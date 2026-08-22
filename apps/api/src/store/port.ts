@@ -46,7 +46,10 @@ export interface StorePort {
   listSuppliers(): Promise<Supplier[]>;
   createSupplier(input: PartyCreate): Promise<Supplier>;
 
-  withTransaction<T>(fn: () => Promise<T>): Promise<T>;
+  /** Runs an atomic unit; the callback receives the same store with the queue
+   * bypassed for its own calls, so nested operations never deadlock and no
+   * external call can ever land inside this transaction. */
+  withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
   lastInvoiceNumber(): Promise<string | undefined>;
   insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">): Promise<Invoice>;
   insertInvoiceLine(line: Omit<InvoiceLine, "id">): Promise<InvoiceLine>;

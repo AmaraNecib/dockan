@@ -252,6 +252,84 @@ describe("edge cases", () => {
   });
 });
 
+describe("transactions", () => {
+  it("rolls the whole unit back when the callback throws (audit + mutation stay atomic)", async () => {
+    const before = (await store.listCategories()).length;
+    await expect(
+      store.withTransaction(async (tx) => {
+        await tx.createCategory({ name: "غير قابل للحفظ" });
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    const after = (await store.listCategories()).length;
+    expect(after).toBe(before);
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).not.toContain("غير قابل للحفظ");
+  });
+
+  it("commits everything inside the unit on success", async () => {
+    const created = await store.withTransaction(async (tx) => {
+      const category = await tx.createCategory({ name: "يُحفظ معاً" });
+      await tx.insertActivity({ type: "CATEGORY_CREATED", summary: category.name, ref: category.id });
+      return category;
+    });
+    expect((await store.listCategories()).some((c) => c.id === created.id)).toBe(true);
+    expect((await store.listActivities(10)).some((a) => a.ref === created.id)).toBe(true);
+  });
+
+  it("serializes concurrent units without nested BEGIN collisions", async () => {
+    const [a, b] = await Promise.all([
+      store.withTransaction(async (tx) => tx.createCategory({ name: "ألف" })),
+      store.withTransaction(async (tx) => tx.createCategory({ name: "باء" })),
+    ]);
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).toContain("ألف");
+    expect(names).toContain("باء");
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it("serializes plain operations against open transactions (no interleave, no deadlock)", async () => {
+    // a transaction that holds its slot open while a plain read arrives
+    const hold = new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const txRun = store.withTransaction(async (tx) => {
+      await tx.createCategory({ name: "أثناء المعاملة" });
+      await hold;
+      return "done";
+    });
+    const plainRun = store.listCategories();
+    const [txResult, list] = await Promise.all([txRun, plainRun]);
+    expect(txResult).toBe("done");
+    // the plain read ran AFTER the transaction committed, not inside it
+    expect(list.some((c) => c.name === "أثناء المعاملة")).toBe(true);
+  });
+
+  it("plain operations never inherit another transaction's rollback", async () => {
+    const rollingBack = store.withTransaction(async (tx) => {
+      await tx.createCategory({ name: "سَترتبط" });
+      throw new Error("rollback");
+    });
+    const plainOp = store.createCategory({ name: "خارج التصحيح" });
+    await expect(rollingBack).rejects.toThrow("rollback");
+    await plainOp;
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).not.toContain("سَترتبط"); // the unit rolled back only its own writes
+    expect(names).toContain("خارج التصحيح"); // the plain op ran afterwards, unharmed
+  });
+
+  it("keeps one unit's failure from breaking the next unit's commit", async () => {
+    const bad = store.withTransaction(async (tx) => {
+      await tx.createCategory({ name: "يفشل" });
+      throw new Error("boom-two");
+    });
+    const good = store.withTransaction(async (tx) => tx.createCategory({ name: "ينجح رغم ذلك" }));
+    await expect(bad).rejects.toThrow("boom-two");
+    await good;
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).toContain("ينجح رغم ذلك");
+    expect(names).not.toContain("يفشل");
+  });
+});
+
 describe("activities + settings", () => {
   it("records and lists activities newest-first", async () => {
     await store.insertActivity({ type: "SALE_CREATED", summary: "بيع INV-0002", ref: "INV-0002" });

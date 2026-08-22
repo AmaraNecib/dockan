@@ -20,10 +20,9 @@ type RpcDeps = {
 };
 
 /**
- * Business procedures land in the items/categories lane (ticket 03). They are
- * listed here with the session guard so the auth rule holds even before their
- * implementations exist; the coordinator merges the real handlers over these
- * NOT_IMPLEMENTED seams.
+ * The merged Dokan router: ticket 02 owns auth (build-secret reset, session
+ * guard), ticket 03 owns categories/items procedures. Every business procedure
+ * passes requireSession; error texts are stable keys the ui translates.
  */
 export function createRpcRouter(deps: RpcDeps) {
   const os = implement(dokanContract).$context<RpcContext>();
@@ -43,13 +42,23 @@ export function createRpcRouter(deps: RpcDeps) {
     return session;
   };
 
-  const notImplemented = (): never => {
-    throw new ORPCError("NOT_IMPLEMENTED", { message: "lands in ticket 03" });
-  };
-
-  const guarded = <T,>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
+  const guarded = <T>(handler: (context: RpcContext) => Promise<T>) => async ({ context }: { context: RpcContext }): Promise<T> => {
     await requireSession(context);
     return handler(context);
+  };
+
+  /** Like guarded, but passes the procedure input through as well. */
+  const guardedInput = <T, I>(handler: (input: I, context: RpcContext) => Promise<T>) => async ({
+    input,
+    context,
+  }: { input: I; context: RpcContext }): Promise<T> => {
+    await requireSession(context);
+    return handler(input, context);
+  };
+
+  const notImplemented = (name: string) => async (): Promise<never> => {
+    deps.logger.warn("NOT_IMPLEMENTED", `procedure ${name} not implemented yet`);
+    throw new ORPCError("INTERNAL_SERVER_ERROR", { message: `${name} is not implemented yet` });
   };
 
   return {
@@ -71,28 +80,92 @@ export function createRpcRouter(deps: RpcDeps) {
       }
     }),
 
-    // --- business procedures: guarded seams for ticket 03 --------------------
-    categoriesList: os.categoriesList.handler(guarded(() => notImplemented())),
-    categoriesCreate: os.categoriesCreate.handler(guarded(() => notImplemented())),
-    itemsList: os.itemsList.handler(guarded(() => notImplemented())),
-    itemsCreate: os.itemsCreate.handler(guarded(() => notImplemented())),
-    itemsUpdate: os.itemsUpdate.handler(guarded(() => notImplemented())),
-    itemsLowStock: os.itemsLowStock.handler(guarded(() => notImplemented())),
-    customersList: os.customersList.handler(guarded(() => notImplemented())),
-    customersCreate: os.customersCreate.handler(guarded(() => notImplemented())),
-    suppliersList: os.suppliersList.handler(guarded(() => notImplemented())),
-    suppliersCreate: os.suppliersCreate.handler(guarded(() => notImplemented())),
-    invoicesCreate: os.invoicesCreate.handler(guarded(() => notImplemented())),
-    invoicesGet: os.invoicesGet.handler(guarded(() => notImplemented())),
-    invoicesList: os.invoicesList.handler(guarded(() => notImplemented())),
-    invoicesPay: os.invoicesPay.handler(guarded(() => notImplemented())),
-    reportsDebts: os.reportsDebts.handler(guarded(() => notImplemented())),
-    settingsGet: os.settingsGet.handler(guarded(() => notImplemented())),
-    settingsUpdate: os.settingsUpdate.handler(guarded(() => notImplemented())),
-    activitiesList: os.activitiesList.handler(guarded(() => notImplemented())),
-    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(guarded(() => notImplemented())),
-    backupManual: os.backupManual.handler(guarded(() => notImplemented())),
+    // --- categories (ticket 03) ----------------------------------------------
+    categoriesList: os.categoriesList.handler(guarded(async () => ({ items: await deps.store.listCategories() }))),
+    categoriesCreate: os.categoriesCreate.handler(
+      guardedInput(async (input) => {
+        // duplicate check lives INSIDE the serialized unit; concurrent creates
+        // for the same name serialize, and the UNIQUE constraint catch below
+        // translates the race into the same CONFLICT response
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const existing = await tx.listCategories();
+            if (existing.some((c) => c.name === input.name)) {
+              throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+            }
+            const category = await tx.createCategory({ name: input.name });
+            await tx.insertActivity({ type: "CATEGORY_CREATED", summary: `إنشاء تصنيف ${input.name}` });
+            return category;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
+          }
+          throw err;
+        }
+      }),
+    ),
+
+    // --- items (ticket 03) ---------------------------------------------------
+    itemsList: os.itemsList.handler(guarded(async () => ({ items: await deps.store.listItems() }))),
+    itemsCreate: os.itemsCreate.handler(
+      guardedInput(async (input) => {
+        const categories = await deps.store.listCategories();
+        if (!categories.some((c) => c.id === input.categoryId)) {
+          throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+        }
+        // item + audit entry commit in the same transaction
+        return deps.store.withTransaction(async (tx) => {
+          const item = await tx.createItem(input);
+          await tx.insertActivity({ type: "ITEM_CREATED", summary: `إنشاء منتج ${input.name}`, ref: item.id });
+          return item;
+        });
+      }),
+    ),
+    itemsUpdate: os.itemsUpdate.handler(
+      guardedInput(async (input) => {
+        // item + audit entry commit in the same transaction; a moved item must
+        // point at a real category, like create does (FK errors are not 500s)
+        return deps.store.withTransaction(async (tx) => {
+          if (input.categoryId !== undefined) {
+            const categories = await tx.listCategories();
+            if (!categories.some((category) => category.id === input.categoryId)) {
+              throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+            }
+          }
+          const item = await tx.updateItem(input.id, input);
+          if (item === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+          }
+          await tx.insertActivity({ type: "ITEM_UPDATED", summary: `تعديل منتج ${item.name}`, ref: item.id });
+          return item;
+        });
+      }),
+    ),
+    itemsLowStock: os.itemsLowStock.handler(guarded(async () => ({ items: await deps.store.listLowStockItems() }))),
+
+    // --- remaining procedures: guarded seams for later tickets ---------------
+    customersList: os.customersList.handler(guarded(notImplemented("customersList"))),
+    customersCreate: os.customersCreate.handler(guarded(notImplemented("customersCreate"))),
+    suppliersList: os.suppliersList.handler(guarded(notImplemented("suppliersList"))),
+    suppliersCreate: os.suppliersCreate.handler(guarded(notImplemented("suppliersCreate"))),
+    invoicesCreate: os.invoicesCreate.handler(guarded(notImplemented("invoicesCreate"))),
+    invoicesGet: os.invoicesGet.handler(guarded(notImplemented("invoicesGet"))),
+    invoicesList: os.invoicesList.handler(guarded(notImplemented("invoicesList"))),
+    invoicesPay: os.invoicesPay.handler(guarded(notImplemented("invoicesPay"))),
+    reportsDebts: os.reportsDebts.handler(guarded(notImplemented("reportsDebts"))),
+    settingsGet: os.settingsGet.handler(guarded(notImplemented("settingsGet"))),
+    settingsUpdate: os.settingsUpdate.handler(guarded(notImplemented("settingsUpdate"))),
+    activitiesList: os.activitiesList.handler(guarded(notImplemented("activitiesList"))),
+    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(guarded(notImplemented("diagnosticsLogsTail"))),
+    backupManual: os.backupManual.handler(guarded(notImplemented("backupManual"))),
   };
 }
 
+/** The router object type, for AppDeps. */
 export type RpcRouter = ReturnType<typeof createRpcRouter>;
+
+/** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
+function isUniqueViolation(err: Error): boolean {
+  return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");
+}

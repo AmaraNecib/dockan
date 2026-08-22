@@ -12,8 +12,10 @@ export type Connection = {
   /** live database file path — used by the backup store method */
   dbPath: string;
   /**
-   * The raw bun:sqlite handle, for migrations and the transaction seams that
-   * need to run statements below the drizzle layer.
+   * The raw bun:sqlite handle. WithTransaction on the store drives explicit
+   * BEGIN/COMMIT/ROLLBACK on this single connection, which stays atomic
+   * across awaited work (drizzle's bun-sqlite transaction was committing
+   * before async callbacks finished).
    */
   raw: Database;
   /** WAL checkpoint, so a straight file copy of the db is consistent */

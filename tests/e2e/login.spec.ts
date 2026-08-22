@@ -20,9 +20,9 @@ test("first-time setup, login, and persisted session", async ({ page }) => {
 
   // 3. the form pre-fills the phone and signs in
   await page.getByTestId("login-submit").click();
-  await expect(page.getByText("تم تسجيل الدخول بنجاح")).toBeVisible();
+  await expect(page.getByText("الرئيسية")).toBeVisible();
 
   // 4. session persists across a reload (cookie)
   await page.reload();
-  await expect(page.getByText("تم تسجيل الدخول بنجاح")).toBeVisible();
+  await expect(page.getByText("الرئيسية")).toBeVisible();
 });

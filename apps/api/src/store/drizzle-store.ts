@@ -124,61 +124,55 @@ export function createDrizzleStore(conn: Connection): StorePort {
   const { db } = conn;
 
   /**
-   * Pre-ticket-02 databases lack the auth columns better-auth reads.
-   * SQLite cannot drop or repurpose columns, but ADD COLUMN covers every
-   * missing one; the created_at TEXT to INTEGER change only affects runs
-   * before ticket 01, and no released install exists with one.
+   * One queue guards the single SQLite connection (greptile: direct store
+   * operations could interleave with open transactions). Transactions hold
+   * the queue exclusively; plain operations either join an open transaction
+   * safely (same connection) or wait behind it. Everything funnels through
+   * serializeStore below.
    */
-  const migrateAuthColumns = (): void => {
-    const tableColumns = (table: string): Set<string> => {
-      // SAFETY: PRAGMA table_info always returns rows shaped { name, type, ... }
-      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-      return new Set(rows.map((r) => r.name));
-    };
-    const wanted = {
-      user: ["username", "phoneNumber", "phoneNumberVerified", "email", "image", "name", "emailVerified", "createdAt", "updatedAt"],
-      session: ["expiresAt", "token", "createdAt", "updatedAt", "ipAddress", "userAgent", "userId"],
-      account: [
-        "accountId", "providerId", "issuer", "userId", "accessToken", "refreshToken", "idToken",
-        "accessTokenExpiresAt", "refreshTokenExpiresAt", "scope", "password", "createdAt", "updatedAt",
-      ],
-      verification: ["identifier", "value", "expiresAt", "createdAt", "updatedAt"],
-    } satisfies Record<string, readonly string[]>;
-    for (const [table, columns] of Object.entries(wanted)) {
-      const existing = tableColumns(table);
-      for (const column of columns) {
-        if (existing.has(column)) continue;
-        conn.raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
-      }
-    }
+  let jobQueue: Promise<unknown> = Promise.resolve();
+  const runSerialized = <T,>(job: () => Promise<T>): Promise<T> => {
+    const run = jobQueue.then(job);
+    jobQueue = run.catch(() => undefined);
+    return run;
   };
 
-  /**
-   * Databases initialized by ticket 01 store the auth tables with snake_case
-   * columns (account_id, provider_id, ...); ticket 02 writes camelCase and the
-   * old NOT NULL snake columns would break writes. Those tables are provably
-   * EMPTY before auth existed, so the correct migration is drop-and-recreate
-   * into the current schema, before SCHEMA_DDL runs.
-   */
-  const rebuildLegacyAuthTables = (): void => {
-    const tables = ["user", "session", "account", "verification"] as const;
-    const looksLegacy = (table: string): boolean => {
-      // SAFETY: PRAGMA table_info always returns rows shaped { name, type, ... }
-      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-      const names = new Set(rows.map((r) => r.name));
-      return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+  /** A store whose calls skip the queue: used inside transaction units, where
+   * the unit itself already holds the queue. Never escapes withTransaction. */
+  const directSeed = (raw: StorePort): StorePort =>
+    // SAFETY: same key set and same values; no wrapper is applied
+    Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value])) as StorePort;
+
+  const serializeStore = (raw: StorePort): StorePort => {
+    // SAFETY: a port object exposes only documented members
+    const entries = Object.entries(raw) as Array<[keyof StorePort, unknown]>;
+    const wrapEntry = ([key, value]: readonly [keyof StorePort, unknown]): readonly [string, StorePort[keyof StorePort]] => {
+      if (key === "withTransaction") {
+        // SAFETY: withTransaction keeps its own serialization; no wrapper needed
+        return [key, value as StorePort["withTransaction"]];
+      }
+      // args are never[] (the object shape opaques them); R is resolved at
+      // each call site to the raw method's real result type
+      // SAFETY: value is the raw method this key names; binding the receiver
+      // keeps this.*-style methods (settings, activities) callable without
+      // changing the call signature (R resolves at each call site)
+      // SAFETY: value is the raw method this key names (its result type is R);
+      // .bind fixes the receiver, so this.*-style methods keep working; the
+      // cast keeps the same call signature
+      const wrapped = <R,>(...args: never[]): Promise<R> =>
+        runSerialized(() => (value as (...a: never[]) => Promise<R>).bind(raw)(...args));
+      // SAFETY: wrapped implements the raw method named by key via its generic R
+      return [key, wrapped as StorePort[keyof StorePort]];
     };
-    for (const table of tables) {
-      if (looksLegacy(table)) conn.raw.exec(`DROP TABLE ${table}`);
-    }
+    // SAFETY: fromEntries returns a plain dictionary keyed by the exact names,
+    // so the value type is the method union indexed by those same keys
+    const built = Object.fromEntries(entries.map(wrapEntry)) as Record<keyof StorePort, StorePort[keyof StorePort]>;
+    // SAFETY: built mirrors raw's exact key set; every member is present
+    return built as StorePort;
   };
 
   async function setup(): Promise<void> {
-    rebuildLegacyAuthTables();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
-    // CREATE TABLE IF NOT EXISTS never adds columns, so pre-ticket-02
-    // databases get their missing auth columns migrated here
-    migrateAuthColumns();
 
     const categoriesCount = await db.$count(categories);
     if (categoriesCount === 0) {
@@ -191,7 +185,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   }
 
-  return {
+  const store: StorePort = {
     setup,
 
     // --- categories ----------------------------------------------------------
@@ -265,7 +259,28 @@ export function createDrizzleStore(conn: Connection): StorePort {
     },
 
     // --- invoices / payments -------------------------------------------------
-    withTransaction: (fn) => db.transaction(async () => fn()),
+    // Explicit BEGIN/COMMIT/ROLLBACK on the single raw connection: drizzle's
+    // bun-sqlite transaction committed before awaited callbacks finished
+    // (proven by the store transactions test), so units would lose atomicity.
+    withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+      // serialized against every other store call; the unit keeps the queue
+      // for its whole run so no second BEGIN can appear mid-transaction. The
+      // callback receives an unqueued store (directSeed) so its internal calls
+      // never deadlock, while every EXTERNAL operation queues behind the unit
+      // and can never land inside this transaction (greptile P1).
+      return runSerialized(async () => {
+        const tx = directSeed(store);
+        conn.raw.exec("BEGIN");
+        try {
+          const result = await fn(tx);
+          conn.raw.exec("COMMIT");
+          return result;
+        } catch (err) {
+          conn.raw.exec("ROLLBACK");
+          throw err;
+        }
+      });
+    },
     async lastInvoiceNumber() {
       const latest = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices).orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(1);
       return latest[0]?.invoiceNumber;
@@ -322,9 +337,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
                MAX(invoice_date) AS latest_date
         FROM invoices
         WHERE remaining_amount > 0 AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
-        -- group by a namespaced key: id-backed parties and free-form typed names
-        -- can never merge, even when they share a display name (greptile P1)
-        GROUP BY kind, CASE WHEN counterparty_id IS NOT NULL THEN 'id:' || counterparty_id ELSE 'name:' || counterparty_name END
+        GROUP BY kind, COALESCE(counterparty_id, counterparty_name)
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       return aggregated.map((r) => {
         const kind =
@@ -392,4 +405,6 @@ export function createDrizzleStore(conn: Connection): StorePort {
       return conn.dbPath;
     },
   };
+
+  return serializeStore(store);
 }

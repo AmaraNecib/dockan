@@ -54,7 +54,11 @@ function ItemForm() {
         categoryId: chosenCategory,
         costPrice: Number(cost) || 0,
         sellingPrice: selling,
-        lowStockThreshold: Number(threshold) || 5,
+        // 0 is a legitimate threshold (warn at zero); only blank/nan falls back
+        lowStockThreshold: (() => {
+          const t = Number(threshold);
+          return Number.isFinite(t) && t >= 0 ? t : 5;
+        })(),
       });
       setName("");
       setCost("");

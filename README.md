@@ -7,7 +7,7 @@ Desktop stock & invoicing app for a car-accessories shop in Algeria.
 
 ## Stack
 
-Bun workspace monorepo (Bun 1.3+, no build step — workspace packages resolve straight from `src/`):
+Bun workspace monorepo (Bun 1.3+, no build step. workspace packages resolve straight from `src/`):
 
 | package             | role                                                     |
 | ------------------- | -------------------------------------------------------- |
@@ -24,7 +24,7 @@ Patterns borrowed from the proven `tuari_react_hono` ERP monorepo in `D:\project
 bun install
 bun run dev:api        # API on http://127.0.0.1:4317
 bun run dev:web        # UI on http://localhost:5173
-bun run dev:desktop    # Tauri window (needs Rust toolchain — installed)
+bun run dev:desktop    # Tauri window (needs Rust toolchain. installed)
 ```
 
 Production distribution: `bun run --filter @dokan/api compile` → `dokan-api` binary, shipped as the Tauri sidecar; web builds to static files the Tauri webview serves.

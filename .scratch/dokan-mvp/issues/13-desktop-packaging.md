@@ -1,6 +1,6 @@
 # 13: Desktop packaging (installable Windows app)
 
-**What to build:** the thing the owner actually installs — a Tauri window loading the built UI, the API running as a compiled sidecar `.exe`, app icons, produced as a portable NSIS installer that works on his Windows PC with no setup.
+**What to build:** the thing the owner actually installs. a Tauri window loading the built UI, the API running as a compiled sidecar `.exe`, app icons, produced as a portable NSIS installer that works on his Windows PC with no setup.
 
 **Blocked by:** 02, 09, 10, 11, 12
 

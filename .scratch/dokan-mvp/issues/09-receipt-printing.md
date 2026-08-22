@@ -1,6 +1,6 @@
 # 09: Receipt printing (PDF via system dialog)
 
-**What to build:** a print button on an invoice generates a PDF receipt and opens the system print dialog — paper when the owner wants it, no special printer required.
+**What to build:** a print button on an invoice generates a PDF receipt and opens the system print dialog. paper when the owner wants it, no special printer required.
 
 **Blocked by:** 05, 06
 

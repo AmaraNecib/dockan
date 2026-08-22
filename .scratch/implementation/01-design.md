@@ -1,4 +1,4 @@
-# Ticket 01 — Persistence backbone: design
+# Ticket 01. Persistence backbone: design
 
 - **mode:** local-only (no GitHub)
 - **ticket:** `.scratch/dokan-mvp/issues/01-persistence-backbone.md`
@@ -8,7 +8,7 @@
 
 ## Public interface
 
-`StorePort` (in `apps/api/src/store/port.ts`) — the one persistence seam (ADR-0003).
+`StorePort` (in `apps/api/src/store/port.ts`). the one persistence seam (ADR-0003).
 Procedures and use cases depend on it; no SQL or driver names escape it.
 Implemented by `createDrizzleStore(conn)` over bun:sqlite today, postgres later
 behind `DOKAN_DB_DRIVER`. Config gains `db.driver` + `db.path`.
@@ -20,7 +20,7 @@ behind `DOKAN_DB_DRIVER`. Config gains `db.driver` + `db.path`.
 - Store owns all persistence behavior: entities, lists, filters, transactions, debt grouping, settings, backup copy.
 - better-auth tables (`user`, `session`, `account`, `verification`) land in the schema now; the adapter wiring is ticket 02.
 
-## Tests (TDD at agreed seams — spec: seam 2)
+## Tests (TDD at agreed seams. spec: seam 2)
 
 `apps/api/src/store/drizzle-store.test.ts` against sqlite `:memory:`:
 setup+seed, better-auth tables exist, categories, items (create/update/low-stock/getByIds),

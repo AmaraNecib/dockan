@@ -1,6 +1,6 @@
 # 10: Activity log view (shop trace)
 
-**What to build:** the owner sees a chronological record of what happened in the app — sales, purchases, payments, edits — with times in Algeria local time, newest first.
+**What to build:** the owner sees a chronological record of what happened in the app. sales, purchases, payments, edits. with times in Algeria local time, newest first.
 
 **Blocked by:** 02
 

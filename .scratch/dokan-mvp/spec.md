@@ -1,5 +1,4 @@
-# Dokan MVP — Spec
-> GitHub issue: #2
+# Dokan MVP. Spec
 
 > Desktop stock & invoicing app for a car-accessories shop in Algeria.
 > Status: ready-for-agent. Source: grilling rounds (grill-with-docs) + scaffold proof.
@@ -18,7 +17,7 @@ A local-first desktop app (Tauri shell, Bun API, React UI in Arabic) where the o
 - logs in with his **phone number + password** (better-auth; no email), resettable via the build secret baked into the app,
 - manages **categories and items** (each item: category, cost price, selling price, low-stock threshold; live profit per unit),
 - records **purchases** from suppliers and **sales** to customers as **invoices** (SALE / PURCHASE), each payable fully in cash, fully on credit, or split,
-- sees **debts grouped by person** — who owes him and who he owes — and records **later payments** against an invoice, never beyond the remaining amount, with payment history visible on the invoice,
+- sees **debts grouped by person**. who owes him and who he owes. and records **later payments** against an invoice, never beyond the remaining amount, with payment history visible on the invoice,
 - is **blocked from selling more than available stock**, gets a **low-stock list** on the dashboard,
 - prints a **PDF receipt** via the system print dialog,
 - gets an **activity log** of what happened and when, and
@@ -46,7 +45,7 @@ All data lives in one local SQLite file. Timestamps are Algeria local time (UTC+
 16. As the shop owner, I want to record later payments against an invoice, so that a debt is settled over time.
 17. As the shop owner, I want the app to prevent paying more than the remaining amount, so that debt numbers stay exact.
 18. As the shop owner, I want to see payment history on the invoice screen, so that I know what was paid and when.
-19. As the shop owner, I want a debts screen grouped by person — who owes me and who I owe, with totals — so that I can follow up.
+19. As the shop owner, I want a debts screen grouped by person. who owes me and who I owe, with totals. so that I can follow up.
 20. As the shop owner, I want the activity log to show what happened and when, so that I can trace any action.
 21. As the shop owner, I want my store name and phone on the invoice header, so that receipts look like my shop.
 22. As the shop owner, I want automatic daily backups and a manual export, so that a dead PC does not kill my records.
@@ -56,24 +55,24 @@ All data lives in one local SQLite file. Timestamps are Algeria local time (UTC+
 
 ## Implementation Decisions
 
-- **Monorepo (Bun workspaces)** — `contracts` (Zod schemas + oRPC contract, the source of truth), `api` (Hono + oRPC + Drizzle), `web` (React + TanStack Router/Query + oRPC client + shadcn/ui + Tailwind 4), `desktop` (Tauri v2). No build step; workspace packages resolve from `src/`.
-- **Runtime** — Bun runs the API (`bun:sqlite`), compiled to a single `.exe` sidecar via `bun build --compile` for the portable desktop build.
-- **Persistence seam** — one `StorePort` interface; sqlite adapter now (Drizzle + bun:sqlite), postgres adapter later behind `DOKAN_DB_DRIVER`. Callers never change (ADR-0003).
-- **Auth — better-auth with phone-number provider** — single admin with a unique, normalized Algerian phone number (+213 …) as the login identifier and a password (scrypt-hashed). No email. No SMS/OTP in the MVP: OTP needs an SMS gateway, which conflicts with local-first/offline and adds cost; it is a possible paid add-on later. Sessions are server-side; the subtle threat model is a shared laptop, not a remote attacker.
-- **Money** — whole dinars, stored as integers; no float arithmetic anywhere.
-- **Time** — every timestamp in Algeria local time (UTC+1): invoice dates, payments, activity log, backup filenames, log file names.
-- **Average cost rule** — weighted by on-hand stock at purchase time; sold units are realized and never re-valued: `newAvg = round((oldStock × oldCost + qty × buyPrice) / (oldStock + qty))` (ADR-0002).
-- **Invoices** — kind SALE (customer owes) / PURCHASE (shop owes); optional known party or typed-in name; lines snapshot description and `costAtSale` so profit stays honest after cost changes; editable auto-numbered invoice number.
-- **Payments** — per-invoice, multiple allowed, never beyond `remainingAmount` (no overpay), history shown on the invoice.
-- **Stock** — never below zero (blocked sale); PURCHASE increments + recomputes average cost, SALE decrements.
-- **Logs — two kinds** — the shop-owner activity log (SALE/PURCHASE/PAYMENT/… events) and a developer-facing daily JSONL diagnostics log with `DKN-XXXXXXXX` error codes and stacks.
-- **Backup** — automatic daily copy of the SQLite file (WAL checkpoint) plus a manual export; files named `dokan-YYYY-MM-DD.db` in an owned `backups/` folder.
-- **UI** — Arabic-first, RTL, one category per item with a seeded default category, low-stock list + dashboard flag, invoice header from settings (store name/phone).
-- **Scope of realism for an MVP** — no multi-user roles, no cloud sync, single machine, one language.
+- **Monorepo (Bun workspaces)**. `contracts` (Zod schemas + oRPC contract, the source of truth), `api` (Hono + oRPC + Drizzle), `web` (React + TanStack Router/Query + oRPC client + shadcn/ui + Tailwind 4), `desktop` (Tauri v2). No build step; workspace packages resolve from `src/`.
+- **Runtime**. Bun runs the API (`bun:sqlite`), compiled to a single `.exe` sidecar via `bun build --compile` for the portable desktop build.
+- **Persistence seam**. one `StorePort` interface; sqlite adapter now (Drizzle + bun:sqlite), postgres adapter later behind `DOKAN_DB_DRIVER`. Callers never change (ADR-0003).
+- **Auth. better-auth with phone-number provider**. single admin with a unique, normalized Algerian phone number (+213 …) as the login identifier and a password (scrypt-hashed). No email. No SMS/OTP in the MVP: OTP needs an SMS gateway, which conflicts with local-first/offline and adds cost; it is a possible paid add-on later. Sessions are server-side; the subtle threat model is a shared laptop, not a remote attacker.
+- **Money**. whole dinars, stored as integers; no float arithmetic anywhere.
+- **Time**. every timestamp in Algeria local time (UTC+1): invoice dates, payments, activity log, backup filenames, log file names.
+- **Average cost rule**. weighted by on-hand stock at purchase time; sold units are realized and never re-valued: `newAvg = round((oldStock × oldCost + qty × buyPrice) / (oldStock + qty))` (ADR-0002).
+- **Invoices**. kind SALE (customer owes) / PURCHASE (shop owes); optional known party or typed-in name; lines snapshot description and `costAtSale` so profit stays honest after cost changes; editable auto-numbered invoice number.
+- **Payments**. per-invoice, multiple allowed, never beyond `remainingAmount` (no overpay), history shown on the invoice.
+- **Stock**. never below zero (blocked sale); PURCHASE increments + recomputes average cost, SALE decrements.
+- **Logs. two kinds**. the shop-owner activity log (SALE/PURCHASE/PAYMENT/… events) and a developer-facing daily JSONL diagnostics log with `DKN-XXXXXXXX` error codes and stacks.
+- **Backup**. automatic daily copy of the SQLite file (WAL checkpoint) plus a manual export; files named `dokan-YYYY-MM-DD.db` in an owned `backups/` folder.
+- **UI**. Arabic-first, RTL, one category per item with a seeded default category, low-stock list + dashboard flag, invoice header from settings (store name/phone).
+- **Scope of realism for an MVP**. no multi-user roles, no cloud sync, single machine, one language.
 
 ## Testing Decisions
 
-- A good test asserts external behavior through a seam with expected values from worked examples — never internals, never SQL, never implementation structure.
+- A good test asserts external behavior through a seam with expected values from worked examples. never internals, never SQL, never implementation structure.
 - **Seam 1 (use cases)**: the invoice/debt/stock math is tested over an in-memory store adapter; canonical examples as literals (30@200 + 100@120 → avg 138; oversell blocked at 4 items left; overpay rejected; owedToUs vs weOwe grouping).
 - **Seam 2 (store)**: persistence behavior tested against sqlite `:memory:` through the same `StorePort`.
 - Prior art: the `tuari_react_hono` monorepo's module tests (bun test is the runner here).
@@ -81,8 +80,8 @@ All data lives in one local SQLite file. Timestamps are Algeria local time (UTC+
 
 ## Out of Scope
 
-- Batch/lot tracking (FIFO per-purchase selling) — deferred after MVP.
-- Fiscal invoices: NIF, TVA (19%) and legal numbering — only if the owner registers for tax, later.
+- Batch/lot tracking (FIFO per-purchase selling). deferred after MVP.
+- Fiscal invoices: NIF, TVA (19%) and legal numbering. only if the owner registers for tax, later.
 - Multi-user, roles, multi-store or per-store branding configuration.
 - Mobile version (would re-open the economics; desktop is the decided product).
 - Barcode/thermal-printer driver integration; profit reports and analytics dashboards; French language.

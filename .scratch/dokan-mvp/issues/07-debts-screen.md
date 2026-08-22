@@ -1,6 +1,6 @@
 # 07: Debts screen (who owes me / I owe)
 
-**What to build:** one screen showing debts grouped by person in both directions — customers who owe the shop and suppliers the shop owes — with totals, invoice counts and a way to open the related invoices.
+**What to build:** one screen showing debts grouped by person in both directions. customers who owe the shop and suppliers the shop owes. with totals, invoice counts and a way to open the related invoices.
 
 **Blocked by:** 04, 05
 

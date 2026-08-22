@@ -14,9 +14,12 @@
     "dev:desktop": "bun run --filter @dokan/desktop dev",
     "build": "turbo build",
     "typecheck": "turbo typecheck",
-    "test": "turbo test"
+    "test": "turbo test",
+    "prepare": "husky",
+    "lint": "oxlint"
   },
   "devDependencies": {
+    "husky": "^9.1.7",
     "turbo": "^2.8.16",
     "typescript": "^5.9.3"
   }

@@ -1,0 +1,2 @@
+bun run lint
+cd apps/api && bunx tsc --noEmit

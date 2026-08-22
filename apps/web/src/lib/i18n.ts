@@ -2,7 +2,7 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
 /**
- * Single i18n instance (AR first; FR slots reserved). UI strings live here,
+ * Single i18n instance, Arabic only. UI strings live here,
  * and server error keys (AUTH_REQUIRED, FORBIDDEN, WRONG_BUILD_SECRET, ...)
  * resolve through the same table, so a message stays meaningful and
  * translatable without touching the api.

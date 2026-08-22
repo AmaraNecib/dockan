@@ -11,7 +11,7 @@ import { initReactI18next } from "react-i18next";
 import type { DokanClient } from "@dokan/contracts";
 
 /**
- * Single i18n instance (AR first; FR slots reserved). UI strings and server
+ * Single i18n instance, Arabic only. UI strings and server
  * error keys (CATEGORY_EXISTS, CATEGORY_NOT_FOUND, ITEM_NOT_FOUND, ...) live
  * here; the api never ships display text.
 >>>>>>> 0f08f6a (PR16 review: update-category validation, error keys + web i18next, dynamic ports (env + fallback), 127.0.0.1 e2e hosts, e2e stable defaults)

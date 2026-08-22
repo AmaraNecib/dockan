@@ -54,8 +54,9 @@ function ItemForm() {
         categoryId: chosenCategory,
         costPrice: Number(cost) || 0,
         sellingPrice: selling,
-        // 0 is a legitimate threshold (warn at zero); only blank/nan falls back
+        // blank means default 5; 0 is a legitimate threshold (warn at zero)
         lowStockThreshold: (() => {
+          if (threshold === "") return 5;
           const t = Number(threshold);
           return Number.isFinite(t) && t >= 0 ? t : 5;
         })(),

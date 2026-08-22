@@ -5,10 +5,15 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5173,
-    strictPort: true,
+    // changeable: if the dev port is taken, vite picks another instead of
+    // crashing (the user is an accountant, not a developer)
+    host: "127.0.0.1",
+    port: Number(process.env.DOKAN_WEB_PORT ?? 5173),
+    strictPort: false,
+    // same-origin API: the webview never talks to the Bun api directly,
+    // so auth cookies stay same-origin and no CORS config is needed
     proxy: {
-      "/api": { target: "http://127.0.0.1:4317", changeOrigin: true },
+      "/api": { target: `http://127.0.0.1:${process.env.DOKAN_PORT ?? 4317}`, changeOrigin: true },
     },
   },
   build: {

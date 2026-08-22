@@ -33,7 +33,7 @@ beforeAll(async () => {
 
   const app = createApp(store, new AppLogger(dir), config);
   const link = new RPCLink({
-    url: () => "http://127.0.0.1:4317/api/rpc",
+    url: () => `http://127.0.0.1:${config.port}/api/rpc`,
     // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
     fetch: (request) => Promise.resolve(app.fetch(request)),
   });
@@ -71,7 +71,7 @@ describe("categories", () => {
   });
 
   it("rejects a duplicate category name with a clear error", async () => {
-    await expect(client.categoriesCreate({ name: "زيوت" })).rejects.toThrow(/exists/i);
+    await expect(client.categoriesCreate({ name: "زيوت" })).rejects.toThrow(/CATEGORY_EXISTS/);
   });
 
   it("two concurrent creates of the same category resolve as CONFLICT, not a raw error", async () => {
@@ -83,7 +83,7 @@ describe("categories", () => {
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
     expect(fulfilled.length).toBeGreaterThanOrEqual(1);
     for (const rejection of rejected) {
-      expect(String(rejection.reason)).toMatch(/already exists/i);
+      expect(String(rejection.reason)).toMatch(/CATEGORY_EXISTS/);
     }
   });
 });

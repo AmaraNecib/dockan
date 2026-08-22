@@ -268,7 +268,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
                MAX(invoice_date) AS latest_date
         FROM invoices
         WHERE remaining_amount > 0 AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
-        GROUP BY kind, COALESCE(counterparty_id, counterparty_name)
+        -- group by a namespaced key: id-backed parties and free-form typed names
+        -- can never merge, even when they share a display name (greptile P1)
+        GROUP BY kind, CASE WHEN counterparty_id IS NOT NULL THEN 'id:' || counterparty_id ELSE 'name:' || counterparty_name END
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       return aggregated.map((r) => {
         const kind =

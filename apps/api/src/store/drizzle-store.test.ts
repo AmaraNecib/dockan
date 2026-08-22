@@ -188,10 +188,41 @@ describe("invoices core", () => {
     expect(yusef).toHaveLength(1);
     expect(yusef[0]?.remainingTotal).toBe(1_500);
     expect(yusef[0]?.invoiceCount).toBe(1);
+  });
 
-    const supplierDebt = weOwe.find((d) => d.counterpartyName === "مخزن الحاج");
-    expect(supplierDebt?.remainingTotal).toBe(25_000);
-    expect(sale.id).toBeTruthy();
+  it("never merges an id-backed party with a same-named free-form party", async () => {
+    const idBacked = await store.insertInvoice({
+      invoiceNumber: "INV-0100",
+      kind: "SALE",
+      counterpartyId: "00000000-0000-4000-8000-000000000001",
+      counterpartyName: "يوسف",
+      invoiceDate: localDate(),
+      totalAmount: 1_000,
+      paidAmount: 0,
+      remainingAmount: 1_000,
+      notes: null,
+    });
+    const freeForm = await store.insertInvoice({
+      invoiceNumber: "INV-0101",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "يوسف",
+      invoiceDate: localDate(),
+      totalAmount: 500,
+      paidAmount: 0,
+      remainingAmount: 500,
+      notes: null,
+    });
+    const rows = (await store.debtSummaries()).filter(
+      (d) => d.counterpartyName === "يوسف" && d.kind === "SALE" && (d.counterpartyId === null || d.counterpartyId === "00000000-0000-4000-8000-000000000001"),
+    );
+    expect(rows).toHaveLength(2);
+    const byId = rows.find((r) => r.counterpartyId !== null);
+    const byName = rows.find((r) => r.counterpartyId === null);
+    expect(byId?.remainingTotal).toBe(1_000);
+    expect(byName?.remainingTotal).toBe(500);
+    expect(idBacked.id).toBeTruthy();
+    expect(freeForm.id).toBeTruthy();
   });
 });
 

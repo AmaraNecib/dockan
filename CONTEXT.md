@@ -23,7 +23,7 @@
 - **Remaining amount / debt** (الباقي) — invoice total minus what has been paid. Direction matters: unpaid *purchases* mean the shop owes the supplier; unpaid *sales* mean the customer owes the shop.
 - **Debt list** — the view grouping invoices by who owes whom: "customers owe us" and "we owe suppliers", with how much remains.
 - **Payment history** — the list of payments recorded against one invoice, shown on that invoice's screen.
-- **Admin login** — the single password-protected entry to the app, protecting the shop's data when the laptop is shared.
+- **Admin login** — the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Reset via the build secret; no email.
 - **Activity log** (سجل) — the trace of what happened in the app (sales, purchases, payments, edits), so the owner can audit past actions.
 - **Backup** — an automatic daily copy of the shop's data plus a manual export button the owner can copy to a USB stick.
 

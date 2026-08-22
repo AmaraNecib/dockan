@@ -18,6 +18,23 @@ export const localDateTimeSchema = z.string().regex(
   "expected YYYY-MM-DDTHH:mm:ss (Algeria local time)",
 );
 
+// Enum value tuples are the single source of truth; the zod schemas below are
+// built from them so the api's drizzle schema can import the same literals.
+export const invoiceKinds = ["SALE", "PURCHASE"] as const;
+export const paymentMethods = ["CASH", "BANK"] as const;
+export const activityTypes = [
+  "LOGIN",
+  "PASSWORD_RESET",
+  "CATEGORY_CREATED",
+  "ITEM_CREATED",
+  "ITEM_UPDATED",
+  "PARTY_CREATED",
+  "SALE_CREATED",
+  "PURCHASE_CREATED",
+  "PAYMENT_RECORDED",
+  "BACKUP_CREATED",
+] as const;
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
@@ -60,7 +77,7 @@ export const supplierSchema = z.object({
 });
 
 /** SALE = the customer owes the shop; PURCHASE = the shop owes the supplier. */
-export const invoiceKindSchema = z.enum(["SALE", "PURCHASE"]);
+export const invoiceKindSchema = z.enum(invoiceKinds);
 
 export const invoiceLineSchema = z.object({
   id: idSchema,
@@ -93,7 +110,7 @@ export const invoiceSchema = z.object({
   updatedAt: localDateTimeSchema,
 });
 
-export const paymentMethodSchema = z.enum(["CASH", "BANK"]);
+export const paymentMethodSchema = z.enum(paymentMethods);
 
 export const paymentSchema = z.object({
   id: idSchema,
@@ -105,18 +122,7 @@ export const paymentSchema = z.object({
   createdAt: localDateTimeSchema,
 });
 
-export const activityTypeSchema = z.enum([
-  "LOGIN",
-  "PASSWORD_RESET",
-  "CATEGORY_CREATED",
-  "ITEM_CREATED",
-  "ITEM_UPDATED",
-  "PARTY_CREATED",
-  "SALE_CREATED",
-  "PURCHASE_CREATED",
-  "PAYMENT_RECORDED",
-  "BACKUP_CREATED",
-]);
+export const activityTypeSchema = z.enum(activityTypes);
 
 export const activitySchema = z.object({
   id: idSchema,

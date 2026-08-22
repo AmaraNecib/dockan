@@ -1,21 +1,5 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-
-// Mirrors the zod enums in packages/contracts (the single source of truth);
-// keep these tuples in sync with core.ts when an enum grows.
-const invoiceKinds = ["SALE", "PURCHASE"] as const;
-const paymentMethods = ["CASH", "BANK"] as const;
-const activityTypes = [
-  "LOGIN",
-  "PASSWORD_RESET",
-  "CATEGORY_CREATED",
-  "ITEM_CREATED",
-  "ITEM_UPDATED",
-  "PARTY_CREATED",
-  "SALE_CREATED",
-  "PURCHASE_CREATED",
-  "PAYMENT_RECORDED",
-  "BACKUP_CREATED",
-] as const;
+import { activityTypes, invoiceKinds, paymentMethods } from "@dokan/contracts";
 
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer

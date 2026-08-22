@@ -1,20 +1,22 @@
-import { Database } from "bun:sqlite";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 
 import { createAppConfig } from "./config";
+import { openConnection } from "./db/connection";
 import { AppLogger, localDateTime } from "./lib/logger";
+import { createDrizzleStore } from "./store/drizzle-store";
 
-/** Tiny skeleton boot — proves the stack works end-to-end before real code lands. */
+/**
+ * Boot: config, logger, the one StorePort seam, then the server.
+ * main.ts knows seams, not SQL; every read and write goes through the store.
+ */
 const config = createAppConfig();
 const logger = new AppLogger(config.dataDir);
+const conn = openConnection(config);
+const store = createDrizzleStore(conn);
 
-// SQLite proof: a table is created, written, and read back.
-const sqlite = new Database(`${config.dataDir}/dokan.db`, { create: true });
-sqlite.exec("CREATE TABLE IF NOT EXISTS smoke (id INTEGER PRIMARY KEY, note TEXT)");
-sqlite.query("INSERT INTO smoke (note) VALUES (?)").run("hello from bun:sqlite");
-// SAFETY: the smoke table's note column is TEXT; the insert above guarantees a row
-const row = sqlite.query("SELECT note FROM smoke ORDER BY id DESC LIMIT 1").get() as { note: string };
+await store.setup();
+logger.info("SERVER_BOOT_DONE", "database ready", { driver: config.db.driver });
 
 const app = new Hono();
 
@@ -22,7 +24,8 @@ app.get("/health", (c) =>
   c.json({
     ok: true,
     version: config.version,
-    db: row.note,
+    driver: config.db.driver,
+    dbPath: conn.dbPath,
     time: localDateTime(),
   }),
 );
@@ -39,7 +42,7 @@ const server = serve(
 );
 
 process.on("SIGINT", () => {
-  sqlite.close();
+  conn.close();
   server.close();
   process.exit(0);
 });

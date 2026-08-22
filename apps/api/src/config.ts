@@ -10,14 +10,24 @@ export type AppConfig = {
   version: string;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
-    driver: "sqlite";
+    driver: "sqlite" | "postgres";
     /** database file path (sqlite) */
     path: string;
   };
 };
 
+/** Drivers the store can be built on today and planned. */
+const SUPPORTED_DRIVERS = ["sqlite", "postgres"] as const;
+const isDriver = (v: string): v is (typeof SUPPORTED_DRIVERS)[number] =>
+  // SAFETY: the includes() membership check against SUPPORTED_DRIVERS below is the invariant
+  SUPPORTED_DRIVERS.includes(v as (typeof SUPPORTED_DRIVERS)[number]);
+
 export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = env.DOKAN_DATA_DIR ?? path.join(process.cwd(), "data");
+  const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
+  if (!isDriver(requested)) {
+    throw new Error(`DOKAN_DB_DRIVER must be one of: ${SUPPORTED_DRIVERS.join(", ")}. Got "${requested}".`);
+  }
   return {
     host: env.DOKAN_HOST ?? "127.0.0.1",
     port: Number(env.DOKAN_PORT ?? 4317),
@@ -25,7 +35,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     buildSecret: env.DOKAN_BUILD_SECRET ?? "dokan-dev-secret",
     version: "0.1.0",
     db: {
-      driver: "sqlite",
+      driver: requested,
       path: env.DOKAN_DB_PATH ?? path.join(dataDir, "dokan.db"),
     },
   };

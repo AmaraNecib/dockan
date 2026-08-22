@@ -270,15 +270,26 @@ export function createDrizzleStore(conn: Connection): StorePort {
         WHERE remaining_amount > 0 AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
         GROUP BY kind, COALESCE(counterparty_id, counterparty_name)
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
-      return aggregated.map((r) => ({
-        counterpartyId: r.counterparty_id == null ? null : String(r.counterparty_id),
-        counterpartyName: r.counterparty_name == null ? null : String(r.counterparty_name),
-        kind: r.kind === "SALE" ? ("SALE" as const) : ("PURCHASE" as const),
-        remainingTotal: Number(r.remaining_total),
-        invoiceCount: Number(r.invoice_count),
-        oldestInvoiceDate: r.oldest_date == null ? null : String(r.oldest_date),
-        latestInvoiceDate: r.latest_date == null ? null : String(r.latest_date),
-      })) satisfies DebtSummary[];
+      return aggregated.map((r) => {
+        const kind =
+          r.kind === "SALE"
+            ? ("SALE" as const)
+            : r.kind === "PURCHASE"
+              ? ("PURCHASE" as const)
+              : (() => {
+                  // SAFETY: invoices.kind is enum-constrained; other values mean corruption
+                  throw new Error(`unexpected invoice kind in debt summary: ${String(r.kind)}`);
+                })();
+        return {
+          counterpartyId: r.counterparty_id == null ? null : String(r.counterparty_id),
+          counterpartyName: r.counterparty_name == null ? null : String(r.counterparty_name),
+          kind,
+          remainingTotal: Number(r.remaining_total),
+          invoiceCount: Number(r.invoice_count),
+          oldestInvoiceDate: r.oldest_date == null ? null : String(r.oldest_date),
+          latestInvoiceDate: r.latest_date == null ? null : String(r.latest_date),
+        } satisfies DebtSummary;
+      });
     },
 
     // --- activities + settings ----------------------------------------------

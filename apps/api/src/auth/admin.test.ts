@@ -101,6 +101,34 @@ describe("phone normalization", () => {
   });
 });
 
+  it("blocks account creation over http (single-admin boundary)", async () => {
+    const res = await app.fetch(
+      new Request("http://localhost/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "213699999999", password: "x", name: "x" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects a session that is not the provisioned admin", async () => {
+    await resetVia("reset-1234");
+    const login = await signIn(USERNAME, PASSWORD);
+    expect(login.status).toBe(200);
+    const cookie = login.headers.get("set-cookie") ?? "";
+    const client = clientWith((request) => {
+      const headers = Object.fromEntries(request.headers.entries());
+      const withCookie = new Request(request, { headers: { ...headers, cookie } });
+      return Promise.resolve(app.fetch(withCookie));
+    });
+    // point the admin identity marker at someone else: the real session now
+    // fails the identity wall, not the session check
+    const realAdminId = await store.getSetting("adminUserId");
+    await store.setSetting("adminUserId", "00000000-0000-4000-8000-000000000000");
+    await expect(client.categoriesList()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    if (realAdminId !== undefined) await store.setSetting("adminUserId", realAdminId);
+  });
 describe("resetAdminPassword", () => {
   it("rejects a wrong build secret with WRONG_BUILD_SECRET", async () => {
     let error: unknown;
@@ -157,6 +185,7 @@ describe("resetAdminPassword", () => {
 });
 
 describe("rpc session guard", () => {
+
   it("rejects a guarded procedure without a session", async () => {
     const client = clientWith(async (request) => await app.fetch(request));
     // SAFETY: ORPCError exposes .code on rejection

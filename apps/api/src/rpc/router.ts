@@ -32,6 +32,13 @@ export function createRpcRouter(deps: RpcDeps) {
     // returns null for anything missing or expired
     const session = await deps.auth.api.getSession({ headers: context.request.headers });
     if (session === null) throw new ORPCError("UNAUTHORIZED", { message: "تسجيل الدخول مطلوب" });
+    // single-admin boundary: only the provisioned identity may call the store.
+    // Sign-up is blocked at the http layer; this check makes the guard immune
+    // to any other path that could mint a session.
+    const adminUserId = await deps.store.getSetting("adminUserId");
+    if (adminUserId !== session.user.id) {
+      throw new ORPCError("FORBIDDEN", { message: "هذا الحساب غير مخوّل" });
+    }
     return session;
   };
 

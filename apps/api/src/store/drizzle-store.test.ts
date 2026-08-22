@@ -268,6 +268,37 @@ describe("activities + settings", () => {
   });
 });
 
+describe("auth column migration", () => {
+  it("adds missing auth columns to a pre-ticket-02 database", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-legacy-"));
+    const legacy = openConnection(createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }));
+    // a database the previous version could have left behind
+    legacy.raw.exec("CREATE TABLE account (id TEXT PRIMARY KEY)");
+    legacy.raw.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup();
+    // SAFETY: these selects return { name } rows from PRAGMA table_info
+    const accountRows = legacy.raw.query("PRAGMA table_info(account)").all() as Array<{ name: string }>;
+    const accountCols = accountRows.map((r) => r.name);
+    expect(accountCols).toContain("issuer");
+    expect(accountCols).toContain("password");
+    // SAFETY: same PRAGMA row shape on the session table
+    const sessionRows = legacy.raw.query("PRAGMA table_info(session)").all() as Array<{ name: string }>;
+    const sessionCols = sessionRows.map((r) => r.name);
+    expect(sessionCols).toContain("expiresAt");
+    legacy.close();
+    // bun:sqlite can keep the file handle open a beat after close on Windows
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+        break;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+});
+
 describe("backup", () => {
   it("copies a consistent database file that opens standalone", async () => {
     const dest = path.join(dir, "backups", "dokan-2026-08-22.db");

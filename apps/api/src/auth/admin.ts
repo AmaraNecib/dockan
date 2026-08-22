@@ -108,6 +108,8 @@ export async function resetAdminPassword(deps: {
   }
 
   await deps.store.insertActivity({ type: "PASSWORD_RESET", summary: `إعادة تعيين كلمة المرور (${phone})` });
+  // the guard cross-checks sessions against this identity (single-admin rule)
+  await deps.store.setSetting("adminUserId", userId);
   deps.logger.info("PASSWORD_RESET", "admin credentials provisioned or rotated via build secret");
   return { ok: true };
 }

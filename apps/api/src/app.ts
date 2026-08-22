@@ -29,8 +29,15 @@ export function createApp(deps: AppDeps) {
 
   app.get("/health", (c) => c.json({ ok: true, version: config.version, driver: config.db.driver, time: localDateTime() }));
 
-  // better-auth handles /api/auth/* itself (sign-in, session, sign-out)
-  app.all("/api/auth/*", (c) => auth.handler(c.req.raw));
+  // better-auth handles /api/auth/* itself (sign-in, session, sign-out);
+  // account creation is NOT allowed: the single admin is provisioned by the
+  // build secret only, so the sign-up route is blocked before it can run
+  app.all("/api/auth/*", (c) => {
+    if (c.req.method === "POST" && c.req.path.includes("/sign-up")) {
+      return c.json({ error: { message: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة" } }, 403);
+    }
+    return auth.handler(c.req.raw);
+  });
 
   // oRPC procedures; the context carries the raw Request for the session guard
   app.all("/api/rpc/*", async (c) => {

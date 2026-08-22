@@ -123,8 +123,41 @@ type DebtSummaryRow = {
 export function createDrizzleStore(conn: Connection): StorePort {
   const { db } = conn;
 
+  /**
+   * Pre-ticket-02 databases lack the auth columns better-auth reads.
+   * SQLite cannot drop or repurpose columns, but ADD COLUMN covers every
+   * missing one; the created_at TEXT to INTEGER change only affects runs
+   * before ticket 01, and no released install exists with one.
+   */
+  const migrateAuthColumns = (): void => {
+    const tableColumns = (table: string): Set<string> => {
+      // SAFETY: PRAGMA table_info always returns rows shaped { name, type, ... }
+      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      return new Set(rows.map((r) => r.name));
+    };
+    const wanted = {
+      user: ["username", "phoneNumber", "phoneNumberVerified", "email", "image", "name", "emailVerified", "createdAt", "updatedAt"],
+      session: ["expiresAt", "token", "createdAt", "updatedAt", "ipAddress", "userAgent", "userId"],
+      account: [
+        "accountId", "providerId", "issuer", "userId", "accessToken", "refreshToken", "idToken",
+        "accessTokenExpiresAt", "refreshTokenExpiresAt", "scope", "password", "createdAt", "updatedAt",
+      ],
+      verification: ["identifier", "value", "expiresAt", "createdAt", "updatedAt"],
+    } satisfies Record<string, readonly string[]>;
+    for (const [table, columns] of Object.entries(wanted)) {
+      const existing = tableColumns(table);
+      for (const column of columns) {
+        if (existing.has(column)) continue;
+        conn.raw.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      }
+    }
+  };
+
   async function setup(): Promise<void> {
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    // CREATE TABLE IF NOT EXISTS never adds columns, so pre-ticket-02
+    // databases get their missing auth columns migrated here
+    migrateAuthColumns();
 
     const categoriesCount = await db.$count(categories);
     if (categoriesCount === 0) {

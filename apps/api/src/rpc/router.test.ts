@@ -73,6 +73,19 @@ describe("categories", () => {
   it("rejects a duplicate category name with a clear error", async () => {
     await expect(client.categoriesCreate({ name: "زيوت" })).rejects.toThrow(/exists/i);
   });
+
+  it("two concurrent creates of the same category resolve as CONFLICT, not a raw error", async () => {
+    const results = await Promise.allSettled([
+      client.categoriesCreate({ name: "مكرر" }),
+      client.categoriesCreate({ name: "مكرر" }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    for (const rejection of rejected) {
+      expect(String(rejection.reason)).toMatch(/already exists/i);
+    }
+  });
 });
 
 describe("items", () => {

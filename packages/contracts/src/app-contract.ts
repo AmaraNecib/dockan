@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   activityListInputSchema,
   activityListOutputSchema,
-  activitySchema,
   backupManualOutputSchema,
   categoryCreateInputSchema,
   categorySchema,
@@ -16,7 +15,6 @@ import {
   invoiceListInputSchema,
   invoiceListOutputSchema,
   invoicePayInputSchema,
-  invoiceSchema,
   itemCreateInputSchema,
   itemSchema,
   itemUpdateInputSchema,
@@ -81,4 +79,4 @@ export const dokanContract = {
 
   // --- backup --------------------------------------------------------------
   backupManual: oc.output(backupManualOutputSchema),
-} satisfies Record<string, unknown>;
+};

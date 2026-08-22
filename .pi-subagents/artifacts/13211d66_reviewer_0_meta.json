@@ -1,0 +1,167 @@
+{
+  "runId": "13211d66",
+  "agent": "reviewer",
+  "task": "[Read from: D:\\projects\\mani-project\\plan.md, D:\\projects\\mani-project\\progress.md]\n\nYou are the Spec reviewer in a two-axis code review, in D:/projects/mani-project on branch feat/01-persistence-backbone (local-only tracker, no GitHub).\nRun these to see the change:\ngit diff main...HEAD\ngit log main..HEAD --oneline\nThen read the originating documents:\ncat .scratch/dokan-mvp/spec.md\ncat .scratch/dokan-mvp/issues/01-persistence-backbone.md\ncat .scratch/implementation/01-design.md\nReview ONLY the repository source: apps/api/src/**, packages/contracts/src/**. Ignore tools/, .scratch/, docs/, bun.lock.\nReport: (a) requirements the spec or ticket asked for that are missing or partial in apps/api/src and packages/contracts/src; (b) behaviour in the diff that was not asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec/ticket line for each finding. Note tickets 02+ are out of scope by design (auth wiring, invoice use-case math). Under 400 words.",
+  "exitCode": 0,
+  "usage": {
+    "input": 18241,
+    "output": 4063,
+    "cacheRead": 62464,
+    "cacheWrite": 0,
+    "cost": 0.0071318480000000005,
+    "turns": 7
+  },
+  "model": "opencode-go/deepseek-v4-flash:medium",
+  "attemptedModels": [
+    "opencode-go/deepseek-v4-flash:medium"
+  ],
+  "modelAttempts": [
+    {
+      "model": "opencode-go/deepseek-v4-flash:medium",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 18241,
+        "output": 4063,
+        "cacheRead": 62464,
+        "cacheWrite": 0,
+        "cost": 0.0071318480000000005,
+        "turns": 7
+      }
+    }
+  ],
+  "durationMs": 39986,
+  "toolCount": 12,
+  "launchContractDigest": "e49becece5bcbbe6151036f0ac57301c91aacd1ebf911180fa24d2b72151862e",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:3d33c8bc54d3a970"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:3d33c8bc54d3a970"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Concrete findings with file paths and severity: missing DOKAN_DB_DRIVER wiring (apps/api/src/config.ts, medium), main.ts smoke-table bypass of the store seam (apps/api/src/main.ts, low), debtSummaries grouping edge case (apps/api/src/store/drizzle-store.ts), hard kind coercion fallback (same file)."
+        }
+      ],
+      "changedFiles": [
+        "apps/api/src/store/port.ts",
+        "apps/api/src/store/drizzle-store.ts",
+        "apps/api/src/store/drizzle-store.test.ts",
+        "apps/api/src/db/schema.ts",
+        "apps/api/src/db/connection.ts",
+        "apps/api/src/config.ts",
+        "apps/api/src/main.ts",
+        "apps/api/src/lib/logger.ts",
+        "apps/api/src/lib/errors.ts",
+        "packages/contracts/src/core.ts",
+        "packages/contracts/src/app-contract.ts"
+      ],
+      "testsAddedOrUpdated": [
+        "apps/api/src/store/drizzle-store.test.ts"
+      ],
+      "commandsRun": [
+        {
+          "command": "git diff main...HEAD --stat",
+          "result": "passed",
+          "summary": "100 files changed; source review scoped to apps/api/src and packages/contracts/src"
+        },
+        {
+          "command": "git log main..HEAD --oneline",
+          "result": "passed",
+          "summary": "3 commits: claim, implementation, ticket answer"
+        },
+        {
+          "command": "cat .scratch/dokan-mvp/spec.md, issues/01-persistence-backbone.md, implementation/01-design.md",
+          "result": "passed",
+          "summary": "Read originating requirements for verification"
+        }
+      ],
+      "validationOutput": [
+        "No tests run (review-only); 14 store-seam tests are present in drizzle-store.test.ts and were not executed.",
+        "Findings: DOKAN_DB_DRIVER never read in config.ts (hardcoded 'sqlite' literal); main.ts smoke table still uses bun:sqlite directly outside the seam."
+      ],
+      "residualRisks": [
+        "DOKAN_DB_DRIVER env switch not implemented despite ticket requirement (config hardcodes driver: 'sqlite').",
+        "main.ts smoke bootstrap bypasses StorePort (pre-existing, contradicts ADR-0003 'no SQL outside adapter').",
+        "debtSummaries collapses same-named parties; kind fallback silently coerces to PURCHASE."
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "Persistence backbone: StorePort seam + Drizzle/bun:sqlite adapter, schema DDL with better-auth tables, seeded default category/settings, debt grouping, activities/settings, backup copy; typed inference types appended to contracts core.",
+      "reviewFindings": [
+        "medium: apps/api/src/config.ts - DOKAN_DB_DRIVER required by ticket but hardcoded 'sqlite' literal; env switch missing",
+        "low: apps/api/src/main.ts - smoke table opens bun:sqlite directly, bypassing the store seam (pre-existing, not migrated)",
+        "note: apps/api/src/store/drizzle-store.ts - debtSummaries merges same-named parties; kind fallback coerces unknown to PURCHASE",
+        "no blockers"
+      ],
+      "manualNotes": "Ticket 02+ (auth wiring, invoice math) out of scope as directed. plan.md/progress.md absent at repo root; reviewed ticket, spec, and design docs under .scratch instead."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": true
+    }
+  },
+  "transcriptPath": "D:\\projects\\mani-project\\.pi-subagents\\artifacts\\13211d66_reviewer_0_transcript.jsonl",
+  "timestamp": 1787411778684
+}

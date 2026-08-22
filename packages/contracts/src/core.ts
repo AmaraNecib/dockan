@@ -285,3 +285,31 @@ export const backupManualOutputSchema = z.object({
   path: z.string(),
   createdAt: localDateTimeSchema,
 });
+
+// ---------------------------------------------------------------------------
+// Types (z.infer) — the API and web import these, never z directly.
+// ---------------------------------------------------------------------------
+
+export type Category = z.infer<typeof categorySchema>;
+export type Item = z.infer<typeof itemSchema>;
+export type Customer = z.infer<typeof customerSchema>;
+export type Supplier = z.infer<typeof supplierSchema>;
+export type InvoiceKind = z.infer<typeof invoiceKindSchema>;
+export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
+export type Invoice = z.infer<typeof invoiceSchema>;
+export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;
+export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
+export type Payment = z.infer<typeof paymentSchema>;
+export type Activity = z.infer<typeof activitySchema>;
+export type ActivityType = z.infer<typeof activityTypeSchema>;
+export type Settings = z.infer<typeof settingsSchema>;
+export type DebtSummary = z.infer<typeof debtSummarySchema>;
+
+export type ItemCreate = z.infer<typeof itemCreateInputSchema>;
+export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;
+export type PartyCreate = z.infer<typeof partyCreateInputSchema>;
+export type InvoiceCreate = z.infer<typeof invoiceCreateInputSchema>;
+export type InvoicePay = z.infer<typeof invoicePayInputSchema>;
+export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
+export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
+export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;

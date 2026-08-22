@@ -2,6 +2,7 @@
   "name": "mani-project",
   "private": true,
   "packageManager": "bun@1.3.14",
+  "type": "module",
   "description": "Dokan — desktop stock & invoicing app for a car-accessories shop (Algeria). Tauri + TanStack + Hono, on Bun.",
   "workspaces": [
     "packages/*",
@@ -13,13 +14,13 @@
     "dev:up": "bun run --filter @dokan/api dev && bun run --filter @dokan/web dev",
     "dev:desktop": "bun run --filter @dokan/desktop dev",
     "build": "turbo build",
+    "lint": "oxlint",
     "typecheck": "turbo typecheck",
-    "test": "turbo test",
-    "prepare": "husky",
-    "lint": "oxlint"
+    "test": "turbo test"
   },
   "devDependencies": {
-    "husky": "^9.1.7",
+    "@oxlint/plugins": "^1.79.0",
+    "oxlint": "^1.79.0",
     "turbo": "^2.8.16",
     "typescript": "^5.9.3"
   }

@@ -8,6 +8,12 @@ export type AppConfig = {
   /** MVP password-reset secret (per docs/adr + last grilling round). Env-overridable. */
   buildSecret: string;
   version: string;
+  /** persistence driver selection — the store port stays fixed (ADR-0003) */
+  db: {
+    driver: "sqlite";
+    /** database file path (sqlite) */
+    path: string;
+  };
 };
 
 export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -18,5 +24,9 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     dataDir,
     buildSecret: env.DOKAN_BUILD_SECRET ?? "dokan-dev-secret",
     version: "0.1.0",
+    db: {
+      driver: "sqlite",
+      path: env.DOKAN_DB_PATH ?? path.join(dataDir, "dokan.db"),
+    },
   };
 }

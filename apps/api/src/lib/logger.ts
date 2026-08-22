@@ -32,6 +32,19 @@ export function errorCode(prefix = "DKN"): string {
 
 export type LogLevel = "info" | "warn" | "error";
 
+/**
+ * Named context contract. Extend it (never loosen to a free dictionary) when
+ * a caller needs to log new structured fields; the diagnostics viewer reads
+ * exactly these keys.
+ */
+export type LogContext = {
+  url?: string;
+  version?: string;
+  invoiceNumber?: string;
+  itemName?: string;
+  driver?: string;
+};
+
 export type LogEntry = {
   ts: string;
   level: LogLevel;
@@ -39,7 +52,13 @@ export type LogEntry = {
   message: string;
   code?: string;
   stack?: string;
-  [key: string]: unknown;
+  errorName?: string;
+  context?: LogContext;
+};
+
+export type LogTail = {
+  file: string;
+  lines: string[];
 };
 
 /**
@@ -63,44 +82,42 @@ export class AppLogger {
     entry.ts = localDateTime();
     const line = JSON.stringify(entry);
     fs.appendFileSync(this.fileFor(new Date()), `${line}\n`);
-    // mirror errors to stdout so `pnpm dev:api` shows them live
+    // mirror non-info events to stdout so `bun run dev:api` shows them live
     if (entry.level !== "info") {
-      // eslint-disable-next-line no-console
+      // eslint-disable-next-line no-console -- dev mirroring
       console[entry.level](`[${entry.ts}] ${entry.event}${entry.code ? ` (${entry.code})` : ""} ${entry.message}`);
     }
   }
 
-  info(event: string, message: string, extra: Record<string, unknown> = {}): void {
-    this.write({ ts: "", level: "info", event, message, ...extra });
+  info(event: string, message: string, context: LogContext = {}): void {
+    const entry: LogEntry = { ts: "", level: "info", event, message };
+    if (Object.keys(context).length > 0) entry.context = context;
+    this.write(entry);
   }
 
-  warn(event: string, message: string, extra: Record<string, unknown> = {}): void {
-    this.write({ ts: "", level: "warn", event, message, ...extra });
+  warn(event: string, message: string, context: LogContext = {}): void {
+    const entry: LogEntry = { ts: "", level: "warn", event, message };
+    if (Object.keys(context).length > 0) entry.context = context;
+    this.write(entry);
   }
 
-  error(event: string, message: string, error?: unknown, extra: Record<string, unknown> = {}): string {
+  error(event: string, message: string, error?: Error, context: LogContext = {}): string {
     const code = errorCode();
-    const entry: LogEntry = {
-      ts: "",
-      level: "error",
-      event,
-      message,
-      code,
-      ...extra,
-    };
-    if (error instanceof Error) {
+    const entry: LogEntry = { ts: "", level: "error", event, message, code };
+    if (error !== undefined) {
       entry.stack = error.stack;
       entry.errorName = error.name;
     }
+    if (Object.keys(context).length > 0) entry.context = context;
     this.write(entry);
     return code;
   }
 
-  /** Last N lines of today's log file — powers the diagnosticsLogsTail procedure. */
-  tail(lines = 100): { file: string; lines: string[] } {
+  /** Last N lines of today's log file, for the diagnosticsLogsTail procedure. */
+  tail(lines = 100): LogTail {
     const file = this.fileFor(new Date());
-    if (!fs.existsSync(file)) return { file, lines: [] };
+    if (!fs.existsSync(file)) return { file, lines: [] } satisfies LogTail;
     const all = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
-    return { file, lines: all.slice(-lines) };
+    return { file, lines: all.slice(-lines) } satisfies LogTail;
   }
 }

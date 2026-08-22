@@ -13,6 +13,7 @@ const logger = new AppLogger(config.dataDir);
 const sqlite = new Database(`${config.dataDir}/dokan.db`, { create: true });
 sqlite.exec("CREATE TABLE IF NOT EXISTS smoke (id INTEGER PRIMARY KEY, note TEXT)");
 sqlite.query("INSERT INTO smoke (note) VALUES (?)").run("hello from bun:sqlite");
+// SAFETY: the smoke table's note column is TEXT; the insert above guarantees a row
 const row = sqlite.query("SELECT note FROM smoke ORDER BY id DESC LIMIT 1").get() as { note: string };
 
 const app = new Hono();

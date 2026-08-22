@@ -31,6 +31,7 @@ const resources = {
       SIGNUP_FORBIDDEN: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة",
       INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح",
       WRONG_BUILD_SECRET: "الرمز السري غير صحيح",
+      BUILD_SECRET_NOT_CONFIGURED: "لم يتم ضبط الرمز السري بعد",
       UNEXPECTED: "حدث خطأ غير متوقع",
     },
   },

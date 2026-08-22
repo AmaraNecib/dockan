@@ -39,6 +39,9 @@ export async function resetAdminPassword(deps: {
 }, input: ResetPasswordInput): Promise<{ ok: true }> {
   const phone = normalizeAlgerianPhone(input.phoneNumber);
   if (phone === null) throw new AppError("INVALID_PHONE_NUMBER", "INVALID_PHONE_NUMBER");
+  if (deps.config.buildSecret === undefined) {
+    throw new AppError("BUILD_SECRET_NOT_CONFIGURED", "BUILD_SECRET_NOT_CONFIGURED");
+  }
   if (input.secret !== deps.config.buildSecret) {
     throw new AppError("WRONG_BUILD_SECRET", "WRONG_BUILD_SECRET");
   }

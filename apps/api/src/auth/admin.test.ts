@@ -130,6 +130,21 @@ describe("phone normalization", () => {
     if (realAdminId !== undefined) await store.setSetting("adminUserId", realAdminId);
   });
 describe("resetAdminPassword", () => {
+  it("refuses to provision when no build secret is configured (boot never crashes)", async () => {
+    const unconfigured = createAppConfig({ DOKAN_DATA_DIR: dir });
+    expect(unconfigured.buildSecret).toBeUndefined();
+    let error: unknown;
+    try {
+      await resetAdminPassword(
+        { db: conn.db, auth, store, config: unconfigured, logger: new AppLogger(dir) },
+        { secret: "anything", newPassword: PASSWORD, phoneNumber: PHONE },
+      );
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error instanceof AppError ? error.code : undefined).toBe("BUILD_SECRET_NOT_CONFIGURED");
+  });
+
   it("rejects a wrong build secret with WRONG_BUILD_SECRET", async () => {
     let error: unknown;
     try {

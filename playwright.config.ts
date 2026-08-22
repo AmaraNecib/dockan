@@ -27,7 +27,13 @@ export default defineConfig({
       url: `http://127.0.0.1:${API_PORT}/health`,
       reuseExistingServer: false,
       timeout: 30_000,
-      env: { DOKAN_PORT: String(API_PORT), DOKAN_DATA_DIR: e2eData, E2E_DATA_DIR: e2eData },
+      env: {
+        DOKAN_PORT: String(API_PORT),
+        DOKAN_DATA_DIR: e2eData,
+        E2E_DATA_DIR: e2eData,
+        // first-time setup in both e2e specs uses this secret
+        DOKAN_BUILD_SECRET: "e2e-secret-0123456789",
+      },
     },
     {
       command: "bun run --filter @dokan/web dev",

@@ -1,17 +1,20 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+
 import { serve } from "@hono/node-server";
 
-import { createApp } from "./app";
+import { createApp, type AppDeps } from "./app";
+import { createAuth } from "./auth/auth";
 import { createAppConfig } from "./config";
 import { openConnection } from "./db/connection";
 import { AppLogger } from "./lib/logger";
+import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 
 /**
- * Boot: config, logger, the one StorePort seam, the app (health + rpc), then
- * the server. main.ts knows seams, not SQL (ADR-0003).
+ * Boot: config, logger, the one StorePort seam, auth, rpc, the app, then the
+ * server. main.ts knows seams, not SQL (ADR-0003).
  */
 const config = createAppConfig();
 const logger = new AppLogger(config.dataDir);
@@ -19,9 +22,11 @@ const conn = openConnection(config);
 const store = createDrizzleStore(conn);
 
 await store.setup();
-logger.info("SERVER_BOOT_DONE", "database ready", { driver: config.db.driver });
-
-const app = createApp(store, logger, config);
+const auth = createAuth(conn.db, config);
+const rpcRouter = createRpcRouter({ db: conn.db, config, logger, store, auth });
+const deps: AppDeps = { config, logger, auth, rpcRouter };
+const app = createApp(deps);
+logger.info("SERVER_BOOT_DONE", "database and auth ready", { driver: config.db.driver });
 
 /**
  * Workspace root = the directory containing .git (repo anchor).
@@ -39,7 +44,7 @@ function findWorkspaceRoot(): string {
 /**
  * The user is not technical; a busy default port must not crash the app.
  * Probe upward from the configured port until one is free, then serve there.
- */
+ * The chosen port is recorded for the web proxy (vite reads .dokan-port). */
 async function firstFreePort(start: number, host: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const probe = (port: number): void => {
@@ -59,11 +64,8 @@ async function firstFreePort(start: number, host: string): Promise<number> {
 }
 
 const port = await firstFreePort(config.port, config.host);
+fs.writeFileSync(path.resolve(findWorkspaceRoot(), ".dokan-port"), String(port), "utf8");
 
-// the web proxy must follow the actual (possibly fallback) port, so the api
-// records it at the workspace root where vite.config reads it
-const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
-fs.writeFileSync(portFile, String(port), "utf8");
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   (info) => {

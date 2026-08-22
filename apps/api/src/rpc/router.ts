@@ -162,6 +162,9 @@ export function createRpcRouter(deps: RpcDeps) {
   };
 }
 
+/** The router object type, for AppDeps. */
+export type RpcRouter = ReturnType<typeof createRpcRouter>;
+
 /** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
 function isUniqueViolation(err: Error): boolean {
   return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");

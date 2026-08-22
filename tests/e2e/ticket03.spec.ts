@@ -5,6 +5,17 @@ import { expect, test } from "@playwright/test";
  * preview, save it, and see it listed as low stock on the dashboard.
  */
 test("category, item with profit preview, low-stock dashboard", async ({ page }) => {
+  // 0. first-time setup + sign in (the session guard is part of the seam)
+  await page.goto("/");
+  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
+  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
+  await page.getByTestId("setup-phone").fill("0550123123");
+  await page.getByTestId("setup-password").fill("pass-1234");
+  await page.getByTestId("setup-submit").click();
+  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
+  await page.getByTestId("login-submit").click();
+  await expect(page.getByText("الرئيسية")).toBeVisible();
+
   // 1. Create a category
   await page.goto("/categories");
   await page.getByPlaceholder("اسم تصنيف جديد").fill("زيوت");

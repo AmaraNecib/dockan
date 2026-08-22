@@ -153,10 +153,14 @@ export function createDrizzleStore(conn: Connection): StorePort {
       }
       // args are never[] (the object shape opaques them); R is resolved at
       // each call site to the raw method's real result type
-      // SAFETY: every call queues behind open transactions; nothing can ever
-      // execute inside another unit's BEGIN/COMMIT window
+      // SAFETY: value is the raw method this key names; binding the receiver
+      // keeps this.*-style methods (settings, activities) callable without
+      // changing the call signature (R resolves at each call site)
+      // SAFETY: value is the raw method this key names (its result type is R);
+      // .bind fixes the receiver, so this.*-style methods keep working; the
+      // cast keeps the same call signature
       const wrapped = <R,>(...args: never[]): Promise<R> =>
-        runSerialized(() => (value as (...a: never[]) => Promise<R>)(...args));
+        runSerialized(() => (value as (...a: never[]) => Promise<R>).bind(raw)(...args));
       // SAFETY: wrapped implements the raw method named by key via its generic R
       return [key, wrapped as StorePort[keyof StorePort]];
     };

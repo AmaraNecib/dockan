@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #14
+
 - [ ] Errors are logged with code + stack + local timestamp; codes are stable identifiers
 - [ ] Daily file per day, human-auditable JSONL
 - [ ] Viewer (admin-side) shows today's tail; log location is documented

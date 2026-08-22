@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #9
+
 - [ ] Two groups rendered: owedToUs (SALE) and weOwe (PURCHASE), each with remaining total and invoice count
 - [ ] Grouping works for known parties and for typed-only names; lone names not lost
 - [ ] Totals match the sum of remaining amounts across that person's invoices

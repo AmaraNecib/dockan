@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #15
+
 - [ ] `bun build --compile` produces the API sidecar; Tauri bundles and starts it on launch
 - [ ] App icons exist and show in the installer/taskbar
 - [ ] Portable NSIS installer builds and installs on a clean Windows PC

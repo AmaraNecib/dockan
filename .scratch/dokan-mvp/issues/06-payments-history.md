@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #8
+
 - [ ] Record a partial payment → remainingAmount decreases
 - [ ] Paying more than the remaining amount is refused (no overpay, exact message)
 - [ ] Multiple payments on one invoice accumulate; full history visible on the invoice

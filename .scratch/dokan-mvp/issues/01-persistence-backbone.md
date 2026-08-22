@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #3
+
 - [ ] A single `StorePort` interface exists; no procedure or use case uses SQL or the driver directly
 - [ ] bun:sqlite adapter creates/opens the database, applies the schema, enables WAL and foreign keys
 - [ ] Driver is selected by config (`DOKAN_DB_DRIVER=sqlite`); an unknown driver fails with a clear message, callers unchanged (ADR-0003)

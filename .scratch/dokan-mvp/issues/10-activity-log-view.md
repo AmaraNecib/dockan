@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #12
+
 - [ ] Entries from real flows (SALE/PURCHASE/PAYMENT/ITEM/CATEGORY/PARTY events) are listed
 - [ ] Newest first, with local timestamps and the related invoice/item
 - [ ] Screen in Arabic (RTL)

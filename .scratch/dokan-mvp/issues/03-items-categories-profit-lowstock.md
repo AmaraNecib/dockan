@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #5
+
 - [ ] Create category; items pick one category (default عام seeded, so item creation never blocks)
 - [ ] Item fields: name, category, cost price, selling price, threshold (numeric, DA)
 - [ ] Profit per unit (selling − cost) shown live while typing and on the item list

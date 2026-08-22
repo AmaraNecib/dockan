@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #10
+
 - [ ] Settings screen reads and writes store name + phone
 - [ ] Invoice header shows store name and phone from settings
 - [ ] Saved values survive restarts; screen in Arabic (RTL)

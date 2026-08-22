@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #6
+
 - [ ] Purchase recorded against a supplier (existing or typed inline); stock increases
 - [ ] Payment split works: paid portion recorded, the rest becomes the debt (remainingAmount)
 - [ ] Average cost follows the on-hand rule: 30 left at 200 + 100 bought at 120 → 138 DA; sold units never re-valued (ADR-0002)

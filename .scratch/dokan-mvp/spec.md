@@ -1,4 +1,5 @@
 # Dokan MVP — Spec
+> GitHub issue: #2
 
 > Desktop stock & invoicing app for a car-accessories shop in Algeria.
 > Status: ready-for-agent. Source: grilling rounds (grill-with-docs) + scaffold proof.

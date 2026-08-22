@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #11
+
 - [ ] Print button on invoice → PDF opens in the system viewer/print dialog
 - [ ] Receipt shows store identity, date, invoice number, lines, totals, paid/remaining, payment history
 - [ ] Works on any printer via the OS dialog; invoice screen in Arabic (RTL)

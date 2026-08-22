@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #13
+
 - [ ] Daily automatic backup (WAL checkpoint + copy) created on startup if today's is missing
 - [ ] Manual "export backup" button creates a copy the owner can move to a USB stick
 - [ ] Files named dokan-YYYY-MM-DD.db in Algeria local time

@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #7
+
 - [ ] Sale recorded with or without a customer name; stock decreases
 - [ ] Oversell blocked: 4 items left → selling 5 is refused with a clear message
 - [ ] Line profit uses the cost snapshot at sale time (costAtSale), so later cost changes don't rewrite history

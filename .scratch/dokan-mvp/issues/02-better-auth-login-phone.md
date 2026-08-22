@@ -6,6 +6,8 @@
 
 **Status:** ready-for-agent
 
+**GitHub:** #4
+
 - [ ] Phone number is the unique login name, normalized to +213… (Algerian format), no email anywhere
 - [ ] Password hashed (scrypt); wrong password / unknown phone refused with the same message
 - [ ] Reset flow: entering the build secret sets a new password (logs a PASSWORD_RESET activity)

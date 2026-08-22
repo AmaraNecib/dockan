@@ -22,5 +22,5 @@ Thumbs.db
 playwright-report/
 test-results/
 coverage/
-# local crew issue/fleet state (harness-managed)
-.scratch/sessions/crew/
+# agent artifacts (never source)
+.pi-subagents/

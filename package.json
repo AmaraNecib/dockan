@@ -10,6 +10,7 @@
   "scripts": {
     "dev:api": "bun run --filter @dokan/api dev",
     "dev:web": "bun run --filter @dokan/web dev",
+    "dev:up": "bun run --filter @dokan/api dev && bun run --filter @dokan/web dev",
     "dev:desktop": "bun run --filter @dokan/desktop dev",
     "build": "turbo build",
     "typecheck": "turbo typecheck",

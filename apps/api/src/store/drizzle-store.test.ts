@@ -276,6 +276,30 @@ describe("transactions", () => {
     expect((await store.listCategories()).some((c) => c.id === created.id)).toBe(true);
     expect((await store.listActivities(10)).some((a) => a.ref === created.id)).toBe(true);
   });
+
+  it("serializes concurrent units without nested BEGIN collisions", async () => {
+    const [a, b] = await Promise.all([
+      store.withTransaction(async () => store.createCategory({ name: "ألف" })),
+      store.withTransaction(async () => store.createCategory({ name: "باء" })),
+    ]);
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).toContain("ألف");
+    expect(names).toContain("باء");
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it("keeps one unit's failure from breaking the next unit's commit", async () => {
+    const bad = store.withTransaction(async () => {
+      await store.createCategory({ name: "يفشل" });
+      throw new Error("boom-two");
+    });
+    const good = store.withTransaction(async () => store.createCategory({ name: "ينجح رغم ذلك" }));
+    await expect(bad).rejects.toThrow("boom-two");
+    await good;
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).toContain("ينجح رغم ذلك");
+    expect(names).not.toContain("يفشل");
+  });
 });
 
 describe("activities + settings", () => {

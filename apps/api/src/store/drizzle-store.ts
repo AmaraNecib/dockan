@@ -153,7 +153,28 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
+  /**
+   * Databases initialized by ticket 01 store the auth tables with snake_case
+   * columns (account_id, provider_id, ...); ticket 02 writes camelCase and the
+   * old NOT NULL snake columns would break writes. Those tables are provably
+   * EMPTY before auth existed, so the correct migration is drop-and-recreate
+   * into the current schema, before SCHEMA_DDL runs.
+   */
+  const rebuildLegacyAuthTables = (): void => {
+    const tables = ["user", "session", "account", "verification"] as const;
+    const looksLegacy = (table: string): boolean => {
+      // SAFETY: PRAGMA table_info always returns rows shaped { name, type, ... }
+      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      const names = new Set(rows.map((r) => r.name));
+      return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+    };
+    for (const table of tables) {
+      if (looksLegacy(table)) conn.raw.exec(`DROP TABLE ${table}`);
+    }
+  };
+
   async function setup(): Promise<void> {
+    rebuildLegacyAuthTables();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     // CREATE TABLE IF NOT EXISTS never adds columns, so pre-ticket-02
     // databases get their missing auth columns migrated here

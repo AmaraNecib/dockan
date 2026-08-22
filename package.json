@@ -16,7 +16,8 @@
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck",
-    "test": "turbo test"
+    "test": "turbo test",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@oxlint/plugins": "^1.79.0",

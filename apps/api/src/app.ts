@@ -34,7 +34,7 @@ export function createApp(deps: AppDeps) {
   // build secret only, so the sign-up route is blocked before it can run
   app.all("/api/auth/*", (c) => {
     if (c.req.method === "POST" && c.req.path.includes("/sign-up")) {
-      return c.json({ error: { message: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة" } }, 403);
+      return c.json({ error: { message: "SIGNUP_FORBIDDEN" } }, 403);
     }
     return auth.handler(c.req.raw);
   });

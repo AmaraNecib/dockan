@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isValidAlgerianPhone } from "./phone";
+
 /**
  * Dokan domain schemas — the single source of truth for every API
  * request and response shape. The database mirrors these.
@@ -162,7 +164,7 @@ export const resetPasswordInputSchema = z.object({
   secret: z.string().min(1),
   newPassword: z.string().min(4),
   /** the owner's Algerian mobile; becomes the login name after +213 normalization */
-  phoneNumber: z.string().regex(/^(\+213|0)[5-7]\d{8}$/, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
+  phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
 });
 
 export const categoryCreateInputSchema = z.object({

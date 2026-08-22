@@ -19,7 +19,9 @@ let store: StorePort;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-store-"));
-  conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
+  conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
   store = createDrizzleStore(conn);
   await store.setup();
 });
@@ -271,7 +273,9 @@ describe("activities + settings", () => {
 describe("auth column migration", () => {
   it("rebuilds a ticket-01 auth table (snake columns) into the current schema", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-legacy-"));
-    const legacy = openConnection(createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
     // the account/session tables ticket 01 left behind: snake_case, NOT NULL
     legacy.raw.exec("CREATE TABLE account (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_id TEXT NOT NULL, userId TEXT NOT NULL)");
     legacy.raw.exec("CREATE TABLE session (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, token TEXT NOT NULL)");
@@ -305,7 +309,7 @@ describe("backup", () => {
     await store.copyDatabaseTo(dest);
     expect(fs.existsSync(dest)).toBe(true);
 
-    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest }));
+    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest, DOKAN_BUILD_SECRET: "test-build-secret-123" }));
     const backupStore = createDrizzleStore(backupConn);
     const cats = await backupStore.listCategories();
     expect(cats.length).toBeGreaterThanOrEqual(1);

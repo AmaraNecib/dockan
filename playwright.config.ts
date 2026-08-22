@@ -25,7 +25,7 @@ export default defineConfig({
         DOKAN_DATA_DIR: e2eData,
         E2E_DATA_DIR: e2eData,
         // the login e2e performs first-time setup with this secret
-        DOKAN_BUILD_SECRET: "e2e-secret",
+        DOKAN_BUILD_SECRET: "e2e-secret-0123456789",
       },
     },
     {

@@ -12,7 +12,7 @@ test("first-time setup, login, and persisted session", async ({ page }) => {
 
   // 2. first-time setup with the build secret
   await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret");
+  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
   await page.getByTestId("setup-phone").fill("0550123123");
   await page.getByTestId("setup-password").fill("pass-1234");
   await page.getByTestId("setup-submit").click();

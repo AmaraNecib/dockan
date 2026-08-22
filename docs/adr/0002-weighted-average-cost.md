@@ -1,0 +1,3 @@
+# Weighted average cost for stock valuation
+
+Stock is valued at the weighted average of unit costs across purchases: buy 100 units at 200 DA, later 200 units at 220 DA, and the app recomputes the per-unit mean automatically; profit = selling price − average cost. We chose this over per-batch/lot tracking (selling "from the first buy" vs "from the second buy" at different prices) because batch selection costs roughly 3-4 extra days of UI and bookkeeping a small shop does not need. Batch tracking remains a possible post-MVP upgrade, but retrofitting it will require migrating historical sales.

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# local runtime data (created by the app)
+data/
+logs/
+backups/
+
+# env / secrets
+.env
+.env.local
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# tests
+playwright-report/
+test-results/
+coverage/

@@ -1,0 +1,3 @@
+# Local-first SQLite, no cloud sync
+
+Dokan is a single-shop, single-machine desktop app; the shop's data lives in one local SQLite file (better-sqlite3). We deliberately chose local-only over a synced store — note that the sibling project gifty uses Turso cloud sync — because Dokan has exactly one machine, a server bill and internet dependency would buy nothing, and the owner's data never leaves the shop. Automatic daily backups plus a manual export button cover data loss. Adding sync/multi-device later would be a product decision requiring a real migration.

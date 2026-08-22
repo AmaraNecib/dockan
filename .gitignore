@@ -24,3 +24,6 @@ test-results/
 coverage/
 # agent artifacts (never source)
 .pi-subagents/
+
+# local crew session state (harness-managed)
+.scratch/sessions/

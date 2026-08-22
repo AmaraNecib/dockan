@@ -3,6 +3,9 @@ import path from "node:path";
 export type AppConfig = {
   host: string;
   port: number;
+  /** true when DOKAN_PORT was set explicitly: that port is authoritative, so
+   * the api must NOT silently fall back to another one (greptile P1) */
+  portExplicit: boolean;
   /** root folder holding the SQLite data file, the backups/ and logs/ folders */
   dataDir: string;
   /** MVP password-reset secret. Optional at boot: the reset procedure refuses
@@ -38,6 +41,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   return {
     host: env.DOKAN_HOST ?? "127.0.0.1",
     port: Number(env.DOKAN_PORT ?? 4317),
+    portExplicit: env.DOKAN_PORT !== undefined,
     dataDir,
     buildSecret: env.DOKAN_BUILD_SECRET,
     authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",

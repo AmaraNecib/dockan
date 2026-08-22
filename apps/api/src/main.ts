@@ -63,7 +63,11 @@ async function firstFreePort(start: number, host: string): Promise<number> {
   });
 }
 
-const port = await firstFreePort(config.port, config.host);
+// An explicitly configured port is authoritative: falling back silently
+// would desync the proxy and point traffic at an unrelated process (greptile
+// P1). Without an explicit port, probe upward and record the winner; the web
+// proxy prefers that record.
+const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.host);
 fs.writeFileSync(path.resolve(findWorkspaceRoot(), ".dokan-port"), String(port), "utf8");
 
 const server = serve(
@@ -77,7 +81,19 @@ const server = serve(
   },
 );
 
+// an explicit port that still collides is a hard failure, never a silent
+// rebind that would desync the proxy (greptile P1)
+server.on("error", (err: NodeJS.ErrnoException) => {
+  logger.error("SERVER_ERROR", `could not bind ${config.host}:${port}`, err);
+  process.exit(1);
+});
+
 process.on("SIGINT", () => {
+  try {
+    fs.unlinkSync(path.resolve(findWorkspaceRoot(), ".dokan-port"));
+  } catch {
+    // already gone
+  }
   conn.close();
   server.close();
   process.exit(0);

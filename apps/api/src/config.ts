@@ -7,6 +7,8 @@ export type AppConfig = {
   dataDir: string;
   /** MVP password-reset secret (per docs/adr + last grilling round). Env-overridable. */
   buildSecret: string;
+  /** better-auth signing secret; a shared laptop is the threat model, so a static local default is fine */
+  authSecret: string;
   version: string;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
@@ -37,6 +39,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     port: Number(env.DOKAN_PORT ?? 4317),
     dataDir,
     buildSecret: env.DOKAN_BUILD_SECRET ?? "dokan-dev-secret",
+    authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",
     version: "0.1.0",
     db: {
       driver: requested,

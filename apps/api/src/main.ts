@@ -1,14 +1,16 @@
 import { serve } from "@hono/node-server";
-import { Hono } from "hono";
 
+import { createAuth } from "./auth/auth";
+import { createApp } from "./app";
 import { createAppConfig } from "./config";
 import { openConnection } from "./db/connection";
-import { AppLogger, localDateTime } from "./lib/logger";
+import { AppLogger } from "./lib/logger";
+import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 
 /**
- * Boot: config, logger, the one StorePort seam, then the server.
- * main.ts knows seams, not SQL; every read and write goes through the store.
+ * Boot: config, logger, the store seam, auth, rpc, then the server.
+ * main.ts knows seams, not SQL (ADR-0003).
  */
 const config = createAppConfig();
 const logger = new AppLogger(config.dataDir);
@@ -16,17 +18,10 @@ const conn = openConnection(config);
 const store = createDrizzleStore(conn);
 
 await store.setup();
-logger.info("SERVER_BOOT_DONE", "database ready", { driver: config.db.driver });
-
-const app = new Hono();
-
-app.get("/health", (c) =>
-  c.json({
-    ok: true,
-    version: config.version,
-    time: localDateTime(),
-  }),
-);
+const auth = createAuth(conn.db, config);
+const rpcRouter = createRpcRouter({ db: conn.db, config, logger, store, auth });
+const app = createApp({ config, logger, auth, rpcRouter });
+logger.info("SERVER_BOOT_DONE", "database and auth ready", { driver: config.db.driver });
 
 const server = serve(
   { fetch: app.fetch, port: config.port, hostname: config.host },

@@ -27,3 +27,7 @@ coverage/
 
 # local crew session state (harness-managed)
 .scratch/sessions/
+
+# local e2e artifacts
+.e2e-data/
+test-results/

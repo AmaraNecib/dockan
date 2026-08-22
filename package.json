@@ -17,13 +17,15 @@
     "lint": "oxlint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@oxlint/plugins": "^1.79.0",
     "husky": "^9.1.7",
     "oxlint": "^1.79.0",
     "turbo": "^2.8.16",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@playwright/test": "^1.62.1"
   }
 }

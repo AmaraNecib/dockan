@@ -1,4 +1,4 @@
-import { oc } from "@orpc/contract";
+import { oc, type ContractRouterClient } from "@orpc/contract";
 import { z } from "zod";
 
 import {
@@ -18,8 +18,6 @@ import {
   itemCreateInputSchema,
   itemSchema,
   itemUpdateInputSchema,
-  loginInputSchema,
-  loginOutputSchema,
   logsTailInputSchema,
   logsTailOutputSchema,
   lowStockOutputSchema,
@@ -39,7 +37,6 @@ export const dokanContract = {
   health: oc.output(healthOutputSchema),
 
   // --- auth ----------------------------------------------------------------
-  authLogin: oc.input(loginInputSchema).output(loginOutputSchema),
   authResetPassword: oc.input(resetPasswordInputSchema).output(resetPasswordOutputSchema),
 
   // --- categories ----------------------------------------------------------
@@ -80,3 +77,6 @@ export const dokanContract = {
   // --- backup --------------------------------------------------------------
   backupManual: oc.output(backupManualOutputSchema),
 };
+
+/** The typed client the web app and tests consume. */
+export type DokanClient = ContractRouterClient<typeof dokanContract>;

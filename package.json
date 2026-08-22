@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@oxlint/plugins": "^1.79.0",
+    "husky": "^9.1.7",
     "oxlint": "^1.79.0",
     "turbo": "^2.8.16",
     "typescript": "^5.9.3"

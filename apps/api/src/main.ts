@@ -24,8 +24,6 @@ app.get("/health", (c) =>
   c.json({
     ok: true,
     version: config.version,
-    driver: config.db.driver,
-    dbPath: conn.dbPath,
     time: localDateTime(),
   }),
 );

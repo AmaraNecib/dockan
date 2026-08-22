@@ -7,6 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // same-origin API: the webview never talks to the Bun api directly,
+    // so auth cookies stay same-origin and no CORS config is needed
+    proxy: {
+      "/api": "http://127.0.0.1:4317",
+    },
   },
   build: {
     outDir: "dist",

@@ -5,8 +5,11 @@ export type AppConfig = {
   port: number;
   /** root folder holding the SQLite data file, the backups/ and logs/ folders */
   dataDir: string;
-  /** MVP password-reset secret (per docs/adr + last grilling round). Env-overridable. */
-  buildSecret: string;
+  /** MVP password-reset secret. Optional at boot: the reset procedure refuses
+   * to run when absent, so the documented api startup paths never crash. */
+  buildSecret: string | undefined;
+  /** better-auth signing secret; a shared laptop is the threat model, so a static local default is fine */
+  authSecret: string;
   version: string;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
@@ -36,7 +39,8 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     host: env.DOKAN_HOST ?? "127.0.0.1",
     port: Number(env.DOKAN_PORT ?? 4317),
     dataDir,
-    buildSecret: env.DOKAN_BUILD_SECRET ?? "dokan-dev-secret",
+    buildSecret: env.DOKAN_BUILD_SECRET,
+    authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",
     version: "0.1.0",
     db: {
       driver: requested,

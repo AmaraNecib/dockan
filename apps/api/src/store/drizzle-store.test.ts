@@ -19,7 +19,9 @@ let store: StorePort;
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-store-"));
-  conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
+  conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
   store = createDrizzleStore(conn);
   await store.setup();
 });
@@ -167,7 +169,7 @@ describe("invoices core", () => {
   });
 
   it("groups debts by person in both directions", async () => {
-    const sale = await store.insertInvoice({
+    await store.insertInvoice({
       invoiceNumber: "INV-0003",
       kind: "SALE",
       counterpartyId: null,
@@ -180,7 +182,6 @@ describe("invoices core", () => {
     });
     const sums = await store.debtSummaries();
     const owedToUs = sums.filter((d) => d.kind === "SALE");
-    const weOwe = sums.filter((d) => d.kind === "PURCHASE");
 
     // يوسف appears once — INV-0002 was paid off in the previous test, so his
     // only unpaid SALE is INV-0003 (1500).
@@ -268,13 +269,46 @@ describe("activities + settings", () => {
   });
 });
 
+describe("auth column migration", () => {
+  it("rebuilds a ticket-01 auth table (snake columns) into the current schema", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    // the account/session tables ticket 01 left behind: snake_case, NOT NULL
+    legacy.raw.exec("CREATE TABLE account (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_id TEXT NOT NULL, userId TEXT NOT NULL)");
+    legacy.raw.exec("CREATE TABLE session (id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL, token TEXT NOT NULL)");
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup();
+    // SAFETY: PRAGMA table_info returns rows shaped { name }
+    const accountRows = legacy.raw.query("PRAGMA table_info(account)").all() as Array<{ name: string }>;
+    const accountCols = accountRows.map((r) => r.name);
+    expect(accountCols).toContain("issuer");
+    expect(accountCols).toContain("password");
+    expect(accountCols).not.toContain("account_id");
+    // SAFETY: same PRAGMA row shape on the session table
+    const sessionRows = legacy.raw.query("PRAGMA table_info(session)").all() as Array<{ name: string }>;
+    expect(sessionRows.map((r) => r.name)).toContain("expiresAt");
+    legacy.close();
+    // bun:sqlite can keep the file handle open a beat after close on Windows
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+        break;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+});
+
 describe("backup", () => {
   it("copies a consistent database file that opens standalone", async () => {
     const dest = path.join(dir, "backups", "dokan-2026-08-22.db");
     await store.copyDatabaseTo(dest);
     expect(fs.existsSync(dest)).toBe(true);
 
-    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest }));
+    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest, DOKAN_BUILD_SECRET: "test-build-secret-123" }));
     const backupStore = createDrizzleStore(backupConn);
     const cats = await backupStore.listCategories();
     expect(cats.length).toBeGreaterThanOrEqual(1);

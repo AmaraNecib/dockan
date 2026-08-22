@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isValidAlgerianPhone } from "./phone";
+
 /**
  * Dokan domain schemas — the single source of truth for every API
  * request and response shape. The database mirrors these.
@@ -157,14 +159,12 @@ export const invoiceDetailSchema = invoiceSchema.extend({
 // Inputs
 // ---------------------------------------------------------------------------
 
-export const loginInputSchema = z.object({
-  password: z.string().min(1),
-});
-
 export const resetPasswordInputSchema = z.object({
   /** the build secret baked into the app; entering it lets the owner set a new password */
   secret: z.string().min(1),
   newPassword: z.string().min(4),
+  /** the owner's Algerian mobile; becomes the login name after +213 normalization */
+  phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
 });
 
 export const categoryCreateInputSchema = z.object({
@@ -250,10 +250,6 @@ export const healthOutputSchema = z.object({
   version: z.string(),
 });
 
-export const loginOutputSchema = z.object({
-  ok: z.literal(true),
-});
-
 export const resetPasswordOutputSchema = z.object({
   ok: z.literal(true),
 });
@@ -310,6 +306,8 @@ export type Activity = z.infer<typeof activitySchema>;
 export type ActivityType = z.infer<typeof activityTypeSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
+
+export type ResetPasswordInput = z.infer<typeof resetPasswordInputSchema>;
 
 export type ItemCreate = z.infer<typeof itemCreateInputSchema>;
 export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;

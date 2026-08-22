@@ -11,6 +11,11 @@ export type Connection = {
   db: DrizzleDb;
   /** live database file path — used by the backup store method */
   dbPath: string;
+  /**
+   * The raw bun:sqlite handle, for migrations and the transaction seams that
+   * need to run statements below the drizzle layer.
+   */
+  raw: Database;
   /** WAL checkpoint, so a straight file copy of the db is consistent */
   checkpoint(): void;
   close(): void;
@@ -27,6 +32,7 @@ export function openConnection(config: AppConfig): Connection {
     return {
       db,
       dbPath: config.db.path,
+      raw: sqlite,
       checkpoint() {
         sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
       },

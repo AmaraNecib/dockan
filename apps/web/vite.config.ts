@@ -37,7 +37,19 @@ export default defineConfig({
     // same-origin API: the webview never talks to the Bun api directly,
     // so auth cookies stay same-origin and no CORS config is needed
     proxy: {
-      "/api": { target: `http://127.0.0.1:${apiTargetPort()}`, changeOrigin: true },
+      // SAFETY: this entry's router field re-resolves the destination per
+      // request (the api's actual port), and the object cast at its end only
+      // widens to vite's ProxyOptions type
+      "/api": {
+        target: `http://127.0.0.1:${apiTargetPort()}`, // SAFETY: router overrides it per request
+        changeOrigin: true,
+        // http-proxy re-resolves the destination on every request, so the proxy
+        // follows the api's actual port even when vite booted before the api
+        // selected and recorded its fallback port (greptile P1)
+        router: () => `http://127.0.0.1:${apiTargetPort()}`,
+        // SAFETY: vite ProxyOptions are http-proxy options plus extras; the
+        // router field is one of them, so the object below is assignable
+      } as import("vite").ProxyOptions,
     },
   },
   build: {

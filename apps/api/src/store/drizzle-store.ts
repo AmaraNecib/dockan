@@ -131,12 +131,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
    * serializeStore below.
    */
   let jobQueue: Promise<unknown> = Promise.resolve();
-  let inTransactionSlot = false;
   const runSerialized = <T,>(job: () => Promise<T>): Promise<T> => {
     const run = jobQueue.then(job);
     jobQueue = run.catch(() => undefined);
     return run;
   };
+
+  /** A store whose calls skip the queue: used inside transaction units, where
+   * the unit itself already holds the queue. Never escapes withTransaction. */
+  const directSeed = (raw: StorePort): StorePort =>
+    // SAFETY: same key set and same values; no wrapper is applied
+    Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value])) as StorePort;
 
   const serializeStore = (raw: StorePort): StorePort => {
     // SAFETY: a port object exposes only documented members
@@ -148,14 +153,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       }
       // args are never[] (the object shape opaques them); R is resolved at
       // each call site to the raw method's real result type
-      const wrapped = <R,>(...args: never[]): Promise<R> => {
-        if (inTransactionSlot) {
-          // SAFETY: same single connection; the open transaction owns BEGIN/COMMIT
-          return (value as (...a: never[]) => Promise<R>)(...args);
-        }
-        // SAFETY: plain operations queue behind any open transaction
-        return runSerialized(() => (value as (...a: never[]) => Promise<R>)(...args));
-      };
+      // SAFETY: every call queues behind open transactions; nothing can ever
+      // execute inside another unit's BEGIN/COMMIT window
+      const wrapped = <R,>(...args: never[]): Promise<R> =>
+        runSerialized(() => (value as (...a: never[]) => Promise<R>)(...args));
       // SAFETY: wrapped implements the raw method named by key via its generic R
       return [key, wrapped as StorePort[keyof StorePort]];
     };
@@ -257,21 +258,22 @@ export function createDrizzleStore(conn: Connection): StorePort {
     // Explicit BEGIN/COMMIT/ROLLBACK on the single raw connection: drizzle's
     // bun-sqlite transaction committed before awaited callbacks finished
     // (proven by the store transactions test), so units would lose atomicity.
-    withTransaction: <T>(fn: () => Promise<T>): Promise<T> => {
+    withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
       // serialized against every other store call; the unit keeps the queue
-      // for its whole run so no second BEGIN can appear mid-transaction
+      // for its whole run so no second BEGIN can appear mid-transaction. The
+      // callback receives an unqueued store (directSeed) so its internal calls
+      // never deadlock, while every EXTERNAL operation queues behind the unit
+      // and can never land inside this transaction (greptile P1).
       return runSerialized(async () => {
-        inTransactionSlot = true;
+        const tx = directSeed(store);
         conn.raw.exec("BEGIN");
         try {
-          const result = await fn();
+          const result = await fn(tx);
           conn.raw.exec("COMMIT");
           return result;
         } catch (err) {
           conn.raw.exec("ROLLBACK");
           throw err;
-        } finally {
-          inTransactionSlot = false;
         }
       });
     },

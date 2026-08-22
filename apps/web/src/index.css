@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+html {
+  direction: rtl;
+}
+
+body {
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+}

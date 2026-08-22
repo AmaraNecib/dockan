@@ -1,0 +1,48 @@
+/** Arabic-first UI strings. Keep the domain vocabulary from CONTEXT.md. */
+export const strings = {
+  appTitle: "دكان",
+  nav: {
+    dashboard: "الرئيسية",
+    categories: "التصنيفات",
+    items: "المنتجات",
+  },
+  dashboard: {
+    title: "الرئيسية",
+    lowStock: "منتجات على وشك النفاد",
+    lowStockEmpty: "لا توجد منتجات منخفضة حالياً",
+    itemsCount: "عدد المنتجات",
+    categoriesCount: "عدد التصنيفات",
+  },
+  categories: {
+    title: "التصنيفات",
+    newName: "اسم تصنيف جديد",
+    add: "إضافة",
+    empty: "لا توجد تصنيفات بعد",
+    added: "تمت إضافة التصنيف",
+    duplicate: "هذا التصنيف موجود مسبقاً",
+  },
+  items: {
+    title: "المنتجات",
+    newItem: "منتج جديد",
+    empty: "لا توجد منتجات بعد",
+    columns: {
+      name: "الاسم",
+      category: "التصنيف",
+      cost: "سعر الشراء",
+      sell: "سعر البيع",
+      profit: "الربح",
+      stock: "المخزون",
+      threshold: "الحد",
+    },
+    low: "منخفض",
+    fieldName: "الاسم",
+    fieldCategory: "التصنيف",
+    fieldCost: "سعر الشراء (دج)",
+    fieldSell: "سعر البيع (دج)",
+    fieldThreshold: "حد التنبيه",
+    save: "حفظ",
+    saved: "تم حفظ المنتج",
+    sellAboveCost: "سعر البيع يجب أن يكون أكبر من 0",
+  },
+  profitPerUnit: (amount: number) => `الربح لكل وحدة: ${amount} دج`,
+} as const;

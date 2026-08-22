@@ -27,7 +27,13 @@ export function createApp(deps: AppDeps) {
 
   const app = new Hono();
 
-  app.get("/health", (c) => c.json({ ok: true, version: config.version, driver: config.db.driver, time: localDateTime() }));
+  app.use("*", async (c, next) => {
+    await next();
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+  });
+
+  app.get("/health", (c) => c.json({ ok: true, version: config.version, time: localDateTime() }));
 
   // better-auth handles /api/auth/* itself (sign-in, session, sign-out);
   // account creation is NOT allowed: the single admin is provisioned by the

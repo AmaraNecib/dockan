@@ -252,6 +252,32 @@ describe("edge cases", () => {
   });
 });
 
+describe("transactions", () => {
+  it("rolls the whole unit back when the callback throws (audit + mutation stay atomic)", async () => {
+    const before = (await store.listCategories()).length;
+    await expect(
+      store.withTransaction(async () => {
+        await store.createCategory({ name: "غير قابل للحفظ" });
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    const after = (await store.listCategories()).length;
+    expect(after).toBe(before);
+    const names = (await store.listCategories()).map((c) => c.name);
+    expect(names).not.toContain("غير قابل للحفظ");
+  });
+
+  it("commits everything inside the unit on success", async () => {
+    const created = await store.withTransaction(async () => {
+      const category = await store.createCategory({ name: "يُحفظ معاً" });
+      await store.insertActivity({ type: "CATEGORY_CREATED", summary: category.name, ref: category.id });
+      return category;
+    });
+    expect((await store.listCategories()).some((c) => c.id === created.id)).toBe(true);
+    expect((await store.listActivities(10)).some((a) => a.ref === created.id)).toBe(true);
+  });
+});
+
 describe("activities + settings", () => {
   it("records and lists activities newest-first", async () => {
     await store.insertActivity({ type: "SALE_CREATED", summary: "بيع INV-0002", ref: "INV-0002" });

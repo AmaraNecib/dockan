@@ -265,7 +265,20 @@ export function createDrizzleStore(conn: Connection): StorePort {
     },
 
     // --- invoices / payments -------------------------------------------------
-    withTransaction: (fn) => db.transaction(async () => fn()),
+    // Explicit BEGIN/COMMIT/ROLLBACK on the single raw connection: drizzle's
+    // bun-sqlite transaction committed before awaited callbacks finished
+    // (proven by the store transactions test), so units would lose atomicity.
+    withTransaction: async (fn) => {
+      conn.raw.exec("BEGIN");
+      try {
+        const result = await fn();
+        conn.raw.exec("COMMIT");
+        return result;
+      } catch (err) {
+        conn.raw.exec("ROLLBACK");
+        throw err;
+      }
+    },
     async lastInvoiceNumber() {
       const latest = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices).orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(1);
       return latest[0]?.invoiceNumber;

@@ -68,11 +68,24 @@ async function firstFreePort(start: number, host: string): Promise<number> {
 // P1). Without an explicit port, probe upward and record the winner; the web
 // proxy prefers that record.
 const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.host);
-fs.writeFileSync(path.resolve(findWorkspaceRoot(), ".dokan-port"), String(port), "utf8");
+const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
+/**
+ * The record is written only after the bind succeeds (in the serve callback)
+ * and removed on close/error, so a failed lifecycle can never leave a stale
+ * record that misdirects the web proxy (greptile P1, follow-up).
+ */
+function forgetPort(): void {
+  try {
+    fs.unlinkSync(portFile);
+  } catch {
+    // already gone
+  }
+}
 
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   (info) => {
+    fs.writeFileSync(portFile, String(port), "utf8");
     logger.info("SERVER_STARTED", "Dokan API booted", {
       url: `http://${info.address}:${info.port}`,
       version: config.version,
@@ -85,15 +98,14 @@ const server = serve(
 // rebind that would desync the proxy (greptile P1)
 server.on("error", (err: NodeJS.ErrnoException) => {
   logger.error("SERVER_ERROR", `could not bind ${config.host}:${port}`, err);
+  forgetPort();
   process.exit(1);
 });
 
+// graceful shutdown of any kind removes the record too
+server.on("close", forgetPort);
+
 process.on("SIGINT", () => {
-  try {
-    fs.unlinkSync(path.resolve(findWorkspaceRoot(), ".dokan-port"));
-  } catch {
-    // already gone
-  }
   conn.close();
   server.close();
   process.exit(0);

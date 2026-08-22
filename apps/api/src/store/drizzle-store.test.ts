@@ -288,6 +288,21 @@ describe("transactions", () => {
     expect(a.id).not.toBe(b.id);
   });
 
+  it("serializes plain operations against open transactions (no interleave, no deadlock)", async () => {
+    // a transaction that holds its slot open while a plain read arrives
+    const hold = new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const txRun = store.withTransaction(async () => {
+      await store.createCategory({ name: "أثناء المعاملة" });
+      await hold;
+      return "done";
+    });
+    const plainRun = store.listCategories();
+    const [txResult, list] = await Promise.all([txRun, plainRun]);
+    expect(txResult).toBe("done");
+    // the plain read ran AFTER the transaction committed, not inside it
+    expect(list.some((c) => c.name === "أثناء المعاملة")).toBe(true);
+  });
+
   it("keeps one unit's failure from breaking the next unit's commit", async () => {
     const bad = store.withTransaction(async () => {
       await store.createCategory({ name: "يفشل" });

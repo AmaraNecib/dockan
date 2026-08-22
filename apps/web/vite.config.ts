@@ -1,6 +1,30 @@
+import fs from "node:fs";
+import path from "node:path";
+
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
+
+/**
+ * The api probes to a free port when the default is busy; the proxy must
+ * follow it. DOKAN_PORT wins, then the port file the api writes at boot,
+ * then the default.
+ */
+function apiTargetPort(): number {
+  if (process.env.DOKAN_PORT !== undefined) return Number(process.env.DOKAN_PORT);
+  let dir = process.cwd();
+  for (;;) {
+    const file = path.join(dir, ".dokan-port");
+    if (fs.existsSync(file)) {
+      const parsed = Number(fs.readFileSync(file, "utf8").trim());
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return 4317;
+}
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -13,7 +37,7 @@ export default defineConfig({
     // same-origin API: the webview never talks to the Bun api directly,
     // so auth cookies stay same-origin and no CORS config is needed
     proxy: {
-      "/api": { target: `http://127.0.0.1:${process.env.DOKAN_PORT ?? 4317}`, changeOrigin: true },
+      "/api": { target: `http://127.0.0.1:${apiTargetPort()}`, changeOrigin: true },
     },
   },
   build: {

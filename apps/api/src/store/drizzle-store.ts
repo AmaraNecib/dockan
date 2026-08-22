@@ -123,9 +123,48 @@ type DebtSummaryRow = {
 export function createDrizzleStore(conn: Connection): StorePort {
   const { db } = conn;
 
-  // Serializes transaction units (see withTransaction below): a second BEGIN
-  // inside an open one would fail, and interleaved awaits would break pairing.
-  let txQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * One queue guards the single SQLite connection (greptile: direct store
+   * operations could interleave with open transactions). Transactions hold
+   * the queue exclusively; plain operations either join an open transaction
+   * safely (same connection) or wait behind it. Everything funnels through
+   * serializeStore below.
+   */
+  let jobQueue: Promise<unknown> = Promise.resolve();
+  let inTransactionSlot = false;
+  const runSerialized = <T,>(job: () => Promise<T>): Promise<T> => {
+    const run = jobQueue.then(job);
+    jobQueue = run.catch(() => undefined);
+    return run;
+  };
+
+  const serializeStore = (raw: StorePort): StorePort => {
+    // SAFETY: a port object exposes only documented members
+    const entries = Object.entries(raw) as Array<[keyof StorePort, unknown]>;
+    const wrapEntry = ([key, value]: readonly [keyof StorePort, unknown]): readonly [string, StorePort[keyof StorePort]] => {
+      if (key === "withTransaction") {
+        // SAFETY: withTransaction keeps its own serialization; no wrapper needed
+        return [key, value as StorePort["withTransaction"]];
+      }
+      // args are never[] (the object shape opaques them); R is resolved at
+      // each call site to the raw method's real result type
+      const wrapped = <R,>(...args: never[]): Promise<R> => {
+        if (inTransactionSlot) {
+          // SAFETY: same single connection; the open transaction owns BEGIN/COMMIT
+          return (value as (...a: never[]) => Promise<R>)(...args);
+        }
+        // SAFETY: plain operations queue behind any open transaction
+        return runSerialized(() => (value as (...a: never[]) => Promise<R>)(...args));
+      };
+      // SAFETY: wrapped implements the raw method named by key via its generic R
+      return [key, wrapped as StorePort[keyof StorePort]];
+    };
+    // SAFETY: fromEntries returns a plain dictionary keyed by the exact names,
+    // so the value type is the method union indexed by those same keys
+    const built = Object.fromEntries(entries.map(wrapEntry)) as Record<keyof StorePort, StorePort[keyof StorePort]>;
+    // SAFETY: built mirrors raw's exact key set; every member is present
+    return built as StorePort;
+  };
 
   async function setup(): Promise<void> {
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
@@ -141,7 +180,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   }
 
-  return {
+  const store: StorePort = {
     setup,
 
     // --- categories ----------------------------------------------------------
@@ -219,7 +258,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
     // bun-sqlite transaction committed before awaited callbacks finished
     // (proven by the store transactions test), so units would lose atomicity.
     withTransaction: <T>(fn: () => Promise<T>): Promise<T> => {
-      const run = txQueue.then(async () => {
+      // serialized against every other store call; the unit keeps the queue
+      // for its whole run so no second BEGIN can appear mid-transaction
+      return runSerialized(async () => {
+        inTransactionSlot = true;
         conn.raw.exec("BEGIN");
         try {
           const result = await fn();
@@ -228,10 +270,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
         } catch (err) {
           conn.raw.exec("ROLLBACK");
           throw err;
+        } finally {
+          inTransactionSlot = false;
         }
       });
-      txQueue = run.catch(() => undefined);
-      return run;
     },
     async lastInvoiceNumber() {
       const latest = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices).orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(1);
@@ -357,4 +399,6 @@ export function createDrizzleStore(conn: Connection): StorePort {
       return conn.dbPath;
     },
   };
+
+  return serializeStore(store);
 }

@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import { serve } from "@hono/node-server";
 
 import { createApp } from "./app";
@@ -20,6 +22,19 @@ await store.setup();
 logger.info("SERVER_BOOT_DONE", "database ready", { driver: config.db.driver });
 
 const app = createApp(store, logger, config);
+
+/**
+ * Workspace root = the directory containing .git (repo anchor).
+ */
+function findWorkspaceRoot(): string {
+  let dir = process.cwd();
+  for (;;) {
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return process.cwd();
+    dir = parent;
+  }
+}
 
 /**
  * The user is not technical; a busy default port must not crash the app.
@@ -44,6 +59,11 @@ async function firstFreePort(start: number, host: string): Promise<number> {
 }
 
 const port = await firstFreePort(config.port, config.host);
+
+// the web proxy must follow the actual (possibly fallback) port, so the api
+// records it at the workspace root where vite.config reads it
+const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
+fs.writeFileSync(portFile, String(port), "utf8");
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   (info) => {

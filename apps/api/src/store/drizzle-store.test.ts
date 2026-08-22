@@ -169,7 +169,7 @@ describe("invoices core", () => {
   });
 
   it("groups debts by person in both directions", async () => {
-    const sale = await store.insertInvoice({
+    await store.insertInvoice({
       invoiceNumber: "INV-0003",
       kind: "SALE",
       counterpartyId: null,
@@ -182,7 +182,6 @@ describe("invoices core", () => {
     });
     const sums = await store.debtSummaries();
     const owedToUs = sums.filter((d) => d.kind === "SALE");
-    const weOwe = sums.filter((d) => d.kind === "PURCHASE");
 
     // يوسف appears once — INV-0002 was paid off in the previous test, so his
     // only unpaid SALE is INV-0003 (1500).

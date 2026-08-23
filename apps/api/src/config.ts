@@ -2,6 +2,8 @@ import path from "node:path";
 
 export type AppConfig = {
   host: string;
+  /** host that liveness probes CONNECT to (loopback for wildcard binds) */
+  probeHost: string;
   port: number;
   /** true when DOKAN_PORT was set explicitly: that port is authoritative, so
    * the api must NOT silently fall back to another one (greptile P1) */
@@ -38,10 +40,16 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
         "The postgres adapter is not implemented yet (ADR-0003); it arrives behind the same switch.",
     );
   }
+  // one shared predicate with the vite proxy: only a finite positive port
+  // counts as explicit; "" / "abc" / "0" / "-5" all mean "unset" on both sides
+  const portEnv = env.DOKAN_PORT ?? "";
+  const parsedPort = portEnv === "" ? NaN : Number(portEnv);
+  const portIsValid = Number.isFinite(parsedPort) && parsedPort > 0;
   return {
     host: env.DOKAN_HOST ?? "127.0.0.1",
-    port: env.DOKAN_PORT && Number(env.DOKAN_PORT) ? Number(env.DOKAN_PORT) : 4317,
-    portExplicit: env.DOKAN_PORT !== undefined && env.DOKAN_PORT !== "" && Number(env.DOKAN_PORT) !== 0, 
+    probeHost: env.DOKAN_HOST === "0.0.0.0" || env.DOKAN_HOST === "::" ? "127.0.0.1" : (env.DOKAN_HOST ?? "127.0.0.1"),
+    port: portIsValid ? parsedPort : 4317,
+    portExplicit: portIsValid, 
     dataDir,
     buildSecret: env.DOKAN_BUILD_SECRET,
     authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",

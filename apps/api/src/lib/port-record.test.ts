@@ -243,6 +243,40 @@ describe("registry", () => {
     fs.rmSync(rollbackDir, { recursive: true, force: true });
   });
 
+  it("forgetPort reports lock contention instead of swallowing it", async () => {
+    const contentionDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-contention-"));
+    const contentionLock = path.join(contentionDir, ".dokan-port.lock");
+    fs.mkdirSync(contentionLock);
+    fs.writeFileSync(path.join(contentionLock, "pid"), String(process.pid), "utf8");
+    await expect(
+      forgetPort(
+        {
+          portFile: path.join(contentionDir, ".dokan-port"),
+          lockDir: contentionLock,
+          registryDir: path.join(contentionDir, ".dokan-port.registry"),
+          pid: process.pid,
+        },
+        { deadlineMs: 100 },
+      ),
+    ).rejects.toThrow("port record lock timeout");
+    fs.rmSync(contentionDir, { recursive: true, force: true });
+  });
+
+  it("forgetPort reports registry filesystem failures instead of swallowing them", async () => {
+    const failureDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-cleanup-failure-"));
+    const registryPath = path.join(failureDir, ".dokan-port.registry");
+    fs.writeFileSync(registryPath, "not a directory", "utf8");
+    await expect(
+      forgetPort({
+        portFile: path.join(failureDir, ".dokan-port"),
+        lockDir: path.join(failureDir, ".dokan-port.lock"),
+        registryDir: registryPath,
+        pid: process.pid,
+      }),
+    ).rejects.toThrow();
+    fs.rmSync(failureDir, { recursive: true, force: true });
+  });
+
   it("forgetPort removes own entry and deletes the canonical when nobody survives", async () => {
     fs.writeFileSync(portFile, "4317", "utf8");
     // SAFETY: own entry exists from previous test only if written for our pid

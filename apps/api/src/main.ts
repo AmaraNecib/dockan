@@ -72,6 +72,22 @@ async function forgetPort(): Promise<void> {
   await forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid });
 }
 
+/** Cleanup must be observable: exiting successfully after a failed reconcile
+ * leaves the proxy with stale discovery data. */
+async function reconcileBeforeExit(): Promise<void> {
+  try {
+    await forgetPort();
+  } catch (err) {
+    logger.error(
+      "SERVER_ERROR",
+      "port record cleanup failed before exit",
+      err instanceof Error ? err : new Error(String(err)),
+    );
+    conn.close();
+    process.exit(1);
+  }
+}
+
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   async (info) => {
@@ -106,7 +122,7 @@ const server = serve(
 // rebind that would desync the proxy (greptile P1)
 server.on("error", async (err: NodeJS.ErrnoException) => {
   logger.error("SERVER_ERROR", `could not bind ${config.host}:${port}`, err);
-  await forgetPort();
+  await reconcileBeforeExit();
   process.exit(1);
 });
 
@@ -114,7 +130,7 @@ server.on("error", async (err: NodeJS.ErrnoException) => {
 // a survivor), then tear down the db and exit — single listener, so no
 // shutdown path can exit before the reconcile finishes
 server.on("close", async () => {
-  await forgetPort();
+  await reconcileBeforeExit();
   conn.close();
   process.exit(0);
 });
@@ -124,7 +140,7 @@ function beginShutdown(): void {
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
   // the forced path still awaits the full reconcile before exiting
   setTimeout(async () => {
-    await forgetPort();
+    await reconcileBeforeExit();
     conn.close();
     process.exit(0);
   }, 3000).unref();

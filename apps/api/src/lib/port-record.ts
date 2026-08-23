@@ -359,13 +359,9 @@ export async function publishPort(
 
 /**
  * Remove our registry entry, then point the canonical at the newest
- * surviving instance (or delete it when none is up). Swallows lock-timeout
- * degradation: the canonical is left untouched rather than corrupted.
+ * surviving instance (or delete it when none is up). Cleanup failures are
+ * propagated so lifecycle callers cannot exit as though reconciliation worked.
  */
-export async function forgetPort(args: ForgetPortArgs): Promise<void> {
-  try {
-    await withPortFileLock(args.lockDir, () => reconcilePortRecord(args));
-  } catch {
-    // live holder stuck: leave the canonical untouched rather than corrupt it
-  }
+export async function forgetPort(args: ForgetPortArgs, lockOpts: LockOpts = {}): Promise<void> {
+  await withPortFileLock(args.lockDir, () => reconcilePortRecord(args), lockOpts);
 }

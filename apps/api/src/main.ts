@@ -114,6 +114,10 @@ server.on("close", () => {
 
 process.on("SIGINT", () => {
   server.close();
-  // a stuck close (keep-alive connection) must not hang the kiosk forever
-  setTimeout(() => process.exit(0), 3000).unref();
+  // a stuck close (keep-alive connection) must not hang the kiosk forever;
+  // and the forced path still removes the port record before exiting
+  setTimeout(() => {
+    forgetPort();
+    process.exit(0);
+  }, 3000).unref();
 });

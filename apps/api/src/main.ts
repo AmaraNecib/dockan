@@ -262,14 +262,23 @@ async function forgetPort(): Promise<void> {
 
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
-  (info) => {
+  async (info) => {
     // record the port that actually bound: for fallback/ephemeral binds this
-    // differs from the configured value and must be what the proxy trusts
-    void withPortFileLock(async () => {
-      fs.mkdirSync(registryDir, { recursive: true });
-      fs.writeFileSync(ownRegistryEntry(), String(info.port), "utf8");
-      fs.writeFileSync(portFile, String(info.port), "utf8");
-    });
+    // differs from the configured value and must be what the proxy trusts.
+    // A publication failure is a boot failure: running while Vite still walks
+    // the previous record would strand /api traffic, so fail loudly (before
+    // logging the server as started) instead of discarding the rejection.
+    try {
+      await withPortFileLock(async () => {
+        fs.mkdirSync(registryDir, { recursive: true });
+        fs.writeFileSync(ownRegistryEntry(), String(info.port), "utf8");
+        fs.writeFileSync(portFile, String(info.port), "utf8");
+      });
+    } catch (err) {
+      // SAFETY: every rejection path throws an Error (lock timeout / fs error)
+      logger.error("SERVER_ERROR", `port record publication failed after binding ${info.port}`, err as Error);
+      process.exit(1);
+    }
     logger.info("SERVER_STARTED", "Dokan API booted", {
       url: `http://${info.address}:${info.port}`,
       version: config.version,

@@ -11,9 +11,10 @@ import { defineConfig } from "vite";
  * then the default.
  */
 function apiTargetPort(): number {
-  // trust the recorded actual port first: when the api fell back (no explicit
-  // env) the file holds the real bound port; DOKAN_PORT env wins for explicit
-  // deployments; 4317 is the final default (greptile P1)
+  // an explicit DOKAN_PORT is authoritative: it overrides any recorded port
+  // from an earlier API process (greptile P1 follow-up). Only when unset does
+  // the recorded actual port (written at bind time) count; 4317 is the default.
+  if (process.env.DOKAN_PORT !== undefined) return Number(process.env.DOKAN_PORT);
   let dir = process.cwd();
   for (;;) {
     const file = path.join(dir, ".dokan-port");
@@ -25,7 +26,6 @@ function apiTargetPort(): number {
     if (parent === dir) break;
     dir = parent;
   }
-  if (process.env.DOKAN_PORT !== undefined) return Number(process.env.DOKAN_PORT);
   return 4317;
 }
 

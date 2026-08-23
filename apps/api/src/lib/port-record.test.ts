@@ -8,6 +8,7 @@ import {
   forgetPort,
   portIsReachable,
   probeHostFor,
+  publishPort,
   readRegistryEntry,
   recomputeCanonical,
   withPortFileLock,
@@ -156,6 +157,14 @@ describe("registry", () => {
     writeRegistryEntry(registryDir, process.pid, "127.0.0.1", 4317);
   });
 
+  it("propagates registry entry I/O failures instead of treating them as no entry", () => {
+    const entryFile = path.join(registryDir, String(process.pid));
+    fs.rmSync(entryFile, { recursive: true, force: true });
+    fs.mkdirSync(entryFile); // readFileSync(directory) throws EISDIR
+    expect(() => readRegistryEntry(registryDir, String(process.pid))).toThrow();
+    fs.rmSync(entryFile, { recursive: true, force: true });
+  });
+
   it("recomputeCanonical picks the newest reachable survivor and drops the rest", async () => {
     // a real listener for a "live" entry
     const listener = net.createServer();
@@ -175,6 +184,31 @@ describe("registry", () => {
     // after the listener dies, nobody is reachable -> canonical deleted
     const after = await recomputeCanonical(registryDir, async () => false);
     expect(after).toBeNull();
+  });
+
+  it("rolls back the registry when canonical publication fails", async () => {
+    const rollbackDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-rollback-"));
+    const args = {
+      portFile: path.join(rollbackDir, ".dokan-port"),
+      lockDir: path.join(rollbackDir, ".dokan-port.lock"),
+      registryDir: path.join(rollbackDir, ".dokan-port.registry"),
+      pid: process.pid,
+      host: "127.0.0.1",
+      port: 4317,
+    };
+    let rejected = false;
+    try {
+      await publishPort(args, () => {
+        throw new Error("simulated canonical write failure");
+      });
+    } catch (err) {
+      // SAFETY: the injected writer throws an Error above
+      rejected = (err as Error).message === "simulated canonical write failure";
+    }
+    expect(rejected).toBe(true);
+    expect(readRegistryEntry(args.registryDir, String(process.pid))).toBeNull();
+    expect(fs.existsSync(args.portFile)).toBe(false);
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
   });
 
   it("forgetPort removes own entry and deletes the canonical when nobody survives", async () => {

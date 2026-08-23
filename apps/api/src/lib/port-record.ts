@@ -176,6 +176,16 @@ export function ownRegistryEntry(registryDir: string, pid: number): string {
   return path.join(registryDir, String(pid));
 }
 
+function removeFileIfPresent(file: string): void {
+  try {
+    fs.unlinkSync(file);
+  } catch (err) {
+    // SAFETY: filesystem failures expose an ErrnoException-shaped code
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT") throw err;
+  }
+}
+
 export function writeRegistryEntry(registryDir: string, pid: number, host: string, port: number): void {
   fs.mkdirSync(registryDir, { recursive: true });
   fs.writeFileSync(ownRegistryEntry(registryDir, pid), JSON.stringify({ host: probeHostFor(host), port }), "utf8");
@@ -190,17 +200,22 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
   const pidFile = path.join(registryDir, name);
   const pid = Number(name);
   if (!Number.isFinite(pid) || !pidIsAlive(pid)) {
-    try {
-      fs.unlinkSync(pidFile);
-    } catch {
-      // already gone
-    }
+    removeFileIfPresent(pidFile);
     return null;
   }
+  let raw: string;
+  try {
+    raw = fs.readFileSync(pidFile, "utf8").trim();
+  } catch (err) {
+    // SAFETY: filesystem failures expose an ErrnoException-shaped code
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    throw err;
+  }
+
   let host = "127.0.0.1";
   let port = NaN;
   try {
-    const raw = fs.readFileSync(pidFile, "utf8").trim();
     // parse at the I/O boundary, then branch on the domain value
     const parsed = registryEntrySchema.safeParse(JSON.parse(raw));
     if (parsed.success) {
@@ -214,11 +229,20 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
       return null;
     }
   } catch {
+    // malformed JSON is an invalid entry, not a filesystem failure
     return null;
   }
   if (!Number.isFinite(port) || port <= 0) return null;
-  // SAFETY: mtime of our own entry file is safe Date material
-  const mtime = (fs.statSync(pidFile).mtimeMs as number) || 0;
+  let mtime: number;
+  try {
+    // SAFETY: mtime of our own entry file is safe Date material
+    mtime = fs.statSync(pidFile).mtimeMs as number;
+  } catch (err) {
+    // SAFETY: filesystem failures expose an ErrnoException-shaped code
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    throw err;
+  }
   return { host: probeHostFor(host), port, pidFile, mtime };
 }
 
@@ -233,8 +257,11 @@ export async function recomputeCanonical(
   let files: string[] = [];
   try {
     files = fs.readdirSync(registryDir);
-  } catch {
-    return null; // no registry yet
+  } catch (err) {
+    // SAFETY: filesystem failures expose an ErrnoException-shaped code
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null; // no registry yet
+    throw err;
   }
   const entries = files
     .map((name) => readRegistryEntry(registryDir, name))
@@ -243,11 +270,7 @@ export async function recomputeCanonical(
 
   for (const entry of entries) {
     if (await reachable(entry.host, entry.port)) return { host: entry.host, port: entry.port };
-    try {
-      fs.unlinkSync(entry.pidFile);
-    } catch {
-      // already gone
-    }
+    removeFileIfPresent(entry.pidFile);
   }
   return null;
 }
@@ -259,6 +282,57 @@ export type ForgetPortArgs = {
   pid: number;
 };
 
+async function reconcilePortRecord(args: ForgetPortArgs): Promise<void> {
+  // ENOENT is expected when this process never published; permission and I/O
+  // failures must surface so callers do not mistake incomplete cleanup for a
+  // successful reconciliation.
+  removeFileIfPresent(ownRegistryEntry(args.registryDir, args.pid));
+  const survivor = await recomputeCanonical(args.registryDir);
+  if (survivor === null) {
+    removeFileIfPresent(args.portFile);
+  } else {
+    fs.writeFileSync(args.portFile, String(survivor.port), "utf8");
+  }
+}
+
+export type PublishPortArgs = ForgetPortArgs & {
+  host: string;
+  port: number;
+};
+
+/**
+ * Publish the registry entry and canonical port as one lifecycle operation.
+ * If canonical publication fails after the registry write, reconcile before
+ * rethrowing so a failed boot cannot leave a stale per-process entry behind.
+ * The writer is injectable only to make the failure/rollback invariant
+ * deterministic in the unit test.
+ */
+export async function publishPort(
+  args: PublishPortArgs,
+  writeCanonical: (portFile: string, port: number) => void = (portFile, port) => {
+    fs.writeFileSync(portFile, String(port), "utf8");
+  },
+): Promise<void> {
+  await withPortFileLock(args.lockDir, async () => {
+    try {
+      writeRegistryEntry(args.registryDir, args.pid, args.host, args.port);
+      writeCanonical(args.portFile, args.port);
+    } catch (err) {
+      // Roll back while still holding the original lock. Reacquiring here
+      // would leave a gap in which another process could hold the lock and
+      // let this failed process exit with a stale registry entry.
+      try {
+        await reconcilePortRecord(args);
+      } catch (rollbackErr) {
+        // The own entry is removed before probing survivors; preserve the
+        // publication error even if survivor canonicalization also fails.
+        console.error("[dokan] port record rollback failed", rollbackErr);
+      }
+      throw err;
+    }
+  });
+}
+
 /**
  * Remove our registry entry, then point the canonical at the newest
  * surviving instance (or delete it when none is up). Swallows lock-timeout
@@ -266,23 +340,7 @@ export type ForgetPortArgs = {
  */
 export async function forgetPort(args: ForgetPortArgs): Promise<void> {
   try {
-    await withPortFileLock(args.lockDir, async () => {
-      try {
-        fs.unlinkSync(ownRegistryEntry(args.registryDir, args.pid));
-      } catch {
-        // not registered — still reconcile
-      }
-      const survivor = await recomputeCanonical(args.registryDir);
-      if (survivor === null) {
-        try {
-          fs.unlinkSync(args.portFile);
-        } catch {
-          // already gone
-        }
-      } else {
-        fs.writeFileSync(args.portFile, String(survivor.port), "utf8");
-      }
-    });
+    await withPortFileLock(args.lockDir, () => reconcilePortRecord(args));
   } catch {
     // live holder stuck: leave the canonical untouched rather than corrupt it
   }

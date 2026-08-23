@@ -6,8 +6,7 @@ import { serve } from "@hono/node-server";
 import {
   forgetPort as forgetPortRecord,
   portIsReachable,
-  withPortFileLock,
-  writeRegistryEntry,
+  publishPort,
 } from "./lib/port-record";
 
 import { createApp, type AppDeps } from "./app";
@@ -82,9 +81,13 @@ const server = serve(
     // the previous record would strand /api traffic, so fail loudly (before
     // logging the server as started) instead of discarding the rejection.
     try {
-      await withPortFileLock(portLockDir, async () => {
-        writeRegistryEntry(registryDir, process.pid, config.host, info.port);
-        fs.writeFileSync(portFile, String(info.port), "utf8");
+      await publishPort({
+        portFile,
+        lockDir: portLockDir,
+        registryDir,
+        pid: process.pid,
+        host: config.host,
+        port: info.port,
       });
     } catch (err) {
       // SAFETY: every rejection path throws an Error (lock timeout / fs error)

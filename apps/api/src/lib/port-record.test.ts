@@ -165,6 +165,36 @@ describe("registry", () => {
     fs.rmSync(entryFile, { recursive: true, force: true });
   });
 
+  it("retains a live entry after transient probe failures", async () => {
+    const transientDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-transient-"));
+    writeRegistryEntry(transientDir, process.pid, "127.0.0.1", DEAD_PORT);
+    let probes = 0;
+    const canonical = await recomputeCanonical(transientDir, async () => {
+      probes++;
+      return false;
+    });
+    expect(probes).toBe(3);
+    expect(canonical).toEqual({ host: "127.0.0.1", port: DEAD_PORT });
+    expect(fs.existsSync(path.join(transientDir, String(process.pid)))).toBe(true);
+    fs.rmSync(transientDir, { recursive: true, force: true });
+  });
+
+  it("prefers an older reachable entry over a newer unconfirmed live entry", async () => {
+    const rollingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-rolling-"));
+    const olderPort = DEAD_PORT - 1;
+    const newerPort = DEAD_PORT;
+    writeRegistryEntry(rollingDir, process.ppid, "127.0.0.1", olderPort);
+    writeRegistryEntry(rollingDir, process.pid, "127.0.0.1", newerPort);
+    const oldTime = new Date(Date.now() - 1000);
+    const newTime = new Date();
+    fs.utimesSync(path.join(rollingDir, String(process.ppid)), oldTime, oldTime);
+    fs.utimesSync(path.join(rollingDir, String(process.pid)), newTime, newTime);
+
+    const canonical = await recomputeCanonical(rollingDir, async (_host, port) => port === olderPort);
+    expect(canonical).toEqual({ host: "127.0.0.1", port: olderPort });
+    fs.rmSync(rollingDir, { recursive: true, force: true });
+  });
+
   it("recomputeCanonical picks the newest reachable survivor and drops the rest", async () => {
     // a real listener for a "live" entry
     const listener = net.createServer();
@@ -181,6 +211,8 @@ describe("registry", () => {
 
     listener.close();
     await new Promise<void>((resolve) => listener.close(() => resolve()));
+    // remove the still-live test PID so this case represents no survivors
+    fs.unlinkSync(path.join(registryDir, String(process.pid)));
     // after the listener dies, nobody is reachable -> canonical deleted
     const after = await recomputeCanonical(registryDir, async () => false);
     expect(after).toBeNull();

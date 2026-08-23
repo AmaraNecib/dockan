@@ -247,8 +247,10 @@ export function readRegistryEntry(registryDir: string, name: string): RegistryEn
 }
 
 /**
- * Latest-live survivor's {host, port}, or null when nobody is reachable.
+ * Latest-live survivor's {host, port}, or null when nobody is alive.
  * Entries are probed newest-first on their own (normalized) bound host.
+ * A single short probe miss is transient evidence, not permission to delete a
+ * live process's entry: retry first, then retain it while its PID is alive.
  */
 export async function recomputeCanonical(
   registryDir: string,
@@ -268,11 +270,33 @@ export async function recomputeCanonical(
     .filter((e): e is RegistryEntry => e !== null)
     .sort((a, b) => b.mtime - a.mtime);
 
+  let liveButUnconfirmed: RegistryEntry | null = null;
   for (const entry of entries) {
-    if (await reachable(entry.host, entry.port)) return { host: entry.host, port: entry.port };
-    removeFileIfPresent(entry.pidFile);
+    // Each 150 ms attempt is intentionally short; transient startup or
+    // Windows scheduling delays must not delete a still-live API entry.
+    let portResponded = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (await reachable(entry.host, entry.port)) {
+        portResponded = true;
+        break;
+      }
+      if (attempt < 2) await Bun.sleep(50);
+    }
+    if (portResponded) return { host: entry.host, port: entry.port };
+
+    // The registry parser already proved the PID alive, but re-check after
+    // the retries. Keep the newest uncertain live entry as a fallback while
+    // continuing: an older entry may still be reachable and is safer now.
+    const pid = Number(path.basename(entry.pidFile));
+    if (pidIsAlive(pid)) {
+      liveButUnconfirmed ??= entry;
+    } else {
+      removeFileIfPresent(entry.pidFile);
+    }
   }
-  return null;
+  return liveButUnconfirmed === null
+    ? null
+    : { host: liveButUnconfirmed.host, port: liveButUnconfirmed.port };
 }
 
 export type ForgetPortArgs = {

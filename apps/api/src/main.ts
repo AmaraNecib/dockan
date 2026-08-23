@@ -71,21 +71,69 @@ const port = config.portExplicit ? config.port : await firstFreePort(config.port
 const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
 /** the port this process actually bound (set in the serve callback) */
 let boundPort: number | null = null;
+const portLockFile = path.join(path.dirname(portFile), ".dokan-port.lock");
+
+/**
+ * Exclusive lock so read-compare-delete and write are atomic against each
+ * other: a concurrent boot can never overwrite the record between our
+ * comparison and our unlink (greptile 4/5 follow-up). On a crashed holder the
+ * deadline force-unlinks the lock so the workspace never stalls.
+ */
+function withPortFileLock(fn: () => void): void {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    try {
+      const fd = fs.openSync(portLockFile, "wx");
+      try {
+        fn();
+      } finally {
+        fs.closeSync(fd);
+        try {
+          fs.unlinkSync(portLockFile);
+        } catch {
+          // already gone
+        }
+      }
+      return;
+    } catch (err) {
+      // SAFETY: errno access is only meaningful for Error values, which the
+      // fs API is guaranteed to throw; the narrowing keeps the guard type-clean
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "EPERM" && code !== "EACCES") {
+        // not a contention error: report it rather than spin forever
+        // SAFETY: Error is what the fs API throws; the assertion only narrows it
+        console.error(`[dokan] port record lock failed: ${(err as Error).message}`);
+        return;
+      }
+      if (Date.now() > deadline) {
+        try {
+          fs.unlinkSync(portLockFile);
+        } catch {
+          // give up quietly; the record logic still works degraded
+        }
+        continue;
+      }
+      Bun.sleepSync(25);
+    }
+  }
+}
+
 /**
  * The record is written only after the bind succeeds and removed on
- * close/error — but only when the file still holds OUR port: an overlapping
- * newer server may have overwritten it, and deleting theirs would strand the
- * proxy on 4317 while the active API runs elsewhere (greptile P1 follow-up).
+ * close/error — but only when the file still holds OUR port and we hold the
+ * lock, so a newer overlapping server's record can never be deleted.
  */
 function forgetPort(): void {
   if (boundPort === null) return;
-  try {
-    if (Number(fs.readFileSync(portFile, "utf8").trim()) === boundPort) {
-      fs.unlinkSync(portFile);
+  withPortFileLock(() => {
+    try {
+      if (Number(fs.readFileSync(portFile, "utf8").trim()) === boundPort) {
+        fs.unlinkSync(portFile);
+      }
+    } catch {
+      // already gone
     }
-  } catch {
-    // already gone
-  }
+  });
 }
 
 const server = serve(
@@ -94,7 +142,9 @@ const server = serve(
     // record the port that actually bound: for fallback/ephemeral binds this
     // differs from the configured value and must be what the proxy trusts
     boundPort = info.port;
-    fs.writeFileSync(portFile, String(info.port), "utf8");
+    withPortFileLock(() => {
+      fs.writeFileSync(portFile, String(info.port), "utf8");
+    });
     logger.info("SERVER_STARTED", "Dokan API booted", {
       url: `http://${info.address}:${info.port}`,
       version: config.version,

@@ -78,11 +78,41 @@ const registryDir = path.join(path.dirname(portFile), ".dokan-port.registry");
  * comparison and our unlink (greptile 4/5 follow-up). On a crashed holder the
  * deadline force-unlinks the lock so the workspace never stalls.
  */
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // SAFETY: process.kill throws only ErrnoException-shaped errors
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "EPERM"; // EPERM = exists but not ours; ESRCH = gone
+  }
+}
+
+/** holder's pid, or null when the lockfile is not yet/fully written */
+function lockHolderPid(): number | null {
+  try {
+    // SAFETY: the lock file is written by us as a bare pid integer
+    const pid = Number(fs.readFileSync(portLockFile, "utf8").trim());
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * pidfile lock: exclusivity is only ever broken when the HOLDER IS DEAD
+ * (crash recovery). A live holder that is slow (long reconcile) is waited on,
+ * never preempted — breaking a live holder's section is what corrupted the
+ * canonical before (greptile follow-up).
+ */
 async function withPortFileLock<T>(fn: () => Promise<T>): Promise<T> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 5000;
   for (;;) {
     try {
       const fd = fs.openSync(portLockFile, "wx");
+      // SAFETY: the fd from openSync("wx") is a valid writable handle for ints
+      fs.writeFileSync(fd, String(process.pid), { encoding: "utf8" });
       try {
         // hold the lock while fn (which may await liveness probes) settles:
         // no other instance can write/delete the canonical mid-reconcile
@@ -105,13 +135,20 @@ async function withPortFileLock<T>(fn: () => Promise<T>): Promise<T> {
         console.error(`[dokan] port record lock failed: ${(err as Error).message}`);
         throw err;
       }
-      if (Date.now() > deadline) {
+      const holder = lockHolderPid();
+      if (holder === null || !pidIsAlive(holder)) {
+        // crashed holder (or write race on a fresh lock): take it over
         try {
           fs.unlinkSync(portLockFile);
         } catch {
-          // give up quietly; the record logic still works degraded
+          // already gone
         }
         continue;
+      }
+      if (Date.now() > deadline) {
+        // live holder but stuck: refuse to corrupt the record; degrade loudly
+        console.error(`[dokan] port record lock held by live pid ${holder} for >5s; skipping reconciliation`);
+        throw new Error("port record lock timeout");
       }
       Bun.sleepSync(25);
     }
@@ -159,6 +196,16 @@ async function recomputeCanonical(): Promise<number | null> {
   const entries = files
     .map((name) => {
       const pidFile = path.join(registryDir, name);
+      const pid = Number(name);
+      if (!Number.isFinite(pid) || !pidIsAlive(pid)) {
+        // dead pid: a leftover entry cannot own a live API; prune it
+        try {
+          fs.unlinkSync(pidFile);
+        } catch {
+          // already gone
+        }
+        return null;
+      }
       let port = NaN;
       try {
         // SAFETY: the file is written by us as a bare integer
@@ -190,23 +237,27 @@ async function recomputeCanonical(): Promise<number | null> {
  * surviving instance (or delete it when none is up).
  */
 async function forgetPort(): Promise<void> {
-  await withPortFileLock(async () => {
-    try {
-      fs.unlinkSync(ownRegistryEntry());
-    } catch {
-      // not registered (bind failed before callback) — still reconcile
-    }
-    const survivor = await recomputeCanonical();
-    if (survivor === null) {
+  try {
+    await withPortFileLock(async () => {
       try {
-        fs.unlinkSync(portFile);
+        fs.unlinkSync(ownRegistryEntry());
       } catch {
-        // already gone
+        // not registered (bind failed before callback) — still reconcile
       }
-    } else {
-      fs.writeFileSync(portFile, String(survivor), "utf8");
-    }
-  });
+      const survivor = await recomputeCanonical();
+      if (survivor === null) {
+        try {
+          fs.unlinkSync(portFile);
+        } catch {
+          // already gone
+        }
+      } else {
+        fs.writeFileSync(portFile, String(survivor), "utf8");
+      }
+    });
+  } catch {
+    // live holder stuck: leave the canonical untouched rather than corrupt it
+  }
 }
 
 const server = serve(

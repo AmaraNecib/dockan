@@ -295,7 +295,7 @@ server.on("close", async () => {
   process.exit(0);
 });
 
-process.on("SIGINT", () => {
+function beginShutdown(): void {
   server.close();
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
   // the forced path still awaits the full reconcile before exiting
@@ -303,4 +303,7 @@ process.on("SIGINT", () => {
     await forgetPort();
     process.exit(0);
   }, 3000).unref();
-});
+}
+
+process.on("SIGINT", beginShutdown);
+process.on("SIGTERM", beginShutdown);

@@ -69,14 +69,20 @@ async function firstFreePort(start: number, host: string): Promise<number> {
 // proxy prefers that record.
 const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.host);
 const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
+/** the port this process actually bound (set in the serve callback) */
+let boundPort: number | null = null;
 /**
- * The record is written only after the bind succeeds (in the serve callback)
- * and removed on close/error, so a failed lifecycle can never leave a stale
- * record that misdirects the web proxy (greptile P1, follow-up).
+ * The record is written only after the bind succeeds and removed on
+ * close/error — but only when the file still holds OUR port: an overlapping
+ * newer server may have overwritten it, and deleting theirs would strand the
+ * proxy on 4317 while the active API runs elsewhere (greptile P1 follow-up).
  */
 function forgetPort(): void {
+  if (boundPort === null) return;
   try {
-    fs.unlinkSync(portFile);
+    if (Number(fs.readFileSync(portFile, "utf8").trim()) === boundPort) {
+      fs.unlinkSync(portFile);
+    }
   } catch {
     // already gone
   }
@@ -85,8 +91,9 @@ function forgetPort(): void {
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   (info) => {
-    // record the port that actually bound: for DOKAN_PORT=0 / ephemeral binds
-    // this differs from the configured value and must be what the proxy trusts
+    // record the port that actually bound: for fallback/ephemeral binds this
+    // differs from the configured value and must be what the proxy trusts
+    boundPort = info.port;
     fs.writeFileSync(portFile, String(info.port), "utf8");
     logger.info("SERVER_STARTED", "Dokan API booted", {
       url: `http://${info.address}:${info.port}`,

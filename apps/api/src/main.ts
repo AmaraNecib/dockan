@@ -72,6 +72,7 @@ const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
 /** the port this process actually bound (set in the serve callback) */
 let boundPort: number | null = null;
 const portLockFile = path.join(path.dirname(portFile), ".dokan-port.lock");
+const registryDir = path.join(path.dirname(portFile), ".dokan-port.registry");
 
 /**
  * Exclusive lock so read-compare-delete and write are atomic against each
@@ -119,20 +120,95 @@ function withPortFileLock(fn: () => void): void {
 }
 
 /**
- * The record is written only after the bind succeeds and removed on
- * close/error — but only when the file still holds OUR port and we hold the
- * lock, so a newer overlapping server's record can never be deleted.
+ * One registry entry per live API process (pid -> port), and a canonical
+ * .dokan-port for the proxy. The canonical always reflects the newest LIVE
+ * instance: when any instance closes it recomputes from the surviving
+ * entries, so closing one can never leave Vite pointing past a still-running
+ * API (greptile 4/5 follow-up). Dead entries self-heal via liveness probe.
+ */
+function ownRegistryEntry(): string {
+  return path.join(registryDir, String(process.pid));
+}
+
+function portIsReachable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    socket.setTimeout(150);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/** newest-first live survivor's port, or null when nobody is reachable */
+async function recomputeCanonical(): Promise<number | null> {
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(registryDir);
+  } catch {
+    return null; // no registry yet
+  }
+  const entries = files
+    .map((name) => {
+      const pidFile = path.join(registryDir, name);
+      let port = NaN;
+      try {
+        // SAFETY: the file is written by us as a bare integer
+        port = Number(fs.readFileSync(pidFile, "utf8").trim());
+      } catch {
+        return null;
+      }
+      // SAFETY: mtime of our own integer file is safe Date material
+      const mtime = (fs.statSync(pidFile).mtimeMs as number) || 0;
+      return { pidFile, port, mtime };
+    })
+    .filter((e): e is { pidFile: string; port: number; mtime: number } => e !== null && Number.isFinite(e.port))
+    .sort((a, b) => b.mtime - a.mtime);
+
+  for (const entry of entries) {
+    if (await portIsReachable(entry.port)) return entry.port;
+    // unreachable -> stale entry; drop it so the canonical can't re-pick it
+    try {
+      fs.unlinkSync(entry.pidFile);
+    } catch {
+      // already gone
+    }
+  }
+  return null;
+}
+
+/**
+ * Remove our registry entry, then point the canonical at the newest
+ * surviving instance (or delete it when none is up).
  */
 function forgetPort(): void {
   if (boundPort === null) return;
   withPortFileLock(() => {
     try {
-      if (Number(fs.readFileSync(portFile, "utf8").trim()) === boundPort) {
-        fs.unlinkSync(portFile);
-      }
+      fs.unlinkSync(ownRegistryEntry());
     } catch {
-      // already gone
+      // not registered (bind failed before callback) — still reconcile
     }
+    recomputeCanonical().then((survivor) => {
+      if (survivor === null) {
+        try {
+          fs.unlinkSync(portFile);
+        } catch {
+          // already gone
+        }
+      } else {
+        fs.writeFileSync(portFile, String(survivor), "utf8");
+      }
+    });
   });
 }
 
@@ -143,6 +219,8 @@ const server = serve(
     // differs from the configured value and must be what the proxy trusts
     boundPort = info.port;
     withPortFileLock(() => {
+      fs.mkdirSync(registryDir, { recursive: true });
+      fs.writeFileSync(ownRegistryEntry(), String(info.port), "utf8");
       fs.writeFileSync(portFile, String(info.port), "utf8");
     });
     logger.info("SERVER_STARTED", "Dokan API booted", {

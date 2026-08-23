@@ -69,8 +69,6 @@ async function firstFreePort(start: number, host: string): Promise<number> {
 // proxy prefers that record.
 const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.host);
 const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
-/** the port this process actually bound (set in the serve callback) */
-let boundPort: number | null = null;
 const portLockFile = path.join(path.dirname(portFile), ".dokan-port.lock");
 const registryDir = path.join(path.dirname(portFile), ".dokan-port.registry");
 
@@ -80,13 +78,15 @@ const registryDir = path.join(path.dirname(portFile), ".dokan-port.registry");
  * comparison and our unlink (greptile 4/5 follow-up). On a crashed holder the
  * deadline force-unlinks the lock so the workspace never stalls.
  */
-function withPortFileLock(fn: () => void): void {
+async function withPortFileLock<T>(fn: () => Promise<T>): Promise<T> {
   const deadline = Date.now() + 2000;
   for (;;) {
     try {
       const fd = fs.openSync(portLockFile, "wx");
       try {
-        fn();
+        // hold the lock while fn (which may await liveness probes) settles:
+        // no other instance can write/delete the canonical mid-reconcile
+        return await fn();
       } finally {
         fs.closeSync(fd);
         try {
@@ -95,7 +95,6 @@ function withPortFileLock(fn: () => void): void {
           // already gone
         }
       }
-      return;
     } catch (err) {
       // SAFETY: errno access is only meaningful for Error values, which the
       // fs API is guaranteed to throw; the narrowing keeps the guard type-clean
@@ -104,7 +103,7 @@ function withPortFileLock(fn: () => void): void {
         // not a contention error: report it rather than spin forever
         // SAFETY: Error is what the fs API throws; the assertion only narrows it
         console.error(`[dokan] port record lock failed: ${(err as Error).message}`);
-        return;
+        throw err;
       }
       if (Date.now() > deadline) {
         try {
@@ -190,25 +189,23 @@ async function recomputeCanonical(): Promise<number | null> {
  * Remove our registry entry, then point the canonical at the newest
  * surviving instance (or delete it when none is up).
  */
-function forgetPort(): void {
-  if (boundPort === null) return;
-  withPortFileLock(() => {
+async function forgetPort(): Promise<void> {
+  await withPortFileLock(async () => {
     try {
       fs.unlinkSync(ownRegistryEntry());
     } catch {
       // not registered (bind failed before callback) — still reconcile
     }
-    recomputeCanonical().then((survivor) => {
-      if (survivor === null) {
-        try {
-          fs.unlinkSync(portFile);
-        } catch {
-          // already gone
-        }
-      } else {
-        fs.writeFileSync(portFile, String(survivor), "utf8");
+    const survivor = await recomputeCanonical();
+    if (survivor === null) {
+      try {
+        fs.unlinkSync(portFile);
+      } catch {
+        // already gone
       }
-    });
+    } else {
+      fs.writeFileSync(portFile, String(survivor), "utf8");
+    }
   });
 }
 
@@ -217,8 +214,7 @@ const server = serve(
   (info) => {
     // record the port that actually bound: for fallback/ephemeral binds this
     // differs from the configured value and must be what the proxy trusts
-    boundPort = info.port;
-    withPortFileLock(() => {
+    void withPortFileLock(async () => {
       fs.mkdirSync(registryDir, { recursive: true });
       fs.writeFileSync(ownRegistryEntry(), String(info.port), "utf8");
       fs.writeFileSync(portFile, String(info.port), "utf8");
@@ -233,16 +229,17 @@ const server = serve(
 
 // an explicit port that still collides is a hard failure, never a silent
 // rebind that would desync the proxy (greptile P1)
-server.on("error", (err: NodeJS.ErrnoException) => {
+server.on("error", async (err: NodeJS.ErrnoException) => {
   logger.error("SERVER_ERROR", `could not bind ${config.host}:${port}`, err);
-  forgetPort();
+  await forgetPort();
   process.exit(1);
 });
 
-// graceful shutdown of any kind removes the record too; the close listener
-// below (registered after) then tears down and exits, so forgetPort always runs
-server.on("close", forgetPort);
-server.on("close", () => {
+// graceful shutdown: reconcile FIRST (registry removed, canonical pointed at
+// a survivor), then tear down the db and exit — single listener, so no
+// shutdown path can exit before the reconcile finishes
+server.on("close", async () => {
+  await forgetPort();
   conn.close();
   process.exit(0);
 });
@@ -250,9 +247,9 @@ server.on("close", () => {
 process.on("SIGINT", () => {
   server.close();
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
-  // and the forced path still removes the port record before exiting
-  setTimeout(() => {
-    forgetPort();
+  // the forced path still awaits the full reconcile before exiting
+  setTimeout(async () => {
+    await forgetPort();
     process.exit(0);
   }, 3000).unref();
 });

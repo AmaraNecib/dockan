@@ -179,7 +179,7 @@ describe("registry", () => {
     fs.rmSync(transientDir, { recursive: true, force: true });
   });
 
-  it("prefers an older reachable entry over a newer unconfirmed live entry", async () => {
+  it("keeps the newest live entry after all transient probes fail", async () => {
     const rollingDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-port-rolling-"));
     const olderPort = DEAD_PORT - 1;
     const newerPort = DEAD_PORT;
@@ -190,8 +190,9 @@ describe("registry", () => {
     fs.utimesSync(path.join(rollingDir, String(process.ppid)), oldTime, oldTime);
     fs.utimesSync(path.join(rollingDir, String(process.pid)), newTime, newTime);
 
-    const canonical = await recomputeCanonical(rollingDir, async (_host, port) => port === olderPort);
-    expect(canonical).toEqual({ host: "127.0.0.1", port: olderPort });
+    const canonical = await recomputeCanonical(rollingDir, async () => false);
+    expect(canonical).toEqual({ host: "127.0.0.1", port: newerPort });
+    expect(fs.existsSync(path.join(rollingDir, String(process.pid)))).toBe(true);
     fs.rmSync(rollingDir, { recursive: true, force: true });
   });
 

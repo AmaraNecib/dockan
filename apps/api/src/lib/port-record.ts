@@ -270,7 +270,6 @@ export async function recomputeCanonical(
     .filter((e): e is RegistryEntry => e !== null)
     .sort((a, b) => b.mtime - a.mtime);
 
-  let liveButUnconfirmed: RegistryEntry | null = null;
   for (const entry of entries) {
     // Each 150 ms attempt is intentionally short; transient startup or
     // Windows scheduling delays must not delete a still-live API entry.
@@ -285,18 +284,13 @@ export async function recomputeCanonical(
     if (portResponded) return { host: entry.host, port: entry.port };
 
     // The registry parser already proved the PID alive, but re-check after
-    // the retries. Keep the newest uncertain live entry as a fallback while
-    // continuing: an older entry may still be reachable and is safer now.
+    // the retries. Keep the newest uncertain live entry canonical: demoting
+    // it to an older process could route Vite away from the active API.
     const pid = Number(path.basename(entry.pidFile));
-    if (pidIsAlive(pid)) {
-      liveButUnconfirmed ??= entry;
-    } else {
-      removeFileIfPresent(entry.pidFile);
-    }
+    if (pidIsAlive(pid)) return { host: entry.host, port: entry.port };
+    removeFileIfPresent(entry.pidFile);
   }
-  return liveButUnconfirmed === null
-    ? null
-    : { host: liveButUnconfirmed.host, port: liveButUnconfirmed.port };
+  return null;
 }
 
 export type ForgetPortArgs = {

@@ -196,7 +196,7 @@ describe("invoices core", () => {
       invoiceNumber: "INV-0100",
       kind: "SALE",
       counterpartyId: "00000000-0000-4000-8000-000000000001",
-      counterpartyName: "يوسف",
+      counterpartyName: "زبون مزدوج",
       invoiceDate: localDate(),
       totalAmount: 1_000,
       paidAmount: 0,
@@ -207,7 +207,7 @@ describe("invoices core", () => {
       invoiceNumber: "INV-0101",
       kind: "SALE",
       counterpartyId: null,
-      counterpartyName: "يوسف",
+      counterpartyName: "زبون مزدوج",
       invoiceDate: localDate(),
       totalAmount: 500,
       paidAmount: 0,
@@ -215,7 +215,7 @@ describe("invoices core", () => {
       notes: null,
     });
     const rows = (await store.debtSummaries()).filter(
-      (d) => d.counterpartyName === "يوسف" && d.kind === "SALE" && (d.counterpartyId === null || d.counterpartyId === "00000000-0000-4000-8000-000000000001"),
+      (d) => d.counterpartyName === "زبون مزدوج" && d.kind === "SALE" && (d.counterpartyId === null || d.counterpartyId === "00000000-0000-4000-8000-000000000001"),
     );
     expect(rows).toHaveLength(2);
     const byId = rows.find((r) => r.counterpartyId !== null);
@@ -377,6 +377,22 @@ describe("auth column migration", () => {
         Bun.sleepSync(50);
       }
     }
+  });
+
+  it("refuses to drop non-empty legacy auth tables", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-nonempty-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
+    );
+    legacy.raw.exec("CREATE TABLE account (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_id TEXT NOT NULL, userId TEXT NOT NULL)");
+    legacy.raw.exec("INSERT INTO account (id, account_id, provider_id, userId) VALUES ('account-1', 'user-1', 'credential', 'user-1')");
+    const legacyStore = createDrizzleStore(legacy);
+    await expect(legacyStore.setup()).rejects.toThrow("non-empty legacy auth tables: account");
+    // SAFETY: the inserted row is queried from the table we just created
+    const rows = legacy.raw.query("SELECT id FROM account").all() as Array<{ id: string }>;
+    expect(rows.map((row) => row.id)).toEqual(["account-1"]);
+    legacy.close();
+    fs.rmSync(legacyDir, { recursive: true, force: true });
   });
 });
 

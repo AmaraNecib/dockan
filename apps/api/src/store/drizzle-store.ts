@@ -171,7 +171,34 @@ export function createDrizzleStore(conn: Connection): StorePort {
     return built as StorePort;
   };
 
+  /**
+   * Ticket 01 created auth tables with snake_case columns. Those tables were
+   * empty before Better Auth was introduced, so rebuild that legacy shape
+   * before the current DDL runs; CREATE TABLE IF NOT EXISTS cannot rename or
+   * remove the old NOT NULL columns.
+   */
+  const rebuildLegacyAuthTables = (): void => {
+    const tables = ["user", "session", "account", "verification"] as const;
+    const looksLegacy = (table: string): boolean => {
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      const names = new Set(rows.map((row) => row.name));
+      return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+    };
+    const legacyTables = tables.filter(looksLegacy);
+    const occupied = legacyTables.filter((table) => {
+      // SAFETY: COUNT(*) returns one row with a numeric count
+      const rows = conn.raw.query(`SELECT COUNT(*) AS count FROM ${table}`).all() as Array<{ count: number }>;
+      return Number(rows[0]?.count ?? 0) > 0;
+    });
+    if (occupied.length > 0) {
+      throw new Error(`cannot rebuild non-empty legacy auth tables: ${occupied.join(", ")}`);
+    }
+    for (const table of legacyTables) conn.raw.exec(`DROP TABLE ${table}`);
+  };
+
   async function setup(): Promise<void> {
+    rebuildLegacyAuthTables();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
 
     const categoriesCount = await db.$count(categories);

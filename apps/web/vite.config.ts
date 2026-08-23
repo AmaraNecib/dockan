@@ -14,7 +14,11 @@ function apiTargetPort(): number {
   // an explicit DOKAN_PORT is authoritative: it overrides any recorded port
   // from an earlier API process (greptile P1 follow-up). Only when unset does
   // the recorded actual port (written at bind time) count; 4317 is the default.
-  if (process.env.DOKAN_PORT !== undefined) return Number(process.env.DOKAN_PORT);
+  const explicit = process.env.DOKAN_PORT;
+  if (explicit !== undefined && explicit !== "") {
+    const parsed = Number(explicit);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
   let dir = process.cwd();
   for (;;) {
     const file = path.join(dir, ".dokan-port");

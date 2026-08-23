@@ -40,8 +40,8 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   }
   return {
     host: env.DOKAN_HOST ?? "127.0.0.1",
-    port: Number(env.DOKAN_PORT ?? 4317),
-    portExplicit: env.DOKAN_PORT !== undefined,
+    port: env.DOKAN_PORT ? Number(env.DOKAN_PORT) || 4317 : 4317,
+    portExplicit: env.DOKAN_PORT !== undefined && env.DOKAN_PORT !== "", 
     dataDir,
     buildSecret: env.DOKAN_BUILD_SECRET,
     authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",

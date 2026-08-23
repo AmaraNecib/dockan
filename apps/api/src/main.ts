@@ -85,7 +85,9 @@ function forgetPort(): void {
 const server = serve(
   { fetch: app.fetch, port, hostname: config.host },
   (info) => {
-    fs.writeFileSync(portFile, String(port), "utf8");
+    // record the port that actually bound: for DOKAN_PORT=0 / ephemeral binds
+    // this differs from the configured value and must be what the proxy trusts
+    fs.writeFileSync(portFile, String(info.port), "utf8");
     logger.info("SERVER_STARTED", "Dokan API booted", {
       url: `http://${info.address}:${info.port}`,
       version: config.version,
@@ -102,11 +104,16 @@ server.on("error", (err: NodeJS.ErrnoException) => {
   process.exit(1);
 });
 
-// graceful shutdown of any kind removes the record too
+// graceful shutdown of any kind removes the record too; the close listener
+// below (registered after) then tears down and exits, so forgetPort always runs
 server.on("close", forgetPort);
+server.on("close", () => {
+  conn.close();
+  process.exit(0);
+});
 
 process.on("SIGINT", () => {
-  conn.close();
   server.close();
-  process.exit(0);
+  // a stuck close (keep-alive connection) must not hang the kiosk forever
+  setTimeout(() => process.exit(0), 3000).unref();
 });

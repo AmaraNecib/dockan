@@ -322,9 +322,15 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
       guardedInput(async (input) => {
-        // Resolve every line's item up front so a bad id fails before any
-        // invoice, movement, or sequence write.
-        const itemsById = await deps.store.getItemsByIds(input.lines.map((line) => line.itemId));
+        // Resolve items and persist inside ONE serialized unit so pricing,
+        // FIFO consumption, and writes all observe the same committed state.
+        // Reading item snapshots before the transaction let a queued request
+        // (e.g. an updateItem price change) land between the read and the
+        // unit, persisting stale unitPrice/costAtSale (greptile P1). Bad ids
+        // still fail before any invoice, movement, or sequence write because
+        // resolution is the first thing inside the unit.
+        return deps.store.withTransaction(async (tx) => {
+        const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
         for (const line of input.lines) {
           if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
         }
@@ -353,11 +359,10 @@ export function createRpcRouter(deps: RpcDeps) {
           const paidAmount = input.initialPaid ?? 0;
           if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
           const invoiceDate = input.invoiceDate ?? localDate();
-          return deps.store.withTransaction(async (tx) => {
-            // SAFETY: allocation is a database-atomic UPDATE inside the same
-            // transaction as the invoice insert, so separate app processes
-            // cannot select the same INV-#### between a read and the insert.
-            const invoiceNumber = await tx.allocateInvoiceNumber();
+          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // transaction as the invoice insert, so separate app processes
+          // cannot select the same INV-#### between a read and the insert.
+          const invoiceNumber = await tx.allocateInvoiceNumber();
             const invoice = await tx.insertInvoice({
               invoiceNumber,
               kind: "SALE",
@@ -375,8 +380,8 @@ export function createRpcRouter(deps: RpcDeps) {
             });
             const insertedLines: InvoiceDetail["lines"] = [];
             for (const [index, line] of input.lines.entries()) {
-              // SAFETY: every itemId was resolved in itemsById before the
-              // transaction, and the map is immutable during this unit.
+              // SAFETY: every itemId was resolved in itemsById at the start of
+              // this unit, and the map is immutable while it runs.
               const item = itemsById.get(line.itemId)!;
               const calculated = totals.lines[index]!;
               const existing = await tx.listStockMovements(item.id);
@@ -436,7 +441,6 @@ export function createRpcRouter(deps: RpcDeps) {
             }
             await tx.insertActivity({ type: "SALE_CREATED", summary: `فاتورة بيع ${invoiceNumber}`, ref: invoice.id });
             return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
-          });
         }
 
         if (input.discount !== undefined || input.discountType !== undefined || input.discountValue !== undefined) {
@@ -448,7 +452,6 @@ export function createRpcRouter(deps: RpcDeps) {
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         const invoiceDate = input.invoiceDate ?? localDate();
-        return deps.store.withTransaction(async (tx) => {
           // SAFETY: allocation is a database-atomic UPDATE inside the same
           // transaction as the invoice insert, so separate app processes
           // cannot select the same INV-#### between a read and the insert.
@@ -470,8 +473,8 @@ export function createRpcRouter(deps: RpcDeps) {
           });
           const insertedLines: InvoiceDetail["lines"] = [];
           for (const line of input.lines) {
-            // SAFETY: every itemId was resolved in itemsById before the
-            // transaction, and the map is immutable during this unit.
+            // SAFETY: every itemId was resolved in itemsById at the start of
+            // this unit, and the map is immutable while it runs.
             const item = itemsById.get(line.itemId)!;
             const unitCost = line.unitPrice ?? item.costPrice;
             // For PURCHASE, the line price is the cost basis feeding ADR-0002.

@@ -260,41 +260,62 @@ export function createDrizzleStore(conn: Connection): StorePort {
   };
 
   /** Additive ticket #30 columns for databases created before discounts. */
+  /** Additive ticket #30 columns created with a durable completion marker.
+   * The historical-data backfill is tracked by the marker, NOT by column
+   * presence: a boot interrupted between the ALTERs and the UPDATEs would
+   * otherwise see the columns on restart and silently skip the backfill
+   * forever (greptile P1). The marker + DDL + backfill are one SQLite
+   * transaction, so an interrupted upgrade either leaves everything pending
+   * or completes everything; the next setup() re-runs until the marker lands. */
   const ensureSaleColumns = (): void => {
     // SAFETY: only fixed SQL identifiers are interpolated; each ALTER is
     // guarded by PRAGMA so repeated setup calls are idempotent.
-    // SAFETY: PRAGMA table_info returns one object with a string name per column.
-    const invoiceRows = conn.raw.query("PRAGMA table_info(invoices)").all() as Array<{ name: string }>;
-    const invoiceNames = new Set(invoiceRows.map((row) => row.name));
-    const hadSubtotal = invoiceNames.has("subtotal_amount");
-    const invoiceColumns: Array<[string, string]> = [
-      ["subtotal_amount", "INTEGER NOT NULL DEFAULT 0"],
-      ["discount_type", "TEXT"],
-      ["discount_value", "INTEGER"],
-      ["discount_amount", "INTEGER NOT NULL DEFAULT 0"],
-    ];
-    for (const [name, definition] of invoiceColumns) {
-      if (invoiceRows.length > 0 && !invoiceNames.has(name)) conn.raw.exec(`ALTER TABLE invoices ADD COLUMN ${name} ${definition}`);
-    }
+    conn.raw.exec("BEGIN");
+    try {
+      // SAFETY: PRAGMA table_info returns one object with a string name per column.
+      const invoiceRows = conn.raw.query("PRAGMA table_info(invoices)").all() as Array<{ name: string }>;
+      const invoiceNames = new Set(invoiceRows.map((row) => row.name));
+      const invoiceColumns: Array<[string, string]> = [
+        ["subtotal_amount", "INTEGER NOT NULL DEFAULT 0"],
+        ["discount_type", "TEXT"],
+        ["discount_value", "INTEGER"],
+        ["discount_amount", "INTEGER NOT NULL DEFAULT 0"],
+      ];
+      for (const [name, definition] of invoiceColumns) {
+        if (invoiceRows.length > 0 && !invoiceNames.has(name)) conn.raw.exec(`ALTER TABLE invoices ADD COLUMN ${name} ${definition}`);
+      }
 
-    // SAFETY: PRAGMA table_info returns one object with a string name per column.
-    const lineRows = conn.raw.query("PRAGMA table_info(invoice_lines)").all() as Array<{ name: string }>;
-    const lineNames = new Set(lineRows.map((row) => row.name));
-    const hadDefaultUnitPrice = lineNames.has("default_unit_price");
-    const hadNetTotal = lineNames.has("net_total");
-    const lineColumns: Array<[string, string]> = [
-      ["default_unit_price", "INTEGER NOT NULL DEFAULT 0"],
-      ["discount_allocated", "INTEGER NOT NULL DEFAULT 0"],
-      ["net_total", "INTEGER NOT NULL DEFAULT 0"],
-    ];
-    for (const [name, definition] of lineColumns) {
-      if (lineRows.length > 0 && !lineNames.has(name)) conn.raw.exec(`ALTER TABLE invoice_lines ADD COLUMN ${name} ${definition}`);
+      // SAFETY: PRAGMA table_info returns one object with a string name per column.
+      const lineRows = conn.raw.query("PRAGMA table_info(invoice_lines)").all() as Array<{ name: string }>;
+      const lineNames = new Set(lineRows.map((row) => row.name));
+      const lineColumns: Array<[string, string]> = [
+        ["default_unit_price", "INTEGER NOT NULL DEFAULT 0"],
+        ["discount_allocated", "INTEGER NOT NULL DEFAULT 0"],
+        ["net_total", "INTEGER NOT NULL DEFAULT 0"],
+      ];
+      for (const [name, definition] of lineColumns) {
+        if (lineRows.length > 0 && !lineNames.has(name)) conn.raw.exec(`ALTER TABLE invoice_lines ADD COLUMN ${name} ${definition}`);
+      }
+
+      // SAFETY: settings.key is PRIMARY KEY; a supported query yields one
+      // object with a single string value per row.
+      const markerRows = conn.raw.query("SELECT value FROM settings WHERE key = ?").all("migration.saleColumnsV1") as Array<{ value: string }>;
+      if (markerRows.length === 0) {
+        // Legacy rows predate these values. Each UPDATE is target-restricted so
+        // it can only match pre-migration rows: an already-migrated or
+        // partially-migrated database re-runs as a no-op, and legitimate
+        // post-migration zeros (free default price, fully discounted net zero)
+        // are never rewritten.
+        conn.raw.exec("UPDATE invoices SET subtotal_amount = total_amount WHERE subtotal_amount = 0 AND total_amount > 0");
+        conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price WHERE default_unit_price = 0 AND unit_price > 0");
+        conn.raw.exec("UPDATE invoice_lines SET net_total = total WHERE net_total = 0 AND discount_allocated = 0 AND total > 0");
+        conn.raw.exec("INSERT INTO settings (key, value) VALUES ('migration.saleColumnsV1', 'done') ON CONFLICT(key) DO NOTHING");
+      }
+      conn.raw.exec("COMMIT");
+    } catch (err) {
+      conn.raw.exec("ROLLBACK");
+      throw err;
     }
-    // Legacy rows predate these values. The UPDATEs run only on the first
-    // migration, so a legitimate zero net total from a later sale is kept.
-    if (invoiceRows.length > 0 && !hadSubtotal) conn.raw.exec("UPDATE invoices SET subtotal_amount = total_amount WHERE subtotal_amount = 0");
-    if (lineRows.length > 0 && !hadDefaultUnitPrice) conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price");
-    if (lineRows.length > 0 && !hadNetTotal) conn.raw.exec("UPDATE invoice_lines SET net_total = total");
   };
 
   async function setup(): Promise<void> {

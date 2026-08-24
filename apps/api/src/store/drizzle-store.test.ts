@@ -200,6 +200,55 @@ describe("barcodes (ticket 28)", () => {
       }
     }
   });
+
+  it("heals an interrupted sale-column migration on the next setup (schema present, backfill not applied)", async () => {
+    const interruptedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-interrupted-"));
+    const interrupted = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: interruptedDir, DOKAN_DB_PATH: path.join(interruptedDir, "interrupted.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // The interrupted state: the ALTERs from a previous boot committed (all
+      // NEW columns exist) but the historical backfill never ran and no
+      // completion marker was written — rows still carry the legacy defaults.
+      interrupted.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)");
+      interrupted.raw.exec("INSERT INTO categories VALUES ('interrupted-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO items VALUES ('interrupted-item', 'منتج قديم', 'interrupted-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoices VALUES ('interrupted-invoice', 'INV-INTERRUPTED', 'SALE', NULL, NULL, '2026-01-01', 0, NULL, NULL, 0, 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('interrupted-line', 'interrupted-invoice', NULL, 'منتج قديم', 1, 0, 200, 100, 200, 0, 0)");
+
+      const interruptedStore = createDrizzleStore(interrupted);
+      await interruptedStore.setup();
+
+      // the next setup completes the backfill even though the schema already
+      // had the columns (the marker, not column presence, gates the UPDATEs)
+      const healed = await interruptedStore.getInvoiceDetail("interrupted-invoice");
+      expect(healed).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
+      expect(healed?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+      expect(await interruptedStore.getSetting("migration.saleColumnsV1")).toBe("done");
+
+      // post-heal modern rows must survive later setup calls: a zero default
+      // price is real for the item, and a fully discounted line's net zero is
+      // real too — the restricted WHERE clauses and the marker keep them.
+      interrupted.raw.exec("INSERT INTO invoices VALUES ('modern-invoice', 'INV-MODERN', 'SALE', NULL, NULL, '2026-02-01', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0)");
+      await interruptedStore.setup();
+      const modern = await interruptedStore.getInvoiceDetail("modern-invoice");
+      expect(modern?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
+    } finally {
+      interrupted.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(interruptedDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
 });
 
 describe("parties", () => {

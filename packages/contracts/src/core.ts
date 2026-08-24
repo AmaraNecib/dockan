@@ -41,6 +41,44 @@ export const activityTypes = [
 // Entities
 // ---------------------------------------------------------------------------
 
+/**
+ * Loose normalized ASCII barcode: printable ASCII, no whitespace, 3..64 chars.
+ * Loose on purpose — EAN, Code39, QR payloads and shop-made codes must fit;
+ * strict checksums are the scanner's job, not the schema's.
+ */
+export const barcodeSchema = z
+  .string()
+  .trim()
+  .regex(/^[\x21-\x7E]{3,64}$/, "expected a printable ASCII barcode");
+
+/**
+ * One barcode normalization for api + web: NFC, strip zero-width/soft-hyphen
+ * junk, uppercase, remove inner spaces. Arabic/IME output can never masquerade
+ * as a barcode — it fails the ASCII check instead of storing mojibake.
+ * Returns null when the result is not a valid barcode.
+ */
+export function normalizeBarcode(raw: string): string | null {
+  const cleaned = raw
+    .normalize("NFC")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\u00AD]/g, "")
+    .toUpperCase()
+    .replace(/\s+/g, "");
+  return /^[\x21-\x7E]{3,64}$/.test(cleaned) ? cleaned : null;
+}
+
+/**
+ * Text search key for names/categories: NFC, lowercase, collapse whitespace,
+ * strip tatweel and Arabic diacritics so "بَطّارية" matches "بطارية".
+ */
+export function normalizeTextKey(raw: string): string {
+  return raw
+    .normalize("NFC")
+    .toLowerCase()
+    .replace(/[\u0640\u064B-\u0652\u0670]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export const categorySchema = z.object({
   id: idSchema,
   name: z.string().trim().min(1),
@@ -51,6 +89,8 @@ export const categorySchema = z.object({
 export const itemSchema = z.object({
   id: idSchema,
   name: z.string().trim().min(1),
+  /** loose normalized ASCII barcode; null = uncoded item (ticket 28) */
+  barcode: barcodeSchema.nullable(),
   categoryId: idSchema,
   /** what the owner pays per unit, in DA */
   costPrice: dinarsSchema,
@@ -177,6 +217,12 @@ export const itemCreateInputSchema = z.object({
   costPrice: dinarsSchema,
   sellingPrice: dinarsSchema,
   lowStockThreshold: z.number().int().min(0).optional(),
+  barcode: barcodeSchema.optional(),
+});
+
+/** create item + initial stock in one unit (unknown-scan "create with stock") */
+export const itemCreateWithStockInputSchema = itemCreateInputSchema.extend({
+  stockOnHand: z.number().int().min(1),
 });
 
 export const itemUpdateInputSchema = z.object({
@@ -186,6 +232,28 @@ export const itemUpdateInputSchema = z.object({
   costPrice: dinarsSchema.optional(),
   sellingPrice: dinarsSchema.optional(),
   lowStockThreshold: z.number().int().min(0).optional(),
+  /** null clears the barcode */
+  barcode: barcodeSchema.nullable().optional(),
+});
+
+export const catalogSearchInputSchema = z.object({
+  query: z.string().trim().min(1).max(128),
+  limit: z.number().int().min(1).max(50).optional(),
+});
+
+export const catalogMatchKindSchema = z.enum(["BARCODE_EXACT", "BARCODE_PARTIAL", "NAME", "CATEGORY"]);
+
+export const catalogMatchSchema = z.object({
+  item: itemSchema,
+  category: categorySchema.nullable(),
+  matchedBy: catalogMatchKindSchema,
+});
+
+export const catalogSearchOutputSchema = z.object({
+  /** the single exact-barcode hit when one exists; ui adds it immediately */
+  exact: catalogMatchSchema.nullable(),
+  /** selectable results, ranked: partial-barcode > name > category */
+  matches: z.array(catalogMatchSchema),
 });
 
 export const partyCreateInputSchema = z.object({
@@ -308,6 +376,9 @@ export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
 
 export type ResetPasswordInput = z.infer<typeof resetPasswordInputSchema>;
+export type CatalogSearchInput = z.infer<typeof catalogSearchInputSchema>;
+export type CatalogMatchKind = z.infer<typeof catalogMatchKindSchema>;
+export type CatalogMatch = z.infer<typeof catalogMatchSchema>;
 
 export type ItemCreate = z.infer<typeof itemCreateInputSchema>;
 export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;

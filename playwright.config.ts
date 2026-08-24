@@ -17,6 +17,9 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
   retries: 0,
+  // every spec shares one sqlite database (wipe -> setup -> login), so spec
+  // files must run sequentially; parallel workers would race first-time setup
+  workers: 1,
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     locale: "ar-DZ",

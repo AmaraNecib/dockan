@@ -197,3 +197,62 @@ describe("items", () => {
     expect(low.items.some((i) => i.id === created.id)).toBe(false);
   });
 });
+describe("catalog search + barcodes (ticket 28)", () => {
+  it("rejects catalogSearch without a session", async () => {
+    await expect(unauthed.catalogSearch({ query: "بطارية" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("creates items with normalized barcodes and finds them by exact scan", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    const created = await client.itemsCreate({
+      name: "حساس ضغط",
+      categoryId: catId,
+      costPrice: 500,
+      sellingPrice: 800,
+      barcode: " abc-123 ",
+    });
+    // boundary normalization: uppercased, spaces stripped
+    expect(created.barcode).toBe("ABC-123");
+
+    const result = await client.catalogSearch({ query: created.barcode! });
+    expect(result.exact?.item.id).toBe(created.id);
+    expect(result.matches).toHaveLength(0);
+  });
+
+  it("maps a duplicate barcode to CONFLICT BARCODE_EXISTS", async () => {
+    const categories = await client.categoriesList();
+    await expect(
+      client.itemsCreate({
+        name: "مكرر الكود",
+        categoryId: categories.items[0]!.id,
+        costPrice: 10,
+        sellingPrice: 20,
+        barcode: "ABC-123",
+      }),
+    ).rejects.toThrow(/BARCODE_EXISTS/);
+  });
+
+  it("ranks search results through the real store seam", async () => {
+    const found = await client.catalogSearch({ query: "بطارية" });
+    expect(found.exact).toBeNull();
+    for (const match of found.matches) {
+      expect(["BARCODE_PARTIAL", "NAME", "CATEGORY"]).toContain(match.matchedBy);
+    }
+  });
+
+  it("itemsCreateWithStock creates the item with initial stock in one unit", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreateWithStock({
+      name: "فلتر زيت",
+      categoryId: categories.items[0]!.id,
+      costPrice: 400,
+      sellingPrice: 650,
+      barcode: "FLT-001",
+      stockOnHand: 12,
+    });
+    expect(item.stockOnHand).toBe(12);
+    const listed = await client.itemsList();
+    expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
+  });
+});

@@ -36,6 +36,8 @@ export interface StorePort {
   listItems(): Promise<Item[]>;
   listLowStockItems(): Promise<Item[]>;
   getItemsByIds(ids: string[]): Promise<Map<string, Item>>;
+  /** exact normalized-barcode lookup; undefined when no item carries it */
+  getItemByBarcode(barcode: string): Promise<Item | undefined>;
   createItem(input: ItemCreate): Promise<Item>;
   updateItem(id: string, patch: ItemUpdate): Promise<Item | undefined>;
   /** stock + average cost kept atomic; used inside invoice transactions */

@@ -5,6 +5,8 @@ import {
   activityListInputSchema,
   activityListOutputSchema,
   backupManualOutputSchema,
+  catalogSearchInputSchema,
+  catalogSearchOutputSchema,
   categoryCreateInputSchema,
   categorySchema,
   customerSchema,
@@ -16,6 +18,7 @@ import {
   invoiceListOutputSchema,
   invoicePayInputSchema,
   itemCreateInputSchema,
+  itemCreateWithStockInputSchema,
   itemSchema,
   itemUpdateInputSchema,
   logsTailInputSchema,
@@ -46,8 +49,12 @@ export const dokanContract = {
   // --- items ---------------------------------------------------------------
   itemsList: oc.output(z.object({ items: z.array(itemSchema) })),
   itemsCreate: oc.input(itemCreateInputSchema).output(itemSchema),
+  itemsCreateWithStock: oc.input(itemCreateWithStockInputSchema).output(itemSchema),
   itemsUpdate: oc.input(itemUpdateInputSchema).output(itemSchema),
   itemsLowStock: oc.output(lowStockOutputSchema),
+
+  // --- catalog search + scanning (ticket 28) --------------------------------
+  catalogSearch: oc.input(catalogSearchInputSchema).output(catalogSearchOutputSchema),
 
   // --- parties -------------------------------------------------------------
   customersList: oc.output(z.object({ items: z.array(customerSchema) })),

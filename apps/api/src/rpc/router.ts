@@ -2,6 +2,8 @@ import { implement, ORPCError } from "@orpc/server";
 import { dokanContract } from "@dokan/contracts";
 
 import type { AppConfig } from "../config";
+import { normalizeBarcode } from "@dokan/contracts";
+import { rankCatalog } from "../lib/catalog-search";
 import type { DrizzleDb } from "../db/connection";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
@@ -114,35 +116,90 @@ export function createRpcRouter(deps: RpcDeps) {
         if (!categories.some((c) => c.id === input.categoryId)) {
           throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
         }
-        // item + audit entry commit in the same transaction
-        return deps.store.withTransaction(async (tx) => {
-          const item = await tx.createItem(input);
-          await tx.insertActivity({ type: "ITEM_CREATED", summary: `إنشاء منتج ${input.name}`, ref: item.id });
-          return item;
-        });
+        const barcode = requireBarcode(input.barcode);
+        // item + audit entry commit in the same transaction; a barcode race
+        // serializes through the UNIQUE index and maps to the same CONFLICT
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const item = await tx.createItem({ ...input, barcode });
+            await tx.insertActivity({ type: "ITEM_CREATED", summary: `إنشاء منتج ${input.name}`, ref: item.id });
+            return item;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
+          }
+          throw err;
+        }
+      }),
+    ),
+    // unknown-scan "create with stock": item + initial stock in one unit,
+    // through the same setItemStockAndCost seam the invoice flows will use
+    itemsCreateWithStock: os.itemsCreateWithStock.handler(
+      guardedInput(async (input) => {
+        const categories = await deps.store.listCategories();
+        if (!categories.some((c) => c.id === input.categoryId)) {
+          throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+        }
+        const barcode = requireBarcode(input.barcode);
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const item = await tx.createItem({ ...input, barcode });
+            await tx.setItemStockAndCost(item.id, input.stockOnHand, input.costPrice);
+            await tx.insertActivity({
+              type: "ITEM_CREATED",
+              summary: `إنشاء منتج ${input.name} بمخزون أولي ${input.stockOnHand}`,
+              ref: item.id,
+            });
+            return { ...item, stockOnHand: input.stockOnHand };
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
+          }
+          throw err;
+        }
       }),
     ),
     itemsUpdate: os.itemsUpdate.handler(
       guardedInput(async (input) => {
         // item + audit entry commit in the same transaction; a moved item must
         // point at a real category, like create does (FK errors are not 500s)
-        return deps.store.withTransaction(async (tx) => {
-          if (input.categoryId !== undefined) {
-            const categories = await tx.listCategories();
-            if (!categories.some((category) => category.id === input.categoryId)) {
-              throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            if (input.categoryId !== undefined) {
+              const categories = await tx.listCategories();
+              if (!categories.some((category) => category.id === input.categoryId)) {
+                throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+              }
             }
+            const item = await tx.updateItem(input.id, {
+              ...input,
+              barcode: input.barcode === null ? null : requireBarcode(input.barcode),
+            });
+            if (item === undefined) {
+              throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            }
+            await tx.insertActivity({ type: "ITEM_UPDATED", summary: `تعديل منتج ${item.name}`, ref: item.id });
+            return item;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
           }
-          const item = await tx.updateItem(input.id, input);
-          if (item === undefined) {
-            throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-          }
-          await tx.insertActivity({ type: "ITEM_UPDATED", summary: `تعديل منتج ${item.name}`, ref: item.id });
-          return item;
-        });
+          throw err;
+        }
       }),
     ),
     itemsLowStock: os.itemsLowStock.handler(guarded(async () => ({ items: await deps.store.listLowStockItems() }))),
+
+    // --- catalog search + scanning (ticket 28) --------------------------------
+    catalogSearch: os.catalogSearch.handler(
+      guardedInput(async ({ query, limit }) => {
+        const [items, categories] = await Promise.all([deps.store.listItems(), deps.store.listCategories()]);
+        return rankCatalog(items, categories, query, limit);
+      }),
+    ),
 
     // --- remaining procedures: guarded seams for later tickets ---------------
     customersList: os.customersList.handler(guarded(notImplemented("customersList"))),
@@ -168,4 +225,16 @@ export type RpcRouter = ReturnType<typeof createRpcRouter>;
 /** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
 function isUniqueViolation(err: Error): boolean {
   return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");
+}
+
+/**
+ * Normalize an optional client-supplied barcode at the boundary. The zod
+ * schema keeps invalid shapes out earlier; this catches case/space
+ * normalization and any junk that slipped past validation defensively.
+ */
+function requireBarcode(raw: string | undefined): string | undefined {
+  if (raw === undefined) return raw;
+  const normalized = normalizeBarcode(raw);
+  if (normalized === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_BARCODE" });
+  return normalized;
 }

@@ -496,3 +496,65 @@ describe("barcode update collisions (test audit)", () => {
     expect(moved?.barcode).toBe("UPD-A");
   });
 });
+
+// --- ticket 29 — purchase linkage -----------------------------------------
+describe("stock links + invoice line lookup (ticket 29)", () => {
+  it("round-trips attribution records and filters them per item", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    const a = await store.createItem({ name: "ربط-أ", categoryId, costPrice: 100, sellingPrice: 150 });
+    const b = await store.createItem({ name: "ربط-ب", categoryId, costPrice: 200, sellingPrice: 300 });
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9001",
+      kind: "PURCHASE",
+      counterpartyId: null,
+      counterpartyName: "مورد المخزن",
+      invoiceDate: localDate(),
+      totalAmount: 800,
+      paidAmount: 0,
+      remainingAmount: 800,
+      notes: null,
+    });
+    const movementA = await store.insertStockMovement({ itemId: a.id, kind: "PURCHASE", delta: 4, unitCost: 100, reason: null, ref: null, occurredAt: stamp() });
+    // an uninvoiced movement on ANOTHER item must never leak into A's links
+    await store.insertStockMovement({ itemId: b.id, kind: "PURCHASE", delta: 2, unitCost: 200, reason: null, ref: null, occurredAt: stamp() });
+
+    const link = await store.insertStockLink({ invoiceId: invoice.id, movementId: movementA.id, quantity: 4 });
+    expect(link.id).toBeTruthy();
+    expect(link).toMatchObject({ invoiceId: invoice.id, movementId: movementA.id, quantity: 4 });
+
+    const linksA = await store.listStockLinksByItem(a.id);
+    expect(linksA).toHaveLength(1);
+    expect(linksA[0]).toMatchObject({ movementId: movementA.id, quantity: 4 });
+    expect(await store.listStockLinksByItem(b.id)).toEqual([]);
+  });
+
+  it("getInvoiceLine returns a single line or undefined", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    const item = await store.createItem({ name: "سطر-بحث", categoryId, costPrice: 50, sellingPrice: 90 });
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9002",
+      kind: "PURCHASE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      totalAmount: 500,
+      paidAmount: 0,
+      remainingAmount: 500,
+      notes: null,
+    });
+    const line = await store.insertInvoiceLine({
+      invoiceId: invoice.id,
+      itemId: item.id,
+      description: item.name,
+      quantity: 10,
+      unitPrice: 50,
+      costAtSale: 50,
+      total: 500,
+    });
+    const found = await store.getInvoiceLine(line.id);
+    expect(found).toMatchObject({ id: line.id, itemId: item.id, quantity: 10, costAtSale: 50 });
+    expect(await store.getInvoiceLine("00000000-0000-4000-8000-000000000009")).toBeUndefined();
+  });
+});

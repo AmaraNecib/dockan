@@ -26,6 +26,10 @@ import {
   logsTailOutputSchema,
   lowStockOutputSchema,
   partyCreateInputSchema,
+  purchasesCorrectLineInputSchema,
+  purchasesLinkStockInputSchema,
+  purchasesLinkStockOutputSchema,
+  purchasesProposalOutputSchema,
   resetPasswordInputSchema,
   resetPasswordOutputSchema,
   settingsSchema,
@@ -73,6 +77,12 @@ export const dokanContract = {
   invoicesGet: oc.input(z.object({ id: z.string().uuid() })).output(invoiceDetailSchema),
   invoicesList: oc.input(invoiceListInputSchema).output(invoiceListOutputSchema),
   invoicesPay: oc.input(invoicePayInputSchema).output(invoiceDetailSchema),
+
+  // --- purchase intake (ticket 29) ------------------------------------------
+  /** per-line preview: how much of this purchase can link to earlier uninvoiced stock */
+  purchasesProposal: oc.input(z.object({ invoiceId: z.string().uuid() })).output(purchasesProposalOutputSchema),
+  purchasesLinkStock: oc.input(purchasesLinkStockInputSchema).output(purchasesLinkStockOutputSchema),
+  purchasesCorrectLine: oc.input(purchasesCorrectLineInputSchema).output(invoiceDetailSchema),
 
   // --- reports -------------------------------------------------------------
   reportsDebts: oc.output(debtsOutputSchema),

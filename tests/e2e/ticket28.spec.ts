@@ -52,6 +52,22 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await search.fill("كلمة-غير-موجودة");
   await expect(page.getByTestId("search-results")).toContainText("لا توجد نتائج مطابقة");
   await search.fill("");
+
+  // 2b. the manual picker keeps the active row on the combobox and selects it
+  // through Enter, exercising the user-facing keyboard seam in a real browser.
+  await page.getByTestId("open-picker").click();
+  const picker = page.getByTestId("picker-dialog");
+  await expect(picker).toBeVisible();
+  const pickerInput = picker.getByRole("combobox", { name: "ابحث بالاسم أو الباركود…" });
+  await pickerInput.fill("زيت");
+  const pickerOptions = picker.getByRole("option");
+  await expect(pickerOptions).toHaveCount(1);
+  await pickerInput.press("ArrowDown");
+  await expect(pickerInput).toHaveAttribute("aria-activedescendant", /picker-option-/);
+  await expect(pickerOptions.first()).toHaveAttribute("aria-selected", "true");
+  await pickerInput.press("Enter");
+  await expect(picker).toBeHidden();
+
   // scans below happen with no field focused — the deterministic wedge path
   await page.getByTestId("catalog-search").blur();
 

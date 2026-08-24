@@ -26,7 +26,7 @@ const PASSWORD = "dokan-1234";
 // the tests honest without dragging client type machinery in
 type RpcApi = {
   authResetPassword(input: { secret: string; newPassword: string; phoneNumber: string }): Promise<{ ok: boolean }>;
-  categoriesList(): Promise<never>; // the session-guard tests expect rejection
+  categoriesList(): Promise<{ items: Array<{ id: string; name: string }> }>; // ticket 03 owns this guarded procedure
 };
 
 let dir: string;
@@ -215,8 +215,9 @@ describe("rpc session guard", () => {
       if (cookie !== "") headers.set("cookie", cookie);
       return await app.fetch(new Request(request, { headers }));
     });
-    // SAFETY: reaching NOT_IMPLEMENTED proves the guard accepted the session
-    await expect(client.categoriesList()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+    // SAFETY: a resolved list proves the guard accepted the session
+    const result = await client.categoriesList();
+    expect(result.items.length).toBeGreaterThan(0);
   });
 
   it("resets the password through the rpc procedure", async () => {

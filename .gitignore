@@ -4,6 +4,8 @@ dist/
 *.tsbuildinfo
 
 # local runtime data (created by the app)
+.dokan-port*
+.dokan-port.registry/
 data/
 logs/
 backups/

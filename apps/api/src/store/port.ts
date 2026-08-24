@@ -21,6 +21,14 @@ import type {
 
 export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings };
 
+/** Additive invoice fields are optional at the write seam so older adapters and
+ * migration tests can keep inserting the pre-discount shape. The adapter
+ * returns the complete historical response shape with safe zero defaults. */
+export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "subtotalAmount" | "discountType" | "discountValue" | "discountAmount"> &
+  Partial<Pick<Invoice, "subtotalAmount" | "discountType" | "discountValue" | "discountAmount">>;
+export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal"> &
+  Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal">>;
+
 /** Attribution record between a purchase invoice and earlier uninvoiced stock. */
 export interface StockLink {
   id: string;
@@ -80,8 +88,8 @@ export interface StorePort {
   allocateInvoiceNumber(): Promise<string>;
   /** Legacy read seam retained for diagnostics and existing callers. */
   lastInvoiceNumber(): Promise<string | undefined>;
-  insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">): Promise<Invoice>;
-  insertInvoiceLine(line: Omit<InvoiceLine, "id">): Promise<InvoiceLine>;
+  insertInvoice(inv: InvoiceInsert): Promise<Invoice>;
+  insertInvoiceLine(line: InvoiceLineInsert): Promise<InvoiceLine>;
   insertPayment(p: Omit<Payment, "id" | "createdAt">): Promise<Payment>;
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
   /** single line lookup; entry point for purchase corrections */

@@ -167,6 +167,39 @@ describe("barcodes (ticket 28)", () => {
       }
     }
   });
+
+  it("backfills sale fields when an existing invoice schema predates discounts", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      legacy.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL)");
+      legacy.raw.exec("INSERT INTO categories VALUES ('legacy-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO items VALUES ('legacy-item', 'منتج قديم', 'legacy-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoices VALUES ('legacy-invoice', 'INV-LEGACY', 'SALE', NULL, NULL, '2026-01-01', 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 100, 200)");
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+      const detail = await legacyStore.getInvoiceDetail("legacy-invoice");
+      expect(detail).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
+      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+    } finally {
+      legacy.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
 });
 
 describe("parties", () => {
@@ -188,6 +221,10 @@ describe("invoices core", () => {
       counterpartyId: null,
       counterpartyName: "مخزن الحاج",
       invoiceDate: localDate(),
+      subtotalAmount: 30_000,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
       totalAmount: 30_000,
       paidAmount: 5_000,
       remainingAmount: 25_000,
@@ -198,9 +235,12 @@ describe("invoices core", () => {
       itemId: null,
       description: "زيوت 100 قطعة",
       quantity: 100,
+      defaultUnitPrice: 300,
       unitPrice: 300,
       costAtSale: 300,
       total: 30_000,
+      discountAllocated: 0,
+      netTotal: 30_000,
     });
     await store.insertPayment({
       invoiceId: invoice.id,
@@ -213,6 +253,10 @@ describe("invoices core", () => {
     const detail = await store.getInvoiceDetail(invoice.id);
     expect(detail?.lines).toHaveLength(1);
     expect(detail?.lines[0]?.total).toBe(30_000);
+    expect(detail?.lines[0]?.defaultUnitPrice).toBe(300);
+    expect(detail?.lines[0]?.netTotal).toBe(30_000);
+    expect(detail?.subtotalAmount).toBe(30_000);
+    expect(detail?.discountAmount).toBe(0);
     expect(detail?.payments).toHaveLength(1);
     expect(detail?.payments[0]?.amount).toBe(5_000);
 

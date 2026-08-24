@@ -26,7 +26,7 @@ import type {
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { localDateTime } from "../lib/logger";
-import type { StockLink, StorePort } from "./port";
+import type { InvoiceInsert, InvoiceLineInsert, StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -59,6 +59,10 @@ const invoiceCols = {
   counterpartyId: invoices.counterpartyId,
   counterpartyName: invoices.counterpartyName,
   invoiceDate: invoices.invoiceDate,
+  subtotalAmount: invoices.subtotalAmount,
+  discountType: invoices.discountType,
+  discountValue: invoices.discountValue,
+  discountAmount: invoices.discountAmount,
   totalAmount: invoices.totalAmount,
   paidAmount: invoices.paidAmount,
   remainingAmount: invoices.remainingAmount,
@@ -74,9 +78,12 @@ const lineCols = {
   itemId: invoiceLines.itemId,
   description: invoiceLines.description,
   quantity: invoiceLines.quantity,
+  defaultUnitPrice: invoiceLines.defaultUnitPrice,
   unitPrice: invoiceLines.unitPrice,
   costAtSale: invoiceLines.costAtSale,
   total: invoiceLines.total,
+  discountAllocated: invoiceLines.discountAllocated,
+  netTotal: invoiceLines.netTotal,
 };
 const paymentCols = {
   id: payments.id,
@@ -111,9 +118,38 @@ const toCustomer = (r: typeof customers.$inferSelect): Customer =>
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Supplier;
 const toInvoice = (r: typeof invoices.$inferSelect): Invoice =>
-  ({ id: r.id, invoiceNumber: r.invoiceNumber, kind: r.kind, counterpartyId: r.counterpartyId, counterpartyName: r.counterpartyName, invoiceDate: r.invoiceDate, totalAmount: r.totalAmount, paidAmount: r.paidAmount, remainingAmount: r.remainingAmount, notes: r.notes, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Invoice;
+  ({
+    id: r.id,
+    invoiceNumber: r.invoiceNumber,
+    kind: r.kind,
+    counterpartyId: r.counterpartyId,
+    counterpartyName: r.counterpartyName,
+    invoiceDate: r.invoiceDate,
+    subtotalAmount: r.subtotalAmount === 0 && r.totalAmount > 0 && r.discountType === null && (r.discountAmount ?? 0) === 0 ? r.totalAmount : r.subtotalAmount,
+    discountType: r.discountType ?? null,
+    discountValue: r.discountValue ?? null,
+    discountAmount: r.discountAmount ?? 0,
+    totalAmount: r.totalAmount,
+    paidAmount: r.paidAmount,
+    remainingAmount: r.remainingAmount,
+    notes: r.notes,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  }) satisfies Invoice;
 const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
-  ({ id: r.id, invoiceId: r.invoiceId, itemId: r.itemId, description: r.description, quantity: r.quantity, unitPrice: r.unitPrice, costAtSale: r.costAtSale, total: r.total }) satisfies InvoiceLine;
+  ({
+    id: r.id,
+    invoiceId: r.invoiceId,
+    itemId: r.itemId,
+    description: r.description,
+    quantity: r.quantity,
+    defaultUnitPrice: r.defaultUnitPrice ?? r.unitPrice,
+    unitPrice: r.unitPrice,
+    costAtSale: r.costAtSale,
+    total: r.total,
+    discountAllocated: r.discountAllocated ?? 0,
+    netTotal: r.netTotal ?? r.total,
+  }) satisfies InvoiceLine;
 const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
@@ -227,10 +263,49 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
+  /** Additive ticket #30 columns for databases created before discounts. */
+  const ensureSaleColumns = (): void => {
+    // SAFETY: only fixed SQL identifiers are interpolated; each ALTER is
+    // guarded by PRAGMA so repeated setup calls are idempotent.
+    // SAFETY: PRAGMA table_info returns one object with a string name per column.
+    const invoiceRows = conn.raw.query("PRAGMA table_info(invoices)").all() as Array<{ name: string }>;
+    const invoiceNames = new Set(invoiceRows.map((row) => row.name));
+    const hadSubtotal = invoiceNames.has("subtotal_amount");
+    const invoiceColumns: Array<[string, string]> = [
+      ["subtotal_amount", "INTEGER NOT NULL DEFAULT 0"],
+      ["discount_type", "TEXT"],
+      ["discount_value", "INTEGER"],
+      ["discount_amount", "INTEGER NOT NULL DEFAULT 0"],
+    ];
+    for (const [name, definition] of invoiceColumns) {
+      if (invoiceRows.length > 0 && !invoiceNames.has(name)) conn.raw.exec(`ALTER TABLE invoices ADD COLUMN ${name} ${definition}`);
+    }
+
+    // SAFETY: PRAGMA table_info returns one object with a string name per column.
+    const lineRows = conn.raw.query("PRAGMA table_info(invoice_lines)").all() as Array<{ name: string }>;
+    const lineNames = new Set(lineRows.map((row) => row.name));
+    const hadDefaultUnitPrice = lineNames.has("default_unit_price");
+    const hadNetTotal = lineNames.has("net_total");
+    const lineColumns: Array<[string, string]> = [
+      ["default_unit_price", "INTEGER NOT NULL DEFAULT 0"],
+      ["discount_allocated", "INTEGER NOT NULL DEFAULT 0"],
+      ["net_total", "INTEGER NOT NULL DEFAULT 0"],
+    ];
+    for (const [name, definition] of lineColumns) {
+      if (lineRows.length > 0 && !lineNames.has(name)) conn.raw.exec(`ALTER TABLE invoice_lines ADD COLUMN ${name} ${definition}`);
+    }
+    // Legacy rows predate these values. The UPDATEs run only on the first
+    // migration, so a legitimate zero net total from a later sale is kept.
+    if (invoiceRows.length > 0 && !hadSubtotal) conn.raw.exec("UPDATE invoices SET subtotal_amount = total_amount WHERE subtotal_amount = 0");
+    if (lineRows.length > 0 && !hadDefaultUnitPrice) conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price");
+    if (lineRows.length > 0 && !hadNetTotal) conn.raw.exec("UPDATE invoice_lines SET net_total = total");
+  };
+
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+    ensureSaleColumns();
 
     // The singleton seed is one conditional INSERT, so two processes opening
     // an existing database cannot both initialize a competing counter. The
@@ -474,12 +549,37 @@ export function createDrizzleStore(conn: Connection): StorePort {
       }
       return best;
     },
-    async insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">) {
-      const row = firstRowOf(await db.insert(invoices).values({ id: id(), ...inv, createdAt: now(), updatedAt: now() }).returning());
+    async insertInvoice(inv: InvoiceInsert) {
+      const row = firstRowOf(
+        await db
+          .insert(invoices)
+          .values({
+            id: id(),
+            ...inv,
+            subtotalAmount: inv.subtotalAmount ?? inv.totalAmount,
+            discountType: inv.discountType ?? null,
+            discountValue: inv.discountValue ?? null,
+            discountAmount: inv.discountAmount ?? 0,
+            createdAt: now(),
+            updatedAt: now(),
+          })
+          .returning(),
+      );
       return toInvoice(row);
     },
-    async insertInvoiceLine(line: Omit<InvoiceLine, "id">) {
-      const row = firstRowOf(await db.insert(invoiceLines).values({ id: id(), ...line }).returning());
+    async insertInvoiceLine(line: InvoiceLineInsert) {
+      const row = firstRowOf(
+        await db
+          .insert(invoiceLines)
+          .values({
+            id: id(),
+            ...line,
+            defaultUnitPrice: line.defaultUnitPrice ?? line.unitPrice,
+            discountAllocated: line.discountAllocated ?? 0,
+            netTotal: line.netTotal ?? line.total,
+          })
+          .returning(),
+      );
       return toInvoiceLine(row);
     },
     async insertPayment(p: Omit<Payment, "id" | "createdAt">) {
@@ -494,7 +594,24 @@ export function createDrizzleStore(conn: Connection): StorePort {
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
-      return { ...header, lines, payments: paymentsRows } satisfies InvoiceDetail;
+      const subtotalAmount = header.subtotalAmount === 0 && header.totalAmount > 0 && header.discountType === null && (header.discountAmount ?? 0) === 0
+        ? header.totalAmount
+        : header.subtotalAmount;
+      const normalizedLines = lines.map((line) => ({
+        ...line,
+        defaultUnitPrice: line.defaultUnitPrice ?? line.unitPrice,
+        discountAllocated: line.discountAllocated ?? 0,
+        netTotal: line.netTotal ?? line.total,
+      }));
+      return {
+        ...header,
+        subtotalAmount,
+        discountType: header.discountType ?? null,
+        discountValue: header.discountValue ?? null,
+        discountAmount: header.discountAmount ?? 0,
+        lines: normalizedLines,
+        payments: paymentsRows,
+      } satisfies InvoiceDetail;
     },
     async getInvoiceLine(lineId: string) {
       const rows = await db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.id, lineId)).limit(1);
@@ -514,7 +631,16 @@ export function createDrizzleStore(conn: Connection): StorePort {
         db.$count(invoices, where),
         db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(200),
       ]);
-      return { items: itemsRows, totalCount };
+      return {
+        items: itemsRows.map((row) => ({
+          ...row,
+          subtotalAmount: row.subtotalAmount === 0 && row.totalAmount > 0 && row.discountType === null && (row.discountAmount ?? 0) === 0 ? row.totalAmount : row.subtotalAmount,
+          discountType: row.discountType ?? null,
+          discountValue: row.discountValue ?? null,
+          discountAmount: row.discountAmount ?? 0,
+        })),
+        totalCount,
+      };
     },
     async setInvoicePaidAmounts(invoiceId: string, paidAmount: number, remainingAmount: number) {
       await db.update(invoices).set({ paidAmount, remainingAmount, updatedAt: now() }).where(eq(invoices.id, invoiceId)).run();

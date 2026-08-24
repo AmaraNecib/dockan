@@ -1,0 +1,112 @@
+import { expect, test } from "@playwright/test";
+
+/**
+ * Ticket 30: sale checkout through the existing catalog seams. The flow uses
+ * an unknown scan's explicit create-with-stock choice, the picker, an exact
+ * scan, both negotiated-price modes, both invoice discount modes, and an
+ * oversell rejection that leaves the cart available.
+ */
+test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", async ({ page }) => {
+  await page.goto("/");
+  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
+  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
+  await page.getByTestId("setup-phone").fill("0550123123");
+  await page.getByTestId("setup-password").fill("pass-1234");
+  await page.getByTestId("setup-submit").click();
+  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
+  await page.getByTestId("login-submit").click();
+  await expect(page.getByText("الرئيسية")).toBeVisible();
+
+  const stamp = Date.now().toString();
+  const categoryName = `بيع-تصنيف-${stamp}`;
+  const itemName = `بيع-ممسوح-${stamp}`;
+  const secondName = `بيع-نسبة-${stamp}`;
+  const barcode = `SALE-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+
+  // Unknown scan must open an explicit choice dialog; create-with-stock then
+  // returns the new known item to the sale cart without an invoice.
+  await page.keyboard.type(barcode, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+  await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(barcode);
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("sale-quick-stock").fill("5");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+
+  // A known exact scan adds immediately (rather than merely showing a toast).
+  // The scanner intentionally suppresses an identical commit briefly; wait
+  // beyond that window because the unknown scan used the same code.
+  await page.waitForTimeout(1_300);
+  await page.getByTestId("sale-save").blur();
+  await page.keyboard.type(barcode, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("2");
+
+  // Manual picker search is the same catalog seam and adds another unit.
+  await page.getByTestId("sale-open-picker").click();
+  const picker = page.getByTestId("picker-dialog");
+  await picker.getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
+  await picker.getByRole("button", { name: new RegExp(itemName) }).first().click();
+  await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("3");
+
+  // Amount negotiated price + amount invoice discount: 3 × 900 − 100.
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`).selectOption("AMOUNT");
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
+  await page.getByTestId("sale-discount-type").selectOption("AMOUNT");
+  await page.getByTestId("sale-discount-value").fill("100");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("2700");
+  await expect(page.getByTestId("sale-total")).toContainText("2600");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+
+  // Start a second sale to exercise percentage line and invoice discounts.
+  await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
+  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-name").fill(secondName);
+  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await page.getByLabel("سعر الشراء (دج)").fill("300");
+  await page.getByLabel("سعر البيع (دج)").fill("500");
+  await page.getByTestId("sale-quick-barcode").fill(`SALE2-${stamp}`);
+  await page.getByTestId("sale-quick-stock").fill("2");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-lines")).toContainText(secondName);
+  await page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`).selectOption("PERCENTAGE");
+  await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
+  await page.getByTestId("sale-discount-type").selectOption("PERCENTAGE");
+  await page.getByTestId("sale-discount-value").fill("10");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("400");
+  await expect(page.getByTestId("sale-total")).toContainText("360");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+
+  // Add only one unit of a fresh item, request two, and verify oversell is
+  // rejected while the cart remains rendered for correction.
+  await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
+  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-name").fill(`بيع-تجاوز-${stamp}`);
+  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await page.getByLabel("سعر الشراء (دج)").fill("100");
+  await page.getByLabel("سعر البيع (دج)").fill("200");
+  await page.getByTestId("sale-quick-stock").fill("1");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  const oversellName = `بيع-تجاوز-${stamp}`;
+  const oversellQty = page.getByTestId("sale-lines").getByLabel(`${oversellName}: الكمية`);
+  await oversellQty.fill("2");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-error")).toContainText("الكمية غير متوفرة");
+  await expect(oversellQty).toHaveValue("2");
+});

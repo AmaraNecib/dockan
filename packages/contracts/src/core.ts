@@ -124,6 +124,43 @@ export const supplierSchema = z.object({
 /** SALE = the customer owes the shop; PURCHASE = the shop owes the supplier. */
 export const invoiceKindSchema = z.enum(invoiceKinds);
 
+/** A negotiated line price can be entered as a final amount or as a percentage
+ * of the item's price at the time the sale is recorded. */
+export const priceOverrideTypeSchema = z.enum(["AMOUNT", "PERCENTAGE"]);
+export const priceOverrideSchema = z
+  .object({
+    type: priceOverrideTypeSchema,
+    /** all persisted price adjustments are whole DZD / percentage points */
+    value: z.number().int().min(0),
+  })
+  .superRefine((value, ctx) => {
+    if (value.type === "AMOUNT" && !Number.isInteger(value.value)) {
+      ctx.addIssue({ code: "custom", message: "amount override must be an integer DZD value", path: ["value"] });
+    }
+    if (value.type === "PERCENTAGE" && value.value > 100) {
+      ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["value"] });
+    }
+  });
+
+/** Invoice-level discount input and its persisted type. */
+export const discountTypeSchema = z.enum(["AMOUNT", "PERCENTAGE"]);
+/** Persisted value is an integer for amount discounts and may be fractional for percentages. */
+export const discountValueSchema = z.number().int().min(0);
+export const invoiceDiscountSchema = z
+  .object({
+    type: discountTypeSchema,
+    /** all persisted discount values are whole DZD / percentage points */
+    value: z.number().int().min(0),
+  })
+  .superRefine((value, ctx) => {
+    if (value.type === "AMOUNT" && !Number.isInteger(value.value)) {
+      ctx.addIssue({ code: "custom", message: "amount discount must be an integer DZD value", path: ["value"] });
+    }
+    if (value.type === "PERCENTAGE" && value.value > 100) {
+      ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["value"] });
+    }
+  });
+
 export const invoiceLineSchema = z.object({
   id: idSchema,
   invoiceId: idSchema,
@@ -131,10 +168,18 @@ export const invoiceLineSchema = z.object({
   /** snapshot of the item name at sale time */
   description: z.string(),
   quantity: z.number().int().positive(),
+  /** item's default price at checkout time (historical, never recomputed) */
+  defaultUnitPrice: dinarsSchema,
+  /** actual negotiated price used on this invoice (historical) */
   unitPrice: dinarsSchema,
-  /** snapshot of the item's average cost at line creation — profit = unitPrice − costAtSale */
+  /** snapshot of the FIFO cost consumed by this line */
   costAtSale: dinarsSchema,
+  /** gross line total before the invoice-level discount */
   total: dinarsSchema,
+  /** proportional share of the invoice discount for item reporting */
+  discountAllocated: dinarsSchema,
+  /** gross line total less its internally allocated invoice discount */
+  netTotal: dinarsSchema,
 });
 
 export const invoiceSchema = z.object({
@@ -147,6 +192,14 @@ export const invoiceSchema = z.object({
   /** typed-in name when the owner does not want to create/choose a party ("give him a name or not") */
   counterpartyName: z.string().trim().min(1).nullable(),
   invoiceDate: localDateSchema,
+  /** subtotal after line prices and before invoice discount */
+  subtotalAmount: dinarsSchema,
+  /** requested discount type/value, null when no discount was entered */
+  discountType: discountTypeSchema.nullable(),
+  discountValue: discountValueSchema.nullable(),
+  /** applied discount, capped at subtotal and rounded to whole DZD */
+  discountAmount: dinarsSchema,
+  /** final amount after invoice discount */
   totalAmount: dinarsSchema,
   paidAmount: dinarsSchema,
   remainingAmount: dinarsSchema,
@@ -290,22 +343,65 @@ export const partyCreateInputSchema = z.object({
 export const invoiceLineInputSchema = z.object({
   itemId: idSchema,
   quantity: z.number().int().positive(),
-  /** defaults to the item's current selling price when omitted */
+  /** explicit final price; omitted lines use the item's current kind-specific default */
   unitPrice: dinarsSchema.optional(),
+  /** optional negotiated price entry; ignored when unitPrice is supplied */
+  priceOverride: priceOverrideSchema.optional(),
+  /** flat aliases keep form integrations simple while the object is canonical */
+  priceOverrideType: priceOverrideTypeSchema.optional(),
+  priceOverrideValue: z.number().int().min(0).optional(),
 });
 
-export const invoiceCreateInputSchema = z.object({
-  kind: invoiceKindSchema,
-  counterpartyId: idSchema.nullable().optional(),
-  /** typed-in name, mutually optional with counterpartyId */
-  counterpartyName: z.string().trim().min(1).nullable().optional(),
-  invoiceDate: localDateSchema.optional(),
-  notes: z.string().nullable().optional(),
-  lines: z.array(invoiceLineInputSchema).min(1),
-  /** cash paid at invoice time; the rest becomes the debt (remainingAmount) */
-  initialPaid: dinarsSchema.refine((v) => v > 0, "must be a positive amount").optional(),
-  paymentMethod: paymentMethodSchema.optional(),
-});
+export const invoiceCreateInputSchema = z
+  .object({
+    kind: invoiceKindSchema,
+    counterpartyId: idSchema.nullable().optional(),
+    /** typed-in name, mutually optional with counterpartyId */
+    counterpartyName: z.string().trim().min(1).nullable().optional(),
+    invoiceDate: localDateSchema.optional(),
+    notes: z.string().nullable().optional(),
+    lines: z.array(invoiceLineInputSchema).min(1),
+    /** optional invoice-level amount or percentage discount */
+    discount: invoiceDiscountSchema.optional(),
+    /** flat aliases for clients that keep separate form fields */
+    discountType: discountTypeSchema.optional(),
+    discountValue: z.number().int().min(0).optional(),
+    /** cash paid at invoice time; the rest becomes the debt (remainingAmount) */
+    initialPaid: dinarsSchema.refine((v) => v > 0, "must be a positive amount").optional(),
+    paymentMethod: paymentMethodSchema.optional(),
+  })
+  .superRefine((input, ctx) => {
+    const hasType = input.discountType !== undefined;
+    const hasValue = input.discountValue !== undefined;
+    if (hasType !== hasValue) {
+      ctx.addIssue({ code: "custom", message: "discountType and discountValue must be supplied together", path: [hasType ? "discountValue" : "discountType"] });
+    }
+    if (input.discountType === "AMOUNT" && input.discountValue !== undefined && !Number.isInteger(input.discountValue)) {
+      ctx.addIssue({ code: "custom", message: "amount discount must be an integer DZD value", path: ["discountValue"] });
+    }
+    if (input.discountType === "PERCENTAGE" && (input.discountValue ?? 0) > 100) {
+      ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["discountValue"] });
+    }
+    if (input.discount !== undefined && hasType && hasValue && (input.discount.type !== input.discountType || input.discount.value !== input.discountValue)) {
+      ctx.addIssue({ code: "custom", message: "conflicting discount inputs", path: ["discount"] });
+    }
+    for (const [index, line] of input.lines.entries()) {
+      const hasOverrideType = line.priceOverrideType !== undefined;
+      const hasOverrideValue = line.priceOverrideValue !== undefined;
+      if (hasOverrideType !== hasOverrideValue) {
+        ctx.addIssue({ code: "custom", message: "priceOverrideType and priceOverrideValue must be supplied together", path: ["lines", index, hasOverrideType ? "priceOverrideValue" : "priceOverrideType"] });
+      }
+      if (line.priceOverrideType === "AMOUNT" && line.priceOverrideValue !== undefined && !Number.isInteger(line.priceOverrideValue)) {
+        ctx.addIssue({ code: "custom", message: "amount override must be an integer DZD value", path: ["lines", index, "priceOverrideValue"] });
+      }
+      if (line.priceOverrideType === "PERCENTAGE" && (line.priceOverrideValue ?? 0) > 100) {
+        ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["lines", index, "priceOverrideValue"] });
+      }
+      if (line.priceOverride !== undefined && hasOverrideType && hasOverrideValue && (line.priceOverride.type !== line.priceOverrideType || line.priceOverride.value !== line.priceOverrideValue)) {
+        ctx.addIssue({ code: "custom", message: "conflicting price override inputs", path: ["lines", index, "priceOverride"] });
+      }
+    }
+  });
 
 export const invoicePayInputSchema = z.object({
   invoiceId: idSchema,
@@ -448,6 +544,10 @@ export type Item = z.infer<typeof itemSchema>;
 export type Customer = z.infer<typeof customerSchema>;
 export type Supplier = z.infer<typeof supplierSchema>;
 export type InvoiceKind = z.infer<typeof invoiceKindSchema>;
+export type PriceOverride = z.infer<typeof priceOverrideSchema>;
+export type DiscountType = z.infer<typeof discountTypeSchema>;
+export type DiscountValue = z.infer<typeof discountValueSchema>;
+export type InvoiceDiscount = z.infer<typeof invoiceDiscountSchema>;
 export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
 export type Invoice = z.infer<typeof invoiceSchema>;
 export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;

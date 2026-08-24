@@ -270,6 +270,9 @@ describe("catalog search + barcodes (ticket 28)", () => {
     expect(item.stockOnHand).toBe(12);
     const listed = await client.itemsList();
     expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.movements[0]).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, unitCost: 400 });
   });
 });
 
@@ -492,11 +495,13 @@ describe("purchase intake (ticket 29)", () => {
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
-  it("keeps SALE a stable stub owned by ticket #30", async () => {
-    const item = await makeItem("بيع-غير-منفذ", 100);
-    await expect(client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] })).rejects.toThrow(/SALE_NOT_IMPLEMENTED/);
-    // the rejection must not have written anything
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], stockOnHand: 0 });
+  it("creates a SALE invoice once stock is available", async () => {
+    const item = await makeItem("بيع-منفذ", 100);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(invoice.kind).toBe("SALE");
+    expect(invoice.totalAmount).toBe(item.sellingPrice);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
   });
 
   it("rejects an unknown line item before any write (ITEM_NOT_FOUND)", async () => {
@@ -814,5 +819,154 @@ describe("purchase intake (ticket 29)", () => {
     await expect(
       client.purchasesCorrectLine({ lineId: "00000000-0000-4000-8000-000000000002", quantity: 1, unitCost: 50 }),
     ).rejects.toThrow(/LINE_NOT_FOUND/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ticket 30 — sale checkout, FIFO cost, negotiated prices, discounts
+// ---------------------------------------------------------------------------
+describe("sale checkout (ticket 30)", () => {
+  async function makeSaleItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice,
+      lowStockThreshold: 0,
+    });
+  }
+
+  it("sells exact stock, defaults to the historical selling price, and records a payment", async () => {
+    const item = await makeSaleItem("بيع-سعر-افتراضي", 400, 700);
+    const stocked = await client.itemsCreateWithStock({
+      name: "بيع-مخزون-أولي",
+      categoryId: item.categoryId,
+      costPrice: 400,
+      sellingPrice: 700,
+      stockOnHand: 3,
+    });
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyName: "زبون البيع",
+      initialPaid: 700,
+      lines: [{ itemId: stocked.id, quantity: 1 }],
+    });
+    expect(invoice.totalAmount).toBe(700);
+    expect(invoice.paidAmount).toBe(700);
+    expect(invoice.remainingAmount).toBe(0);
+    expect(invoice.lines[0]).toMatchObject({
+      defaultUnitPrice: 700,
+      unitPrice: 700,
+      costAtSale: 400,
+      total: 700,
+      netTotal: 700,
+    });
+    expect(invoice.payments).toHaveLength(1);
+    expect((await client.itemsList()).items.find((row) => row.id === stocked.id)?.stockOnHand).toBe(2);
+    expect((await client.itemsHistory({ itemId: stocked.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
+  });
+
+  it("persists amount and percentage negotiated prices separately from their defaults", async () => {
+    const amountItem = await makeSaleItem("بيع-تفاوض-مبلغ", 100, 1_000);
+    const percentItem = await makeSaleItem("بيع-تفاوض-نسبة", 100, 1_000);
+    await client.stockAddManual({ itemId: amountItem.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: percentItem.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [
+        { itemId: amountItem.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 850 } },
+        { itemId: percentItem.id, quantity: 1, priceOverride: { type: "PERCENTAGE", value: 80 } },
+      ],
+    });
+    expect(invoice.lines.map((line) => ({ default: line.defaultUnitPrice, actual: line.unitPrice }))).toEqual([
+      { default: 1_000, actual: 850 },
+      { default: 1_000, actual: 800 },
+    ]);
+  });
+
+  it("applies amount and percentage invoice discounts after line overrides", async () => {
+    const a = await makeSaleItem("بيع-خصم-مبلغ", 100, 1_000);
+    const b = await makeSaleItem("بيع-خصم-نسبة", 100, 500);
+    await client.stockAddManual({ itemId: a.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: b.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+
+    const amount = await client.invoicesCreate({
+      kind: "SALE",
+      discount: { type: "AMOUNT", value: 250 },
+      lines: [
+        { itemId: a.id, quantity: 1, unitPrice: 900 },
+        { itemId: b.id, quantity: 1, unitPrice: 500 },
+      ],
+    });
+    expect(amount.subtotalAmount).toBe(1_400);
+    expect(amount.discountAmount).toBe(250);
+    expect(amount.totalAmount).toBe(1_150);
+    expect(amount.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(250);
+    expect(amount.lines.reduce((sum, line) => sum + line.netTotal, 0)).toBe(1_150);
+
+    const percentageItem = await makeSaleItem("بيع-خصم-نسبة-ثاني", 100, 1_000);
+    await client.stockAddManual({ itemId: percentageItem.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const percentage = await client.invoicesCreate({
+      kind: "SALE",
+      discountType: "PERCENTAGE",
+      discountValue: 10,
+      lines: [{ itemId: percentageItem.id, quantity: 2 }],
+    });
+    expect(percentage.subtotalAmount).toBe(2_000);
+    expect(percentage.discountAmount).toBe(200);
+    expect(percentage.totalAmount).toBe(1_800);
+  });
+
+  it("caps a discount at zero and rejects oversell atomically", async () => {
+    const item = await makeSaleItem("بيع-تجاوز-مخزون", 120, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 120, kind: "PURCHASE" });
+    const before = await client.itemsHistory({ itemId: item.id });
+    await expect(
+      client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 9_999 }, lines: [{ itemId: item.id, quantity: 2 }] }),
+    ).rejects.toThrow(/STOCK_NEGATIVE/);
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after).toEqual(before);
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(1);
+
+    const zero = await client.invoicesCreate({
+      kind: "SALE",
+      discount: { type: "AMOUNT", value: 9_999 },
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    expect(zero.subtotalAmount).toBe(300);
+    expect(zero.discountAmount).toBe(300);
+    expect(zero.totalAmount).toBe(0);
+    const reread = await client.invoicesGet({ id: zero.id });
+    expect(reread.lines[0]).toMatchObject({ discountAllocated: 300, netTotal: 0 });
+    expect(reread.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(reread.discountAmount);
+  });
+
+  it("rolls back every sale write when a later line oversells", async () => {
+    const first = await makeSaleItem("بيع-تراجع-أ", 100, 200);
+    const second = await makeSaleItem("بيع-تراجع-ب", 100, 300);
+    await client.stockAddManual({ itemId: first.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const firstBefore = await client.itemsHistory({ itemId: first.id });
+    const secondBefore = await client.itemsHistory({ itemId: second.id });
+    const invoicesBefore = (await client.invoicesList({ kind: "SALE" })).totalCount;
+    await expect(
+      client.invoicesCreate({ kind: "SALE", lines: [{ itemId: first.id, quantity: 1 }, { itemId: second.id, quantity: 1 }] }),
+    ).rejects.toThrow(/STOCK_NEGATIVE/);
+    expect(await client.itemsHistory({ itemId: first.id })).toEqual(firstBefore);
+    expect(await client.itemsHistory({ itemId: second.id })).toEqual(secondBefore);
+    expect((await client.invoicesList({ kind: "SALE" })).totalCount).toBe(invoicesBefore);
+    expect((await client.itemsList()).items.find((row) => row.id === first.id)?.stockOnHand).toBe(1);
+  });
+
+  it("snapshots FIFO cost across layers and reconciles stock after checkout", async () => {
+    const item = await makeSaleItem("بيع-ففو", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(invoice.lines[0]!.costAtSale).toBe(117);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(4);
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(history.stockOnHand);
+    expect(history.movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
 });

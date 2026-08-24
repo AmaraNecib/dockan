@@ -8,6 +8,7 @@ import { ItemHistoryPage } from "./pages/stock";
 import { BackupsPage } from "./pages/backups";
 import { ActivityLogPage } from "./pages/activity";
 import { PurchasePage } from "./pages/purchase";
+import { SalePage } from "./pages/sale";
 import "./lib/i18n";
 
 const rootRoute = createRootRoute({
@@ -35,6 +36,9 @@ const rootRoute = createRootRoute({
             <Link to="/purchase" className="text-stone-600 hover:text-stone-900">
               {t("navPurchases")}
             </Link>
+            <Link to="/sale" className="text-stone-600 hover:text-stone-900">
+              {t("navSales")}
+            </Link>
           </nav>
         </header>
         <main className="mx-auto max-w-3xl p-4">
@@ -56,6 +60,7 @@ const itemHistoryRoute = createRoute({
 const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/backups", component: BackupsPage });
 const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/activity", component: ActivityLogPage });
 const purchaseRoute = createRoute({ getParentRoute: () => rootRoute, path: "/purchase", component: PurchasePage });
+const saleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sale", component: SalePage });
 
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
@@ -65,6 +70,7 @@ const routeTree = rootRoute.addChildren([
   backupsRoute,
   activityRoute,
   purchaseRoute,
+  saleRoute,
 ]);
 
 export const router = createRouter({ routeTree });

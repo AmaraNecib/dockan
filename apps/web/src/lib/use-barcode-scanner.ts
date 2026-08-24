@@ -46,6 +46,8 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
     let lastKeyAt = 0;
     let lastCommitCode = "";
     let lastCommitAt = 0;
+    // SAFETY: event targets are EventTargets; we only compare identity here
+    let lastTarget: EventTarget | null = null;
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
@@ -53,6 +55,10 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const now = performance.now();
       const editable = isEditableTarget(event.target);
+      // a focus change mid-burst is human-driven (a scanner never moves the
+      // focus), so any buffered prefix belongs to the old target — drop it
+      if (event.target !== lastTarget && now - lastKeyAt > SCAN_MAX_GAP_MS) buffer = "";
+      lastTarget = event.target;
       // in editable fields only a tight burst is a scan; elsewhere every
       // keystroke is scanner output, so gap timing must not drop it
       if (editable && now - lastKeyAt > SCAN_MAX_GAP_MS) buffer = "";

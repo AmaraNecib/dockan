@@ -32,14 +32,18 @@ export function ItemsPage() {
 
   // window-level wedge capture: works without any input focus
   async function handleScan(code: string) {
+    let result;
     try {
-      const result = await rpcClient.catalogSearch({ query: code });
-      if (result.exact !== null) {
-        setNotice(t("scanFoundItem", { name: result.exact.item.name }));
-        return;
-      }
+      result = await rpcClient.catalogSearch({ query: code });
     } catch {
-      // fall through to the explicit unknown path; never auto-create
+      // auth/transport/server failure is NOT a confirmed miss — never offer
+      // to create an item that may already exist (greptile P1)
+      setNotice(t("scanLookupError"));
+      return;
+    }
+    if (result.exact !== null) {
+      setNotice(t("scanFoundItem", { name: result.exact.item.name }));
+      return;
     }
     setUnknownCode(code);
   }

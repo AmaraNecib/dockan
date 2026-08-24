@@ -62,6 +62,7 @@ const resources = {
       matchedByName: "بالاسم",
       matchedByCategory: "بالتصنيف",
       scanFoundItem: "تم العثور على: {{name}}",
+      scanLookupError: "تعذّر التحقق من الكود، أعد المسح",
       itemsOpenPicker: "اختيار من القائمة…",
       scanStockInvalid: "أدخل مخزوناً أولياً أكبر من صفر",
       itemsSellAboveCost: "سعر البيع يجب أن يكون عدداً موجباً",

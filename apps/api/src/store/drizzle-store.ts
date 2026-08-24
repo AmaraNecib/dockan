@@ -19,11 +19,12 @@ import type {
   Payment,
   Settings,
   SettingsUpdate,
+  StockMovement,
   Supplier,
 } from "@dokan/contracts";
 
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockMovements, suppliers } from "../db/schema";
 import { localDateTime } from "../lib/logger";
 import type { StorePort } from "./port";
 
@@ -86,6 +87,17 @@ const paymentCols = {
   createdAt: payments.createdAt,
 };
 const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref };
+const movementCols = {
+  id: stockMovements.id,
+  itemId: stockMovements.itemId,
+  kind: stockMovements.kind,
+  delta: stockMovements.delta,
+  unitCost: stockMovements.unitCost,
+  reason: stockMovements.reason,
+  ref: stockMovements.ref,
+  occurredAt: stockMovements.occurredAt,
+  createdAt: stockMovements.createdAt,
+};
 
 // returning() yields snake_case rows; these mappers convert the seven shapes
 // we write back into their contract camelCase forms, checked with satisfies.
@@ -103,6 +115,8 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
   ({ id: r.id, invoiceId: r.invoiceId, itemId: r.itemId, description: r.description, quantity: r.quantity, unitPrice: r.unitPrice, costAtSale: r.costAtSale, total: r.total }) satisfies InvoiceLine;
 const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
+const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
+  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
 
 type DebtSummaryRow = {
   kind: unknown;
@@ -210,6 +224,30 @@ export function createDrizzleStore(conn: Connection): StorePort {
       await db.insert(settings).values({ key: "storeName", value: "Dokan" }).run();
       await db.insert(settings).values({ key: "storePhone", value: "" }).run();
     }
+
+    // Opening-balance backfill (ticket 27): any item with no ledger history
+    // gets exactly one synthetic "opening" movement derived from its current
+    // stock/cost. Idempotent by the zero-count guard — real movements are
+    // never duplicated, and re-running setup is a no-op.
+    const ledgerItems = await db.select(itemCols).from(items);
+    for (const item of ledgerItems) {
+      if ((await db.$count(stockMovements, eq(stockMovements.itemId, item.id))) === 0) {
+        await db
+          .insert(stockMovements)
+          .values({
+            id: id(),
+            itemId: item.id,
+            kind: "MANUAL_ADJUSTMENT",
+            delta: item.stockOnHand,
+            unitCost: item.costPrice,
+            reason: "opening",
+            ref: null,
+            occurredAt: item.createdAt,
+            createdAt: now(),
+          })
+          .run();
+      }
+    }
   }
 
   const store: StorePort = {
@@ -267,6 +305,39 @@ export function createDrizzleStore(conn: Connection): StorePort {
     },
     async setItemStockAndCost(itemId: string, stockOnHand: number, costPrice: number) {
       await db.update(items).set({ stockOnHand, costPrice, updatedAt: now() }).where(eq(items.id, itemId)).run();
+    },
+
+    // --- stock ledger (ticket 27) --------------------------------------------
+    async insertStockMovement(movement) {
+      const row = firstRowOf(
+        await db
+          .insert(stockMovements)
+          .values({
+            id: id(),
+            itemId: movement.itemId,
+            kind: movement.kind,
+            delta: movement.delta,
+            unitCost: movement.unitCost ?? null,
+            reason: movement.reason ?? null,
+            ref: movement.ref ?? null,
+            occurredAt: movement.occurredAt,
+            createdAt: now(),
+          })
+          .returning(),
+      );
+      return toMovement(row);
+    },
+    async listStockMovements(itemId) {
+      // rowid breaks same-timestamp ties deterministically (insertion order)
+      const rows = await db
+        .select({ ...movementCols, seq: sql<number>`rowid` })
+        .from(stockMovements)
+        .where(eq(stockMovements.itemId, itemId))
+        .orderBy(stockMovements.occurredAt, sql`rowid`);
+      return rows.map((row) => ({ ...toMovement(row), seq: Number(row.seq) }));
+    },
+    async countStockMovements(itemId) {
+      return db.$count(stockMovements, eq(stockMovements.itemId, itemId));
     },
 
     // --- parties -------------------------------------------------------------

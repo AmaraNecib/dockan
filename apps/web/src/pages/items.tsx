@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Link } from "@tanstack/react-router";
@@ -32,17 +32,25 @@ export function ItemsPage() {
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // serializes scan lookups by recency: only the NEWEST scan may write state.
+  // Without this, an older slow lookup that settles after a newer fast one can
+  // overwrite its notice or open the unknown-scan dialog with the wrong code.
+  const scanSeqRef = useRef(0);
+
   // window-level wedge capture: works without any input focus
   async function handleScan(code: string) {
+    const seq = ++scanSeqRef.current;
     let result;
     try {
       result = await rpcClient.catalogSearch({ query: code });
     } catch {
       // auth/transport/server failure is NOT a confirmed miss — never offer
       // to create an item that may already exist (greptile P1)
+      if (seq !== scanSeqRef.current) return; // a newer scan superseded this one
       setNotice(t("scanLookupError"));
       return;
     }
+    if (seq !== scanSeqRef.current) return; // a newer scan superseded this one
     if (result.exact !== null) {
       setNotice(t("scanFoundItem", { name: result.exact.item.name }));
       return;

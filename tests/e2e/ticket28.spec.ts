@@ -120,3 +120,56 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByTestId("item-save").click();
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");
 });
+
+test("stale scan lookups never overwrite newer results", async ({ page }) => {
+  // auth is idempotent in the shared e2e database (build-secret reset path)
+  await page.goto("/");
+  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
+  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
+  await page.getByTestId("setup-phone").fill("0550123123");
+  await page.getByTestId("setup-password").fill("pass-1234");
+  await page.getByTestId("setup-submit").click();
+  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
+  await page.getByTestId("login-submit").click();
+  await expect(page.getByText("الرئيسية")).toBeVisible();
+
+  // seed a known item with a barcode so one scan resolves exactly
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill("زينة");
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText("زينة", { exact: true })).toBeVisible();
+  await page.goto("/items");
+  const categoryOption = page.getByRole("combobox").locator("option", { hasText: "زينة" });
+  await expect(categoryOption).toHaveCount(1);
+  await page.getByTestId("item-name").fill("نظارة مرايا");
+  await page.getByTestId("item-barcode").fill("9990000000011");
+  await page.getByLabel("سعر الشراء (دج)").fill("150");
+  await page.getByLabel("سعر البيع (دج)").fill("250");
+  await page.getByTestId("item-save").click();
+  await expect(page.getByRole("row", { name: /نظارة مرايا/ })).toBeVisible();
+  // scans below happen with no field focused — the deterministic wedge path
+  await page.getByTestId("catalog-search").fill("");
+  await page.getByTestId("catalog-search").blur();
+
+  // hold ONLY the first scan's response so the second scan settles first.
+  // If stale settlements could write state, the slow UNKNOWN scan settling
+  // after the fast KNOWN scan would open the dialog with the wrong code.
+  let catalogCalls = 0;
+  await page.route("**/api/rpc/catalogSearch", async (route) => {
+    catalogCalls++;
+    if (catalogCalls === 1) await new Promise((resolve) => setTimeout(resolve, 700));
+    await route.continue();
+  });
+
+  await page.keyboard.type("UNKNOWN-RACE", { delay: 4 });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("9990000000011", { delay: 4 });
+  await page.keyboard.press("Enter");
+
+  // the fast KNOWN scan's success notice must win immediately…
+  await expect(page.getByTestId("scan-found")).toContainText("نظارة مرايا");
+  // …and the stale UNKNOWN settling later must NOT open the dialog
+  await page.waitForTimeout(900); // let the delayed lookup settle
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeHidden();
+  await expect(page.getByTestId("scan-found")).toContainText("نظارة مرايا");
+});

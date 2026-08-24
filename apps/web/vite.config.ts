@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+
 /**
  * The api probes to a free port when the default is busy; the proxy must
  * follow it. DOKAN_PORT wins, then the port file the api writes at boot,
@@ -35,6 +36,12 @@ function apiTargetPort(): number {
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // shadcn/ui components import via the @ alias; keep in sync with tsconfig paths
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
   server: {
     // changeable: if the dev port is taken, vite picks another instead of
     // crashing (the user is an accountant, not a developer)

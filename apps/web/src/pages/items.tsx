@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Skeleton } from "@/components/ui/skeleton";
+
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -125,6 +127,21 @@ function ItemForm() {
 function ItemList() {
   const { t } = useTranslation();
   const items = useQuery(orpc.itemsList.queryOptions());
+
+  // first load: skeleton rows matching the table shape so layout does not jump
+  if (items.isPending || !items.data) {
+    return (
+      <div className="mt-6 grid gap-3 rounded border bg-white p-3">
+        {[0, 1, 2, 3].map((row) => (
+          <Skeleton key={row} className="h-6 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (items.data.items.length === 0) {
+    return <p className="mt-6 rounded border bg-white p-3 text-stone-500">{t("itemsEmpty")}</p>;
+  }
 
   return (
     <table className="mt-6 w-full rounded border bg-white">

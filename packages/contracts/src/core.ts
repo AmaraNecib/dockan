@@ -38,6 +38,7 @@ export const activityTypes = [
   "PAYMENT_RECORDED",
   "BACKUP_CREATED",
   "STOCK_ADJUSTED",
+  "SETTINGS_UPDATED",
 ] as const;
 
 // ---------------------------------------------------------------------------

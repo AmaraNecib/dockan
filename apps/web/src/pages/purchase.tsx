@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { Item } from "@dokan/contracts";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
+import { InvoiceHeader } from "@/components/invoice-header";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -133,7 +134,8 @@ export function PurchasePage() {
 
       {savedInvoice && (
         <div className="mt-4 rounded border bg-white p-4" data-testid="purchase-saved">
-          <p className="font-semibold text-green-700" data-testid="purchase-saved-number">
+          <InvoiceHeader />
+          <p className="mt-2 font-semibold text-green-700" data-testid="purchase-saved-number">
             {t("purchasesSaved", { number: savedInvoice.invoiceNumber })}
           </p>
           <LinkProposalPanel invoiceId={savedInvoice.id} />

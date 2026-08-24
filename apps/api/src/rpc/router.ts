@@ -1,9 +1,9 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 
 import type { AppConfig } from "../config";
-import { normalizeBarcode } from "@dokan/contracts";
 import { rankCatalog } from "../lib/catalog-search";
+import { normalizeAlgerianPhone } from "../lib/phone";
 import type { DrizzleDb } from "../db/connection";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
@@ -704,8 +704,26 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     reportsDebts: os.reportsDebts.handler(guarded(notImplemented("reportsDebts"))),
-    settingsGet: os.settingsGet.handler(guarded(notImplemented("settingsGet"))),
-    settingsUpdate: os.settingsUpdate.handler(guarded(notImplemented("settingsUpdate"))),
+
+    // --- settings (ticket 10: store identity for the invoice header) ----
+    settingsGet: os.settingsGet.handler(guarded(async () => deps.store.getSettings())),
+    settingsUpdate: os.settingsUpdate.handler(
+      guardedInput(async (input) => {
+        // semantic phone handling at the boundary, like requireBarcode: zod
+        // kept the shape; this normalizes to the canonical +213 form and
+        // maps empty strings to a cleared phone (null) so the invoice header
+        // never shows a raw, half-normalized number
+        const storePhone =
+          input.storePhone === undefined
+            ? undefined
+            : input.storePhone === null
+              ? null
+              : requireStorePhone(input.storePhone);
+        const updated = await deps.store.updateSettings({ storeName: input.storeName, storePhone });
+        await deps.store.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
+        return updated;
+      }),
+    ),
     activitiesList: os.activitiesList.handler(
       guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
     ),
@@ -744,6 +762,18 @@ async function withBarcodeConflict<T>(fn: () => Promise<T>): Promise<T> {
     }
     throw err;
   }
+}
+
+/**
+ * Normalize a store phone at the boundary, like auth's reset flow: valid
+ * Algerian numbers land in canonical +213XXXXXXXXX form; anything else is a
+ * stable INVALID_PHONE_NUMBER (the ui already translates it). Empty strings
+ * normalize to null and are rejected here — the UI sends null to clear.
+ */
+function requireStorePhone(raw: string): string {
+  const normalized = normalizeAlgerianPhone(raw);
+  if (normalized === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
+  return normalized;
 }
 
 /**

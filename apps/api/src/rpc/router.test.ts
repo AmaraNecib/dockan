@@ -475,6 +475,59 @@ describe("activity log (ticket 12)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ticket 10 — settings (store identity)
+// ---------------------------------------------------------------------------
+describe("settings (ticket 10)", () => {
+  it("rejects settingsGet/settingsUpdate without a session", async () => {
+    await expect(unauthed.settingsGet()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.settingsUpdate({ storeName: "متجر" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("reports the seeded defaults before any edit", async () => {
+    expect(await client.settingsGet()).toEqual({ storeName: "Dokan", storePhone: null });
+  });
+
+  it("normalizes a loose Algerian phone, persists, and audits the change", async () => {
+    const updated = await client.settingsUpdate({
+      storeName: "متجر السيارات",
+      storePhone: "066 12 34 56 7",
+    });
+    expect(updated).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567" });
+    // persisted: a fresh read (no local cache in this client) sees the same
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567" });
+
+    const activities = await client.activitiesList({});
+    expect(activities.items[0]).toMatchObject({
+      type: "SETTINGS_UPDATED",
+      summary: "تحديث إعدادات المتجر",
+    });
+  });
+
+  it("clears the phone with an explicit null", async () => {
+    await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: "0550123123" });
+    const cleared = await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: null });
+    expect(cleared.storePhone).toBeNull();
+    expect((await client.settingsGet()).storePhone).toBeNull();
+  });
+
+  it("rejects a non-Algerian phone with INVALID_PHONE_NUMBER and writes nothing", async () => {
+    await client.settingsUpdate({ storeName: "متجر ثابت", storePhone: "0550123123" });
+    for (const badPhone of ["2660123123", "abc", "021 44 22 11"]) {
+      let code = "";
+      try {
+        await client.settingsUpdate({ storeName: "متجر ثابت", storePhone: badPhone });
+      } catch (err) {
+        // SAFETY: oRPC surfaces server ORPCError messages as err.message
+        code = (err as Error).message;
+      }
+      expect(code).toContain("INVALID_PHONE_NUMBER");
+    }
+    // nothing changed: name untouched, phone still the accepted one
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر ثابت", storePhone: "+213550123123" });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ticket 29 — purchase intake & deferred invoice linking
 // ---------------------------------------------------------------------------
 describe("purchase intake (ticket 29)", () => {

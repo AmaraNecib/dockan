@@ -53,7 +53,18 @@ export function SettingsPage() {
       <h1 className="text-xl font-bold">{t("settingsTitle")}</h1>
       <p className="mt-1 text-sm text-stone-600">{t("settingsHint")}</p>
 
-      {pending ? (
+      {settings.isError ? (
+        <div
+          className="mt-4 flex items-center justify-between rounded border bg-red-50 p-3 text-sm text-red-700"
+          role="alert"
+          data-testid="settings-get-error"
+        >
+          <span>{t("activityError")}</span>
+          <button type="button" className="underline" onClick={() => void settings.refetch()}>
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      ) : pending ? (
         <div className="mt-4 grid gap-3 rounded border bg-white p-4">
           {[0, 1].map((row) => (
             <Skeleton key={row} className="h-8 w-full" />

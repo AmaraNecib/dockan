@@ -716,7 +716,7 @@ export function createRpcRouter(deps: RpcDeps) {
         const storePhone =
           input.storePhone === undefined
             ? undefined
-            : input.storePhone === null
+            : input.storePhone === null || input.storePhone.trim() === ""
               ? null
               : requireStorePhone(input.storePhone);
         const updated = await deps.store.updateSettings({ storeName: input.storeName, storePhone });
@@ -767,8 +767,9 @@ async function withBarcodeConflict<T>(fn: () => Promise<T>): Promise<T> {
 /**
  * Normalize a store phone at the boundary, like auth's reset flow: valid
  * Algerian numbers land in canonical +213XXXXXXXXX form; anything else is a
- * stable INVALID_PHONE_NUMBER (the ui already translates it). Empty strings
- * normalize to null and are rejected here — the UI sends null to clear.
+ * stable INVALID_PHONE_NUMBER (the ui already translates it). The clear
+ * signal is handled by the caller: both null and trimmed-empty map to null,
+ * so an API consumer can clear the phone with either.
  */
 function requireStorePhone(raw: string): string {
   const normalized = normalizeAlgerianPhone(raw);

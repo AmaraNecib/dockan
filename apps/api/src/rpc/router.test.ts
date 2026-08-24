@@ -503,11 +503,21 @@ describe("settings (ticket 10)", () => {
     });
   });
 
-  it("clears the phone with an explicit null", async () => {
+  it("clears the phone with an explicit null or an empty string", async () => {
     await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: "0550123123" });
-    const cleared = await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: null });
-    expect(cleared.storePhone).toBeNull();
-    expect((await client.settingsGet()).storePhone).toBeNull();
+    for (const clearWith of [null, ""]) {
+      const cleared = await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: clearWith });
+      expect(cleared.storePhone).toBeNull();
+      expect((await client.settingsGet()).storePhone).toBeNull();
+    }
+  });
+
+  it("supports a phone-only partial update and rejects an empty store name", async () => {
+    await client.settingsUpdate({ storeName: "متجر جزئي", storePhone: "0550123123" });
+    const updated = await client.settingsUpdate({ storePhone: "066 12 34 56 7" });
+    expect(updated.storeName).toBe("متجر جزئي"); // untouched by the partial update
+    expect(updated.storePhone).toBe("+213661234567");
+    await expect(client.settingsUpdate({ storeName: "   " })).rejects.toThrow();
   });
 
   it("rejects a non-Algerian phone with INVALID_PHONE_NUMBER and writes nothing", async () => {

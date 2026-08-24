@@ -59,8 +59,9 @@ settingsUpdate: os.settingsUpdate.handler(guardedInput(async (input) => {
 
 `requireStorePhone(raw)` = `normalizeAlgerianPhone(raw)`, throwing
 `ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" })` on null.
-Empty string also normalizes to null → rejected (the UI sends `null` to
-clear). Session guard identical to every other business procedure.
+The clear signal is normalized before that check: both an explicit `null` and
+a trimmed-empty string map to `null` (clear), so API consumers and the UI
+agree on how to remove the stored phone.
 
 ### web (`apps/web/src`)
 
@@ -93,7 +94,8 @@ Unit / router — `apps/api/src/rpc/router.test.ts`:
 - `settingsUpdate` normalizes a loose Algerian input to canonical `+213…`
   form, persists (round-trip through `settingsGet`), and records a
   `SETTINGS_UPDATED` activity entry.
-- explicit `null` clears the phone (round-trip → `storePhone null`).
+- explicit `null` (or an empty string) clears the phone (round-trip →
+  `storePhone null`).
 - invalid phone (`"2660123123"`, `"abc"`) → rejects with `INVALID_PHONE_NUMBER`
   and leaves stored settings untouched.
 

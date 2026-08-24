@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -73,14 +74,16 @@ function isValidSqliteBackup(p: string): boolean {
 }
 
 /**
- * Checkpoint + copy into place safely: write to a `.partial` sibling first,
- * then rename over the destination. Rename is atomic within the same
- * directory, so a crash mid-copy can never leave a truncated file under the
- * real backup name — only a disposable `.partial`. Any pre-existing corrupt
- * destination (e.g. written by older code) is overwritten.
+ * Checkpoint + copy into place safely: write to a unique `.partial` sibling
+ * first, then rename over the destination. The partial name carries pid+random
+ * bytes so two overlapping exports never race on one temp file (greptile P1:
+ * a shared name let request B's rename fail ENOENT after A renamed first).
+ * Rename is atomic within the same directory, so a crash mid-copy can never
+ * leave a truncated file under the real backup name — only a disposable
+ * `.partial.*`. Any pre-existing corrupt destination is overwritten.
  */
 async function writeBackupCopy(store: StorePort, dest: string): Promise<void> {
-  const partial = `${dest}.partial`;
+  const partial = `${dest}.partial.${process.pid}.${crypto.randomBytes(6).toString("hex")}`;
   try {
     await store.copyDatabaseTo(partial);
     await fs.promises.rename(partial, dest);

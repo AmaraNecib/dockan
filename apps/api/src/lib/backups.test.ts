@@ -9,7 +9,8 @@ import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
-import { backupDirFor, backupFileNameFor, backupFilePath, createBackup, ensureDailyBackup } from "./backups";
+import { backupDirFor, backupFileNameFor, backupFilePath, createBackup, ensureDailyBackup, } from "./backups";
+import { localDate } from "./logger";
 
 /**
  * Ticket 13 unit seams: naming policy, once-per-day idempotency, and the
@@ -149,6 +150,27 @@ describe("daily startup backup", () => {
     } finally {
       copy.close();
     }
+  });
+
+  it("survives two concurrent exports for the same day (greptile race)", async () => {
+    const results = await Promise.all([
+      createBackup({ store, dataDir: dir }),
+      createBackup({ store, dataDir: dir }),
+    ]);
+
+    // both exports succeed — neither rename loses to the other
+    expect(results).toHaveLength(2);
+    for (const r of results) {
+      expect(fs.existsSync(r.path)).toBe(true);
+      expect(r.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    }
+    expect(results[0].path).toBe(results[1].path); // same daily name
+
+    // exactly one real file for today, zero partial leftovers from the race
+    const todayPrefix = `dokan-${localDate()}`;
+    const files = fs.readdirSync(backupDirFor(dir));
+    expect(files.filter((f) => f === `${todayPrefix}.db`)).toHaveLength(1);
+    expect(files.filter((f) => f.includes(".partial"))).toEqual([]);
   });
 
   it("never leaves a .partial file behind after a failed copy", async () => {

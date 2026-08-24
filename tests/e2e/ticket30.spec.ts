@@ -64,7 +64,12 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await expect(page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`)).toHaveValue("3");
 
   // Amount negotiated price + amount invoice discount: 3 × 900 − 100.
+  // Choosing an override type with an EMPTY value must not submit a free
+  // (0 DZD) line: save is rejected, the error is shown, the cart stays intact.
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`).selectOption("AMOUNT");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("3000");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
   await page.getByTestId("sale-discount-type").selectOption("AMOUNT");
   await page.getByTestId("sale-discount-value").fill("100");

@@ -43,6 +43,18 @@ function actualPrice(line: SaleLine): number {
   return line.item.sellingPrice;
 }
 
+/** A chosen price override must carry a usable value: empty input parses to 0
+ * (Number("") === 0) and would bill the line as free while the preview still
+ * shows the default price, so it is rejected here before submission. */
+export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "overrideValue">): boolean {
+  if (line.overrideType === "") return false;
+  if (line.overrideValue.trim() === "") return true;
+  const value = Number(line.overrideValue);
+  if (!Number.isFinite(value)) return true;
+  if (line.overrideType === "AMOUNT") return !Number.isInteger(value) || value < 0;
+  return !Number.isInteger(value) || value < 0 || value > 100;
+}
+
 export function SalePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -142,11 +154,7 @@ export function SalePage() {
       }
     }
     for (const line of lines) {
-      if (line.overrideType === "") continue;
-      const value = Number(line.overrideValue);
-      const invalidAmount = line.overrideType === "AMOUNT" && (!Number.isInteger(value) || value < 0);
-      const invalidPercentage = line.overrideType === "PERCENTAGE" && (!Number.isInteger(value) || value < 0 || value > 100);
-      if (!Number.isFinite(value) || invalidAmount || invalidPercentage) {
+      if (overrideInputInvalid(line)) {
         setError(t("saleInvalidOverride"));
         return;
       }
@@ -269,7 +277,7 @@ export function SalePage() {
       <div className="mt-4 grid gap-3 rounded border bg-white p-4">
         <h2 className="font-semibold">{t("saleTotalsTitle")}</h2>
         <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === ""} data-testid="sale-discount-value" /></label></div>
-        <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal">{subtotal} دج</dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount">-{discountAmount} دج</dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total">{total} دج</dd></div></dl>
+        <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal">{subtotal} دج</dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount">{discountAmount > 0 ? `-${discountAmount}` : "0"} دج</dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total">{total} دج</dd></div></dl>
       </div>
       {error && <p className="mt-3 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="sale-error" role="alert">{error}</p>}
       <button type="button" className="mt-4 w-full rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending} data-testid="sale-save">{t("saleSave")}</button>

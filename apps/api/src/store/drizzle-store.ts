@@ -113,29 +113,25 @@ const toCategory = (r: typeof categories.$inferSelect): Category =>
   ({ id: r.id, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Category;
 const toItem = (r: typeof items.$inferSelect): Item =>
   ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
+/** Legacy rows predate subtotal_amount; a read-time heuristic maps the
+ * pre-discount shape (no discount, subtotal 0, nonzero total) back to total.
+ * New rows always carry a real subtotal, so the rewrite can never fire on
+ * them; kept here once so toInvoice/getInvoiceDetail/listInvoices agree. */
+function normalizeInvoiceLegacy(row: typeof invoices.$inferSelect): Pick<Invoice, "subtotalAmount" | "discountType" | "discountValue" | "discountAmount"> {
+  return {
+    subtotalAmount: row.subtotalAmount === 0 && row.totalAmount > 0 && row.discountType === null && (row.discountAmount ?? 0) === 0 ? row.totalAmount : row.subtotalAmount,
+    discountType: row.discountType ?? null,
+    discountValue: row.discountValue ?? null,
+    discountAmount: row.discountAmount ?? 0,
+  };
+}
+
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Supplier;
 const toInvoice = (r: typeof invoices.$inferSelect): Invoice =>
-  ({
-    id: r.id,
-    invoiceNumber: r.invoiceNumber,
-    kind: r.kind,
-    counterpartyId: r.counterpartyId,
-    counterpartyName: r.counterpartyName,
-    invoiceDate: r.invoiceDate,
-    subtotalAmount: r.subtotalAmount === 0 && r.totalAmount > 0 && r.discountType === null && (r.discountAmount ?? 0) === 0 ? r.totalAmount : r.subtotalAmount,
-    discountType: r.discountType ?? null,
-    discountValue: r.discountValue ?? null,
-    discountAmount: r.discountAmount ?? 0,
-    totalAmount: r.totalAmount,
-    paidAmount: r.paidAmount,
-    remainingAmount: r.remainingAmount,
-    notes: r.notes,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-  }) satisfies Invoice;
+  ({ id: r.id, invoiceNumber: r.invoiceNumber, kind: r.kind, counterpartyId: r.counterpartyId, counterpartyName: r.counterpartyName, invoiceDate: r.invoiceDate, ...normalizeInvoiceLegacy(r), totalAmount: r.totalAmount, paidAmount: r.paidAmount, remainingAmount: r.remainingAmount, notes: r.notes, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Invoice;
 const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
   ({
     id: r.id,
@@ -594,9 +590,6 @@ export function createDrizzleStore(conn: Connection): StorePort {
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
-      const subtotalAmount = header.subtotalAmount === 0 && header.totalAmount > 0 && header.discountType === null && (header.discountAmount ?? 0) === 0
-        ? header.totalAmount
-        : header.subtotalAmount;
       const normalizedLines = lines.map((line) => ({
         ...line,
         defaultUnitPrice: line.defaultUnitPrice ?? line.unitPrice,
@@ -605,10 +598,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
       }));
       return {
         ...header,
-        subtotalAmount,
-        discountType: header.discountType ?? null,
-        discountValue: header.discountValue ?? null,
-        discountAmount: header.discountAmount ?? 0,
+        ...normalizeInvoiceLegacy(header),
         lines: normalizedLines,
         payments: paymentsRows,
       } satisfies InvoiceDetail;
@@ -632,13 +622,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
         db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(200),
       ]);
       return {
-        items: itemsRows.map((row) => ({
-          ...row,
-          subtotalAmount: row.subtotalAmount === 0 && row.totalAmount > 0 && row.discountType === null && (row.discountAmount ?? 0) === 0 ? row.totalAmount : row.subtotalAmount,
-          discountType: row.discountType ?? null,
-          discountValue: row.discountValue ?? null,
-          discountAmount: row.discountAmount ?? 0,
-        })),
+        items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
         totalCount,
       };
     },

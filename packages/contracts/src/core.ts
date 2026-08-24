@@ -134,9 +134,8 @@ export const priceOverrideSchema = z
     value: z.number().int().min(0),
   })
   .superRefine((value, ctx) => {
-    if (value.type === "AMOUNT" && !Number.isInteger(value.value)) {
-      ctx.addIssue({ code: "custom", message: "amount override must be an integer DZD value", path: ["value"] });
-    }
+    // .int() above already guarantees integer values; only the domain
+    // bound on percentages is checked here.
     if (value.type === "PERCENTAGE" && value.value > 100) {
       ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["value"] });
     }
@@ -144,7 +143,7 @@ export const priceOverrideSchema = z
 
 /** Invoice-level discount input and its persisted type. */
 export const discountTypeSchema = z.enum(["AMOUNT", "PERCENTAGE"]);
-/** Persisted value is an integer for amount discounts and may be fractional for percentages. */
+/** Persisted value is an integer; percentages are whole percentage points. */
 export const discountValueSchema = z.number().int().min(0);
 export const invoiceDiscountSchema = z
   .object({
@@ -153,9 +152,8 @@ export const invoiceDiscountSchema = z
     value: z.number().int().min(0),
   })
   .superRefine((value, ctx) => {
-    if (value.type === "AMOUNT" && !Number.isInteger(value.value)) {
-      ctx.addIssue({ code: "custom", message: "amount discount must be an integer DZD value", path: ["value"] });
-    }
+    // .int() above already guarantees integer values; only the domain
+    // bound on percentages is checked here.
     if (value.type === "PERCENTAGE" && value.value > 100) {
       ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["value"] });
     }
@@ -342,10 +340,11 @@ export const partyCreateInputSchema = z.object({
 
 export const invoiceLineInputSchema = z.object({
   itemId: idSchema,
-  quantity: z.number().int().positive(),
+  /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
+  quantity: z.number().int().positive().max(1_000_000),
   /** explicit final price; omitted lines use the item's current kind-specific default */
   unitPrice: dinarsSchema.optional(),
-  /** optional negotiated price entry; ignored when unitPrice is supplied */
+  /** optional negotiated price entry; rejected when unitPrice is also supplied */
   priceOverride: priceOverrideSchema.optional(),
   /** flat aliases keep form integrations simple while the object is canonical */
   priceOverrideType: priceOverrideTypeSchema.optional(),
@@ -376,9 +375,7 @@ export const invoiceCreateInputSchema = z
     if (hasType !== hasValue) {
       ctx.addIssue({ code: "custom", message: "discountType and discountValue must be supplied together", path: [hasType ? "discountValue" : "discountType"] });
     }
-    if (input.discountType === "AMOUNT" && input.discountValue !== undefined && !Number.isInteger(input.discountValue)) {
-      ctx.addIssue({ code: "custom", message: "amount discount must be an integer DZD value", path: ["discountValue"] });
-    }
+    // .int() on the fields already guarantees integers; only bounds are checked here.
     if (input.discountType === "PERCENTAGE" && (input.discountValue ?? 0) > 100) {
       ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["discountValue"] });
     }
@@ -391,14 +388,22 @@ export const invoiceCreateInputSchema = z
       if (hasOverrideType !== hasOverrideValue) {
         ctx.addIssue({ code: "custom", message: "priceOverrideType and priceOverrideValue must be supplied together", path: ["lines", index, hasOverrideType ? "priceOverrideValue" : "priceOverrideType"] });
       }
-      if (line.priceOverrideType === "AMOUNT" && line.priceOverrideValue !== undefined && !Number.isInteger(line.priceOverrideValue)) {
-        ctx.addIssue({ code: "custom", message: "amount override must be an integer DZD value", path: ["lines", index, "priceOverrideValue"] });
-      }
       if (line.priceOverrideType === "PERCENTAGE" && (line.priceOverrideValue ?? 0) > 100) {
         ctx.addIssue({ code: "too_big", maximum: 100, origin: "number", path: ["lines", index, "priceOverrideValue"] });
       }
       if (line.priceOverride !== undefined && hasOverrideType && hasOverrideValue && (line.priceOverride.type !== line.priceOverrideType || line.priceOverride.value !== line.priceOverrideValue)) {
         ctx.addIssue({ code: "custom", message: "conflicting price override inputs", path: ["lines", index, "priceOverride"] });
+      }
+      // One negotiated-price path per line: an explicit unitPrice and an
+      // override would silently disagree about which one the shop actually
+      // billed, so the pair is rejected like the discount aliases above.
+      const hasPriceOverride = line.priceOverride !== undefined || hasOverrideType || hasOverrideValue;
+      if (line.unitPrice !== undefined && hasPriceOverride) {
+        ctx.addIssue({ code: "custom", message: "unitPrice cannot be combined with a price override", path: ["lines", index, "unitPrice"] });
+      }
+      // Purchase lines price the stock cost basis, not a negotiated sale price.
+      if (input.kind === "PURCHASE" && hasPriceOverride) {
+        ctx.addIssue({ code: "custom", message: "price override is sale-only", path: ["lines", index, "priceOverride"] });
       }
     }
   });

@@ -863,6 +863,10 @@ describe("sale checkout (ticket 30)", () => {
       netTotal: 700,
     });
     expect(invoice.payments).toHaveLength(1);
+    const saleActivity = (await client.activitiesList({})).items.find((entry) => entry.type === "SALE_CREATED");
+    expect(saleActivity).toBeDefined();
+    expect(saleActivity!.ref).toBe(invoice.id);
+    expect(saleActivity!.summary).toContain(invoice.invoiceNumber);
     expect((await client.itemsList()).items.find((row) => row.id === stocked.id)?.stockOnHand).toBe(2);
     expect((await client.itemsHistory({ itemId: stocked.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
@@ -968,5 +972,74 @@ describe("sale checkout (ticket 30)", () => {
     expect(history.stockOnHand).toBe(4);
     expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(history.stockOnHand);
     expect(history.movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
+  });
+
+  it("keeps the live ADR-0002 cache unchanged while later sales cost from remaining FIFO layers", async () => {
+    const item = await makeSaleItem("بيع-طبقات-متتابع", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const first = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(first.lines[0]!.costAtSale).toBe(117);
+    const second = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(second.lines[0]!.costAtSale).toBe(200);
+    const listed = (await client.itemsList()).items.find((row) => row.id === item.id)!;
+    expect(listed.stockOnHand).toBe(2);
+    // outflows never move the weighted average (ADR-0002), even though the
+    // second sale's FIFO snapshot differs from it
+    expect(listed.costPrice).toBe(150);
+    expect((await client.itemsHistory({ itemId: item.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(2);
+  });
+
+  it("consumes FIFO layers across duplicate item lines within one invoice", async () => {
+    const item = await makeSaleItem("بيع-سطران-مكرر", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 6 }] });
+    // line 1 takes a 100-DZD unit; line 2 then costs from 4×100 + 2×200
+    expect(invoice.lines.map((line) => line.costAtSale)).toEqual([100, 133]);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(3);
+    expect((await client.itemsHistory({ itemId: item.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(2);
+  });
+
+  it("validates the initial payment against the discounted total", async () => {
+    const item = await makeSaleItem("بيع-دفع-حد-الخصم", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await expect(
+      client.invoicesCreate({ kind: "SALE", initialPaid: 250, discount: { type: "AMOUNT", value: 100 }, lines: [{ itemId: item.id, quantity: 1 }] }),
+    ).rejects.toThrow(/PAID_EXCEEDS_TOTAL/);
+    const paid = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, discount: { type: "AMOUNT", value: 100 }, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(paid.totalAmount).toBe(200);
+    expect(paid.paidAmount).toBe(200);
+    expect(paid.remainingAmount).toBe(0);
+  });
+
+  it("fully discounts a sale with a 100% percentage and keeps zero totals whole", async () => {
+    const item = await makeSaleItem("بيع-خصم-كامل", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", discount: { type: "PERCENTAGE", value: 100 }, lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(invoice.subtotalAmount).toBe(600);
+    expect(invoice.discountValue).toBe(100);
+    expect(invoice.discountAmount).toBe(600);
+    expect(invoice.totalAmount).toBe(0);
+    expect(invoice.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(600);
+    expect(invoice.lines.reduce((sum, line) => sum + line.netTotal, 0)).toBe(0);
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.totalAmount).toBe(0);
+    expect(reread.lines[0]?.netTotal).toBe(0);
+  });
+
+  it("rejects conflicting or purchase-only negotiated price inputs before any write", async () => {
+    const item = await makeSaleItem("بيع-مدخلات-مرفوضة", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await expect(
+      client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 400, priceOverride: { type: "AMOUNT", value: 300 } }] }),
+    ).rejects.toThrow(/Input validation failed/);
+    await expect(
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 300 } }] }),
+    ).rejects.toThrow(/Input validation failed/);
+    await expect(
+      client.invoicesCreate({ kind: "PURCHASE", discount: { type: "AMOUNT", value: 10 }, lines: [{ itemId: item.id, quantity: 1 }] }),
+    ).rejects.toThrow(/DISCOUNT_ONLY_SALE/);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
 });

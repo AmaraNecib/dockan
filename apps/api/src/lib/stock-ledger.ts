@@ -126,7 +126,6 @@ export function historyWithRemaining<T extends LedgerMovement>(movements: readon
   });
 }
 
-/** ADR-0002 weighted average after an inflow lands on top of current holdings. */
 /**
  * Average FIFO unit cost for a sale from the current layers. The returned
  * value is an integer DZD snapshot; the ledger itself remains the source of
@@ -153,6 +152,7 @@ export function fifoCostForOutflow(
   return Math.round(totalCost / quantity);
 }
 
+/** ADR-0002 weighted average after an inflow lands on top of current holdings. */
 export function averageCostAfter(
   currentAvgCost: number,
   currentQty: number,

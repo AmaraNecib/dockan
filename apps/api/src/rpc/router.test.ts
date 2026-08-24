@@ -241,6 +241,22 @@ describe("catalog search + barcodes (ticket 28)", () => {
     }
   });
 
+  it("honors the optional limit through schema → router → rankCatalog (ticket 34)", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    for (let i = 1; i <= 5; i++) {
+      await client.itemsCreate({ name: `حد-مشترك-${i}`, categoryId: catId, costPrice: 10, sellingPrice: 20 });
+    }
+
+    const limited = await client.catalogSearch({ query: "حد-مشترك", limit: 2 });
+    expect(limited.matches).toHaveLength(2);
+
+    const unbounded = await client.catalogSearch({ query: "حد-مشترك" });
+    // the shared fragment only matches the five rows created above
+    expect(unbounded.matches.length).toBe(5);
+    expect(unbounded.matches.length).toBeGreaterThan(limited.matches.length);
+  });
+
   it("itemsCreateWithStock creates the item with initial stock in one unit", async () => {
     const categories = await client.categoriesList();
     const item = await client.itemsCreateWithStock({

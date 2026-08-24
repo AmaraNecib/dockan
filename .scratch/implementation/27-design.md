@@ -109,15 +109,11 @@ Playwright (`tests/e2e/ticket27.spec.ts`):
   (stock-as-of date control) deferred to a later ticket.
 - **Single-process assumption:** backfill idempotency relies on the single serialized
   connection; two OS processes on one DB file could race the count-then-insert guard.
-- **Costing method must stay pluggable (future):** FIFO vs LIFO must remain a read-time
-  projection parameter over immutable movement rows (`projectLedger` consumption order),
-  never baked into stored data. Sale documents must snapshot their original cost basis
-  and computed profit at creation (like `invoice_lines.cost_at_sale`) so a later method
-  switch can show "original vs recomputed" without rewriting history.
-- **Per-batch profit attribution (sale-flow requirement):** profit is computed against
-  the specific batch a sold unit came from — `unit_price − batch.unit_cost` — not an
-  averaged number. When invoices land, extend `projectLedger` to also report source
-  movement ids + per-chunk unit costs for each consumption, so each invoice line can
-  record which batches it drew from, their costs, and the resulting profit (the
-  "why" behind the number). The chosen method (FIFO/LIFO) selects which batches are
-  consumed going forward; past sales keep their frozen snapshots.
+- **Costing method is a swappable strategy (future):** TODAY Dokan uses the "equation
+  way" — the ADR-0002 running weighted average over what we hold. It must remain easy
+  to switch later to FIFO, LIFO, or manual batch selection: movement rows already store
+  per-batch `unit_cost`, so alternative methods are read-time projections over immutable
+  rows (`projectLedger` consumption order / explicit batch pick), never baked into stored
+  data. Whatever the method, sale documents snapshot their original cost basis + computed
+  profit at creation so a later switch shows "original vs recomputed" without rewriting
+  history.

@@ -101,6 +101,43 @@ describe("daily startup backup", () => {
     }
   });
 
+  it("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
+    const day = "2026-08-28";
+    const dest = backupFilePath(dir, day);
+
+    // simulate a half-written backup: a few bytes, no SQLite magic header
+    fs.writeFileSync(dest, Buffer.from("truncated garbage"));
+
+    const result = await ensureDailyBackup({ store, dataDir: dir, today: day });
+    expect(result.created).toBe(true);
+
+    // the rebuilt file is a real database holding committed rows
+    const copy = new Database(dest, { readonly: true });
+    try {
+      // SAFETY: categories.name is TEXT in every row of this table (schema.ts)
+      const names = copy.query("SELECT name FROM categories").all() as Array<{ name: string }>;
+      expect(names.length).toBeGreaterThan(0);
+    } finally {
+      copy.close();
+    }
+  });
+
+  it("never leaves a .partial file behind after a failed copy", async () => {
+    const day = "2026-08-29";
+    const failingStore: StorePort = {
+      ...store,
+      copyDatabaseTo: async () => {
+        throw new Error("disk full");
+      },
+    };
+
+    await expect(ensureDailyBackup({ store: failingStore, dataDir: dir, today: day })).rejects.toThrow("disk full");
+
+    const leftovers = fs.readdirSync(backupDirFor(dir)).filter((f) => f.includes(".partial"));
+    expect(leftovers).toEqual([]);
+    expect(fs.existsSync(backupFilePath(dir, day))).toBe(false);
+  });
+
   it("keeps one file per distinct day", async () => {
     await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-26" });
     await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-27" });

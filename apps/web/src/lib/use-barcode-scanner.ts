@@ -19,10 +19,16 @@ import { useEffect, useRef } from "react";
 
 /** max gap between keystrokes of one scan burst while focus is editable (ms) */
 export const SCAN_MAX_GAP_MS = 50;
-/** identical scans inside this window are ignored (ms) */
-export const SCAN_DUPLICATE_WINDOW_MS = 800;
+/** identical scans inside this window are ignored (ms); tests shorten via env */
+export const SCAN_DUPLICATE_WINDOW_MS = parseEnvInt(import.meta.env.VITE_SCAN_DUPLICATE_WINDOW_MS) ?? 800;
 /** shortest buffer committed as a scan */
 export const SCAN_MIN_LENGTH = 3;
+
+function parseEnvInt(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
 
 const isEditableTarget = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement &&
@@ -43,6 +49,8 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
+      // modifier chords (Ctrl+C, Alt+Tab leftovers…) are never scanner output
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       const now = performance.now();
       const editable = isEditableTarget(event.target);
       // in editable fields only a tight burst is a scan; elsewhere every

@@ -256,3 +256,24 @@ describe("catalog search + barcodes (ticket 28)", () => {
     expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
   });
 });
+
+describe("ticket 28 follow-ups from test audit", () => {
+  it("two concurrent creates with the same barcode resolve as BARCODE_EXISTS, not a raw error", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    const results = await Promise.allSettled([
+      client.itemsCreate({ name: "سباق 1", categoryId: catId, costPrice: 10, sellingPrice: 20, barcode: "RACE-1" }),
+      client.itemsCreate({ name: "سباق 2", categoryId: catId, costPrice: 30, sellingPrice: 40, barcode: "RACE-1" }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect(String(rejected[0]!.reason)).toMatch(/BARCODE_EXISTS/);
+  });
+
+  it("rejects catalogSearch input that violates the schema boundaries", async () => {
+    await expect(client.catalogSearch({ query: "" })).rejects.toThrow();
+    await expect(client.catalogSearch({ query: "x".repeat(129) })).rejects.toThrow();
+  });
+});

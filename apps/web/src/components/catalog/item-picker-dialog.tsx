@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { CatalogMatch, Item } from "@dokan/contracts";
 
 import { orpc } from "@/lib/rpc";
+import { useModalDialog } from "@/lib/use-modal-dialog";
 
 /** LTR-isolated barcode text inside the RTL layout */
 function Barcode({ code }: { code: string }) {
@@ -36,6 +37,7 @@ export function ItemPickerDialog({
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const { panelRef } = useModalDialog<HTMLDivElement>(open, onClose);
 
   // debounce search keystrokes so typing stays snappy
   useEffect(() => {
@@ -71,7 +73,13 @@ export function ItemPickerDialog({
       data-testid="picker-dialog"
       onMouseDown={handleBackdrop}
     >
-      <div role="dialog" aria-modal="true" aria-label={t("itemsSearchPlaceholder")} className="w-full max-w-lg rounded-2xl border bg-white p-4 shadow-lg">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("itemsSearchPlaceholder")}
+        className="w-full max-w-lg rounded-2xl border bg-white p-4 shadow-lg"
+      >
         <input
           ref={inputRef}
           className="w-full rounded border px-3 py-2"

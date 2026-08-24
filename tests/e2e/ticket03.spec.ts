@@ -24,7 +24,7 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
 
   // 2. Create an item; the profit preview recomputes while typing
   await page.goto("/items");
-  await page.getByLabel("الاسم").fill("بطارية");
+  await page.getByLabel("الاسم", { exact: true }).fill("بطارية");
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("350");
   await expect(page.getByTestId("profit-preview")).toHaveText("الربح لكل وحدة: 150 دج");

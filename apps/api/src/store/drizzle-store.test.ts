@@ -483,3 +483,16 @@ describe("backup", () => {
     backupConn.close();
   });
 });
+describe("barcode update collisions (test audit)", () => {
+  it("updateItem onto another item's barcode hits the same UNIQUE constraint", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    const a = await store.createItem({ name: "عناصر أ", categoryId, costPrice: 10, sellingPrice: 20, barcode: "UPD-A" });
+    const b = await store.createItem({ name: "عناصر ب", categoryId, costPrice: 30, sellingPrice: 40, barcode: "UPD-B" });
+    await expect(store.updateItem(b.id, { id: b.id, barcode: "UPD-A" })).rejects.toThrow(/unique/i);
+    // clearing A's barcode frees the code for B
+    await store.updateItem(a.id, { id: a.id, barcode: null });
+    const moved = await store.updateItem(b.id, { id: b.id, barcode: "UPD-A" });
+    expect(moved?.barcode).toBe("UPD-A");
+  });
+});

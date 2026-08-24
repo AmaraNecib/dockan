@@ -55,26 +55,40 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   // scans below happen with no field focused — the deterministic wedge path
   await page.getByTestId("catalog-search").blur();
 
-  // 3. wedge scan with focus OUTSIDE any input: fast burst + Enter.
-  //    Duplicate protection: sending it twice must not double-handle.
-  for (let round = 0; round < 2; round++) {
-    await page.keyboard.type("6210001000017", { delay: 4 });
-    await page.keyboard.press("Enter");
-    await expect(page.getByTestId("scan-found")).toContainText("بطارية");
-    if (round === 0) await page.waitForTimeout(900); // second round is a fresh scan, not a duplicate
-  }
+  // 3. wedge scan with focus OUTSIDE any input: fast burst + Enter. RPC-call
+  //    counting makes suppression provable (oRPC multiplexes every procedure
+  //    through one /api/rpc endpoint; the name rides in the POST body).
+  let searchCalls = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/rpc/catalogSearch")) searchCalls++;
+  });
 
-  // 4. unknown scan opens the explicit dialog; cancel creates nothing
+  await page.keyboard.type("6210001000017", { delay: 4 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("scan-found")).toContainText("بطارية");
+
   await page.keyboard.type("UNKNOWN-999", { delay: 4 });
   await page.keyboard.press("Enter");
   const dialog = page.getByTestId("unknown-scan-dialog");
   await expect(dialog).toBeVisible();
+  // both lookups must have hit the wire
+  await expect.poll(() => searchCalls, { timeout: 5_000 }).toBeGreaterThanOrEqual(2);
+  const callsBeforeDuplicate = searchCalls;
 
-  const itemsBefore = await page.getByRole("row").count();
+  // 4. true duplicate suppression: rescanning the SAME code inside the
+  //    duplicate window (~150 ms of typing vs a 1200 ms window) must be
+  //    swallowed — no second catalogSearch RPC, no state change.
+  await page.keyboard.type("UNKNOWN-999", { delay: 4 });
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(400); // settle past any in-flight work
+  expect(searchCalls).toBe(callsBeforeDuplicate); // suppressed, not re-sent
+  await expect(dialog).toBeVisible();
+
+  const rowsWithUnknownCode = page.getByRole("row", { name: /UNKNOWN-999/ });
+  await expect(rowsWithUnknownCode).toHaveCount(0);
   await page.getByTestId("scan-cancel").click();
   await expect(dialog).toBeHidden();
-  await page.waitForTimeout(300);
-  expect(await page.getByRole("row").count()).toBe(itemsBefore);
+  await expect(rowsWithUnknownCode).toHaveCount(0);
 
   // 5. unknown scan -> create item prefilled with the scanned barcode
   await page.keyboard.type("UNKNOWN-777", { delay: 4 });
@@ -87,9 +101,9 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByLabel("سعر البيع (دج)").fill("160");
   await page.getByTestId("item-save").click();
   await expect(page.getByRole("row", { name: /منتج ممسوح/ })).toBeVisible();
-  // rescanning now finds it instead of opening the dialog (past the
-  // duplicate-protection window of the scan that opened the dialog)
-  await page.waitForTimeout(900);
+  // rescanning now finds it instead of opening the dialog — past the e2e
+  // duplicate window (1200 ms) plus margin
+  await page.waitForTimeout(1500);
   await page.keyboard.type("UNKNOWN-777", { delay: 4 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("منتج ممسوح");

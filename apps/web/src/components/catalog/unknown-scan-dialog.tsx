@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { useModalDialog } from "@/lib/use-modal-dialog";
 
 /**
  * Unknown-scan dialog (ticket 28): a scanned code matched nothing, and
@@ -23,10 +24,11 @@ export function UnknownScanDialog({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  const { panelRef } = useModalDialog<HTMLDivElement>(true, onClose);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/30" data-testid="unknown-scan-dialog" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal="true" aria-label={t("scanUnknownTitle")} className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-lg">
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={t("scanUnknownTitle")} className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-lg">
         <h2 className="text-lg font-bold">{t("scanUnknownTitle")}</h2>
         <p className="mt-1 text-sm text-stone-500">
           {t("scanUnknownCode")}:{" "}

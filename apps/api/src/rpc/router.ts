@@ -119,18 +119,13 @@ export function createRpcRouter(deps: RpcDeps) {
         const barcode = requireBarcode(input.barcode);
         // item + audit entry commit in the same transaction; a barcode race
         // serializes through the UNIQUE index and maps to the same CONFLICT
-        try {
-          return await deps.store.withTransaction(async (tx) => {
+        return withBarcodeConflict(async () => {
+          return deps.store.withTransaction(async (tx) => {
             const item = await tx.createItem({ ...input, barcode });
             await tx.insertActivity({ type: "ITEM_CREATED", summary: `إنشاء منتج ${input.name}`, ref: item.id });
             return item;
           });
-        } catch (err) {
-          if (err instanceof Error && isUniqueViolation(err)) {
-            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
-          }
-          throw err;
-        }
+        });
       }),
     ),
     // unknown-scan "create with stock": item + initial stock in one unit,
@@ -142,8 +137,8 @@ export function createRpcRouter(deps: RpcDeps) {
           throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
         }
         const barcode = requireBarcode(input.barcode);
-        try {
-          return await deps.store.withTransaction(async (tx) => {
+        return withBarcodeConflict(() =>
+          deps.store.withTransaction(async (tx) => {
             const item = await tx.createItem({ ...input, barcode });
             await tx.setItemStockAndCost(item.id, input.stockOnHand, input.costPrice);
             await tx.insertActivity({
@@ -152,21 +147,16 @@ export function createRpcRouter(deps: RpcDeps) {
               ref: item.id,
             });
             return { ...item, stockOnHand: input.stockOnHand };
-          });
-        } catch (err) {
-          if (err instanceof Error && isUniqueViolation(err)) {
-            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
-          }
-          throw err;
-        }
+          }),
+        );
       }),
     ),
     itemsUpdate: os.itemsUpdate.handler(
       guardedInput(async (input) => {
         // item + audit entry commit in the same transaction; a moved item must
         // point at a real category, like create does (FK errors are not 500s)
-        try {
-          return await deps.store.withTransaction(async (tx) => {
+        return withBarcodeConflict(() =>
+          deps.store.withTransaction(async (tx) => {
             if (input.categoryId !== undefined) {
               const categories = await tx.listCategories();
               if (!categories.some((category) => category.id === input.categoryId)) {
@@ -182,13 +172,8 @@ export function createRpcRouter(deps: RpcDeps) {
             }
             await tx.insertActivity({ type: "ITEM_UPDATED", summary: `تعديل منتج ${item.name}`, ref: item.id });
             return item;
-          });
-        } catch (err) {
-          if (err instanceof Error && isUniqueViolation(err)) {
-            throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
-          }
-          throw err;
-        }
+          }),
+        );
       }),
     ),
     itemsLowStock: os.itemsLowStock.handler(guarded(async () => ({ items: await deps.store.listLowStockItems() }))),
@@ -225,6 +210,18 @@ export type RpcRouter = ReturnType<typeof createRpcRouter>;
 /** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
 function isUniqueViolation(err: Error): boolean {
   return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");
+}
+
+/** Maps the sqlite UNIQUE race on items.barcode to the stable BARCODE_EXISTS key. */
+async function withBarcodeConflict<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof Error && isUniqueViolation(err)) {
+      throw new ORPCError("CONFLICT", { message: "BARCODE_EXISTS" });
+    }
+    throw err;
+  }
 }
 
 /**

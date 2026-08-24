@@ -10,7 +10,7 @@ import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { normalizeBarcode } from "@dokan/contracts";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
-import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
+import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 
 /** Live profit preview: selling - cost, recomputed on every keystroke. */
@@ -56,7 +56,7 @@ export function ItemsPage() {
     <section>
       <h1 className="text-xl font-bold">{t("itemsTitle")}</h1>
       {notice && (
-        <p className="mt-2 rounded border bg-green-50 p-2 text-sm text-green-800" data-testid="scan-found">
+        <p className="mt-2 rounded border bg-green-50 p-2 text-sm text-green-800" data-testid="scan-found" role="status" aria-live="polite">
           {notice}
         </p>
       )}
@@ -106,11 +106,20 @@ function CatalogSearch() {
       <input
         className="w-full rounded border px-3 py-2"
         placeholder={t("itemsSearchPlaceholder")}
+        aria-label={t("itemsSearchPlaceholder")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         data-testid="catalog-search"
       />
-      {debounced.length > 0 && (
+      {search.isError && (
+        <div className="mt-2 flex items-center justify-between rounded border bg-red-50 p-2 text-sm text-red-700">
+          <span>{t("itemsSearchError")}</span>
+          <button type="button" className="underline" onClick={() => void search.refetch()}>
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      )}
+      {debounced.length > 0 && !search.isError && (
         <ul className="mt-2" data-testid="search-results">
           {search.data?.exact && (
             <li className="flex items-center justify-between rounded bg-stone-50 p-2 font-semibold">
@@ -129,11 +138,11 @@ function CatalogSearch() {
                     {match.item.barcode}
                   </span>
                 )}
-                <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-600">{t(`matchedBy${match.matchedBy.charAt(0)}${match.matchedBy.slice(1).toLowerCase()}`)}</span>
+                <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-600">{t(matchBadgeKey(match.matchedBy))}</span>
               </span>
             </li>
           ))}
-          {debounced.length > 0 && !search.isPending && !search.data?.exact && (search.data?.matches.length ?? 0) === 0 && (
+          {debounced.length > 0 && !search.isPending && !search.isError && !search.data?.exact && (search.data?.matches.length ?? 0) === 0 && (
             <li className="p-2 text-sm text-stone-500">{t("itemsSearchEmpty")}</li>
           )}
         </ul>

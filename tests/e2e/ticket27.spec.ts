@@ -25,7 +25,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await expect(page.getByText("بطاريات", { exact: true })).toBeVisible();
 
   await page.goto("/items");
-  await page.getByLabel("الاسم").fill("مكواة 27");
+  await page.getByTestId("item-name").fill("مكواة 27");
   await page.getByLabel("سعر الشراء (دج)").fill("2000");
   await page.getByLabel("سعر البيع (دج)").fill("3500");
   // threshold 0 keeps this item off the shared low-stock dashboard so the

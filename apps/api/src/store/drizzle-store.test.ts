@@ -95,6 +95,80 @@ describe("items", () => {
   });
 });
 
+describe("barcodes (ticket 28)", () => {
+  it("round-trips a barcode; uncoded items stay valid (null)", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    const coded = await store.createItem({ name: "كوددار", categoryId, costPrice: 100, sellingPrice: 150, barcode: "6291111111113" });
+    expect(coded.barcode).toBe("6291111111113");
+    const uncoded = await store.createItem({ name: "بلا كود", categoryId, costPrice: 50, sellingPrice: 80 });
+    expect(uncoded.barcode).toBeNull();
+
+    const found = await store.getItemByBarcode("6291111111113");
+    expect(found?.id).toBe(coded.id);
+    expect(await store.getItemByBarcode("0000000000000")).toBeUndefined();
+
+    // update can set and clear the barcode
+    await store.updateItem(uncoded.id, { id: uncoded.id, barcode: "BC-1" });
+    expect((await store.getItemByBarcode("BC-1"))?.id).toBe(uncoded.id);
+    await store.updateItem(uncoded.id, { id: uncoded.id, barcode: null });
+    expect((await store.getItemByBarcode("BC-1"))?.id).toBeUndefined();
+  });
+
+  it("rejects a duplicate barcode with a UNIQUE violation", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    await store.createItem({ name: "أول", categoryId, costPrice: 10, sellingPrice: 20, barcode: "DUP-1" });
+    await expect(
+      store.createItem({ name: "ثاني", categoryId, costPrice: 30, sellingPrice: 40, barcode: "DUP-1" }),
+    ).rejects.toThrow(/unique/i);
+  });
+
+  it("migrates a legacy items table (no barcode column) on setup", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-items-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // the pre-ticket-28 items shape: no barcode column, plus a row to prove data survives
+      legacy.raw.exec(
+        "CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL REFERENCES categories(id), cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL DEFAULT 5, stock_on_hand INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec("INSERT INTO categories (id, name, created_at, updated_at) VALUES ('cat-l', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec(
+        "INSERT INTO items (id, name, category_id, cost_price, selling_price, low_stock_threshold, stock_on_hand, created_at, updated_at) VALUES ('item-l', 'منتج قديم', 'cat-l', 10, 20, 5, 2, '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+      );
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+
+      // SAFETY: PRAGMA table_info returns rows shaped { name }
+      const rows = legacy.raw.query("PRAGMA table_info(items)").all() as Array<{ name: string }>;
+      expect(rows.map((r) => r.name)).toContain("barcode");
+
+      const migrated = await legacyStore.getItemByBarcode("NEW-1");
+      expect(migrated).toBeUndefined();
+      const updated = await legacyStore.updateItem("item-l", { id: "item-l", barcode: "NEW-1" });
+      expect(updated?.barcode).toBe("NEW-1");
+      const listed = await legacyStore.listItems();
+      expect(listed.find((i) => i.id === "item-l")?.name).toBe("منتج قديم");
+    } finally {
+      legacy.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+});
+
 describe("parties", () => {
   it("creates and lists customers and suppliers", async () => {
     const c = await store.createCustomer({ name: "يوسف", phone: "0550123123" });
@@ -407,5 +481,18 @@ describe("backup", () => {
     const cats = await backupStore.listCategories();
     expect(cats.length).toBeGreaterThanOrEqual(1);
     backupConn.close();
+  });
+});
+describe("barcode update collisions (test audit)", () => {
+  it("updateItem onto another item's barcode hits the same UNIQUE constraint", async () => {
+    const cats = await store.listCategories();
+    const categoryId = cats[0]!.id;
+    const a = await store.createItem({ name: "عناصر أ", categoryId, costPrice: 10, sellingPrice: 20, barcode: "UPD-A" });
+    const b = await store.createItem({ name: "عناصر ب", categoryId, costPrice: 30, sellingPrice: 40, barcode: "UPD-B" });
+    await expect(store.updateItem(b.id, { id: b.id, barcode: "UPD-A" })).rejects.toThrow(/unique/i);
+    // clearing A's barcode frees the code for B
+    await store.updateItem(a.id, { id: a.id, barcode: null });
+    const moved = await store.updateItem(b.id, { id: b.id, barcode: "UPD-A" });
+    expect(moved?.barcode).toBe("UPD-A");
   });
 });

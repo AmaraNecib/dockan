@@ -17,6 +17,9 @@ export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
   retries: 0,
+  // every spec shares one sqlite database (wipe -> setup -> login), so spec
+  // files must run sequentially; parallel workers would race first-time setup
+  workers: 1,
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     locale: "ar-DZ",
@@ -40,7 +43,14 @@ export default defineConfig({
       url: `http://127.0.0.1:${WEB_PORT}`,
       reuseExistingServer: false,
       timeout: 30_000,
-      env: { DOKAN_WEB_PORT: String(WEB_PORT), DOKAN_PORT: String(API_PORT) },
+      env: {
+        DOKAN_WEB_PORT: String(WEB_PORT),
+        DOKAN_PORT: String(API_PORT),
+        // enlarge the scanner's duplicate-suppression window under e2e so
+        // "rescan same code" is deterministically suppressed (typing takes
+        // ~150 ms) while "new scan after the window" stays provable
+        VITE_SCAN_DUPLICATE_WINDOW_MS: "1200",
+      },
     },
   ],
 });

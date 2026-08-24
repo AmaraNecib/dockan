@@ -197,6 +197,87 @@ describe("items", () => {
     expect(low.items.some((i) => i.id === created.id)).toBe(false);
   });
 });
+describe("catalog search + barcodes (ticket 28)", () => {
+  it("rejects catalogSearch without a session", async () => {
+    await expect(unauthed.catalogSearch({ query: "بطارية" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("creates items with normalized barcodes and finds them by exact scan", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    const created = await client.itemsCreate({
+      name: "حساس ضغط",
+      categoryId: catId,
+      costPrice: 500,
+      sellingPrice: 800,
+      barcode: " abc-123 ",
+    });
+    // boundary normalization: uppercased, spaces stripped
+    expect(created.barcode).toBe("ABC-123");
+
+    const result = await client.catalogSearch({ query: created.barcode! });
+    expect(result.exact?.item.id).toBe(created.id);
+    expect(result.matches).toHaveLength(0);
+  });
+
+  it("maps a duplicate barcode to CONFLICT BARCODE_EXISTS", async () => {
+    const categories = await client.categoriesList();
+    await expect(
+      client.itemsCreate({
+        name: "مكرر الكود",
+        categoryId: categories.items[0]!.id,
+        costPrice: 10,
+        sellingPrice: 20,
+        barcode: "ABC-123",
+      }),
+    ).rejects.toThrow(/BARCODE_EXISTS/);
+  });
+
+  it("ranks search results through the real store seam", async () => {
+    const found = await client.catalogSearch({ query: "بطارية" });
+    expect(found.exact).toBeNull();
+    for (const match of found.matches) {
+      expect(["BARCODE_PARTIAL", "NAME", "CATEGORY"]).toContain(match.matchedBy);
+    }
+  });
+
+  it("itemsCreateWithStock creates the item with initial stock in one unit", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreateWithStock({
+      name: "فلتر زيت",
+      categoryId: categories.items[0]!.id,
+      costPrice: 400,
+      sellingPrice: 650,
+      barcode: "FLT-001",
+      stockOnHand: 12,
+    });
+    expect(item.stockOnHand).toBe(12);
+    const listed = await client.itemsList();
+    expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
+  });
+});
+
+describe("ticket 28 follow-ups from test audit", () => {
+  it("two concurrent creates with the same barcode resolve as BARCODE_EXISTS, not a raw error", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    const results = await Promise.allSettled([
+      client.itemsCreate({ name: "سباق 1", categoryId: catId, costPrice: 10, sellingPrice: 20, barcode: "RACE-1" }),
+      client.itemsCreate({ name: "سباق 2", categoryId: catId, costPrice: 30, sellingPrice: 40, barcode: "RACE-1" }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect(String(rejected[0]!.reason)).toMatch(/BARCODE_EXISTS/);
+  });
+
+  it("rejects catalogSearch input that violates the schema boundaries", async () => {
+    await expect(client.catalogSearch({ query: "" })).rejects.toThrow();
+    await expect(client.catalogSearch({ query: "x".repeat(129) })).rejects.toThrow();
+  });
+});
+
 describe("stock ledger (ticket 27)", () => {
   async function makeItem(name: string, costPrice: number) {
     const categories = await client.categoriesList();
@@ -306,5 +387,6 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
     row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(25);
     expect(row.costPrice).toBe(130);
+
   });
 });

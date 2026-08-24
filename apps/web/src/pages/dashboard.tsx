@@ -17,11 +17,15 @@ export function DashboardPage() {
 
       <div className="mt-4 flex gap-3">
         <div className="flex-1 rounded border bg-white p-3">
-          <div className="text-2xl font-bold">{items.isPending || !items.data ? <Skeleton className="inline-block h-8 w-10" /> : items.data.items.length}</div>
+          <div className="text-2xl font-bold">
+            {items.isPending || !items.data ? <Skeleton className="inline-block h-8 w-10" /> : items.data.items.length}
+          </div>
           <div className="text-sm text-stone-500">{t("dashboardItemsCount")}</div>
         </div>
         <div className="flex-1 rounded border bg-white p-3">
-          <div className="text-2xl font-bold">{categories.isPending || !categories.data ? <Skeleton className="inline-block h-8 w-10" /> : categories.data.items.length}</div>
+          <div className="text-2xl font-bold">
+            {categories.isPending || !categories.data ? <Skeleton className="inline-block h-8 w-10" /> : categories.data.items.length}
+          </div>
           <div className="text-sm text-stone-500">{t("dashboardCategoriesCount")}</div>
         </div>
       </div>

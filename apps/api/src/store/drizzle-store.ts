@@ -43,6 +43,7 @@ const categoryCols = { id: categories.id, name: categories.name, createdAt: cate
 const itemCols = {
   id: items.id,
   name: items.name,
+  barcode: items.barcode,
   categoryId: items.categoryId,
   costPrice: items.costPrice,
   sellingPrice: items.sellingPrice,
@@ -104,7 +105,7 @@ const movementCols = {
 const toCategory = (r: typeof categories.$inferSelect): Category =>
   ({ id: r.id, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Category;
 const toItem = (r: typeof items.$inferSelect): Item =>
-  ({ id: r.id, name: r.name, categoryId: r.categoryId, costPrice: r.costPrice, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
+  ({ id: r.id, name: r.name, barcode: r.barcode, categoryId: r.categoryId, costPrice: r.costPrice, sellingPrice: r.sellingPrice, lowStockThreshold: r.lowStockThreshold, stockOnHand: r.stockOnHand, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies Item;
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
@@ -211,8 +212,22 @@ export function createDrizzleStore(conn: Connection): StorePort {
     for (const table of legacyTables) conn.raw.exec(`DROP TABLE ${table}`);
   };
 
+  /**
+   * Ticket 28: legacy databases predate the items.barcode column. CREATE
+   * TABLE IF NOT EXISTS cannot add it, so ALTER here when missing. New
+   * databases get the column from DDL and skip this entirely.
+   */
+  const ensureItemsBarcodeColumn = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(items)").all() as Array<{ name: string }>;
+    if (rows.length > 0 && !rows.some((row) => row.name === "barcode")) {
+      conn.raw.exec("ALTER TABLE items ADD COLUMN barcode TEXT");
+    }
+  };
+
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
+    ensureItemsBarcodeColumn();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
 
     const categoriesCount = await db.$count(categories);
@@ -264,6 +279,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const found = await db.select(itemCols).from(items).where(inArray(items.id, ids));
       return new Map(found.map((item) => [item.id, item]));
     },
+    async getItemByBarcode(barcode) {
+      const found = await db.select(itemCols).from(items).where(eq(items.barcode, barcode)).limit(1);
+      return found[0];
+    },
     async createItem(input: ItemCreate) {
       const row = firstRowOf(
         await db
@@ -271,6 +290,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
           .values({
             id: id(),
             name: input.name,
+            barcode: input.barcode ?? null,
             categoryId: input.categoryId,
             costPrice: input.costPrice,
             sellingPrice: input.sellingPrice,
@@ -290,6 +310,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
       if (patch.costPrice !== undefined) set.costPrice = patch.costPrice;
       if (patch.sellingPrice !== undefined) set.sellingPrice = patch.sellingPrice;
       if (patch.lowStockThreshold !== undefined) set.lowStockThreshold = patch.lowStockThreshold;
+      if (patch.barcode !== undefined) set.barcode = patch.barcode;
       const rows = await db.update(items).set(set).where(eq(items.id, idToUpdate)).returning();
       return rows.length === 0 ? undefined : toItem(firstRowOf(rows));
     },

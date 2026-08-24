@@ -719,9 +719,14 @@ export function createRpcRouter(deps: RpcDeps) {
             : input.storePhone === null || input.storePhone.trim() === ""
               ? null
               : requireStorePhone(input.storePhone);
-        const updated = await deps.store.updateSettings({ storeName: input.storeName, storePhone });
-        await deps.store.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
-        return updated;
+        // identity write + audit land in ONE transaction: a failed audit
+        // insert rolls the settings change back instead of persisting an
+        // un-audited identity that a retry would misrepresent (greptile P1)
+        return deps.store.withTransaction(async (tx) => {
+          const updated = await tx.updateSettings({ storeName: input.storeName, storePhone });
+          await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
+          return updated;
+        });
       }),
     ),
     activitiesList: os.activitiesList.handler(

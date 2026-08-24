@@ -8,9 +8,9 @@ import { RPCLink } from "@orpc/client/fetch";
 import type { DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
-import { createAuth } from "../auth/auth";
+import { createAuth, type BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
-import { createAppConfig } from "../config";
+import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { AppLogger } from "../lib/logger";
 import { createRpcRouter } from "./router";
@@ -28,10 +28,16 @@ let conn: Connection;
 let store: StorePort;
 let client: DokanClient;
 let unauthed: DokanClient;
+// hoisted so tests can rebuild an app+router against a modified store (the
+// settings-atomicity test) with the same config/auth/cookie as beforeAll
+let config: AppConfig;
+let logger: AppLogger;
+let auth: BetterAuthInstance;
+let cookie = "";
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-"));
-  const config = createAppConfig({
+  config = createAppConfig({
     DOKAN_DATA_DIR: dir,
     DOKAN_DB_PATH: path.join(dir, "test.db"),
     DOKAN_AUTH_SECRET: "test-auth-secret",
@@ -40,8 +46,8 @@ beforeAll(async () => {
   conn = openConnection(config);
   store = createDrizzleStore(conn);
   await store.setup();
-  const logger = new AppLogger(dir);
-  const auth = createAuth(conn.db, config);
+  logger = new AppLogger(dir);
+  auth = createAuth(conn.db, config);
   const app = createApp({ config, logger, auth, rpcRouter: createRpcRouter({ db: conn.db, config, logger, store, auth }) });
 
   await resetAdminPassword(
@@ -57,7 +63,7 @@ beforeAll(async () => {
     }),
   );
   expect(login.status).toBe(200);
-  const cookie = login.headers.get("set-cookie") ?? "";
+  cookie = login.headers.get("set-cookie") ?? "";
 
   const linkWith = (cookieToSend: string) =>
     new RPCLink({
@@ -534,6 +540,59 @@ describe("settings (ticket 10)", () => {
     }
     // nothing changed: name untouched, phone still the accepted one
     expect(await client.settingsGet()).toEqual({ storeName: "متجر ثابت", storePhone: "+213550123123" });
+  });
+
+  it("rolls the identity write back when the audit insert fails (atomicity)", async () => {
+    // baseline identity that a failed attempt must NOT clobber
+    await client.settingsUpdate({ storeName: "متجر ذرّي", storePhone: "0550123123" });
+    const auditBefore = (await store.listActivities(100)).filter((a) => a.type === "SETTINGS_UPDATED").length;
+
+    // store whose transaction-unit audit write throws: updateSettings goes
+    // through the real tx and INSERTs, then insertActivity rejects -> the
+    // whole unit must ROLL BACK. Pre-fix wiring (two separate calls) would
+    // leave the new identity committed with no audit record. A typed spread
+    // wrapper keeps the real methods (this.*-style calls still resolve) while
+    // overriding only the audit write — no dynamic dispatch.
+    const failingStore: StorePort = {
+      ...store,
+      withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransaction((realTx: StorePort) =>
+          fn({
+            ...realTx,
+            insertActivity: async () => {
+              throw new Error("audit-boom");
+            },
+          }),
+        ),
+    };
+    const failingApp = createApp({
+      config,
+      logger,
+      auth,
+      rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: failingStore, auth }),
+    });
+    const failingLink = new RPCLink({
+      url: () => `http://127.0.0.1:${config.port}/api/rpc`,
+      // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+      fetch: (request) => {
+        const headers = Object.fromEntries(request.headers.entries());
+        if (cookie !== "") headers.cookie = cookie;
+        return Promise.resolve(failingApp.fetch(new Request(request, { headers })));
+      },
+    });
+    const failingClient: DokanClient = createORPCClient(failingLink);
+
+    // the whole unit must abort (oRPC surfaces it as a generic server error);
+    // the real proof is the rollback below — with the pre-fix two-call wiring
+    // this call would still reject after committing the new identity
+    await expect(
+      failingClient.settingsUpdate({ storeName: "متجر ذرّي 2", storePhone: "066 12 34 56 7" }),
+    ).rejects.toThrow();
+
+    // identity unchanged AND no phantom audit row appeared
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر ذرّي", storePhone: "+213550123123" });
+    const auditAfter = (await store.listActivities(100)).filter((a) => a.type === "SETTINGS_UPDATED").length;
+    expect(auditAfter).toBe(auditBefore);
   });
 });
 

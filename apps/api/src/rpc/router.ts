@@ -169,8 +169,11 @@ export function createRpcRouter(deps: RpcDeps) {
             seq: undefined,
           };
           let stockAfter: number;
+          let projectedLayers: ReturnType<typeof projectLedger>["layers"];
           try {
-            stockAfter = historyWithRemaining([...existing, candidate]).at(-1)!.stockAfter;
+            const projection = projectLedger([...existing, candidate]);
+            stockAfter = projection.stockOnHand;
+            projectedLayers = projection.layers;
           } catch (err) {
             if (err instanceof StockLedgerError) {
               throw new ORPCError("BAD_REQUEST", { message: err.code });
@@ -188,10 +191,22 @@ export function createRpcRouter(deps: RpcDeps) {
             occurredAt: candidate.occurredAt,
           });
 
-          // keep the fast path in sync: inflows blend cost (ADR-0002),
-          // outflows leave the average untouched
+          // keep the fast path in sync. Inflows blend cost (ADR-0002) ONLY
+          // when they land after every existing movement — blending a
+          // backdated inflow against present holdings would misstate the
+          // average. Backdated inflows instead recompute cost_price from the
+          // ledger's own remaining layer value, which is position-independent.
+          const isNewest = existing.length === 0 || candidate.occurredAt >= existing.at(-1)!.occurredAt;
+          const layerValue = projectedLayers.reduce((sum, layer) => sum + layer.quantity * layer.unitCost, 0);
+          const layerQty = projectedLayers.reduce((sum, layer) => sum + layer.quantity, 0);
           const newCost =
-            input.delta > 0 ? averageCostAfter(item.costPrice, item.stockOnHand, input.delta, unitCost!) : item.costPrice;
+            input.delta <= 0
+              ? item.costPrice
+              : isNewest
+                ? averageCostAfter(item.costPrice, item.stockOnHand, input.delta, unitCost!)
+                : layerQty > 0
+                  ? Math.round(layerValue / layerQty)
+                  : unitCost ?? 0;
           await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تسوية مخزون ${item.name}`, ref: item.id });
           return movement;

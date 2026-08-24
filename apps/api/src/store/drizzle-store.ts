@@ -227,26 +227,16 @@ export function createDrizzleStore(conn: Connection): StorePort {
 
     // Opening-balance backfill (ticket 27): any item with no ledger history
     // gets exactly one synthetic "opening" movement derived from its current
-    // stock/cost. Idempotent by the zero-count guard — real movements are
-    // never duplicated, and re-running setup is a no-op.
+    // stock/cost. The conditional INSERT..WHERE NOT EXISTS is atomic at the
+    // SQLite statement level, so repeated setups (or a second process racing
+    // boot) can never double-insert the opening row.
     const ledgerItems = await db.select(itemCols).from(items);
     for (const item of ledgerItems) {
-      if ((await db.$count(stockMovements, eq(stockMovements.itemId, item.id))) === 0) {
-        await db
-          .insert(stockMovements)
-          .values({
-            id: id(),
-            itemId: item.id,
-            kind: "MANUAL_ADJUSTMENT",
-            delta: item.stockOnHand,
-            unitCost: item.costPrice,
-            reason: "opening",
-            ref: null,
-            occurredAt: item.createdAt,
-            createdAt: now(),
-          })
-          .run();
-      }
+      await db.run(sql`
+        INSERT INTO stock_movements (id, item_id, kind, delta, unit_cost, reason, ref, occurred_at, created_at)
+        SELECT ${id()}, ${item.id}, 'MANUAL_ADJUSTMENT', ${item.stockOnHand}, ${item.costPrice}, 'opening', NULL, ${item.createdAt}, ${now()}
+        WHERE NOT EXISTS (SELECT 1 FROM stock_movements WHERE item_id = ${item.id})
+      `);
     }
   }
 

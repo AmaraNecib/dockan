@@ -271,3 +271,40 @@ describe("stock ledger (ticket 27)", () => {
     });
   });
 });
+
+describe("stock ledger — backdated inflows (greptile P1)", () => {
+  it("recomputes cost from ledger layers instead of blending against present holdings", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({
+      name: "ledger-backdated",
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 250,
+      lowStockThreshold: 0,
+    });
+
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100 });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 200 });
+    // chronological inflow blends the ADR-0002 average
+    let row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(150);
+
+    // now insert an inflow BACKDATED before both existing movements
+    await client.stockAddManual({
+      itemId: item.id,
+      delta: 5,
+      unitCost: 50,
+      occurredAt: "2020-01-01T08:00:00",
+    });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(3);
+    expect(history.movements[0]).toMatchObject({ unitCost: 50, stockAfter: 5 }); // sorted first
+    expect(history.stockOnHand).toBe(25);
+
+    // layers after insertion: 5@50, 10@100, 10@200 → value 3250 / qty 25 → 130
+    row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(25);
+    expect(row.costPrice).toBe(130);
+  });
+});

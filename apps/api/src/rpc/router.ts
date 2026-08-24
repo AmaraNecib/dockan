@@ -11,6 +11,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
 import { historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { createBackup } from "../lib/backups";
 import { localDateTime } from "../lib/logger";
 
 export type RpcContext = { request: Request };
@@ -271,7 +272,19 @@ export function createRpcRouter(deps: RpcDeps) {
     settingsUpdate: os.settingsUpdate.handler(guarded(notImplemented("settingsUpdate"))),
     activitiesList: os.activitiesList.handler(guarded(notImplemented("activitiesList"))),
     diagnosticsLogsTail: os.diagnosticsLogsTail.handler(guarded(notImplemented("diagnosticsLogsTail"))),
-    backupManual: os.backupManual.handler(guarded(notImplemented("backupManual"))),
+    backupManual: os.backupManual.handler(
+      guarded(async () => {
+        // checkpoint+copy through the store seam; the audit entry lands only
+        // after the file exists, so a failed copy never logs a phantom backup
+        const result = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
+        await deps.store.insertActivity({
+          type: "BACKUP_CREATED",
+          summary: `نسخة احتياطية ${result.path.split(/[\\/]/).pop()}`,
+          ref: result.path,
+        });
+        return result;
+      }),
+    ),
   };
 }
 

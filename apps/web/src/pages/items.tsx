@@ -40,6 +40,11 @@ export function ItemsPage() {
   // window-level wedge capture: works without any input focus
   async function handleScan(code: string) {
     const seq = ++scanSeqRef.current;
+    // a new scan supersedes ALL previous feedback immediately: a confirmed
+    // miss must not display under an older found-item/lookup-error notice,
+    // and a found item must not leave a stale dialog open (review P2)
+    setNotice(null);
+    setUnknownCode(null);
     let result;
     try {
       result = await rpcClient.catalogSearch({ query: code });

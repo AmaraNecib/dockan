@@ -560,6 +560,20 @@ describe("purchase intake (ticket 29)", () => {
     expect(list.items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
+  it("defaults omitted line prices to the item's cost in the header totals", async () => {
+    const item = await makeItem("سطر-بلا-سعر", 250);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      initialPaid: 500,
+      lines: [{ itemId: item.id, quantity: 4 }], // no unitPrice → cost 250 each
+    });
+    // header must agree with the persisted line: 4 × 250, not 4 × 0
+    expect(invoice.totalAmount).toBe(1000);
+    expect(invoice.paidAmount).toBe(500);
+    expect(invoice.remainingAmount).toBe(500);
+    expect(invoice.lines[0]!.unitPrice).toBe(250);
+  });
+
   it("blends the weighted average when later inflows land on an invoiced item", async () => {
     const item = await makeItem("شراء-خلط", 200);
     await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 4, unitPrice: 250 }] });

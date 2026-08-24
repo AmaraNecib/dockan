@@ -306,8 +306,9 @@ export function PurchasePage() {
 }
 
 /** Post-save proposal: one-click attribution of earlier uninvoiced stock */
-function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
+export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const proposal = useQuery(orpc.purchasesProposal.queryOptions({ input: { invoiceId } }));
   const [linkedMsg, setLinkedMsg] = useState<string | null>(null);
 
@@ -315,6 +316,12 @@ function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
     orpc.purchasesLinkStock.mutationOptions({
       onSuccess: (result) => {
         setLinkedMsg(t("purchasesLinked", { linked: result.linked, remainder: result.remainderMoved }));
+        // SAFETY: without this refetch the stale proposal keeps showing the old
+        // proposedLinkQty with an enabled button, and a second submit reports
+        // zero units linked (greptile round-2)
+        void queryClient.invalidateQueries({
+          queryKey: orpc.purchasesProposal.queryKey({ input: { invoiceId } }),
+        });
       },
       onError: (err) => setLinkedMsg(tError(err.message)),
     }),

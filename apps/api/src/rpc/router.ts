@@ -330,7 +330,14 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
         }
-        const totalAmount = input.lines.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? 0), 0);
+        // omitted line prices default to the item's cost here too — using 0
+        // would make total/remaining disagree with the persisted lines and
+        // reject any positive initialPaid against a too-small total
+        const totalAmount = input.lines.reduce((sum, line) => {
+          // SAFETY: every itemId was resolved in itemsById by the loop above
+          const unitPrice = line.unitPrice ?? itemsById.get(line.itemId)!.costPrice;
+          return sum + line.quantity * unitPrice;
+        }, 0);
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) {
           throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });

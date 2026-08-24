@@ -21,6 +21,15 @@ import type {
 
 export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings };
 
+/** Attribution record between a purchase invoice and earlier uninvoiced stock. */
+export interface StockLink {
+  id: string;
+  invoiceId: string;
+  movementId: string;
+  quantity: number;
+  createdAt: string;
+}
+
 /**
  * StorePort — the persistence seam. Procedures and use cases depend on this
  * interface and nothing else; no SQL or driver names escape it (ADR-0003).
@@ -51,6 +60,13 @@ export interface StorePort {
   listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
 
+  // --- purchase linkage (ticket 29) ----------------------------------------
+  /** appends an attribution record between a purchase invoice and an earlier
+   * uninvoiced movement; the ledger itself is never rewritten */
+  insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
+  /** all links whose movement belongs to the item (link consumption audit) */
+  listStockLinksByItem(itemId: string): Promise<StockLink[]>;
+
   listCustomers(): Promise<Customer[]>;
   createCustomer(input: PartyCreate): Promise<Customer>;
   listSuppliers(): Promise<Supplier[]>;
@@ -60,11 +76,16 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Reserves the next invoice number atomically in the database. */
+  allocateInvoiceNumber(): Promise<string>;
+  /** Legacy read seam retained for diagnostics and existing callers. */
   lastInvoiceNumber(): Promise<string | undefined>;
   insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">): Promise<Invoice>;
   insertInvoiceLine(line: Omit<InvoiceLine, "id">): Promise<InvoiceLine>;
   insertPayment(p: Omit<Payment, "id" | "createdAt">): Promise<Payment>;
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
+  /** single line lookup; entry point for purchase corrections */
+  getInvoiceLine(lineId: string): Promise<InvoiceLine | undefined>;
   listInvoices(filters: InvoiceListFilters): Promise<{ items: Invoice[]; totalCount: number }>;
   setInvoicePaidAmounts(id: string, paidAmount: number, remainingAmount: number): Promise<void>;
   debtSummaries(): Promise<DebtSummary[]>;

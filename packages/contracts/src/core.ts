@@ -343,6 +343,48 @@ export const stockAddManualInputSchema = z.object({
   reason: z.string().trim().optional(),
   /** Algeria-local moment; defaults to now at the api */
   occurredAt: localDateTimeSchema.optional(),
+  /** PURCHASE = stock-in without an invoice (ticket 29); defaults to a plain adjustment */
+  kind: z.enum(["PURCHASE", "MANUAL_ADJUSTMENT"]).default("MANUAL_ADJUSTMENT"),
+});
+
+// --- purchase intake (ticket 29) -------------------------------------------
+
+export const purchaseAllocationSchema = z.object({
+  itemId: idSchema,
+  quantity: z.number().int().positive(),
+});
+
+export const purchasesLinkStockInputSchema = z.object({
+  invoiceId: idSchema,
+  allocations: z.array(purchaseAllocationSchema).min(1),
+});
+
+export const purchasesLinkStockOutputSchema = z.object({
+  /** total quantity attributed to earlier uninvoiced movements */
+  linked: z.number().int().min(0),
+  /** allocation share not matched to earlier uninvoiced stock — already
+   * covered by the invoice's own posting, so no movement is created */
+  remainderMoved: z.number().int().min(0),
+});
+
+export const purchasesProposalOutputSchema = z.object({
+  invoiceId: idSchema,
+  items: z.array(
+    z.object({
+      itemId: idSchema,
+      itemName: z.string(),
+      lineQuantity: z.number().int().min(0),
+      uninvoicedQty: z.number().int().min(0),
+      proposedLinkQty: z.number().int().min(0),
+      remainderQty: z.number().int().min(0),
+    }),
+  ),
+});
+
+export const purchasesCorrectLineInputSchema = z.object({
+  lineId: idSchema,
+  quantity: z.number().int().positive(),
+  unitCost: dinarsSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -432,3 +474,4 @@ export type InvoicePay = z.infer<typeof invoicePayInputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
 export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;
+export type PurchaseAllocation = z.infer<typeof purchaseAllocationSchema>;

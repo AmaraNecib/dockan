@@ -83,7 +83,8 @@ describe("stock movements — persistence + ordering", () => {
     const rows = await store.listStockMovements(item.id);
     // earliest day first; same-timestamp pair keeps insertion order
     expect(rows.map((r) => r.delta)).toEqual([-1, 10, -2]);
-    // within the same timestamp, the earlier-inserted row has the smaller seq
+    // Arabic reason strings round-trip through sqlite unchanged
+    expect(rows.find((r) => r.delta === -2)?.reason).toBe("كسر");
     const pair = rows.filter((r) => r.occurredAt === "2025-05-02T10:00:00");
     expect(pair.length).toBe(2);
     expect(pair[0]!.delta).toBe(10);

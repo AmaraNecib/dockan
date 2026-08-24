@@ -91,3 +91,21 @@ Playwright (`tests/e2e/ticket27.spec.ts`):
 - **Concurrency:** single bun:sqlite connection + withTransaction keeps movement+stock
   atomic; same caveat as ADR-0003 postgres note.
 - **Negative stock:** UI blocks it; API rejects with `STOCK_NEGATIVE` error key (i18n).
+
+## Known limitations (accepted for ticket 27 — revisit when invoices land)
+
+- **Dual-source-of-truth risk:** `items.stock_on_hand`/`cost_price` is a fast-path cache
+  kept in sync only by writers that dual-write. Today those are `stockAddManual` and the
+  backfill. The invoice flow currently calls bare `setItemStockAndCost`; when invoice work
+  starts it MUST also append movements, or derived ledger stock silently diverges from the
+  cached column. Follow-up: consistency check comparing `projectLedger` to the column,
+  and route invoice stock changes through the ledger.
+- **Costing duality:** ADR-0002 weighted average (`cost_price`) and FIFO layers are two
+  different lenses on cost; they legitimately disagree after partial consumption. Profit
+  previews read `cost_price`; future COGS from the ledger reads FIFO layers. Reconcile or
+  pick one when invoices consume layers.
+- **`ref` column unwired:** reserved for invoice linkage; always null until then.
+- **`stockAsOf` not exposed:** implemented + unit-tested at the seam; RPC/UI exposure
+  (stock-as-of date control) deferred to a later ticket.
+- **Single-process assumption:** backfill idempotency relies on the single serialized
+  connection; two OS processes on one DB file could race the count-then-insert guard.

@@ -168,7 +168,9 @@ function ItemList() {
             <td className="p-3">{item.sellingPrice}</td>
             <td className="p-3">{item.sellingPrice - item.costPrice}</td>
             <td className="p-3">
-              {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              <span data-testid="stock-after-cell">
+                {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              </span>
             </td>
             <td className="p-3">
               <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-stone-600 underline hover:text-stone-900">

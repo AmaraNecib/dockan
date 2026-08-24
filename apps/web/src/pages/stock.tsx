@@ -148,6 +148,7 @@ export function ItemHistoryPage() {
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("historyKind")}</th>
               <th className="p-3">{t("historyDelta")}</th>
+              <th className="p-3">{t("stockUnitCost")}</th>
               <th className="p-3">{t("historyStockAfter")}</th>
             </tr>
           </thead>
@@ -167,6 +168,7 @@ export function ItemHistoryPage() {
                 <td className={`p-3 ${movement.delta > 0 ? "text-green-700" : "text-red-700"}`}>
                   {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
                 </td>
+                <td className="p-3">{movement.unitCost ?? "—"}</td>
                 <td className="p-3 font-semibold" data-testid="stock-after">
                   {movement.stockAfter}
                 </td>

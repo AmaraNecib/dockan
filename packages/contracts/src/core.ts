@@ -269,8 +269,8 @@ export const settingsUpdateInputSchema = z.object({
 
 export const stockAddManualInputSchema = z.object({
   itemId: idSchema,
-  /** signed; nonzero. Positive inflows should carry unitCost. */
-  delta: z.number().int().refine((v) => v !== 0, "delta must not be zero"),
+  /** signed; nonzero; magnitude-capped so sqlite INTEGER + JS number stay exact */
+  delta: z.number().int().refine((v) => v !== 0 && Math.abs(v) <= 1_000_000, "delta must be a nonzero integer within ±1,000,000"),
   unitCost: dinarsSchema.optional(),
   reason: z.string().trim().optional(),
   /** Algeria-local moment; defaults to now at the api */

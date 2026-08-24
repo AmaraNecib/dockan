@@ -154,7 +154,9 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
-          const unitCost = input.unitCost ?? (input.delta > 0 ? item.costPrice : null);
+          // inflows default to the item's current cost; outflows carry no
+          // unit cost — storing one would be a misleading "fact"
+          const unitCost = input.delta > 0 ? (input.unitCost ?? item.costPrice) : null;
 
           // validate the WHOLE projected history incl. the candidate row —
           // negative stock is rejected before anything is written

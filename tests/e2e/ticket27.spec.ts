@@ -2,8 +2,9 @@ import { expect, test } from "@playwright/test";
 
 /**
  * Ticket 27 e2e flow: create an item, add stock manually through the ledger,
- * verify the raised stock, open the item history and check the derived
- * stock-after column plus the opening movement marker.
+ * verify the raised stock in the items list, open the item history and check
+ * the derived stock-after column, then confirm an oversell is rejected and
+ * changes nothing. (Opening-row backfill behavior is covered by store tests.)
  */
 test("add stock manually, item history shows movements with derived stock", async ({ page }) => {
   // 0. first-time setup + sign in
@@ -41,8 +42,8 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await stockForm.getByRole("button", { name: "تسجيل" }).click();
   await expect(page.getByTestId("stock-done")).toContainText("تم تسجيل الحركة");
 
-  // 3. the items list reflects the new stock (no longer low-stock badge)
-  await expect(page.getByRole("row", { name: /مكواة 27/ })).toContainText("6");
+  // 3. the items list reflects the new stock (exact cell match, not substring)
+  await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
 
   // 4. history: the manual movement with derived stock-after. A fresh item
   // has no ledger history before this, so exactly one row exists (the
@@ -57,10 +58,12 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await expect(rows.first()).toContainText("+6");
   await expect(page.getByTestId("stock-after").last()).toHaveText("6");
 
-  // 5. overselling is rejected by the api with a translated error
+  // 5. overselling is rejected by the api with a translated error…
   await page.goto("/items");
   await page.getByTestId("stock-form").getByRole("combobox").selectOption({ label: "مكواة 27" });
   await page.getByTestId("stock-delta").fill("-99");
   await page.getByTestId("stock-form").getByRole("button", { name: "تسجيل" }).click();
   await expect(page.getByTestId("stock-error")).toContainText("الكمية غير متوفرة في المخزون");
+  // …and the rejected delta changed nothing
+  await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
 });

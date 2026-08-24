@@ -109,3 +109,8 @@ Playwright (`tests/e2e/ticket27.spec.ts`):
   (stock-as-of date control) deferred to a later ticket.
 - **Single-process assumption:** backfill idempotency relies on the single serialized
   connection; two OS processes on one DB file could race the count-then-insert guard.
+- **Costing method must stay pluggable (future):** FIFO vs LIFO must remain a read-time
+  projection parameter over immutable movement rows (`projectLedger` consumption order),
+  never baked into stored data. Sale documents must snapshot their original cost basis
+  and computed profit at creation (like `invoice_lines.cost_at_sale`) so a later method
+  switch can show "original vs recomputed" without rewriting history.

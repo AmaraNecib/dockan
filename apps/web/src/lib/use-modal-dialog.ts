@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
  * trapped inside the dialog, and focus returns to the previously focused
  * element on close. Pairs with role="dialog" + aria-modal on the panel.
  */
+const FOCUSABLE_SELECTOR = "input:not([tabindex='-1']), button:not([tabindex='-1']), select:not([tabindex='-1']), textarea:not([tabindex='-1']), [tabindex]:not([tabindex='-1'])";
+
 export function useModalDialog<T extends HTMLElement>(open: boolean, onClose: () => void) {
   const panelRef = useRef<T>(null);
   const { t } = useTranslation();
@@ -19,7 +21,7 @@ export function useModalDialog<T extends HTMLElement>(open: boolean, onClose: ()
 
     // move focus into the dialog once it has painted
     const raf = requestAnimationFrame(() => {
-      const first = panel?.querySelector<HTMLElement>("input, button, select, textarea, [tabindex]:not([tabindex='-1'])");
+      const first = panel?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
       first?.focus();
     });
 
@@ -32,7 +34,7 @@ export function useModalDialog<T extends HTMLElement>(open: boolean, onClose: ()
       if (event.key === "Tab" && panel !== null) {
         // cycle focus within the dialog
         const focusables = Array.from(
-          panel.querySelectorAll<HTMLElement>("input, button, select, textarea, [tabindex]:not([tabindex='-1'])"),
+          panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
         ).filter((el) => !el.hasAttribute("disabled"));
         if (focusables.length === 0) return;
         const active = document.activeElement;

@@ -158,6 +158,89 @@ describe("item-picker-dialog keyboard behavior", () => {
     expect(state.selected?.id).toBe("00000000-0000-4000-8000-00000000000b"); // فلتر زيت ranks first
   });
 
+  it("moves the visual active row with arrows and wraps in both directions", async () => {
+    let selections = 0;
+    const { host } = renderPicker({ onClose: () => {}, onSelect: () => selections++ });
+    await typeQuery(host, "بط");
+
+    const input = host.querySelector<HTMLInputElement>("input")!;
+    const options = () => Array.from(host.querySelectorAll<HTMLElement>("[role='option']"));
+
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+
+    // Down starts at the first ranked row and announces it to assistive tech.
+    pressKey("ArrowDown", input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(options()[0]!.id);
+    expect(options()[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(options()[0]!.querySelector("button")!.className).toContain("bg-stone-200");
+
+    // Down advances, then wraps to the first row at the end.
+    pressKey("ArrowDown", input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(options()[1]!.id);
+    expect(options()[0]!.getAttribute("aria-selected")).toBe("false");
+    pressKey("ArrowDown", input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(options()[0]!.id);
+
+    // Up from the first row wraps to the final ranked row.
+    pressKey("ArrowUp", input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(options()[1]!.id);
+    expect(options()[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(selections).toBe(0);
+  });
+
+  it("keeps arrow navigation on the combobox without tabbable row divergence", async () => {
+    const state: SelectionState = { selected: null };
+    const { host } = renderPicker({ onClose: () => {}, onSelect: (it) => (state.selected = it) });
+    await typeQuery(host, "بط");
+
+    const input = host.querySelector<HTMLInputElement>("input")!;
+    const rowButtons = Array.from(host.querySelectorAll<HTMLButtonElement>("[role='option'] button"));
+    expect(rowButtons.map((button) => button.tabIndex)).toEqual([-1, -1]);
+
+    input.focus();
+    pressKey("ArrowDown", input);
+    expect(document.activeElement).toBe(input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(host.querySelector("[role='option']")!.id);
+
+    // The native exact-match action remains available, but ranked row buttons
+    // are not candidates for the modal's forward or reverse Tab movement.
+    pressKey("Tab", input);
+    expect(rowButtons.some((button) => button === document.activeElement)).toBe(false);
+    input.focus();
+    pressKey("Tab", input, { shiftKey: true });
+    expect(rowButtons.some((button) => button === document.activeElement)).toBe(false);
+
+    // Removing a row from the Tab sequence does not remove mouse selection.
+    act(() => rowButtons[0]!.click());
+    expect(state.selected?.id).toBe("00000000-0000-4000-8000-00000000000b");
+  });
+
+  it("clears the active row when the query changes", async () => {
+    const { host } = renderPicker({ onClose: () => {}, onSelect: () => {} });
+    await typeQuery(host, "بط");
+    const input = host.querySelector<HTMLInputElement>("input")!;
+
+    pressKey("ArrowDown", input);
+    expect(input.getAttribute("aria-activedescendant")).not.toBeNull();
+
+    await typeQuery(host, "مص");
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(host.querySelectorAll("[aria-selected='true']")).toHaveLength(0);
+  });
+
+  it("Enter selects the active ranked row instead of resetting to the first", async () => {
+    const state: SelectionState = { selected: null };
+    const { host } = renderPicker({ onClose: () => {}, onSelect: (it) => (state.selected = it) });
+    await typeQuery(host, "بط");
+    const input = host.querySelector<HTMLInputElement>("input")!;
+
+    pressKey("ArrowDown", input);
+    pressKey("ArrowDown", input);
+    pressKey("Enter", input);
+
+    expect(state.selected?.id).toBe("00000000-0000-4000-8000-00000000000c"); // مصباح, the second ranked match
+  });
+
   it("Escape closes through the shared modal-dialog seam", async () => {
     let closed = false;
     const { host } = renderPicker({ onClose: () => (closed = true), onSelect: () => {} });
@@ -171,7 +254,7 @@ describe("item-picker-dialog keyboard behavior", () => {
     await typeQuery(host, "بط");
 
     const panel = host.querySelector<HTMLElement>("[role='dialog']")!;
-    const focusables = Array.from(panel.querySelectorAll<HTMLElement>("input, button"));
+    const focusables = Array.from(panel.querySelectorAll<HTMLElement>("input, button")).filter((element) => element.tabIndex >= 0);
     const input = host.querySelector("input")!;
     input.focus();
     expect(document.activeElement).toBe(input);

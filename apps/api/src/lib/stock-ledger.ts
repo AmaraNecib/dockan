@@ -137,3 +137,30 @@ export function averageCostAfter(
   if (totalQty === 0) return currentAvgCost;
   return Math.round((currentAvgCost * currentQty + inboundUnitCost * inboundQty) / totalQty);
 }
+
+/**
+ * Recompute the ADR-0002 running weighted average from scratch by replaying
+ * the full ledger chronologically: inflows blend into the running average,
+ * outflows only reduce quantity. Position-independent — this is the single
+ * source of truth for `cost_price` after ANY write, including backdated
+ * inserts, so callers never need special-case math per insertion point.
+ */
+export function weightedAverageCost(
+  movements: readonly LedgerMovement[],
+  opts: { fallbackUnitCost?: number } = {},
+): number {
+  let quantity = 0;
+  let average = 0;
+  for (const movement of ordered(movements)) {
+    if (movement.delta > 0) {
+      average = averageCostAfter(
+        average,
+        quantity,
+        movement.delta,
+        movement.unitCost ?? opts.fallbackUnitCost ?? 0,
+      );
+    }
+    quantity += movement.delta;
+  }
+  return average;
+}

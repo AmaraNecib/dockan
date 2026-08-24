@@ -8,7 +8,7 @@ import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
-import { averageCostAfter, historyWithRemaining, projectLedger, StockLedgerError } from "../lib/stock-ledger";
+import { historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { localDateTime } from "../lib/logger";
 
 export type RpcContext = { request: Request };
@@ -169,11 +169,8 @@ export function createRpcRouter(deps: RpcDeps) {
             seq: undefined,
           };
           let stockAfter: number;
-          let projectedLayers: ReturnType<typeof projectLedger>["layers"];
           try {
-            const projection = projectLedger([...existing, candidate]);
-            stockAfter = projection.stockOnHand;
-            projectedLayers = projection.layers;
+            stockAfter = projectLedger([...existing, candidate]).stockOnHand;
           } catch (err) {
             if (err instanceof StockLedgerError) {
               throw new ORPCError("BAD_REQUEST", { message: err.code });
@@ -191,22 +188,13 @@ export function createRpcRouter(deps: RpcDeps) {
             occurredAt: candidate.occurredAt,
           });
 
-          // keep the fast path in sync. Inflows blend cost (ADR-0002) ONLY
-          // when they land after every existing movement — blending a
-          // backdated inflow against present holdings would misstate the
-          // average. Backdated inflows instead recompute cost_price from the
-          // ledger's own remaining layer value, which is position-independent.
-          const isNewest = existing.length === 0 || candidate.occurredAt >= existing.at(-1)!.occurredAt;
-          const layerValue = projectedLayers.reduce((sum, layer) => sum + layer.quantity * layer.unitCost, 0);
-          const layerQty = projectedLayers.reduce((sum, layer) => sum + layer.quantity, 0);
+          // keep the fast path in sync. cost_price is the ADR-0002 running
+          // weighted average, so after ANY write — including a backdated one
+          // — we recompute it by replaying the full ledger chronologically
+      // (inflows blend, outflows only reduce quantity). No special-casing
+          // per insertion position; the model stays uniform.
           const newCost =
-            input.delta <= 0
-              ? item.costPrice
-              : isNewest
-                ? averageCostAfter(item.costPrice, item.stockOnHand, input.delta, unitCost!)
-                : layerQty > 0
-                  ? Math.round(layerValue / layerQty)
-                  : unitCost ?? 0;
+            input.delta > 0 ? weightedAverageCost([...existing, candidate]) : item.costPrice;
           await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تسوية مخزون ${item.name}`, ref: item.id });
           return movement;

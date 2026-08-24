@@ -17,3 +17,17 @@ statement level. Idempotency tests unchanged and passing.
 ## Evidence
 - typecheck 3/3 · oxlint clean · bun test 87 pass · e2e 3 passed
 - Prior battery: f2361d2-*.md + verification pass 14379f0-code-review.md (READY)
+
+## Round 2 — Greptile 4/5 finding: backdated inflows switch costing models — FIXED
+Valid finding. The round-1 fix (remaining FIFO layer value) used the wrong valuation
+model for cost_price. Replaced with the model-correct approach:
+`weightedAverageCost()` in apps/api/src/lib/stock-ledger.ts replays the FULL ledger
+chronologically under ADR-0002 (inflows blend into the running average; outflows only
+reduce quantity). Router now uses it for every inflow write — no per-position
+special cases at all. Position-independent by construction.
+
+New unit tests pin the exact property Greptile flagged: after a sale consumes the
+entire cheap layer, cost_price stays 200 (ADR-0002), NOT 300 (FIFO layer avg).
+Backdated regression test still passes with replay math (130).
+
+Gates: typecheck 3/3 · oxlint clean · bun test 90 pass · e2e 3 passed.

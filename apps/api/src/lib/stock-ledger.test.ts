@@ -6,6 +6,7 @@ import {
   historyWithRemaining,
   projectLedger,
   stockAsOf,
+  weightedAverageCost,
 } from "./stock-ledger";
 
 /**
@@ -132,5 +133,37 @@ describe("averageCostAfter (ADR-0002 weighted average)", () => {
   });
   it("keeps the average when nothing is held", () => {
     expect(averageCostAfter(0, 0, 8, 125)).toBe(125);
+  });
+});
+
+describe("weightedAverageCost (ADR-0002 replay)", () => {
+  const m = (delta: number, unitCost: number | null, occurredAt: string) => ({
+    kind: delta > 0 ? "PURCHASE" : "SALE",
+    delta,
+    unitCost,
+    occurredAt,
+  } as const);
+
+  it("matches incremental blending for chronological inflows", () => {
+    expect(
+      weightedAverageCost([m(10, 500, "2025-01-01T00:00:00"), m(10, 700, "2025-01-02T00:00:00")]),
+    ).toBe(600);
+  });
+
+  it("is position-independent: a backdated inflow yields the historical replay average, not FIFO layer value", () => {
+    // chronological: 5@50, 10@100 → avg 83; then 10@200 → (83*15 + 2000)/25 = 130
+    const movements = [
+      m(10, 100, "2025-01-02T00:00:00"),
+      m(10, 200, "2025-01-03T00:00:00"),
+      m(5, 50, "2025-01-01T00:00:00"), // backdated
+    ];
+    expect(weightedAverageCost(movements)).toBe(130);
+  });
+
+  it("outflows never change the average — unlike FIFO layer valuation", () => {
+    // 10@100 + 10@300 → avg 200; sale of the ENTIRE cheap layer
+    const movements = [m(10, 100, "2025-01-01T00:00:00"), m(10, 300, "2025-01-02T00:00:00"), m(-10, null, "2025-01-03T00:00:00")];
+    // FIFO remaining-layer avg would say 300; ADR-0002 says the average is untouched
+    expect(weightedAverageCost(movements)).toBe(200);
   });
 });

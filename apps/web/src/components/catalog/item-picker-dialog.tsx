@@ -162,6 +162,7 @@ export function ItemPickerDialog({
               >
                 <button
                   type="button"
+                  tabIndex={-1}
                   className={`flex w-full items-center justify-between rounded p-2 text-right ${isActive ? "bg-stone-200 ring-2 ring-inset ring-stone-500" : "hover:bg-stone-100"}`}
                   onClick={() => onSelect(match.item)}
                 >

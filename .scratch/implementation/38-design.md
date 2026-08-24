@@ -21,6 +21,9 @@ hit remains a distinct action as it is today.
   stable row id, with a listbox/list-option structure and `aria-selected` on the active
   option. Visual selected state uses the existing stone palette and a stronger focus
   ring; the active option is scrolled into view when navigation changes it.
+- Ranked row buttons remain mouse-clickable but use `tabIndex={-1}`. The shared modal
+  focusable selector excludes explicit `tabindex=-1` controls, so its Tab trap keeps
+  DOM focus on the combobox/exact action rather than creating a second row focus model.
 - Escape remains owned by `useModalDialog`'s capture listener (and the input's existing
   close path), while Tab remains owned by the shared focus trap. No global scanner or
   invoice seams are changed.

@@ -188,6 +188,33 @@ describe("item-picker-dialog keyboard behavior", () => {
     expect(selections).toBe(0);
   });
 
+  it("keeps arrow navigation on the combobox without tabbable row divergence", async () => {
+    const state: SelectionState = { selected: null };
+    const { host } = renderPicker({ onClose: () => {}, onSelect: (it) => (state.selected = it) });
+    await typeQuery(host, "بط");
+
+    const input = host.querySelector<HTMLInputElement>("input")!;
+    const rowButtons = Array.from(host.querySelectorAll<HTMLButtonElement>("[role='option'] button"));
+    expect(rowButtons.map((button) => button.tabIndex)).toEqual([-1, -1]);
+
+    input.focus();
+    pressKey("ArrowDown", input);
+    expect(document.activeElement).toBe(input);
+    expect(input.getAttribute("aria-activedescendant")).toBe(host.querySelector("[role='option']")!.id);
+
+    // The native exact-match action remains available, but ranked row buttons
+    // are not candidates for the modal's forward or reverse Tab movement.
+    pressKey("Tab", input);
+    expect(rowButtons.some((button) => button === document.activeElement)).toBe(false);
+    input.focus();
+    pressKey("Tab", input, { shiftKey: true });
+    expect(rowButtons.some((button) => button === document.activeElement)).toBe(false);
+
+    // Removing a row from the Tab sequence does not remove mouse selection.
+    act(() => rowButtons[0]!.click());
+    expect(state.selected?.id).toBe("00000000-0000-4000-8000-00000000000b");
+  });
+
   it("clears the active row when the query changes", async () => {
     const { host } = renderPicker({ onClose: () => {}, onSelect: () => {} });
     await typeQuery(host, "بط");
@@ -227,7 +254,7 @@ describe("item-picker-dialog keyboard behavior", () => {
     await typeQuery(host, "بط");
 
     const panel = host.querySelector<HTMLElement>("[role='dialog']")!;
-    const focusables = Array.from(panel.querySelectorAll<HTMLElement>("input, button"));
+    const focusables = Array.from(panel.querySelectorAll<HTMLElement>("input, button")).filter((element) => element.tabIndex >= 0);
     const input = host.querySelector("input")!;
     input.focus();
     expect(document.activeElement).toBe(input);

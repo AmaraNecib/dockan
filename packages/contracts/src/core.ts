@@ -24,6 +24,8 @@ export const localDateTimeSchema = z.string().regex(
 // built from them so the api's drizzle schema can import the same literals.
 export const invoiceKinds = ["SALE", "PURCHASE"] as const;
 export const paymentMethods = ["CASH", "BANK"] as const;
+/** append-only stock ledger movement kinds (ticket 27) */
+export const movementKinds = ["PURCHASE", "SALE", "MANUAL_ADJUSTMENT"] as const;
 export const activityTypes = [
   "LOGIN",
   "PASSWORD_RESET",
@@ -35,6 +37,7 @@ export const activityTypes = [
   "PURCHASE_CREATED",
   "PAYMENT_RECORDED",
   "BACKUP_CREATED",
+  "STOCK_ADJUSTED",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -125,6 +128,29 @@ export const paymentSchema = z.object({
 });
 
 export const activityTypeSchema = z.enum(activityTypes);
+
+export const movementKindSchema = z.enum(movementKinds);
+
+/** One append-only ledger row (ticket 27). Raw fact — never rewritten. */
+export const stockMovementSchema = z.object({
+  id: idSchema,
+  itemId: idSchema,
+  kind: movementKindSchema,
+  /** signed quantity: positive = stock in, negative = stock out */
+  delta: z.number().int(),
+  /** per-unit cost of an inflow; null for outflows */
+  unitCost: dinarsSchema.nullable(),
+  reason: z.string().nullable(),
+  /** linked invoice id when the movement originates from one */
+  ref: z.string().nullable(),
+  occurredAt: localDateTimeSchema,
+  createdAt: localDateTimeSchema,
+});
+
+export const stockMovementWithBalanceSchema = stockMovementSchema.extend({
+  /** derived remaining stock right after this movement (FIFO projection) */
+  stockAfter: z.number().int().min(0),
+});
 
 export const activitySchema = z.object({
   id: idSchema,
@@ -241,6 +267,16 @@ export const settingsUpdateInputSchema = z.object({
   storePhone: z.string().trim().nullable().optional(),
 });
 
+export const stockAddManualInputSchema = z.object({
+  itemId: idSchema,
+  /** signed; nonzero; magnitude-capped so sqlite INTEGER + JS number stay exact */
+  delta: z.number().int().refine((v) => v !== 0 && Math.abs(v) <= 1_000_000, "delta must be a nonzero integer within ±1,000,000"),
+  unitCost: dinarsSchema.optional(),
+  reason: z.string().trim().optional(),
+  /** Algeria-local moment; defaults to now at the api */
+  occurredAt: localDateTimeSchema.optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
@@ -261,6 +297,11 @@ export const entityListOutputSchema = z.object({
 export const invoiceListOutputSchema = z.object({
   items: z.array(invoiceSchema),
   totalCount: z.number().int().min(0),
+});
+
+export const itemHistoryOutputSchema = z.object({
+  movements: z.array(stockMovementWithBalanceSchema),
+  stockOnHand: z.number().int().min(0),
 });
 
 export const debtsOutputSchema = z.object({
@@ -304,6 +345,9 @@ export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 export type Payment = z.infer<typeof paymentSchema>;
 export type Activity = z.infer<typeof activitySchema>;
 export type ActivityType = z.infer<typeof activityTypeSchema>;
+export type MovementKind = z.infer<typeof movementKindSchema>;
+export type StockMovement = z.infer<typeof stockMovementSchema>;
+export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
 

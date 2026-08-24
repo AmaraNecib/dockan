@@ -1,9 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Skeleton } from "@/components/ui/skeleton";
+
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { StockForm } from "./stock";
 
 /** Live profit preview: selling - cost, recomputed on every keystroke. */
 function profitPreview(costText: string, sellText: string): number | null {
@@ -19,6 +23,7 @@ export function ItemsPage() {
     <section>
       <h1 className="text-xl font-bold">{t("itemsTitle")}</h1>
       <ItemForm />
+      <StockForm />
       <ItemList />
     </section>
   );
@@ -126,6 +131,21 @@ function ItemList() {
   const { t } = useTranslation();
   const items = useQuery(orpc.itemsList.queryOptions());
 
+  // first load: skeleton rows matching the table shape so layout does not jump
+  if (items.isPending || !items.data) {
+    return (
+      <div className="mt-6 grid gap-3 rounded border bg-white p-3">
+        {[0, 1, 2, 3].map((row) => (
+          <Skeleton key={row} className="h-6 w-full" />
+        ))}
+      </div>
+    );
+  }
+
+  if (items.data.items.length === 0) {
+    return <p className="mt-6 rounded border bg-white p-3 text-stone-500">{t("itemsEmpty")}</p>;
+  }
+
   return (
     <table className="mt-6 w-full rounded border bg-white">
       <thead>
@@ -136,6 +156,7 @@ function ItemList() {
           <th className="p-3">{t("itemsSell")}</th>
           <th className="p-3">{t("itemsProfitPerUnit", { profit: "" })}</th>
           <th className="p-3">{t("dashboardItemsCount")}</th>
+          <th className="p-3" />
         </tr>
       </thead>
       <tbody>
@@ -147,7 +168,14 @@ function ItemList() {
             <td className="p-3">{item.sellingPrice}</td>
             <td className="p-3">{item.sellingPrice - item.costPrice}</td>
             <td className="p-3">
-              {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              <span data-testid="stock-after-cell">
+                {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              </span>
+            </td>
+            <td className="p-3">
+              <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-stone-600 underline hover:text-stone-900">
+                {t("historyLink")}
+              </Link>
             </td>
           </tr>
         ))}

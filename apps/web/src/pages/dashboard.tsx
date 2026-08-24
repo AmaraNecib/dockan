@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
+import { Skeleton } from "@/components/ui/skeleton";
+
 import { orpc } from "../lib/rpc";
 
 export function DashboardPage() {
@@ -15,17 +17,23 @@ export function DashboardPage() {
 
       <div className="mt-4 flex gap-3">
         <div className="flex-1 rounded border bg-white p-3">
-          <div className="text-2xl font-bold">{items.data?.items.length ?? "…"}</div>
+          <div className="text-2xl font-bold">{items.isPending || !items.data ? <Skeleton className="inline-block h-8 w-10" /> : items.data.items.length}</div>
           <div className="text-sm text-stone-500">{t("dashboardItemsCount")}</div>
         </div>
         <div className="flex-1 rounded border bg-white p-3">
-          <div className="text-2xl font-bold">{categories.data?.items.length ?? "…"}</div>
+          <div className="text-2xl font-bold">{categories.isPending || !categories.data ? <Skeleton className="inline-block h-8 w-10" /> : categories.data.items.length}</div>
           <div className="text-sm text-stone-500">{t("dashboardCategoriesCount")}</div>
         </div>
       </div>
 
       <h2 className="mt-6 font-semibold">{t("dashboardLowStock")}</h2>
-      {lowStock.data && lowStock.data.items.length === 0 ? (
+      {lowStock.isPending || !lowStock.data ? (
+        <div className="mt-2 grid gap-3 rounded border bg-white p-3">
+          {[0, 1].map((row) => (
+            <Skeleton key={row} className="h-6 w-full" />
+          ))}
+        </div>
+      ) : lowStock.data.items.length === 0 ? (
         <p className="mt-2 text-stone-500">{t("dashboardLowStockEmpty")}</p>
       ) : (
         <ul className="mt-2 divide-y rounded border bg-white">

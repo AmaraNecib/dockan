@@ -37,4 +37,12 @@ test("manual export backup creates today's file", async ({ page }) => {
   expect(fs.existsSync(backupPath)).toBe(true);
   const ageMs = Date.now() - fs.statSync(backupPath).mtimeMs;
   expect(ageMs).toBeLessThan(60_000);
+
+  // The activity log stores the filesystem path for a backup, but the UI must
+  // show its useful filename rather than the same eight-character ID preview
+  // used for entity references.
+  await page.goto("/activity");
+  const backupRow = page.getByTestId("activity-table").locator("tbody tr").filter({ hasText: todayName });
+  await expect(backupRow.first()).toBeVisible();
+  await expect(backupRow.first().getByTestId("activity-ref")).toHaveText(todayName);
 });

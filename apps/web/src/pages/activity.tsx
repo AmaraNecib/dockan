@@ -19,7 +19,14 @@ export function ActivityLogPage() {
     <section>
       <h1 className="text-xl font-bold">{t("activityTitle")}</h1>
 
-      {activities.isPending || !activities.data ? (
+      {activities.isError ? (
+        <div className="mt-4 flex items-center justify-between rounded border bg-red-50 p-3 text-sm text-red-700">
+          <span>{t("activityError")}</span>
+          <button type="button" className="underline" onClick={() => void activities.refetch()}>
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      ) : activities.isPending || !activities.data ? (
         <div className="mt-4 grid gap-3 rounded border bg-white p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />

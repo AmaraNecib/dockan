@@ -29,6 +29,7 @@ const resources = {
       navActivity: "سجل النشاط",
       activityTitle: "سجل النشاط",
       activityEmpty: "لا توجد حركات بعد",
+      activityError: "تعذّر تحميل السجل، تحقق من الاتصال",
       activityType: "النوع",
       activitySummary: "الوصف",
       activityRef: "المرجع",

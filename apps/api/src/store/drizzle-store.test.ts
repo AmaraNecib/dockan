@@ -273,18 +273,33 @@ describe("barcodes (ticket 28)", () => {
       // modern, fully discounted: zero default, negotiated 700, net 0
       stale.raw.exec("INSERT INTO invoices VALUES ('modern-free', 'INV-FREE', 'SALE', NULL, NULL, '2026-02-02', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-02T00:00:00', '2026-02-02T00:00:00')");
       stale.raw.exec("INSERT INTO invoice_lines VALUES ('modern-free-line', 'modern-free', NULL, 'منتج بدون سعر افتراضي', 1, 0, 700, 100, 700, 700, 0)");
+      // modern purchase with a zero cost basis bought at an explicit price —
+      // default (item cost 0) legitimately differs from the actual unit price
+      stale.raw.exec("INSERT INTO invoices VALUES ('modern-purchase', 'INV-PURCHASE', 'PURCHASE', NULL, NULL, '2026-02-03', 700, NULL, NULL, 0, 700, 700, 0, NULL, '2026-02-03T00:00:00', '2026-02-03T00:00:00')");
+      stale.raw.exec("INSERT INTO invoice_lines VALUES ('modern-purchase-line', 'modern-purchase', NULL, 'شراء بسعر صريح', 1, 0, 700, 700, 700, 0, 700)");
       // pre-migration line the interrupted backfill never reached
       stale.raw.exec("INSERT INTO invoices VALUES ('legacy-late', 'INV-LATE', 'SALE', NULL, NULL, '2026-01-01', 0, NULL, NULL, 0, 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       stale.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-late-line', 'legacy-late', NULL, 'منتج قديم', 1, 0, 200, 100, 200, 0, 0)");
 
+      // byte-identical proof: the modern rows' full column state before setup()
+      // must survive setup() untouched; only the marker lands
+      const modernRows = ["modern-plain-line", "modern-free-line", "modern-purchase-line"] as const;
+      const before = modernRows.map((id) => stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id));
+
       const staleStore = createDrizzleStore(stale);
       await staleStore.setup();
 
-      // the two modern zero-default snapshots survive untouched…
+      for (const [index, id] of modernRows.entries()) {
+        expect(stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id)).toEqual(before[index]!);
+      }
+
+      // the modern zero-default snapshots survive untouched…
       const plain = await staleStore.getInvoiceDetail("modern-plain");
       expect(plain?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 0, netTotal: 700 });
       const free = await staleStore.getInvoiceDetail("modern-free");
       expect(free?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
+      const purchased = await staleStore.getInvoiceDetail("modern-purchase");
+      expect(purchased?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 0, netTotal: 700 });
       // …while the invariant-consistent pre-migration line still heals
       const late = await staleStore.getInvoiceDetail("legacy-late");
       expect(late).toMatchObject({ subtotalAmount: 200 });

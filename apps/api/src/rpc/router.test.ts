@@ -390,3 +390,26 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
 
   });
 });
+
+describe("backups (ticket 13)", () => {
+  it("rejects backupManual without a session", async () => {
+    await expect(unauthed.backupManual()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("exports a copy under dataDir/backups and logs BACKUP_CREATED", async () => {
+    const result = await client.backupManual();
+
+    // file exists under the configured data dir with the daily name shape
+    expect(result.path).toContain(path.join("backups", ""));
+    expect(path.basename(result.path)).toMatch(/^dokan-\d{4}-\d{2}-\d{2}\.db$/);
+    expect(fs.existsSync(result.path)).toBe(true);
+    expect(result.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+
+    // the audit entry lands after the copy succeeds (checked through the
+    // store directly: activitiesList is ticket #12's seam, still a stub)
+    const activities = await store.listActivities(10);
+    const backupEntry = activities.find((a) => a.type === "BACKUP_CREATED");
+    expect(backupEntry).toBeDefined();
+    expect(backupEntry!.ref).toBe(result.path);
+  });
+});

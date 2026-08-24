@@ -13,6 +13,7 @@ import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
 import { createAppConfig } from "./config";
 import { openConnection } from "./db/connection";
+import { ensureDailyBackup } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -27,6 +28,23 @@ const conn = openConnection(config);
 const store = createDrizzleStore(conn);
 
 await store.setup();
+
+// daily startup backup (ticket 13): one copy per Algeria-local day. A failed
+// backup is logged loudly but must not block boot — a full disk should not
+// stop the shop from selling.
+try {
+  const daily = await ensureDailyBackup({ store, dataDir: config.dataDir });
+  if (daily.created) {
+    await store.insertActivity({
+      type: "BACKUP_CREATED",
+      summary: `نسخة احتياطية يومية ${daily.path.split(/[\\/]/).pop()}`,
+      ref: daily.path,
+    });
+  }
+} catch (err) {
+  logger.error("SERVER_ERROR", "daily startup backup failed", err instanceof Error ? err : new Error(String(err)));
+}
+
 const auth = createAuth(conn.db, config);
 const rpcRouter = createRpcRouter({ db: conn.db, config, logger, store, auth });
 const deps: AppDeps = { config, logger, auth, rpcRouter };

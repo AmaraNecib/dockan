@@ -5,6 +5,7 @@ import { CategoriesPage } from "./pages/categories";
 import { DashboardPage } from "./pages/dashboard";
 import { ItemsPage } from "./pages/items";
 import { ItemHistoryPage } from "./pages/stock";
+import { BackupsPage } from "./pages/backups";
 import "./lib/i18n";
 
 const rootRoute = createRootRoute({
@@ -22,6 +23,9 @@ const rootRoute = createRootRoute({
             </Link>
             <Link to="/items" className="text-stone-600 hover:text-stone-900">
               {t("navItems")}
+            </Link>
+            <Link to="/backups" className="text-stone-600 hover:text-stone-900">
+              {t("navBackups")}
             </Link>
           </nav>
         </header>
@@ -41,7 +45,8 @@ const itemHistoryRoute = createRoute({
   path: "/items/$itemId/history",
   component: ItemHistoryPage,
 });
+const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/backups", component: BackupsPage });
 
-const routeTree = rootRoute.addChildren([dashboardRoute, categoriesRoute, itemsRoute, itemHistoryRoute]);
+const routeTree = rootRoute.addChildren([dashboardRoute, categoriesRoute, itemsRoute, itemHistoryRoute, backupsRoute]);
 
 export const router = createRouter({ routeTree });

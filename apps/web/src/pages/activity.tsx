@@ -34,6 +34,7 @@ export function ActivityLogPage() {
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("activityType")}</th>
               <th className="p-3">{t("activitySummary")}</th>
+              <th className="p-3">{t("activityRef")}</th>
             </tr>
           </thead>
           <tbody>
@@ -46,6 +47,10 @@ export function ActivityLogPage() {
                   <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-700">{t(`activityType_${entry.type}`)}</span>
                 </td>
                 <td className="p-3">{entry.summary}</td>
+                {/* ref is the related item/invoice id; null for flow-less entries like login */}
+                <td className="p-3 font-mono text-xs text-stone-500" dir="ltr" data-testid="activity-ref">
+                  {entry.ref ? entry.ref.slice(0, 8) : "—"}
+                </td>
               </tr>
             ))}
           </tbody>

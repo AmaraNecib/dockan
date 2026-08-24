@@ -31,6 +31,7 @@ const resources = {
       activityEmpty: "لا توجد حركات بعد",
       activityType: "النوع",
       activitySummary: "الوصف",
+      activityRef: "المرجع",
       activityType_LOGIN: "تسجيل دخول",
       activityType_PASSWORD_RESET: "إعادة تعيين كلمة السر",
       activityType_CATEGORY_CREATED: "إنشاء تصنيف",

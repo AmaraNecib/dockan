@@ -26,7 +26,7 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   await page.goto("/items");
   const categoryOption = page.getByRole("combobox").locator("option", { hasText: "سجل-تصنيف-12" });
   await expect(categoryOption).toHaveCount(1);
-  await page.getByLabel("الاسم").fill("سجل-منتج-12");
+  await page.getByLabel("الاسم", { exact: true }).fill("سجل-منتج-12");
   await page.getByLabel("سعر الشراء (دج)").fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByRole("button", { name: "حفظ" }).click();
@@ -37,5 +37,7 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   const rows = page.getByTestId("activity-table").locator("tbody tr");
   await expect(rows.first()).toContainText("إنشاء منتج");
   await expect(rows.first()).toContainText("سجل-منتج-12");
+  // the item creation carries its related item id as a ref
+  await expect(rows.first().getByTestId("activity-ref")).not.toHaveText("—");
   await expect(rows.nth(1)).toContainText("إنشاء تصنيف");
 });

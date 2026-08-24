@@ -42,6 +42,13 @@ interface SearchFixture {
 
 let fixture: SearchFixture = { exact: null, matches: [] };
 
+interface RenderedPicker {
+  closeCalls: number;
+}
+
+let mountedRoots: Array<{ unmount: () => void }> = [];
+let previousPickers: RenderedPicker[] = [];
+
 // The picker resolves matches through orpc.catalogSearch.queryOptions; mock
 // the rpc module so tests drive fixtures without a network seam.
 mock.module("@/lib/rpc", () => ({
@@ -63,15 +70,25 @@ function renderPicker(handlers: { onClose: () => void; onSelect: (item: Item) =>
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host = document.createElement("div");
   document.body.appendChild(host);
+  const picker: RenderedPicker = { closeCalls: 0 };
   const root = createRoot(host);
+  mountedRoots.push(root);
+  previousPickers.push(picker);
   act(() => {
     root.render(
       <QueryClientProvider client={client}>
-        <ItemPickerDialog open={true} onClose={handlers.onClose} onSelect={handlers.onSelect} />
+        <ItemPickerDialog
+          open={true}
+          onClose={() => {
+            picker.closeCalls++;
+            handlers.onClose();
+          }}
+          onSelect={handlers.onSelect}
+        />
       </QueryClientProvider>,
     );
   });
-  return { host, root };
+  return { host };
 }
 
 /** act-wrapped polling so every deferred state update stays inside React */
@@ -104,10 +121,7 @@ const pressKey = (key: string, target: EventTarget = window, init: KeyboardEvent
 };
 
 describe("item-picker-dialog keyboard behavior", () => {
-  let unmounts: Array<() => void> = [];
-
   beforeEach(() => {
-    unmounts = [];
     document.body.innerHTML = "";
     fixture = {
       exact: match(item("00000000-0000-4000-8000-00000000000a", "بطارية", "ABC1"), "BARCODE_EXACT"),
@@ -119,9 +133,20 @@ describe("item-picker-dialog keyboard behavior", () => {
   });
 
   afterEach(() => {
-    for (const fn of unmounts) fn();
-    unmounts = [];
-    document.body.innerHTML = "";
+    const roots = mountedRoots;
+    mountedRoots = [];
+    try {
+      for (const root of roots) act(() => root.unmount());
+      // A leaked root would still receive this event after its host is removed.
+      for (const picker of previousPickers) {
+        const closeCalls = picker.closeCalls;
+        pressKey("Escape");
+        expect(picker.closeCalls).toBe(closeCalls);
+      }
+    } finally {
+      previousPickers = [];
+      document.body.innerHTML = "";
+    }
   });
 
   it("Enter selects the first ranked match", async () => {
@@ -135,12 +160,10 @@ describe("item-picker-dialog keyboard behavior", () => {
 
   it("Escape closes through the shared modal-dialog seam", async () => {
     let closed = false;
-    const { host, root } = renderPicker({ onClose: () => (closed = true), onSelect: () => {} });
+    const { host } = renderPicker({ onClose: () => (closed = true), onSelect: () => {} });
     await typeQuery(host, "بط");
     pressKey("Escape");
     expect(closed).toBe(true);
-    unmounts.push(() => root.unmount());
-    void host;
   });
 
   it("traps Tab focus inside the dialog and wraps in both directions", async () => {

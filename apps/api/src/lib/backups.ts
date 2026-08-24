@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -34,23 +35,40 @@ export function backupFilePath(dataDir: string, localDateString: string = localD
 export type BackupResult = { path: string; createdAt: string };
 
 /**
- * SAFETY: SQLite files start with the 16-byte magic string "SQLite format 3\0"
- * (https://www.sqlite.org/fileformat.html#the_database_header). A truncated or
- * half-written copy virtually never carries it, so this cheap probe rejects
- * incomplete files without running a full integrity_check.
+ * A file only counts as today's backup when it opens as a real SQLite db AND
+ * passes `PRAGMA quick_check` — a magic header alone can survive a truncation
+ * that cut whole pages off the tail (greptile P1 on the header-probe fix).
+ * quick_check is O(db size) but runs once per day at startup, so the cost is
+ * bounded by one daily copy of a small shop database.
  */
-function looksLikeSqliteFile(p: string): boolean {
+function isValidSqliteBackup(p: string): boolean {
+  let copy: Database | null = null;
   try {
-    const fd = fs.openSync(p, "r");
-    try {
-      const header = Buffer.alloc(16);
-      const bytes = fs.readSync(fd, header, 0, 16, 0);
-      return bytes === 16 && header.toString("latin1") === "SQLite format 3\0";
-    } finally {
-      fs.closeSync(fd);
-    }
+    // readonly: validation must never write to (or create WAL for) the backup
+    copy = new Database(p, { readonly: true });
+    // SAFETY: PRAGMA quick_check returns exactly one row with a "quick_check" text column
+    const row = copy.query("PRAGMA quick_check").get() as
+      | { quick_check?: string }
+      | undefined;
+    return row?.quick_check === "ok";
   } catch {
     return false;
+  } finally {
+    try {
+      copy?.close();
+    } catch {
+      /* already closed */
+    }
+    // opening a WAL-mode copy read-only makes SQLite create empty -wal/-shm
+    // sidecars beside it; remove them so the backups dir stays
+    // one-file-per-day by construction
+    for (const suffix of ["-wal", "-shm"] as const) {
+      try {
+        fs.unlinkSync(`${p}${suffix}`);
+      } catch {
+        /* sidecar was not created */
+      }
+    }
   }
 }
 
@@ -87,7 +105,7 @@ export async function createBackup({ store, dataDir }: { store: StorePort; dataD
  * Startup daily backup: creates today's file only when a *valid* one does not
  * exist yet, so restarting the app ten times a day never multiplies copies.
  * Existence alone is not trust: a truncated or corrupt file (crash mid-copy,
- * full disk) fails the SQLite-header probe and is rebuilt from the live db.
+ * full disk) fails the quick_check probe and is rebuilt from the live db.
  * Returns `created: false` when today's valid copy already exists.
  */
 export async function ensureDailyBackup({
@@ -101,7 +119,7 @@ export async function ensureDailyBackup({
   today?: string;
 }): Promise<{ path: string; created: boolean }> {
   const dest = backupFilePath(dataDir, today);
-  if (fs.existsSync(dest) && looksLikeSqliteFile(dest)) return { path: dest, created: false };
+  if (fs.existsSync(dest) && isValidSqliteBackup(dest)) return { path: dest, created: false };
   await writeBackupCopy(store, dest);
   return { path: dest, created: true };
 }

@@ -87,7 +87,9 @@ describe("daily startup backup", () => {
     const second = await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-25" });
     expect(second.created).toBe(false);
 
-    const files = fs.readdirSync(backupDirFor(dir)).filter((f) => f.startsWith("dokan-2026-08-25"));
+    // SAFETY: backup names are exactly "dokan-<date>.db" (backupFileNameFor);
+    // a strict match also proves validation leaves no -wal/-shm sidecars behind
+    const files = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2026-08-25\.db$/.test(f));
     expect(files).toEqual(["dokan-2026-08-25.db"]);
 
     // the retained copy predates the later category
@@ -117,6 +119,33 @@ describe("daily startup backup", () => {
       // SAFETY: categories.name is TEXT in every row of this table (schema.ts)
       const names = copy.query("SELECT name FROM categories").all() as Array<{ name: string }>;
       expect(names.length).toBeGreaterThan(0);
+    } finally {
+      copy.close();
+    }
+  });
+
+  it("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
+    const day = "2026-08-30";
+
+    // force a multi-page db so a mid-file cut keeps the header but loses pages
+    for (let i = 0; i < 400; i++) {
+      await store.createCategory({ name: `امتلاء-${i}` });
+    }
+    await ensureDailyBackup({ store, dataDir: dir, today: day });
+    const dest = backupFilePath(dir, day);
+    const fullSize = fs.statSync(dest).size;
+    expect(fullSize).toBeGreaterThan(8192); // more than two 4096-byte pages
+
+    // cut the tail: header (first 100 bytes) survives, later pages are gone
+    fs.truncateSync(dest, Math.floor(fullSize / 2));
+
+    const result = await ensureDailyBackup({ store, dataDir: dir, today: day });
+    expect(result.created).toBe(true);
+    expect(fs.statSync(dest).size).toBe(fullSize); // rebuilt from the live db
+
+    const copy = new Database(dest, { readonly: true });
+    try {
+      expect(copy.query("PRAGMA quick_check").get()).toEqual({ quick_check: "ok" });
     } finally {
       copy.close();
     }

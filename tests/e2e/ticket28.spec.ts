@@ -63,11 +63,11 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
     if (request.url().includes("/api/rpc/catalogSearch")) searchCalls++;
   });
 
-  await page.keyboard.type("6210001000017", { delay: 4 });
+  await page.keyboard.type("6210001000017", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("بطارية");
 
-  await page.keyboard.type("UNKNOWN-999", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-999", { delay: 12 });
   await page.keyboard.press("Enter");
   const dialog = page.getByTestId("unknown-scan-dialog");
   await expect(dialog).toBeVisible();
@@ -78,7 +78,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   // 4. true duplicate suppression: rescanning the SAME code inside the
   //    duplicate window (~150 ms of typing vs a 1200 ms window) must be
   //    swallowed — no second catalogSearch RPC, no state change.
-  await page.keyboard.type("UNKNOWN-999", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-999", { delay: 12 });
   await page.keyboard.press("Enter");
   await page.waitForTimeout(400); // settle past any in-flight work
   expect(searchCalls).toBe(callsBeforeDuplicate); // suppressed, not re-sent
@@ -91,7 +91,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await expect(rowsWithUnknownCode).toHaveCount(0);
 
   // 5. unknown scan -> create item prefilled with the scanned barcode
-  await page.keyboard.type("UNKNOWN-777", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-777", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create").click();
@@ -104,12 +104,12 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   // rescanning now finds it instead of opening the dialog — past the e2e
   // duplicate window (1200 ms) plus margin
   await page.waitForTimeout(1500);
-  await page.keyboard.type("UNKNOWN-777", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-777", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("منتج ممسوح");
 
   // 6. create-with-stock path lands stock on hand > 0
-  await page.keyboard.type("UNKNOWN-555", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-555", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
@@ -161,9 +161,9 @@ test("stale scan lookups never overwrite newer results", async ({ page }) => {
     await route.continue();
   });
 
-  await page.keyboard.type("UNKNOWN-RACE", { delay: 4 });
+  await page.keyboard.type("UNKNOWN-RACE", { delay: 12 });
   await page.keyboard.press("Enter");
-  await page.keyboard.type("9990000000011", { delay: 4 });
+  await page.keyboard.type("9990000000011", { delay: 12 });
   await page.keyboard.press("Enter");
 
   // the fast KNOWN scan's success notice must win immediately…
@@ -204,8 +204,9 @@ test("scan while focus is inside an input commits through the editable regime", 
   // focus stays INSIDE an editable field: a tight burst is still a scan, and
   // the keys also feed the field (both regimes must hold at once)
   const search = page.getByTestId("catalog-search");
-  search.focus();
-  await page.keyboard.type("8880000000019", { delay: 4 });
+  // await focus: an un-awaited focus() races the first keystroke and drops it
+  await search.focus();
+  await page.keyboard.type("8880000000019", { delay: 12 });
   await page.keyboard.press("Enter");
 
   // the wedge path recognized the burst…

@@ -362,7 +362,8 @@ export const purchasesLinkStockInputSchema = z.object({
 export const purchasesLinkStockOutputSchema = z.object({
   /** total quantity attributed to earlier uninvoiced movements */
   linked: z.number().int().min(0),
-  /** quantity that arrived with the invoice and became a new linked movement */
+  /** allocation share not matched to earlier uninvoiced stock — already
+   * covered by the invoice's own posting, so no movement is created */
   remainderMoved: z.number().int().min(0),
 });
 

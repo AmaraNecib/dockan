@@ -24,9 +24,10 @@ type RpcDeps = {
   auth: BetterAuthInstance;
 };
 
-/** reason marker burned into movements created by deferred linking; the
- * prefix distinguishes them from the invoice's own intake movements */
-const LINK_REASON_PREFIX = "ربط بفاتورة";
+/** reason prefix burned into purchase-line corrections; the line id rides as
+ * a #suffix so N corrections of one line reverse the PREVIOUS effective
+ * quantity instead of re-reversing the untouched original */
+const CORRECTION_REASON_PREFIX = "تصحيح فاتورة";
 
 /** next invoice number: INV-%04d after the stored last number (+1,
  * zero-padded); an absent or unparseable value restarts at 0001 */
@@ -67,19 +68,14 @@ async function uninvoicedAvailability(store: StorePort, itemId: string): Promise
   return available;
 }
 
-/** how much of one item's line this invoice has ALREADY attributed: links
- * pointing at earlier uninvoiced movements + remainder movements this invoice
- * itself created. Capping re-links at (line − already) keeps repeated calls
- * idempotent instead of minting duplicate stock. */
+/** how much of one item's line this invoice has ALREADY attributed via
+ * stock_links (pure attribution rows — no movement creation happens in
+ * linking). Capping re-links at (line − already) keeps repeated calls from
+ * attributing more than the line claims. */
 async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: string): Promise<number> {
   let total = 0;
   for (const link of await store.listStockLinksByItem(itemId)) {
     if (link.invoiceId === invoiceId) total += link.quantity;
-  }
-  for (const movement of await store.listStockMovements(itemId)) {
-    if (movement.ref === invoiceId && movement.reason?.startsWith(LINK_REASON_PREFIX)) {
-      total += movement.delta;
-    }
   }
   return total;
 }
@@ -339,9 +335,13 @@ export function createRpcRouter(deps: RpcDeps) {
         if (paidAmount > totalAmount) {
           throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         }
-        const invoiceNumber = await nextInvoiceNumber(deps.store);
         const invoiceDate = input.invoiceDate ?? localDate();
         return deps.store.withTransaction(async (tx) => {
+          // SAFETY: numbering must run INSIDE the serialized unit — reading it
+          // outside lets two concurrent creates select the same INV-####
+          // between SELECT and INSERT and collide on the UNIQUE index. The
+          // transaction queue serializes the read with the insert.
+          const invoiceNumber = await nextInvoiceNumber(tx);
           const invoice = await tx.insertInvoice({
             invoiceNumber,
             kind: "PURCHASE",
@@ -468,12 +468,9 @@ export function createRpcRouter(deps: RpcDeps) {
             if (allocation.quantity > lineQuantity) {
               throw new ORPCError("BAD_REQUEST", { message: "LINK_EXCEEDS_LINE" });
             }
-            const item = itemsById.get(allocation.itemId)!;
             // idempotency cap: a re-link can never attribute more than what is
-            // still missing from this line (previous links + remainders count)
+            // still missing from this line (previous links count toward it)
             const attributed = await alreadyAttributed(tx, detail.id, allocation.itemId);
-            // idempotency cap: a re-link can never attribute more than what is
-            // still missing from this line (previous links + remainders count)
             let remainingToLink = Math.min(allocation.quantity, Math.max(0, lineQuantity - attributed));
             if (remainingToLink === 0) continue;
             // FIFO walk over that item's uninvoiced PURCHASE movements
@@ -493,41 +490,13 @@ export function createRpcRouter(deps: RpcDeps) {
               remainingToLink -= take;
               linked += take;
             }
-            // whatever the invoice claims beyond recorded stock arrives NOW as
-            // a fresh linked movement at the line's purchase cost
-            if (remainingToLink > 0) {
-              const lineForItem = detail.lines.find((l) => l.itemId === allocation.itemId);
-              const unitCost = lineForItem?.unitPrice ?? item.costPrice;
-              const existing = await tx.listStockMovements(allocation.itemId);
-              const candidate = {
-                kind: "PURCHASE" as const,
-                delta: remainingToLink,
-                unitCost,
-                occurredAt: localDateTime(),
-                seq: undefined,
-              };
-              let stockAfter: number;
-              try {
-                stockAfter = projectLedger([...existing, candidate]).stockOnHand;
-              } catch (err) {
-                if (err instanceof StockLedgerError) {
-                  throw new ORPCError("BAD_REQUEST", { message: err.code });
-                }
-                throw err;
-              }
-              await tx.insertStockMovement({
-                itemId: allocation.itemId,
-                kind: "PURCHASE",
-                delta: remainingToLink,
-                unitCost,
-                reason: `${LINK_REASON_PREFIX} ${detail.invoiceNumber}`,
-                ref: detail.id,
-                occurredAt: candidate.occurredAt,
-              });
-              const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
-              await tx.setItemStockAndCost(allocation.itemId, stockAfter, newCost);
-              remainderMoved += remainingToLink;
-            }
+            // SAFETY: no new stock is minted here. invoicesCreate already
+            // posted the FULL line quantity as the invoice's own PURCHASE
+            // movement, so units beyond the uninvoiced pool are already in the
+            // ledger — creating a "remainder" movement would double-count
+            // them and overstate inventory (greptile finding). The unmatched
+            // share is reported back as remainderMoved instead.
+            remainderMoved += remainingToLink;
           }
           await tx.insertActivity({
             type: "STOCK_ADJUSTED",
@@ -553,14 +522,28 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
           }
-          // append-only correction: reverse the original quantity, then record
-          // the corrected one. Nothing is rewritten; settled sales keep their
-          // original cost basis; only the live cache follows the replay.
-          const reason = `تصحيح فاتورة ${detail.invoiceNumber}`;
+          // append-only correction: reverse the PREVIOUS EFFECTIVE quantity of
+          // this line (original + net of prior corrections, keyed by the
+          // #lineId reason suffix), then record the corrected one. Re-reversing
+          // the untouched original would double-reverse on every re-correction
+          // and drift stock with each pass. Nothing is rewritten; settled
+          // sales keep their original cost basis; only the live cache follows
+          // the replay.
           const existing = await tx.listStockMovements(item.id);
+          const suffix = `#${line.id}`;
+          const priorNet = existing
+            .filter(
+              (movement) =>
+                movement.ref === detail.id &&
+                movement.reason?.startsWith(CORRECTION_REASON_PREFIX) === true &&
+                movement.reason.endsWith(suffix),
+            )
+            .reduce((sum, movement) => sum + movement.delta, 0);
+          const effectiveOriginal = line.quantity + priorNet;
+          const reason = `${CORRECTION_REASON_PREFIX} ${detail.invoiceNumber} ${suffix}`;
           const reversal = {
             kind: "MANUAL_ADJUSTMENT" as const,
-            delta: -line.quantity,
+            delta: -effectiveOriginal,
             unitCost: null,
             occurredAt: localDateTime(),
             seq: undefined,

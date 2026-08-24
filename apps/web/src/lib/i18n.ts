@@ -151,7 +151,7 @@ const resources = {
       purchasesProposalEmpty: "لا يوجد مخزون سابق غير مُفوتر لهذه الأسطر",
       purchasesProposalUninvoiced: "غير مُفوتر:",
       purchasesLinkBtn: "ربط المخزون السابق",
-      purchasesLinked: "تم ربط {{linked}} وحدة، وأُضيفت {{remainder}} وحدة كحركة مرتبطة بالفاتورة",
+      purchasesLinked: "تم ربط {{linked}} وحدة بمخزون سابق؛ {{remainder}} وحدة كانت مغطاة أصلاً بأسطر الفاتورة",
       SALE_NOT_IMPLEMENTED: "مسار البيع لم يُنفّذ بعد",
       PURCHASE_REQUIRES_INFLOW: "حركة المشتريات يجب أن تكون إدخالاً للمخزون (كمية موجبة)",
       LINK_EXCEEDS_LINE: "الكمية المطلوب ربطها تتجاوز كمية سطر الفاتورة",

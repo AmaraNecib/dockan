@@ -590,7 +590,7 @@ describe("purchase intake (ticket 29)", () => {
     expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], stockOnHand: 0 });
   });
 
-  it("proposes FIFO availability, links partially, and mints one remainder movement", async () => {
+  it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
     const item = await makeItem("ربط-تدفق", 400);
     // goods arrived earlier without any invoice
     await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 500, kind: "PURCHASE" });
@@ -617,24 +617,87 @@ describe("purchase intake (ticket 29)", () => {
       allocations: [{ itemId: item.id, quantity: 5 }],
     });
     expect(result.linked).toBe(3);
-    expect(result.remainderMoved).toBe(2);
+    expect(result.remainderMoved).toBe(2); // unmatched share, reported only
 
     const history = await client.itemsHistory({ itemId: item.id });
-    // +3 manual +5 intake +2 remainder — never double-counted
-    expect(history.stockOnHand).toBe(10);
-    const remainders = history.movements.filter((m) => (m.reason ?? "").includes("ربط بفاتورة"));
-    expect(remainders).toHaveLength(1);
-    expect(remainders[0]).toMatchObject({ kind: "PURCHASE", delta: 2, ref: invoice.id });
+    // +3 manual +5 invoice posting = 8 physical units; linking NEVER adds stock
+    // on top of the invoice's own posting (greptile: inventory overstatement)
+    expect(history.stockOnHand).toBe(8);
+    expect(history.movements).toHaveLength(2);
+    expect(history.movements.filter((m) => (m.reason ?? "").includes("ربط بفاتورة"))).toHaveLength(0);
+    const links = history.movements.length;
 
-    // idempotent re-link: capped at what the line still misses → nothing minted
-    const again = await client.purchasesLinkStock({
-      invoiceId: invoice.id,
-      allocations: [{ itemId: item.id, quantity: 5 }],
-    });
-    expect(again.linked).toBe(0);
-    expect(again.remainderMoved).toBe(0);
+    // repeated over-attempts can never inflate inventory: every re-link finds
+    // the pool consumed and reports the rest as unmatched, writing nothing
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const again = await client.purchasesLinkStock({
+        invoiceId: invoice.id,
+        allocations: [{ itemId: item.id, quantity: 5 }],
+      });
+      expect(again.linked).toBe(0);
+      expect(again.remainderMoved).toBeLessThanOrEqual(2);
+    }
     const after = await client.itemsHistory({ itemId: item.id });
-    expect(after.movements).toHaveLength(history.movements.length);
+    expect(after.stockOnHand).toBe(8);
+    expect(after.movements).toHaveLength(links);
+  });
+
+  it("concurrent invoice creates serialize into distinct invoice numbers", async () => {
+    const item = await makeItem("تسابق-ترقيم", 50);
+    // both selects used to run outside the serialized transaction and could
+    // mint the same INV-#### between SELECT and INSERT (UNIQUE -> 500)
+    const results = await Promise.allSettled([
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
+    ]);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof client.invoicesCreate>>> => r.status === "fulfilled");
+    expect(fulfilled).toHaveLength(2);
+    const numbers = fulfilled.map((r) => r.value.invoiceNumber);
+    expect(new Set(numbers).size).toBe(2);
+  });
+
+  it("double correction converges on the last corrected quantity instead of drifting", async () => {
+    const item = await makeItem("تصحيح-مزدوج", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    const lineId = invoice.lines[0]!.id;
+    await client.purchasesCorrectLine({ lineId, quantity: 6, unitCost: 200 });
+    await client.purchasesCorrectLine({ lineId, quantity: 9, unitCost: 150 });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    // +10 intake, (+6 −10), (+9 −6): each pass reverses the PREVIOUS effective
+    // quantity, so N corrections land exactly on the last corrected value
+    expect(history.stockOnHand).toBe(9);
+    expect(history.movements).toHaveLength(5);
+    const listed = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(listed.stockOnHand).toBe(9);
+    // ADR-0002 replay: 10@100 → avg 100; +6@200 → 2200/16 = 137.5;
+    // reversal drops running qty to 6; +9@150 → (137.5×6 + 1350)/15 = 145
+    expect(listed.costPrice).toBe(145);
+  });
+
+  it("correction oversell guard uses the EFFECTIVE quantity after prior corrections", async () => {
+    const item = await makeItem("تصحيح-فعال", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    const lineId = invoice.lines[0]!.id;
+    await client.purchasesCorrectLine({ lineId, quantity: 6, unitCost: 200 });
+    await client.stockAddManual({ itemId: item.id, delta: -4 }); // 2 on hand
+
+    let code = "";
+    try {
+      // correcting DOWN to 3 must fail: effective original is 6, so
+      // 2 + 3 − 6 < 0 — fewer units than were already sold
+      await client.purchasesCorrectLine({ lineId, quantity: 3, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("STOCK_NEGATIVE");
   });
 
   it("rejects allocations beyond the line with LINK_EXCEEDS_LINE", async () => {

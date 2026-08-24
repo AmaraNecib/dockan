@@ -1,0 +1,166 @@
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// React 19 act() requires the environment flag to be set explicitly
+// SAFETY: only this flag is written; globalThis keeps every other property
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+
+interface ProposalFixture {
+  invoiceId: string;
+  items: Array<{
+    itemId: string;
+    itemName: string;
+    lineQuantity: number;
+    uninvoicedQty: number;
+    proposedLinkQty: number;
+    remainderQty: number;
+  }>;
+}
+
+/** subset of the tanstack mutation options the panel passes through */
+interface PanelMutationOptions {
+  onSuccess?: (result: { linked: number; remainderMoved: number }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
+let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
+let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
+
+// The panel resolves proposal + link through orpc.*.queryOptions/mutationOptions;
+// mock the rpc module so tests drive fixtures without a network seam.
+mock.module("@/lib/rpc", () => ({
+  orpc: {
+    purchasesProposal: {
+      queryOptions: ({ input }: { input: { invoiceId: string } }) => ({
+        queryKey: ["purchasesProposal", input],
+        queryFn: async (): Promise<ProposalFixture> => fixture,
+      }),
+      // SAFETY: mirror the real tanstack-query utils signature ({ input })
+      queryKey: (args: { input: { invoiceId: string } }) => ["purchasesProposal", args.input],
+    },
+    purchasesLinkStock: {
+      // SAFETY: pass caller options through so onSuccess (cache reset) survives
+      mutationOptions: (opts?: PanelMutationOptions) => ({
+        mutationFn: async (input: { invoiceId: string; allocations: Array<{ itemId: string; quantity: number }> }) => {
+          lastLinkAllocation = input.allocations[0] ?? null;
+          // linking consumes the whole pool BEFORE onSuccess runs, exactly
+          // like the real seam — later refetches must see the emptied pool
+          fixture = {
+            invoiceId: fixture.invoiceId,
+            items: fixture.items.map((entry) => ({ ...entry, uninvoicedQty: 0, proposedLinkQty: 0 })),
+          };
+          return { linked: input.allocations[0]?.quantity ?? 0, remainderMoved: 0 };
+        },
+        ...opts,
+      }),
+    },
+  },
+  rpcClient: {},
+}));
+
+const { LinkProposalPanel } = await import("./purchase");
+
+const row = (over: Partial<ProposalFixture["items"][number]> = {}): ProposalFixture["items"][number] => ({
+  itemId: "item-1",
+  itemName: "بطارية",
+  lineQuantity: 5,
+  uninvoicedQty: 3,
+  proposedLinkQty: 3,
+  remainderQty: 2,
+  ...over,
+});
+
+/** mounts the panel and returns a snapshot-driven interaction helper */
+async function mountPanel(queryClient: QueryClient) {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <LinkProposalPanel invoiceId="inv-1" />
+      </QueryClientProvider>,
+    );
+  });
+  return {
+    text: () => container.textContent ?? "",
+    button: () => container.querySelector<HTMLButtonElement>("button"),
+    emptyState: () => container.textContent?.includes("لا يوجد مخزون سابق غير مُفوتر") ?? false,
+    unmount: async () => {
+      await act(async () => root.unmount());
+      container.remove();
+    },
+    waitFor: async (check: () => boolean) => {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        if (check()) return true;
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+      }
+      return false;
+    },
+  };
+}
+
+describe("LinkProposalPanel cache reset after linking (greptile round-2)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    document.body.innerHTML = "";
+  });
+
+  afterEach(async () => {
+    await queryClient.cancelQueries();
+    queryClient.clear();
+  });
+
+  it("refetches the proposal after a successful link so the button cannot double-submit", async () => {
+    // fresh pool: one item with 3 linkable units
+    fixture = { invoiceId: "inv-1", items: [row()] };
+
+    const ui = await mountPanel(queryClient);
+    const appeared = await ui.waitFor(() => ui.button() !== null);
+    expect(appeared).toBe(true);
+    expect(ui.text()).toContain("3");
+
+    // one click links everything the proposal offered
+    await act(async () => {
+      ui.button()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await ui.waitFor(() => (lastLinkAllocation ?? null) !== null);
+    expect(lastLinkAllocation).toEqual({ itemId: "item-1", quantity: 3 });
+
+    // onSuccess invalidated the proposal query → refetch sees an empty pool
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    // stale button + old quantities must be gone; second submit impossible
+    expect(ui.emptyState()).toBe(true);
+    expect(ui.button()).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("keeps the result message visible while the rows refresh", async () => {
+    fixture = { invoiceId: "inv-1", items: [row()] };
+    const ui = await mountPanel(queryClient);
+    await ui.waitFor(() => ui.button() !== null);
+
+    await act(async () => {
+      ui.button()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const linkedShown = await ui.waitFor(() => ui.text().includes("تم ربط 3"));
+    expect(linkedShown).toBe(true);
+    await ui.unmount();
+  });
+});

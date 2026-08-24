@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract } from "@dokan/contracts";
+import { dokanContract, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 
 import type { AppConfig } from "../config";
 import { normalizeBarcode } from "@dokan/contracts";
@@ -12,7 +12,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
 import { historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { createBackup } from "../lib/backups";
-import { localDateTime } from "../lib/logger";
+import { localDate, localDateTime } from "../lib/logger";
 
 export type RpcContext = { request: Request };
 
@@ -23,6 +23,52 @@ type RpcDeps = {
   store: StorePort;
   auth: BetterAuthInstance;
 };
+
+/** reason prefix burned into purchase-line corrections; the line id rides as
+ * a #suffix so N corrections of one line reverse the PREVIOUS effective
+ * quantity instead of re-reversing the untouched original */
+const CORRECTION_REASON_PREFIX = "تصحيح فاتورة";
+
+/** total invoiced quantity per item across a detail's lines (description-only
+ * lines carry no item and are skipped) */
+function aggregateLineQuantities(lines: readonly InvoiceLine[]): Map<string, number> {
+  const totals = new Map<string, number>();
+  for (const line of lines) {
+    if (line.itemId === null) continue;
+    totals.set(line.itemId, (totals.get(line.itemId) ?? 0) + line.quantity);
+  }
+  return totals;
+}
+
+/** uninvoiced availability for one item: Σ PURCHASE movements with ref=null,
+ * minus quantities already attributed by stock_links — walked oldest-first in
+ * the ledger's canonical ordering so consumption matches FIFO. One spelling
+ * of "oldest first", shared with projectLedger via listStockMovements order. */
+async function uninvoicedAvailability(store: StorePort, itemId: string): Promise<number> {
+  const movements = await store.listStockMovements(itemId);
+  const consumed = new Map<string, number>();
+  for (const link of await store.listStockLinksByItem(itemId)) {
+    consumed.set(link.movementId, (consumed.get(link.movementId) ?? 0) + link.quantity);
+  }
+  let available = 0;
+  for (const movement of movements) {
+    if (movement.kind !== "PURCHASE" || movement.ref !== null) continue;
+    available += Math.max(0, movement.delta - (consumed.get(movement.id) ?? 0));
+  }
+  return available;
+}
+
+/** how much of one item's line this invoice has ALREADY attributed via
+ * stock_links (pure attribution rows — no movement creation happens in
+ * linking). Capping re-links at (line − already) keeps repeated calls from
+ * attributing more than the line claims. */
+async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: string): Promise<number> {
+  let total = 0;
+  for (const link of await store.listStockLinksByItem(itemId)) {
+    if (link.invoiceId === invoiceId) total += link.quantity;
+  }
+  return total;
+}
 
 /**
  * The merged Dokan router: ticket 02 owns auth (build-secret reset, session
@@ -192,6 +238,9 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- stock ledger (ticket 27) ----------------------------------------------
     stockAddManual: os.stockAddManual.handler(
       guardedInput(async (input) => {
+        if (input.kind === "PURCHASE" && input.delta <= 0) {
+          throw new ORPCError("BAD_REQUEST", { message: "PURCHASE_REQUIRES_INFLOW" });
+        }
         return deps.store.withTransaction(async (tx) => {
           const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
           if (item === undefined) {
@@ -205,7 +254,7 @@ export function createRpcRouter(deps: RpcDeps) {
           // negative stock is rejected before anything is written
           const existing = await tx.listStockMovements(item.id);
           const candidate = {
-            kind: "MANUAL_ADJUSTMENT" as const,
+            kind: input.kind,
             delta: input.delta,
             unitCost,
             occurredAt: input.occurredAt ?? localDateTime(),
@@ -258,15 +307,301 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
-    // --- remaining procedures: guarded seams for later tickets ---------------
-    customersList: os.customersList.handler(guarded(notImplemented("customersList"))),
-    customersCreate: os.customersCreate.handler(guarded(notImplemented("customersCreate"))),
-    suppliersList: os.suppliersList.handler(guarded(notImplemented("suppliersList"))),
-    suppliersCreate: os.suppliersCreate.handler(guarded(notImplemented("suppliersCreate"))),
-    invoicesCreate: os.invoicesCreate.handler(guarded(notImplemented("invoicesCreate"))),
-    invoicesGet: os.invoicesGet.handler(guarded(notImplemented("invoicesGet"))),
-    invoicesList: os.invoicesList.handler(guarded(notImplemented("invoicesList"))),
+    // --- invoices (ticket 29: PURCHASE intake; ticket #30 owns SALE) ----------
+    invoicesCreate: os.invoicesCreate.handler(
+      guardedInput(async (input) => {
+        if (input.kind !== "PURCHASE") {
+          throw new ORPCError("NOT_IMPLEMENTED", { message: "SALE_NOT_IMPLEMENTED" });
+        }
+        // resolve every line's item up front so a bad id fails before any write
+        const itemsById = await deps.store.getItemsByIds(input.lines.map((line) => line.itemId));
+        for (const line of input.lines) {
+          if (!itemsById.has(line.itemId)) {
+            throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          }
+        }
+        // omitted line prices default to the item's cost here too — using 0
+        // would make total/remaining disagree with the persisted lines and
+        // reject any positive initialPaid against a too-small total
+        const totalAmount = input.lines.reduce((sum, line) => {
+          // SAFETY: every itemId was resolved in itemsById by the loop above
+          const unitPrice = line.unitPrice ?? itemsById.get(line.itemId)!.costPrice;
+          return sum + line.quantity * unitPrice;
+        }, 0);
+        const paidAmount = input.initialPaid ?? 0;
+        if (paidAmount > totalAmount) {
+          throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
+        }
+        const invoiceDate = input.invoiceDate ?? localDate();
+        return deps.store.withTransaction(async (tx) => {
+          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // transaction as the invoice insert, so separate app processes cannot
+          // select the same INV-#### between a read and the UNIQUE insert.
+          const invoiceNumber = await tx.allocateInvoiceNumber();
+          const invoice = await tx.insertInvoice({
+            invoiceNumber,
+            kind: "PURCHASE",
+            counterpartyId: input.counterpartyId ?? null,
+            counterpartyName: input.counterpartyName ?? null,
+            invoiceDate,
+            totalAmount,
+            paidAmount,
+            remainingAmount: totalAmount - paidAmount,
+            notes: input.notes ?? null,
+          });
+          const insertedLines = [];
+          for (const line of input.lines) {
+            const item = itemsById.get(line.itemId)!;
+            const unitCost = line.unitPrice ?? item.costPrice;
+            const inserted = await tx.insertInvoiceLine({
+              invoiceId: invoice.id,
+              itemId: line.itemId,
+              description: item.name,
+              quantity: line.quantity,
+              unitPrice: unitCost,
+              // for a PURCHASE the line price IS the cost basis (ADR-0002 feed)
+              costAtSale: unitCost,
+              total: line.quantity * unitCost,
+            });
+            insertedLines.push(inserted);
+            // stock event through the ledger, then recompute the fast-path
+            // cache by full replay — same discipline as stockAddManual
+            const existing = await tx.listStockMovements(line.itemId);
+            const candidate = {
+              kind: "PURCHASE" as const,
+              delta: line.quantity,
+              unitCost,
+              occurredAt: localDateTime(),
+              seq: undefined,
+            };
+            let stockAfter: number;
+            try {
+              stockAfter = projectLedger([...existing, candidate]).stockOnHand;
+            } catch (err) {
+              if (err instanceof StockLedgerError) {
+                throw new ORPCError("BAD_REQUEST", { message: err.code });
+              }
+              throw err;
+            }
+            await tx.insertStockMovement({
+              itemId: line.itemId,
+              kind: "PURCHASE",
+              delta: line.quantity,
+              unitCost,
+              reason: null,
+              ref: invoice.id,
+              occurredAt: candidate.occurredAt,
+            });
+            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
+            await tx.setItemStockAndCost(line.itemId, stockAfter, newCost);
+          }
+          await tx.insertActivity({
+            type: "PURCHASE_CREATED",
+            summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`,
+            ref: invoice.id,
+          });
+          return {
+            ...invoice,
+            lines: insertedLines,
+            payments: [],
+          } satisfies InvoiceDetail;
+        });
+      }),
+    ),
+    invoicesGet: os.invoicesGet.handler(
+      guardedInput(async ({ id }) => {
+        const detail = await deps.store.getInvoiceDetail(id);
+        if (detail === undefined) {
+          throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+        }
+        return detail;
+      }),
+    ),
+    invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices(filters))),
     invoicesPay: os.invoicesPay.handler(guarded(notImplemented("invoicesPay"))),
+
+    // --- purchase intake: deferred linking + corrections (ticket 29) ----------
+    purchasesProposal: os.purchasesProposal.handler(
+      guardedInput(async ({ invoiceId }) => {
+        const detail = await deps.store.getInvoiceDetail(invoiceId);
+        if (detail === undefined || detail.kind !== "PURCHASE") {
+          throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+        }
+        const itemsById = await deps.store.getItemsByIds(detail.lines.filter((l) => l.itemId !== null).map((l) => l.itemId!));
+        const quantitiesByItem = aggregateLineQuantities(detail.lines);
+        const proposalRows = [];
+        for (const [itemId, lineQuantity] of quantitiesByItem) {
+          const uninvoicedQty = await uninvoicedAvailability(deps.store, itemId);
+          const alreadyLinked = await alreadyAttributed(deps.store, invoiceId, itemId);
+          const remainingLineQty = Math.max(0, lineQuantity - alreadyLinked);
+          const proposedLinkQty = Math.min(uninvoicedQty, remainingLineQty);
+          proposalRows.push({
+            itemId,
+            itemName: itemsById.get(itemId)?.name ?? "",
+            lineQuantity,
+            uninvoicedQty,
+            proposedLinkQty,
+            // Once the line's attribution cap is consumed, there is no
+            // remainder to offer even if uninvoiced stock remains available.
+            remainderQty: Math.max(0, remainingLineQty - proposedLinkQty),
+          });
+        }
+        return { invoiceId, items: proposalRows };
+      }),
+    ),
+    purchasesLinkStock: os.purchasesLinkStock.handler(
+      guardedInput(async (input) => {
+        return deps.store.withTransaction(async (tx) => {
+          const detail = await tx.getInvoiceDetail(input.invoiceId);
+          if (detail === undefined || detail.kind !== "PURCHASE") {
+            throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+          }
+          const itemsById = await tx.getItemsByIds(input.allocations.map((a) => a.itemId));
+          const quantitiesByItem = aggregateLineQuantities(detail.lines);
+          let linked = 0;
+          let remainderMoved = 0;
+          for (const allocation of input.allocations) {
+            const lineQuantity = quantitiesByItem.get(allocation.itemId);
+            if (lineQuantity === undefined || !itemsById.has(allocation.itemId)) {
+              throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_ON_INVOICE" });
+            }
+            if (allocation.quantity > lineQuantity) {
+              throw new ORPCError("BAD_REQUEST", { message: "LINK_EXCEEDS_LINE" });
+            }
+            // idempotency cap: a re-link can never attribute more than what is
+            // still missing from this line (previous links count toward it)
+            const attributed = await alreadyAttributed(tx, detail.id, allocation.itemId);
+            let remainingToLink = Math.min(allocation.quantity, Math.max(0, lineQuantity - attributed));
+            if (remainingToLink === 0) continue;
+            // FIFO walk over that item's uninvoiced PURCHASE movements
+            const movements = await tx.listStockMovements(allocation.itemId);
+            const alreadyLinked = new Map<string, number>();
+            for (const link of await tx.listStockLinksByItem(allocation.itemId)) {
+              alreadyLinked.set(link.movementId, (alreadyLinked.get(link.movementId) ?? 0) + link.quantity);
+            }
+            for (const movement of movements) {
+              if (remainingToLink === 0) break;
+              if (movement.kind !== "PURCHASE" || movement.ref !== null) continue;
+              const consumed = alreadyLinked.get(movement.id) ?? 0;
+              const available = movement.delta - consumed;
+              if (available <= 0) continue;
+              const take = Math.min(available, remainingToLink);
+              await tx.insertStockLink({ invoiceId: input.invoiceId, movementId: movement.id, quantity: take });
+              remainingToLink -= take;
+              linked += take;
+            }
+            // SAFETY: no new stock is minted here. invoicesCreate already
+            // posted the FULL line quantity as the invoice's own PURCHASE
+            // movement, so units beyond the uninvoiced pool are already in the
+            // ledger — creating a "remainder" movement would double-count
+            // them and overstate inventory (greptile finding). The unmatched
+            // share is reported back as remainderMoved instead.
+            remainderMoved += remainingToLink;
+          }
+          await tx.insertActivity({
+            type: "STOCK_ADJUSTED",
+            summary: `ربط مخزون سابق بفاتورة ${detail.invoiceNumber}`,
+            ref: detail.id,
+          });
+          return { linked, remainderMoved };
+        });
+      }),
+    ),
+    purchasesCorrectLine: os.purchasesCorrectLine.handler(
+      guardedInput(async (input) => {
+        const line = await deps.store.getInvoiceLine(input.lineId);
+        if (line === undefined || line.itemId === null) {
+          throw new ORPCError("NOT_FOUND", { message: "LINE_NOT_FOUND" });
+        }
+        const detail = await deps.store.getInvoiceDetail(line.invoiceId);
+        if (detail === undefined || detail.kind !== "PURCHASE") {
+          throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
+        }
+        return deps.store.withTransaction(async (tx) => {
+          const item = (await tx.getItemsByIds([line.itemId!])).get(line.itemId!);
+          if (item === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+          }
+          // append-only correction: reverse the PREVIOUS EFFECTIVE quantity of
+          // this line (original + net of prior corrections, keyed by the
+          // #lineId reason suffix), then record the corrected one. Re-reversing
+          // the untouched original would double-reverse on every re-correction
+          // and drift stock with each pass. Nothing is rewritten; settled
+          // sales keep their original cost basis; only the live cache follows
+          // the replay.
+          const existing = await tx.listStockMovements(item.id);
+          const suffix = `#${line.id}`;
+          const priorNet = existing
+            .filter(
+              (movement) =>
+                movement.ref === detail.id &&
+                movement.reason?.startsWith(CORRECTION_REASON_PREFIX) === true &&
+                movement.reason.endsWith(suffix),
+            )
+            .reduce((sum, movement) => sum + movement.delta, 0);
+          const effectiveOriginal = line.quantity + priorNet;
+          const reason = `${CORRECTION_REASON_PREFIX} ${detail.invoiceNumber} ${suffix}`;
+          // One timestamp keeps the replacement and reversal in the same
+          // ledger instant. The corrected inflow is inserted first, and the
+          // store's rowid seq tie-breaker preserves that inflow-first order.
+          const correctionOccurredAt = localDateTime();
+          const reversal = {
+            kind: "MANUAL_ADJUSTMENT" as const,
+            delta: -effectiveOriginal,
+            unitCost: null,
+            occurredAt: correctionOccurredAt,
+            seq: undefined,
+          };
+          const corrected = {
+            kind: "PURCHASE" as const,
+            delta: input.quantity,
+            unitCost: input.unitCost,
+            occurredAt: correctionOccurredAt,
+            seq: undefined,
+          };
+          // SAFETY: the corrected INFLOW must precede the reversal OUTFLOW — in
+          // the validation below AND in the stored rows. Reversal-first would
+          // drive the projection below zero whenever any invoiced unit was
+          // already sold (even for pure cost fixes) and would poison every
+          // future replay of the stored ledger. Inflow-first fails exactly
+          // when the corrected quantity drops below what was already sold.
+          try {
+            projectLedger([...existing, corrected, reversal]);
+          } catch (err) {
+            if (err instanceof StockLedgerError) {
+              throw new ORPCError("BAD_REQUEST", { message: err.code });
+            }
+            throw err;
+          }
+          await tx.insertStockMovement({
+            itemId: item.id,
+            kind: corrected.kind,
+            delta: corrected.delta,
+            unitCost: corrected.unitCost,
+            reason,
+            ref: detail.id,
+            occurredAt: corrected.occurredAt,
+          });
+          await tx.insertStockMovement({
+            itemId: item.id,
+            kind: reversal.kind,
+            delta: reversal.delta,
+            unitCost: null,
+            reason,
+            ref: detail.id,
+            occurredAt: reversal.occurredAt,
+          });
+          const all = [...existing, corrected, reversal];
+          const stockAfter = projectLedger(all).stockOnHand;
+          const newCost = weightedAverageCost(all, { fallbackUnitCost: item.costPrice });
+          await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تصحيح شراء ${item.name}`, ref: item.id });
+          const refreshed = await tx.getInvoiceDetail(detail.id);
+          // SAFETY: the invoice was just read inside this handler; it cannot vanish mid-transaction
+          return refreshed!;
+        });
+      }),
+    ),
     reportsDebts: os.reportsDebts.handler(guarded(notImplemented("reportsDebts"))),
     settingsGet: os.settingsGet.handler(guarded(notImplemented("settingsGet"))),
     settingsUpdate: os.settingsUpdate.handler(guarded(notImplemented("settingsUpdate"))),

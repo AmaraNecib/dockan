@@ -30,7 +30,8 @@ export function ItemsPage() {
   /** what the item form gets prefilled with after an unknown-scan choice */
   const [formSeed, setFormSeed] = useState<{ barcode: string; withStock: boolean } | null>(null);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  /** scan feedback carries a tone: found/deferred are ok, lookup errors render red */
+  const [notice, setNotice] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
 
   // serializes scan lookups by recency: only the NEWEST scan may write state.
   // Without this, an older slow lookup that settles after a newer fast one can
@@ -52,12 +53,12 @@ export function ItemsPage() {
       // auth/transport/server failure is NOT a confirmed miss — never offer
       // to create an item that may already exist (greptile P1)
       if (seq !== scanSeqRef.current) return; // a newer scan superseded this one
-      setNotice(t("scanLookupError"));
+      setNotice({ text: t("scanLookupError"), tone: "error" });
       return;
     }
     if (seq !== scanSeqRef.current) return; // a newer scan superseded this one
     if (result.exact !== null) {
-      setNotice(t("scanFoundItem", { name: result.exact.item.name }));
+      setNotice({ text: t("scanFoundItem", { name: result.exact.item.name }), tone: "ok" });
       return;
     }
     setUnknownCode(code);
@@ -75,8 +76,17 @@ export function ItemsPage() {
     <section>
       <h1 className="text-xl font-bold">{t("itemsTitle")}</h1>
       {notice && (
-        <p className="mt-2 rounded border bg-green-50 p-2 text-sm text-green-800" data-testid="scan-found" role="status" aria-live="polite">
-          {notice}
+        <p
+          className={
+            notice.tone === "error"
+              ? "mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700"
+              : "mt-2 rounded border bg-green-50 p-2 text-sm text-green-800"
+          }
+          data-testid={notice.tone === "error" ? "scan-error" : "scan-found"}
+          role="status"
+          aria-live="polite"
+        >
+          {notice.text}
         </p>
       )}
       <CatalogSearch />
@@ -97,7 +107,7 @@ export function ItemsPage() {
           }}
           onManualLine={() => {
             // honest deferral: wired to the invoice builder in ticket #30
-            setNotice(t("scanDeferredToast"));
+            setNotice({ text: t("scanDeferredToast"), tone: "ok" });
             setUnknownCode(null);
           }}
         />

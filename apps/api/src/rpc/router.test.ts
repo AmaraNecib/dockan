@@ -241,6 +241,22 @@ describe("catalog search + barcodes (ticket 28)", () => {
     }
   });
 
+  it("honors the optional limit through schema → router → rankCatalog (ticket 34)", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    for (let i = 1; i <= 5; i++) {
+      await client.itemsCreate({ name: `حد-مشترك-${i}`, categoryId: catId, costPrice: 10, sellingPrice: 20 });
+    }
+
+    const limited = await client.catalogSearch({ query: "حد-مشترك", limit: 2 });
+    expect(limited.matches).toHaveLength(2);
+
+    const unbounded = await client.catalogSearch({ query: "حد-مشترك" });
+    // the shared fragment only matches the five rows created above
+    expect(unbounded.matches.length).toBe(5);
+    expect(unbounded.matches.length).toBeGreaterThan(limited.matches.length);
+  });
+
   it("itemsCreateWithStock creates the item with initial stock in one unit", async () => {
     const categories = await client.categoriesList();
     const item = await client.itemsCreateWithStock({
@@ -452,5 +468,351 @@ describe("activity log (ticket 12)", () => {
     // out-of-range limits are rejected by zod before touching the store
     await expect(client.activitiesList({ limit: 0 })).rejects.toThrow();
     await expect(client.activitiesList({ limit: 201 })).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ticket 29 — purchase intake & deferred invoice linking
+// ---------------------------------------------------------------------------
+describe("purchase intake (ticket 29)", () => {
+  async function makeItem(name: string, costPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice: costPrice * 2,
+      lowStockThreshold: 0,
+    });
+  }
+
+  it("rejects unauthed invoicesCreate with UNAUTHORIZED", async () => {
+    await expect(
+      unauthed.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: "00000000-0000-4000-8000-000000000000", quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("keeps SALE a stable stub owned by ticket #30", async () => {
+    const item = await makeItem("بيع-غير-منفذ", 100);
+    await expect(client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] })).rejects.toThrow(/SALE_NOT_IMPLEMENTED/);
+    // the rejection must not have written anything
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], stockOnHand: 0 });
+  });
+
+  it("rejects an unknown line item before any write (ITEM_NOT_FOUND)", async () => {
+    await expect(
+      client.invoicesCreate({
+        kind: "PURCHASE",
+        lines: [{ itemId: "00000000-0000-4000-8000-000000000001", quantity: 2 }],
+      }),
+    ).rejects.toThrow(/ITEM_NOT_FOUND/);
+  });
+
+  it("rejects paid-above-total with PAID_EXCEEDS_TOTAL", async () => {
+    const item = await makeItem("دفع-زائد", 100);
+    await expect(
+      client.invoicesCreate({
+        kind: "PURCHASE",
+        lines: [{ itemId: item.id, quantity: 2, unitPrice: 100 }],
+        initialPaid: 201,
+      }),
+    ).rejects.toThrow(/PAID_EXCEEDS_TOTAL/);
+  });
+
+  it("records a multi-line PURCHASE invoice through the ledger with paid/partial math", async () => {
+    const a = await makeItem("شراء-سطر-أ", 200);
+    const b = await makeItem("شراء-سطر-ب", 300);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      counterpartyName: "مورد القطع",
+      initialPaid: 1000,
+      lines: [
+        { itemId: a.id, quantity: 5, unitPrice: 200 },
+        { itemId: b.id, quantity: 10, unitPrice: 300 },
+      ],
+    });
+    expect(invoice.invoiceNumber).toMatch(/^INV-\d{4}$/u);
+    expect(invoice.totalAmount).toBe(5 * 200 + 10 * 300); // 4000
+    expect(invoice.paidAmount).toBe(1000);
+    expect(invoice.remainingAmount).toBe(3000);
+    expect(invoice.lines).toHaveLength(2);
+    // for a PURCHASE the line price IS the cost basis
+    for (const line of invoice.lines) {
+      expect(line.costAtSale).toBe(line.unitPrice);
+    }
+
+    // one PURCHASE movement per line, attributed to the invoice
+    const historyA = await client.itemsHistory({ itemId: a.id });
+    expect(historyA.movements.filter((m) => m.ref === invoice.id)).toHaveLength(1);
+    expect(historyA.movements.find((m) => m.ref === invoice.id)).toMatchObject({ kind: "PURCHASE", delta: 5, unitCost: 200 });
+    const historyB = await client.itemsHistory({ itemId: b.id });
+    expect(historyB.movements.find((m) => m.ref === invoice.id)).toMatchObject({ kind: "PURCHASE", delta: 10, unitCost: 300 });
+    expect(historyB.stockOnHand).toBe(10);
+
+    // cached fast path follows the replay
+    const listed = (await client.itemsList()).items;
+    expect(listed.find((i) => i.id === a.id)!.stockOnHand).toBe(5);
+    expect(listed.find((i) => i.id === b.id)!.costPrice).toBe(300);
+
+    // invoicesGet / invoicesList round-trip
+    expect((await client.invoicesGet({ id: invoice.id })).id).toBe(invoice.id);
+    const list = await client.invoicesList({ kind: "PURCHASE" });
+    expect(list.items.some((i) => i.id === invoice.id)).toBe(true);
+  });
+
+  it("defaults omitted line prices to the item's cost in the header totals", async () => {
+    const item = await makeItem("سطر-بلا-سعر", 250);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      initialPaid: 500,
+      lines: [{ itemId: item.id, quantity: 4 }], // no unitPrice → cost 250 each
+    });
+    // header must agree with the persisted line: 4 × 250, not 4 × 0
+    expect(invoice.totalAmount).toBe(1000);
+    expect(invoice.paidAmount).toBe(500);
+    expect(invoice.remainingAmount).toBe(500);
+    expect(invoice.lines[0]!.unitPrice).toBe(250);
+  });
+
+  it("blends the weighted average when later inflows land on an invoiced item", async () => {
+    const item = await makeItem("شراء-خلط", 200);
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 4, unitPrice: 250 }] });
+    await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 350, kind: "PURCHASE" });
+    // (4×250 + 4×350) / 8 = 300
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(8);
+    expect(row.costPrice).toBe(300);
+  });
+
+  it("quick stock without an invoice lands as a PURCHASE movement (ref=null)", async () => {
+    const item = await makeItem("مخزون-بدون-فاتورة", 500);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 500, kind: "PURCHASE" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]).toMatchObject({ kind: "PURCHASE", delta: 3, unitCost: 500, ref: null });
+  });
+
+  it("rejects a PURCHASE outflow with PURCHASE_REQUIRES_INFLOW", async () => {
+    const item = await makeItem("مشتريات-سالب", 100);
+    let code = "";
+    try {
+      await client.stockAddManual({ itemId: item.id, delta: -2, kind: "PURCHASE" });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], stockOnHand: 0 });
+  });
+
+  it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
+    const item = await makeItem("ربط-تدفق", 400);
+    // goods arrived earlier without any invoice
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 500, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 5, unitPrice: 450 }],
+    });
+
+    // proposal is read-only: 3 uninvoiced vs a 5-unit line
+    const proposal = await client.purchasesProposal({ invoiceId: invoice.id });
+    expect(proposal.invoiceId).toBe(invoice.id);
+    expect(proposal.items[0]).toMatchObject({
+      itemName: item.name,
+      lineQuantity: 5,
+      uninvoicedQty: 3,
+      proposedLinkQty: 3,
+      remainderQty: 2,
+    });
+    // read-only: no ledger rows appeared
+    expect((await client.itemsHistory({ itemId: item.id })).movements).toHaveLength(2);
+
+    const result = await client.purchasesLinkStock({
+      invoiceId: invoice.id,
+      allocations: [{ itemId: item.id, quantity: 5 }],
+    });
+    expect(result.linked).toBe(3);
+    expect(result.remainderMoved).toBe(2); // unmatched share, reported only
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    // +3 manual +5 invoice posting = 8 physical units; linking NEVER adds stock
+    // on top of the invoice's own posting (greptile: inventory overstatement)
+    expect(history.stockOnHand).toBe(8);
+    expect(history.movements).toHaveLength(2);
+    expect(history.movements.filter((m) => (m.reason ?? "").includes("ربط بفاتورة"))).toHaveLength(0);
+    const links = history.movements.length;
+
+    // repeated over-attempts can never inflate inventory: every re-link finds
+    // the pool consumed and reports the rest as unmatched, writing nothing
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const again = await client.purchasesLinkStock({
+        invoiceId: invoice.id,
+        allocations: [{ itemId: item.id, quantity: 5 }],
+      });
+      expect(again.linked).toBe(0);
+      expect(again.remainderMoved).toBeLessThanOrEqual(2);
+    }
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.stockOnHand).toBe(8);
+    expect(after.movements).toHaveLength(links);
+  });
+
+  it("does not propose a no-op after the invoice attribution cap is consumed", async () => {
+    const item = await makeItem("ربط-حد-الإسناد", 400);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 400, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 2, unitPrice: 400 }],
+    });
+
+    await client.purchasesLinkStock({
+      invoiceId: invoice.id,
+      allocations: [{ itemId: item.id, quantity: 2 }],
+    });
+
+    // Three uninvoiced units remain, but this invoice has reached its two-unit
+    // attribution cap and the proposal must not offer a stale allocation.
+    const proposal = await client.purchasesProposal({ invoiceId: invoice.id });
+    expect(proposal.items).toHaveLength(1);
+    expect(proposal.items[0]).toMatchObject({
+      uninvoicedQty: 3,
+      proposedLinkQty: 0,
+      remainderQty: 0,
+    });
+    expect(proposal.items.filter((row) => row.proposedLinkQty > 0)).toHaveLength(0);
+  });
+
+  it("concurrent invoice creates serialize into distinct invoice numbers", async () => {
+    const item = await makeItem("تسابق-ترقيم", 50);
+    // both selects used to run outside the serialized transaction and could
+    // mint the same INV-#### between SELECT and INSERT (UNIQUE -> 500)
+    const results = await Promise.allSettled([
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
+    ]);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof client.invoicesCreate>>> => r.status === "fulfilled");
+    expect(fulfilled).toHaveLength(2);
+    const numbers = fulfilled.map((r) => r.value.invoiceNumber);
+    expect(new Set(numbers).size).toBe(2);
+  });
+
+  it("double correction converges on the last corrected quantity instead of drifting", async () => {
+    const item = await makeItem("تصحيح-مزدوج", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    const lineId = invoice.lines[0]!.id;
+    await client.purchasesCorrectLine({ lineId, quantity: 6, unitCost: 200 });
+    await client.purchasesCorrectLine({ lineId, quantity: 9, unitCost: 150 });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    // +10 intake, (+6 −10), (+9 −6): each pass reverses the PREVIOUS effective
+    // quantity, so N corrections land exactly on the last corrected value
+    expect(history.stockOnHand).toBe(9);
+    expect(history.movements).toHaveLength(5);
+    const listed = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(listed.stockOnHand).toBe(9);
+    // ADR-0002 replay: 10@100 → avg 100; +6@200 → 2200/16 = 137.5;
+    // reversal drops running qty to 6; +9@150 → (137.5×6 + 1350)/15 = 145
+    expect(listed.costPrice).toBe(145);
+  });
+
+  it("correction oversell guard uses the EFFECTIVE quantity after prior corrections", async () => {
+    const item = await makeItem("تصحيح-فعال", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    const lineId = invoice.lines[0]!.id;
+    await client.purchasesCorrectLine({ lineId, quantity: 6, unitCost: 200 });
+    await client.stockAddManual({ itemId: item.id, delta: -4 }); // 2 on hand
+
+    let code = "";
+    try {
+      // correcting DOWN to 3 must fail: effective original is 6, so
+      // 2 + 3 − 6 < 0 — fewer units than were already sold
+      await client.purchasesCorrectLine({ lineId, quantity: 3, unitCost: 100 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("STOCK_NEGATIVE");
+  });
+
+  it("rejects allocations beyond the line with LINK_EXCEEDS_LINE", async () => {
+    const item = await makeItem("ربط-تجاوز", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 2, unitPrice: 100 }],
+    });
+    await expect(
+      client.purchasesLinkStock({ invoiceId: invoice.id, allocations: [{ itemId: item.id, quantity: 3 }] }),
+    ).rejects.toThrow(/LINK_EXCEEDS_LINE/);
+  });
+
+  it("correcting a saved purchase cost keeps inflow-first ordering after partial sale", async () => {
+    const item = await makeItem("تصحيح-تكلفة", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    // settled outflow keeps its original basis
+    await client.stockAddManual({ itemId: item.id, delta: -4 });
+    const before = await client.itemsHistory({ itemId: item.id });
+
+    const corrected = await client.purchasesCorrectLine({
+      lineId: invoice.lines[0]!.id,
+      quantity: 10,
+      unitCost: 300,
+    });
+    expect(corrected.id).toBe(invoice.id);
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements.length).toBe(before.movements.length + 2); // append-only pair
+    // Both correction rows share one timestamp, so occurredAt cannot put the
+    // reversal before the replacement across a one-second boundary. Their
+    // insertion order (the store's rowid seq) is corrected inflow first.
+    const correctionRows = after.movements.slice(before.movements.length);
+    expect(correctionRows.map((movement) => movement.kind)).toEqual(["PURCHASE", "MANUAL_ADJUSTMENT"]);
+    expect(correctionRows[0]!.occurredAt).toBe(correctionRows[1]!.occurredAt);
+    // earlier rows are untouched — corrections never rewrite facts
+    expect(after.movements.slice(0, before.movements.length)).toEqual(before.movements);
+
+    // replay: +10@100, −4 sold, then correction pair (+10@300 before the −10
+    // reversal) leaves 6 units whose average follows ADR-0002:
+    // (100×6 + 300×10) / 16 = 225
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(6);
+    expect(row.costPrice).toBe(225);
+  });
+
+  it("rejects a correction that would oversell with STOCK_NEGATIVE and writes nothing", async () => {
+    const item = await makeItem("تصحيح-سالب", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 5, unitPrice: 100 }],
+    });
+    // sell 4 of the 5 invoiced units; correcting the line down to 2 would
+    // claim fewer units ever arrived than were already sold
+    await client.stockAddManual({ itemId: item.id, delta: -4 });
+    const before = await client.itemsHistory({ itemId: item.id });
+
+    let code = "";
+    try {
+      await client.purchasesCorrectLine({ lineId: invoice.lines[0]!.id, quantity: 2, unitCost: 120 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("STOCK_NEGATIVE");
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements).toEqual(before.movements); // ledger untouched
+  });
+
+  it("rejects corrections for unknown lines with LINE_NOT_FOUND", async () => {
+    await expect(
+      client.purchasesCorrectLine({ lineId: "00000000-0000-4000-8000-000000000002", quantity: 1, unitCost: 50 }),
+    ).rejects.toThrow(/LINE_NOT_FOUND/);
   });
 });

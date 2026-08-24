@@ -30,6 +30,10 @@ export function openConnection(config: AppConfig): Connection {
     const sqlite = new Database(config.db.path, { create: true });
     sqlite.exec("PRAGMA journal_mode = WAL;");
     sqlite.exec("PRAGMA foreign_keys = ON;");
+    // Separate app processes may briefly contend while SQLite serializes a
+    // database write (notably invoice-number allocation). Wait for the writer
+    // rather than turning a normal concurrent request into SQLITE_BUSY.
+    sqlite.exec("PRAGMA busy_timeout = 5000;");
     const db = drizzle(sqlite, { schema });
     return {
       db,

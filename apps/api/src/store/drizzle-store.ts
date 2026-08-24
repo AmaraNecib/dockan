@@ -24,9 +24,9 @@ import type {
 } from "@dokan/contracts";
 
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { localDateTime } from "../lib/logger";
-import type { StorePort } from "./port";
+import type { StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -118,6 +118,8 @@ const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
   ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
+  ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
 type DebtSummaryRow = {
   kind: unknown;
@@ -229,6 +231,19 @@ export function createDrizzleStore(conn: Connection): StorePort {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
+
+    // The singleton seed is one conditional INSERT, so two processes opening
+    // an existing database cannot both initialize a competing counter. The
+    // numeric expression preserves the old lastInvoiceNumber behavior for
+    // legacy/manual INV-* rows while the sequence owns future allocations.
+    await db.run(sql`
+      INSERT INTO invoice_number_sequence (id, next_number)
+      SELECT 1, COALESCE((SELECT MAX(CASE
+        WHEN invoice_number GLOB 'INV-[0-9]*' THEN CAST(substr(invoice_number, 5) AS INTEGER)
+        ELSE 0
+      END) FROM invoices), 0) + 1
+      WHERE NOT EXISTS (SELECT 1 FROM invoice_number_sequence WHERE id = 1)
+    `);
 
     const categoriesCount = await db.$count(categories);
     if (categoriesCount === 0) {
@@ -351,6 +366,35 @@ export function createDrizzleStore(conn: Connection): StorePort {
       return db.$count(stockMovements, eq(stockMovements.itemId, itemId));
     },
 
+    // --- purchase linkage (ticket 29) ----------------------------------------
+    async insertStockLink(link) {
+      const row = firstRowOf(
+        await db
+          .insert(stockLinks)
+          .values({ id: id(), invoiceId: link.invoiceId, movementId: link.movementId, quantity: link.quantity, createdAt: now() })
+          .returning(),
+      );
+      return toStockLink(row);
+    },
+    async listStockLinksByItem(itemId: string) {
+      // join through the movement to scope links to one item's ledger
+      const rows = await db
+        .select({
+          id: stockLinks.id,
+          invoiceId: stockLinks.invoiceId,
+          movementId: stockLinks.movementId,
+          quantity: stockLinks.quantity,
+          createdAt: stockLinks.createdAt,
+        })
+        .from(stockLinks)
+        .innerJoin(stockMovements, eq(stockMovements.id, stockLinks.movementId))
+        .where(eq(stockMovements.itemId, itemId))
+        // SAFETY: the join makes a bare `rowid` ambiguous — qualify it with the
+        // links table so insertion-order tiebreaks still apply
+        .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
+      return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
+
     // --- parties -------------------------------------------------------------
     async listCustomers() {
       return db.select(customerCols).from(customers).orderBy(customers.name);
@@ -390,9 +434,45 @@ export function createDrizzleStore(conn: Connection): StorePort {
         }
       });
     },
+    async allocateInvoiceNumber() {
+      // SAFETY: this statement has fixed SQL identifiers and no user input;
+      // SQLite serializes the UPDATE across database connections. Reading the
+      // existing maximum in the same statement also keeps manually inserted
+      // INV-* rows from moving the sequence backwards.
+      const rows = conn.raw
+        .query(`
+          UPDATE invoice_number_sequence
+          SET next_number = MAX(
+            next_number,
+            COALESCE((SELECT MAX(CASE
+              WHEN invoice_number GLOB 'INV-[0-9]*' THEN CAST(substr(invoice_number, 5) AS INTEGER)
+              ELSE 0
+            END) FROM invoices), 0) + 1
+          ) + 1
+          WHERE id = 1
+          RETURNING printf('INV-%04d', next_number - 1) AS invoice_number
+        `)
+        .all() as Array<{ invoice_number: string }>;
+      // SAFETY: setup seeds exactly one singleton row before store use; the
+      // UPDATE ... RETURNING therefore yields exactly one formatted number.
+      return firstRowOf(rows).invoice_number;
+    },
     async lastInvoiceNumber() {
-      const latest = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices).orderBy(desc(invoices.createdAt), desc(invoices.id)).limit(1);
-      return latest[0]?.invoiceNumber;
+      // SAFETY: created_at has second granularity and id is a random UUID, so
+      // "latest by row" can return a stale number when several invoices land
+      // in the same second — the UNIQUE invoice_number would then 500. Take
+      // the numeric maximum of INV-%04d instead.
+      const rows = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices);
+      let best: string | undefined;
+      let bestNum = -1;
+      for (const row of rows) {
+        const parsed = Number.parseInt(row.invoiceNumber.replace(/^INV-/u, ""), 10);
+        if (Number.isSafeInteger(parsed) && parsed > bestNum) {
+          bestNum = parsed;
+          best = row.invoiceNumber;
+        }
+      }
+      return best;
     },
     async insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">) {
       const row = firstRowOf(await db.insert(invoices).values({ id: id(), ...inv, createdAt: now(), updatedAt: now() }).returning());
@@ -415,6 +495,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const header = invoice[0];
       if (header === undefined) return undefined;
       return { ...header, lines, payments: paymentsRows } satisfies InvoiceDetail;
+    },
+    async getInvoiceLine(lineId: string) {
+      const rows = await db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.id, lineId)).limit(1);
+      return rows.length === 0 ? undefined : toInvoiceLine(firstRowOf(rows));
     },
     async listInvoices(filters: InvoiceListFilters) {
       const conds: SQL[] = [];

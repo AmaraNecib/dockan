@@ -114,3 +114,10 @@ Playwright (`tests/e2e/ticket27.spec.ts`):
   never baked into stored data. Sale documents must snapshot their original cost basis
   and computed profit at creation (like `invoice_lines.cost_at_sale`) so a later method
   switch can show "original vs recomputed" without rewriting history.
+- **Per-batch profit attribution (sale-flow requirement):** profit is computed against
+  the specific batch a sold unit came from — `unit_price − batch.unit_cost` — not an
+  averaged number. When invoices land, extend `projectLedger` to also report source
+  movement ids + per-chunk unit costs for each consumption, so each invoice line can
+  record which batches it drew from, their costs, and the resulting profit (the
+  "why" behind the number). The chosen method (FIFO/LIFO) selects which batches are
+  consumed going forward; past sales keep their frozen snapshots.

@@ -93,7 +93,7 @@ export function SettingsPage() {
           </label>
 
           {message && (
-            <p className="text-sm font-semibold text-green-700" data-testid="settings-saved">
+            <p className="text-sm font-semibold text-green-700" role="status" data-testid="settings-saved">
               {message}
             </p>
           )}

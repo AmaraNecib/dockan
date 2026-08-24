@@ -42,6 +42,7 @@ const resources = {
       itemsThreshold: "حد التنبيه",
       itemsSave: "حفظ",
       itemsLowBadge: "منخفض",
+      itemsEmpty: "لا توجد منتجات بعد",
       itemsSellAboveCost: "سعر البيع يجب أن يكون عدداً موجباً",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
       itemsProfitPerUnit: "الربح لكل وحدة: {{profit}} دج",

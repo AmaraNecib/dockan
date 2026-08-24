@@ -29,16 +29,6 @@ type RpcDeps = {
  * quantity instead of re-reversing the untouched original */
 const CORRECTION_REASON_PREFIX = "تصحيح فاتورة";
 
-/** next invoice number: INV-%04d after the stored last number (+1,
- * zero-padded); an absent or unparseable value restarts at 0001 */
-async function nextInvoiceNumber(store: StorePort): Promise<string> {
-  const last = await store.lastInvoiceNumber();
-  // SAFETY: strip the known prefix, then trust parseInt to reject junk (NaN)
-  const parsed = Number.parseInt((last ?? "").replace(/^INV-/u, ""), 10);
-  const next = Number.isSafeInteger(parsed) && parsed > 0 ? parsed + 1 : 1;
-  return `INV-${String(next).padStart(4, "0")}`;
-}
-
 /** total invoiced quantity per item across a detail's lines (description-only
  * lines carry no item and are skipped) */
 function aggregateLineQuantities(lines: readonly InvoiceLine[]): Map<string, number> {
@@ -344,11 +334,10 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         const invoiceDate = input.invoiceDate ?? localDate();
         return deps.store.withTransaction(async (tx) => {
-          // SAFETY: numbering must run INSIDE the serialized unit — reading it
-          // outside lets two concurrent creates select the same INV-####
-          // between SELECT and INSERT and collide on the UNIQUE index. The
-          // transaction queue serializes the read with the insert.
-          const invoiceNumber = await nextInvoiceNumber(tx);
+          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // transaction as the invoice insert, so separate app processes cannot
+          // select the same INV-#### between a read and the UNIQUE insert.
+          const invoiceNumber = await tx.allocateInvoiceNumber();
           const invoice = await tx.insertInvoice({
             invoiceNumber,
             kind: "PURCHASE",
@@ -443,14 +432,18 @@ export function createRpcRouter(deps: RpcDeps) {
         const proposalRows = [];
         for (const [itemId, lineQuantity] of quantitiesByItem) {
           const uninvoicedQty = await uninvoicedAvailability(deps.store, itemId);
-          const proposedLinkQty = Math.min(uninvoicedQty, lineQuantity);
+          const alreadyLinked = await alreadyAttributed(deps.store, invoiceId, itemId);
+          const remainingLineQty = Math.max(0, lineQuantity - alreadyLinked);
+          const proposedLinkQty = Math.min(uninvoicedQty, remainingLineQty);
           proposalRows.push({
             itemId,
             itemName: itemsById.get(itemId)?.name ?? "",
             lineQuantity,
             uninvoicedQty,
             proposedLinkQty,
-            remainderQty: lineQuantity - proposedLinkQty,
+            // Once the line's attribution cap is consumed, there is no
+            // remainder to offer even if uninvoiced stock remains available.
+            remainderQty: Math.max(0, remainingLineQty - proposedLinkQty),
           });
         }
         return { invoiceId, items: proposalRows };

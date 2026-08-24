@@ -402,6 +402,86 @@ describe("transactions", () => {
     expect(names).toContain("ينجح رغم ذلك");
     expect(names).not.toContain("يفشل");
   });
+
+  it("allocates invoice numbers atomically across independent connections", async () => {
+    const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-invoice-sequence-"));
+    const dbPath = path.join(sharedDir, "shared.db");
+    const firstConnection = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath, DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const secondConnection = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath, DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const firstStore = createDrizzleStore(firstConnection);
+    const secondStore = createDrizzleStore(secondConnection);
+    try {
+      await firstStore.setup();
+      await secondStore.setup();
+
+      // These are separate store instances (and therefore separate SQLite
+      // connections); the database UPDATE, not either store's queue, owns the
+      // uniqueness boundary.
+      const [first, second] = await Promise.all([
+        firstStore.allocateInvoiceNumber(),
+        secondStore.allocateInvoiceNumber(),
+      ]);
+      expect(new Set([first, second])).toEqual(new Set(["INV-0001", "INV-0002"]));
+
+      // The same allocator is safe inside the transaction seam used by the
+      // router, and the reservation is committed alongside the invoice row.
+      const persisted = await firstStore.withTransaction(async (tx) => {
+        const invoiceNumber = await tx.allocateInvoiceNumber();
+        return tx.insertInvoice({
+          invoiceNumber,
+          kind: "PURCHASE",
+          counterpartyId: null,
+          counterpartyName: "عملية محفوظة",
+          invoiceDate: "2026-08-25",
+          totalAmount: 0,
+          paidAmount: 0,
+          remainingAmount: 0,
+          notes: null,
+        });
+      });
+      expect(persisted.invoiceNumber).toBe("INV-0003");
+
+      // A failed transaction must not burn a number, because the sequence
+      // update is part of the same atomic unit as the invoice insert.
+      await expect(
+        firstStore.withTransaction(async (tx) => {
+          await tx.allocateInvoiceNumber();
+          throw new Error("rollback-number");
+        }),
+      ).rejects.toThrow("rollback-number");
+      expect(await firstStore.allocateInvoiceNumber()).toBe("INV-0004");
+
+      // A pre-existing manually assigned number must also advance the next
+      // suggestion; this protects setup/migration databases with old invoices.
+      await firstStore.insertInvoice({
+        invoiceNumber: "INV-0042",
+        kind: "PURCHASE",
+        counterpartyId: null,
+        counterpartyName: "رقم قديم",
+        invoiceDate: "2026-08-25",
+        totalAmount: 0,
+        paidAmount: 0,
+        remainingAmount: 0,
+        notes: null,
+      });
+      expect(await firstStore.allocateInvoiceNumber()).toBe("INV-0043");
+    } finally {
+      firstConnection.close();
+      secondConnection.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(sharedDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
 });
 
 describe("activities + settings", () => {

@@ -656,6 +656,31 @@ describe("purchase intake (ticket 29)", () => {
     expect(after.movements).toHaveLength(links);
   });
 
+  it("does not propose a no-op after the invoice attribution cap is consumed", async () => {
+    const item = await makeItem("ربط-حد-الإسناد", 400);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 400, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 2, unitPrice: 400 }],
+    });
+
+    await client.purchasesLinkStock({
+      invoiceId: invoice.id,
+      allocations: [{ itemId: item.id, quantity: 2 }],
+    });
+
+    // Three uninvoiced units remain, but this invoice has reached its two-unit
+    // attribution cap and the proposal must not offer a stale allocation.
+    const proposal = await client.purchasesProposal({ invoiceId: invoice.id });
+    expect(proposal.items).toHaveLength(1);
+    expect(proposal.items[0]).toMatchObject({
+      uninvoicedQty: 3,
+      proposedLinkQty: 0,
+      remainderQty: 0,
+    });
+    expect(proposal.items.filter((row) => row.proposedLinkQty > 0)).toHaveLength(0);
+  });
+
   it("concurrent invoice creates serialize into distinct invoice numbers", async () => {
     const item = await makeItem("تسابق-ترقيم", 50);
     // both selects used to run outside the serialized transaction and could

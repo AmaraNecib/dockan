@@ -76,6 +76,9 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Reserves the next invoice number atomically in the database. */
+  allocateInvoiceNumber(): Promise<string>;
+  /** Legacy read seam retained for diagnostics and existing callers. */
   lastInvoiceNumber(): Promise<string | undefined>;
   insertInvoice(inv: Omit<Invoice, "id" | "createdAt" | "updatedAt">): Promise<Invoice>;
   insertInvoiceLine(line: Omit<InvoiceLine, "id">): Promise<InvoiceLine>;

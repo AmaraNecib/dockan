@@ -232,6 +232,19 @@ export function createDrizzleStore(conn: Connection): StorePort {
     ensureItemsBarcodeColumn();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
 
+    // The singleton seed is one conditional INSERT, so two processes opening
+    // an existing database cannot both initialize a competing counter. The
+    // numeric expression preserves the old lastInvoiceNumber behavior for
+    // legacy/manual INV-* rows while the sequence owns future allocations.
+    await db.run(sql`
+      INSERT INTO invoice_number_sequence (id, next_number)
+      SELECT 1, COALESCE((SELECT MAX(CASE
+        WHEN invoice_number GLOB 'INV-[0-9]*' THEN CAST(substr(invoice_number, 5) AS INTEGER)
+        ELSE 0
+      END) FROM invoices), 0) + 1
+      WHERE NOT EXISTS (SELECT 1 FROM invoice_number_sequence WHERE id = 1)
+    `);
+
     const categoriesCount = await db.$count(categories);
     if (categoriesCount === 0) {
       await db.insert(categories).values({ id: id(), name: "عام", createdAt: now(), updatedAt: now() }).run();
@@ -420,6 +433,29 @@ export function createDrizzleStore(conn: Connection): StorePort {
           throw err;
         }
       });
+    },
+    async allocateInvoiceNumber() {
+      // SAFETY: this statement has fixed SQL identifiers and no user input;
+      // SQLite serializes the UPDATE across database connections. Reading the
+      // existing maximum in the same statement also keeps manually inserted
+      // INV-* rows from moving the sequence backwards.
+      const rows = conn.raw
+        .query(`
+          UPDATE invoice_number_sequence
+          SET next_number = MAX(
+            next_number,
+            COALESCE((SELECT MAX(CASE
+              WHEN invoice_number GLOB 'INV-[0-9]*' THEN CAST(substr(invoice_number, 5) AS INTEGER)
+              ELSE 0
+            END) FROM invoices), 0) + 1
+          ) + 1
+          WHERE id = 1
+          RETURNING printf('INV-%04d', next_number - 1) AS invoice_number
+        `)
+        .all() as Array<{ invoice_number: string }>;
+      // SAFETY: setup seeds exactly one singleton row before store use; the
+      // UPDATE ... RETURNING therefore yields exactly one formatted number.
+      return firstRowOf(rows).invoice_number;
     },
     async lastInvoiceNumber() {
       // SAFETY: created_at has second granularity and id is a random UUID, so

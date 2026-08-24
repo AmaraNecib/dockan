@@ -270,7 +270,9 @@ export function createRpcRouter(deps: RpcDeps) {
     reportsDebts: os.reportsDebts.handler(guarded(notImplemented("reportsDebts"))),
     settingsGet: os.settingsGet.handler(guarded(notImplemented("settingsGet"))),
     settingsUpdate: os.settingsUpdate.handler(guarded(notImplemented("settingsUpdate"))),
-    activitiesList: os.activitiesList.handler(guarded(notImplemented("activitiesList"))),
+    activitiesList: os.activitiesList.handler(
+      guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
+    ),
     diagnosticsLogsTail: os.diagnosticsLogsTail.handler(guarded(notImplemented("diagnosticsLogsTail"))),
     backupManual: os.backupManual.handler(
       guarded(async () => {

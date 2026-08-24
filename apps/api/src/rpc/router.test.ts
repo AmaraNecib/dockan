@@ -413,3 +413,44 @@ describe("backups (ticket 13)", () => {
     expect(backupEntry!.ref).toBe(result.path);
   });
 });
+
+describe("activity log (ticket 12)", () => {
+  it("rejects activitiesList without a session", async () => {
+    await expect(unauthed.activitiesList({})).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("lists real-flow entries newest first with a working limit clamp", async () => {
+    // three distinct flows in a known order: category -> item -> stock adjustment
+    const categories = await client.categoriesList();
+    const created = await client.itemsCreate({
+      name: "activity-log-probe",
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 200,
+      lowStockThreshold: 0,
+    });
+    await client.stockAddManual({ itemId: created.id, delta: 3 });
+
+    const all = await client.activitiesList({});
+    expect(all.items.length).toBeGreaterThanOrEqual(3);
+    // newest first: the stock adjustment is the latest entry
+    expect(all.items[0]!.type).toBe("STOCK_ADJUSTED");
+    expect(all.items[0]!.summary).toContain("activity-log-probe");
+    // the item creation comes before the adjustment
+    const typesInOrder = all.items.slice(0, 2).map((a) => a.type);
+    expect(typesInOrder).toEqual(["STOCK_ADJUSTED", "ITEM_CREATED"]);
+    // every row carries an Algeria-local timestamp
+    for (const entry of all.items) {
+      expect(entry.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    }
+
+    // limit clamps the page size
+    const limited = await client.activitiesList({ limit: 1 });
+    expect(limited.items).toHaveLength(1);
+    expect(limited.items[0]!.type).toBe("STOCK_ADJUSTED");
+
+    // out-of-range limits are rejected by zod before touching the store
+    await expect(client.activitiesList({ limit: 0 })).rejects.toThrow();
+    await expect(client.activitiesList({ limit: 201 })).rejects.toThrow();
+  });
+});

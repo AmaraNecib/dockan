@@ -541,18 +541,22 @@ export function createRpcRouter(deps: RpcDeps) {
             .reduce((sum, movement) => sum + movement.delta, 0);
           const effectiveOriginal = line.quantity + priorNet;
           const reason = `${CORRECTION_REASON_PREFIX} ${detail.invoiceNumber} ${suffix}`;
+          // One timestamp keeps the replacement and reversal in the same
+          // ledger instant. The corrected inflow is inserted first, and the
+          // store's rowid seq tie-breaker preserves that inflow-first order.
+          const correctionOccurredAt = localDateTime();
           const reversal = {
             kind: "MANUAL_ADJUSTMENT" as const,
             delta: -effectiveOriginal,
             unitCost: null,
-            occurredAt: localDateTime(),
+            occurredAt: correctionOccurredAt,
             seq: undefined,
           };
           const corrected = {
             kind: "PURCHASE" as const,
             delta: input.quantity,
             unitCost: input.unitCost,
-            occurredAt: localDateTime(),
+            occurredAt: correctionOccurredAt,
             seq: undefined,
           };
           // SAFETY: the corrected INFLOW must precede the reversal OUTFLOW — in

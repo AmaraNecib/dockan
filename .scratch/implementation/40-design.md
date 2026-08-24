@@ -26,3 +26,7 @@
 - Startup migration must never reset an already-seeded sequence or duplicate rows under concurrent setup.
 - The sequence can have gaps only if a future caller commits a reservation without an invoice; current router allocation and invoice insert share one transaction, so failed creates roll back the reservation.
 - Keep existing SAFETY comments and StorePort seam; do not introduce a process mutex that cannot coordinate separate app processes.
+
+## Follow-up: correction timestamp ordering
+
+`purchasesCorrectLine` uses one `correctionOccurredAt` for both the replacement inflow and reversal outflow, then inserts the inflow first. The ledger already orders equal timestamps by persisted rowid (`seq`), so no new sequence column is needed. The existing partially-sold correction regression asserts both the replay result and equal correction timestamps/order.

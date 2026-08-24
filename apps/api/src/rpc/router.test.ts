@@ -750,7 +750,7 @@ describe("purchase intake (ticket 29)", () => {
     ).rejects.toThrow(/LINK_EXCEEDS_LINE/);
   });
 
-  it("correcting a saved purchase cost appends history and replays the weighted average", async () => {
+  it("correcting a saved purchase cost keeps inflow-first ordering after partial sale", async () => {
     const item = await makeItem("تصحيح-تكلفة", 100);
     const invoice = await client.invoicesCreate({
       kind: "PURCHASE",
@@ -769,6 +769,12 @@ describe("purchase intake (ticket 29)", () => {
 
     const after = await client.itemsHistory({ itemId: item.id });
     expect(after.movements.length).toBe(before.movements.length + 2); // append-only pair
+    // Both correction rows share one timestamp, so occurredAt cannot put the
+    // reversal before the replacement across a one-second boundary. Their
+    // insertion order (the store's rowid seq) is corrected inflow first.
+    const correctionRows = after.movements.slice(before.movements.length);
+    expect(correctionRows.map((movement) => movement.kind)).toEqual(["PURCHASE", "MANUAL_ADJUSTMENT"]);
+    expect(correctionRows[0]!.occurredAt).toBe(correctionRows[1]!.occurredAt);
     // earlier rows are untouched — corrections never rewrite facts
     expect(after.movements.slice(0, before.movements.length)).toEqual(before.movements);
 

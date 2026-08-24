@@ -32,8 +32,9 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   await page.getByRole("button", { name: "حفظ" }).click();
 
   // 3. The item appears in the list with a low badge (stock 0 <= threshold 5)
-  await expect(page.getByRole("row", { name: /بطارية/ })).toBeVisible();
-  await expect(page.getByText("منخفض")).toBeVisible();
+  const batteryRow = page.getByRole("row", { name: /بطارية/ });
+  await expect(batteryRow).toBeVisible();
+  await expect(batteryRow.getByText("منخفض")).toBeVisible();
 
   // 4. The dashboard lists it under low stock
   await page.goto("/");

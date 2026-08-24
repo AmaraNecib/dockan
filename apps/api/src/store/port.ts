@@ -15,6 +15,7 @@ import type {
   Payment,
   Settings,
   SettingsUpdate,
+  StockMovement,
   Supplier,
 } from "@dokan/contracts";
 
@@ -42,6 +43,13 @@ export interface StorePort {
   updateItem(id: string, patch: ItemUpdate): Promise<Item | undefined>;
   /** stock + average cost kept atomic; used inside invoice transactions */
   setItemStockAndCost(id: string, stockOnHand: number, costPrice: number): Promise<void>;
+
+  // --- stock ledger (ticket 27) --------------------------------------------
+  /** append-only; no update or delete exists by design */
+  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt">): Promise<StockMovement>;
+  /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
+  listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
+  countStockMovements(itemId: string): Promise<number>;
 
   listCustomers(): Promise<Customer[]>;
   createCustomer(input: PartyCreate): Promise<Customer>;

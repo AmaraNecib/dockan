@@ -10,6 +10,8 @@ import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
+import { historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { localDateTime } from "../lib/logger";
 
 export type RpcContext = { request: Request };
 
@@ -183,6 +185,75 @@ export function createRpcRouter(deps: RpcDeps) {
       guardedInput(async ({ query, limit }) => {
         const [items, categories] = await Promise.all([deps.store.listItems(), deps.store.listCategories()]);
         return rankCatalog(items, categories, query, limit);
+      }),
+    ),
+
+    // --- stock ledger (ticket 27) ----------------------------------------------
+    stockAddManual: os.stockAddManual.handler(
+      guardedInput(async (input) => {
+        return deps.store.withTransaction(async (tx) => {
+          const item = (await tx.getItemsByIds([input.itemId])).get(input.itemId);
+          if (item === undefined) {
+            throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+          }
+          // inflows default to the item's current cost; outflows carry no
+          // unit cost — storing one would be a misleading "fact"
+          const unitCost = input.delta > 0 ? (input.unitCost ?? item.costPrice) : null;
+
+          // validate the WHOLE projected history incl. the candidate row —
+          // negative stock is rejected before anything is written
+          const existing = await tx.listStockMovements(item.id);
+          const candidate = {
+            kind: "MANUAL_ADJUSTMENT" as const,
+            delta: input.delta,
+            unitCost,
+            occurredAt: input.occurredAt ?? localDateTime(),
+            seq: undefined,
+          };
+          let stockAfter: number;
+          try {
+            stockAfter = projectLedger([...existing, candidate]).stockOnHand;
+          } catch (err) {
+            if (err instanceof StockLedgerError) {
+              throw new ORPCError("BAD_REQUEST", { message: err.code });
+            }
+            throw err;
+          }
+
+          const movement = await tx.insertStockMovement({
+            itemId: item.id,
+            kind: candidate.kind,
+            delta: input.delta,
+            unitCost,
+            reason: input.reason ?? null,
+            ref: null,
+            occurredAt: candidate.occurredAt,
+          });
+
+          // keep the fast path in sync. cost_price is the ADR-0002 running
+          // weighted average, so after ANY write — including a backdated one
+          // — we recompute it by replaying the full ledger chronologically
+          // (inflows blend, outflows only reduce quantity). No special-casing
+          // per insertion position; the model stays uniform.
+          const newCost =
+            input.delta > 0 ? weightedAverageCost([...existing, candidate]) : item.costPrice;
+          await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تسوية مخزون ${item.name}`, ref: item.id });
+          return movement;
+        });
+      }),
+    ),
+
+    itemsHistory: os.itemsHistory.handler(
+      guardedInput(async (input) => {
+        const item = (await deps.store.getItemsByIds([input.itemId])).get(input.itemId);
+        if (item === undefined) {
+          throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+        }
+        const movements = await deps.store.listStockMovements(item.id);
+        const rows = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
+        const { stockOnHand } = projectLedger(movements, { fallbackUnitCost: item.costPrice });
+        return { movements: rows, stockOnHand };
       }),
     ),
 

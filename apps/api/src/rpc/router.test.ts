@@ -277,3 +277,116 @@ describe("ticket 28 follow-ups from test audit", () => {
     await expect(client.catalogSearch({ query: "x".repeat(129) })).rejects.toThrow();
   });
 });
+
+describe("stock ledger (ticket 27)", () => {
+  async function makeItem(name: string, costPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice: costPrice * 2,
+      lowStockThreshold: 0, // keep the shared dashboard deterministic
+    });
+  }
+
+  it("rejects an oversell with STOCK_NEGATIVE and leaves the ledger untouched", async () => {
+    const item = await makeItem("ledger-oversell", 100);
+    const before = await client.itemsHistory({ itemId: item.id });
+    expect(before.movements.length).toBe(0);
+
+    let code = "";
+    try {
+      await client.stockAddManual({ itemId: item.id, delta: -5 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("STOCK_NEGATIVE");
+
+    const after = await client.itemsHistory({ itemId: item.id });
+    expect(after.movements.length).toBe(0); // append-only integrity under rejection
+  });
+
+  it("defaults inflow unit cost to the item's current cost when omitted", async () => {
+    const item = await makeItem("ledger-fallback-cost", 200);
+    await client.stockAddManual({ itemId: item.id, delta: 4 }); // no unitCost
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(1);
+    expect(history.movements[0]!.unitCost).toBe(200);
+    expect(history.movements[0]!.stockAfter).toBe(4);
+  });
+
+  it("blends weighted-average cost on inflow and writes back atomically", async () => {
+    const item = await makeItem("ledger-avg-blend", 500);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 500 });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 700 });
+
+    const list = await client.itemsList();
+    const blended = list.items.find((i) => i.id === item.id)!;
+    expect(blended.stockOnHand).toBe(20);
+    expect(blended.costPrice).toBe(600); // ADR-0002 weighted average
+
+    // outflow leaves the average untouched but derives remaining stock
+    await client.stockAddManual({ itemId: item.id, delta: -6 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.at(-1)!.stockAfter).toBe(14);
+    const afterSale = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(afterSale.costPrice).toBe(600);
+    // outflow rows carry no unit cost — a meaningless fact otherwise
+    expect(history.movements.at(-1)!.unitCost).toBeNull();
+  });
+
+  it("rejects out-of-range deltas before touching the store", async () => {
+    const item = await makeItem("ledger-range", 100);
+    let rejected = false;
+    try {
+      await client.stockAddManual({ itemId: item.id, delta: 2_000_000 });
+    } catch {
+      rejected = true; // zod input validation must refuse absurd magnitudes
+    }
+    expect(rejected).toBe(true);
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({
+      movements: [],
+      stockOnHand: 0,
+    });
+  });
+});
+
+describe("stock ledger — backdated inflows (greptile P1)", () => {
+  it("recomputes cost from ledger layers instead of blending against present holdings", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({
+      name: "ledger-backdated",
+      categoryId: categories.items[0]!.id,
+      costPrice: 100,
+      sellingPrice: 250,
+      lowStockThreshold: 0,
+    });
+
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100 });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 200 });
+    // chronological inflow blends the ADR-0002 average
+    let row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.costPrice).toBe(150);
+
+    // now insert an inflow BACKDATED before both existing movements
+    await client.stockAddManual({
+      itemId: item.id,
+      delta: 5,
+      unitCost: 50,
+      occurredAt: "2020-01-01T08:00:00",
+    });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements).toHaveLength(3);
+    expect(history.movements[0]).toMatchObject({ unitCost: 50, stockAfter: 5 }); // sorted first
+    expect(history.stockOnHand).toBe(25);
+
+    // layers after insertion: 5@50, 10@100, 10@200 → value 3250 / qty 25 → 130
+    row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(25);
+    expect(row.costPrice).toBe(130);
+
+  });
+});

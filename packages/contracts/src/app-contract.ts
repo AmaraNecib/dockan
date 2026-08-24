@@ -21,6 +21,7 @@ import {
   itemCreateWithStockInputSchema,
   itemSchema,
   itemUpdateInputSchema,
+  itemHistoryOutputSchema,
   logsTailInputSchema,
   logsTailOutputSchema,
   lowStockOutputSchema,
@@ -29,6 +30,8 @@ import {
   resetPasswordOutputSchema,
   settingsSchema,
   settingsUpdateInputSchema,
+  stockAddManualInputSchema,
+  stockMovementSchema,
   supplierSchema,
 } from "./core";
 
@@ -55,6 +58,9 @@ export const dokanContract = {
 
   // --- catalog search + scanning (ticket 28) --------------------------------
   catalogSearch: oc.input(catalogSearchInputSchema).output(catalogSearchOutputSchema),
+  // --- stock ledger (ticket 27) --------------------------------------------
+  stockAddManual: oc.input(stockAddManualInputSchema).output(stockMovementSchema),
+  itemsHistory: oc.input(z.object({ itemId: z.string().uuid() })).output(itemHistoryOutputSchema),
 
   // --- parties -------------------------------------------------------------
   customersList: oc.output(z.object({ items: z.array(customerSchema) })),

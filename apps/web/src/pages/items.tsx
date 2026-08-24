@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Link } from "@tanstack/react-router";
 import type { Item, ItemCreate } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +13,7 @@ import { normalizeBarcode } from "@dokan/contracts";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
+import { StockForm } from "./stock";
 
 /** Live profit preview: selling - cost, recomputed on every keystroke. */
 function profitPreview(costText: string, sellText: string): number | null {
@@ -66,6 +68,7 @@ export function ItemsPage() {
       )}
       <CatalogSearch />
       <ItemForm seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={refreshItems} />
+      <StockForm />
       <ItemList />
       {unknownCode !== null && (
         <UnknownScanDialog
@@ -382,6 +385,7 @@ function ItemList() {
           <th className="p-3">{t("itemsSell")}</th>
           <th className="p-3">{t("itemsProfitPerUnit", { profit: "" })}</th>
           <th className="p-3">{t("dashboardItemsCount")}</th>
+          <th className="p-3" />
         </tr>
       </thead>
       <tbody>
@@ -402,7 +406,14 @@ function ItemList() {
             <td className="p-3">{item.sellingPrice}</td>
             <td className="p-3">{item.sellingPrice - item.costPrice}</td>
             <td className="p-3">
-              {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              <span data-testid="stock-after-cell">
+                {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+              </span>
+            </td>
+            <td className="p-3">
+              <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-stone-600 underline hover:text-stone-900">
+                {t("historyLink")}
+              </Link>
             </td>
           </tr>
         ))}

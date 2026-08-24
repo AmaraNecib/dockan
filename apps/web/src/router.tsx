@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { CategoriesPage } from "./pages/categories";
 import { DashboardPage } from "./pages/dashboard";
 import { ItemsPage } from "./pages/items";
+import { ItemHistoryPage } from "./pages/stock";
 import "./lib/i18n";
 
 const rootRoute = createRootRoute({
@@ -35,7 +36,12 @@ const rootRoute = createRootRoute({
 const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: DashboardPage });
 const categoriesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/categories", component: CategoriesPage });
 const itemsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/items", component: ItemsPage });
+const itemHistoryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/items/$itemId/history",
+  component: ItemHistoryPage,
+});
 
-const routeTree = rootRoute.addChildren([dashboardRoute, categoriesRoute, itemsRoute]);
+const routeTree = rootRoute.addChildren([dashboardRoute, categoriesRoute, itemsRoute, itemHistoryRoute]);
 
 export const router = createRouter({ routeTree });

@@ -301,13 +301,19 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // object with a single string value per row.
       const markerRows = conn.raw.query("SELECT value FROM settings WHERE key = ?").all("migration.saleColumnsV1") as Array<{ value: string }>;
       if (markerRows.length === 0) {
-        // Legacy rows predate these values. Each UPDATE is target-restricted so
-        // it can only match pre-migration rows: an already-migrated or
-        // partially-migrated database re-runs as a no-op, and legitimate
-        // post-migration zeros (free default price, fully discounted net zero)
-        // are never rewritten.
-        conn.raw.exec("UPDATE invoices SET subtotal_amount = total_amount WHERE subtotal_amount = 0 AND total_amount > 0");
-        conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price WHERE default_unit_price = 0 AND unit_price > 0");
+        // Legacy rows predate these values. Each UPDATE is target-restricted by
+        // the row INVARIANT a pre-migration row provably has, not by column
+        // presence alone: a markerless database can also contain legitimate
+        // modern rows (zero default price + negotiated price), so a line is
+        // only healed when default 0, unit > 0 AND the discount columns still
+        // carry their pre-migration zeros — a modern zero-default line has
+        // net = gross − allocated, which is > 0 when undiscounted and has
+        // allocated > 0 when discounted, so it can never match. An
+        // already-migrated or partially-migrated database re-runs as a no-op,
+        // and legit post-migration zeros (free default price, fully discounted
+        // net zero) are never rewritten.
+        conn.raw.exec("UPDATE invoices SET subtotal_amount = total_amount WHERE subtotal_amount = 0 AND total_amount > 0 AND discount_type IS NULL AND (discount_amount IS NULL OR discount_amount = 0)");
+        conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price WHERE default_unit_price = 0 AND unit_price > 0 AND discount_allocated = 0 AND net_total = 0");
         conn.raw.exec("UPDATE invoice_lines SET net_total = total WHERE net_total = 0 AND discount_allocated = 0 AND total > 0");
         conn.raw.exec("INSERT INTO settings (key, value) VALUES ('migration.saleColumnsV1', 'done') ON CONFLICT(key) DO NOTHING");
       }

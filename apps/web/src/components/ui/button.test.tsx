@@ -90,4 +90,48 @@ describe("Button (Base UI primitive)", () => {
     expect(link.className).toContain("bg-primary");
     expect(link.textContent).toBe("Settings");
   });
+
+  it("asChild with a non-button child keeps valid anchor semantics (no type, no dev warning)", () => {
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      const { host } = render(
+        <Button asChild>
+          <a href="/settings">Settings</a>
+        </Button>,
+      );
+      const link = host.querySelector<HTMLAnchorElement>("a")!;
+      // Base UI's nativeButton=false path: role instead of button-only type attr
+      expect(link.hasAttribute("type")).toBe(false);
+      expect(link.getAttribute("role")).toBe("button");
+      expect(link.getAttribute("href")).toBe("/settings");
+    } finally {
+      console.error = originalError;
+    }
+    // Base UI raises a dev error when nativeButton defaults to true but the
+    // rendered child is not a <button>; the shim must never hit that path.
+    expect(errors).toHaveLength(0);
+  });
+
+  it("asChild with a real button child keeps native button semantics", () => {
+    const errors: unknown[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => errors.push(args);
+    try {
+      const { host } = render(
+        <Button asChild>
+          <button className="custom">Go</button>
+        </Button>,
+      );
+      const button = host.querySelector("button")!;
+      expect(button.getAttribute("type")).toBe("button");
+      expect(button.getAttribute("role")).toBeNull();
+      expect(button.className).toContain("custom");
+      expect(button.className).toContain("bg-primary");
+    } finally {
+      console.error = originalError;
+    }
+    expect(errors).toHaveLength(0);
+  });
 });

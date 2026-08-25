@@ -58,6 +58,10 @@ function Button({
       return (
         <ButtonPrimitive
           render={child}
+          // Base UI defaults to native-button semantics (type="button" + dev
+          // warning when the rendered child isn't a <button>); a polymorphic
+          // child such as an anchor must opt out to stay valid.
+          nativeButton={child.type === "button"}
           data-slot="button"
           data-variant={variant}
           data-size={size}

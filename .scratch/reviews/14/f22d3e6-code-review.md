@@ -1,10 +1,12 @@
 # Code Review — Dokan Ticket #14 (stable DKN codes + diagnostics log)
 
-- Diff: `git diff c1bec84...96fddf2` on `feat/14-diagnostics-log`.
+- Diff: `git diff af0c7a3...f22d3e6` on `feat/14-diagnostics-log` (restacked
+  onto origin/develop af0c7a3).
 - Reviewed HEAD: `4249cff` (standards + spec axes in parallel sub-agents);
-  findings were applied in `653a4bb`; final head `96fddf2` adds only this
-  evidence and `.agents/wisdom/` (no code change post-review), so the review
-  describes the shipped code exactly.
+  findings were applied in `653a4bb`; final head `f22d3e6`. Ticket-14 files
+  are byte-identical to the post-review state (verified via `git diff`); the
+  restack only joined develop's own sale/settings work, so this review
+  describes the shipped ticket code exactly.
 - Spec source: GitHub issue #14 + implementation notes (`.scratch/implementation/14-design.md`).
 - Standards sources: `docs/engineering-workflow.md`, `docs/development-workflow.md`,
   `docs/adr/*`, base-file conventions (guarded RPC seam, `SAFETY:` comment rule,

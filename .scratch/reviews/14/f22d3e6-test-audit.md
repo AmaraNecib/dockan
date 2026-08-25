@@ -3,9 +3,11 @@
 - Base `c1bec84`, branch `feat/14-diagnostics-log`.
 - Reviewed HEAD: `4249cff` (three parallel voices: edge-case hunter, coverage
   analyst, quality reviewer — raw reports folded in below).
-- Final HEAD: `96fddf2` — the only additions after the review commit `653a4bb`
-  are this evidence and `.agents/wisdom/` (post-review documentation; no code
-  changed since the reviewed `653a4bb`).
+- Final HEAD: `f22d3e6` (rebased onto `origin/develop` af0c7a3 after sale
+  checkout #42 + settings #44 merged). Every ticket-14 source file is
+  byte-identical to the reviewed `653a4bb`/`96fddf2` states (verified via
+  `git diff`); the only reviewable delta since then is develop's own merged
+  work (sale/settings) plus this evidence.
 - Process: `.agents/skills/test-audit/SKILL.md`; review-only runs (no source
   modified by reviewers). Validation on the FINAL head:
   - `bun run lint` → clean (oxlint)

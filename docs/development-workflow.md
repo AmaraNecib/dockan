@@ -95,9 +95,11 @@ desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled ext
      │       DOKAN_AUTH_SECRET = baked better-auth signing secret
      │  baked: per-customer provisioning secret INLINED into the sidecar exe
      │         at build time (bun --define), never in env, logs or disk state
-     └─ probes a free port → hands it to the child explicitly (DOKAN_PORT)
+     └─ binds 127.0.0.1:0 (kernel-assigned free port, held as a reservation)
+        → hands the exact port to the child explicitly (DOKAN_PORT)
         → waits for the child to echo the one-time DOKAN_BOOT_TOKEN at
-        /health-token → navigates window to http://127.0.0.1:<port>
+        /health-token AND publish its pid's registry entry for that port
+        → navigates window to http://127.0.0.1:<port>
 ```
 
 The api serves the bundled UI (static + SPA fallback) **only when
@@ -149,10 +151,14 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
   Missing or weak (<16 chars) secrets fail the build loudly; installers built
   without a secret are test artifacts only (`cargo build`/`gates` fall back to
   a secret-less sidecar with a loud warning and are never shipped).
-- **Verified sidecar discovery** (PR #51 finding 1): the shell chooses the
-  port, passes it explicitly (`DOKAN_PORT`, authoritative), and only navigates
-  after the child echoes the one-time boot token at `/health-token` — a stale
-  or tampered port record can never redirect the webview.
+- **Verified sidecar discovery** (PR #51 finding 1): the shell binds a
+  listener on `127.0.0.1:0` — the kernel assigns a free port and the socket
+  reserves it while the child is spawned, so no local process can race a
+  probe (PR #51 TOCTOU fix: no probe at all anymore). The exact port is
+  passed explicitly (`DOKAN_PORT`, authoritative) and navigation happens only
+  after BOTH the one-time token echo at `/health-token` AND the child-pid
+  registry entry for that port confirm identity — a stale, tampered, decoyed
+  or race-hijacked record or port can never redirect the webview.
 - First run: setup flow types the per-customer secret once to create the admin
   account (see `apps/api/src/auth/admin.ts`).
 - If the app is hard-killed the sidecar may linger; the next launch probes a

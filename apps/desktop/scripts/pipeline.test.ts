@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { customerSlug, renamedInstaller } from "./release";
+import { customerSlug, findInstallerName, renamedInstaller } from "./release";
 import { MIN_BUILD_SECRET_LEN, validateBuildSecret } from "./sidecar";
 
 /**
@@ -50,5 +50,12 @@ describe("customerSlug / renamedInstaller (installer naming)", () => {
   it("inserts the slug into the tauri artifact name", () => {
     expect(renamedInstaller("Dokan_0.1.0_x64-setup.exe", "acme-shop")).toBe("Dokan_0.1.0_acme-shop_x64-setup.exe");
     expect(renamedInstaller("Dokan_0.2.5_arm64-setup.exe", "b")).toBe("Dokan_0.2.5_b_arm64-setup.exe");
+  });
+
+  it("only renames the pristine artifact — never an already-slung file", () => {
+    expect(findInstallerName(["Dokan_0.1.0_x64-setup.exe"])).toBe("Dokan_0.1.0_x64-setup.exe");
+    expect(findInstallerName(["Dokan_0.1.0_acme-shop_x64-setup.exe"])).toBeUndefined();
+    expect(findInstallerName(["Dokan_0.1.0_acme-shop_acme-shop_x64-setup.exe"])).toBeUndefined();
+    expect(findInstallerName(["Dokan_0.2.5_arm64-setup.exe", "README.txt"])).toBe("Dokan_0.2.5_arm64-setup.exe");
   });
 });

@@ -22,8 +22,15 @@ import path from "node:path";
 import { compileSidecar, validateBuildSecret } from "./sidecar";
 
 const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
-/** Matches the tauri NSIS artifact: `Dokan_<version>_<arch>-setup.exe`. */
-const SETUP_GLOB = /^Dokan_\d+\.\d+\.\d+_[^.]+-setup\.exe$/;
+/** Matches ONLY the pristine tauri NSIS artifact `Dokan_<version>_<arch>-setup.exe`
+ * (arch is a single token, never an underscore) — an already slug-renamed
+ * file like `Dokan_0.1.0_acme-shop_x64-setup.exe` must not be re-renamed. */
+const SETUP_GLOB = /^Dokan_\d+\.\d+\.\d+_[a-zA-Z0-9]+-setup\.exe$/;
+
+/** Find the pristine installer artifact among the bundle-dir entries. */
+export function findInstallerName(names: string[]): string | undefined {
+  return names.find((name) => SETUP_GLOB.test(name));
+}
 
 /** Sanitize an optional customer slug: `[a-z0-9][a-z0-9-]*` or undefined. */
 export function customerSlug(raw: string | undefined): string | undefined {
@@ -66,8 +73,7 @@ async function main(): Promise<void> {
   }
 
   if (slug !== undefined) {
-    const names = fs.readdirSync(BUNDLE_DIR);
-    const setupName = names.find((name) => SETUP_GLOB.test(name));
+    const setupName = findInstallerName(fs.readdirSync(BUNDLE_DIR));
     if (setupName === undefined) {
       console.error(`[dokan] installer artifact not found in ${BUNDLE_DIR}`);
       process.exit(1);

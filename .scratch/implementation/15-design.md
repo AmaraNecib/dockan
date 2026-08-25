@@ -104,15 +104,30 @@ taskbar/installer icon comes from `icon.ico` via tauri-build.
 ### Finding 1 — verified sidecar discovery (done)
 
 The release bootstrap previously navigated from the persistent port record.
-Now: the shell probes a free port, hands it to the child explicitly
-(`DOKAN_PORT` = authoritative for the api), generates a one-time boot token
-(`DOKAN_BOOT_TOKEN`), and only navigates after the child echoes the token at
+Now: the shell binds a listener on `127.0.0.1:0` — the kernel assigns a
+free port and the socket reserves it while the child is spawned — hands the
+exact port to the child explicitly (`DOKAN_PORT` = authoritative for the
+api), generates a one-time boot token (`DOKAN_BOOT_TOKEN`), and only
+navigates after BOTH identity checks pass: the child echoes the token at
 `GET /health-token?token=…` (constant-time compare both sides; the response
-body must contain the exact `"token":"…"` JSON field). A stale, tampered or
-decoyed record can never redirect the webview — verified live (decoy on
-4444 + planted record → app bound its own port 4317, decoy saw zero
-requests). Rust unit tests pin `health_token_ok`, `find_free_port`,
-`generate_boot_token`.
+body must contain the exact `"token":"…"` JSON field) AND the port-record
+registry entry under the child's pid records that port. A stale, tampered,
+decoyed or race-hijacked record can never redirect the webview — verified
+live (decoy on 4444 + planted record → app bound its own kernel-assigned
+port, decoy saw zero requests). Rust unit tests pin `reserve_port`,
+`registry_owned_by`, `health_token_ok`, `generate_boot_token`.
+
+**PR #51 TOCTOU follow-up (done):** the original fix probed a free port,
+leaving a window where a local process could bind the eventual port before
+ the child, intercept the token URL, echo it, and pass verification. The
+probe is GONE: `reserve_port()` binds port 0 and holds the reservation
+through the spawn; the child then takes over the exact assigned port.
+Ownership is cross-checked via the child-pid registry entry (a hijacker who
+won the drop→bind window would have made the child's explicit bind fail and
+exit — no entry, no navigation). Regression tests: the reservation is
+unbindable while alive and re-bindable after release; a kernel-assigned port
+never collides with an occupied one; `registry_owned_by` rejects missing,
+wrong, longer (`43189` ≠ `4318`) and wrong-host entries.
 
 ### Finding 2 — per-customer build secret (done, parent decision)
 

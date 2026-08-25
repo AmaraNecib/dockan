@@ -14,6 +14,8 @@ import { InvoicesPage } from "./pages/invoices";
 import { InvoicePage } from "./pages/invoice";
 import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
+import { ExpensesPage } from "./pages/expenses";
+import { ReportsPage } from "./pages/reports";
 import "./lib/i18n";
 
 const rootRoute = createRootRoute({
@@ -50,6 +52,12 @@ const rootRoute = createRootRoute({
             <Link to="/invoices" className="text-stone-600 hover:text-stone-900">
               {t("navInvoices")}
             </Link>
+            <Link to="/expenses" className="text-stone-600 hover:text-stone-900">
+              {t("navExpenses")}
+            </Link>
+            <Link to="/reports" className="text-stone-600 hover:text-stone-900">
+              {t("navReports")}
+            </Link>
             <Link to="/settings" className="text-stone-600 hover:text-stone-900">
               {t("navSettings")}
             </Link>
@@ -81,6 +89,8 @@ const saleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sale", 
 const debtsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/debts", component: DebtsPage });
 const invoicesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices", component: InvoicesPage });
 const invoiceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices/$invoiceId", component: InvoicePage });
+const expensesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/expenses", component: ExpensesPage });
+const reportsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/reports", component: ReportsPage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
 const diagnosticsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/diagnostics", component: DiagnosticsPage });
 
@@ -96,6 +106,8 @@ const routeTree = rootRoute.addChildren([
   debtsRoute,
   invoicesRoute,
   invoiceRoute,
+  expensesRoute,
+  reportsRoute,
   settingsRoute,
   diagnosticsRoute,
 ]);

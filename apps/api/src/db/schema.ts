@@ -1,6 +1,5 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { activityTypes, invoiceKinds, movementKinds, paymentMethods } from "@dokan/contracts";
-
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer
  * maps rows to the camelCase shapes of @dokan/contracts.
@@ -142,6 +141,41 @@ export const stockLinks = sqliteTable("stock_links", {
 });
 
 // ---------------------------------------------------------------------------
+// Expenses and profit reports (ticket 31)
+// ---------------------------------------------------------------------------
+
+/**
+ * Expense categories. `is_owner_withdrawal` flags owner cash-outs (سحوبات
+ * المالك) so the report separates them from operating expenses by attribute.
+ * Seeded with defaults once per database (see store setup).
+ */
+export const expenseCategories = sqliteTable("expense_categories", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  isOwnerWithdrawal: integer("is_owner_withdrawal").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+/**
+ * Append-only expense records (تسجيل مصروف). The profit report derives every
+ * figure from these raw rows plus SALE invoice lines at read time; no
+ * precomputed money totals are stored anywhere.
+ */
+export const expenses = sqliteTable("expenses", {
+  id: text("id").primaryKey(),
+  categoryId: text("category_id")
+    .notNull()
+    .references(() => expenseCategories.id),
+  /** whole dinars; positive by contract */
+  amount: integer("amount").notNull(),
+  note: text("note"),
+  /** Algeria-local moment of the expense (editable for backdating) */
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+// ---------------------------------------------------------------------------
 // better-auth tables (ticket 02 wires the adapter; schema lands here now)
 // ---------------------------------------------------------------------------
 
@@ -215,6 +249,10 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS expense_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_owner_withdrawal INTEGER NOT NULL DEFAULT 0 CHECK (is_owner_withdrawal IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL CHECK (amount > 0), note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_expenses_occurred_at ON expenses(occurred_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category_id)`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS user (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT, username TEXT UNIQUE, phoneNumber TEXT UNIQUE, phoneNumberVerified INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS session (id TEXT PRIMARY KEY, expiresAt INTEGER NOT NULL, token TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, ipAddress TEXT, userAgent TEXT, userId TEXT NOT NULL REFERENCES user(id))`,

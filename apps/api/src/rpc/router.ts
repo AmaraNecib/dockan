@@ -14,6 +14,9 @@ import { fifoCostForOutflow, historyWithRemaining, projectLedger, StockLedgerErr
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
+import type { ReportRangePreset } from "@dokan/contracts";
+import { currentMonthRange, resolveReportRange, validCustomRange } from "../lib/report-ranges";
+import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
 
 export type RpcContext = { request: Request };
 
@@ -24,6 +27,49 @@ type RpcDeps = {
   store: StorePort;
   auth: BetterAuthInstance;
 };
+
+/**
+ * Resolve the inclusive Algeria-local window for expense listing and profit
+ * reports. A preset (or an explicit from/to pair) wins; an absent preset and
+ * absent bounds default to the current month — the spec's default range.
+ * Custom bounds must be present and ordered, else INVALID_RANGE.
+ */
+function resolveWindow(input: {
+  preset?: ReportRangePreset;
+  customFrom?: string;
+  customTo?: string;
+  from?: string;
+  to?: string;
+}): ProfitReportRange {
+  if (input.preset !== undefined) {
+    const range = resolveReportRange(input.preset, new Date(), { from: input.customFrom, to: input.customTo });
+    if (input.preset === "CUSTOM" && !validCustomRange(input.customFrom, input.customTo)) {
+      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+    }
+    return range;
+  }
+  // preset absent: honor caller-supplied bounds. preset + bounds together is a
+  // documented precedence (preset wins); customFrom/customTo without a preset
+  // act as a CUSTOM window, so a client bug surfaces as a window, not as
+  // wrong-but-successful data.
+  if (input.customFrom !== undefined || input.customTo !== undefined) {
+    const range = resolveReportRange("CUSTOM", new Date(), { from: input.customFrom, to: input.customTo });
+    if (!validCustomRange(range.from, range.to)) {
+      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+    }
+    return range;
+  }
+  // single instant for the whole default-window computation so a call that
+  // straddles local midnight never mixes two months together
+  const month = currentMonthRange();
+  const from = input.from ?? (input.to === undefined ? month.from : "0001-01-01T00:00:00");
+  const to = input.to ?? (input.from === undefined ? month.to : "9999-12-31T23:59:59");
+  if (from > to) {
+    throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+  }
+  // bounds-only windows are "custom" by origin (the report page echoes preset)
+  return { preset: "CUSTOM" as const, from, to };
+}
 
 /** reason prefix burned into purchase-line corrections; the line id rides as
  * a #suffix so N corrections of one line reverse the PREVIOUS effective
@@ -773,6 +819,81 @@ export function createRpcRouter(deps: RpcDeps) {
         const items = await deps.store.listUnpaidInvoicesByParty(kind, counterpartyId, counterpartyName);
         // the party query has no pagination cap, so the count is the list size
         return { items, totalCount: items.length };
+      }),
+    ),
+
+    // --- profit report (ticket 31): computed from raw records at read time ---
+    reportsProfit: os.reportsProfit.handler(
+      guardedInput(async (input) => {
+        const range = resolveWindow({ preset: input.preset, customFrom: input.customFrom, customTo: input.customTo });
+        const [saleLines, expenses, categories] = await Promise.all([
+          deps.store.listSaleLinesForProfit(range.from, range.to),
+          deps.store.listExpenseRecords({ from: range.from, to: range.to }),
+          deps.store.listExpenseCategories(),
+        ]);
+        return computeProfitReport({ saleLines, expenses, categories, range });
+      }),
+    ),
+
+    // --- expenses (ticket 31) ------------------------------------------------
+    expenseCategoriesList: os.expenseCategoriesList.handler(guarded(async () => ({ items: await deps.store.listExpenseCategories() }))),
+    expenseCategoriesCreate: os.expenseCategoriesCreate.handler(
+      guardedInput(async (input) => {
+        // duplicate check lives INSIDE the serialized unit, same as categoriesCreate
+        try {
+          return await deps.store.withTransaction(async (tx) => {
+            const existing = await tx.listExpenseCategories();
+            if (existing.some((category) => category.name === input.name)) {
+              throw new ORPCError("CONFLICT", { message: "EXPENSE_CATEGORY_EXISTS" });
+            }
+            const category = await tx.createExpenseCategory(input);
+            // the flag choice rides in the audit summary so a misclassification
+            // is traceable (the flag itself is create-only today, by design)
+            const withdrawalMark = input.isOwnerWithdrawal === true ? " (سحب مالك)" : "";
+            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `إنشاء تصنيف مصاريف ${input.name}${withdrawalMark}` });
+            return category;
+          });
+        } catch (err) {
+          if (err instanceof Error && isUniqueViolation(err)) {
+            throw new ORPCError("CONFLICT", { message: "EXPENSE_CATEGORY_EXISTS" });
+          }
+          throw err;
+        }
+      }),
+    ),
+    expensesCreate: os.expensesCreate.handler(
+      guardedInput(async (input) => {
+        // category existence is validated INSIDE the transaction unit, so an
+        // FK violation on a race (category vanishing mid-call) surfaces as the
+        // translated CATEGORY_NOT_FOUND instead of a raw constraint error
+        return deps.store.withTransaction(async (tx) => {
+          const categories = await tx.listExpenseCategories();
+          if (!categories.some((category) => category.id === input.categoryId)) {
+            throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+          }
+          const expense = await tx.insertExpense({
+            categoryId: input.categoryId,
+            amount: input.amount,
+            note: input.note ?? null,
+            occurredAt: input.occurredAt ?? localDateTime(),
+          });
+          await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `تسجيل مصروف ${input.amount} دج`, ref: expense.id });
+          return expense;
+        });
+      }),
+    ),
+    expensesList: os.expensesList.handler(
+      guardedInput(async (input) => {
+        // the spec's default range is the current month; an explicit preset or
+        // bounds overrides it. Single source of truth: resolveReportRange.
+        const preset =
+          input.preset ??
+          ((input.from === undefined && input.to === undefined && input.customFrom === undefined && input.customTo === undefined
+            ? "CURRENT_MONTH"
+            : undefined));
+        const range = resolveWindow({ preset, customFrom: input.customFrom, customTo: input.customTo, from: input.from, to: input.to });
+        const rows = await deps.store.listExpenseRecords({ categoryIds: input.categoryIds, from: range.from, to: range.to });
+        return { items: sortExpenses(rows, input.sortBy, input.sortDir) };
       }),
     ),
 

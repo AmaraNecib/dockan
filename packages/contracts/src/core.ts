@@ -41,6 +41,8 @@ export const activityTypes = [
   "BACKUP_CREATED",
   "STOCK_ADJUSTED",
   "SETTINGS_UPDATED",
+  "EXPENSE_RECORDED",
+  "EXPENSE_CATEGORY_CREATED",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -259,6 +261,98 @@ export const settingsSchema = z.object({
   storePhone: z.string().trim().nullable(),
 });
 
+// ---------------------------------------------------------------------------
+// Expenses and profit reports (ticket 31)
+// ---------------------------------------------------------------------------
+
+/** Whole-dinar ceiling shared by the entity and its create input so report sums
+ * can never approach MAX_SAFE_INTEGER at realistic volumes. */
+export const MAX_EXPENSE_AMOUNT = 1_000_000_000_000;
+
+/**
+ * Expense category. `isOwnerWithdrawal` marks owner cash-outs (سحوبات المالك)
+ * so the profit report separates operating expenses from rich-taking — matched
+ * by attribute, never by name. One flagged category is seeded by default.
+ */
+export const expenseCategorySchema = z.object({
+  id: idSchema,
+  name: z.string().trim().min(1),
+  isOwnerWithdrawal: z.boolean(),
+  createdAt: localDateTimeSchema,
+  updatedAt: localDateTimeSchema,
+});
+
+/**
+ * One raw expense record (تسجيل مصروف). Append-only by design: the profit
+ * report derives every figure from these rows plus SALE invoice lines, so
+ * nothing is ever stored as a fragile precomputed total. Amounts are capped
+ * far below MAX_SAFE_INTEGER so report sums stay exact whole-DZD integers.
+ */
+export const expenseSchema = z.object({
+  id: idSchema,
+  categoryId: idSchema,
+  /** whole dinars; must be positive — a zero-DZD expense is a no-op record */
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  /** mirror of the input cap so persisted and returned shapes agree */
+  note: z.string().max(500).nullable(),
+  /** Algeria-local moment of the expense (editable for backdating) */
+  occurredAt: localDateTimeSchema,
+  createdAt: localDateTimeSchema,
+});
+
+/** Flexible report windows, computed in Algeria local time (ticket 31). */
+export const reportRangePresets = [
+  "24H",
+  "7D",
+  "28D",
+  "30D",
+  "CURRENT_MONTH",
+  "3M",
+  "6M",
+  "CURRENT_YEAR",
+  "LAST_YEAR",
+  "CUSTOM",
+] as const;
+
+export const reportRangePresetSchema = z.enum(reportRangePresets);
+
+/**
+ * Report window selection. `CUSTOM` requires both `customFrom` and `customTo`;
+ * other presets ignore them (the api computes the window in Algeria local
+ * time — see apps/api/src/lib/report-ranges.ts). Both bounds are inclusive.
+ */
+export const profitReportInputSchema = z.object({
+  preset: reportRangePresetSchema,
+  customFrom: localDateTimeSchema.optional(),
+  customTo: localDateTimeSchema.optional(),
+});
+
+/** One category's raw expense sum inside the report window. */
+export const expenseCategoryTotalSchema = z.object({
+  categoryId: idSchema,
+  categoryName: z.string(),
+  isOwnerWithdrawal: z.boolean(),
+  total: z.number().int().min(0),
+  count: z.number().int().min(0),
+});
+
+/**
+ * Profit report the ui renders: revenue/COGS/gross profit, then operating
+ * expenses and owner withdrawals separately, then the result after expenses.
+ * Every figure is summed at read time from raw SALE invoice lines (netTotal,
+ * costAtSale) and expense rows inside the window — nothing is precomputed.
+ */
+export const profitReportOutputSchema = z.object({
+  range: z.object({ preset: reportRangePresetSchema, from: localDateTimeSchema, to: localDateTimeSchema }),
+  revenue: z.number().int().min(0),
+  cogs: z.number().int().min(0),
+  grossProfit: z.number().int(),
+  operatingExpenses: z.number().int().min(0),
+  ownerWithdrawals: z.number().int().min(0),
+  resultAfterExpenses: z.number().int(),
+  byCategory: z.array(expenseCategoryTotalSchema),
+});
+
 export const debtSummarySchema = z.object({
   /** null when the invoice carries only a typed-in name */
   counterpartyId: idSchema.nullable(),
@@ -451,13 +545,50 @@ export const stockAddManualInputSchema = z.object({
   kind: z.enum(["PURCHASE", "MANUAL_ADJUSTMENT"]).default("MANUAL_ADJUSTMENT"),
 });
 
+export const expenseCategoryCreateInputSchema = z.object({
+  name: z.string().trim().min(1),
+  /** mark this category as owner withdrawals (سحوبات المالك) */
+  isOwnerWithdrawal: z.boolean().optional(),
+});
+
+export const expenseCreateInputSchema = z.object({
+  categoryId: idSchema,
+  /** same cap as the entity so an absurd input can never threaten 2^53 sums */
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
+  note: z.string().trim().max(500).nullable().optional(),
+  /** Algeria-local moment; defaults to now at the api */
+  occurredAt: localDateTimeSchema.optional(),
+});
+
+export const expenseListInputSchema = z.object({
+  /** empty/absent = all categories (a record never escapes every filter) */
+  categoryIds: z.array(idSchema).max(100).optional(),
+  /** window preset, resolved in Algeria local time at the api (same math as
+   * the profit report). When absent and no from/to bounds are sent, the
+   * window defaults to the current month. */
+  preset: reportRangePresetSchema.optional(),
+  /** required together when preset = CUSTOM */
+  customFrom: localDateTimeSchema.optional(),
+  customTo: localDateTimeSchema.optional(),
+  /** inclusive local-datetime bounds; an alternative to a preset. Half-open:
+   * an absent bound stays open-ended (from-only filters up to "now", to-only
+   * filters since the beginning of records) — pinned by wire tests */
+  from: localDateTimeSchema.optional(),
+  to: localDateTimeSchema.optional(),
+  sortBy: z.enum(["occurredAt", "amount"]).optional(),
+  sortDir: z.enum(["asc", "desc"]).optional(),
+});
+
+export const expenseListOutputSchema = z.object({
+  items: z.array(expenseSchema),
+});
+
 // --- purchase intake (ticket 29) -------------------------------------------
 
 export const purchaseAllocationSchema = z.object({
   itemId: idSchema,
   quantity: z.number().int().positive(),
 });
-
 export const purchasesLinkStockInputSchema = z.object({
   invoiceId: idSchema,
   allocations: z.array(purchaseAllocationSchema).min(1),
@@ -584,6 +715,11 @@ export type StockMovement = z.infer<typeof stockMovementSchema>;
 export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
+export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
+export type Expense = z.infer<typeof expenseSchema>;
+export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;
+export type ExpenseCategoryTotal = z.infer<typeof expenseCategoryTotalSchema>;
+export type ProfitReport = z.infer<typeof profitReportOutputSchema>;
 
 export type ResetPasswordInput = z.infer<typeof resetPasswordInputSchema>;
 export type CatalogSearchInput = z.infer<typeof catalogSearchInputSchema>;
@@ -599,3 +735,7 @@ export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
 export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;
 export type PurchaseAllocation = z.infer<typeof purchaseAllocationSchema>;
+export type ExpenseCategoryCreate = z.infer<typeof expenseCategoryCreateInputSchema>;
+export type ExpenseCreate = z.infer<typeof expenseCreateInputSchema>;
+export type ExpenseListFilters = z.infer<typeof expenseListInputSchema>;
+export type ProfitReportInput = z.infer<typeof profitReportInputSchema>;

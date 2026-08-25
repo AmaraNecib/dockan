@@ -8,6 +8,8 @@ import type {
   Category,
   Customer,
   DebtSummary,
+  Expense,
+  ExpenseCategory,
   Invoice,
   InvoiceDetail,
   InvoiceLine,
@@ -22,14 +24,31 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { localDateTime } from "../lib/logger";
-import type { InvoiceInsert, InvoiceLineInsert, StockLink, StorePort } from "./port";
+import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
+
+/**
+ * Default expense categories (ticket 31). The owner-withdrawal entry MUST be
+ * flagged — the profit report splits operating expenses from owner cash-outs
+ * by this attribute, never by name.
+ */
+const EXPENSE_CATEGORY_DEFAULTS: ReadonlyArray<{ name: string; isOwnerWithdrawal: boolean }> = [
+  { name: "كراء المحل", isOwnerWithdrawal: false },
+  { name: "كهرباء وماء وغاز", isOwnerWithdrawal: false },
+  { name: "أجور ورواتب", isOwnerWithdrawal: false },
+  { name: "نقل وتوصيل", isOwnerWithdrawal: false },
+  { name: "صيانة وتصليح", isOwnerWithdrawal: false },
+  { name: "مصاريف أخرى", isOwnerWithdrawal: false },
+  { name: "سحوبات المالك", isOwnerWithdrawal: true },
+];
+
+/** Durable marker: once written, the default set is complete and never re-seeded. */
+const EXPENSE_CATEGORIES_MARKER = "seed.expenseCategoriesV1";
 
 const firstRowOf = <T,>(rows: T[]): T => {
   const row = rows[0];
@@ -95,6 +114,21 @@ const paymentCols = {
   createdAt: payments.createdAt,
 };
 const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref };
+const expenseCategoryCols = {
+  id: expenseCategories.id,
+  name: expenseCategories.name,
+  isOwnerWithdrawal: expenseCategories.isOwnerWithdrawal,
+  createdAt: expenseCategories.createdAt,
+  updatedAt: expenseCategories.updatedAt,
+};
+const expenseCols = {
+  id: expenses.id,
+  categoryId: expenses.categoryId,
+  amount: expenses.amount,
+  note: expenses.note,
+  occurredAt: expenses.occurredAt,
+  createdAt: expenses.createdAt,
+};
 const movementCols = {
   id: stockMovements.id,
   itemId: stockMovements.itemId,
@@ -150,8 +184,73 @@ const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
   ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+const toExpenseCategory = (r: typeof expenseCategories.$inferSelect): ExpenseCategory =>
+  ({ id: r.id, name: r.name, isOwnerWithdrawal: r.isOwnerWithdrawal === 1, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies ExpenseCategory;
+const toExpense = (r: typeof expenses.$inferSelect): Expense =>
+  ({ id: r.id, categoryId: r.categoryId, amount: r.amount, note: r.note, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies Expense;
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
   ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
+
+/**
+ * Seed the default expense categories atomically with a durable marker, and
+ * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
+ * loop committed row by row, so a crash between inserts left a marker-less
+ * non-empty table that the old count===0 guard would skip forever — the
+ * owner-withdrawal category could go missing).
+ *
+ * - Fresh table → all defaults + marker land in ONE transaction.
+ * - Marker-less table whose rows are ALL default names → a partial seed from
+ *   the legacy loop (or a crash between seed and marker write): resume with
+ *   INSERT ... ON CONFLICT(name) DO NOTHING so missing defaults, including
+ *   the flagged withdrawal category, appear exactly once.
+ * - Any other non-empty table (owner-created categories present) → the
+ *   "defaults only when empty" upgrade policy holds: nothing is added and
+ *   user categories or renamed defaults are never duplicated.
+ *
+ * The unit opens with BEGIN IMMEDIATE — the write lock is reserved BEFORE
+ * the marker/rows read (same primitive as StorePort.withTransactionImmediate,
+ * which setup() cannot call here: it already holds the serialization queue,
+ * and re-entering it would deadlock). Two processes racing boot on a
+ * fresh/partially-seeded database otherwise BOTH read under a deferred
+ * snapshot and the loser dies with SQLITE_BUSY_SNAPSHOT mid-startup; with
+ * the immediate begin the loser waits on busy_timeout, then re-runs as a
+ * no-op against the winner's committed marker.
+ */
+export const seedExpenseCategories = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: fixed SQL identifiers and bound parameters only; the cast
+    // promises the exact keys the literal SELECT produces
+    const existing = conn.raw.query("SELECT name FROM expense_categories").all() as Array<{ name: string }>;
+    // SAFETY: the literal SELECT reads the marker key; the cast promises the
+    // single string column the settings row exposes
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(EXPENSE_CATEGORIES_MARKER) as Array<{ value: string }>;
+    // the read and the writes share one transaction, so a crash mid-seed
+    // either commits everything or nothing and the next boot resumes from
+    // the marker state deterministically
+    const names = new Set(existing.map((row) => row.name));
+    const partialDefaultSeed =
+      existing.length > 0 &&
+      marker.length === 0 &&
+      existing.every((row) => EXPENSE_CATEGORY_DEFAULTS.some((candidate) => candidate.name === row.name));
+    if (existing.length === 0 || partialDefaultSeed) {
+      for (const category of EXPENSE_CATEGORY_DEFAULTS) {
+        if (names.has(category.name)) continue;
+        const inserted = conn.raw
+          .query("INSERT INTO expense_categories (id, name, is_owner_withdrawal, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING")
+          .run(id(), category.name, category.isOwnerWithdrawal ? 1 : 0, now(), now());
+        // SAFETY: the unique-name conflict path is the idempotency guard;
+        // nothing is written twice by definition
+        void inserted;
+      }
+      conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(EXPENSE_CATEGORIES_MARKER);
+    }
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
 
 type DebtSummaryRow = {
   kind: unknown;
@@ -355,6 +454,22 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
+  /**
+   * Seed the default expense categories atomically with a durable marker, and
+   * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
+   * loop committed row by row, so a crash between inserts left a marker-less
+   * non-empty table that the old count===0 guard would skip forever — the
+   * owner-withdrawal category could go missing).
+   *
+   * - Fresh table → all defaults + marker land in ONE transaction.
+   * - Marker-less table whose rows are ALL default names → a partial seed from
+   *   the legacy loop (or a crash between seed and marker write): resume with
+   *   INSERT ... ON CONFLICT(name) DO NOTHING so missing defaults, including
+   *   the flagged withdrawal category, appear exactly once.
+   * - Any other non-empty table (owner-created categories present) → the
+   *   "defaults only when empty" upgrade policy holds: nothing is added and
+   *   user categories or renamed defaults are never duplicated.
+   */
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
@@ -378,6 +493,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
     if (categoriesCount === 0) {
       await db.insert(categories).values({ id: id(), name: "عام", createdAt: now(), updatedAt: now() }).run();
     }
+    // Expense categories seed once per database (ticket 31, greptile round at
+    // 38c7adb): atomic + marker-gated self-heal — see seedExpenseCategories.
+    seedExpenseCategories(conn);
     const storeName = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, "storeName")).limit(1);
     if (storeName.length === 0) {
       await db.insert(settings).values({ key: "storeName", value: "Dokan" }).run();
@@ -522,6 +640,59 @@ export function createDrizzleStore(conn: Connection): StorePort {
         // links table so insertion-order tiebreaks still apply
         .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
       return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
+
+    // --- expenses + profit report (ticket 31) --------------------------------
+    async listExpenseCategories() {
+      const rows = await db.select(expenseCategoryCols).from(expenseCategories).orderBy(expenseCategories.name);
+      return rows.map((row) => toExpenseCategory(row));
+    },
+    async createExpenseCategory(input) {
+      const row = firstRowOf(
+        await db
+          .insert(expenseCategories)
+          .values({ id: id(), name: input.name, isOwnerWithdrawal: input.isOwnerWithdrawal === true ? 1 : 0, createdAt: now(), updatedAt: now() })
+          .returning(),
+      );
+      return toExpenseCategory(row);
+    },
+    async insertExpense(input) {
+      const row = firstRowOf(
+        await db
+          .insert(expenses)
+          .values({ id: id(), categoryId: input.categoryId, amount: input.amount, note: input.note ?? null, occurredAt: input.occurredAt, createdAt: now() })
+          .returning(),
+      );
+      return toExpense(row);
+    },
+    async listExpenseRecords(filters) {
+      const conds: SQL[] = [];
+      if (filters.categoryIds !== undefined && filters.categoryIds.length > 0) {
+        conds.push(inArray(expenses.categoryId, filters.categoryIds));
+      }
+      if (filters.from !== undefined) conds.push(sql`${expenses.occurredAt} >= ${filters.from}`);
+      if (filters.to !== undefined) conds.push(sql`${expenses.occurredAt} <= ${filters.to}`);
+      const where = conds.length ? and(...conds) : undefined;
+      const rows = await db.select(expenseCols).from(expenses).where(where);
+      return rows.map((row) => toExpense(row));
+    },
+    async listSaleLinesForProfit(from, to) {
+      // raw line facts only: netTotal (revenue basis) and costAtSale×quantity
+      // (COGS basis); the pure report module owns the formulas
+      // SAFETY: the SELECT aliases exactly produce these camelCase keys from
+      // the fixed column list; the raw result's shape is pinned by the literal
+      // query, not by any user input
+      const rows = (await db.all(sql`
+        SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
+               l.quantity AS quantity, l.cost_at_sale AS costAtSale,
+               l.net_total AS netTotal
+        FROM invoice_lines l
+        JOIN invoices i ON i.id = l.invoice_id
+        WHERE i.kind = 'SALE'
+          AND i.invoice_date >= substr(${from}, 1, 10)
+          AND i.invoice_date <= substr(${to}, 1, 10)
+      `)) as Array<ProfitSaleLine>;
+      return rows;
     },
 
     // --- parties -------------------------------------------------------------

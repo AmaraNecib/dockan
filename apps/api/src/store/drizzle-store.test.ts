@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
-import { createDrizzleStore } from "./drizzle-store";
+import { createDrizzleStore, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
 
 /**
@@ -41,12 +41,203 @@ afterAll(() => {
 
 const stamp = () => localDateTime();
 
+/** bun:sqlite can keep the file handle open a beat after close on Windows;
+ * retry the temp-dir removal instead of failing the test on EBUSY. */
+const removeTempDirRetry = (dir: string): void => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Bun.sleepSync(50);
+    }
+  }
+};
+
 describe("setup + seed", () => {
   it("creates tables and seeds the default category and settings", async () => {
     const cats = await store.listCategories();
     expect(cats.some((c) => c.name === "عام")).toBe(true);
     const settings = await store.getSettings();
     expect(settings.storeName).toBe("Dokan");
+  });
+
+  it("seeds expense categories with one distinct owner-withdrawal category, idempotently", async () => {
+    const first = await store.listExpenseCategories();
+    expect(first.some((row) => row.isOwnerWithdrawal)).toBe(true);
+    const withdrawal = first.filter((row) => row.isOwnerWithdrawal);
+    expect(withdrawal).toHaveLength(1);
+    expect(withdrawal[0]!.name).toBe("سحوبات المالك");
+    expect(first.some((row) => row.name === "كراء المحل")).toBe(true);
+    // the seeded rows round-trip the boolean through the integer column
+    expect(first.find((row) => row.name === "سحوبات المالك")!.isOwnerWithdrawal).toBe(true);
+    expect(first.find((row) => row.name === "كراء المحل")!.isOwnerWithdrawal).toBe(false);
+    // a second setup() must never duplicate the defaults
+    await store.setup();
+    const second = await store.listExpenseCategories();
+    expect(second).toEqual(first);
+  });
+
+  it("rejects a duplicate category name at the store seam and round-trips the flag", async () => {
+    const { isOwnerWithdrawal } = await store.createExpenseCategory({ name: "تصنيف مخصص", isOwnerWithdrawal: true });
+    expect(isOwnerWithdrawal).toBe(true);
+    await expect(store.createExpenseCategory({ name: "تصنيف مخصص" })).rejects.toThrow();
+    // a later setup() never removes or duplicates owner-created categories
+    await store.setup();
+    const names = (await store.listExpenseCategories()).map((row) => row.name);
+    expect(names.filter((name) => name === "تصنيف مخصص")).toHaveLength(1);
+  });
+
+  it("self-heals an interrupted default-category seed exactly once (greptile round)", async () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-seed-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup(); // full atomic seed + marker
+    // simulate the pre-fix crash state: a few defaults committed, count
+    // nonzero, the owner-withdrawal category missing, marker absent
+    legacy.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    legacy.raw.exec("DELETE FROM expense_categories WHERE name IN ('سحوبات المالك', 'صيانة وتصليح')");
+    const degraded = await legacyStore.listExpenseCategories();
+    expect(degraded.some((row) => row.name === "سحوبات المالك")).toBe(false);
+    expect(degraded).toHaveLength(5);
+    // the next boot completes the set exactly once (no duplicates, flag intact)
+    await legacyStore.setup();
+    const healed = await legacyStore.listExpenseCategories();
+    expect(healed).toHaveLength(7);
+    expect(healed.find((row) => row.name === "سحوبات المالك")?.isOwnerWithdrawal).toBe(true);
+    expect(healed.filter((row) => row.name === "سحوبات المالك")).toHaveLength(1);
+    // a third setup is a no-op (marker present)
+    await legacyStore.setup();
+    expect(await legacyStore.listExpenseCategories()).toHaveLength(7);
+    legacy.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(seedDir, { recursive: true, force: true });
+        return;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
+  it("keeps the defaults-only-when-empty policy: owner tables are never reseeded (greptile round)", async () => {
+    const ownerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-owner-"));
+    const ownerConn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: ownerDir, DOKAN_DB_PATH: path.join(ownerDir, "owner.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const ownerStore = createDrizzleStore(ownerConn);
+    await ownerStore.setup();
+    // degrade into a hypothetical legacy owner table: no marker, one
+    // owner-created category, no defaults at all
+    ownerConn.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    ownerConn.raw.exec("DELETE FROM expense_categories");
+    ownerConn.raw.exec("INSERT INTO expense_categories (id, name, is_owner_withdrawal, created_at, updated_at) VALUES ('owner-1', 'تصنيفي الخاص', 0, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+    // setup() must NOT inject defaults into an owner-populated table
+    await ownerStore.setup();
+    expect((await ownerStore.listExpenseCategories()).map((row) => row.name)).toEqual(["تصنيفي الخاص"]);
+    ownerConn.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(ownerDir, { recursive: true, force: true });
+        return;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
+  it("enforces the money CHECK constraints at the database level", async () => {
+    const categories = await store.listExpenseCategories();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    // the router validates via zod; the store must ALSO reject raw negatives
+    await expect(
+      store.insertExpense({ categoryId: op.id, amount: -5, note: null, occurredAt: "2026-02-10T12:00:00" }),
+    ).rejects.toThrow();
+  });
+
+  // Regression for the greptile round at ab5e585: two processes racing boot
+  // on a partially-seeded database used to BOTH read under a deferred
+  // snapshot; the loser's read-to-write upgrade then failed with
+  // SQLITE_BUSY_SNAPSHOT — a raw crash during startup.
+  //
+  // Lock-first unit proof (deterministic, no timing): hold the write lock on
+  // a second connection, shrink busy_timeout, and record every SQL statement
+  // the seed issues. The fixed unit fails AT ITS BEGIN IMMEDIATE without
+  // having read anything; a deferred begin would read rows+marker first and
+  // only die later at its first INSERT. Full setup() cannot host this race:
+  // its earlier invoice_number_sequence conditional INSERT queues on the same
+  // lock first (single autocommit statement — no stale-snapshot risk), so it
+  // absorbs any contention before the seed is ever reached.
+  it("expense seed takes the write lock BEFORE its marker/rows read", async () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-lockfirst-"));
+    const seedConn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const seedStore = createDrizzleStore(seedConn);
+    await seedStore.setup();
+    // partial-seed state: the unit will genuinely want to write when it runs
+    seedConn.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    seedConn.raw.exec("DELETE FROM expense_categories WHERE name IN ('سحوبات المالك', 'صيانة وتصليح')");
+
+    // second connection holds the write lock for the whole attempt
+    const holder = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    holder.raw.exec("BEGIN IMMEDIATE");
+    holder.raw.exec("INSERT INTO settings (key, value) VALUES ('lock.probe', 'held') ON CONFLICT(key) DO UPDATE SET value = 'held'");
+    seedConn.raw.exec("PRAGMA busy_timeout = 250;");
+
+    // record the seed's statement order. Pass-through spies bound to the same
+    // driver methods; signatures are preserved verbatim so production call
+    // sites inside the seed keep their exact types.
+    const calls: string[] = [];
+    const driver = seedConn.raw;
+    const head = (statement: string): string => {
+      const parts = statement.trimStart().split(/\s+/);
+      return parts[0]! + " " + (parts[1] ?? "");
+    };
+    const origExec = driver.exec.bind(driver);
+    const origQuery = driver.query.bind(driver);
+    const spiedExec: typeof origExec = (statement) => {
+      calls.push(head(statement));
+      return origExec(statement);
+    };
+    const spiedQuery: typeof origQuery = (statement, ...rest) => {
+      calls.push(statement.trimStart().split(/[\s;]/)[0]!);
+      // SAFETY: rest is the bound query's own parameter list forwarded verbatim
+      return origQuery(statement, ...rest);
+    };
+    driver.exec = spiedExec;
+    driver.query = spiedQuery;
+
+    try {
+      // the unit must refuse to read while another writer holds the lock:
+      // BEGIN IMMEDIATE itself is what blocks and throws
+      await expect(Promise.resolve().then(() => seedExpenseCategories(seedConn))).rejects.toThrow(/locked|busy/i);
+      // FIRST statement is the immediate begin; NOTHING was read after it —
+      // a deferred begin would show the expense/settings SELECTs here
+      expect(calls[0]).toBe("BEGIN IMMEDIATE");
+      expect(calls).toHaveLength(1);
+    } finally {
+      driver.exec = origExec;
+      driver.query = origQuery;
+      holder.raw.exec("ROLLBACK");
+      holder.close();
+      // self-heal still works once the lock is gone: the deflated database
+      // completes to exactly the seven defaults through the normal unit
+      seedConn.raw.exec("PRAGMA busy_timeout = 5000;");
+      seedExpenseCategories(seedConn);
+      const healed = await seedStore.listExpenseCategories();
+      expect(healed).toHaveLength(7);
+      expect(healed.find((row) => row.name === "سحوبات المالك")?.isOwnerWithdrawal).toBe(true);
+      // SAFETY: the literal SELECT reads one known settings row
+      const markerRows = seedConn.raw.query("SELECT value FROM settings WHERE key = 'seed.expenseCategoriesV1'").all() as Array<{ value: string }>;
+      expect(markerRows).toHaveLength(1);
+      seedConn.close();
+      removeTempDirRetry(seedDir);
+    }
   });
   it("better-auth tables exist (schema from ADR/ticket 02 wiring)", async () => {
     // SAFETY: sqlite_master name column is TEXT; the query returns the table list verbatim

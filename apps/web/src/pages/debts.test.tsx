@@ -30,6 +30,8 @@ type Invoice = {
 let owedToUs: Summary[] = [];
 let weOwe: Summary[] = [];
 let perParty: Map<string, Invoice[]> = new Map();
+/** when set to a party key, the drill-down for that party rejects */
+let failingParty: string | null = null;
 
 // The page resolves both queries through orpc.*.queryOptions; mock the rpc
 // module so tests drive fixtures without a network seam. debtsByParty keys on
@@ -48,6 +50,8 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["debtsByParty", input],
         queryFn: async (): Promise<{ items: Invoice[]; totalCount: number }> => {
           const key = `${input.kind}:${input.counterpartyId ?? input.counterpartyName}`;
+          // RPC errors carry stable server keys; tError translates them
+          if (failingParty === key) throw new Error("INVOICE_NOT_FOUND");
           const items = perParty.get(key) ?? [];
           return { items, totalCount: items.length };
         },
@@ -93,7 +97,14 @@ async function mountPage(queryClient: QueryClient) {
   return {
     text: () => container.textContent ?? "",
     personButtons: () => container.querySelectorAll<HTMLButtonElement>("button[data-testid='debts-person']"),
+    personNamed: (name: string) =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button[data-testid='debts-person']")).find((button) =>
+        button.textContent?.includes(name),
+      ),
     invoiceRows: () => container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='debts-invoice-row']"),
+    groupTotal: (label: string) => container.querySelector<HTMLElement>(`[data-testid='${label}-total']`),
+    groupCount: (label: string) => container.querySelector<HTMLElement>(`[data-testid='${label}-count']`),
+    alert: () => container.querySelector<HTMLElement>("[role='alert']"),
     emptyOwed: () => container.querySelector<HTMLElement>("[data-testid='debts-group-owed-empty']"),
     emptyWeOwe: () => container.querySelector<HTMLElement>("[data-testid='debts-group-weowe-empty']"),
     unmount: async () => {
@@ -121,6 +132,7 @@ describe("DebtsPage (ticket 9)", () => {
     owedToUs = [];
     weOwe = [];
     perParty = new Map();
+    failingParty = null;
   });
 
   afterEach(async () => {
@@ -144,6 +156,25 @@ describe("DebtsPage (ticket 9)", () => {
     expect(ui.text()).toContain("600 دج");
     expect(ui.text()).toContain("800 دج");
     expect(ui.text()).toContain("عدد الفواتير: 2");
+
+    await ui.unmount();
+  });
+
+  it("sums per-group totals and invoice counts independently of any single row", async () => {
+    owedToUs = [
+      summary({ counterpartyName: "زبون مدين", remainingTotal: 600, invoiceCount: 1 }),
+      summary({ counterpartyName: "زبون ثان", remainingTotal: 800, invoiceCount: 2 }),
+    ];
+    weOwe = [summary({ kind: "PURCHASE", counterpartyName: "مورد مستحق", remainingTotal: 1_200, invoiceCount: 3 })];
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 3);
+    expect(loaded).toBe(true);
+
+    expect(ui.groupTotal("debts-group-owed")?.textContent).toContain("1400 دج");
+    expect(ui.groupCount("debts-group-owed")?.textContent).toBe("3");
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("1200 دج");
+    expect(ui.groupCount("debts-group-weowe")?.textContent).toBe("3");
 
     await ui.unmount();
   });
@@ -197,16 +228,93 @@ describe("DebtsPage (ticket 9)", () => {
     const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
     expect(loaded).toBe(true);
 
-    // expand the weOwe supplier: only its purchase invoice shows
-    const weOweButton = ui.personButtons()[1]!;
+    // expand the weOwe supplier (found by name, not by DOM order): only its
+    // purchase invoice shows
+    const weOweButton = ui.personNamed("مورد مستحق");
+    expect(weOweButton).toBeDefined();
     await act(async () => {
-      weOweButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      weOweButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     const expanded = await ui.waitFor(() => ui.invoiceRows().length === 1);
     expect(expanded).toBe(true);
     const cells = ui.invoiceRows()[0]!.textContent ?? "";
     expect(cells).toContain("INV-PUR-1");
     expect(cells).not.toContain("INV-SALE-1");
+
+    await ui.unmount();
+  });
+
+  it("opens only one person's invoices at a time across groups", async () => {
+    owedToUs = [summary({ counterpartyName: "زبون مدين", remainingTotal: 600, invoiceCount: 1 })];
+    weOwe = [summary({ kind: "PURCHASE", counterpartyName: "مورد مستحق", remainingTotal: 800, invoiceCount: 1 })];
+    perParty.set("SALE:زبون مدين", [invoice({ invoiceNumber: "INV-SALE-1" })]);
+    perParty.set("PURCHASE:مورد مستحق", [invoice({ invoiceNumber: "INV-PUR-1" })]);
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
+    expect(loaded).toBe(true);
+
+    await act(async () => {
+      ui.personNamed("زبون مدين")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await ui.waitFor(() => ui.invoiceRows().length === 1);
+    expect(ui.invoiceRows()[0]!.textContent).toContain("INV-SALE-1");
+
+    // opening the supplier's row closes the customer's and shows its own list
+    await act(async () => {
+      ui.personNamed("مورد مستحق")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const swapped = await ui.waitFor(() => {
+      const rows = Array.from(ui.invoiceRows()).map((row) => row.textContent ?? "");
+      return rows.length === 1 && rows[0]!.includes("INV-PUR-1");
+    });
+    expect(swapped).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("shows an empty drill-down and an error drill-down inside an expanded row", async () => {
+    owedToUs = [
+      summary({ counterpartyName: "زبون بلا فواتير", remainingTotal: 600, invoiceCount: 1 }),
+      summary({ counterpartyName: "زبون فاشل", remainingTotal: 900, invoiceCount: 1 }),
+    ];
+    perParty.set("SALE:زبون بلا فواتير", []);
+    failingParty = "SALE:زبون فاشل";
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
+    expect(loaded).toBe(true);
+
+    // party whose drill-down is legitimately empty (summary/drill-down drift)
+    await act(async () => {
+      ui.personNamed("زبون بلا فواتير")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const emptyShown = await ui.waitFor(() => ui.text().includes("لا توجد ديون حالياً"));
+    expect(emptyShown).toBe(true);
+    expect(ui.invoiceRows()).toHaveLength(0);
+
+    await act(async () => {
+      ui.personNamed("زبون بلا فواتير")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      ui.personNamed("زبون فاشل")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const errorShown = await ui.waitFor(() => ui.alert() !== null);
+    expect(errorShown).toBe(true);
+    expect(ui.alert()!.textContent).toContain("الفاتورة غير موجودة");
+    expect(ui.invoiceRows()).toHaveLength(0);
+
+    await ui.unmount();
+  });
+
+  it("renders an id-backed party by its id when the invoice has no name", async () => {
+    const PARTY_ID = "00000000-0000-4000-8000-0000000000cd";
+    owedToUs = [summary({ counterpartyId: PARTY_ID, counterpartyName: null, remainingTotal: 400, invoiceCount: 1 })];
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 1);
+    expect(loaded).toBe(true);
+    expect(ui.text()).toContain(PARTY_ID);
 
     await ui.unmount();
   });

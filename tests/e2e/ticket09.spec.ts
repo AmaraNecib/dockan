@@ -71,6 +71,14 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   await expect(page.getByTestId("debts-page")).toBeVisible();
   await expect(page.getByText("مستحقاتنا عند الزبائن")).toBeVisible();
   await expect(page.getByText("مستحقات الموردين عندنا")).toBeVisible();
+  // the whole app is an Arabic RTL screen (acceptance bullet)
+  await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+
+  // group headers sum their persons: 1500 owed to us, 1200 owed to the supplier
+  await expect(page.getByTestId("debts-group-owed-total")).toContainText("1500 دج");
+  await expect(page.getByTestId("debts-group-owed-count")).toHaveText("1");
+  await expect(page.getByTestId("debts-group-weowe-total")).toContainText("1200 دج");
+  await expect(page.getByTestId("debts-group-weowe-count")).toHaveText("1");
 
   // the customer owes us: one invoice, 1500 remaining
   const owedRow = page.getByTestId("debts-person").filter({ hasText: customerName });

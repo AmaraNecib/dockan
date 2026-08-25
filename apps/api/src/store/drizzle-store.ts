@@ -662,14 +662,16 @@ export function createDrizzleStore(conn: Connection): StorePort {
     async listUnpaidInvoicesByParty(kind: Invoice["kind"], counterpartyId: string | null, counterpartyName: string | null): Promise<Invoice[]> {
       // SAFETY: the identity rule mirrors debtSummaries' GROUP BY key exactly:
       // a known party matches by id (never by a name that happens to equal a
-      // typed name), and a typed-only query matches by name only when the
-      // invoice carries no id — so the two identities never cross-pollinate.
+      // typed name), and a typed-only query matches by trimmed name only when
+      // the invoice carries no id — so the two identities never cross-pollinate,
+      // and a padded stored name (store-seam inserts, seeds) is not orphaned
+      // from its summary row.
       const conds: SQL[] = [
         sql`${invoices.kind} = ${kind}`,
         sql`${invoices.remainingAmount} > 0`,
         counterpartyId !== null
           ? sql`${invoices.counterpartyId} = ${counterpartyId}`
-          : sql`${invoices.counterpartyId} IS NULL AND ${invoices.counterpartyName} = ${counterpartyName}`,
+          : sql`${invoices.counterpartyId} IS NULL AND TRIM(${invoices.counterpartyName}) = TRIM(${counterpartyName})`,
       ];
       const rows = await db
         .select(invoiceCols)

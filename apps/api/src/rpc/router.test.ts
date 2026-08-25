@@ -1246,10 +1246,8 @@ describe("debts screen (ticket 9)", () => {
       unauthed.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "بدون جلسة" }),
     ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
 
-    const item = await makeItem("ديون-بلا-جهة", 100, 300);
     const bothNull = { kind: "SALE" as const, counterpartyId: null, counterpartyName: null };
     await expect(client.debtsByParty(bothNull)).rejects.toThrow(/Input validation failed/);
-    expect(item.id).toBeTruthy();
   });
 
   it("splits debts by direction with totals and invoice counts", async () => {
@@ -1328,9 +1326,12 @@ describe("debts screen (ticket 9)", () => {
     const group = summaries.owedToUs.find((d) => d.counterpartyId === customer.id);
     expect(group).toMatchObject({ counterpartyName: "زبون مسجل", remainingTotal: 700, invoiceCount: 1 });
 
-    // drilling by id returns the invoice; the typed name alone must not
+    // drilling by id returns the invoice; the typed name alone must not,
+    // and the id stays authoritative even when the label name mismatches
     const byId = await client.debtsByParty({ kind: "SALE", counterpartyId: customer.id, counterpartyName: customer.name });
     expect(byId.items.map((i) => i.id)).toEqual([invoice.id]);
+    const byMismatchedLabel = await client.debtsByParty({ kind: "SALE", counterpartyId: customer.id, counterpartyName: "اسم مختلف تماماً" });
+    expect(byMismatchedLabel.items.map((i) => i.id)).toEqual([invoice.id]);
     const byName = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون مسجل" });
     expect(byName.items).toHaveLength(0);
   });

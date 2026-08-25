@@ -114,9 +114,9 @@ function DebtGroup({ title, rows, label, emptyLabel, openSignature, onToggle }: 
         <h2 id={`${label}-title`} className="font-semibold">{title}</h2>
         {rows.length > 0 && (
           <p className="text-sm text-stone-500">
-            {t("debtsGroupTotal")}: <span className="font-semibold text-stone-900">{groupTotal} دج</span>
+            {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-stone-900">{groupTotal} دج</span>
             {" · "}
-            {t("debtsInvoiceCount")}: <span className="font-semibold text-stone-900">{groupCount}</span>
+            {t("debtsInvoiceCount")}: <span data-testid={`${label}-count`} className="font-semibold text-stone-900">{groupCount}</span>
           </p>
         )}
       </header>

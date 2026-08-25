@@ -21,6 +21,11 @@ function partySignature(party: Pick<PartyIdentity, "kind" | "counterpartyId" | "
   return `${party.kind}:${party.counterpartyId ?? party.counterpartyName}`;
 }
 
+/** HTML-id-safe form of the signature (typed names may contain spaces). */
+function partyId(signature: string): string {
+  return encodeURIComponent(signature);
+}
+
 function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void }) {
   const { t } = useTranslation();
   const signature = partySignature(row);
@@ -41,8 +46,8 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
         type="button"
         data-testid="debts-person"
         aria-expanded={expanded}
-        aria-controls={`${groupLabel}-${signature}-invoices`}
-        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-right hover:bg-stone-50"
+        aria-controls={`${groupLabel}-${partyId(signature)}-invoices`}
+        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-right hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-stone-400"
         onClick={onToggle}
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
@@ -52,7 +57,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       </button>
 
       {expanded && (
-        <div id={`${groupLabel}-${signature}-invoices`} className="border-t bg-stone-50 px-4 py-3">
+        <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-stone-50 px-4 py-3">
           <h3 className="text-sm font-semibold text-stone-600">{t("debtsInvoicesTitle")}</h3>
           {invoices.isPending ? (
             <div className="mt-2 grid gap-2">
@@ -140,6 +145,9 @@ export function DebtsPage() {
   const debts = useQuery(orpc.reportsDebts.queryOptions());
   const [openParty, setOpenParty] = useState<PartyIdentity | null>(null);
 
+  const toggleParty = (party: PartyIdentity) =>
+    setOpenParty((current) => (current !== null && partySignature(current) === partySignature(party) ? null : party));
+
   const owedToUs = debts.data?.owedToUs ?? [];
   const weOwe = debts.data?.weOwe ?? [];
 
@@ -164,9 +172,7 @@ export function DebtsPage() {
             rows={owedToUs}
             emptyLabel={t("debtsEmpty")}
             openSignature={openParty !== null ? partySignature(openParty) : null}
-            onToggle={(party) =>
-              setOpenParty((current) => (current !== null && partySignature(current) === partySignature(party) ? null : party))
-            }
+            onToggle={toggleParty}
           />
           <DebtGroup
             title={t("debtsWeOwe")}
@@ -174,9 +180,7 @@ export function DebtsPage() {
             rows={weOwe}
             emptyLabel={t("debtsEmpty")}
             openSignature={openParty !== null ? partySignature(openParty) : null}
-            onToggle={(party) =>
-              setOpenParty((current) => (current !== null && partySignature(current) === partySignature(party) ? null : party))
-            }
+            onToggle={toggleParty}
           />
         </div>
       )}

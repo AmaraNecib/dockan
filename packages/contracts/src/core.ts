@@ -533,6 +533,10 @@ export const debtsByPartyInputSchema = z
   })
   .refine((v) => v.counterpartyId !== null || v.counterpartyName !== null, {
     message: "a debts group always has a known id or a typed name",
+    // NOTE: when an id IS supplied it is authoritative — the store matches
+    // on it and the name only labels the request (id-over-name identity,
+    // same as debtSummaries' grouping key), so a mismatched name can never
+    // re-route invoices to another party.
   });
 
 export const lowStockOutputSchema = z.object({

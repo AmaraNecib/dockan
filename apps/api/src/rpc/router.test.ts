@@ -1308,4 +1308,30 @@ describe("debts screen (ticket 9)", () => {
     const paidOff = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون دائن لا شيء عليه" });
     expect(paidOff.items).toHaveLength(0);
   });
+
+  it("drills into an id-backed party by id, never by a same-named typed name", async () => {
+    const saleItem = await makeItem("ديون-جهة-معروفة", 400, 1_000);
+    // the customers/suppliers RPC seams belong to another lane; seed the
+    // known party through the store seam the grouping key actually reads
+    const customer = await store.createCustomer({ name: "زبون مسجل" });
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      initialPaid: 300,
+      lines: [{ itemId: saleItem.id, quantity: 1 }],
+    });
+    expect(invoice.remainingAmount).toBe(700);
+
+    // the grouping surface reports the id-backed party under owedToUs
+    const summaries = await client.reportsDebts();
+    const group = summaries.owedToUs.find((d) => d.counterpartyId === customer.id);
+    expect(group).toMatchObject({ counterpartyName: "زبون مسجل", remainingTotal: 700, invoiceCount: 1 });
+
+    // drilling by id returns the invoice; the typed name alone must not
+    const byId = await client.debtsByParty({ kind: "SALE", counterpartyId: customer.id, counterpartyName: customer.name });
+    expect(byId.items.map((i) => i.id)).toEqual([invoice.id]);
+    const byName = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون مسجل" });
+    expect(byName.items).toHaveLength(0);
+  });
 });

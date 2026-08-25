@@ -13,6 +13,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { AppLogger } from "../lib/logger";
+import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
@@ -1927,5 +1928,89 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
     const invoice = await unpaidSaleInvoice("دفعة-ملاحظة-فارغة");
     const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 100, note: "   " });
     expect(paid.payments[0]!.note).toBeNull();
+  });
+});
+
+/**
+ * Issue #52: the authResetPassword lockout wiring. Self-contained app +
+ * injected throttle clock so exhausting attempts here cannot poison the
+ * shared router above, and unlocking is deterministic without real sleeps.
+ */
+describe("authResetPassword throttling", () => {
+  let tDir: string;
+  let tConn: Connection;
+  let tStore: StorePort;
+  let lockedClient: DokanClient;
+  let now: number;
+  const LOCKOUT_MS = 30_000;
+
+  beforeAll(async () => {
+    tDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-throttle-"));
+    const tConfig = createAppConfig({
+      DOKAN_DATA_DIR: tDir,
+      DOKAN_DB_PATH: path.join(tDir, "test.db"),
+      DOKAN_AUTH_SECRET: "test-auth-secret",
+      DOKAN_BUILD_SECRET: "throttled-secret-1",
+    });
+    tConn = openConnection(tConfig);
+    tStore = createDrizzleStore(tConn);
+    await tStore.setup();
+    const tLogger = new AppLogger(tDir);
+    const tAuth = createAuth(tConn.db, tConfig);
+    now = 1_000_000;
+    const throttle = createResetThrottle({ now: () => now });
+    const tApp = createApp({
+      config: tConfig,
+      logger: tLogger,
+      auth: tAuth,
+      rpcRouter: createRpcRouter({ db: tConn.db, config: tConfig, logger: tLogger, store: tStore, auth: tAuth, resetThrottle: throttle }),
+    });
+    // SAFETY: the typed client from the link implements exactly DokanClient
+    lockedClient = createORPCClient(
+      new RPCLink({
+        url: `http://127.0.0.1:${tConfig.port}/api/rpc`,
+        fetch: (request) => Promise.resolve(tApp.fetch(request)),
+      }),
+    );
+  });
+
+  afterAll(() => {
+    tConn.close();
+    // SAFETY: Windows holds the sqlite file briefly after close (same retry
+    // pattern as the shared suite's afterAll above)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(tDir, { recursive: true, force: true });
+        return;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
+  it("locks the reset RPC behind RESET_LOCKED after repeated wrong secrets", async () => {
+    const wrong = { secret: "guess", newPassword: "dokan-1234", phoneNumber: "0550123123" };
+    for (let i = 0; i < 4; i++) {
+      // SAFETY: ORPCError exposes .code and .message on rejection
+      await expect(lockedClient.authResetPassword(wrong)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: "WRONG_BUILD_SECRET",
+      });
+    }
+    await expect(lockedClient.authResetPassword(wrong)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("gates even a CORRECT secret while locked, then succeeds after the wait", async () => {
+    await expect(
+      lockedClient.authResetPassword({ secret: "throttled-secret-1", newPassword: "dokan-1234", phoneNumber: "0550123123" }),
+    ).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS", message: "RESET_LOCKED" });
+
+    now += LOCKOUT_MS + 1; // deterministic wait via the injected clock
+    const out = await lockedClient.authResetPassword({
+      secret: "throttled-secret-1",
+      newPassword: "dokan-1234",
+      phoneNumber: "0550123123",
+    });
+    expect(out.ok).toBe(true);
   });
 });

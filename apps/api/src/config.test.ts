@@ -57,3 +57,50 @@ describe("createAppConfig packaged-build overrides", () => {
     expect(explicit.authSecret).toBe("x".repeat(MIN_AUTH_SECRET_LEN));
   });
 });
+
+describe("createAppConfig host binding", () => {
+  it("defaults to loopback", () => {
+    const config = createAppConfig({});
+    expect(config.host).toBe("127.0.0.1");
+    expect(config.probeHost).toBe("127.0.0.1");
+  });
+
+  it("keeps an explicit LAN host without extra opt-in", () => {
+    const config = createAppConfig({ DOKAN_HOST: "192.168.1.5" });
+    expect(config.host).toBe("192.168.1.5");
+    expect(config.probeHost).toBe("192.168.1.5");
+  });
+
+  it("refuses a wildcard host unless DOKAN_HOST_INTERFACE opts in (fail loudly)", () => {
+    let error: unknown;
+    try {
+      createAppConfig({ DOKAN_HOST: "0.0.0.0" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : "";
+    expect(message).toContain("DOKAN_HOST");
+    expect(message).toContain("DOKAN_HOST_INTERFACE");
+  });
+
+  it("refuses every wildcard spelling without the opt-in", () => {
+    for (const host of ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0"]) {
+      expect(() => createAppConfig({ DOKAN_HOST: host })).toThrow();
+    }
+  });
+
+  it("accepts the wildcard when the opt-in env names the same interface", () => {
+    const config = createAppConfig({ DOKAN_HOST: "0.0.0.0", DOKAN_HOST_INTERFACE: "0.0.0.0" });
+    expect(config.host).toBe("0.0.0.0");
+    // the liveness probe still CONNECTs to loopback for a wildcard bind
+    expect(config.probeHost).toBe("127.0.0.1");
+  });
+
+  it("accepts the ipv6 wildcard only with the matching opt-in value", () => {
+    expect(() => createAppConfig({ DOKAN_HOST: "::", DOKAN_HOST_INTERFACE: "0.0.0.0" })).toThrow();
+    const config = createAppConfig({ DOKAN_HOST: "::", DOKAN_HOST_INTERFACE: "::" });
+    expect(config.host).toBe("::");
+    expect(config.probeHost).toBe("127.0.0.1");
+  });
+});

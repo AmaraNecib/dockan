@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { isWildcardBindHost } from "./lib/port-record";
+
 export type AppConfig = {
   host: string;
   /** host that liveness probes CONNECT to (loopback for wildcard binds) */
@@ -75,14 +77,27 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
         "The postgres adapter is not implemented yet (ADR-0003); it arrives behind the same switch.",
     );
   }
+  // issue #52: a wildcard bind exposes the api on every interface (LAN,
+  // hotspot, ...). Loopback stays the default; going wide requires a second,
+  // explicit opt-in naming the same interface, so a stray DOKAN_HOST=0.0.0.0
+  // copied from some tutorial fails loudly at boot instead of silently
+  // publishing the store to the room.
+  const requestedHost = env.DOKAN_HOST ?? "127.0.0.1";
+  if (isWildcardBindHost(requestedHost) && env.DOKAN_HOST_INTERFACE !== requestedHost) {
+    throw new Error(
+      `DOKAN_HOST=${requestedHost} binds every network interface and is refused by default. ` +
+        `To opt in deliberately, also set DOKAN_HOST_INTERFACE=${requestedHost}; ` +
+        `otherwise remove DOKAN_HOST to keep the loopback-only default (127.0.0.1).`,
+    );
+  }
   // one shared predicate with the vite proxy: only a finite positive port
   // counts as explicit; "" / "abc" / "0" / "-5" all mean "unset" on both sides
   const portEnv = env.DOKAN_PORT ?? "";
   const parsedPort = portEnv === "" ? NaN : Number(portEnv);
   const portIsValid = Number.isFinite(parsedPort) && parsedPort > 0;
   return {
-    host: env.DOKAN_HOST ?? "127.0.0.1",
-    probeHost: env.DOKAN_HOST === "0.0.0.0" || env.DOKAN_HOST === "::" ? "127.0.0.1" : (env.DOKAN_HOST ?? "127.0.0.1"),
+    host: requestedHost,
+    probeHost: isWildcardBindHost(requestedHost) ? "127.0.0.1" : requestedHost,
     port: portIsValid ? parsedPort : 4317,
     portExplicit: portIsValid, 
     dataDir,

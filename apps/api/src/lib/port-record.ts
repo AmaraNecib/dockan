@@ -23,12 +23,20 @@ export type LockOpts = { deadlineMs?: number; graceMs?: number };
 
 const registryEntrySchema = z.object({ host: z.string(), port: z.number().int().positive() });
 
+/** Every spelling of "bind every interface" node accepts as a host string. */
+const WILDCARD_BIND_HOSTS: readonly string[] = ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0"];
+
+/** True when the host string binds every network interface (issue #52). */
+export function isWildcardBindHost(host: string): boolean {
+  return WILDCARD_BIND_HOSTS.includes(host);
+}
+
 /**
  * A bind host like 0.0.0.0 or :: cannot be CONNECTED to on Windows for a
  * liveness probe; the probe always targets the loopback the proxy uses.
  */
 export function probeHostFor(bindHost: string): string {
-  if (bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "::0" || bindHost === "0:0:0:0:0:0:0:0") {
+  if (isWildcardBindHost(bindHost)) {
     return "127.0.0.1";
   }
   return bindHost;

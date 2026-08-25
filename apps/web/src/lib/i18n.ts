@@ -141,6 +141,8 @@ const resources = {
       SIGNUP_FORBIDDEN: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة",
       INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح",
       WRONG_BUILD_SECRET: "الرمز السري غير صحيح",
+      // issue #52 — reset lockout after repeated wrong-secret attempts
+      RESET_LOCKED: "تم إيقاف إعادة التعيين مؤقتاً بعد محاولات خاطئة متكررة؛ أعد المحاولة بعد نصف دقيقة",
       BUILD_SECRET_NOT_CONFIGURED: "لم يتم ضبط الرمز السري بعد",
       CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       BARCODE_EXISTS: "هذا الباركود مستعمل مع منتج آخر",

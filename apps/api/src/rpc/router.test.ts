@@ -1533,4 +1533,47 @@ describe("invoice payments (ticket 8)", () => {
     const paymentsAfter = (await store.listActivities(100)).filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
     expect(paymentsAfter).toBe(paymentsBefore);
   });
+
+it("two concurrent payments serialize and never overpay the invoice", async () => {
+    const invoice = await unpaidSaleInvoice("دفعتان-متزامنتان");
+    const results = await Promise.allSettled([
+      client.invoicesPay({ invoiceId: invoice.id, amount: 600 }),
+      client.invoicesPay({ invoiceId: invoice.id, amount: 600 }),
+    ]);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof client.invoicesPay>>> => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    // exactly one instalment lands; the loser sees the fresh remaining inside
+    // its serialized unit and is refused with the money-boundary key
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(fulfilled[0]!.value).toMatchObject({ paidAmount: 600, remainingAmount: 200 });
+    // SAFETY: allSettled rejected reasons are Error instances (oRPC client throws)
+    expect((rejected[0]!.reason as Error).message).toContain("PAYMENT_EXCEEDS_REMAINING");
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.paidAmount).toBe(600);
+    expect(reread.remainingAmount).toBe(200);
+    expect(reread.payments).toHaveLength(1);
+  });
+
+  it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+  });
+
+  it("rejects amounts beyond the safe-integer money range at the schema", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-خارج-النطاق");
+    await expect(client.invoicesPay({ invoiceId: invoice.id, amount: 2 ** 53 })).rejects.toThrow(/Input validation failed/);
+  });
+
+  it("normalizes an empty or whitespace-only note to null", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-ملاحظة-فارغة");
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 100, note: "   " });
+    expect(paid.payments[0]!.note).toBeNull();
+  });
 });

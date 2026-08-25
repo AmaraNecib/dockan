@@ -13,7 +13,9 @@ import { isValidAlgerianPhone } from "./phone";
  */
 
 export const idSchema = z.string().uuid();
-export const dinarsSchema = z.number().int().min(0);
+/** Whole-DA money. Capped at the max safe integer so any persisted sum can
+ * never drift into float-inexact territory (2⁵³+ round-trips differently). */
+export const dinarsSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 export const localDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD (Algeria local time)");
 export const localDateTimeSchema = z.string().regex(
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,

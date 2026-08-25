@@ -43,7 +43,15 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await expect(page.getByTestId("sale-total")).toContainText("900");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
-  const number = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d{4}/)![0]!;
+  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  const number = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
+
+  // count real invoicesPay wire calls so the overpay step can prove nothing
+  // reached the server (the client boundary must block it before sending)
+  let payRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/rpc/invoicesPay")) payRequests += 1;
+  });
 
   // 2. the invoice is listed with its full remaining amount
   await page.getByRole("link", { name: "الفواتير" }).click();
@@ -67,12 +75,15 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await expect(history.first()).toContainText("300");
 
   // 5. overpay +1 beyond the remaining is refused with the exact message and
-  //    writes nothing (history stays at one row, remaining unchanged)
+  //    writes nothing (history stays at one row, remaining unchanged) — and
+  //    the client boundary blocks it BEFORE any request reaches the server
+  const payRequestsAfterFirst = payRequests;
   await page.getByTestId("pmt-amount").fill("601");
   await page.getByTestId("pmt-submit").click();
   await expect(page.getByTestId("pmt-error")).toContainText("المبلغ يتجاوز المتبقي");
   await expect(page.getByTestId("invoice-remaining")).toContainText("600");
   await expect(history).toHaveCount(1);
+  expect(payRequests).toBe(payRequestsAfterFirst);
 
   // 6. settling instalment: 600 → remaining 0, history in recording order
   await page.getByTestId("pmt-amount").fill("600");
@@ -83,6 +94,7 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await expect(history.nth(0)).toContainText("300");
   await expect(history.nth(1)).toContainText("600");
   await expect(page.getByTestId("pmt-amount")).toBeDisabled();
+  expect(payRequests).toBe(payRequestsAfterFirst + 1);
 
   // 7. both instalments landed in the activity log as PAYMENT_RECORDED
   await page.getByRole("link", { name: "سجل النشاط" }).click();

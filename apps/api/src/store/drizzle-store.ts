@@ -612,6 +612,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const row = firstRowOf(await db.insert(payments).values({ id: id(), ...p, createdAt: now() }).returning());
       return toPayment(row);
     },
+    async applyPaymentToInvoice(invoiceId: string, amount: number) {
+      // One conditional UPDATE is atomic at the SQLite statement level, so the
+      // boundary "instalment may never exceed remaining" holds across separate
+      // connections too (two processes cannot both pass a check-then-act read).
+      // Raw SQL is fine here: this file is the driver adapter (ADR-0003), and
+      // allocateInvoiceNumber already uses the same raw connection in-tx.
+      const result = conn.raw
+        .query(`UPDATE invoices SET paid_amount = paid_amount + ?, remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
+        .run(amount, amount, now(), invoiceId, amount);
+      return Number(result.changes) > 0;
+    },
     async getInvoiceDetail(invoiceId: string) {
       const [invoice, lines, paymentsRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
@@ -641,7 +652,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const conds: SQL[] = [];
       if (filters.kind) conds.push(sql`${invoices.kind} = ${filters.kind}`);
       if (filters.status === "PAID") conds.push(sql`${invoices.remainingAmount} = 0`);
-      else if (filters.status === "UNPAID") conds.push(sql`${invoices.remainingAmount} = ${invoices.totalAmount}`);
+      // remaining > 0 excludes fully-discounted/free invoices (total 0):
+      // nothing is owed, so they are never "unpaid"
+      else if (filters.status === "UNPAID") conds.push(sql`${invoices.remainingAmount} > 0 AND ${invoices.remainingAmount} = ${invoices.totalAmount}`);
       else if (filters.status === "PARTIAL") conds.push(sql`${invoices.remainingAmount} > 0 AND ${invoices.remainingAmount} < ${invoices.totalAmount}`);
       if (filters.fromDate) conds.push(sql`${invoices.invoiceDate} >= ${filters.fromDate}`);
       if (filters.toDate) conds.push(sql`${invoices.invoiceDate} <= ${filters.toDate}`);

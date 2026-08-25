@@ -91,6 +91,12 @@ export interface StorePort {
   insertInvoice(inv: InvoiceInsert): Promise<Invoice>;
   insertInvoiceLine(line: InvoiceLineInsert): Promise<InvoiceLine>;
   insertPayment(p: Omit<Payment, "id" | "createdAt">): Promise<Payment>;
+  /** Atomic instalment application: debits remainingAmount by amount ONLY while
+   * it still covers the payment (single conditional UPDATE). Returns true when
+   * the money moved, false when the boundary was violated — the caller rolls
+   * the whole unit back in that case. DB-level guard: two processes on the
+   * same file can never both overpay an invoice. */
+  applyPaymentToInvoice(invoiceId: string, amount: number): Promise<boolean>;
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
   /** single line lookup; entry point for purchase corrections */
   getInvoiceLine(lineId: string): Promise<InvoiceLine | undefined>;

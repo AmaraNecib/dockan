@@ -236,6 +236,7 @@ const resources = {
       invoicesFilterSale: "المبيعات",
       invoicesFilterPurchase: "المشتريات",
       invoicesStatusAll: "كل الحالات",
+      invoicesStatusFilter: "حالة الدفع",
       invoicesStatusUnpaid: "غير مدفوعة",
       invoicesStatusPartial: "مدفوعة جزئياً",
       invoicesStatusPaid: "مسدّدة بالكامل",

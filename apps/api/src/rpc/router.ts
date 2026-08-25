@@ -545,8 +545,10 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           // the money boundary: an instalment may never exceed what is still
           // owed, exactly-remaining included (that is the settling payment).
-          // The check runs INSIDE the unit, so a second pay can only read the
-          // remaining AFTER this one committed — no check-then-act race.
+          // The fast-fail read keeps the SQL free, but the AUTHORITATIVE guard
+          // is the conditional UPDATE inside the unit (applyPaymentToInvoice
+          // below), which stays atomic even if a second process races this one
+          // on the same database file — no check-then-act gap survives.
           if (input.amount > detail.remainingAmount) {
             throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
           }
@@ -554,10 +556,16 @@ export function createRpcRouter(deps: RpcDeps) {
             invoiceId: detail.id,
             amount: input.amount,
             method: input.method ?? "CASH",
-            note: input.note ?? null,
+            note: input.note == null || input.note.trim() === "" ? null : input.note.trim(),
             paidAt: localDateTime(),
           });
-          await tx.setInvoicePaidAmounts(detail.id, detail.paidAmount + input.amount, detail.remainingAmount - input.amount);
+          const applied = await tx.applyPaymentToInvoice(detail.id, input.amount);
+          if (!applied) {
+            // the DB refused the instalment (remaining dropped below the
+            // amount between our read and the write); the whole unit rolls
+            // back, so the payment row above never persists
+            throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+          }
           await tx.insertActivity({
             type: "PAYMENT_RECORDED",
             summary: `تسجيل دفعة ${input.amount} دج على ${detail.invoiceNumber}`,

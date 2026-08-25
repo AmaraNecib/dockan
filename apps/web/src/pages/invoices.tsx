@@ -51,7 +51,7 @@ export function InvoicesPage() {
           </select>
         </label>
         <label className="grid gap-1 text-sm">
-          {t("invoicePaid")}
+          {t("invoicesStatusFilter")}
           <select
             className="rounded border px-3 py-2"
             value={status}

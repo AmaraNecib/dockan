@@ -955,3 +955,49 @@ describe("payments history (ticket 8)", () => {
     expect(detail?.payments.map((p) => p.amount)).toEqual([200, 300]);
   });
 });
+
+describe("applyPaymentToInvoice boundary (ticket 8)", () => {
+  it("is the DB-level guard: a second connection can no longer overpay the invoice", async () => {
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9102",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون الاتصال الثاني",
+      invoiceDate: localDate(),
+      totalAmount: 800,
+      paidAmount: 0,
+      remainingAmount: 800,
+      notes: null,
+    });
+    // first connection applies a 600 instalment through the serialized unit
+    expect(await store.withTransaction((tx) => tx.applyPaymentToInvoice(invoice.id, 600))).toBe(true);
+    // a SEPARATE connection on the same file has its own queue; only the
+    // conditional UPDATE can stop it from acting on the stale remaining
+    const conn2 = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const store2 = createDrizzleStore(conn2);
+    expect(await store2.withTransaction((tx) => tx.applyPaymentToInvoice(invoice.id, 300))).toBe(false);
+    conn2.close();
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.paidAmount).toBe(600);
+    expect(detail?.remainingAmount).toBe(200);
+  });
+
+  it("never classifies a zero-total invoice as UNPAID", async () => {
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9103",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "فاتورة مجانية",
+      invoiceDate: localDate(),
+      totalAmount: 0,
+      paidAmount: 0,
+      remainingAmount: 0,
+      notes: null,
+    });
+    expect((await store.listInvoices({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    // remaining = 0 is the PAID definition; a free invoice owes nothing
+    expect((await store.listInvoices({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+  });
+});

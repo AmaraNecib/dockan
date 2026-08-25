@@ -41,16 +41,22 @@ Inside `guardedInput` → one `withTransaction`:
 2. Business rule (the high-assurance boundary): if `input.amount > detail.remainingAmount`
    → `ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" })`.
    Exact-remaining passes; remaining=0 refuses any positive amount.
-   Concurrency: the whole unit runs inside the store's serialized transaction,
-   so two concurrent pays observe the committed remaining (same queue that
-   protects allocation/stock).
-3. `tx.insertPayment({ invoiceId, amount, method: input.method ?? "CASH", note: input.note ?? null, paidAt: now })`.
-4. `tx.setInvoicePaidAmounts(id, paid + amount, remaining - amount)`.
+3. `tx.insertPayment({ invoiceId, amount, method: input.method ?? "CASH", note: null-or-trimmed, paidAt: now })`.
+4. `tx.applyPaymentToInvoice(detail.id, input.amount)` — a single conditional
+   `UPDATE ... SET paid_amount = paid_amount + ?, remaining_amount = remaining_amount - ?
+   WHERE id = ? AND remaining_amount >= ?` (new StorePort seam). If it returns
+   false the whole unit rolls back with `PAYMENT_EXCEEDS_REMAINING`: the DB,
+   not a JS read, is the final authority, so two processes on the same file
+   can never both overpay an invoice. This replaces the design's earlier
+   JS-side `paid + amount` recompute (a check-then-act gap across processes).
 5. `tx.insertActivity({ type: "PAYMENT_RECORDED", summary: "تسجيل دفعة <amount> دج على <invoiceNumber>", ref: id })`.
-6. Re-read `tx.getInvoiceDetail(id)` and return it (fresh header + appended history)
-   — same pattern as `purchasesCorrectLine`.
+6. Re-read `tx.getInvoiceDetail(id)` and return it (fresh header + appended history).
 
-No store changes needed; no contract changes needed (input/output shapes already exist).
+Scope decision (recorded): a payment made AT invoice creation is audited by the
+create transaction's `SALE_CREATED`/`PURCHASE_CREATED` activity; `PAYMENT_RECORDED`
+is logged per LATER instalment — the issue's subject is "record later payments".
+Emitting a second activity for one creation-time money event would split one
+financial fact into two log entries.
 
 ### 2. Error key + i18n
 
@@ -83,9 +89,12 @@ No store changes needed; no contract changes needed (input/output shapes already
 - exact-remaining payment OK → remaining 0
 - overpay +1 DA → PAYMENT_EXCEEDS_REMAINING; nothing written (payment count + paidAmount unchanged)
 - payment on already-PAID invoice refused
+- TWO CONCURRENT instalments: exactly one lands, one refused — never overpay
+- status transitions: PARTIAL after first instalment, leaves PARTIAL at settlement
 - PURCHASE invoice payable (both kinds)
 - missing invoice → INVOICE_NOT_FOUND
-- zod rejects non-positive / fractional amounts before the handler
+- zod rejects non-positive / fractional / NaN / > MAX_SAFE_INTEGER amounts before the handler
+- empty/whitespace-only note normalizes to null
 - `PAYMENT_RECORDED` activity logged with ref + summary containing the number
 - rollback atomicity: failing store whose `insertActivity` throws →
   payment row absent, paid/remaining unchanged, no phantom activity row
@@ -93,26 +102,43 @@ No store changes needed; no contract changes needed (input/output shapes already
 
 **API store (apps/api/src/store/drizzle-store.test.ts):**
 - multiple `insertPayment` + `setInvoicePaidAmounts` accumulate; `getInvoiceDetail`
-  returns them in chronological order (existing seam test extended additively).
+  returns them in chronological order (extended additively).
+- `applyPaymentToInvoice` cross-connection: a second store/connection on the same
+  file cannot apply an instalment against a stale remaining.
+- zero-total invoice is PAID, never UNPAID.
 
-**Web unit (apps/web/src/pages/invoice.test.ts):**
-- `paymentInputInvalid`: accepts exact remaining; rejects +1, 0, negative,
-  fractional, non-numeric (mirrors sale overrideInputInvalid conventions).
+**Web (apps/web/src/pages/invoice.test.ts):**
+- `paymentAmountError`: accepts exact remaining; rejects +1, 0, negative,
+  fractional, scientific/hex spellings, > MAX_SAFE_INTEGER, non-numeric.
+- `PaymentPanel` component (router-free, mirrors LinkProposalPanel): empty
+  history, ordered history rendering, client-side overpay blocks + sends
+  nothing, valid submit + `role="status"` success, server-refusal translation
+  path, form locked at remaining 0.
 
 **E2E (tests/e2e/ticket8.spec.ts):**
 - setup/login (shared-db idempotent pattern) → seed category+item →
   create a SALE invoice with zero paid via /sale quick-add-with-stock →
   /invoices → open it → record two payments → history shows both → remaining
-  decreases to 0 → overpay attempt refused with the clear error → pay form
-  disabled when paid off. Unique names (Date.now stamp) per shared-db rule.
+  decreases to 0 → overpay attempt refused with the clear error AND a
+  request-count proves nothing reached the server → pay form disabled when
+  paid off → activity log shows the two PAYMENT_RECORDED rows.
 
 ## Risks / notes
 
-- Concurrency: guarded by existing serialized `withTransaction`; overpay check is
-  inside the unit, so no check-then-act race survives.
+- Concurrency: the overpay boundary is enforced by a single conditional UPDATE
+  (`applyPaymentToInvoice`), atomic at the SQLite statement level, so no
+  check-then-act race survives even across two processes on one file. The unit
+  still wraps insert + UPDATE + activity in one BEGIN/COMMIT for crash atomicity.
+- Money schema: `dinarsSchema` is capped at `Number.MAX_SAFE_INTEGER` so no
+  persisted sum can drift into float-inexact territory or overflow SQLite i64.
 - Shared files (router.ts, router.test.ts, i18n.ts, router.tsx) are edited
   additively only; debts (#31) and expenses (#9) seams untouched.
 - Money is whole DA integers throughout; no float arithmetic.
+- Deferred (documented follow-ups, not blockers): DB-level `CHECK` on
+  paid/remaining columns would need a SQLite table rebuild (ALTER cannot add
+  CHECK); a `payments(invoice_id)` index and a note length cap are scale
+  niceties; `/invoices` inherits the pre-existing 200-row list cap; pre-change
+  purchase invoices with an initial payment carry no payment row (no backfill).
 - Timestamp: one reused `localDateTime()` for paidAt pins the payment into the
-  history order at its real position (store orders by paidAt, id).
+  history order at its real position (store orders by paidAt, rowid).
 - `.dokan-port` tracked file must be byte-restored after e2e (4317, 4 bytes).

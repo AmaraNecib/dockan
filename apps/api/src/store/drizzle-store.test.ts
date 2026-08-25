@@ -64,6 +64,25 @@ describe("setup + seed", () => {
     const second = await store.listExpenseCategories();
     expect(second).toEqual(first);
   });
+
+  it("rejects a duplicate category name at the store seam and round-trips the flag", async () => {
+    const { isOwnerWithdrawal } = await store.createExpenseCategory({ name: "تصنيف مخصص", isOwnerWithdrawal: true });
+    expect(isOwnerWithdrawal).toBe(true);
+    await expect(store.createExpenseCategory({ name: "تصنيف مخصص" })).rejects.toThrow();
+    // a later setup() never removes or duplicates owner-created categories
+    await store.setup();
+    const names = (await store.listExpenseCategories()).map((row) => row.name);
+    expect(names.filter((name) => name === "تصنيف مخصص")).toHaveLength(1);
+  });
+
+  it("enforces the money CHECK constraints at the database level", async () => {
+    const categories = await store.listExpenseCategories();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    // the router validates via zod; the store must ALSO reject raw negatives
+    await expect(
+      store.insertExpense({ categoryId: op.id, amount: -5, note: null, occurredAt: "2026-02-10T12:00:00" }),
+    ).rejects.toThrow();
+  });
   it("better-auth tables exist (schema from ADR/ticket 02 wiring)", async () => {
     // SAFETY: sqlite_master name column is TEXT; the query returns the table list verbatim
     const tables = (await conn.db.all(`SELECT name FROM sqlite_master WHERE type='table'`)) as Array<{ name: string }>;

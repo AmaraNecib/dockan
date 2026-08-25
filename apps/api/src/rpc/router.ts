@@ -48,9 +48,10 @@ function resolveWindow(input: {
     }
     return range;
   }
-  // preset absent: honor caller-supplied bounds. customFrom/customTo are never
-  // silently dropped — they act as a CUSTOM window, so a client bug surfaces
-  // as a window, not as wrong-but-successful data.
+  // preset absent: honor caller-supplied bounds. preset + bounds together is a
+  // documented precedence (preset wins); customFrom/customTo without a preset
+  // act as a CUSTOM window, so a client bug surfaces as a window, not as
+  // wrong-but-successful data.
   if (input.customFrom !== undefined || input.customTo !== undefined) {
     const range = resolveReportRange("CUSTOM", new Date(), { from: input.customFrom, to: input.customTo });
     if (!validCustomRange(range.from, range.to)) {
@@ -58,8 +59,11 @@ function resolveWindow(input: {
     }
     return range;
   }
-  const from = input.from ?? (input.to === undefined ? currentMonthRange().from : "0001-01-01T00:00:00");
-  const to = input.to ?? (input.from === undefined ? currentMonthRange().to : "9999-12-31T23:59:59");
+  // single instant for the whole default-window computation so a call that
+  // straddles local midnight never mixes two months together
+  const month = currentMonthRange();
+  const from = input.from ?? (input.to === undefined ? month.from : "0001-01-01T00:00:00");
+  const to = input.to ?? (input.from === undefined ? month.to : "9999-12-31T23:59:59");
   if (from > to) {
     throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
   }

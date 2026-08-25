@@ -24,9 +24,11 @@ async function ensureAuthed(page: import("@playwright/test").Page) {
   await expect(page.getByText("الرئيسية")).toBeVisible();
 }
 
-/** Read the displayed amount (may be negative) out of a report figure cell. */
+/** Read the displayed amount (may be negative) out of a report figure cell.
+ * Tolerates thousands separators and the Unicode minus sign. */
 function parseAmount(text: string | null): number {
-  const match = (text ?? "").match(/-?\d+/);
+  const normalized = (text ?? "").replace(/[،,]/g, "").replace(/−/g, "-");
+  const match = normalized.match(/-?\d+/);
   return match === null ? NaN : Number(match[0]);
 }
 

@@ -1342,9 +1342,10 @@ describe("expenses (ticket 31)", () => {
   it("seeds default expense categories with exactly one owner-withdrawal flag", async () => {
     const { items } = await client.expenseCategoriesList();
     expect(items.length).toBeGreaterThanOrEqual(6);
-    const withdrawal = items.filter((row) => row.isOwnerWithdrawal);
-    expect(withdrawal).toHaveLength(1);
-    expect(withdrawal[0]!.name).toBe("سحوبات المالك");
+    // scoped to the seeded name: later tests may intentionally add flagged rows
+    const seeded = items.filter((row) => row.name === "سحوبات المالك");
+    expect(seeded).toHaveLength(1);
+    expect(seeded[0]!.isOwnerWithdrawal).toBe(true);
     expect(items.some((row) => row.name === "كراء المحل")).toBe(true);
   });
 
@@ -1364,18 +1365,29 @@ describe("expenses (ticket 31)", () => {
     expect(expense.note).toBe("كراء فيفري");
     expect(expense.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
     expect(expense.categoryId).toBe(rent.id);
-    const activity = (await client.activitiesList({})).items.find((entry) => entry.type === "EXPENSE_RECORDED");
-    expect(activity).toBeDefined();
-    expect(activity!.ref).toBe(expense.id);
-    expect(activity!.summary).toContain("1200");
+    const activityRows = (await client.activitiesList({})).items.filter((entry) => entry.type === "EXPENSE_RECORDED");
+    expect(activityRows.some((entry) => entry.ref === expense.id && entry.summary.includes("1200"))).toBe(true);
   });
 
-  it("rejects an unknown category and a zero/negative amount", async () => {
+  it("rejects an unknown category and schema-invalid amounts", async () => {
     await expect(
       client.expensesCreate({ categoryId: "00000000-0000-4000-8000-000000000000", amount: 100 }),
     ).rejects.toThrow(/CATEGORY_NOT_FOUND/);
-    await expect(client.expensesCreate({ categoryId: (await client.expenseCategoriesList()).items[0]!.id, amount: 0 })).rejects.toThrow();
-    await expect(client.expensesCreate({ categoryId: (await client.expenseCategoriesList()).items[0]!.id, amount: -5 })).rejects.toThrow();
+    const validId = (await client.expenseCategoriesList()).items[0]!.id;
+    // zero/negative/huge amounts fail zod before the router ever runs
+    await expect(client.expensesCreate({ categoryId: validId, amount: 0 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.expensesCreate({ categoryId: validId, amount: -5 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.expensesCreate({ categoryId: validId, amount: 1_000_000_000_001 })).rejects.toThrow(/Input validation failed/);
+    // malformed occurredAt and unknown presets are rejected at the schema too;
+    // the casts only widen a literal so the zod boundary is exercised
+    // occurredAt is format-validated like every other local timestamp (regex
+    // policy shared with invoiceDate: no calendar-range checks app-wide); a
+    // value that fails the fixed-width pattern is rejected at the schema
+    await expect(client.expensesCreate({ categoryId: validId, amount: 1, occurredAt: "not-a-time" })).rejects.toThrow(/Input validation failed/);
+    // SAFETY: the cast feeds a value deliberately outside the closed preset enum
+    await expect(client.reportsProfit({ preset: "FORTNIGHT" as never })).rejects.toThrow(/Input validation failed/);
+    // SAFETY: the cast feeds a value deliberately outside the sort fields
+    await expect(client.expensesList({ sortBy: "nonsense" as never })).rejects.toThrow(/Input validation failed/);
   });
 
   it("defaults the list to the current month, filters by category and custom range", async () => {
@@ -1401,27 +1413,38 @@ describe("expenses (ticket 31)", () => {
     expect(onlyOp.items.map((row) => row.id)).not.toContain(withdraw.id);
     const onlyWithdrawal = await client.expensesList({ categoryIds: [withdrawal.id] });
     expect(onlyWithdrawal.items.map((row) => row.id)).toEqual([withdraw.id]);
+
+    // multi-category filter: both ids together return both rows, nothing else
+    const both = await client.expensesList({ categoryIds: [op.id, withdrawal.id] });
+    const bothIds = both.items.map((row) => row.id);
+    expect(bothIds).toContain(withdraw.id);
+    expect(bothIds.some((id) => id !== withdraw.id)).toBe(true); // at least the op rows (222 etc.)
+    // an empty-window filter returns no rows
+    const empty = await client.expensesList({ categoryIds: [withdrawal.id], from: "2020-09-01T00:00:00", to: "2020-09-30T23:59:59" });
+    expect(empty.items).toEqual([]);
   });
 
   it("sorts history by date or amount in both directions", async () => {
     const { items: categories } = await client.expenseCategoriesList();
     const op = categories.find((row) => !row.isOwnerWithdrawal)!;
-    const small = await client.expensesCreate({ categoryId: op.id, amount: 50, occurredAt: "2026-02-01T12:00:00" });
-    const big = await client.expensesCreate({ categoryId: op.id, amount: 900, occurredAt: "2026-02-20T12:00:00" });
-    const mid = await client.expensesCreate({ categoryId: op.id, amount: 100, occurredAt: "2026-02-10T12:00:00" });
-    const window = { from: "2026-02-01T00:00:00", to: "2026-02-28T23:59:59" };
+    // far-past dates (2020) keep this strict window immune to the machine clock
+    // landing inside the window during a run
+    const small = await client.expensesCreate({ categoryId: op.id, amount: 50, occurredAt: "2020-02-01T12:00:00" });
+    const big = await client.expensesCreate({ categoryId: op.id, amount: 900, occurredAt: "2020-02-20T12:00:00" });
+    const mid = await client.expensesCreate({ categoryId: op.id, amount: 100, occurredAt: "2020-02-10T12:00:00" });
+    const window = { from: "2020-02-01T00:00:00", to: "2020-02-28T23:59:59" };
+    const amounts = (rows: readonly { amount: number }[]) => rows.map((row) => row.amount);
+    const ids = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
 
     const byDateDesc = await client.expensesList({ ...window, sortBy: "occurredAt", sortDir: "desc" });
-    expect(byDateDesc.items.map((row) => row.amount)).toEqual([900, 100, 50]);
+    expect(ids(byDateDesc.items)).toEqual([big.id, mid.id, small.id]);
+    expect(amounts(byDateDesc.items)).toEqual([900, 100, 50]);
     const byDateAsc = await client.expensesList({ ...window, sortBy: "occurredAt", sortDir: "asc" });
-    expect(byDateAsc.items.map((row) => row.amount)).toEqual([50, 100, 900]);
+    expect(ids(byDateAsc.items)).toEqual([small.id, mid.id, big.id]);
     const byAmountAsc = await client.expensesList({ ...window, sortBy: "amount", sortDir: "asc" });
-    expect(byAmountAsc.items.map((row) => row.amount)).toEqual([50, 100, 900]);
+    expect(amounts(byAmountAsc.items)).toEqual([50, 100, 900]);
     const byAmountDesc = await client.expensesList({ ...window, sortBy: "amount", sortDir: "desc" });
-    expect(byAmountDesc.items.map((row) => row.amount)).toEqual([900, 100, 50]);
-    // sort stability across equal keys: the three ids stay distinct and ordered by date
-    expect(new Set([...byDateDesc.items, ...byAmountDesc.items].map((row) => row.id)).size).toBe(3);
-    void small; void big; void mid;
+    expect(amounts(byAmountDesc.items)).toEqual([900, 100, 50]);
   });
 
   it("rejects an inverted custom window with INVALID_RANGE", async () => {
@@ -1441,6 +1464,28 @@ describe("expenses (ticket 31)", () => {
     await expect(
       client.expensesList({ customFrom: "2020-04-01T00:00:00", customTo: "2020-03-01T00:00:00" }),
     ).rejects.toThrow(/INVALID_RANGE/);
+  });
+
+  it("documents preset precedence: an explicit preset wins over stray from/to bounds", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    await client.expensesCreate({ categoryId: op.id, amount: 777, occurredAt: "2020-05-05T12:00:00" });
+    // preset CURRENT_MONTH plus an inverted from/to: the preset must win, so no
+    // INVALID_RANGE and the current-month rows come back, not a 2020 window
+    const mixed = await client.expensesList({ preset: "CURRENT_MONTH", from: "2020-06-01T00:00:00", to: "2020-05-01T00:00:00" });
+    expect(mixed.items.map((row) => row.id)).not.toContain("");
+    expect(mixed.items.every((row) => row.occurredAt !== "2020-05-05T12:00:00")).toBe(true);
+  });
+
+  it("wires non-default presets (24H / LAST_YEAR) through reportsProfit", async () => {
+    const lastYear = await client.reportsProfit({ preset: "LAST_YEAR" });
+    expect(lastYear.range.preset).toBe("LAST_YEAR");
+    expect(lastYear.range.from).toMatch(/^\d{4}-01-01T00:00:00$/);
+    expect(lastYear.range.to).toMatch(/^\d{4}-12-31T23:59:59$/);
+    expect(lastYear.revenue).toBeGreaterThanOrEqual(0);
+    const last24h = await client.reportsProfit({ preset: "24H" });
+    expect(last24h.range.preset).toBe("24H");
+    expect(last24h.range.from <= last24h.range.to).toBe(true);
   });
 });
 
@@ -1493,6 +1538,7 @@ describe("profit report (ticket 31) — wire reconciliation", () => {
     const categories = await client.categoriesList();
     const item = await client.itemsCreate({ name: "ربح-مؤرخ", categoryId: categories.items[0]!.id, costPrice: 100, sellingPrice: 300, lowStockThreshold: 0 });
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const baselineCurrent = await client.reportsProfit({ preset: "CURRENT_MONTH" });
     const backdated = await client.invoicesCreate({
       kind: "SALE",
       invoiceDate: "2020-01-10",
@@ -1500,13 +1546,44 @@ describe("profit report (ticket 31) — wire reconciliation", () => {
     });
     expect(backdated.totalAmount).toBe(300);
 
-    const currentMonth = await client.reportsProfit({ preset: "CURRENT_MONTH" });
-    // the backdated sale belongs to 2020, so it never moves the current report
-    const previousRevenue = currentMonth.revenue;
+    // current-month figures are byte-identical after the backdated sale
+    const after = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    expect(after.revenue).toBe(baselineCurrent.revenue);
+    expect(after.cogs).toBe(baselineCurrent.cogs);
+    expect(after.grossProfit).toBe(baselineCurrent.grossProfit);
+    // …while a CUSTOM window over 2020-01 reports it exactly
     const custom = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:59" });
     expect(custom.revenue).toBe(300);
     expect(custom.cogs).toBe(100);
-    expect(previousRevenue).toBeGreaterThanOrEqual(0);
+  });
+
+  it("reports multi-line sales and fully-discounted sales exactly", async () => {
+    const categories = await client.categoriesList();
+    const catId = categories.items[0]!.id;
+    const cheap = await client.itemsCreate({ name: "ربح-سطر-رخيص", categoryId: catId, costPrice: 100, sellingPrice: 250, lowStockThreshold: 0 });
+    const costly = await client.itemsCreate({ name: "ربح-سطر-غال", categoryId: catId, costPrice: 700, sellingPrice: 1_500, lowStockThreshold: 0 });
+    await client.stockAddManual({ itemId: cheap.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: costly.id, delta: 1, unitCost: 700, kind: "PURCHASE" });
+    const baseline = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+
+    const multi = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [
+        { itemId: cheap.id, quantity: 2, unitPrice: 230 },
+        { itemId: costly.id, quantity: 1, unitPrice: 1_400 },
+      ],
+    });
+    expect(multi.totalAmount).toBe(1_860);
+
+    const freeItem = await client.itemsCreate({ name: "ربح-مجاني", categoryId: catId, costPrice: 50, sellingPrice: 120, lowStockThreshold: 0 });
+    await client.stockAddManual({ itemId: freeItem.id, delta: 1, unitCost: 50, kind: "PURCHASE" });
+    const free = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 9_999 }, lines: [{ itemId: freeItem.id, quantity: 1 }] });
+    expect(free.totalAmount).toBe(0);
+
+    const after = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    expect(after.revenue - baseline.revenue).toBe(1_860 + 0);
+    expect(after.cogs - baseline.cogs).toBe(2 * 100 + 1 * 700 + 1 * 50);
+    expect(after.grossProfit - baseline.grossProfit).toBe(1_860 - 950);
   });
 
   it("keeps the purchase side invisible in the profit report (COGS only from sales)", async () => {

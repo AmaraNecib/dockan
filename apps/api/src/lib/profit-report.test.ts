@@ -83,7 +83,7 @@ describe("profit report — reconciliation on a worked example", () => {
     expect(byCategory.reduce((sum, row) => sum + row.total, 0)).toBe(report.operatingExpenses + report.ownerWithdrawals);
   });
 
-  it("rejects a report that would not reconcile (guard against future drift)", () => {
+  it("a minimal single-sale report still reconciles exactly", () => {
     const report = computeProfitReport({
       saleLines: [{ invoiceId: "inv-1", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, netTotal: 250 }],
       expenses: [],
@@ -248,5 +248,36 @@ describe("sortExpenses", () => {
     const copy = [...rows];
     sortExpenses(rows);
     expect(rows).toEqual(copy);
+  });
+
+  it("breaks same-instant ties on createdAt (insertion order), not unspecified DB order", () => {
+    const sameMoment = "2026-02-10T12:00:00";
+    const first = expense({ categoryId: opCategory.id, amount: 100, occurredAt: sameMoment, createdAt: "2026-02-10T12:00:01" });
+    const second = expense({ categoryId: opCategory.id, amount: 100, occurredAt: sameMoment, createdAt: "2026-02-10T12:00:02" });
+    const shuffled = [second, first];
+    expect(sortExpenses(shuffled, "amount", "asc").map((row) => row.createdAt)).toEqual(["2026-02-10T12:00:02", "2026-02-10T12:00:01"]);
+    expect(sortExpenses(shuffled, "occurredAt", "desc").map((row) => row.createdAt)).toEqual(["2026-02-10T12:00:02", "2026-02-10T12:00:01"]);
+  });
+});
+
+describe("profit report — byCategory ordering", () => {
+  it("lists operating categories alphabetically first, then withdrawal categories", () => {
+    const a = { id: "op-b", name: "مصاريف أخرى", isOwnerWithdrawal: false, createdAt: "2026-01-01T00:00:00", updatedAt: "2026-01-01T00:00:00" };
+    const b = { id: "op-a", name: "أجور ورواتب", isOwnerWithdrawal: false, createdAt: "2026-01-01T00:00:00", updatedAt: "2026-01-01T00:00:00" };
+    const w1 = { id: "wd-b", name: "سحب خاص ب", isOwnerWithdrawal: true, createdAt: "2026-01-01T00:00:00", updatedAt: "2026-01-01T00:00:00" };
+    const w2 = { id: "wd-a", name: "سحب خاص أ", isOwnerWithdrawal: true, createdAt: "2026-01-01T00:00:00", updatedAt: "2026-01-01T00:00:00" };
+    const report = computeProfitReport({
+      saleLines: [],
+      expenses: [
+        { categoryId: b.id, amount: 10, occurredAt: "2026-02-05T12:00:00" },
+        { categoryId: a.id, amount: 20, occurredAt: "2026-02-05T12:00:00" },
+        { categoryId: w2.id, amount: 30, occurredAt: "2026-02-05T12:00:00" },
+        { categoryId: w1.id, amount: 40, occurredAt: "2026-02-05T12:00:00" },
+      ],
+      categories: [a, b, w1, w2],
+      range,
+    });
+    expect(report.byCategory.map((row) => row.categoryId)).toEqual(["op-a", "op-b", "wd-a", "wd-b"]);
+    expect(report.byCategory.map((row) => row.isOwnerWithdrawal)).toEqual([false, false, true, true]);
   });
 });

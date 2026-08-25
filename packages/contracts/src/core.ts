@@ -281,13 +281,14 @@ export const expenseCategorySchema = z.object({
 /**
  * One raw expense record (تسجيل مصروف). Append-only by design: the profit
  * report derives every figure from these rows plus SALE invoice lines, so
- * nothing is ever stored as a fragile precomputed total.
+ * nothing is ever stored as a fragile precomputed total. Amounts are capped
+ * far below MAX_SAFE_INTEGER so report sums stay exact whole-DZD integers.
  */
 export const expenseSchema = z.object({
   id: idSchema,
   categoryId: idSchema,
   /** whole dinars; must be positive — a zero-DZD expense is a no-op record */
-  amount: z.number().int().positive(),
+  amount: z.number().int().positive().max(1_000_000_000_000),
   /** mirror of the input cap so persisted and returned shapes agree */
   note: z.string().max(500).nullable(),
   /** Algeria-local moment of the expense (editable for backdating) */
@@ -548,7 +549,8 @@ export const expenseCategoryCreateInputSchema = z.object({
 
 export const expenseCreateInputSchema = z.object({
   categoryId: idSchema,
-  amount: z.number().int().positive(),
+  /** same cap as the entity so an absurd input can never threaten 2^53 sums */
+  amount: z.number().int().positive().max(1_000_000_000_000),
   note: z.string().trim().max(500).nullable().optional(),
   /** Algeria-local moment; defaults to now at the api */
   occurredAt: localDateTimeSchema.optional(),

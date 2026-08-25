@@ -105,6 +105,14 @@ describe("report ranges (Algeria local time)", () => {
     expect(range.from).toBe("2026-02-24T10:00:00");
   });
 
+  it("normalizes the local midnight rollover (en-CA hour-24 edge)", () => {
+    // 2026-03-15T23:00:00Z is 2026-03-16T00:00:00 local — exactly midnight
+    const now = new Date("2026-03-15T23:00:00Z");
+    const range = resolveReportRange("24H", now);
+    expect(range.to).toBe("2026-03-16T00:00:00");
+    expect(range.from).toBe("2026-03-15T00:00:00");
+  });
+
   it("CUSTOM passes the caller's bounds through unchanged", () => {
     const now = new Date("2026-01-15T12:00:00Z");
     const range = resolveReportRange("CUSTOM", now, { from: "2026-01-10T08:00:00", to: "2026-01-20T18:30:00" });

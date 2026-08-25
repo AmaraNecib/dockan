@@ -145,8 +145,9 @@ export function computeProfitReport(input: {
 }
 
 /** Immutable sort for expense history: occurredAt (newest first by default) or
- * amount, each asc/desc. Equal sort keys keep deterministic relative order —
- * by later date for amount sorts, by input order for date sorts. */
+ * amount, each asc/desc. Fully deterministic from row data alone: equal sort
+ * keys break on occurredAt (newest first), then createdAt (insertion order),
+ * so history order never depends on unspecified database row order. */
 export function sortExpenses(
   expenses: readonly Expense[],
   sortBy: "occurredAt" | "amount" = "occurredAt",
@@ -158,13 +159,14 @@ export function sortExpenses(
     .sort((a, b) => {
       if (sortBy === "amount") {
         if (a.entry.amount !== b.entry.amount) return (a.entry.amount - b.entry.amount) * direction;
-        // equal amounts: newest first, independent of direction (stable within)
         if (a.entry.occurredAt !== b.entry.occurredAt) return a.entry.occurredAt < b.entry.occurredAt ? 1 : -1;
+        if (a.entry.createdAt !== b.entry.createdAt) return a.entry.createdAt < b.entry.createdAt ? 1 : -1;
         return a.index - b.index;
       }
       if (a.entry.occurredAt !== b.entry.occurredAt) {
         return (a.entry.occurredAt < b.entry.occurredAt ? -1 : 1) * direction;
       }
+      if (a.entry.createdAt !== b.entry.createdAt) return a.entry.createdAt < b.entry.createdAt ? 1 : -1;
       return a.index - b.index;
     })
     .map(({ entry }) => entry);

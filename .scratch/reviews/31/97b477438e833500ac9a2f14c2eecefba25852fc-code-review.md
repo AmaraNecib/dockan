@@ -1,6 +1,6 @@
 # Code review — Expenses and flexible profit reports (issue #31)
 
-- **Base:** `origin/develop` af0c7a3 → rebased onto 9e4e97b (#46 debts); **Final head:** 52997e667cc926bc264f5f90c8a8d826e758e81c
+- **Base:** `origin/develop` af0c7a3 → rebased onto 9e4e97b (#46 debts); **Final head:** 97b477438e833500ac9a2f14c2eecefba25852fc
 - **Commits:** 80be2cf (feature), 518bfc2 (debate fixes), 8c50479 (test-audit fixes),
   d048332 (rebase completion), 52997e6 (code-review nits)
 - Two-axis review (standards + spec) via parallel sub-agents; nits applied in the final round.
@@ -54,3 +54,9 @@ additions purely additive.
 Branch `feat/31-expenses-profit-reports`, 5 commits on `origin/develop` 9e4e97b (rebased per
 parent notice; both intents preserved, no `--abort`). Working tree clean apart from this review
 evidence (committed below). Parent owns push/PR/Greptile/merge.
+
+## Round 2 — greptile finding fixed (97b4774)
+
+Re-verified at this head: atomic default-category seed + marker-gated self-heal
+(full detail in the round-2 debate section; regression tests in
+drizzle-store.test.ts). All gates re-run green at 97b4774.

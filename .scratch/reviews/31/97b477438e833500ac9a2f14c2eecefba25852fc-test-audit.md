@@ -1,6 +1,6 @@
 # Test audit — Expenses and flexible profit reports (issue #31)
 
-- **Final head reviewed:** 52997e667cc926bc264f5f90c8a8d826e758e81c
+- **Final head reviewed:** 97b477438e833500ac9a2f14c2eecefba25852fc
 - **Gate run at this head:** `bun run typecheck` ✓ · `bun run lint` ✓ · `bun run test` 263 pass/0 fail ✓ · e2e 15/15 ✓
 
 Three sub-agents (edge-case hunter, coverage analyst, quality reviewer) audited the tests. All
@@ -63,3 +63,9 @@ actionable findings fixed; the round's own evidence re-keyed to the final head.
 - Flag create-only: reclassifying a category needs a future edit route (deferred).
 - Pre-#31 upgrade path: defaults seed only when the table is empty (consistent with the `categories`
   seed policy); installs that already ran #31 boot get all defaults.
+
+## Round 2 — greptile finding fixed (97b4774)
+
+Re-verified at this head: atomic default-category seed + marker-gated self-heal
+(full detail in the round-2 debate section; regression tests in
+drizzle-store.test.ts). All gates re-run green at 97b4774.

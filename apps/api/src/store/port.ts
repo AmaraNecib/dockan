@@ -96,6 +96,10 @@ export interface StorePort {
   getInvoiceLine(lineId: string): Promise<InvoiceLine | undefined>;
   listInvoices(filters: InvoiceListFilters): Promise<{ items: Invoice[]; totalCount: number }>;
   setInvoicePaidAmounts(id: string, paidAmount: number, remainingAmount: number): Promise<void>;
+  /** unpaid invoices for one person (debts-screen drill-down). Matches the
+   * debtSummaries grouping key: id for a known party, typed name otherwise,
+   * so the two seams never disagree on identity. */
+  listUnpaidInvoicesByParty(kind: Invoice["kind"], counterpartyId: string | null, counterpartyName: string | null): Promise<Invoice[]>;
   debtSummaries(): Promise<DebtSummary[]>;
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;

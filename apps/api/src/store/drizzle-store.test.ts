@@ -467,6 +467,128 @@ describe("invoices core", () => {
   });
 });
 
+describe("debts drill-down (ticket 9)", () => {
+  const insertDebt = async (seed: {
+    invoiceNumber: string;
+    kind: "SALE" | "PURCHASE";
+    counterpartyId?: string | null;
+    counterpartyName?: string | null;
+    totalAmount: number;
+    paidAmount: number;
+    invoiceDate?: string;
+  }) =>
+    store.insertInvoice({
+      invoiceNumber: seed.invoiceNumber,
+      kind: seed.kind,
+      counterpartyId: seed.counterpartyId ?? null,
+      counterpartyName: seed.counterpartyName ?? null,
+      invoiceDate: seed.invoiceDate ?? localDate(),
+      subtotalAmount: seed.totalAmount,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: seed.totalAmount,
+      paidAmount: seed.paidAmount,
+      remainingAmount: seed.totalAmount - seed.paidAmount,
+      notes: null,
+    });
+
+  it("returns a typed-only party's unpaid invoices and matches its debtSummary total", async () => {
+    await insertDebt({ invoiceNumber: "INV-0201", kind: "SALE", counterpartyName: "زبون مدين", totalAmount: 2_000, paidAmount: 500 });
+    await insertDebt({ invoiceNumber: "INV-0202", kind: "SALE", counterpartyName: "زبون مدين", totalAmount: 1_000, paidAmount: 0 });
+    // fully paid → owes nothing
+    await insertDebt({ invoiceNumber: "INV-0203", kind: "SALE", counterpartyName: "زبون مدين", totalAmount: 4_000, paidAmount: 4_000 });
+
+    const invoices = await store.listUnpaidInvoicesByParty("SALE", null, "زبون مدين");
+    const numbers = invoices.map((i) => i.invoiceNumber).sort();
+    expect(numbers).toEqual(["INV-0201", "INV-0202"]);
+    for (const invoice of invoices) {
+      expect(invoice.remainingAmount).toBeGreaterThan(0);
+    }
+
+    // acceptance: the group total is the sum of its unpaid invoices' remaining
+    const sum = invoices.reduce((total, i) => total + i.remainingAmount, 0);
+    expect(sum).toBe(2_500);
+    const summary = (await store.debtSummaries()).find((d) => d.kind === "SALE" && d.counterpartyId === null && d.counterpartyName === "زبون مدين");
+    expect(summary?.remainingTotal).toBe(sum);
+    expect(summary?.invoiceCount).toBe(invoices.length);
+  });
+
+  it("never mixes an id-backed party with a same-named typed-only party", async () => {
+    const ID_PARTY = "00000000-0000-4000-8000-0000000000ab";
+    const sharedName = "مزدوج-ت09";
+    await insertDebt({ invoiceNumber: "INV-0211", kind: "SALE", counterpartyId: ID_PARTY, counterpartyName: sharedName, totalAmount: 1_500, paidAmount: 0 });
+    await insertDebt({ invoiceNumber: "INV-0212", kind: "SALE", counterpartyName: sharedName, totalAmount: 800, paidAmount: 0 });
+
+    const byId = await store.listUnpaidInvoicesByParty("SALE", ID_PARTY, sharedName);
+    expect(byId.map((i) => i.invoiceNumber)).toEqual(["INV-0211"]);
+
+    const byName = await store.listUnpaidInvoicesByParty("SALE", null, sharedName);
+    expect(byName.map((i) => i.invoiceNumber)).toEqual(["INV-0212"]);
+  });
+
+  it("keeps purchase debts out of a sale drill-down and vice versa", async () => {
+    await insertDebt({ invoiceNumber: "INV-0221", kind: "PURCHASE", counterpartyName: "مورد دائن", totalAmount: 3_000, paidAmount: 800 });
+
+    const saleSide = await store.listUnpaidInvoicesByParty("SALE", null, "مورد دائن");
+    expect(saleSide).toHaveLength(0);
+
+    const purchaseSide = await store.listUnpaidInvoicesByParty("PURCHASE", null, "مورد دائن");
+    expect(purchaseSide.map((i) => i.invoiceNumber)).toEqual(["INV-0221"]);
+    const summary = (await store.debtSummaries()).find((d) => d.kind === "PURCHASE" && d.counterpartyName === "مورد دائن");
+    expect(summary?.kind).toBe("PURCHASE");
+    expect(summary?.remainingTotal).toBe(2_200);
+  });
+
+  it("returns an empty list for parties that owe nothing or are unknown", async () => {
+    await insertDebt({ invoiceNumber: "INV-0231", kind: "SALE", counterpartyName: "مسدد بالكامل", totalAmount: 900, paidAmount: 900 });
+    expect(await store.listUnpaidInvoicesByParty("SALE", null, "مسدد بالكامل")).toHaveLength(0);
+    expect(await store.listUnpaidInvoicesByParty("SALE", null, "اسم غير موجود")).toHaveLength(0);
+  });
+
+  it("keeps summary and drill-down consistent for padded typed names (test-audit E1)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0241", kind: "SALE", counterpartyName: "زبون بحواشي ", totalAmount: 500, paidAmount: 0 });
+    // the summary row groups by the raw stored name; the drill-down matches on
+    // the trimmed name so a padded store-seam insert stays openable in both
+    // spellings (the trimmed query also covers earlier unpadded "زبون مدين"
+    // rows, hence a dedicated name here)
+    expect((await store.debtSummaries()).find((d) => d.counterpartyName === "زبون بحواشي ")?.invoiceCount).toBe(1);
+    expect(await store.listUnpaidInvoicesByParty("SALE", null, "زبون بحواشي ")).toHaveLength(1);
+    expect(await store.listUnpaidInvoicesByParty("SALE", null, "زبون بحواشي")).toHaveLength(1);
+  });
+
+  it("keeps a same-named party's debts scoped per direction (test-audit E2)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0251", kind: "SALE", counterpartyName: "الطرف المشترك", totalAmount: 1_000, paidAmount: 0 });
+    await insertDebt({ invoiceNumber: "INV-0252", kind: "PURCHASE", counterpartyName: "الطرف المشترك", totalAmount: 2_000, paidAmount: 500 });
+
+    const summaries = await store.debtSummaries();
+    const saleSummary = summaries.find((d) => d.kind === "SALE" && d.counterpartyName === "الطرف المشترك");
+    const purchaseSummary = summaries.find((d) => d.kind === "PURCHASE" && d.counterpartyName === "الطرف المشترك");
+    expect(saleSummary?.remainingTotal).toBe(1_000);
+    expect(saleSummary?.invoiceCount).toBe(1);
+    expect(purchaseSummary?.remainingTotal).toBe(1_500);
+    expect(purchaseSummary?.invoiceCount).toBe(1);
+
+    expect((await store.listUnpaidInvoicesByParty("SALE", null, "الطرف المشترك")).map((i) => i.invoiceNumber)).toEqual(["INV-0251"]);
+    expect((await store.listUnpaidInvoicesByParty("PURCHASE", null, "الطرف المشترك")).map((i) => i.invoiceNumber)).toEqual(["INV-0252"]);
+  });
+
+  it("excludes overpaid invoices from summaries and drill-down (test-audit E5)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0261", kind: "SALE", counterpartyName: "دفع زائد", totalAmount: 1_000, paidAmount: 1_200 });
+    expect(await store.listUnpaidInvoicesByParty("SALE", null, "دفع زائد")).toHaveLength(0);
+    expect((await store.debtSummaries()).some((d) => d.counterpartyName === "دفع زائد")).toBe(false);
+  });
+
+  it("orders a party's drill-down newest invoice date first (test-audit ordering)", async () => {
+    await insertDebt({ invoiceNumber: "INV-0271", kind: "SALE", counterpartyName: "زبون متسلسل", totalAmount: 100, paidAmount: 0, invoiceDate: "2026-07-01" });
+    await insertDebt({ invoiceNumber: "INV-0272", kind: "SALE", counterpartyName: "زبون متسلسل", totalAmount: 200, paidAmount: 0, invoiceDate: "2026-07-03" });
+    await insertDebt({ invoiceNumber: "INV-0273", kind: "SALE", counterpartyName: "زبون متسلسل", totalAmount: 300, paidAmount: 0, invoiceDate: "2026-07-02" });
+
+    const invoices = await store.listUnpaidInvoicesByParty("SALE", null, "زبون متسلسل");
+    expect(invoices.map((i) => i.invoiceNumber)).toEqual(["INV-0272", "INV-0273", "INV-0271"]);
+  });
+});
+
 describe("edge cases", () => {
   it("derives UNPAID status and date filters", async () => {
     const unpaid = await store.listInvoices({ status: "UNPAID" });

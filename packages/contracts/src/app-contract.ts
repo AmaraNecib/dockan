@@ -10,6 +10,7 @@ import {
   categoryCreateInputSchema,
   categorySchema,
   customerSchema,
+  debtsByPartyInputSchema,
   debtsOutputSchema,
   healthOutputSchema,
   invoiceCreateInputSchema,
@@ -86,6 +87,10 @@ export const dokanContract = {
 
   // --- reports -------------------------------------------------------------
   reportsDebts: oc.output(debtsOutputSchema),
+
+  // --- debts screen drill-down (ticket 9) ----------------------------------
+  /** unpaid invoices for one person, matched by the same identity debtSummaries groups by */
+  debtsByParty: oc.input(debtsByPartyInputSchema).output(invoiceListOutputSchema),
 
   // --- settings ------------------------------------------------------------
   settingsGet: oc.output(settingsSchema),

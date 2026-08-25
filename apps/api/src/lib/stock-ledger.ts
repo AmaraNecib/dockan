@@ -126,6 +126,32 @@ export function historyWithRemaining<T extends LedgerMovement>(movements: readon
   });
 }
 
+/**
+ * Average FIFO unit cost for a sale from the current layers. The returned
+ * value is an integer DZD snapshot; the ledger itself remains the source of
+ * truth for the exact layers and the caller validates the resulting outflow.
+ */
+export function fifoCostForOutflow(
+  movements: readonly LedgerMovement[],
+  quantity: number,
+  opts: { fallbackUnitCost?: number } = {},
+): number {
+  if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("quantity must be a positive integer");
+  const projection = projectLedger(movements, opts);
+  if (quantity > projection.stockOnHand) {
+    throw new StockLedgerError("STOCK_NEGATIVE", `sale of ${quantity} exceeds stock ${projection.stockOnHand}`);
+  }
+  let remaining = quantity;
+  let totalCost = 0;
+  for (const layer of projection.layers) {
+    const take = Math.min(layer.quantity, remaining);
+    totalCost += take * layer.unitCost;
+    remaining -= take;
+    if (remaining === 0) break;
+  }
+  return Math.round(totalCost / quantity);
+}
+
 /** ADR-0002 weighted average after an inflow lands on top of current holdings. */
 export function averageCostAfter(
   currentAvgCost: number,

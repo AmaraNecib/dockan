@@ -10,7 +10,8 @@ import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
-import { historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { fifoCostForOutflow, historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { calculateSaleTotals } from "../lib/sale-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
 
@@ -189,6 +190,17 @@ export function createRpcRouter(deps: RpcDeps) {
         return withBarcodeConflict(() =>
           deps.store.withTransaction(async (tx) => {
             const item = await tx.createItem({ ...input, barcode });
+            // Initial stock is a real ledger fact, not only a cache update;
+            // otherwise a subsequent sale would see an empty FIFO history.
+            await tx.insertStockMovement({
+              itemId: item.id,
+              kind: "MANUAL_ADJUSTMENT",
+              delta: input.stockOnHand,
+              unitCost: input.costPrice,
+              reason: "opening",
+              ref: null,
+              occurredAt: item.createdAt,
+            });
             await tx.setItemStockAndCost(item.id, input.stockOnHand, input.costPrice);
             await tx.insertActivity({
               type: "ITEM_CREATED",
@@ -307,36 +319,142 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
-    // --- invoices (ticket 29: PURCHASE intake; ticket #30 owns SALE) ----------
+    // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
       guardedInput(async (input) => {
-        if (input.kind !== "PURCHASE") {
-          throw new ORPCError("NOT_IMPLEMENTED", { message: "SALE_NOT_IMPLEMENTED" });
-        }
-        // resolve every line's item up front so a bad id fails before any write
-        const itemsById = await deps.store.getItemsByIds(input.lines.map((line) => line.itemId));
-        for (const line of input.lines) {
-          if (!itemsById.has(line.itemId)) {
-            throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
-          }
-        }
-        // omitted line prices default to the item's cost here too — using 0
-        // would make total/remaining disagree with the persisted lines and
-        // reject any positive initialPaid against a too-small total
-        const totalAmount = input.lines.reduce((sum, line) => {
-          // SAFETY: every itemId was resolved in itemsById by the loop above
-          const unitPrice = line.unitPrice ?? itemsById.get(line.itemId)!.costPrice;
-          return sum + line.quantity * unitPrice;
-        }, 0);
-        const paidAmount = input.initialPaid ?? 0;
-        if (paidAmount > totalAmount) {
-          throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
-        }
-        const invoiceDate = input.invoiceDate ?? localDate();
+        // Resolve items and persist inside ONE serialized unit so pricing,
+        // FIFO consumption, and writes all observe the same committed state.
+        // Reading item snapshots before the transaction let a queued request
+        // (e.g. an updateItem price change) land between the read and the
+        // unit, persisting stale unitPrice/costAtSale (greptile P1). Bad ids
+        // still fail before any invoice, movement, or sequence write because
+        // resolution is the first thing inside the unit.
         return deps.store.withTransaction(async (tx) => {
+        const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
+        for (const line of input.lines) {
+          if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+        }
+
+        if (input.kind === "SALE") {
+          const discount = input.discount ??
+            (input.discountType !== undefined && input.discountValue !== undefined
+              ? { type: input.discountType, value: input.discountValue }
+              : undefined);
+          const totals = calculateSaleTotals(
+            input.lines.map((line) => {
+              const item = itemsById.get(line.itemId)!;
+              return {
+                quantity: line.quantity,
+                price: {
+                  defaultUnitPrice: item.sellingPrice,
+                  unitPrice: line.unitPrice,
+                  priceOverride: line.priceOverride,
+                  priceOverrideType: line.priceOverrideType,
+                  priceOverrideValue: line.priceOverrideValue,
+                },
+              };
+            }),
+            discount,
+          );
+          const paidAmount = input.initialPaid ?? 0;
+          if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
+          const invoiceDate = input.invoiceDate ?? localDate();
           // SAFETY: allocation is a database-atomic UPDATE inside the same
-          // transaction as the invoice insert, so separate app processes cannot
-          // select the same INV-#### between a read and the UNIQUE insert.
+          // transaction as the invoice insert, so separate app processes
+          // cannot select the same INV-#### between a read and the insert.
+          const invoiceNumber = await tx.allocateInvoiceNumber();
+            const invoice = await tx.insertInvoice({
+              invoiceNumber,
+              kind: "SALE",
+              counterpartyId: input.counterpartyId ?? null,
+              counterpartyName: input.counterpartyName ?? null,
+              invoiceDate,
+              subtotalAmount: totals.subtotalAmount,
+              discountType: totals.discountType,
+              discountValue: totals.discountValue,
+              discountAmount: totals.discountAmount,
+              totalAmount: totals.totalAmount,
+              paidAmount,
+              remainingAmount: totals.totalAmount - paidAmount,
+              notes: input.notes ?? null,
+            });
+            const insertedLines: InvoiceDetail["lines"] = [];
+            for (const [index, line] of input.lines.entries()) {
+              // SAFETY: every itemId was resolved in itemsById at the start of
+              // this unit, and the map is immutable while it runs.
+              const item = itemsById.get(line.itemId)!;
+              const calculated = totals.lines[index]!;
+              const existing = await tx.listStockMovements(item.id);
+              const occurredAt = localDateTime();
+              const candidate = {
+                kind: "SALE" as const,
+                delta: -line.quantity,
+                unitCost: null,
+                occurredAt,
+                seq: undefined,
+              };
+              let costAtSale: number;
+              try {
+                costAtSale = fifoCostForOutflow(existing, line.quantity, { fallbackUnitCost: item.costPrice });
+                projectLedger([...existing, candidate]);
+              } catch (err) {
+                if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
+                throw err;
+              }
+              const inserted = await tx.insertInvoiceLine({
+                invoiceId: invoice.id,
+                itemId: item.id,
+                description: item.name,
+                quantity: line.quantity,
+                defaultUnitPrice: item.sellingPrice,
+                unitPrice: calculated.unitPrice,
+                costAtSale,
+                total: calculated.grossTotal,
+                discountAllocated: calculated.discountAllocated,
+                netTotal: calculated.netTotal,
+              });
+              insertedLines.push(inserted);
+              await tx.insertStockMovement({
+                itemId: item.id,
+                kind: "SALE",
+                delta: -line.quantity,
+                unitCost: null,
+                reason: null,
+                ref: invoice.id,
+                occurredAt,
+              });
+              const projected = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice });
+              const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
+              await tx.setItemStockAndCost(item.id, projected.stockOnHand, newCost);
+            }
+            const insertedPayments: InvoiceDetail["payments"] = [];
+            if (paidAmount > 0) {
+              insertedPayments.push(
+                await tx.insertPayment({
+                  invoiceId: invoice.id,
+                  amount: paidAmount,
+                  method: input.paymentMethod ?? "CASH",
+                  note: null,
+                  paidAt: localDateTime(),
+                }),
+              );
+            }
+            await tx.insertActivity({ type: "SALE_CREATED", summary: `فاتورة بيع ${invoiceNumber}`, ref: invoice.id });
+            return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
+        }
+
+        if (input.discount !== undefined || input.discountType !== undefined || input.discountValue !== undefined) {
+          throw new ORPCError("BAD_REQUEST", { message: "DISCOUNT_ONLY_SALE" });
+        }
+        // Existing purchase intake behavior: omitted line prices default to the
+        // item's cost because purchase prices are the stock cost basis.
+        const totalAmount = input.lines.reduce((sum, line) => sum + line.quantity * (line.unitPrice ?? itemsById.get(line.itemId)!.costPrice), 0);
+        const paidAmount = input.initialPaid ?? 0;
+        if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
+        const invoiceDate = input.invoiceDate ?? localDate();
+          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // transaction as the invoice insert, so separate app processes
+          // cannot select the same INV-#### between a read and the insert.
           const invoiceNumber = await tx.allocateInvoiceNumber();
           const invoice = await tx.insertInvoice({
             invoiceNumber,
@@ -344,67 +462,50 @@ export function createRpcRouter(deps: RpcDeps) {
             counterpartyId: input.counterpartyId ?? null,
             counterpartyName: input.counterpartyName ?? null,
             invoiceDate,
+            subtotalAmount: totalAmount,
+            discountType: null,
+            discountValue: null,
+            discountAmount: 0,
             totalAmount,
             paidAmount,
             remainingAmount: totalAmount - paidAmount,
             notes: input.notes ?? null,
           });
-          const insertedLines = [];
+          const insertedLines: InvoiceDetail["lines"] = [];
           for (const line of input.lines) {
+            // SAFETY: every itemId was resolved in itemsById at the start of
+            // this unit, and the map is immutable while it runs.
             const item = itemsById.get(line.itemId)!;
             const unitCost = line.unitPrice ?? item.costPrice;
+            // For PURCHASE, the line price is the cost basis feeding ADR-0002.
             const inserted = await tx.insertInvoiceLine({
               invoiceId: invoice.id,
               itemId: line.itemId,
               description: item.name,
               quantity: line.quantity,
+              defaultUnitPrice: item.costPrice,
               unitPrice: unitCost,
-              // for a PURCHASE the line price IS the cost basis (ADR-0002 feed)
               costAtSale: unitCost,
               total: line.quantity * unitCost,
+              discountAllocated: 0,
+              netTotal: line.quantity * unitCost,
             });
             insertedLines.push(inserted);
-            // stock event through the ledger, then recompute the fast-path
-            // cache by full replay — same discipline as stockAddManual
             const existing = await tx.listStockMovements(line.itemId);
-            const candidate = {
-              kind: "PURCHASE" as const,
-              delta: line.quantity,
-              unitCost,
-              occurredAt: localDateTime(),
-              seq: undefined,
-            };
+            const candidate = { kind: "PURCHASE" as const, delta: line.quantity, unitCost, occurredAt: localDateTime(), seq: undefined };
             let stockAfter: number;
             try {
               stockAfter = projectLedger([...existing, candidate]).stockOnHand;
             } catch (err) {
-              if (err instanceof StockLedgerError) {
-                throw new ORPCError("BAD_REQUEST", { message: err.code });
-              }
+              if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
               throw err;
             }
-            await tx.insertStockMovement({
-              itemId: line.itemId,
-              kind: "PURCHASE",
-              delta: line.quantity,
-              unitCost,
-              reason: null,
-              ref: invoice.id,
-              occurredAt: candidate.occurredAt,
-            });
+            await tx.insertStockMovement({ itemId: line.itemId, kind: "PURCHASE", delta: line.quantity, unitCost, reason: null, ref: invoice.id, occurredAt: candidate.occurredAt });
             const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(line.itemId, stockAfter, newCost);
           }
-          await tx.insertActivity({
-            type: "PURCHASE_CREATED",
-            summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`,
-            ref: invoice.id,
-          });
-          return {
-            ...invoice,
-            lines: insertedLines,
-            payments: [],
-          } satisfies InvoiceDetail;
+          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`, ref: invoice.id });
+          return { ...invoice, lines: insertedLines, payments: [] } satisfies InvoiceDetail;
         });
       }),
     ),

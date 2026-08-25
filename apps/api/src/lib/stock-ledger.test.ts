@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   StockLedgerError,
   averageCostAfter,
+  fifoCostForOutflow,
   historyWithRemaining,
   projectLedger,
   stockAsOf,
@@ -58,6 +59,18 @@ describe("projectLedger — FIFO consumption", () => {
   it("falls back to the fallback unit cost when an inflow omits one", () => {
     const p = projectLedger([m("MANUAL_ADJUSTMENT", 4)], { fallbackUnitCost: 250 });
     expect(p.layers).toEqual([{ quantity: 4, unitCost: 250 }]);
+  });
+});
+
+describe("fifoCostForOutflow", () => {
+  it("uses FIFO layers and rounds the consumed weighted unit cost", () => {
+    const movements = [m("PURCHASE", 5, 100), m("PURCHASE", 5, 200)];
+    expect(fifoCostForOutflow(movements, 6)).toBe(117);
+    expect(projectLedger([...movements, m("SALE", -6)]).layers).toEqual([{ quantity: 4, unitCost: 200 }]);
+  });
+
+  it("rejects an outflow larger than available stock", () => {
+    expect(() => fifoCostForOutflow([m("PURCHASE", 2, 100)], 3)).toThrow(StockLedgerError);
   });
 });
 

@@ -167,6 +167,161 @@ describe("barcodes (ticket 28)", () => {
       }
     }
   });
+
+  it("backfills sale fields when an existing invoice schema predates discounts", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      legacy.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL)");
+      legacy.raw.exec("INSERT INTO categories VALUES ('legacy-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO items VALUES ('legacy-item', 'منتج قديم', 'legacy-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoices VALUES ('legacy-invoice', 'INV-LEGACY', 'SALE', NULL, NULL, '2026-01-01', 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-line', 'legacy-invoice', 'legacy-item', 'منتج قديم', 1, 200, 100, 200)");
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+      const detail = await legacyStore.getInvoiceDetail("legacy-invoice");
+      expect(detail).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
+      expect(detail?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+    } finally {
+      legacy.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
+  it("heals an interrupted sale-column migration on the next setup (schema present, backfill not applied)", async () => {
+    const interruptedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-interrupted-"));
+    const interrupted = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: interruptedDir, DOKAN_DB_PATH: path.join(interruptedDir, "interrupted.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // The interrupted state: the ALTERs from a previous boot committed (all
+      // NEW columns exist) but the historical backfill never ran and no
+      // completion marker was written — rows still carry the legacy defaults.
+      interrupted.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      interrupted.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)");
+      interrupted.raw.exec("INSERT INTO categories VALUES ('interrupted-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO items VALUES ('interrupted-item', 'منتج قديم', 'interrupted-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoices VALUES ('interrupted-invoice', 'INV-INTERRUPTED', 'SALE', NULL, NULL, '2026-01-01', 0, NULL, NULL, 0, 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('interrupted-line', 'interrupted-invoice', NULL, 'منتج قديم', 1, 0, 200, 100, 200, 0, 0)");
+
+      const interruptedStore = createDrizzleStore(interrupted);
+      await interruptedStore.setup();
+
+      // the next setup completes the backfill even though the schema already
+      // had the columns (the marker, not column presence, gates the UPDATEs)
+      const healed = await interruptedStore.getInvoiceDetail("interrupted-invoice");
+      expect(healed).toMatchObject({ subtotalAmount: 200, discountType: null, discountValue: null, discountAmount: 0 });
+      expect(healed?.lines[0]).toMatchObject({ defaultUnitPrice: 200, discountAllocated: 0, netTotal: 200 });
+      expect(await interruptedStore.getSetting("migration.saleColumnsV1")).toBe("done");
+
+      // post-heal modern rows must survive later setup calls: a zero default
+      // price is real for the item, and a fully discounted line's net zero is
+      // real too — the restricted WHERE clauses and the marker keep them.
+      interrupted.raw.exec("INSERT INTO invoices VALUES ('modern-invoice', 'INV-MODERN', 'SALE', NULL, NULL, '2026-02-01', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
+      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0)");
+      await interruptedStore.setup();
+      const modern = await interruptedStore.getInvoiceDetail("modern-invoice");
+      expect(modern?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
+    } finally {
+      interrupted.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(interruptedDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
+  it("never rewrites legitimate zero-default sale lines in a markerless database", async () => {
+    const staleDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-stale-"));
+    const stale = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: staleDir, DOKAN_DB_PATH: path.join(staleDir, "stale.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // A database upgraded from the PRE-marker implementation: the columns
+      // exist, the old backfill already ran there, no marker was ever written —
+      // and it holds legitimate modern sale lines whose default price is 0
+      // (an item with zero selling price sold at a negotiated price) plus one
+      // not-yet-healed pre-migration line.
+      stale.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      stale.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      stale.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      stale.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)");
+      stale.raw.exec("INSERT INTO categories VALUES ('stale-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      stale.raw.exec("INSERT INTO items VALUES ('stale-item', 'منتج قديم', 'stale-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      // modern, undiscounted: zero default price, negotiated 700, net 700
+      stale.raw.exec("INSERT INTO invoices VALUES ('modern-plain', 'INV-PLAIN', 'SALE', NULL, NULL, '2026-02-01', 700, NULL, NULL, 0, 700, 0, 700, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
+      stale.raw.exec("INSERT INTO invoice_lines VALUES ('modern-plain-line', 'modern-plain', NULL, 'منتج بدون سعر افتراضي', 1, 0, 700, 100, 700, 0, 700)");
+      // modern, fully discounted: zero default, negotiated 700, net 0
+      stale.raw.exec("INSERT INTO invoices VALUES ('modern-free', 'INV-FREE', 'SALE', NULL, NULL, '2026-02-02', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-02T00:00:00', '2026-02-02T00:00:00')");
+      stale.raw.exec("INSERT INTO invoice_lines VALUES ('modern-free-line', 'modern-free', NULL, 'منتج بدون سعر افتراضي', 1, 0, 700, 100, 700, 700, 0)");
+      // modern purchase with a zero cost basis bought at an explicit price —
+      // default (item cost 0) legitimately differs from the actual unit price
+      stale.raw.exec("INSERT INTO invoices VALUES ('modern-purchase', 'INV-PURCHASE', 'PURCHASE', NULL, NULL, '2026-02-03', 700, NULL, NULL, 0, 700, 700, 0, NULL, '2026-02-03T00:00:00', '2026-02-03T00:00:00')");
+      stale.raw.exec("INSERT INTO invoice_lines VALUES ('modern-purchase-line', 'modern-purchase', NULL, 'شراء بسعر صريح', 1, 0, 700, 700, 700, 0, 700)");
+      // pre-migration line the interrupted backfill never reached
+      stale.raw.exec("INSERT INTO invoices VALUES ('legacy-late', 'INV-LATE', 'SALE', NULL, NULL, '2026-01-01', 0, NULL, NULL, 0, 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      stale.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-late-line', 'legacy-late', NULL, 'منتج قديم', 1, 0, 200, 100, 200, 0, 0)");
+
+      // byte-identical proof: the modern rows' full column state before setup()
+      // must survive setup() untouched; only the marker lands
+      const modernRows = ["modern-plain-line", "modern-free-line", "modern-purchase-line"] as const;
+      const before = modernRows.map((id) => stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id));
+
+      const staleStore = createDrizzleStore(stale);
+      await staleStore.setup();
+
+      for (const [index, id] of modernRows.entries()) {
+        expect(stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id)).toEqual(before[index]!);
+      }
+
+      // the modern zero-default snapshots survive untouched…
+      const plain = await staleStore.getInvoiceDetail("modern-plain");
+      expect(plain?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 0, netTotal: 700 });
+      const free = await staleStore.getInvoiceDetail("modern-free");
+      expect(free?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
+      const purchased = await staleStore.getInvoiceDetail("modern-purchase");
+      expect(purchased?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 0, netTotal: 700 });
+      // …while the invariant-consistent pre-migration line still heals
+      const late = await staleStore.getInvoiceDetail("legacy-late");
+      expect(late).toMatchObject({ subtotalAmount: 200 });
+      expect(late?.lines[0]).toMatchObject({ defaultUnitPrice: 200, netTotal: 200 });
+      expect(await staleStore.getSetting("migration.saleColumnsV1")).toBe("done");
+
+      // a later setup with the marker present changes nothing
+      await staleStore.setup();
+      expect((await staleStore.getInvoiceDetail("modern-plain"))?.lines[0]).toMatchObject({ defaultUnitPrice: 0, netTotal: 700 });
+      expect((await staleStore.getInvoiceDetail("modern-free"))?.lines[0]).toMatchObject({ defaultUnitPrice: 0, netTotal: 0 });
+    } finally {
+      stale.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(staleDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
 });
 
 describe("parties", () => {
@@ -188,6 +343,10 @@ describe("invoices core", () => {
       counterpartyId: null,
       counterpartyName: "مخزن الحاج",
       invoiceDate: localDate(),
+      subtotalAmount: 30_000,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
       totalAmount: 30_000,
       paidAmount: 5_000,
       remainingAmount: 25_000,
@@ -198,9 +357,12 @@ describe("invoices core", () => {
       itemId: null,
       description: "زيوت 100 قطعة",
       quantity: 100,
+      defaultUnitPrice: 300,
       unitPrice: 300,
       costAtSale: 300,
       total: 30_000,
+      discountAllocated: 0,
+      netTotal: 30_000,
     });
     await store.insertPayment({
       invoiceId: invoice.id,
@@ -213,6 +375,10 @@ describe("invoices core", () => {
     const detail = await store.getInvoiceDetail(invoice.id);
     expect(detail?.lines).toHaveLength(1);
     expect(detail?.lines[0]?.total).toBe(30_000);
+    expect(detail?.lines[0]?.defaultUnitPrice).toBe(300);
+    expect(detail?.lines[0]?.netTotal).toBe(30_000);
+    expect(detail?.subtotalAmount).toBe(30_000);
+    expect(detail?.discountAmount).toBe(0);
     expect(detail?.payments).toHaveLength(1);
     expect(detail?.payments[0]?.amount).toBe(5_000);
 

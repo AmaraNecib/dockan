@@ -74,6 +74,16 @@ describe("manual export copy", () => {
     } finally {
       copy.close();
     }
+
+    // Best-effort cleanup: this test writes a real-today backup into the shared
+    // fixture dir, and the daily-startup tests below assert a FIRST-ever file
+    // for their pinned dates. With real-today equal to a pinned date the stale
+    // copy would make that first call a no-op on every run from that day on.
+    try {
+      fs.rmSync(result.path, { force: true });
+    } catch {
+      /* left for the OS temp cleaner */
+    }
   });
 });
 

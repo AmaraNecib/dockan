@@ -1226,3 +1226,86 @@ describe("diagnostics log (ticket 14)", () => {
     await expect(client.diagnosticsLogsTail({ lines: "50" })).rejects.toThrow();
   });
 });
+
+// --- debts screen (ticket 9) ------------------------------------------------
+describe("debts screen (ticket 9)", () => {
+  async function makeItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreateWithStock({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice,
+      lowStockThreshold: 0,
+      stockOnHand: 10,
+    });
+  }
+
+  it("rejects debtsByParty without a session and with no party identity", async () => {
+    await expect(
+      unauthed.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "بدون جلسة" }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+
+    const item = await makeItem("ديون-بلا-جهة", 100, 300);
+    const bothNull = { kind: "SALE" as const, counterpartyId: null, counterpartyName: null };
+    await expect(client.debtsByParty(bothNull)).rejects.toThrow(/Input validation failed/);
+    expect(item.id).toBeTruthy();
+  });
+
+  it("splits debts by direction with totals and invoice counts", async () => {
+    const saleItem = await makeItem("ديون-بيع", 400, 1_000);
+    const purchaseItem = await makeItem("ديون-شراء", 200, 350);
+
+    // customer pays 400 of 1000 → owes 600
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyName: "زبون دائن",
+      initialPaid: 400,
+      lines: [{ itemId: saleItem.id, quantity: 1 }],
+    });
+    expect(sale.remainingAmount).toBe(600);
+    // fully paid sale with the same typed name contributes no debt
+    await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyName: "زبون دائن",
+      initialPaid: 1_000,
+      lines: [{ itemId: saleItem.id, quantity: 1 }],
+    });
+
+    // we pay 500 of 1300 to the supplier → we owe 800
+    const purchase = await client.invoicesCreate({
+      kind: "PURCHASE",
+      counterpartyName: "مورد مستحق",
+      initialPaid: 500,
+      lines: [{ itemId: purchaseItem.id, quantity: 1, unitPrice: 1_300 }],
+    });
+    expect(purchase.remainingAmount).toBe(800);
+
+    const debts = await client.reportsDebts();
+    const owedToUs = debts.owedToUs.find((d) => d.counterpartyName === "زبون دائن");
+    expect(owedToUs).toMatchObject({ kind: "SALE", counterpartyId: null, remainingTotal: 600, invoiceCount: 1 });
+
+    const weOwe = debts.weOwe.find((d) => d.counterpartyName === "مورد مستحق");
+    expect(weOwe).toMatchObject({ kind: "PURCHASE", counterpartyId: null, remainingTotal: 800, invoiceCount: 1 });
+
+    // directions never leak into each other
+    expect(debts.owedToUs.some((d) => d.counterpartyName === "مورد مستحق")).toBe(false);
+    expect(debts.weOwe.some((d) => d.counterpartyName === "زبون دائن")).toBe(false);
+  });
+
+  it("drills into one party's unpaid invoices by typed name in both directions", async () => {
+    const sale = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون دائن" });
+    expect(sale.items).toHaveLength(1);
+    expect(sale.items[0]!.invoiceNumber).toMatch(/^INV-\d{4}$/u);
+    expect(sale.items[0]).toMatchObject({ kind: "SALE", counterpartyName: "زبون دائن", totalAmount: 1_000, paidAmount: 400, remainingAmount: 600 });
+
+    const purchase = await client.debtsByParty({ kind: "PURCHASE", counterpartyId: null, counterpartyName: "مورد مستحق" });
+    expect(purchase.items).toHaveLength(1);
+    expect(purchase.items[0]).toMatchObject({ remainingAmount: 800 });
+    expect(purchase.totalCount).toBe(1);
+
+    // a party we owe nothing is an empty drill-down, not an error
+    const paidOff = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون دائن لا شيء عليه" });
+    expect(paidOff.items).toHaveLength(0);
+  });
+});

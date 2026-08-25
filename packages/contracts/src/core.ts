@@ -523,6 +523,18 @@ export const debtsOutputSchema = z.object({
   weOwe: z.array(debtSummarySchema),
 });
 
+export const debtsByPartyInputSchema = z
+  .object({
+    kind: invoiceKindSchema,
+    /** exactly the summary's party identity: id when known, null for typed-only */
+    counterpartyId: idSchema.nullable(),
+    /** typed name; null only when the party is id-backed */
+    counterpartyName: z.string().trim().min(1).nullable(),
+  })
+  .refine((v) => v.counterpartyId !== null || v.counterpartyName !== null, {
+    message: "a debts group always has a known id or a typed name",
+  });
+
 export const lowStockOutputSchema = z.object({
   items: z.array(itemSchema),
 });

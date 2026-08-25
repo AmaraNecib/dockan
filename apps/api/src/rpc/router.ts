@@ -703,7 +703,25 @@ export function createRpcRouter(deps: RpcDeps) {
         });
       }),
     ),
-    reportsDebts: os.reportsDebts.handler(guarded(notImplemented("reportsDebts"))),
+    // --- debts screen (ticket 9) -------------------------------------------
+    reportsDebts: os.reportsDebts.handler(
+      guarded(async () => {
+        const summaries = await deps.store.debtSummaries();
+        // SAFETY: debtSummary.kind is enum-constrained, so every row lands in
+        // exactly one bucket; the resulting buckets match the acceptance split.
+        return {
+          owedToUs: summaries.filter((d) => d.kind === "SALE"),
+          weOwe: summaries.filter((d) => d.kind === "PURCHASE"),
+        };
+      }),
+    ),
+    debtsByParty: os.debtsByParty.handler(
+      guardedInput(async ({ kind, counterpartyId, counterpartyName }) => {
+        const items = await deps.store.listUnpaidInvoicesByParty(kind, counterpartyId, counterpartyName);
+        // the party query has no pagination cap, so the count is the list size
+        return { items, totalCount: items.length };
+      }),
+    ),
 
     // --- settings (ticket 10: store identity for the invoice header) ----
     settingsGet: os.settingsGet.handler(guarded(async () => deps.store.getSettings())),

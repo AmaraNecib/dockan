@@ -3,7 +3,9 @@
 - Base `c1bec84`, branch `feat/14-diagnostics-log`.
 - Reviewed HEAD: `4249cff` (three parallel voices: edge-case hunter, coverage
   analyst, quality reviewer — raw reports folded in below).
-- Final HEAD after applying the audit's "Fix it" items: `653a4bb`.
+- Final HEAD: `96fddf2` — the only additions after the review commit `653a4bb`
+  are this evidence and `.agents/wisdom/` (post-review documentation; no code
+  changed since the reviewed `653a4bb`).
 - Process: `.agents/skills/test-audit/SKILL.md`; review-only runs (no source
   modified by reviewers). Validation on the FINAL head:
   - `bun run lint` → clean (oxlint)

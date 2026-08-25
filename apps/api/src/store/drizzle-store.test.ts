@@ -75,6 +75,66 @@ describe("setup + seed", () => {
     expect(names.filter((name) => name === "تصنيف مخصص")).toHaveLength(1);
   });
 
+  it("self-heals an interrupted default-category seed exactly once (greptile round)", async () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-seed-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup(); // full atomic seed + marker
+    // simulate the pre-fix crash state: a few defaults committed, count
+    // nonzero, the owner-withdrawal category missing, marker absent
+    legacy.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    legacy.raw.exec("DELETE FROM expense_categories WHERE name IN ('سحوبات المالك', 'صيانة وتصليح')");
+    const degraded = await legacyStore.listExpenseCategories();
+    expect(degraded.some((row) => row.name === "سحوبات المالك")).toBe(false);
+    expect(degraded).toHaveLength(5);
+    // the next boot completes the set exactly once (no duplicates, flag intact)
+    await legacyStore.setup();
+    const healed = await legacyStore.listExpenseCategories();
+    expect(healed).toHaveLength(7);
+    expect(healed.find((row) => row.name === "سحوبات المالك")?.isOwnerWithdrawal).toBe(true);
+    expect(healed.filter((row) => row.name === "سحوبات المالك")).toHaveLength(1);
+    // a third setup is a no-op (marker present)
+    await legacyStore.setup();
+    expect(await legacyStore.listExpenseCategories()).toHaveLength(7);
+    legacy.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(seedDir, { recursive: true, force: true });
+        return;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
+  it("keeps the defaults-only-when-empty policy: owner tables are never reseeded (greptile round)", async () => {
+    const ownerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-owner-"));
+    const ownerConn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: ownerDir, DOKAN_DB_PATH: path.join(ownerDir, "owner.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const ownerStore = createDrizzleStore(ownerConn);
+    await ownerStore.setup();
+    // degrade into a hypothetical legacy owner table: no marker, one
+    // owner-created category, no defaults at all
+    ownerConn.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    ownerConn.raw.exec("DELETE FROM expense_categories");
+    ownerConn.raw.exec("INSERT INTO expense_categories (id, name, is_owner_withdrawal, created_at, updated_at) VALUES ('owner-1', 'تصنيفي الخاص', 0, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+    // setup() must NOT inject defaults into an owner-populated table
+    await ownerStore.setup();
+    expect((await ownerStore.listExpenseCategories()).map((row) => row.name)).toEqual(["تصنيفي الخاص"]);
+    ownerConn.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(ownerDir, { recursive: true, force: true });
+        return;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
   it("enforces the money CHECK constraints at the database level", async () => {
     const categories = await store.listExpenseCategories();
     const op = categories.find((row) => !row.isOwnerWithdrawal)!;

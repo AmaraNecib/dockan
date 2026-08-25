@@ -29,7 +29,10 @@ export function ReceiptPrintPage() {
   const settings = useQuery(orpc.settingsGet.queryOptions());
 
   const ready = detail.isSuccess && settings.isSuccess;
-  const printTriggered = useRef(false);
+  // gate armed once per invoice: the manual button also arms it so a
+  // dialog never fires twice for the same receipt, and a later invoice
+  // navigating to the same route re-arms for its own auto-print
+  const printTriggered = useRef<string | null>(null);
 
   useEffect(() => {
     if (!ready) return;
@@ -39,15 +42,15 @@ export function ReceiptPrintPage() {
     // is the one that fires, exactly once. A fast unmount ahead of the timer
     // cancels the print via the cleanup.
     const timer = setTimeout(() => {
-      if (printTriggered.current) return;
-      printTriggered.current = true;
+      if (printTriggered.current === invoiceId) return;
+      printTriggered.current = invoiceId;
       window.print();
     }, 300);
     return () => clearTimeout(timer);
-  }, [ready]);
+  }, [ready, invoiceId]);
 
   if (detail.isPending || settings.isPending) {
-    return <p className="text-sm text-stone-500">{t("activityError")}</p>;
+    return <p className="text-sm text-stone-500" data-testid="receipt-loading">{t("expensesLoading")}</p>;
   }
   if (detail.isError || settings.isError || detail.data === undefined || settings.data === undefined) {
     const detailError = detail.error instanceof Error ? detail.error.message : undefined;
@@ -81,7 +84,12 @@ export function ReceiptPrintPage() {
         <button
           type="button"
           className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
-          onClick={() => window.print()}
+          onClick={() => {
+            // a manual print arms the same gate: no double dialog if the
+            // pending auto-print timer is still armed
+            printTriggered.current = invoiceId;
+            window.print();
+          }}
           data-testid="receipt-print-now"
         >
           {t("receiptPrintNow")}

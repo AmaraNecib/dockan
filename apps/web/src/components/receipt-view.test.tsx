@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -43,7 +43,12 @@ const receipt: Receipt = {
 };
 
 let roots: Array<{ unmount: () => void }> = [];
-let host = document.createElement("div");
+let host: HTMLDivElement;
+
+beforeEach(() => {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+});
 
 afterEach(() => {
   for (const root of roots) root.unmount();
@@ -52,8 +57,6 @@ afterEach(() => {
 });
 
 function renderReceipt(data: Receipt) {
-  host = document.createElement("div");
-  document.body.appendChild(host);
   const root = createRoot(host);
   roots.push(root);
   act(() => {
@@ -93,6 +96,17 @@ describe("ReceiptView — document content", () => {
     expect(host.querySelector('[data-testid="receipt-total"]')?.textContent).toBe("950 دج");
     expect(host.querySelector('[data-testid="receipt-paid"]')?.textContent).toBe("500 دج");
     expect(host.querySelector('[data-testid="receipt-remaining"]')?.textContent).toBe("450 دج");
+  });
+
+  it("shows a zero discount and the invoice kind label in the header", () => {
+    renderReceipt({ ...receipt, discountAmount: 0 });
+    expect(host.querySelector('[data-testid="receipt-discount"]')?.textContent).toBe("0 دج");
+    expect(text()).toContain("بيع"); // invoiceKind_SALE label
+  });
+
+  it("prints the party cell separately from the free-form document text", () => {
+    renderReceipt(receipt);
+    expect(host.querySelector('[data-testid="receipt-party"]')?.textContent).toBe("زبون النقد");
   });
 
   it("prints the full payment history in order", () => {

@@ -33,6 +33,8 @@ test("invoice print button → receipt document with identity, totals and paymen
   const storeName = `متجر-الإيصال-${stamp}`;
   await page.goto("/settings");
   await page.getByTestId("settings-name").fill(storeName);
+  // loose Algerian input is normalized at the api boundary to canonical +213 form,
+  // so the receipt header is asserted in its canonical spelling
   await page.getByTestId("settings-phone").fill("066 12 34 56 7");
   await page.getByTestId("settings-save").click();
   await expect(page.getByTestId("settings-saved")).toContainText("تم حفظ الإعدادات");

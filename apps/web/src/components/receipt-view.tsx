@@ -73,7 +73,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
         </>
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+      <dl className="receipt-totals mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1">
           <dt className="text-stone-500">{t("saleSubtotal")}</dt>
           <dd data-testid="receipt-subtotal">{receipt.subtotalAmount} دج</dd>

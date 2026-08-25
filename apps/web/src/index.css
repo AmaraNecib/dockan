@@ -136,3 +136,17 @@ body {
     @apply font-sans;
   }
 }
+
+/* Receipt printing: only the receipt document reaches the paper.
+ * .print-hidden is applied to the app chrome (nav header) and the receipt
+ * toolbar so window.print() never captures them. The receipt's rows and
+ * totals keep themselves whole across page breaks. */
+@media print {
+  .print-hidden {
+    display: none !important;
+  }
+  [data-testid="receipt-view"] tr,
+  [data-testid="receipt-view"] .receipt-totals {
+    break-inside: avoid;
+  }
+}

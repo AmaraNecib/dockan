@@ -210,7 +210,17 @@ export function InvoicePage() {
     <section className="grid gap-4" data-testid="invoice-page">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">{t("invoiceTitle")} {invoice.invoiceNumber}</h1>
-        <Link to="/invoices" className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100" data-testid="invoice-back">{t("invoiceBack")}</Link>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/invoices/$invoiceId/print"
+            params={{ invoiceId }}
+            className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
+            data-testid="invoice-print"
+          >
+            {t("invoicePrint")}
+          </Link>
+          <Link to="/invoices" className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100" data-testid="invoice-back">{t("invoiceBack")}</Link>
+        </div>
       </div>
 
       <div className="rounded border bg-white p-4">

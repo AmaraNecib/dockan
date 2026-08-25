@@ -274,6 +274,10 @@ const resources = {
       pmtExceedsRemaining: "المبلغ يتجاوز المتبقي ({{remaining}} دج)",
       pmtUnavailable: "الفاتورة مسدّدة بالكامل",
       PAYMENT_EXCEEDS_REMAINING: "المبلغ يتجاوز المتبقي من الفاتورة",
+      // receipt printing
+      invoicePrint: "طباعة الإيصال",
+      receiptBack: "رجوع للفاتورة",
+      receiptPrintNow: "طباعة الآن",
       EXPENSE_CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       INVALID_RANGE: "الفترة غير صالحة",
       UNEXPECTED: "حدث خطأ غير متوقع",

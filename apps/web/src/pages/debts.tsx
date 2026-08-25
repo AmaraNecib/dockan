@@ -41,7 +41,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   });
 
   return (
-    <li key={signature} className="px-1">
+    <li className="px-1">
       <button
         type="button"
         data-testid="debts-person"

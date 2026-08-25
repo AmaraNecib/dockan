@@ -89,19 +89,23 @@ describe("manual export copy", () => {
 
 describe("daily startup backup", () => {
   it("creates today's file once; a second call on the same day is a no-op", async () => {
-    const first = await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-25" });
+    // fixture date far from the real clock: the manual-export test above
+    // creates the REAL today's copy, so a fixture near today would find it
+    // already on disk and flip first.created to false (pre-existing flake)
+    const today = "2035-06-01";
+    const first = await ensureDailyBackup({ store, dataDir: dir, today });
     expect(first.created).toBe(true);
-    expect(first.path).toBe(backupFilePath(dir, "2026-08-25"));
+    expect(first.path).toBe(backupFilePath(dir, today));
 
     // mutate after the first copy — the retained daily copy must not change
     await store.createCategory({ name: "بعد النسخة" });
-    const second = await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-25" });
+    const second = await ensureDailyBackup({ store, dataDir: dir, today });
     expect(second.created).toBe(false);
 
     // SAFETY: backup names are exactly "dokan-<date>.db" (backupFileNameFor);
     // a strict match also proves validation leaves no -wal/-shm sidecars behind
-    const files = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2026-08-25\.db$/.test(f));
-    expect(files).toEqual(["dokan-2026-08-25.db"]);
+    const files = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2035-06-01\.db$/.test(f));
+    expect(files).toEqual(["dokan-2035-06-01.db"]);
 
     // the retained copy predates the later category
     const copy = new Database(first.path, { readonly: true });

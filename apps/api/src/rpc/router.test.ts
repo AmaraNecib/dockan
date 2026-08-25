@@ -1165,3 +1165,49 @@ describe("sale checkout (ticket 30)", () => {
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
 });
+// ticket 14 — diagnostics log tail (stable DKN codes + viewer input)
+// ---------------------------------------------------------------------------
+describe("diagnostics log (ticket 14)", () => {
+  it("rejects diagnosticsLogsTail without a session", async () => {
+    await expect(unauthed.diagnosticsLogsTail({})).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("returns today's JSONL tail with stable DKN codes across repeated failures", async () => {
+    // two failing RPC calls on the same app — each triggers the onError
+    // interceptor, which writes an RPC_ERROR row with a DKN code
+    await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+
+    const tail = await client.diagnosticsLogsTail({});
+    // the viewer input points at today's Algeria-local JSONL under logs/
+    expect(tail.file).toContain(path.join("logs", ""));
+    expect(path.basename(tail.file)).toMatch(/^\d{4}-\d{2}-\d{2}\.jsonl$/);
+
+    // SAFETY: the api writes these rows itself via JSON.stringify(LogEntry);
+    // the cast promises the two string keys this assertion reads
+    const rows = tail.lines.map((line) => JSON.parse(line) as { event?: string; code?: string });
+    const rpcErrors = rows.filter((row) => row.event === "RPC_ERROR");
+    // the two failures above are in the tail (newest-last: chronological)
+    expect(rpcErrors.length).toBeGreaterThanOrEqual(2);
+
+    // STABLE codes: same error site (RPC_ERROR + ORPCError) → one code,
+    // never a fresh random per occurrence
+    const codes = new Set(rpcErrors.map((row) => row.code));
+    expect(codes.size).toBe(1);
+    for (const code of codes) {
+      expect(code).toMatch(/^DKN-[0-9A-F]{8}$/);
+    }
+  });
+
+  it("clamps the tail through the contract's bound", async () => {
+    await client.diagnosticsLogsTail({}); // ensure the file exists
+    const one = await client.diagnosticsLogsTail({ lines: 1 });
+    expect(one.lines).toHaveLength(1);
+    const many = await client.diagnosticsLogsTail({ lines: 500 });
+    expect(many.lines.length).toBeGreaterThanOrEqual(1);
+
+    // out-of-range limits are rejected by zod before touching the store
+    await expect(client.diagnosticsLogsTail({ lines: 0 })).rejects.toThrow();
+    await expect(client.diagnosticsLogsTail({ lines: 501 })).rejects.toThrow();
+  });
+});

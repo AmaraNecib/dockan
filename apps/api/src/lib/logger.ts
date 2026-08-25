@@ -25,9 +25,22 @@ export function localDateTime(date: Date = new Date()): string {
   return d.replace(", ", "T").replace("24:", "00:");
 }
 
-/** Stable error identifier for failures, e.g. DKN-1A2B3C4D. */
-export function errorCode(prefix = "DKN"): string {
-  return `${prefix}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+/**
+ * Stable error identifier for failures, e.g. DKN-1A2B3C4D.
+ *
+ * The code is DERIVED, never random: the same error site (the caller's `event`
+ * literal) plus the same error class (`error.name`) maps to the same code on
+ * every run and every machine. That is what makes a code an identifier — the
+ * viewer and the docs can point at "DKN-XXXX happens at RPC_ERROR". Different
+ * error classes at one site get different codes; occurrences of the same
+ * failure are told apart by `ts` in the JSONL, not by the code.
+ *
+ * 8 hex chars of sha256 = 32 bits; collisions across distinct sites are an
+ * event-name clash (a programming error), not a realistic accident.
+ */
+export function errorCodeFor(event: string, errorName = "Error"): string {
+  const digest = crypto.createHash("sha256").update(`${event}::${errorName}`).digest("hex");
+  return `DKN-${digest.slice(0, 8).toUpperCase()}`;
 }
 
 export type LogLevel = "info" | "warn" | "error";
@@ -102,7 +115,9 @@ export class AppLogger {
   }
 
   error(event: string, message: string, error?: Error, context: LogContext = {}): string {
-    const code = errorCode();
+    // stable per site: the event literal + the error's class pick the code;
+    // a non-Error payload (e.g. a string) still maps deterministically
+    const code = errorCodeFor(event, error?.name);
     const entry: LogEntry = { ts: "", level: "error", event, message, code };
     if (error !== undefined) {
       entry.stack = error.stack;

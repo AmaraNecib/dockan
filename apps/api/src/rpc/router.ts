@@ -732,7 +732,11 @@ export function createRpcRouter(deps: RpcDeps) {
     activitiesList: os.activitiesList.handler(
       guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
     ),
-    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(guarded(notImplemented("diagnosticsLogsTail"))),
+    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
+      // today's JSONL tail; the contract clamps `lines` to 1..500 so the
+      // bounded read is the caller's choice, newest-last (chronological)
+      guardedInput(async ({ lines }) => deps.logger.tail(lines ?? 100)),
+    ),
     backupManual: os.backupManual.handler(
       guarded(async () => {
         // checkpoint+copy through the store seam; the audit entry lands only

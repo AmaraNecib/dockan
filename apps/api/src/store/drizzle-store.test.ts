@@ -926,3 +926,32 @@ describe("stock links + invoice line lookup (ticket 29)", () => {
     expect(await store.getInvoiceLine("00000000-0000-4000-8000-000000000009")).toBeUndefined();
   });
 });
+describe("payments history (ticket 8)", () => {
+  it("accumulates instalments and returns history in insertion order even within one second", async () => {
+    const stamp = localDateTime();
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9101",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون التسديد",
+      invoiceDate: localDate(),
+      totalAmount: 1_000,
+      paidAmount: 0,
+      remainingAmount: 1_000,
+      notes: null,
+    });
+    // same paidAt on purpose: the ordering tiebreak must be insertion order
+    // (rowid), never the random payment id — otherwise history shuffles when
+    // two instalments land within the same second
+    for (const amount of [200, 300]) {
+      await store.insertPayment({ invoiceId: invoice.id, amount, method: "CASH", note: null, paidAt: stamp });
+    }
+
+    // header recompute through the same seam invoicesPay uses
+    await store.setInvoicePaidAmounts(invoice.id, 500, 500);
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.paidAmount).toBe(500);
+    expect(detail?.remainingAmount).toBe(500);
+    expect(detail?.payments.map((p) => p.amount)).toEqual([200, 300]);
+  });
+});

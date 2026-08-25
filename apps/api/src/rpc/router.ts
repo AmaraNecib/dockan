@@ -504,8 +504,20 @@ export function createRpcRouter(deps: RpcDeps) {
             const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(line.itemId, stockAfter, newCost);
           }
+          const insertedPayments: InvoiceDetail["payments"] = [];
+          if (paidAmount > 0) {
+            insertedPayments.push(
+              await tx.insertPayment({
+                invoiceId: invoice.id,
+                amount: paidAmount,
+                method: input.paymentMethod ?? "CASH",
+                note: null,
+                paidAt: localDateTime(),
+              }),
+            );
+          }
           await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`, ref: invoice.id });
-          return { ...invoice, lines: insertedLines, payments: [] } satisfies InvoiceDetail;
+          return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         });
       }),
     ),
@@ -519,7 +531,45 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices(filters))),
-    invoicesPay: os.invoicesPay.handler(guarded(notImplemented("invoicesPay"))),
+    // ticket 8 — later payments in instalments. Payment row + paid/remaining
+    // recompute + PAYMENT_RECORDED audit commit in ONE serialized unit, so a
+    // concurrent pay or a crash mid-way can never leave paidAmount out of
+    // sync with the payments history (high-assurance: amounts are never
+    // allowed to exceed an invoice's remaining amount).
+    invoicesPay: os.invoicesPay.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransaction(async (tx) => {
+          const detail = await tx.getInvoiceDetail(input.invoiceId);
+          if (detail === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+          }
+          // the money boundary: an instalment may never exceed what is still
+          // owed, exactly-remaining included (that is the settling payment).
+          // The check runs INSIDE the unit, so a second pay can only read the
+          // remaining AFTER this one committed — no check-then-act race.
+          if (input.amount > detail.remainingAmount) {
+            throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+          }
+          await tx.insertPayment({
+            invoiceId: detail.id,
+            amount: input.amount,
+            method: input.method ?? "CASH",
+            note: input.note ?? null,
+            paidAt: localDateTime(),
+          });
+          await tx.setInvoicePaidAmounts(detail.id, detail.paidAmount + input.amount, detail.remainingAmount - input.amount);
+          await tx.insertActivity({
+            type: "PAYMENT_RECORDED",
+            summary: `تسجيل دفعة ${input.amount} دج على ${detail.invoiceNumber}`,
+            ref: detail.id,
+          });
+          // return the fresh header + appended history from inside the unit
+          // (SAFETY: the invoice was just read in this handler; it cannot
+          // vanish mid-transaction)
+          return (await tx.getInvoiceDetail(detail.id))!;
+        }),
+      ),
+    ),
 
     // --- purchase intake: deferred linking + corrections (ticket 29) ----------
     purchasesProposal: os.purchasesProposal.handler(

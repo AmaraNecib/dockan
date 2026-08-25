@@ -616,7 +616,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const [invoice, lines, paymentsRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
         db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id),
-        db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, payments.id),
+        db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;

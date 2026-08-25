@@ -129,6 +129,13 @@ financial fact into two log entries.
   (`applyPaymentToInvoice`), atomic at the SQLite statement level, so no
   check-then-act race survives even across two processes on one file. The unit
   still wraps insert + UPDATE + activity in one BEGIN/COMMIT for crash atomicity.
+- PR #48 finding: a DEFERRED transaction lets two processes each take a WAL read
+  snapshot before writing; the loser's read-to-write upgrade then dies with
+  SQLITE_BUSY_SNAPSHOT (raw "database is locked") instead of the refusal.
+  Fixed with `withTransactionImmediate` (BEGIN IMMEDIATE) for the payment unit:
+  the write lock is acquired BEFORE the read, the loser waits via busy_timeout,
+  reads post-commit state, and the conditional UPDATE refuses cleanly. This also
+  pre-empts the BEGIN IMMEDIATE hardening previously deferred in #43 (payments path).
 - Money schema: `dinarsSchema` is capped at `Number.MAX_SAFE_INTEGER` so no
   persisted sum can drift into float-inexact territory or overflow SQLite i64.
 - Shared files (router.ts, router.test.ts, i18n.ts, router.tsx) are edited

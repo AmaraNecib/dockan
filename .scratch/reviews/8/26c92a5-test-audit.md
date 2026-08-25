@@ -1,3 +1,45 @@
+# Round-4 addendum — PR #48 fresh finding: stale-snapshot busy error (fixed at 26c92a5)
+
+**Finding (validated real):** with a deferred BEGIN, two app processes paying the
+same invoice each take a WAL read snapshot in their (read) transaction; the loser
+upgrades to a write, hits SQLITE_BUSY_SNAPSHOT, and the RPC returns an internal
+error instead of PAYMENT_EXCEEDS_REMAINING (busy_timeout does NOT apply to the
+snapshot error; it only covers the plain BUSY retry loop).
+
+**Validation (differential, two real processes):** a synchronized two-worker
+probe against one file showed — `BEGIN` (pre-fix shape): [APPLIED, ERROR
+"database is locked"]; `BEGIN IMMEDIATE` (fix): [APPLIED, REFUSED]. Final state
+identical (600/200) in both, only the loser's RESPONSE differs.
+
+**Fix:** `StorePort.withTransactionImmediate(fn)` — the write lock is acquired
+BEFORE the first read (BEGIN IMMEDIATE on the raw connection), so a concurrent
+process waits in its own thread via busy_timeout, then reads the post-commit
+state and the conditional UPDATE refuses with the boundary error. Wiring:
+- drizzle-store.ts: shared `runTransaction(immediate, fn)` body; both
+  `withTransaction` and `withTransactionImmediate` are exempt from the
+  per-instance queue wrapper (otherwise the inner queue would deadlock).
+- router.ts `invoicesPay` runs in the write-first unit; the audit-boom
+  atomicity harness now wraps the immediate variant as well.
+- This pre-empts the BEGIN IMMEDIATE hardening previously deferred in issue #43
+  for the payments path — #43 can drop that item.
+
+**Regression:** store test spawns two REAL processes (Bun.spawn workers on a
+go-flag) paying concurrently: exactly one APPLIED + one REFUSED, exit codes 0,
+never a raw SQLite error. Subprocesses are required because bun is
+single-threaded: an in-process second connection's synchronous busy-wait would
+starve the winner's async continuation, an environment artifact that does not
+exist across processes.
+
+**Gates at 26c92a5:** typecheck ok, lint 0 errors, test ok (api 235, web 49),
+e2e 14/14 (one run of the suite's known timing-sensitive ticket-28 scan spec
+flaked under load, retries: 0; two subsequent full runs green) — `.dokan-port`
+restored byte-exact. Evidence re-keyed to the code head de06d11; the commits
+after it are .scratch/.agents docs only.
+
+---
+
+---
+
 # Review evidence — Issue #8 (Payments on invoices, instalments)
 
 - **Tier:** HIGH-ASSURANCE (payment amounts exceeding invoice totals are an

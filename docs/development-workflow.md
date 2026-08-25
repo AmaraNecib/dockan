@@ -79,3 +79,28 @@ A ticket is done when:
 
 Milestones follow the MVP slice order in the domain glossary (stock → invoicing → payments/debts →
 auth → backup). A milestone closes only when all its tickets are merged into `develop`.
+
+## 5. Diagnostics log (developer-facing)
+
+Every technical error (and every info/warn entry) is appended to a daily JSONL log:
+
+- **Location:** `<DOKAN_DATA_DIR>/logs/YYYY-MM-DD.jsonl` — one file per Algeria-local day
+  (`Africa/Algiers`, no DST); `DOKAN_DATA_DIR` defaults to `./data` at the api workspace root.
+- **Fields per line:** `ts` (Algeria-local `YYYY-MM-DDTHH:mm:ss`), `level` (`info|warn|error`),
+  `event` (stable call-site literal, e.g. `RPC_ERROR`, `SERVER_ERROR`), `message`, `code`,
+  `stack`, `errorName`, `context` — see `LogEntry` in `apps/api/src/lib/logger.ts`.
+- **Stable error codes:** `DKN-XXXXXXXX` is **derived, never random** — `sha256(event::errorKind)`
+  truncated to 8 uppercase hex chars, where `errorKind` is the error's class name plus, when the
+  error framework distinguishes a failure kind (oRPC's `ORPCError.code`, e.g. `UNAUTHORIZED` vs
+  `INTERNAL_SERVER_ERROR`), that kind. Same error site + same failure kind ⇒ same code on every
+  run and every machine; occurrences differ only by `ts`. To find a code in the source, grep the
+  `event` literal — the code survives restarts and reinstallations. Note: **one event literal ⇒
+  one code**, so when two genuinely different failure sites must be told apart by the log, give
+  them distinct `event` literals at the call site.
+- **Retention:** one file per day is kept indefinitely; there is no rotation. The viewer tail reads
+  a whole day file into memory to slice it, so on a very long-lived install you can safely delete
+  old `<date>.jsonl` files by hand (or move them off-box) — nothing references them.
+- **Viewer:** admin-session-guarded page `/diagnostics` (nav link «التشخيص») shows today's tail,
+  newest first, bounded to 200 lines; the `diagnosticsLogsTail` RPC clamps `lines` to 1..500.
+- **Reading a failure:** the api mirrors non-info entries to stdout, and the workflow for a bug
+  report is: open `/diagnostics`, copy the `DKN` code + `ts`, then grep the repo for the event.

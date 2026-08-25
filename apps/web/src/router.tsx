@@ -7,6 +7,7 @@ import { ItemsPage } from "./pages/items";
 import { ItemHistoryPage } from "./pages/stock";
 import { BackupsPage } from "./pages/backups";
 import { ActivityLogPage } from "./pages/activity";
+import { DiagnosticsPage } from "./pages/diagnostics";
 import { PurchasePage } from "./pages/purchase";
 import { SalePage } from "./pages/sale";
 import { SettingsPage } from "./pages/settings";
@@ -43,6 +44,9 @@ const rootRoute = createRootRoute({
             <Link to="/settings" className="text-stone-600 hover:text-stone-900">
               {t("navSettings")}
             </Link>
+            <Link to="/diagnostics" className="text-stone-600 hover:text-stone-900">
+              {t("navDiagnostics")}
+            </Link>
           </nav>
         </header>
         <main className="mx-auto max-w-3xl p-4">
@@ -66,6 +70,7 @@ const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/act
 const purchaseRoute = createRoute({ getParentRoute: () => rootRoute, path: "/purchase", component: PurchasePage });
 const saleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sale", component: SalePage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
+const diagnosticsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/diagnostics", component: DiagnosticsPage });
 
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
@@ -77,6 +82,7 @@ const routeTree = rootRoute.addChildren([
   purchaseRoute,
   saleRoute,
   settingsRoute,
+  diagnosticsRoute,
 ]);
 
 export const router = createRouter({ routeTree });

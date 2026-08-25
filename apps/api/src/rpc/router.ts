@@ -108,11 +108,6 @@ export function createRpcRouter(deps: RpcDeps) {
     return handler(input, context);
   };
 
-  const notImplemented = (name: string) => async (): Promise<never> => {
-    deps.logger.warn("NOT_IMPLEMENTED", `procedure ${name} not implemented yet`);
-    throw new ORPCError("INTERNAL_SERVER_ERROR", { message: `${name} is not implemented yet` });
-  };
-
   return {
     health: os.health.handler(() => ({ ok: true as const, version: deps.config.version })),
 
@@ -504,8 +499,20 @@ export function createRpcRouter(deps: RpcDeps) {
             const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(line.itemId, stockAfter, newCost);
           }
+          const insertedPayments: InvoiceDetail["payments"] = [];
+          if (paidAmount > 0) {
+            insertedPayments.push(
+              await tx.insertPayment({
+                invoiceId: invoice.id,
+                amount: paidAmount,
+                method: input.paymentMethod ?? "CASH",
+                note: null,
+                paidAt: localDateTime(),
+              }),
+            );
+          }
           await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`, ref: invoice.id });
-          return { ...invoice, lines: insertedLines, payments: [] } satisfies InvoiceDetail;
+          return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         });
       }),
     ),
@@ -519,7 +526,53 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices(filters))),
-    invoicesPay: os.invoicesPay.handler(guarded(notImplemented("invoicesPay"))),
+    // ticket 8 — later payments in instalments. Payment row + paid/remaining
+    // recompute + PAYMENT_RECORDED audit commit in ONE write-first unit, so a
+    // concurrent pay or a crash mid-way can never leave paidAmount out of
+    // sync with the payments history (high-assurance: amounts are never
+    // allowed to exceed an invoice's remaining amount).
+    invoicesPay: os.invoicesPay.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const detail = await tx.getInvoiceDetail(input.invoiceId);
+          if (detail === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+          }
+          // the money boundary: an instalment may never exceed what is still
+          // owed, exactly-remaining included (that is the settling payment).
+          // The fast-fail read keeps the SQL free, but the AUTHORITATIVE guard
+          // is the conditional UPDATE inside the unit (applyPaymentToInvoice
+          // below), which stays atomic even if a second process races this one
+          // on the same database file — no check-then-act gap survives.
+          if (input.amount > detail.remainingAmount) {
+            throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+          }
+          await tx.insertPayment({
+            invoiceId: detail.id,
+            amount: input.amount,
+            method: input.method ?? "CASH",
+            note: input.note == null || input.note.trim() === "" ? null : input.note.trim(),
+            paidAt: localDateTime(),
+          });
+          const applied = await tx.applyPaymentToInvoice(detail.id, input.amount);
+          if (!applied) {
+            // the DB refused the instalment (remaining dropped below the
+            // amount between our read and the write); the whole unit rolls
+            // back, so the payment row above never persists
+            throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+          }
+          await tx.insertActivity({
+            type: "PAYMENT_RECORDED",
+            summary: `تسجيل دفعة ${input.amount} دج على ${detail.invoiceNumber}`,
+            ref: detail.id,
+          });
+          // return the fresh header + appended history from inside the unit
+          // (SAFETY: the invoice was just read in this handler; it cannot
+          // vanish mid-transaction)
+          return (await tx.getInvoiceDetail(detail.id))!;
+        }),
+      ),
+    ),
 
     // --- purchase intake: deferred linking + corrections (ticket 29) ----------
     purchasesProposal: os.purchasesProposal.handler(

@@ -1336,3 +1336,255 @@ describe("debts screen (ticket 9)", () => {
     expect(byName.items).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ticket 8 — later payments on invoices (instalments, never above remaining)
+// ---------------------------------------------------------------------------
+describe("invoice payments (ticket 8)", () => {
+  async function makePaidItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice,
+      lowStockThreshold: 0,
+    });
+  }
+
+  /** SALE invoice with zero initial payment: total 800, remaining 800. */
+  async function unpaidSaleInvoice(name: string) {
+    const item = await makePaidItem(name, 100, 800);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", counterpartyName: "زبون الدفعات", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(invoice.remainingAmount).toBe(800);
+    return invoice;
+  }
+
+  it("rejects an unauthed later payment with UNAUTHORIZED", async () => {
+    await expect(
+      unauthed.invoicesPay({ invoiceId: "00000000-0000-4000-8000-000000000001", amount: 100 }),
+    ).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("refuses a payment on a missing invoice with INVOICE_NOT_FOUND", async () => {
+    await expect(
+      client.invoicesPay({ invoiceId: "00000000-0000-4000-8000-000000000002", amount: 100 }),
+    ).rejects.toThrow(/INVOICE_NOT_FOUND/);
+  });
+
+  it("records a partial payment: remaining drops, paid rises, history grows", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-جزئية");
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 300, method: "CASH", note: "أول دفعة" });
+
+    expect(paid.id).toBe(invoice.id);
+    expect(paid.totalAmount).toBe(800);
+    expect(paid.paidAmount).toBe(300);
+    expect(paid.remainingAmount).toBe(500);
+    expect(paid.payments).toHaveLength(1);
+    expect(paid.payments[0]).toMatchObject({ amount: 300, method: "CASH", note: "أول دفعة" });
+
+    // persisted: a fresh read shows the same header + history
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.paidAmount).toBe(300);
+    expect(reread.remainingAmount).toBe(500);
+    expect(reread.payments).toHaveLength(1);
+  });
+
+  it("accumulates multiple instalments and logs PAYMENT_RECORDED per payment", async () => {
+    const invoice = await unpaidSaleInvoice("دفعات-متراكمة");
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 200, method: "CASH" });
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 250, method: "BANK", note: "تحويل بنكي" });
+
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.paidAmount).toBe(450);
+    expect(reread.remainingAmount).toBe(350);
+    expect(reread.payments.map((p) => p.amount)).toEqual([200, 250]);
+    expect(reread.payments.map((p) => p.method)).toEqual(["CASH", "BANK"]);
+
+    const records = (await client.activitiesList({})).items.filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id);
+    expect(records).toHaveLength(2);
+    for (const record of records) {
+      expect(record.ref).toBe(invoice.id);
+      expect(record.summary).toContain(invoice.invoiceNumber);
+    }
+  });
+
+  it("accepts an exact-remaining payment (boundary) and marks the invoice PAID", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-حد-المتبقي");
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 800 });
+
+    expect(paid.remainingAmount).toBe(0);
+    expect(paid.paidAmount).toBe(800);
+    const listed = await client.invoicesList({ status: "PAID" });
+    expect(listed.items.some((i) => i.id === invoice.id)).toBe(true);
+  });
+
+  it("refuses a +1 DA overpayment with PAYMENT_EXCEEDS_REMAINING and writes nothing", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-زائدة");
+    const before = await client.invoicesGet({ id: invoice.id });
+
+    let code = "";
+    try {
+      await client.invoicesPay({ invoiceId: invoice.id, amount: 801 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("PAYMENT_EXCEEDS_REMAINING");
+
+    // nothing persisted: no payment row, no paid/remaining drift, no audit row
+    const after = await client.invoicesGet({ id: invoice.id });
+    expect(after.payments).toHaveLength(before.payments.length);
+    expect(after.paidAmount).toBe(before.paidAmount);
+    expect(after.remainingAmount).toBe(before.remainingAmount);
+    const records = (await client.activitiesList({})).items.filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id);
+    expect(records).toHaveLength(0);
+  });
+
+  it("refuses any payment on an already-paid invoice", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-مكتملة");
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 800 });
+    let code = "";
+    try {
+      await client.invoicesPay({ invoiceId: invoice.id, amount: 1 });
+    } catch (err) {
+      // SAFETY: oRPC surfaces server ORPCError messages as err.message
+      code = (err as Error).message;
+    }
+    expect(code).toContain("PAYMENT_EXCEEDS_REMAINING");
+    expect((await client.invoicesGet({ id: invoice.id })).payments).toHaveLength(1);
+  });
+
+  it("accepts later payments on PURCHASE invoices too", async () => {
+    const item = await makePaidItem("دفعة-شراء", 200, 400);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      counterpartyName: "مورد الدفعات",
+      initialPaid: 200,
+      lines: [{ itemId: item.id, quantity: 3, unitPrice: 200 }], // total 600
+    });
+    expect(invoice.remainingAmount).toBe(400);
+
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 400, method: "BANK" });
+    expect(paid.kind).toBe("PURCHASE");
+    expect(paid.paidAmount).toBe(600);
+    expect(paid.remainingAmount).toBe(0);
+    expect(paid.payments.map((p) => p.amount)).toEqual([200, 400]);
+  });
+
+  it("rejects non-positive, fractional, or non-integer amounts at the schema", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-مبلغ-فاسد");
+    for (const amount of [0, -5, 12.5, Number.NaN]) {
+      await expect(client.invoicesPay({ invoiceId: invoice.id, amount })).rejects.toThrow(/Input validation failed/);
+    }
+    // zod-valid must still reach the handler: nothing was paid so far
+    expect((await client.invoicesGet({ id: invoice.id })).payments).toHaveLength(0);
+  });
+
+  it("defaults the method to CASH and stores a null note when omitted", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-افتراضية");
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 100 });
+    expect(paid.payments[0]).toMatchObject({ amount: 100, method: "CASH", note: null });
+  });
+
+  it("rolls the payment back when the audit insert fails (atomicity)", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-ذرية");
+    const paymentsBefore = (await store.listActivities(100)).filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
+
+    const invoiceStore: StorePort = {
+      ...store,
+      withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransaction((realTx: StorePort) =>
+          fn({
+            ...realTx,
+            insertActivity: async () => {
+              throw new Error("audit-boom");
+            },
+          }),
+        ),
+      // invoicesPay runs in the write-first unit, so the same audit-boom
+      // override must wrap that variant for the rollback proof to fire
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((realTx: StorePort) =>
+          fn({
+            ...realTx,
+            insertActivity: async () => {
+              throw new Error("audit-boom");
+            },
+          }),
+        ),
+    };
+    const failingApp = createApp({
+      config,
+      logger,
+      auth,
+      rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: invoiceStore, auth }),
+    });
+    const failingLink = new RPCLink({
+      url: () => `http://127.0.0.1:${config.port}/api/rpc`,
+      // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+      fetch: (request) => {
+        const headers = Object.fromEntries(request.headers.entries());
+        if (cookie !== "") headers.cookie = cookie;
+        return Promise.resolve(failingApp.fetch(new Request(request, { headers })));
+      },
+    });
+    const failingClient: DokanClient = createORPCClient(failingLink);
+
+    // the whole unit must abort; the real proof is the rollback below — with
+    // pre-fix wiring (two separate calls) this would commit the payment and
+    // then fail the audit, leaving an un-audited instalment behind
+    await expect(failingClient.invoicesPay({ invoiceId: invoice.id, amount: 500 })).rejects.toThrow();
+
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.paidAmount).toBe(0);
+    expect(reread.remainingAmount).toBe(800);
+    expect(reread.payments).toHaveLength(0);
+    const paymentsAfter = (await store.listActivities(100)).filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
+    expect(paymentsAfter).toBe(paymentsBefore);
+  });
+
+it("two concurrent payments serialize and never overpay the invoice", async () => {
+    const invoice = await unpaidSaleInvoice("دفعتان-متزامنتان");
+    const results = await Promise.allSettled([
+      client.invoicesPay({ invoiceId: invoice.id, amount: 600 }),
+      client.invoicesPay({ invoiceId: invoice.id, amount: 600 }),
+    ]);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof client.invoicesPay>>> => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    // exactly one instalment lands; the loser sees the fresh remaining inside
+    // its serialized unit and is refused with the money-boundary key
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(fulfilled[0]!.value).toMatchObject({ paidAmount: 600, remainingAmount: 200 });
+    // SAFETY: allSettled rejected reasons are Error instances (oRPC client throws)
+    expect((rejected[0]!.reason as Error).message).toContain("PAYMENT_EXCEEDS_REMAINING");
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.paidAmount).toBe(600);
+    expect(reread.remainingAmount).toBe(200);
+    expect(reread.payments).toHaveLength(1);
+  });
+
+  it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+  });
+
+  it("rejects amounts beyond the safe-integer money range at the schema", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-خارج-النطاق");
+    await expect(client.invoicesPay({ invoiceId: invoice.id, amount: 2 ** 53 })).rejects.toThrow(/Input validation failed/);
+  });
+
+  it("normalizes an empty or whitespace-only note to null", async () => {
+    const invoice = await unpaidSaleInvoice("دفعة-ملاحظة-فارغة");
+    const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 100, note: "   " });
+    expect(paid.payments[0]!.note).toBeNull();
+  });
+});

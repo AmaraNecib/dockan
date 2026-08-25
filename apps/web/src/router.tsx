@@ -10,6 +10,8 @@ import { ActivityLogPage } from "./pages/activity";
 import { DiagnosticsPage } from "./pages/diagnostics";
 import { PurchasePage } from "./pages/purchase";
 import { SalePage } from "./pages/sale";
+import { InvoicesPage } from "./pages/invoices";
+import { InvoicePage } from "./pages/invoice";
 import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
 import "./lib/i18n";
@@ -45,6 +47,9 @@ const rootRoute = createRootRoute({
             <Link to="/debts" className="text-stone-600 hover:text-stone-900">
               {t("navDebts")}
             </Link>
+            <Link to="/invoices" className="text-stone-600 hover:text-stone-900">
+              {t("navInvoices")}
+            </Link>
             <Link to="/settings" className="text-stone-600 hover:text-stone-900">
               {t("navSettings")}
             </Link>
@@ -74,6 +79,8 @@ const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/act
 const purchaseRoute = createRoute({ getParentRoute: () => rootRoute, path: "/purchase", component: PurchasePage });
 const saleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sale", component: SalePage });
 const debtsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/debts", component: DebtsPage });
+const invoicesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices", component: InvoicesPage });
+const invoiceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices/$invoiceId", component: InvoicePage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
 const diagnosticsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/diagnostics", component: DiagnosticsPage });
 
@@ -87,6 +94,8 @@ const routeTree = rootRoute.addChildren([
   purchaseRoute,
   saleRoute,
   debtsRoute,
+  invoicesRoute,
+  invoiceRoute,
   settingsRoute,
   diagnosticsRoute,
 ]);

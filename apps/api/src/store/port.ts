@@ -84,6 +84,11 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Like withTransaction but BEGIN IMMEDIATE — the write lock is taken before
+   * the first read so money units never deadlock on a stale WAL read snapshot
+   * (SQLITE_BUSY_SNAPSHOT) against a second process writing the same file.
+   * Use for money-math units (payments); plain reads keep withTransaction. */
+  withTransactionImmediate<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
   /** Reserves the next invoice number atomically in the database. */
   allocateInvoiceNumber(): Promise<string>;
   /** Legacy read seam retained for diagnostics and existing callers. */
@@ -91,6 +96,12 @@ export interface StorePort {
   insertInvoice(inv: InvoiceInsert): Promise<Invoice>;
   insertInvoiceLine(line: InvoiceLineInsert): Promise<InvoiceLine>;
   insertPayment(p: Omit<Payment, "id" | "createdAt">): Promise<Payment>;
+  /** Atomic instalment application: debits remainingAmount by amount ONLY while
+   * it still covers the payment (single conditional UPDATE). Returns true when
+   * the money moved, false when the boundary was violated — the caller rolls
+   * the whole unit back in that case. DB-level guard: two processes on the
+   * same file can never both overpay an invoice. */
+  applyPaymentToInvoice(invoiceId: string, amount: number): Promise<boolean>;
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
   /** single line lookup; entry point for purchase corrections */
   getInvoiceLine(lineId: string): Promise<InvoiceLine | undefined>;

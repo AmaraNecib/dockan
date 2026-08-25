@@ -119,7 +119,9 @@ describe("daily startup backup", () => {
   });
 
   it("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
-    const day = "2026-08-28";
+    // far-future fixture: a date near the real clock would collide with the
+    // manual-export test's real-today copy (see the idempotency test)
+    const day = "2035-06-02";
     const dest = backupFilePath(dir, day);
 
     // simulate a half-written backup: a few bytes, no SQLite magic header
@@ -140,7 +142,8 @@ describe("daily startup backup", () => {
   });
 
   it("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
-    const day = "2026-08-30";
+    // far-future fixture, same collision class as above
+    const day = "2035-06-03";
 
     // force a multi-page db so a mid-file cut keeps the header but loses pages
     for (let i = 0; i < 400; i++) {
@@ -188,7 +191,8 @@ describe("daily startup backup", () => {
   });
 
   it("never leaves a .partial file behind after a failed copy", async () => {
-    const day = "2026-08-29";
+    // far-future fixture, same collision class as above
+    const day = "2035-06-05";
     const failingStore: StorePort = {
       ...store,
       copyDatabaseTo: async () => {
@@ -204,9 +208,10 @@ describe("daily startup backup", () => {
   });
 
   it("keeps one file per distinct day", async () => {
-    await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-26" });
-    await ensureDailyBackup({ store, dataDir: dir, today: "2026-08-27" });
-    const days = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2026-08-2[67]\.db$/.test(f));
-    expect(days.sort()).toEqual(["dokan-2026-08-26.db", "dokan-2026-08-27.db"]);
+    // far-future fixtures, same collision class as above
+    await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-06" });
+    await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-07" });
+    const days = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2035-06-0[67]\.db$/.test(f));
+    expect(days.sort()).toEqual(["dokan-2035-06-06.db", "dokan-2035-06-07.db"]);
   });
 });

@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { ORPCError } from "@orpc/client";
+
 import { AppLogger, errorCodeFor, localDate, localDateTime } from "./logger";
 
 /** Africa/Algiers date computed independently of the module under test. */
@@ -15,8 +17,30 @@ function algiersToday(): string {
   });
 }
 
-function tmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "dokan-logger-"));
+/** Per-test tmpdir with a guaranteed cleanup even when the body throws. */
+function withTmpLogDir(run: (dir: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-logger-"));
+  try {
+    run(dir);
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* left for the OS temp cleaner */
+    }
+  }
+}
+
+/** Minimal shape of one JSONL row, for assertions in this spec. */
+interface LogRowJson {
+  ts: string;
+  level: string;
+  event: string;
+  message: string;
+  code?: string | undefined;
+  errorName?: string | undefined;
+  stack?: unknown;
+  context?: unknown;
 }
 
 /**
@@ -46,24 +70,22 @@ describe("stable error codes (DKN-XXXXXXXX)", () => {
   it("defaults an unknown error name to Error", () => {
     expect(errorCodeFor("RPC_ERROR")).toBe(errorCodeFor("RPC_ERROR", "Error"));
   });
-});
 
-/** Minimal shape of one JSONL row, for assertions in this spec. */
-interface LogRowJson {
-  ts: string;
-  level: string;
-  event: string;
-  message: string;
-  code?: string | undefined;
-  errorName?: string | undefined;
-  stack?: unknown;
-  context?: unknown;
-}
+  it("keeps oRPC failure kinds apart (UNAUTHORIZED vs INTERNAL_SERVER_ERROR)", () => {
+    // the app hashes errorKind = name::code, so two RPC failures of different
+    // kinds get different stable codes instead of collapsing into one
+    expect(errorCodeFor("RPC_ERROR", "ORPCError::UNAUTHORIZED")).not.toBe(
+      errorCodeFor("RPC_ERROR", "ORPCError::INTERNAL_SERVER_ERROR"),
+    );
+    expect(errorCodeFor("RPC_ERROR", "ORPCError::UNAUTHORIZED")).toBe(
+      errorCodeFor("RPC_ERROR", "ORPCError::UNAUTHORIZED"),
+    );
+  });
+});
 
 describe("AppLogger JSONL persistence", () => {
   it("writes today's Algeria-local file under <dir>/logs with the full error shape", () => {
-    const dir = tmpDir();
-    try {
+    withTmpLogDir((dir) => {
       const logger = new AppLogger(dir);
       const boom = new Error("kaboom");
       const code = logger.error("RPC_ERROR", "rpc call failed", boom, { url: "/api/rpc/health" });
@@ -83,14 +105,34 @@ describe("AppLogger JSONL persistence", () => {
       expect(row.errorName).toBe("Error");
       expect(String(row.stack)).toContain("kaboom");
       expect(row.context).toEqual({ url: "/api/rpc/health" });
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
+  });
+
+  it("derives distinct stable codes for oRPC failure kinds through the full shape", () => {
+    withTmpLogDir((dir) => {
+      const logger = new AppLogger(dir);
+      const auth = new ORPCError("UNAUTHORIZED", { message: "AUTH_REQUIRED" });
+      const crash = new ORPCError("INTERNAL_SERVER_ERROR", { message: "boom" });
+      const authCode = logger.error("RPC_ERROR", "rpc call failed", auth);
+      const crashCode = logger.error("RPC_ERROR", "rpc call failed", crash);
+
+      // different failure kinds → different codes, both stable
+      expect(authCode).not.toBe(crashCode);
+      const file = path.join(dir, "logs", `${algiersToday()}.jsonl`);
+      // SAFETY: same invariant as elsewhere — AppLogger writes its own
+      // JSON.stringify(entry), so each line parses to the LogEntry shape
+      const two = fs.readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l) as LogRowJson);
+      expect(new Set(two.map((row) => `${row.event}::${row.code}`))).toEqual(
+        new Set([`RPC_ERROR::${authCode}`, `RPC_ERROR::${crashCode}`]),
+      );
+
+      const again = new AppLogger(dir).error("RPC_ERROR", "rpc call failed", auth);
+      expect(again).toBe(authCode); // restart stability with kinds included
+    });
   });
 
   it("keeps codes stable across restarts: a fresh instance derives the same code", () => {
-    const dir = tmpDir();
-    try {
+    withTmpLogDir((dir) => {
       const first = new AppLogger(dir);
       const boom = new Error("kaboom");
       const codeRun1 = first.error("RPC_ERROR", "rpc call failed", boom);
@@ -100,35 +142,34 @@ describe("AppLogger JSONL persistence", () => {
 
       expect(codeRun2).toBe(codeRun1);
       expect(codeRun2).toMatch(/^DKN-[0-9A-F]{8}$/);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
-  it("writes info entries too, without a code", () => {
-    const dir = tmpDir();
-    try {
+  it("writes info and warn entries too; only errors carry a code", () => {
+    withTmpLogDir((dir) => {
       const logger = new AppLogger(dir);
       logger.info("SERVER_BOOT_DONE", "database ready", { driver: "sqlite" });
+      logger.warn("LOW_DISK", "disk nearly full");
 
-      const file = path.join(dir, "logs", `${algiersToday()}.jsonl`);
       // SAFETY: same invariant as above — the file content is AppLogger's own
       // JSON.stringify output (LogEntry shape), so the cast is a shape promise
-      const row = JSON.parse(fs.readFileSync(file, "utf8").trim()) as LogRowJson;
-      expect(row.level).toBe("info");
-      expect(row.event).toBe("SERVER_BOOT_DONE");
-      // stable codes exist for technical ERRORS; info rows have no code
-      expect(row.code).toBeUndefined();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+      const rows = fs
+        .readFileSync(path.join(dir, "logs", `${algiersToday()}.jsonl`), "utf8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as LogRowJson);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]!).toMatchObject({ level: "info", event: "SERVER_BOOT_DONE" });
+      expect(rows[1]!).toMatchObject({ level: "warn", event: "LOW_DISK" });
+      expect(rows[0]!.code).toBeUndefined();
+      expect(rows[1]!.code).toBeUndefined();
+    });
   });
 });
 
 describe("AppLogger.tail (viewer input)", () => {
   it("returns the newest-last bounded tail of today's file", () => {
-    const dir = tmpDir();
-    try {
+    withTmpLogDir((dir) => {
       const logger = new AppLogger(dir);
       for (let i = 1; i <= 10; i++) logger.info("PROBE", `entry ${i}`);
 
@@ -137,32 +178,33 @@ describe("AppLogger.tail (viewer input)", () => {
       expect(tail.lines[2]).toContain("entry 10"); // newest last
       expect(tail.lines[0]).toContain("entry 8");
       expect(tail.file).toBe(path.join(dir, "logs", `${algiersToday()}.jsonl`));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("returns all lines when the file is smaller than the limit", () => {
-    const dir = tmpDir();
-    try {
+    withTmpLogDir((dir) => {
       const logger = new AppLogger(dir);
       logger.info("PROBE", "only one");
       expect(logger.tail(100).lines).toHaveLength(1);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("returns an empty list when today's file does not exist yet", () => {
-    const dir = tmpDir();
-    try {
+    withTmpLogDir((dir) => {
       const logger = new AppLogger(dir);
       const tail = logger.tail(10);
       expect(tail.lines).toEqual([]);
       expect(tail.file).toContain("logs");
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    });
+  });
+
+  it("returns an empty list for a non-positive bound instead of the whole file", () => {
+    withTmpLogDir((dir) => {
+      const logger = new AppLogger(dir);
+      logger.info("PROBE", "must not leak");
+      expect(logger.tail(0).lines).toEqual([]);
+      expect(logger.tail(-3).lines).toEqual([]);
+    });
   });
 });
 
@@ -170,7 +212,28 @@ describe("Algeria-local timestamps", () => {
   it("formats dates as YYYY-MM-DD and moments as YYYY-MM-DDTHH:mm:ss", () => {
     expect(localDate()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(localDateTime()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
-    // the date part of the moment agrees with localDate() — one calendar day
-    expect(localDateTime().slice(0, 10)).toBe(localDate());
+  });
+
+  it("never rewrites a real minute 24 (regression: bare '24:' replace)", () => {
+    // 11:24:05 UTC = 12:24:05 Africa/Algiers; the old compensation s/24:/00:/
+    // turned it into 12:00:05, corrupting roughly every :24 minute of the day
+    expect(localDateTime(new Date("2026-08-25T11:24:05Z"))).toBe("2026-08-25T12:24:05");
+    expect(localDateTime(new Date("2026-08-24T23:24:00Z"))).toBe("2026-08-25T00:24:00");
+  });
+
+  it("compensates a 24-hour midnight only on the hour field, when it appears", () => {
+    // midnight here renders 00:00:00 already; the anchored compensation must
+    // be a no-op on this runtime and never touch the minute column
+    expect(localDateTime(new Date("2026-08-24T23:00:00Z"))).toBe("2026-08-25T00:00:00");
+  });
+
+  it("maps instants near midnight to the Algeria calendar day (UTC+1, no DST)", () => {
+    expect(localDate(new Date("2026-08-24T23:00:00Z"))).toBe("2026-08-25"); // 00:00 local
+    expect(localDate(new Date("2026-08-24T22:59:59Z"))).toBe("2026-08-24"); // 23:59 local
+  });
+
+  it("agrees on the day within ONE instant (no midnight-crossing flake)", () => {
+    const now = new Date();
+    expect(localDateTime(now).slice(0, 10)).toBe(localDate(now));
   });
 });

@@ -22,7 +22,9 @@ export function localDateTime(date: Date = new Date()): string {
     hour12: false,
   });
   // en-CA yields "YYYY-MM-DD, HH:mm:ss" — normalize to ISO-looking local time.
-  return d.replace(", ", "T").replace("24:", "00:");
+  // The midnight compensation is anchored to the hour field (it follows the
+  // ", " separator): bare "24:" would also rewrite a real minute 24 into 00.
+  return d.replace(", ", "T").replace(", 24:", ", 00:");
 }
 
 /**
@@ -41,6 +43,21 @@ export function localDateTime(date: Date = new Date()): string {
 export function errorCodeFor(event: string, errorName = "Error"): string {
   const digest = crypto.createHash("sha256").update(`${event}::${errorName}`).digest("hex");
   return `DKN-${digest.slice(0, 8).toUpperCase()}`;
+}
+
+/**
+ * The error identity that picks a stable code: the error's class name plus,
+ * when the error framework distinguishes failures with a kind code (oRPC's
+ * ORPCError.code — UNAUTHORIZED, BAD_REQUEST, INTERNAL_SERVER_ERROR, ...),
+ * that kind. Without the kind, every RPC_ERROR row would collapse to one
+ * code and the log could not tell an auth failure from a crash.
+ */
+function errorKind(error: Error | undefined): string {
+  if (error === undefined) return "Error";
+  // SAFETY: the optional .code probe is how oRPC's ORPCError exposes its
+  // failure kind (UNAUTHORIZED, BAD_REQUEST, ...); plain Errors have none
+  const kind = (error as { code?: string }).code;
+  return kind === undefined ? error.name : `${error.name}::${kind}`;
 }
 
 export type LogLevel = "info" | "warn" | "error";
@@ -92,9 +109,13 @@ export class AppLogger {
   }
 
   private write(entry: LogEntry): void {
-    entry.ts = localDateTime();
+    // one clock read: the ts and the day file must agree even at the exact
+    // Algeria-midnight boundary (a split instant could date-stamp a row into
+    // the wrong day's file)
+    const now = new Date();
+    entry.ts = localDateTime(now);
     const line = JSON.stringify(entry);
-    fs.appendFileSync(this.fileFor(new Date()), `${line}\n`);
+    fs.appendFileSync(this.fileFor(now), `${line}\n`);
     // mirror non-info events to stdout so `bun run dev:api` shows them live
     if (entry.level !== "info") {
       // eslint-disable-next-line no-console -- dev mirroring
@@ -115,9 +136,10 @@ export class AppLogger {
   }
 
   error(event: string, message: string, error?: Error, context: LogContext = {}): string {
-    // stable per site: the event literal + the error's class pick the code;
-    // a non-Error payload (e.g. a string) still maps deterministically
-    const code = errorCodeFor(event, error?.name);
+    // stable per site: the event literal + the error's class (and oRPC kind
+    // code when present) pick the code; never random. A non-Error payload
+    // (e.g. a string) still maps deterministically.
+    const code = errorCodeFor(event, errorKind(error));
     const entry: LogEntry = { ts: "", level: "error", event, message, code };
     if (error !== undefined) {
       entry.stack = error.stack;
@@ -131,6 +153,10 @@ export class AppLogger {
   /** Last N lines of today's log file, for the diagnosticsLogsTail procedure. */
   tail(lines = 100): LogTail {
     const file = this.fileFor(new Date());
+    // SAFETY: slice(-0) is the whole array — a non-positive bound must mean
+    // "nothing", not "everything" (the RPC contract clamps to 1..500, but
+    // this seam should not betray a direct caller)
+    if (lines <= 0) return { file, lines: [] } satisfies LogTail;
     if (!fs.existsSync(file)) return { file, lines: [] } satisfies LogTail;
     const all = fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean);
     return { file, lines: all.slice(-lines) } satisfies LogTail;

@@ -29,7 +29,8 @@ let store: StorePort;
 let client: DokanClient;
 let unauthed: DokanClient;
 // hoisted so tests can rebuild an app+router against a modified store (the
-// settings-atomicity test) with the same config/auth/cookie as beforeAll
+// settings-atomicity test) and so the ticket-14 describe can seed DIRECT log
+// rows, with the same config/auth/cookie as beforeAll
 let config: AppConfig;
 let logger: AppLogger;
 let auth: BetterAuthInstance;
@@ -1174,7 +1175,9 @@ describe("diagnostics log (ticket 14)", () => {
 
   it("returns today's JSONL tail with stable DKN codes across repeated failures", async () => {
     // two failing RPC calls on the same app — each triggers the onError
-    // interceptor, which writes an RPC_ERROR row with a DKN code
+    // interceptor, which writes an RPC_ERROR row with a DKN code. The tail is
+    // newest-last and nothing logs between these two calls, so the LAST TWO
+    // rows are exactly our seeds (the invariant this describe relies on).
     await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(unauthed.categoriesList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
 
@@ -1186,28 +1189,40 @@ describe("diagnostics log (ticket 14)", () => {
     // SAFETY: the api writes these rows itself via JSON.stringify(LogEntry);
     // the cast promises the two string keys this assertion reads
     const rows = tail.lines.map((line) => JSON.parse(line) as { event?: string; code?: string });
-    const rpcErrors = rows.filter((row) => row.event === "RPC_ERROR");
-    // the two failures above are in the tail (newest-last: chronological)
-    expect(rpcErrors.length).toBeGreaterThanOrEqual(2);
-
-    // STABLE codes: same error site (RPC_ERROR + ORPCError) → one code,
-    // never a fresh random per occurrence
-    const codes = new Set(rpcErrors.map((row) => row.code));
-    expect(codes.size).toBe(1);
-    for (const code of codes) {
-      expect(code).toMatch(/^DKN-[0-9A-F]{8}$/);
+    const seeded = rows.slice(-2);
+    expect(seeded).toHaveLength(2);
+    for (const row of seeded) {
+      expect(row.event).toBe("RPC_ERROR");
+      expect(row.code).toMatch(/^DKN-[0-9A-F]{8}$/);
     }
+
+    // STABLE codes: same error site (RPC_ERROR) + same failure kind
+    // (ORPCError::UNAUTHORIZED) → one code, never a fresh random per
+    // occurrence
+    expect(seeded[0]!.code).toBe(seeded[1]!.code);
   });
 
   it("clamps the tail through the contract's bound", async () => {
-    await client.diagnosticsLogsTail({}); // ensure the file exists
+    // seed a guaranteed row so these assertions never depend on rows written
+    // by other tests in the shared suite log
+    await expect(unauthed.diagnosticsLogsTail({})).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+
     const one = await client.diagnosticsLogsTail({ lines: 1 });
     expect(one.lines).toHaveLength(1);
-    const many = await client.diagnosticsLogsTail({ lines: 500 });
-    expect(many.lines.length).toBeGreaterThanOrEqual(1);
 
-    // out-of-range limits are rejected by zod before touching the store
+    // the cap is a real truncation, not a permissive "at least" bound: write
+    // 510 rows directly and read only the newest 500 through the route
+    for (let i = 0; i < 510; i++) logger.info("CLAMP_PROBE", `row ${i}`);
+    const cap = await client.diagnosticsLogsTail({ lines: 500 });
+    expect(cap.lines).toHaveLength(500);
+    expect(cap.lines.at(-1)).toContain("row 509"); // newest kept
+
+    // out-of-range / wrong-type limits are rejected by zod before the tail
     await expect(client.diagnosticsLogsTail({ lines: 0 })).rejects.toThrow();
     await expect(client.diagnosticsLogsTail({ lines: 501 })).rejects.toThrow();
+    await expect(client.diagnosticsLogsTail({ lines: -1 })).rejects.toThrow();
+    await expect(client.diagnosticsLogsTail({ lines: 1.5 })).rejects.toThrow();
+    // @ts-expect-error -- deliberate boundary probe: wrong type at the wire
+    await expect(client.diagnosticsLogsTail({ lines: "50" })).rejects.toThrow();
   });
 });

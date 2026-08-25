@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // React 19 act() requires the environment flag to be set explicitly
@@ -17,6 +17,8 @@ interface TailFixture {
 
 let fixture: TailFixture = { file: "logs/2026-08-25.jsonl", lines: [] };
 let lastInput: { lines?: number } | undefined;
+let failNextFetch = false;
+let refetchCount = 0;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -25,7 +27,14 @@ mock.module("@/lib/rpc", () => ({
         lastInput = input;
         return {
           queryKey: ["diagnosticsLogsTail", input],
-          queryFn: async (): Promise<TailFixture> => fixture,
+          queryFn: async (): Promise<TailFixture> => {
+            refetchCount += 1;
+            if (failNextFetch) {
+              failNextFetch = false;
+              throw new Error("RPC unavailable");
+            }
+            return fixture;
+          },
         };
       },
       // SAFETY: mirror the real tanstack-query utils signature ({ input })
@@ -36,6 +45,9 @@ mock.module("@/lib/rpc", () => ({
 }));
 
 const { DiagnosticsPage } = await import("./diagnostics");
+
+/** mounts are registered so afterEach tears them down even on assertion failure */
+let mountedRoots: Array<{ root: Root; container: HTMLDivElement }> = [];
 
 async function mountPage(queryClient: QueryClient) {
   const container = document.createElement("div");
@@ -48,9 +60,15 @@ async function mountPage(queryClient: QueryClient) {
       </QueryClientProvider>,
     );
   });
+  const entry = { root, container };
+  mountedRoots.push(entry);
   return {
     text: () => container.textContent ?? "",
+    /** per-row text, in DOM order (top = newest) */
+    rowsText: () =>
+      [...container.querySelectorAll("[data-testid='diagnostics-row']")].map((el) => el.textContent ?? ""),
     rows: () => container.querySelectorAll("[data-testid='diagnostics-row']").length,
+    retryButton: () => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("إعادة المحاولة")),
     waitFor: async (check: () => boolean) => {
       for (let attempt = 0; attempt < 50; attempt++) {
         if (check()) return true;
@@ -63,14 +81,18 @@ async function mountPage(queryClient: QueryClient) {
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
+      mountedRoots = mountedRoots.filter((m) => m !== entry);
     },
   };
 }
 
 const boot = JSON.stringify({ ts: "2026-08-25T08:00:00", level: "info", event: "SERVER_BOOT_DONE", message: "database ready" });
-const err = (message: string) =>
-  JSON.stringify({
-    ts: `2026-08-25T08:00:0${message.length}`,
+const warn = JSON.stringify({ ts: "2026-08-25T08:00:01", level: "warn", event: "LOW_DISK", message: "disk nearly full" });
+const seen = { n: 0 };
+const err = (message: string) => {
+  seen.n += 1;
+  return JSON.stringify({
+    ts: `2026-08-25T08:00:0${seen.n % 10}`, // valid distinct seconds, never >59
     level: "error",
     event: "RPC_ERROR",
     message,
@@ -78,6 +100,7 @@ const err = (message: string) =>
     errorName: "ORPCError",
     stack: `ORPCError: ${message}\n    at probe (app.ts:1)`,
   });
+};
 
 describe("DiagnosticsPage (ticket 14 viewer)", () => {
   let queryClient: QueryClient;
@@ -86,10 +109,20 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
     fixture = { file: "logs/2026-08-25.jsonl", lines: [] };
     lastInput = undefined;
+    failNextFetch = false;
+    refetchCount = 0;
+    seen.n = 0;
   });
 
   afterEach(() => {
     queryClient.clear();
+    // teardown any mount left behind by a failed assertion — a dangling root
+    // would leak DOM (and act() warnings) into the next test in the file
+    for (const { root, container } of mountedRoots) {
+      root.unmount();
+      container.remove();
+    }
+    mountedRoots = [];
   });
 
   it("requests a bounded tail (200 lines) and shows the log file name", async () => {
@@ -102,27 +135,29 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
   });
 
   it("renders newest first and keeps the stable DKN code visible on every row", async () => {
-    fixture = { file: "logs/2026-08-25.jsonl", lines: [boot, err("rpc call failed #1"), err("rpc call failed #2")] };
+    fixture = { file: "logs/2026-08-25.jsonl", lines: [boot, warn, err("rpc call failed #1"), err("rpc call failed #2")] };
     const page = await mountPage(queryClient);
-    expect(await page.waitFor(() => page.rows() === 3)).toBe(true);
+    expect(await page.waitFor(() => page.rows() === 4)).toBe(true);
 
-    // newest-last from the api → newest first on screen
-    const firstRowMessage = page.text().indexOf("rpc call failed #2");
-    const secondRowMessage = page.text().indexOf("rpc call failed #1");
-    expect(firstRowMessage).toBeGreaterThan(-1);
-    expect(secondRowMessage).toBeGreaterThan(firstRowMessage);
+    // newest-last from the api → newest first on screen (DOM order)
+    const rows = page.rowsText();
+    expect(rows[0]).toContain("rpc call failed #2");
+    expect(rows[1]).toContain("rpc call failed #1");
+    expect(rows[2]).toContain("LOW_DISK"); // warn badge rendered as a row
+    expect(rows[3]).toContain("SERVER_BOOT_DONE");
 
     // same site → same DKN code on every RPC_ERROR row (stability, not random)
-    const matches = page.text().match(/DKN-[0-9A-F]{8}/g) ?? [];
+    const matches = rows.join("\n").match(/DKN-[0-9A-F]{8}/g) ?? [];
     expect(matches.length).toBeGreaterThanOrEqual(2);
     expect([...new Set(matches)]).toEqual(["DKN-A03C6A02"]);
     await page.unmount();
   });
 
   it("shows malformed lines as raw text instead of dropping them", async () => {
-    fixture = { file: "logs/2026-08-25.jsonl", lines: ["this is not json", boot] };
+    fixture = { file: "logs/2026-08-25.jsonl", lines: ["this is not json", '{"event": 5}', boot] };
     const page = await mountPage(queryClient);
     expect(await page.waitFor(() => page.text().includes("this is not json"))).toBe(true);
+    expect(page.text()).toContain('"event": 5'); // valid JSON, wrong shape → raw too
     expect(page.text()).toContain("SERVER_BOOT_DONE");
     await page.unmount();
   });
@@ -132,6 +167,23 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     const page = await mountPage(queryClient);
     expect(await page.waitFor(() => page.text().includes("لا توجد سجلات بعد"))).toBe(true);
     expect(page.rows()).toBe(0);
+    await page.unmount();
+  });
+
+  it("surfaces the error state and recovers through the retry button", async () => {
+    fixture = { file: "logs/2026-08-25.jsonl", lines: [err("first attempt failed")] };
+    failNextFetch = true; // the initial fetch rejects
+    const page = await mountPage(queryClient);
+    expect(await page.waitFor(() => page.text().includes("تعذّر تحميل السجل"))).toBe(true);
+    expect(page.rows()).toBe(0);
+
+    // refetch succeeds once the next call goes through
+    await act(async () => {
+      page.retryButton()?.click();
+    });
+    expect(await page.waitFor(() => page.rows() === 1)).toBe(true);
+    expect(page.text()).toContain("first attempt failed");
+    expect(refetchCount).toBeGreaterThanOrEqual(2);
     await page.unmount();
   });
 });

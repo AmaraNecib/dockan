@@ -52,7 +52,10 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   });
   await expect(page.getByTestId("diagnostics-file")).toContainText(`${today}.jsonl`);
 
-  // 6. the seeded RPC_ERROR row renders with its stable DKN badge
+  // 6. the seeded RPC_ERROR row renders with its stable DKN badge. INVARIANT:
+  // the tail is newest-first and nothing logs after the seed below, so .first()
+  // is the seeded row; a future spec that logs RPC errors later must not rely
+  // on the same assumption
   await expect(page.getByTestId("diagnostics-row").first()).toBeVisible();
   await expect(page.getByTestId("diagnostics-list")).toContainText("RPC_ERROR");
   const code = page.getByTestId("diagnostics-code").first();

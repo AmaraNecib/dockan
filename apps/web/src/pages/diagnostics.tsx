@@ -120,13 +120,18 @@ export function DiagnosticsPage() {
         <p className="mt-4 rounded border bg-white p-4 text-stone-500">{t("diagnosticsEmpty")}</p>
       ) : (
         <div className="mt-4 grid gap-2" data-testid="diagnostics-list">
-          {/* the api tail is newest-last (chronological); the viewer shows newest first */}
-          {[...logs.data.lines].reverse().map((line, index) => {
-            const row = parseRow(line);
-            // SAFETY: parseRow collapses malformed lines to null; the raw line
-            // key keeps React identity stable across refetches
-            return <LogRowCard key={`${row?.ts ?? "raw"}-${index}`} row={row} raw={line} />;
-          })}
+          {/* the api tail is newest-last (chronological); the viewer shows newest first.
+              Keys come from the RAW (unreversed) index so an appended line — the only
+              change a refetch can make — never remounts every existing row. */}
+          {[...logs.data.lines]
+            .map((line, rawIndex) => ({ line, rawIndex }))
+            .reverse()
+            .map(({ line, rawIndex }) => {
+              const row = parseRow(line);
+              // SAFETY: parseRow collapses malformed lines to null; the raw line
+              // + raw index key keeps React identity stable across refetches
+              return <LogRowCard key={`${line}-${rawIndex}`} row={row} raw={line} />;
+            })}
         </div>
       )}
     </section>

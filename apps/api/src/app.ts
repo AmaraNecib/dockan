@@ -20,7 +20,10 @@ export function createApp(deps: AppDeps) {
   const rpcHandler = new RPCHandler(rpcRouter, {
     interceptors: [
       onError((error) => {
-        if (error instanceof Error) logger.error("RPC_ERROR", "rpc call failed", error);
+        // every technical error gets a DKN row with a stack; a non-Error
+        // rejection (e.g. `throw "x"`) is wrapped so the invariant holds
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        logger.error("RPC_ERROR", "rpc call failed", wrapped);
       }),
     ],
   });

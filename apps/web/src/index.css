@@ -136,3 +136,12 @@ body {
     @apply font-sans;
   }
 }
+
+/* Receipt printing: only the receipt document reaches the paper.
+ * .print-hidden is applied to the app chrome (nav header) and the receipt
+ * toolbar so window.print() never captures them. */
+@media print {
+  .print-hidden {
+    display: none !important;
+  }
+}

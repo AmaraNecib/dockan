@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
-import { createDrizzleStore } from "./drizzle-store";
+import { createDrizzleStore, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
 
 /**
@@ -40,6 +40,19 @@ afterAll(() => {
 });
 
 const stamp = () => localDateTime();
+
+/** bun:sqlite can keep the file handle open a beat after close on Windows;
+ * retry the temp-dir removal instead of failing the test on EBUSY. */
+const removeTempDirRetry = (dir: string): void => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch {
+      Bun.sleepSync(50);
+    }
+  }
+};
 
 describe("setup + seed", () => {
   it("creates tables and seeds the default category and settings", async () => {
@@ -142,6 +155,89 @@ describe("setup + seed", () => {
     await expect(
       store.insertExpense({ categoryId: op.id, amount: -5, note: null, occurredAt: "2026-02-10T12:00:00" }),
     ).rejects.toThrow();
+  });
+
+  // Regression for the greptile round at ab5e585: two processes racing boot
+  // on a partially-seeded database used to BOTH read under a deferred
+  // snapshot; the loser's read-to-write upgrade then failed with
+  // SQLITE_BUSY_SNAPSHOT — a raw crash during startup.
+  //
+  // Lock-first unit proof (deterministic, no timing): hold the write lock on
+  // a second connection, shrink busy_timeout, and record every SQL statement
+  // the seed issues. The fixed unit fails AT ITS BEGIN IMMEDIATE without
+  // having read anything; a deferred begin would read rows+marker first and
+  // only die later at its first INSERT. Full setup() cannot host this race:
+  // its earlier invoice_number_sequence conditional INSERT queues on the same
+  // lock first (single autocommit statement — no stale-snapshot risk), so it
+  // absorbs any contention before the seed is ever reached.
+  it("expense seed takes the write lock BEFORE its marker/rows read", async () => {
+    const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-lockfirst-"));
+    const seedConn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    const seedStore = createDrizzleStore(seedConn);
+    await seedStore.setup();
+    // partial-seed state: the unit will genuinely want to write when it runs
+    seedConn.raw.exec("DELETE FROM settings WHERE key = 'seed.expenseCategoriesV1'");
+    seedConn.raw.exec("DELETE FROM expense_categories WHERE name IN ('سحوبات المالك', 'صيانة وتصليح')");
+
+    // second connection holds the write lock for the whole attempt
+    const holder = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    holder.raw.exec("BEGIN IMMEDIATE");
+    holder.raw.exec("INSERT INTO settings (key, value) VALUES ('lock.probe', 'held') ON CONFLICT(key) DO UPDATE SET value = 'held'");
+    seedConn.raw.exec("PRAGMA busy_timeout = 250;");
+
+    // record the seed's statement order. Pass-through spies bound to the same
+    // driver methods; signatures are preserved verbatim so production call
+    // sites inside the seed keep their exact types.
+    const calls: string[] = [];
+    const driver = seedConn.raw;
+    const head = (statement: string): string => {
+      const parts = statement.trimStart().split(/\s+/);
+      return parts[0]! + " " + (parts[1] ?? "");
+    };
+    const origExec = driver.exec.bind(driver);
+    const origQuery = driver.query.bind(driver);
+    const spiedExec: typeof origExec = (statement) => {
+      calls.push(head(statement));
+      return origExec(statement);
+    };
+    const spiedQuery: typeof origQuery = (statement, ...rest) => {
+      calls.push(statement.trimStart().split(/[\s;]/)[0]!);
+      // SAFETY: rest is the bound query's own parameter list forwarded verbatim
+      return origQuery(statement, ...rest);
+    };
+    driver.exec = spiedExec;
+    driver.query = spiedQuery;
+
+    try {
+      // the unit must refuse to read while another writer holds the lock:
+      // BEGIN IMMEDIATE itself is what blocks and throws
+      await expect(Promise.resolve().then(() => seedExpenseCategories(seedConn))).rejects.toThrow(/locked|busy/i);
+      // FIRST statement is the immediate begin; NOTHING was read after it —
+      // a deferred begin would show the expense/settings SELECTs here
+      expect(calls[0]).toBe("BEGIN IMMEDIATE");
+      expect(calls).toHaveLength(1);
+    } finally {
+      driver.exec = origExec;
+      driver.query = origQuery;
+      holder.raw.exec("ROLLBACK");
+      holder.close();
+      // self-heal still works once the lock is gone: the deflated database
+      // completes to exactly the seven defaults through the normal unit
+      seedConn.raw.exec("PRAGMA busy_timeout = 5000;");
+      seedExpenseCategories(seedConn);
+      const healed = await seedStore.listExpenseCategories();
+      expect(healed).toHaveLength(7);
+      expect(healed.find((row) => row.name === "سحوبات المالك")?.isOwnerWithdrawal).toBe(true);
+      // SAFETY: the literal SELECT reads one known settings row
+      const markerRows = seedConn.raw.query("SELECT value FROM settings WHERE key = 'seed.expenseCategoriesV1'").all() as Array<{ value: string }>;
+      expect(markerRows).toHaveLength(1);
+      seedConn.close();
+      removeTempDirRetry(seedDir);
+    }
   });
   it("better-auth tables exist (schema from ADR/ticket 02 wiring)", async () => {
     // SAFETY: sqlite_master name column is TEXT; the query returns the table list verbatim

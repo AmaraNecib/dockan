@@ -191,6 +191,67 @@ const toExpense = (r: typeof expenses.$inferSelect): Expense =>
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
   ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
+/**
+ * Seed the default expense categories atomically with a durable marker, and
+ * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
+ * loop committed row by row, so a crash between inserts left a marker-less
+ * non-empty table that the old count===0 guard would skip forever — the
+ * owner-withdrawal category could go missing).
+ *
+ * - Fresh table → all defaults + marker land in ONE transaction.
+ * - Marker-less table whose rows are ALL default names → a partial seed from
+ *   the legacy loop (or a crash between seed and marker write): resume with
+ *   INSERT ... ON CONFLICT(name) DO NOTHING so missing defaults, including
+ *   the flagged withdrawal category, appear exactly once.
+ * - Any other non-empty table (owner-created categories present) → the
+ *   "defaults only when empty" upgrade policy holds: nothing is added and
+ *   user categories or renamed defaults are never duplicated.
+ *
+ * The unit opens with BEGIN IMMEDIATE — the write lock is reserved BEFORE
+ * the marker/rows read (same primitive as StorePort.withTransactionImmediate,
+ * which setup() cannot call here: it already holds the serialization queue,
+ * and re-entering it would deadlock). Two processes racing boot on a
+ * fresh/partially-seeded database otherwise BOTH read under a deferred
+ * snapshot and the loser dies with SQLITE_BUSY_SNAPSHOT mid-startup; with
+ * the immediate begin the loser waits on busy_timeout, then re-runs as a
+ * no-op against the winner's committed marker.
+ */
+export const seedExpenseCategories = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: fixed SQL identifiers and bound parameters only; the cast
+    // promises the exact keys the literal SELECT produces
+    const existing = conn.raw.query("SELECT name FROM expense_categories").all() as Array<{ name: string }>;
+    // SAFETY: the literal SELECT reads the marker key; the cast promises the
+    // single string column the settings row exposes
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(EXPENSE_CATEGORIES_MARKER) as Array<{ value: string }>;
+    // the read and the writes share one transaction, so a crash mid-seed
+    // either commits everything or nothing and the next boot resumes from
+    // the marker state deterministically
+    const names = new Set(existing.map((row) => row.name));
+    const partialDefaultSeed =
+      existing.length > 0 &&
+      marker.length === 0 &&
+      existing.every((row) => EXPENSE_CATEGORY_DEFAULTS.some((candidate) => candidate.name === row.name));
+    if (existing.length === 0 || partialDefaultSeed) {
+      for (const category of EXPENSE_CATEGORY_DEFAULTS) {
+        if (names.has(category.name)) continue;
+        const inserted = conn.raw
+          .query("INSERT INTO expense_categories (id, name, is_owner_withdrawal, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING")
+          .run(id(), category.name, category.isOwnerWithdrawal ? 1 : 0, now(), now());
+        // SAFETY: the unique-name conflict path is the idempotency guard;
+        // nothing is written twice by definition
+        void inserted;
+      }
+      conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(EXPENSE_CATEGORIES_MARKER);
+    }
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
+
 type DebtSummaryRow = {
   kind: unknown;
   counterparty_id: unknown;
@@ -409,42 +470,6 @@ export function createDrizzleStore(conn: Connection): StorePort {
    *   "defaults only when empty" upgrade policy holds: nothing is added and
    *   user categories or renamed defaults are never duplicated.
    */
-  const seedExpenseCategories = (): void => {
-    conn.raw.exec("BEGIN");
-    try {
-      // SAFETY: fixed SQL identifiers and bound parameters only; the cast
-      // promises the exact keys the literal SELECT produces
-      const existing = conn.raw.query("SELECT name FROM expense_categories").all() as Array<{ name: string }>;
-      // SAFETY: the literal SELECT reads the marker key; the cast promises the
-      // single string column the settings row exposes
-      const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(EXPENSE_CATEGORIES_MARKER) as Array<{ value: string }>;
-      // the read and the writes share one transaction, so a crash mid-seed
-      // either commits everything or nothing and the next boot resumes from
-      // the marker state deterministically
-      const names = new Set(existing.map((row) => row.name));
-      const partialDefaultSeed =
-        existing.length > 0 &&
-        marker.length === 0 &&
-        existing.every((row) => EXPENSE_CATEGORY_DEFAULTS.some((candidate) => candidate.name === row.name));
-      if (existing.length === 0 || partialDefaultSeed) {
-        for (const category of EXPENSE_CATEGORY_DEFAULTS) {
-          if (names.has(category.name)) continue;
-          const inserted = conn.raw
-            .query("INSERT INTO expense_categories (id, name, is_owner_withdrawal, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING")
-            .run(id(), category.name, category.isOwnerWithdrawal ? 1 : 0, now(), now());
-          // SAFETY: the unique-name conflict path is the idempotency guard;
-          // nothing is written twice by definition
-          void inserted;
-        }
-        conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(EXPENSE_CATEGORIES_MARKER);
-      }
-      conn.raw.exec("COMMIT");
-    } catch (err) {
-      conn.raw.exec("ROLLBACK");
-      throw err;
-    }
-  };
-
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
@@ -470,7 +495,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
     // Expense categories seed once per database (ticket 31, greptile round at
     // 38c7adb): atomic + marker-gated self-heal — see seedExpenseCategories.
-    seedExpenseCategories();
+    seedExpenseCategories(conn);
     const storeName = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, "storeName")).limit(1);
     if (storeName.length === 0) {
       await db.insert(settings).values({ key: "storeName", value: "Dokan" }).run();

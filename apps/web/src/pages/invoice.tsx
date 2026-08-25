@@ -51,10 +51,13 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         setNote("");
         setError(null);
         setRecorded(true);
+        // the detail read refetches with its exact key (proven mechanism);
+        // the list/activity invalidations use prefix keys as best effort — if
+        // a filter variant does not match, the list still refetches on remount
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
-          queryClient.invalidateQueries({ queryKey: orpc.invoicesList.queryKey({ input: {} }) }),
-          queryClient.invalidateQueries({ queryKey: orpc.activitiesList.queryKey({ input: {} }) }),
+          queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
+          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
         ]);
       },
       onError: (err) => {

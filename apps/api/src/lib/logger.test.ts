@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { ORPCError } from "@orpc/client";
 
-import { AppLogger, errorCodeFor, localDate, localDateTime } from "./logger";
+import { AppLogger, errorCodeFor, localDate, localDateTime, normalizeLocalDateTime } from "./logger";
 
 /** Africa/Algiers date computed independently of the module under test. */
 function algiersToday(): string {
@@ -214,16 +214,33 @@ describe("Algeria-local timestamps", () => {
     expect(localDateTime()).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
   });
 
-  it("never rewrites a real minute 24 (regression: bare '24:' replace)", () => {
-    // 11:24:05 UTC = 12:24:05 Africa/Algiers; the old compensation s/24:/00:/
-    // turned it into 12:00:05, corrupting roughly every :24 minute of the day
+  it("clamps hour-24 midnight BEFORE the delimiter swap (synthetic, runtime-conditional)", () => {
+    // Some Intl runtimes render midnight as hour "24". The clamp must run
+    // while the ", " delimiter is still present: swapping first would leave
+    // the non-canonical "T24:00:00" in the log on those runtimes. These
+    // strings exercise that branch deterministically on ANY runtime.
+    expect(normalizeLocalDateTime("2026-08-25, 24:00:00")).toBe("2026-08-25T00:00:00");
+    expect(normalizeLocalDateTime("2026-08-25, 24:24:05")).toBe("2026-08-25T00:24:05"); // a 24-minute survives
+    expect(normalizeLocalDateTime("2026-08-25, 24:59:59")).toBe("2026-08-25T00:59:59");
+  });
+
+  it("never rewrites a real minute 24 through the anchored clamp", () => {
+    // the clamp pattern ", 24:" only anchors on the HOUR (the sole ", " in the
+    // rendering precedes the time), so a real minute-24 is untouched
+    expect(normalizeLocalDateTime("2026-08-25, 12:24:05")).toBe("2026-08-25T12:24:05");
+    expect(normalizeLocalDateTime("2026-08-25, 00:24:00")).toBe("2026-08-25T00:24:00");
+    expect(normalizeLocalDateTime("2026-08-25, 00:00:00")).toBe("2026-08-25T00:00:00");
+    expect(normalizeLocalDateTime("2026-08-25, 23:59:59")).toBe("2026-08-25T23:59:59");
+  });
+
+  it("never rewrites a real minute 24 through the runtime path either", () => {
+    // 11:24:05 UTC = 12:24:05 Africa/Algiers; the old bare s/24:/00:/ turned
+    // it into 12:00:05, corrupting roughly every :24 minute of the day
     expect(localDateTime(new Date("2026-08-25T11:24:05Z"))).toBe("2026-08-25T12:24:05");
     expect(localDateTime(new Date("2026-08-24T23:24:00Z"))).toBe("2026-08-25T00:24:00");
   });
 
-  it("compensates a 24-hour midnight only on the hour field, when it appears", () => {
-    // midnight here renders 00:00:00 already; the anchored compensation must
-    // be a no-op on this runtime and never touch the minute column
+  it("renders midnight canonically on this runtime", () => {
     expect(localDateTime(new Date("2026-08-24T23:00:00Z"))).toBe("2026-08-25T00:00:00");
   });
 

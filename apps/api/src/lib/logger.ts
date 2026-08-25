@@ -9,6 +9,19 @@ export function localDate(date: Date = new Date()): string {
   return date.toLocaleString("en-CA", { timeZone: ALGERIA_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
+/**
+ * Normalize the en-CA rendering "YYYY-MM-DD, HH:mm:ss" into the canonical
+ * "YYYY-MM-DDTHH:mm:ss" used across Dokan. Exported so tests can drive the
+ * hour-24 compensation with a SYNTHETIC string: some Intl runtimes render
+ * midnight as hour "24", which must be clamped to "00" BEFORE the ", "
+ * delimiter is swapped to "T" (swapping first would leave "T24:00:00" in the
+ * log on those runtimes). The clamp is anchored to the hour field (it follows
+ * the ", " separator), so a real minute 24 is never rewritten.
+ */
+export function normalizeLocalDateTime(rendered: string): string {
+  return rendered.replace(", 24:", ", 00:").replace(", ", "T");
+}
+
 /** "YYYY-MM-DDTHH:mm:ss" in Algeria local time. */
 export function localDateTime(date: Date = new Date()): string {
   const d = date.toLocaleString("en-CA", {
@@ -21,10 +34,7 @@ export function localDateTime(date: Date = new Date()): string {
     second: "2-digit",
     hour12: false,
   });
-  // en-CA yields "YYYY-MM-DD, HH:mm:ss" — normalize to ISO-looking local time.
-  // The midnight compensation is anchored to the hour field (it follows the
-  // ", " separator): bare "24:" would also rewrite a real minute 24 into 00.
-  return d.replace(", ", "T").replace(", 24:", ", 00:");
+  return normalizeLocalDateTime(d);
 }
 
 /**

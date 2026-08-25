@@ -82,18 +82,106 @@ taskbar/installer icon comes from `icon.ico` via tauri-build.
 
 ### 4. Scripts — `apps/desktop/package.json`, root `package.json`, `.gitignore`
 
-- `apps/desktop`: `"sidecar"` = `bun build --compile ../api/src/main.ts
-  --outfile src-tauri/binaries/dokan-api-x86_64-pc-windows-msvc`;
-  `"portable"` = `sidecar && tauri build --bundles nsis`.
+- `apps/desktop/scripts/sidecar.ts`: validates `DOKAN_BUILD_SECRET` (≥16
+  chars — refuses a default/weak secret, PR #51 finding 2) and compiles the
+  sidecar with the secret inlined via `bun build --define` replacing
+  `process.env.DOKAN_BUILD_SECRET` (the literal the api reads in `main.ts`).
+- `apps/desktop/scripts/release.ts`: the `portable` pipeline — validate →
+  compile sidecar → `tauri build --bundles nsis` → rename the installer with
+  `DOKAN_CUSTOMER_SLUG` when set (e.g. `Dokan_0.1.0_acme_x64-setup.exe`).
+- `apps/desktop/package.json`: `build` = `sidecar && tauri build`,
+  `portable` = `scripts/release.ts`; `test` = `bun test` (pipeline tests).
+- `src-tauri/build.rs`: ensures the sidecar exists for cargo gates from a
+  clean checkout (PR #51 finding 3); inlines the secret only when a strong
+  `DOKAN_BUILD_SECRET` is present, otherwise compiles a secret-less test
+  artifact with a loud `cargo:warning` — never shippable, never a default.
 - root: `"desktop:portable"` passthrough.
 - `.gitignore`: `target/`, `apps/desktop/src-tauri/binaries/`,
   `apps/desktop/src-tauri/gen/`. `dist/` already ignored.
 
+## Security review round (PR #51) — findings 1, 2, 3
+
+### Finding 1 — verified sidecar discovery (done)
+
+The release bootstrap previously navigated from the persistent port record.
+Now: the shell probes a free port, hands it to the child explicitly
+(`DOKAN_PORT` = authoritative for the api), generates a one-time boot token
+(`DOKAN_BOOT_TOKEN`), and only navigates after the child echoes the token at
+`GET /health-token?token=…` (constant-time compare both sides; the response
+body must contain the exact `"token":"…"` JSON field). A stale, tampered or
+decoyed record can never redirect the webview — verified live (decoy on
+4444 + planted record → app bound its own port 4317, decoy saw zero
+requests). Rust unit tests pin `health_token_ok`, `find_free_port`,
+`generate_boot_token`.
+
+### Finding 2 — per-customer build secret (done, parent decision)
+
+**Decision (parent): option 2 — per-customer secret, no shared committed
+value.** The vendor picks a unique secret per shop and passes it at build
+time; it is inlined into the compiled sidecar exe with `bun build --define`,
+never committed, never in the runtime environment, logs, port-record or
+app-data (the Rust shell no longer passes it to the child). The api's reset
+procedure reads it from the binary via the `main.ts` define seam
+(`config.buildSecret ??= process.env.DOKAN_BUILD_SECRET`). PASSWORD_RESET
+behavior unchanged — verified live: the packaged exe accepts the inlined
+secret (`ok:true`) and rejects any other (`WRONG_BUILD_SECRET`).
+
+**Exact per-customer release command (documented + run):**
+
+```bash
+DOKAN_BUILD_SECRET='<unique-per-shop-secret, >=16 chars>' \
+DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
+bun run --filter @dokan/desktop portable
+# → src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
+```
+
+Missing or weak (<16 chars) secrets fail loudly (exit 1, message + example);
+there is no fallback secret. Verified: `Dokan_0.1.0_acme-shop_x64-setup.exe`
+produced with `DOKAN_CUSTOMER_SLUG=acme-shop`.
+
+### Threat model — who holds what
+
+- **Vendor** holds the per-shop secret at build time (in the build shell
+  env, briefly on the build command line, and inside the produced exe).
+- **Installer holder** (shop owner) receives a binary with the secret baked
+  in. After provisioning, a determined local attacker with access to the exe
+  **can** extract the secret (strings/RE on the binary) and run the reset
+  procedure — honest statement: per-customer inlining does not make the
+  secret inextractable from the artifact itself.
+- **Why per-customer bounds the blast radius:** one shop's extracted secret
+  does not unlock any other shop's install; rotation for a compromised shop
+  is rebuild + reinstall with a fresh secret. The shared-laptop threat model
+  is casual co-users, not RE attackers, and the session model (server-side
+  sessions, better-auth signing secret held separately) is unchanged.
+- **At runtime the secret is never written**: not to committed files, not to
+  logs (the reset procedure logs no secret), not to the port record or
+  app-data; the shell passes it nowhere (the child's env is clean).
+- The better-auth signing secret (`DOKAN_AUTH_SECRET`, baked in the Rust
+  shell) is a separate credential protecting session cookies; the two are
+  deliberately independent.
+
+### Future: hybrid reset models (open)
+
+A follow-up could move secret-ownership off the binary: e.g. a per-install
+secret generated at first boot and shown once to the vendor (printed setup
+code), or a vendor-held secret compared server-side only if the app ever
+gains an onboarding channel. Not decided; the current per-customer model
+keeps the reset path local and offline as the MVP requires.
+
+### Finding 3 — clean build generates the sidecar (done)
+
+`binaries/` is gitignored, yet tauri-build hard-fails without the artifact.
+The pipeline now generates it: `bun run build` = validating sidecar script +
+`tauri build`; `bun run portable` = release.ts; and `build.rs` compiles the
+sidecar (secret only when provided) when missing, so `cargo test`/`clippy`
+work from a clean checkout too. Verified: sidecar deleted → `cargo test`
+regenerated it and passed.
+
 ## Deliverable command (documented + run)
 
 ```bash
-bun run --filter @dokan/desktop portable
-# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_0.1.0_x64-setup.exe
+DOKAN_BUILD_SECRET='<unique-per-shop-secret>' bun run --filter @dokan/desktop portable
+# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_0.1.0[_<slug>]_x64-setup.exe
 ```
 
 ## Tests

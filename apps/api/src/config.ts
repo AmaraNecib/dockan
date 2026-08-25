@@ -20,6 +20,13 @@ export type AppConfig = {
    * dir. Absent in dev/e2e: the record lives at the git workspace root, which
    * the vite proxy walks up to find. */
   portRecordDir: string | undefined;
+  /** one-time per-boot identity handed to the sidecar by the desktop shell
+   * (PR #51 finding 1). When set, the api serves `GET /health-token` which
+   * only answers with the matching token — the shell verifies the server on
+   * its chosen port is really its own child before navigating to it, so a
+   * stale or modified port record can never redirect the webview. Absent in
+   * dev/e2e: no token endpoint exists there. */
+  bootToken: string | undefined;
   /** MVP password-reset secret. Optional at boot: the reset procedure refuses
    * to run when absent, so the documented api startup paths never crash. */
   buildSecret: string | undefined;
@@ -46,6 +53,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const webDataDir = env.DOKAN_WEB_DIST === undefined || env.DOKAN_WEB_DIST === "" ? undefined : path.resolve(env.DOKAN_WEB_DIST);
   const portRecordDir =
     env.DOKAN_PORT_ROOT === undefined || env.DOKAN_PORT_ROOT === "" ? undefined : path.resolve(env.DOKAN_PORT_ROOT);
+  const bootToken = env.DOKAN_BOOT_TOKEN === undefined || env.DOKAN_BOOT_TOKEN === "" ? undefined : env.DOKAN_BOOT_TOKEN;
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -66,6 +74,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     dataDir,
     webDataDir,
     portRecordDir,
+    bootToken,
     buildSecret: env.DOKAN_BUILD_SECRET,
     authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",
     version: "0.1.0",

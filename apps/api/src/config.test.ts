@@ -18,16 +18,23 @@ describe("createAppConfig packaged-build overrides", () => {
     expect(config.portRecordDir).toBe("C:\\Dokan\\run");
   });
 
+  it("reads DOKAN_BOOT_TOKEN verbatim", () => {
+    const config = createAppConfig({ DOKAN_BOOT_TOKEN: "0123456789abcdef0123456789abcdef" });
+    expect(config.bootToken).toBe("0123456789abcdef0123456789abcdef");
+  });
+
   it("stays undefined when unset (dev/e2e behavior unchanged)", () => {
     const config = createAppConfig({});
     expect(config.webDataDir).toBeUndefined();
     expect(config.portRecordDir).toBeUndefined();
+    expect(config.bootToken).toBeUndefined();
   });
 
   it("treats empty strings as unset", () => {
-    const config = createAppConfig({ DOKAN_WEB_DIST: "", DOKAN_PORT_ROOT: "" });
+    const config = createAppConfig({ DOKAN_WEB_DIST: "", DOKAN_PORT_ROOT: "", DOKAN_BOOT_TOKEN: "" });
     expect(config.webDataDir).toBeUndefined();
     expect(config.portRecordDir).toBeUndefined();
+    expect(config.bootToken).toBeUndefined();
   });
 
   it("does not disturb existing fields", () => {

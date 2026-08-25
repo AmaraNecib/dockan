@@ -92,9 +92,12 @@ desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled ext
      │  env: DOKAN_DATA_DIR  = %APPDATA%/dz.dokan.app
      │       DOKAN_PORT_ROOT = %APPDATA%/dz.dokan.app/run
      │       DOKAN_WEB_DIST  = <resource>/ui   (bundled web dist)
-     │       DOKAN_BUILD_SECRET / DOKAN_AUTH_SECRET = baked per-build secrets
-     └─ waits for <.dokan-port> + health probe → navigates window to
-        http://127.0.0.1:<port>
+     │       DOKAN_AUTH_SECRET = baked better-auth signing secret
+     │  baked: per-customer provisioning secret INLINED into the sidecar exe
+     │         at build time (bun --define), never in env, logs or disk state
+     └─ probes a free port → hands it to the child explicitly (DOKAN_PORT)
+        → waits for the child to echo the one-time DOKAN_BOOT_TOKEN at
+        /health-token → navigates window to http://127.0.0.1:<port>
 ```
 
 The api serves the bundled UI (static + SPA fallback) **only when
@@ -111,13 +114,16 @@ Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 ### Commands
 
 ```bash
-# one-shot: compile sidecar + build NSIS installer
+# per-customer release (required): validates + inlines the secret, builds NSIS
+DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
+DOKAN_CUSTOMER_SLUG='shop-slug' \
 bun run --filter @dokan/desktop portable
-# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>_x64-setup.exe
+# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
+# fails loudly when the secret is missing or <16 chars — never ships a default
 
 # pieces separately
-bun run --filter @dokan/desktop sidecar   # bun build --compile → src-tauri/binaries/
-bun run --filter @dokan/desktop build     # tauri build (release)
+bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
+bun run --filter @dokan/desktop build     # sidecar + tauri build (release)
 ```
 
 The sidecar binary and `target/` are generated artifacts (gitignored); the
@@ -129,9 +135,26 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
 - NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
   `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
   automatically by the installer).
-- First run: setup flow types the baked build secret once to create the admin
-  account (see `apps/api/src/auth/admin.ts`). The secrets live in
-  `apps/desktop/src-tauri/src/desktop.rs`.
+- **Per-customer provisioning secret** (PR #51 finding 2): the vendor picks a
+  unique secret per shop and passes it at BUILD time — it is inlined into the
+  compiled sidecar exe, never committed, never in runtime env/logs/app-data.
+  The documented release command is:
+
+  ```bash
+  DOKAN_BUILD_SECRET='<unique-per-shop-secret (>=16 chars)>' \
+  DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
+  bun run --filter @dokan/desktop portable
+  ```
+
+  Missing or weak (<16 chars) secrets fail the build loudly; installers built
+  without a secret are test artifacts only (`cargo build`/`gates` fall back to
+  a secret-less sidecar with a loud warning and are never shipped).
+- **Verified sidecar discovery** (PR #51 finding 1): the shell chooses the
+  port, passes it explicitly (`DOKAN_PORT`, authoritative), and only navigates
+  after the child echoes the one-time boot token at `/health-token` — a stale
+  or tampered port record can never redirect the webview.
+- First run: setup flow types the per-customer secret once to create the admin
+  account (see `apps/api/src/auth/admin.ts`).
 - If the app is hard-killed the sidecar may linger; the next launch probes a
   free port and rewrites the port record, so discovery self-heals.
 

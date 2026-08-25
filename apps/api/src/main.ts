@@ -16,6 +16,7 @@ import { createAuth } from "./auth/auth";
 import { createAppConfig } from "./config";
 import { openConnection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
+import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -25,6 +26,15 @@ import { createDrizzleStore } from "./store/drizzle-store";
  * server. main.ts knows seams, not SQL (ADR-0003).
  */
 const config = createAppConfig();
+
+// Per-customer provisioning secret (PR #51 finding 2): the release pipeline
+// bakes the vendor-supplied secret into this compiled exe by replacing the
+// `process.env.DOKAN_BUILD_SECRET` expression below with a string literal
+// (`bun build --define`, see apps/desktop/scripts/sidecar.ts). In packaged
+// builds nothing sets the env var at runtime, so this fill is what makes the
+// secret available for the reset procedure; in dev it reads the shell env as
+// before. It is a comparison-only credential — never logged, never stored.
+config.buildSecret ??= process.env.DOKAN_BUILD_SECRET;
 
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
@@ -73,31 +83,49 @@ logger.info("SERVER_BOOT_DONE", "database and auth ready", { driver: config.db.d
  */
 let requestHandler: (request: Request) => Response | Promise<Response> = (req) => app.fetch(req);
 
-if (config.webDataDir !== undefined) {
-  const webRoot = config.webDataDir;
-  // A missing ui folder means a broken install — the api must still boot (the
-  // desktop window falls back to the bundled frontendDist UI whose in-app
-  // error states surface the problem) instead of dying before first request.
-  let index: string | undefined;
-  try {
-    index = await fs.promises.readFile(path.join(webRoot, "index.html"), "utf8");
-  } catch (err) {
-    logger.error("WEB_UI_SERVE_FAILED", "packaged ui missing; serving api only", err instanceof Error ? err : new Error(String(err)));
-  }
-  if (index !== undefined) {
-    const ui = new Hono();
-    ui.use("*", async (c, next) => {
-      const pathname = new URL(c.req.url).pathname;
-      if (pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/")) {
-        return app.fetch(c.req.raw);
+// Packaged builds only. Both overrides are set together by the desktop shell;
+// dev/e2e keep requestHandler = app.fetch untouched.
+if (config.bootToken !== undefined || config.webDataDir !== undefined) {
+  const overlay = new Hono();
+  overlay.use("*", async (c, next) => {
+    const url = new URL(c.req.url);
+    const pathname = url.pathname;
+    // PR #51 finding 1: the shell verifies the server on its chosen port is
+    // really its own child by asking for the one-time token it handed over
+    // via DOKAN_BOOT_TOKEN and checking the echo. Only the spawned api knows
+    // the token, so a stale or modified port record pointing at an unrelated
+    // localhost server (or a decoy that 200s everything) cannot satisfy this
+    // endpoint. The token is never logged or rendered into the UI.
+    if (pathname === "/health-token" && config.bootToken !== undefined) {
+      if (tokenMatches(url.searchParams.get("token"), config.bootToken)) {
+        // echo the token back so the shell can compare it byte-for-byte
+        return c.json({ ok: true, token: config.bootToken });
       }
-      return next();
-    });
-    ui.use("*", serveStatic({ root: webRoot }));
-    ui.use("*", async (c) => c.html(index));
-    requestHandler = (req) => ui.fetch(req);
-    logger.info("WEB_UI_SERVED", "serving packaged ui from " + webRoot);
+      return c.text("not found", 404);
+    }
+    if (pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/")) {
+      return app.fetch(c.req.raw);
+    }
+    return next();
+  });
+  if (config.webDataDir !== undefined) {
+    const webRoot = config.webDataDir;
+    // A missing ui folder means a broken install — the api must still boot (the
+    // desktop window falls back to the bundled frontendDist UI whose in-app
+    // error states surface the problem) instead of dying before first request.
+    let index: string | undefined;
+    try {
+      index = await fs.promises.readFile(path.join(webRoot, "index.html"), "utf8");
+    } catch (err) {
+      logger.error("WEB_UI_SERVE_FAILED", "packaged ui missing; serving api only", err instanceof Error ? err : new Error(String(err)));
+    }
+    if (index !== undefined) {
+      overlay.use("*", serveStatic({ root: webRoot }));
+      overlay.use("*", async (c) => c.html(index));
+      logger.info("WEB_UI_SERVED", "serving packaged ui from " + webRoot);
+    }
   }
+  requestHandler = (req) => overlay.fetch(req);
 }
 
 /**

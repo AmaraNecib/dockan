@@ -25,7 +25,9 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   });
   expect(seeded).toBeGreaterThanOrEqual(400);
 
-  // 3. first-time setup + login (shared e2e flow)
+  // 3. first-time setup + login (shared e2e flow); the login screen was at
+  // /diagnostics, so the post-login reload lands here — proving auth AND that
+  // the route renders for a session
   await page.getByText("أنشئ كلمة السر بالرمز السري").click();
   await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
   await page.getByTestId("setup-phone").fill("0550123123");
@@ -33,9 +35,11 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   await page.getByTestId("setup-submit").click();
   await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
   await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  await expect(page.getByTestId("diagnostics-title")).toContainText("سجل التشخيص");
 
-  // 4. the page is registered in the nav
+  // 4. the page is registered in the nav (reachable from the home view)
+  await page.goto("/");
+  await expect(page.getByText("الرئيسية")).toBeVisible();
   await page.getByRole("link", { name: "التشخيص" }).click();
   await expect(page.getByTestId("diagnostics-title")).toContainText("سجل التشخيص");
 

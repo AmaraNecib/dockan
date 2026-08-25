@@ -136,7 +136,8 @@ const resources = {
       itemsProfitPerUnit: "الربح لكل وحدة: {{profit}} دج",
       itemsUncategorized: "بدون تصنيف",
       // server error keys -> user text
-      AUTH_REQUIRED: "تسجيل الدخول مطلوب",      FORBIDDEN: "هذا الحساب غير مخوّل",
+      AUTH_REQUIRED: "تسجيل الدخول مطلوب",
+      FORBIDDEN: "هذا الحساب غير مخوّل",
       SIGNUP_FORBIDDEN: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة",
       INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح",
       WRONG_BUILD_SECRET: "الرمز السري غير صحيح",

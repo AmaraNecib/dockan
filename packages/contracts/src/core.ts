@@ -265,6 +265,10 @@ export const settingsSchema = z.object({
 // Expenses and profit reports (ticket 31)
 // ---------------------------------------------------------------------------
 
+/** Whole-dinar ceiling shared by the entity and its create input so report sums
+ * can never approach MAX_SAFE_INTEGER at realistic volumes. */
+export const MAX_EXPENSE_AMOUNT = 1_000_000_000_000;
+
 /**
  * Expense category. `isOwnerWithdrawal` marks owner cash-outs (سحوبات المالك)
  * so the profit report separates operating expenses from rich-taking — matched
@@ -288,7 +292,7 @@ export const expenseSchema = z.object({
   id: idSchema,
   categoryId: idSchema,
   /** whole dinars; must be positive — a zero-DZD expense is a no-op record */
-  amount: z.number().int().positive().max(1_000_000_000_000),
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
   /** mirror of the input cap so persisted and returned shapes agree */
   note: z.string().max(500).nullable(),
   /** Algeria-local moment of the expense (editable for backdating) */
@@ -550,7 +554,7 @@ export const expenseCategoryCreateInputSchema = z.object({
 export const expenseCreateInputSchema = z.object({
   categoryId: idSchema,
   /** same cap as the entity so an absurd input can never threaten 2^53 sums */
-  amount: z.number().int().positive().max(1_000_000_000_000),
+  amount: z.number().int().positive().max(MAX_EXPENSE_AMOUNT),
   note: z.string().trim().max(500).nullable().optional(),
   /** Algeria-local moment; defaults to now at the api */
   occurredAt: localDateTimeSchema.optional(),
@@ -566,7 +570,9 @@ export const expenseListInputSchema = z.object({
   /** required together when preset = CUSTOM */
   customFrom: localDateTimeSchema.optional(),
   customTo: localDateTimeSchema.optional(),
-  /** inclusive local-datetime bounds; an alternative to a preset */
+  /** inclusive local-datetime bounds; an alternative to a preset. Half-open:
+   * an absent bound stays open-ended (from-only filters up to "now", to-only
+   * filters since the beginning of records) — pinned by wire tests */
   from: localDateTimeSchema.optional(),
   to: localDateTimeSchema.optional(),
   sortBy: z.enum(["occurredAt", "amount"]).optional(),

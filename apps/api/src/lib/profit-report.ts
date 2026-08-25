@@ -99,7 +99,8 @@ export function computeProfitReport(input: {
   }
 
   // operating categories alphabetically first, then owner-withdrawal
-  // categories — one sort over the final array, never split across passes
+  // categories; the final array is re-sorted once after the withdrawal rows
+  // are appended so the order never depends on two separate sort passes
   const byCategory: ExpenseCategoryTotal[] = [...buckets.entries()]
     .map(([categoryId, bucket]) => {
       const category = categoryById.get(categoryId);

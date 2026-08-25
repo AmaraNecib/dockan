@@ -22,8 +22,6 @@ export interface LocalRange {
   to: string;
 }
 
-export type ReportPreset = ReportRangePreset;
-
 const SPAN_HOURS = { "24H": 24, "7D": 24 * 7, "28D": 24 * 28, "30D": 24 * 30 } as const;
 
 const pad = (value: number): string => String(value).padStart(2, "0");

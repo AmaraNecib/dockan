@@ -192,6 +192,30 @@ export function createDrizzleStore(conn: Connection): StorePort {
     // SAFETY: same key set and same values; no wrapper is applied
     Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value])) as StorePort;
 
+  /** Shared BEGIN/COMMIT/ROLLBACK body for deferred and write-first units.
+   * immediate=true uses BEGIN IMMEDIATE, which takes the write lock BEFORE the
+   * first read — see withTransactionImmediate's comment for why money paths
+   * need it (no SQLITE_BUSY_SNAPSHOT on read-to-write upgrade). */
+  const runTransaction = <T>(immediate: boolean, fn: (tx: StorePort) => Promise<T>): Promise<T> => {
+    // serialized against every other store call; the unit keeps the queue
+    // for its whole run so no second BEGIN can appear mid-transaction. The
+    // callback receives an unqueued store (directSeed) so its internal calls
+    // never deadlock, while every EXTERNAL operation queues behind the unit
+    // and can never land inside this transaction (greptile P1).
+    return runSerialized(async () => {
+      const tx = directSeed(store);
+      conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
+      try {
+        const result = await fn(tx);
+        conn.raw.exec("COMMIT");
+        return result;
+      } catch (err) {
+        conn.raw.exec("ROLLBACK");
+        throw err;
+      }
+    });
+  };
+
   const serializeStore = (raw: StorePort): StorePort => {
     // SAFETY: a port object exposes only documented members
     const entries = Object.entries(raw) as Array<[keyof StorePort, unknown]>;
@@ -199,6 +223,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       if (key === "withTransaction") {
         // SAFETY: withTransaction keeps its own serialization; no wrapper needed
         return [key, value as StorePort["withTransaction"]];
+      }
+      if (key === "withTransactionImmediate") {
+        // SAFETY: same serialization contract as withTransaction; no wrapper needed
+        return [key, value as StorePort["withTransactionImmediate"]];
       }
       // args are never[] (the object shape opaques them); R is resolved at
       // each call site to the raw method's real result type
@@ -516,25 +544,16 @@ export function createDrizzleStore(conn: Connection): StorePort {
     // Explicit BEGIN/COMMIT/ROLLBACK on the single raw connection: drizzle's
     // bun-sqlite transaction committed before awaited callbacks finished
     // (proven by the store transactions test), so units would lose atomicity.
-    withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => {
-      // serialized against every other store call; the unit keeps the queue
-      // for its whole run so no second BEGIN can appear mid-transaction. The
-      // callback receives an unqueued store (directSeed) so its internal calls
-      // never deadlock, while every EXTERNAL operation queues behind the unit
-      // and can never land inside this transaction (greptile P1).
-      return runSerialized(async () => {
-        const tx = directSeed(store);
-        conn.raw.exec("BEGIN");
-        try {
-          const result = await fn(tx);
-          conn.raw.exec("COMMIT");
-          return result;
-        } catch (err) {
-          conn.raw.exec("ROLLBACK");
-          throw err;
-        }
-      });
-    },
+    withTransaction: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => runTransaction(false, fn),
+    // Money paths (payments) acquire the WRITE lock BEFORE any read: a deferred
+    // BEGIN can take a WAL read snapshot that a second process committed over,
+    // and the later read-to-write upgrade then fails with SQLITE_BUSY_SNAPSHOT
+    // (busy_timeout does not apply) — surfacing as a raw 500 instead of the
+    // PAYMENT_EXCEEDS_REMAINING refusal. BEGIN IMMEDIATE waits (busy_timeout)
+    // for the concurrent writer, then reads the post-commit state, so the
+    // conditional UPDATE simply refuses. This pre-empts the BEGIN IMMEDIATE
+    // hardening deferred in issue #43 for the payments path.
+    withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => runTransaction(true, fn),
     async allocateInvoiceNumber() {
       // SAFETY: this statement has fixed SQL identifiers and no user input;
       // SQLite serializes the UPDATE across database connections. Reading the

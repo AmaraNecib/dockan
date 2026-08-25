@@ -84,6 +84,11 @@ export interface StorePort {
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
   withTransaction<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
+  /** Like withTransaction but BEGIN IMMEDIATE — the write lock is taken before
+   * the first read so money units never deadlock on a stale WAL read snapshot
+   * (SQLITE_BUSY_SNAPSHOT) against a second process writing the same file.
+   * Use for money-math units (payments); plain reads keep withTransaction. */
+  withTransactionImmediate<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
   /** Reserves the next invoice number atomically in the database. */
   allocateInvoiceNumber(): Promise<string>;
   /** Legacy read seam retained for diagnostics and existing callers. */

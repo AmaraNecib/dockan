@@ -1000,4 +1000,77 @@ describe("applyPaymentToInvoice boundary (ticket 8)", () => {
     // remaining = 0 is the PAID definition; a free invoice owes nothing
     expect((await store.listInvoices({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
   });
+
+
+
+// Regression for PR #48: two REAL processes paying the same invoice
+  // concurrently. With a deferred BEGIN each process takes a WAL read snapshot;
+  // the loser's read-to-write upgrade then fails with SQLITE_BUSY_SNAPSHOT —
+  // a raw "database is locked" instead of the refusal. BEGIN IMMEDIATE makes
+  // the loser wait (busy_timeout) in its own process, then read the post-commit
+  // state, so the conditional UPDATE refuses cleanly. Subprocesses are used
+  // because bun is single-threaded: an in-process second connection's
+  // synchronous busy-wait would starve the winner's async continuation.
+  it("two processes paying concurrently yield exactly one applied instalment and one refusal, never a raw SQLite error", async () => {
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "INV-9104",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "عملية مزدوجة",
+      invoiceDate: localDate(),
+      totalAmount: 800,
+      paidAmount: 0,
+      remainingAmount: 800,
+      notes: null,
+    });
+    // self-contained worker: opens the shared file, waits for the go flag so
+    // both processes genuinely overlap, then runs the write-first payment unit
+    const worker = path.join(dir, "pay-race-worker.ts");
+    fs.writeFileSync(
+      worker,
+      `import { Database } from "bun:sqlite";
+import fs from "node:fs";
+
+const [dbp, invoiceId, goFile] = [process.argv[2]!, process.argv[3]!, process.argv[4]!];
+const conn = new Database(dbp, { create: true });
+conn.exec("PRAGMA journal_mode = WAL;");
+conn.exec("PRAGMA busy_timeout = 5000;");
+while (!fs.existsSync(goFile)) await Bun.sleep(5);
+try {
+  conn.exec("BEGIN IMMEDIATE");
+  // hold the write lock briefly so the other process really contends
+  await Bun.sleep(150);
+  const result = conn.query(
+    "UPDATE invoices SET paid_amount = paid_amount + ?, remaining_amount = remaining_amount - ?, updated_at = datetime('now') WHERE id = ? AND remaining_amount >= ?",
+  ).run(600, 600, invoiceId, 600);
+  conn.exec("COMMIT");
+  console.log(result.changes > 0 ? "APPLIED" : "REFUSED");
+} catch (err) {
+  try { conn.exec("ROLLBACK"); } catch {}
+  console.log("ERROR " + String(err));
+}
+`,
+    );
+    const goFlag = path.join(dir, "pay-race-go.flag");
+    fs.rmSync(goFlag, { force: true });
+    const dbPath = path.join(dir, "test.db");
+    const spawnWorker = () => Bun.spawn(["bun", "run", worker, dbPath, invoice.id, goFlag]);
+    try {
+      const [p1, p2] = await Promise.all([spawnWorker(), spawnWorker()]);
+      await Bun.sleep(600);
+      fs.writeFileSync(goFlag, "go");
+      const [c1, c2] = await Promise.all([p1.exited, p2.exited]);
+      const [o1, o2] = await Promise.all([new Response(p1.stdout).text(), new Response(p2.stdout).text()]);
+      expect([c1, c2]).toEqual([0, 0]);
+      const outcomes = [o1.trim(), o2.trim()];
+      expect(outcomes.filter((o) => o === "APPLIED")).toHaveLength(1);
+      expect(outcomes.filter((o) => o === "REFUSED")).toHaveLength(1);
+      expect(outcomes.some((o) => o.startsWith("ERROR"))).toBe(false);
+    } finally {
+      fs.rmSync(goFlag, { force: true });
+    }
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.paidAmount).toBe(600);
+    expect(detail?.remainingAmount).toBe(200);
+  });
 });

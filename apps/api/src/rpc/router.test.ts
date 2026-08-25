@@ -1503,6 +1503,17 @@ describe("invoice payments (ticket 8)", () => {
             },
           }),
         ),
+      // invoicesPay runs in the write-first unit, so the same audit-boom
+      // override must wrap that variant for the rollback proof to fire
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((realTx: StorePort) =>
+          fn({
+            ...realTx,
+            insertActivity: async () => {
+              throw new Error("audit-boom");
+            },
+          }),
+        ),
     };
     const failingApp = createApp({
       config,

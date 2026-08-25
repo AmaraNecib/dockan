@@ -527,13 +527,13 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices(filters))),
     // ticket 8 — later payments in instalments. Payment row + paid/remaining
-    // recompute + PAYMENT_RECORDED audit commit in ONE serialized unit, so a
+    // recompute + PAYMENT_RECORDED audit commit in ONE write-first unit, so a
     // concurrent pay or a crash mid-way can never leave paidAmount out of
     // sync with the payments history (high-assurance: amounts are never
     // allowed to exceed an invoice's remaining amount).
     invoicesPay: os.invoicesPay.handler(
       guardedInput(async (input) =>
-        deps.store.withTransaction(async (tx) => {
+        deps.store.withTransactionImmediate(async (tx) => {
           const detail = await tx.getInvoiceDetail(input.invoiceId);
           if (detail === undefined) {
             throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });

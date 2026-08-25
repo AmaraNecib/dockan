@@ -1,6 +1,6 @@
 import * as React from "react"
+import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
-import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
@@ -46,21 +46,42 @@ function Button({
   variant = "default",
   size = "default",
   asChild = false,
+  children,
   ...props
-}: React.ComponentProps<"button"> &
+}: ButtonPrimitive.Props &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
   }) {
-  const Comp = asChild ? Slot.Root : "button"
+  if (asChild) {
+    const child = React.Children.only(children)
+    if (React.isValidElement(child)) {
+      return (
+        <ButtonPrimitive
+          render={child}
+          // Base UI defaults to native-button semantics (type="button" + dev
+          // warning when the rendered child isn't a <button>); a polymorphic
+          // child such as an anchor must opt out to stay valid.
+          nativeButton={child.type === "button"}
+          data-slot="button"
+          data-variant={variant}
+          data-size={size}
+          className={cn(buttonVariants({ variant, size, className }))}
+          {...props}
+        />
+      )
+    }
+  }
 
   return (
-    <Comp
+    <ButtonPrimitive
       data-slot="button"
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    />
+    >
+      {children}
+    </ButtonPrimitive>
   )
 }
 

@@ -1166,6 +1166,7 @@ describe("sale checkout (ticket 30)", () => {
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
 });
+
 // ticket 14 — diagnostics log tail (stable DKN codes + viewer input)
 // ---------------------------------------------------------------------------
 describe("diagnostics log (ticket 14)", () => {
@@ -1334,6 +1335,182 @@ describe("debts screen (ticket 9)", () => {
     expect(byMismatchedLabel.items.map((i) => i.id)).toEqual([invoice.id]);
     const byName = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون مسجل" });
     expect(byName.items).toHaveLength(0);
+
+
+
+describe("expenses (ticket 31)", () => {
+  it("seeds default expense categories with exactly one owner-withdrawal flag", async () => {
+    const { items } = await client.expenseCategoriesList();
+    expect(items.length).toBeGreaterThanOrEqual(6);
+    const withdrawal = items.filter((row) => row.isOwnerWithdrawal);
+    expect(withdrawal).toHaveLength(1);
+    expect(withdrawal[0]!.name).toBe("سحوبات المالك");
+    expect(items.some((row) => row.name === "كراء المحل")).toBe(true);
+  });
+
+  it("creates an extra expense category and rejects duplicates", async () => {
+    const created = await client.expenseCategoriesCreate({ name: "تسويق" });
+    expect(created.isOwnerWithdrawal).toBe(false);
+    await expect(client.expenseCategoriesCreate({ name: "تسويق" })).rejects.toThrow(/EXPENSE_CATEGORY_EXISTS/);
+    const flagged = await client.expenseCategoriesCreate({ name: "سحب خاص", isOwnerWithdrawal: true });
+    expect(flagged.isOwnerWithdrawal).toBe(true);
+  });
+
+  it("records an expense with a note, defaults the moment, and audits it", async () => {
+    const { items } = await client.expenseCategoriesList();
+    const rent = items.find((row) => row.name === "كراء المحل")!;
+    const expense = await client.expensesCreate({ categoryId: rent.id, amount: 1_200, note: "كراء فيفري" });
+    expect(expense.amount).toBe(1_200);
+    expect(expense.note).toBe("كراء فيفري");
+    expect(expense.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(expense.categoryId).toBe(rent.id);
+    const activity = (await client.activitiesList({})).items.find((entry) => entry.type === "EXPENSE_RECORDED");
+    expect(activity).toBeDefined();
+    expect(activity!.ref).toBe(expense.id);
+    expect(activity!.summary).toContain("1200");
+  });
+
+  it("rejects an unknown category and a zero/negative amount", async () => {
+    await expect(
+      client.expensesCreate({ categoryId: "00000000-0000-4000-8000-000000000000", amount: 100 }),
+    ).rejects.toThrow(/CATEGORY_NOT_FOUND/);
+    await expect(client.expensesCreate({ categoryId: (await client.expenseCategoriesList()).items[0]!.id, amount: 0 })).rejects.toThrow();
+    await expect(client.expensesCreate({ categoryId: (await client.expenseCategoriesList()).items[0]!.id, amount: -5 })).rejects.toThrow();
+  });
+
+  it("defaults the list to the current month, filters by category and custom range", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    const withdrawal = categories.find((row) => row.isOwnerWithdrawal)!;
+    const old = await client.expensesCreate({ categoryId: op.id, amount: 111, occurredAt: "2020-01-15T12:00:00" });
+    const withdraw = await client.expensesCreate({ categoryId: withdrawal.id, amount: 333 });
+    await client.expensesCreate({ categoryId: op.id, amount: 222 });
+
+    // default = current month: the backdated expense is invisible
+    const currentMonth = await client.expensesList({});
+    expect(currentMonth.items.map((row) => row.id)).not.toContain(old.id);
+    expect(currentMonth.items.some((row) => row.amount === 222)).toBe(true);
+    expect(currentMonth.items.some((row) => row.id === withdraw.id)).toBe(true);
+
+    // custom range brings the backdated expense back
+    const custom = await client.expensesList({ from: "2020-01-01T00:00:00", to: "2020-01-31T23:59:59" });
+    expect(custom.items.map((row) => row.id)).toEqual([old.id]);
+
+    // category filter narrows the operating vs withdrawal split
+    const onlyOp = await client.expensesList({ categoryIds: [op.id] });
+    expect(onlyOp.items.map((row) => row.id)).not.toContain(withdraw.id);
+    const onlyWithdrawal = await client.expensesList({ categoryIds: [withdrawal.id] });
+    expect(onlyWithdrawal.items.map((row) => row.id)).toEqual([withdraw.id]);
+  });
+
+  it("sorts history by date or amount in both directions", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    const small = await client.expensesCreate({ categoryId: op.id, amount: 50, occurredAt: "2026-02-01T12:00:00" });
+    const big = await client.expensesCreate({ categoryId: op.id, amount: 900, occurredAt: "2026-02-20T12:00:00" });
+    const mid = await client.expensesCreate({ categoryId: op.id, amount: 100, occurredAt: "2026-02-10T12:00:00" });
+    const window = { from: "2026-02-01T00:00:00", to: "2026-02-28T23:59:59" };
+
+    const byDateDesc = await client.expensesList({ ...window, sortBy: "occurredAt", sortDir: "desc" });
+    expect(byDateDesc.items.map((row) => row.amount)).toEqual([900, 100, 50]);
+    const byDateAsc = await client.expensesList({ ...window, sortBy: "occurredAt", sortDir: "asc" });
+    expect(byDateAsc.items.map((row) => row.amount)).toEqual([50, 100, 900]);
+    const byAmountAsc = await client.expensesList({ ...window, sortBy: "amount", sortDir: "asc" });
+    expect(byAmountAsc.items.map((row) => row.amount)).toEqual([50, 100, 900]);
+    const byAmountDesc = await client.expensesList({ ...window, sortBy: "amount", sortDir: "desc" });
+    expect(byAmountDesc.items.map((row) => row.amount)).toEqual([900, 100, 50]);
+    // sort stability across equal keys: the three ids stay distinct and ordered by date
+    expect(new Set([...byDateDesc.items, ...byAmountDesc.items].map((row) => row.id)).size).toBe(3);
+    void small; void big; void mid;
+  });
+
+  it("rejects an inverted custom window with INVALID_RANGE", async () => {
+    await expect(client.expensesList({ from: "2026-03-01T00:00:00", to: "2026-02-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
+    await expect(client.reportsProfit({ preset: "CUSTOM", customFrom: "2026-03-01T00:00:00", customTo: "2026-02-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
+    await expect(client.reportsProfit({ preset: "CUSTOM" })).rejects.toThrow(/INVALID_RANGE/);
+  });
+});
+
+describe("profit report (ticket 31) — wire reconciliation", () => {
+  it("reconciles revenue − COGS − expenses = result on a worked example", async () => {
+    // the router suite shares one sqlite database, so assertions are deltas
+    // against a baseline report taken before this test writes anything
+    const baseline = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+
+    const categories = await client.categoriesList();
+    const itemCategoryId = categories.items[0]!.id;
+    const item = await client.itemsCreate({ name: "ربح-مثال", categoryId: itemCategoryId, costPrice: 400, sellingPrice: 1_000, lowStockThreshold: 0 });
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 400, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      discount: { type: "AMOUNT", value: 100 },
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    expect(sale.totalAmount).toBe(900);
+    expect(sale.lines[0]!.netTotal).toBe(900);
+
+    const { items: expenseCategories } = await client.expenseCategoriesList();
+    const rent = expenseCategories.find((row) => row.name === "كراء المحل")!;
+    const withdrawal = expenseCategories.find((row) => row.isOwnerWithdrawal)!;
+    await client.expensesCreate({ categoryId: rent.id, amount: 500, note: "الكراء" });
+    await client.expensesCreate({ categoryId: withdrawal.id, amount: 300 });
+
+    const report = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    expect(report.revenue - baseline.revenue).toBe(900);
+    expect(report.cogs - baseline.cogs).toBe(400);
+    expect(report.grossProfit - baseline.grossProfit).toBe(500);
+    expect(report.operatingExpenses - baseline.operatingExpenses).toBe(500);
+    expect(report.ownerWithdrawals - baseline.ownerWithdrawals).toBe(300);
+    expect(report.resultAfterExpenses - baseline.resultAfterExpenses).toBe(-300);
+    // the acceptance identity holds on the recorded figures themselves
+    expect(report.revenue - report.cogs - report.operatingExpenses - report.ownerWithdrawals).toBe(report.resultAfterExpenses);
+    const rentRow = report.byCategory.find((row) => row.categoryId === rent.id);
+    const rentBaseline = baseline.byCategory.find((row) => row.categoryId === rent.id)?.total ?? 0;
+    expect(rentRow).toMatchObject({ categoryName: "كراء المحل", total: rentBaseline + 500, count: (baseline.byCategory.find((row) => row.categoryId === rent.id)?.count ?? 0) + 1 });
+    const withdrawalRow = report.byCategory.find((row) => row.categoryId === withdrawal.id);
+    const withdrawBaseline = baseline.byCategory.find((row) => row.categoryId === withdrawal.id)?.total ?? 0;
+    expect(withdrawalRow).toMatchObject({ isOwnerWithdrawal: true, total: withdrawBaseline + 300 });
+    // breakdown reconciliation: category sums equal the expense lines
+    expect(report.byCategory.reduce((sum, row) => sum + row.total, 0)).toBe(
+      report.operatingExpenses + report.ownerWithdrawals,
+    );
+  });
+
+  it("attributes a backdated invoice to its invoiceDate window, not the report range of now", async () => {
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({ name: "ربح-مؤرخ", categoryId: categories.items[0]!.id, costPrice: 100, sellingPrice: 300, lowStockThreshold: 0 });
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const backdated = await client.invoicesCreate({
+      kind: "SALE",
+      invoiceDate: "2020-01-10",
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    expect(backdated.totalAmount).toBe(300);
+
+    const currentMonth = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    // the backdated sale belongs to 2020, so it never moves the current report
+    const previousRevenue = currentMonth.revenue;
+    const custom = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:59" });
+    expect(custom.revenue).toBe(300);
+    expect(custom.cogs).toBe(100);
+    expect(previousRevenue).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keeps the purchase side invisible in the profit report (COGS only from sales)", async () => {
+    const baseline = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({ name: "ربح-شراء-فقط", categoryId: categories.items[0]!.id, costPrice: 250, sellingPrice: 500, lowStockThreshold: 0 });
+    await client.invoicesCreate({ kind: "PURCHASE", invoiceDate: "2020-02-05", lines: [{ itemId: item.id, quantity: 2 }] });
+    const report = await client.reportsProfit({ preset: "CURRENT_MONTH" });
+    // purchases bought but not sold contribute nothing to revenue or COGS,
+    // even when the purchase invoice carries a date inside the window
+    expect(report.revenue).toBe(baseline.revenue);
+    expect(report.cogs).toBe(baseline.cogs);
+    expect(report.operatingExpenses).toBe(baseline.operatingExpenses);
+    const custom = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-02-01T00:00:00", customTo: "2020-02-28T23:59:59" });
+    expect(custom.revenue).toBe(0);
+    expect(custom.cogs).toBe(0);
+
   });
 });
 

@@ -4,6 +4,8 @@ import type {
   Category,
   Customer,
   DebtSummary,
+  Expense,
+  ExpenseCategory,
   Invoice,
   InvoiceDetail,
   InvoiceLine,
@@ -19,7 +21,20 @@ import type {
   Supplier,
 } from "@dokan/contracts";
 
-export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings };
+export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory };
+
+/**
+ * One raw SALE invoice line fact the profit report sums. Read via a JOIN of
+ * invoice_lines × invoices (kind=SALE) inside the window; the pure report
+ * module (profit-report.ts) owns the formulas, this seam only carries facts.
+ */
+export interface ProfitSaleLine {
+  invoiceId: string;
+  invoiceDate: string;
+  quantity: number;
+  costAtSale: number;
+  netTotal: number;
+}
 
 /** Additive invoice fields are optional at the write seam so older adapters and
  * migration tests can keep inserting the pre-discount shape. The adapter
@@ -74,6 +89,17 @@ export interface StorePort {
   insertStockLink(link: { invoiceId: string; movementId: string; quantity: number }): Promise<StockLink>;
   /** all links whose movement belongs to the item (link consumption audit) */
   listStockLinksByItem(itemId: string): Promise<StockLink[]>;
+
+  // --- expenses + profit report (ticket 31) --------------------------------
+  listExpenseCategories(): Promise<ExpenseCategory[]>;
+  /** names are UNIQUE; the adapter surfaces the violation as EXPENSE_CATEGORY_EXISTS */
+  createExpenseCategory(input: { name: string; isOwnerWithdrawal?: boolean }): Promise<ExpenseCategory>;
+  insertExpense(input: { categoryId: string; amount: number; note?: string | null; occurredAt: string }): Promise<Expense>;
+  /** raw rows inside the optional category/range filters (ordering happens in
+   * the pure module, so sort behavior is unit-tested without SQL) */
+  listExpenseRecords(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<Expense[]>;
+  /** raw SALE line facts (netTotal/costAtSale) for invoices dated in [from, to] */
+  listSaleLinesForProfit(from: string, to: string): Promise<ProfitSaleLine[]>;
 
   listCustomers(): Promise<Customer[]>;
   createCustomer(input: PartyCreate): Promise<Customer>;

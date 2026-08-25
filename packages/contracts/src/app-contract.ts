@@ -12,6 +12,12 @@ import {
   customerSchema,
   debtsByPartyInputSchema,
   debtsOutputSchema,
+  expenseCategoryCreateInputSchema,
+  expenseCategorySchema,
+  expenseCreateInputSchema,
+  expenseListInputSchema,
+  expenseListOutputSchema,
+  expenseSchema,
   healthOutputSchema,
   invoiceCreateInputSchema,
   invoiceDetailSchema,
@@ -27,6 +33,8 @@ import {
   logsTailOutputSchema,
   lowStockOutputSchema,
   partyCreateInputSchema,
+  profitReportInputSchema,
+  profitReportOutputSchema,
   purchasesCorrectLineInputSchema,
   purchasesLinkStockInputSchema,
   purchasesLinkStockOutputSchema,
@@ -87,6 +95,14 @@ export const dokanContract = {
 
   // --- reports -------------------------------------------------------------
   reportsDebts: oc.output(debtsOutputSchema),
+  /** ticket 31 — profit report computed from raw records at read time */
+  reportsProfit: oc.input(profitReportInputSchema).output(profitReportOutputSchema),
+
+  // --- expenses (ticket 31) -------------------------------------------------
+  expenseCategoriesList: oc.output(z.object({ items: z.array(expenseCategorySchema) })),
+  expenseCategoriesCreate: oc.input(expenseCategoryCreateInputSchema).output(expenseCategorySchema),
+  expensesList: oc.input(expenseListInputSchema).output(expenseListOutputSchema),
+  expensesCreate: oc.input(expenseCreateInputSchema).output(expenseSchema),
 
   // --- debts screen drill-down (ticket 9) ----------------------------------
   /** unpaid invoices for one person, matched by the same identity debtSummaries groups by */
@@ -98,7 +114,6 @@ export const dokanContract = {
 
   // --- activity log --------------------------------------------------------
   activitiesList: oc.input(activityListInputSchema).output(activityListOutputSchema),
-
   // --- diagnostics (developer-facing) --------------------------------------
   diagnosticsLogsTail: oc.input(logsTailInputSchema).output(logsTailOutputSchema),
 

@@ -48,6 +48,22 @@ describe("setup + seed", () => {
     const settings = await store.getSettings();
     expect(settings.storeName).toBe("Dokan");
   });
+
+  it("seeds expense categories with one distinct owner-withdrawal category, idempotently", async () => {
+    const first = await store.listExpenseCategories();
+    expect(first.some((row) => row.isOwnerWithdrawal)).toBe(true);
+    const withdrawal = first.filter((row) => row.isOwnerWithdrawal);
+    expect(withdrawal).toHaveLength(1);
+    expect(withdrawal[0]!.name).toBe("سحوبات المالك");
+    expect(first.some((row) => row.name === "كراء المحل")).toBe(true);
+    // the seeded rows round-trip the boolean through the integer column
+    expect(first.find((row) => row.name === "سحوبات المالك")!.isOwnerWithdrawal).toBe(true);
+    expect(first.find((row) => row.name === "كراء المحل")!.isOwnerWithdrawal).toBe(false);
+    // a second setup() must never duplicate the defaults
+    await store.setup();
+    const second = await store.listExpenseCategories();
+    expect(second).toEqual(first);
+  });
   it("better-auth tables exist (schema from ADR/ticket 02 wiring)", async () => {
     // SAFETY: sqlite_master name column is TEXT; the query returns the table list verbatim
     const tables = (await conn.db.all(`SELECT name FROM sqlite_master WHERE type='table'`)) as Array<{ name: string }>;

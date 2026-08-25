@@ -8,6 +8,8 @@ import type {
   Category,
   Customer,
   DebtSummary,
+  Expense,
+  ExpenseCategory,
   Invoice,
   InvoiceDetail,
   InvoiceLine,
@@ -22,11 +24,10 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { localDateTime } from "../lib/logger";
-import type { InvoiceInsert, InvoiceLineInsert, StockLink, StorePort } from "./port";
+import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -95,6 +96,21 @@ const paymentCols = {
   createdAt: payments.createdAt,
 };
 const activityCols = { id: activities.id, at: activities.at, type: activities.type, summary: activities.summary, ref: activities.ref };
+const expenseCategoryCols = {
+  id: expenseCategories.id,
+  name: expenseCategories.name,
+  isOwnerWithdrawal: expenseCategories.isOwnerWithdrawal,
+  createdAt: expenseCategories.createdAt,
+  updatedAt: expenseCategories.updatedAt,
+};
+const expenseCols = {
+  id: expenses.id,
+  categoryId: expenses.categoryId,
+  amount: expenses.amount,
+  note: expenses.note,
+  occurredAt: expenses.occurredAt,
+  createdAt: expenses.createdAt,
+};
 const movementCols = {
   id: stockMovements.id,
   itemId: stockMovements.itemId,
@@ -150,6 +166,10 @@ const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
   ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+const toExpenseCategory = (r: typeof expenseCategories.$inferSelect): ExpenseCategory =>
+  ({ id: r.id, name: r.name, isOwnerWithdrawal: r.isOwnerWithdrawal === 1, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies ExpenseCategory;
+const toExpense = (r: typeof expenses.$inferSelect): Expense =>
+  ({ id: r.id, categoryId: r.categoryId, amount: r.amount, note: r.note, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies Expense;
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
   ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
@@ -378,6 +398,29 @@ export function createDrizzleStore(conn: Connection): StorePort {
     if (categoriesCount === 0) {
       await db.insert(categories).values({ id: id(), name: "عام", createdAt: now(), updatedAt: now() }).run();
     }
+    // Expense categories seed once per database (ticket 31). A pre-existing
+    // database that already holds owner-created categories keeps them: the
+    // defaults are for fresh installs, and the flag decides the report split.
+    const expenseCategoryCount = await db.$count(expenseCategories);
+    if (expenseCategoryCount === 0) {
+      const defaults: Array<{ name: string; isOwnerWithdrawal: boolean }> = [
+        { name: "كراء المحل", isOwnerWithdrawal: false },
+        { name: "كهرباء وماء وغاز", isOwnerWithdrawal: false },
+        { name: "أجور ورواتب", isOwnerWithdrawal: false },
+        { name: "نقل وتوصيل", isOwnerWithdrawal: false },
+        { name: "صيانة وتصليح", isOwnerWithdrawal: false },
+        { name: "مصاريف أخرى", isOwnerWithdrawal: false },
+        // owner cash-outs must be a DISTINCT category so the profit report
+        // keeps them out of operating expenses
+        { name: "سحوبات المالك", isOwnerWithdrawal: true },
+      ];
+      for (const category of defaults) {
+        await db
+          .insert(expenseCategories)
+          .values({ id: id(), name: category.name, isOwnerWithdrawal: category.isOwnerWithdrawal ? 1 : 0, createdAt: now(), updatedAt: now() })
+          .run();
+      }
+    }
     const storeName = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, "storeName")).limit(1);
     if (storeName.length === 0) {
       await db.insert(settings).values({ key: "storeName", value: "Dokan" }).run();
@@ -522,6 +565,59 @@ export function createDrizzleStore(conn: Connection): StorePort {
         // links table so insertion-order tiebreaks still apply
         .orderBy(stockLinks.createdAt, sql`stock_links.rowid`);
       return rows.map((row) => ({ ...row }) satisfies StockLink);
+    },
+
+    // --- expenses + profit report (ticket 31) --------------------------------
+    async listExpenseCategories() {
+      const rows = await db.select(expenseCategoryCols).from(expenseCategories).orderBy(expenseCategories.name);
+      return rows.map((row) => toExpenseCategory(row));
+    },
+    async createExpenseCategory(input) {
+      const row = firstRowOf(
+        await db
+          .insert(expenseCategories)
+          .values({ id: id(), name: input.name, isOwnerWithdrawal: input.isOwnerWithdrawal === true ? 1 : 0, createdAt: now(), updatedAt: now() })
+          .returning(),
+      );
+      return toExpenseCategory(row);
+    },
+    async insertExpense(input) {
+      const row = firstRowOf(
+        await db
+          .insert(expenses)
+          .values({ id: id(), categoryId: input.categoryId, amount: input.amount, note: input.note ?? null, occurredAt: input.occurredAt, createdAt: now() })
+          .returning(),
+      );
+      return toExpense(row);
+    },
+    async listExpenseRecords(filters) {
+      const conds: SQL[] = [];
+      if (filters.categoryIds !== undefined && filters.categoryIds.length > 0) {
+        conds.push(inArray(expenses.categoryId, filters.categoryIds));
+      }
+      if (filters.from !== undefined) conds.push(sql`${expenses.occurredAt} >= ${filters.from}`);
+      if (filters.to !== undefined) conds.push(sql`${expenses.occurredAt} <= ${filters.to}`);
+      const where = conds.length ? and(...conds) : undefined;
+      const rows = await db.select(expenseCols).from(expenses).where(where);
+      return rows.map((row) => toExpense(row));
+    },
+    async listSaleLinesForProfit(from, to) {
+      // raw line facts only: netTotal (revenue basis) and costAtSale×quantity
+      // (COGS basis); the pure report module owns the formulas
+      // SAFETY: the SELECT aliases exactly produce these camelCase keys from
+      // the fixed column list; the raw result's shape is pinned by the literal
+      // query, not by any user input
+      const rows = (await db.all(sql`
+        SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
+               l.quantity AS quantity, l.cost_at_sale AS costAtSale,
+               l.net_total AS netTotal
+        FROM invoice_lines l
+        JOIN invoices i ON i.id = l.invoice_id
+        WHERE i.kind = 'SALE'
+          AND i.invoice_date >= substr(${from}, 1, 10)
+          AND i.invoice_date <= substr(${to}, 1, 10)
+      `)) as Array<ProfitSaleLine>;
+      return rows;
     },
 
     // --- parties -------------------------------------------------------------

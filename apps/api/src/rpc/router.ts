@@ -108,11 +108,6 @@ export function createRpcRouter(deps: RpcDeps) {
     return handler(input, context);
   };
 
-  const notImplemented = (name: string) => async (): Promise<never> => {
-    deps.logger.warn("NOT_IMPLEMENTED", `procedure ${name} not implemented yet`);
-    throw new ORPCError("INTERNAL_SERVER_ERROR", { message: `${name} is not implemented yet` });
-  };
-
   return {
     health: os.health.handler(() => ({ ok: true as const, version: deps.config.version })),
 

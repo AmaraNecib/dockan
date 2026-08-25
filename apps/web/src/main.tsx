@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { RequireSession } from "./App";
 import { router } from "./router";
 import "./lib/i18n";
+import "./index.css";
 
 const queryClient = new QueryClient();
 

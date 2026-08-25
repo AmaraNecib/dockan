@@ -1335,8 +1335,8 @@ describe("debts screen (ticket 9)", () => {
     expect(byMismatchedLabel.items.map((i) => i.id)).toEqual([invoice.id]);
     const byName = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون مسجل" });
     expect(byName.items).toHaveLength(0);
-
-
+  });
+});
 
 describe("expenses (ticket 31)", () => {
   it("seeds default expense categories with exactly one owner-withdrawal flag", async () => {

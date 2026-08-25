@@ -1,6 +1,6 @@
 # Implementation evidence — Dokan Ticket #15 (desktop packaging)
 
-- Tier: Standard + Rust gates. Base SHA: `9e4e97b` (merge-base with origin/develop).
+- Tier: Standard + Rust gates. Base SHA: `9e4e97b`. Head SHA: `0da0be7` (merge-base with origin/develop).
 - Lane: implementation (`feat/15-desktop-packaging`, working tree unpushed).
 - Design: `.scratch/implementation/15-design.md`.
 

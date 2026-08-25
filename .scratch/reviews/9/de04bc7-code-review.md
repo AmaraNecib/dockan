@@ -61,3 +61,9 @@ invoices" bullet.
   issue recommended (same item as debate finding #2).
 - Padded-name asymmetry between summary grouping and drill-down is latent but
   app-create paths trim, and it is frozen by a dedicated test.
+## Rebase addendum (2026-08-25)
+
+Rebased onto origin/develop `d589133`; evidence re-keyed `0cf7e3c` →
+`de04bc7`. Debts code byte-identical post-rebase; the only added reviewable
+drift is #45's diagnostics feature, resolved additively (both RPCs, both
+routes/nav, both test describes). Standards/spec verdicts unchanged.

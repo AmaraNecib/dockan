@@ -59,3 +59,13 @@ session (critic: 10 findings, defender: 4 defenses, no blockers).
 - Summary groups by raw name while the drill-down matches trimmed — the app
   create flows trim, so mixed-padding only arises via store-seam seeds;
   frozen by test-audit E1.
+## Rebase addendum (2026-08-25)
+
+Rebased onto origin/develop `d589133` (#45 diagnostics merged). Evidence
+re-keyed from reviewed head `0cf7e3c` to final head `de04bc7`. The debts
+implementation files are byte-identical to the reviewed versions (verified:
+`git diff 0cf7e3c HEAD -- my files` is empty); the only reviewable-file drift
+is #45's incoming diagnostics content, resolved additively in the rebase
+(router.ts: both reportsDebts/debtsByParty and diagnosticsLogsTail; router.tsx
+and i18n.ts: both routes/nav; router.test.ts: both describes). Findings and
+decisions above remain valid for the rebased tree.

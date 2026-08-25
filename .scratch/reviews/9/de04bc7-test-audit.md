@@ -41,3 +41,8 @@ Grades: store describe A−, router describe B, component B+, e2e B+.
   names (documented pattern in this suite; debts describes sit last).
 - Error-path coverage uses the mocked rpc seam, consistent with other pages
   (network errors at the browser level are not simulated in E2E).
+## Rebase addendum (2026-08-25)
+
+Rebased onto origin/develop `d589133`; evidence re-keyed `0cf7e3c` →
+`de04bc7`. Debts test files byte-identical post-rebase; the rebase only added
+#45 diagnostics tests alongside. All audit conclusions hold.

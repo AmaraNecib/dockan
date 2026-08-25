@@ -35,7 +35,10 @@ const localCalendar = (instant: Date) => {
 const firstDay = (y: number, m: number): string => `${y}-${pad(m)}-01T00:00:00`;
 const lastDay = (y: number, m: number): string => {
   // day 0 of next month = last day of this month (calendar-only, no tz)
-  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  // SAFETY: Date.UTC reads years 0-99 as 1900+y, so normalize below 100;
+  // localCalendar only yields four-digit years — the guard is belt-and-suspenders
+  const year = y < 100 ? y + 2000 : y;
+  const days = new Date(Date.UTC(year, m, 0)).getUTCDate();
   return `${y}-${pad(m)}-${pad(days)}T23:59:59`;
 };
 

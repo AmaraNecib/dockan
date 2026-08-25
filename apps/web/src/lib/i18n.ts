@@ -325,6 +325,9 @@ const resources = {
       reportsEmpty: "لا توجد بيانات في هذه الفترة",
       reportNegative: "(خسارة)",
       reportsRangeHint: "الفترة تُحسب بتوقيت الجزائر المحلي",
+      reportsSellByDayHint: "تُحسب المبيعات باليوم الكامل (فواتير البيع بلا وقت)",
+      expensesLoading: "جاري التحميل…",
+      expenseCount: "العدد",
     },
   },
 } as const;

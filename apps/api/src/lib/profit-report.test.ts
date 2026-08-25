@@ -98,6 +98,32 @@ describe("profit report — reconciliation on a worked example", () => {
   });
 });
 
+describe("profit report — window semantics (documented)", () => {
+  it("counts sales by whole boundary day while expenses use exact instants", () => {
+    // invoiceDate has no time component, so a mid-day custom window includes
+    // each whole boundary day for sales; expenses are instant-exact. This
+    // behavior is disclosed in the ui (reportsSellByDayHint) and pinned here.
+    const midDay = { preset: "CUSTOM" as const, from: "2026-02-05T14:00:00", to: "2026-02-06T10:00:00" };
+    const report = computeProfitReport({
+      saleLines: [
+        { invoiceId: "a", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, netTotal: 200 }, // before 14:00, same day → in
+        { invoiceId: "b", invoiceDate: "2026-02-06", quantity: 1, costAtSale: 100, netTotal: 200 }, // after 10:00, same day → in
+        { invoiceId: "c", invoiceDate: "2026-02-07", quantity: 1, costAtSale: 100, netTotal: 200 }, // outside → out
+      ],
+      expenses: [
+        { categoryId: opCategory.id, amount: 50, occurredAt: "2026-02-05T09:00:00" }, // before from → out
+        { categoryId: opCategory.id, amount: 50, occurredAt: "2026-02-06T11:00:00" }, // after to → out
+        { categoryId: opCategory.id, amount: 50, occurredAt: "2026-02-05T15:00:00" }, // inside → in
+      ],
+      categories: [opCategory],
+      range: midDay,
+    });
+    expect(report.revenue).toBe(400);
+    expect(report.cogs).toBe(200);
+    expect(report.operatingExpenses).toBe(50);
+  });
+});
+
 describe("profit report — range slicing", () => {
   it("excludes invoices and expenses outside the window", () => {
     const report = computeProfitReport({

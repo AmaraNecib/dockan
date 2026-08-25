@@ -222,7 +222,7 @@ export function ExpensesPage() {
         </div>
 
         {history.isPending ? (
-          <p className="rounded border bg-white p-4 text-stone-500">{t("activityError")}</p>
+          <p className="rounded border bg-white p-4 text-stone-500" data-testid="expenses-loading">{t("expensesLoading")}</p>
         ) : history.data === undefined || history.data.items.length === 0 ? (
           <p className="rounded border bg-white p-4 text-stone-500" data-testid="expenses-empty">{t("expensesEmpty")}</p>
         ) : (

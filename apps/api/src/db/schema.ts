@@ -175,7 +175,6 @@ export const expenses = sqliteTable("expenses", {
   createdAt: text("created_at").notNull(),
 });
 
-
 // ---------------------------------------------------------------------------
 // better-auth tables (ticket 02 wires the adapter; schema lands here now)
 // ---------------------------------------------------------------------------
@@ -250,8 +249,8 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS expense_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_owner_withdrawal INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL, note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS expense_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_owner_withdrawal INTEGER NOT NULL DEFAULT 0 CHECK (is_owner_withdrawal IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL CHECK (amount > 0), note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_occurred_at ON expenses(occurred_at)`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category_id)`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,

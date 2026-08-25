@@ -75,6 +75,9 @@ export function ReportsPage() {
             {report.data.range.from} → {report.data.range.to}
           </p>
         )}
+        {report.data !== undefined && (
+          <p className="text-xs text-stone-500" data-testid="report-day-hint">{t("reportsSellByDayHint")}</p>
+        )}
       </div>
 
       {report.isError ? (
@@ -125,7 +128,7 @@ export function ReportsPage() {
               <thead>
                 <tr className="border-b text-right text-sm text-stone-500">
                   <th className="p-3">{t("expenseColCategory")}</th>
-                  <th className="p-3">{t("expensesHistoryTitle")}</th>
+                  <th className="p-3">{t("expenseCount")}</th>
                   <th className="p-3">{t("expenseColAmount")}</th>
                 </tr>
               </thead>

@@ -48,6 +48,16 @@ function resolveWindow(input: {
     }
     return range;
   }
+  // preset absent: honor caller-supplied bounds. customFrom/customTo are never
+  // silently dropped — they act as a CUSTOM window, so a client bug surfaces
+  // as a window, not as wrong-but-successful data.
+  if (input.customFrom !== undefined || input.customTo !== undefined) {
+    const range = resolveReportRange("CUSTOM", new Date(), { from: input.customFrom, to: input.customTo });
+    if (!validCustomRange(range.from, range.to)) {
+      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+    }
+    return range;
+  }
   const from = input.from ?? (input.to === undefined ? currentMonthRange().from : "0001-01-01T00:00:00");
   const to = input.to ?? (input.from === undefined ? currentMonthRange().to : "9999-12-31T23:59:59");
   if (from > to) {
@@ -833,7 +843,10 @@ export function createRpcRouter(deps: RpcDeps) {
               throw new ORPCError("CONFLICT", { message: "EXPENSE_CATEGORY_EXISTS" });
             }
             const category = await tx.createExpenseCategory(input);
-            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `إنشاء تصنيف مصاريف ${input.name}` });
+            // the flag choice rides in the audit summary so a misclassification
+            // is traceable (the flag itself is create-only today, by design)
+            const withdrawalMark = input.isOwnerWithdrawal === true ? " (سحب مالك)" : "";
+            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `إنشاء تصنيف مصاريف ${input.name}${withdrawalMark}` });
             return category;
           });
         } catch (err) {
@@ -846,13 +859,14 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     expensesCreate: os.expensesCreate.handler(
       guardedInput(async (input) => {
-        // the category must exist before an expense can reference it; the same
-        // pre-check pattern as itemsCreate, cheaper than failing mid-transaction
-        const categories = await deps.store.listExpenseCategories();
-        if (!categories.some((category) => category.id === input.categoryId)) {
-          throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
-        }
+        // category existence is validated INSIDE the transaction unit, so an
+        // FK violation on a race (category vanishing mid-call) surfaces as the
+        // translated CATEGORY_NOT_FOUND instead of a raw constraint error
         return deps.store.withTransaction(async (tx) => {
+          const categories = await tx.listExpenseCategories();
+          if (!categories.some((category) => category.id === input.categoryId)) {
+            throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
+          }
           const expense = await tx.insertExpense({
             categoryId: input.categoryId,
             amount: input.amount,

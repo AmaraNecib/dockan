@@ -98,8 +98,8 @@ export function computeProfitReport(input: {
     buckets.set(entry.categoryId, bucket);
   }
 
-  // operating categories alphabetically, then owner-withdrawal categories —
-  // the report stays readable and the split is structural, not name-based
+  // operating categories alphabetically first, then owner-withdrawal
+  // categories — one sort over the final array, never split across passes
   const byCategory: ExpenseCategoryTotal[] = [...buckets.entries()]
     .map(([categoryId, bucket]) => {
       const category = categoryById.get(categoryId);
@@ -126,6 +126,9 @@ export function computeProfitReport(input: {
     }
     if (total > 0) byCategory.push({ categoryId: category.id, categoryName: category.name, isOwnerWithdrawal: true, total, count });
   }
+  // SAFETY: the appended rows are name-members of the same contract shape, so
+  // re-sorting the whole array once keeps one canonical order in all cases
+  byCategory.sort((a, b) => Number(a.isOwnerWithdrawal) - Number(b.isOwnerWithdrawal) || a.categoryName.localeCompare(b.categoryName));
 
   const grossProfit = revenue - cogs;
   const resultAfterExpenses = grossProfit - operatingExpenses - ownerWithdrawals;

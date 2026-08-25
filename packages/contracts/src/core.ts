@@ -288,7 +288,8 @@ export const expenseSchema = z.object({
   categoryId: idSchema,
   /** whole dinars; must be positive — a zero-DZD expense is a no-op record */
   amount: z.number().int().positive(),
-  note: z.string().nullable(),
+  /** mirror of the input cap so persisted and returned shapes agree */
+  note: z.string().max(500).nullable(),
   /** Algeria-local moment of the expense (editable for backdating) */
   occurredAt: localDateTimeSchema,
   createdAt: localDateTimeSchema,

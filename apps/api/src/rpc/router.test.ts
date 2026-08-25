@@ -1429,6 +1429,19 @@ describe("expenses (ticket 31)", () => {
     await expect(client.reportsProfit({ preset: "CUSTOM", customFrom: "2026-03-01T00:00:00", customTo: "2026-02-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
     await expect(client.reportsProfit({ preset: "CUSTOM" })).rejects.toThrow(/INVALID_RANGE/);
   });
+
+  it("honors customFrom/customTo even without a preset (never silently dropped)", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    const entry = await client.expensesCreate({ categoryId: op.id, amount: 321, occurredAt: "2020-03-05T12:00:00" });
+    const windowed = await client.expensesList({ customFrom: "2020-03-01T00:00:00", customTo: "2020-03-31T23:59:59" });
+    expect(windowed.items.map((row) => row.id)).toContain(entry.id);
+    const outside = await client.expensesList({ customFrom: "2020-04-01T00:00:00", customTo: "2020-04-30T23:59:59" });
+    expect(outside.items.map((row) => row.id)).not.toContain(entry.id);
+    await expect(
+      client.expensesList({ customFrom: "2020-04-01T00:00:00", customTo: "2020-03-01T00:00:00" }),
+    ).rejects.toThrow(/INVALID_RANGE/);
+  });
 });
 
 describe("profit report (ticket 31) — wire reconciliation", () => {

@@ -13,6 +13,8 @@
     "dev:web": "bun run --filter @dokan/web dev",
     "dev:up": "bun run --filter @dokan/api dev && bun run --filter @dokan/web dev",
     "dev:desktop": "bun run --filter @dokan/desktop dev",
+    "desktop:sidecar": "bun run --filter @dokan/desktop sidecar",
+    "desktop:portable": "bun run --filter @dokan/desktop portable",
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck",

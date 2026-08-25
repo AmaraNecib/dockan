@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { serve } from "@hono/node-server";
+import { serveStatic } from "hono/bun";
+import { Hono } from "hono";
 
 import {
   forgetPort as forgetPortRecord,
@@ -23,6 +25,13 @@ import { createDrizzleStore } from "./store/drizzle-store";
  * server. main.ts knows seams, not SQL (ADR-0003).
  */
 const config = createAppConfig();
+
+// A fresh install's app-data folder does not exist yet. Nothing else creates
+// it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
+// so the process would die on first openConnection; make the whole tree now.
+fs.mkdirSync(config.dataDir, { recursive: true });
+fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
+
 const logger = new AppLogger(config.dataDir);
 const conn = openConnection(config);
 const store = createDrizzleStore(conn);
@@ -52,7 +61,49 @@ const app = createApp(deps);
 logger.info("SERVER_BOOT_DONE", "database and auth ready", { driver: config.db.driver });
 
 /**
- * Workspace root = the directory containing .git (repo anchor).
+ * Packaged builds: the desktop webview loads the api's origin, so the api
+ * also serves the built UI (static files plus an SPA fallback to index.html
+ * for client-routed paths). Dev/e2e never set DOKAN_WEB_DIST — the vite dev
+ * server owns the frontend there. The api app itself (createApp) is untouched.
+ *
+ * Composition order matters: the api app is NOT mounted (its router would
+ * swallow unmatched paths with a 404 and block the fallback); instead only
+ * the api-owned prefixes are forwarded to it, then static files, then the
+ * SPA fallback. serveStatic calls next() on a miss.
+ */
+let requestHandler: (request: Request) => Response | Promise<Response> = (req) => app.fetch(req);
+
+if (config.webDataDir !== undefined) {
+  const webRoot = config.webDataDir;
+  // A missing ui folder means a broken install — the api must still boot (the
+  // desktop window falls back to the bundled frontendDist UI whose in-app
+  // error states surface the problem) instead of dying before first request.
+  let index: string | undefined;
+  try {
+    index = await fs.promises.readFile(path.join(webRoot, "index.html"), "utf8");
+  } catch (err) {
+    logger.error("WEB_UI_SERVE_FAILED", "packaged ui missing; serving api only", err instanceof Error ? err : new Error(String(err)));
+  }
+  if (index !== undefined) {
+    const ui = new Hono();
+    ui.use("*", async (c, next) => {
+      const pathname = new URL(c.req.url).pathname;
+      if (pathname === "/health" || pathname === "/api" || pathname.startsWith("/api/")) {
+        return app.fetch(c.req.raw);
+      }
+      return next();
+    });
+    ui.use("*", serveStatic({ root: webRoot }));
+    ui.use("*", async (c) => c.html(index));
+    requestHandler = (req) => ui.fetch(req);
+    logger.info("WEB_UI_SERVED", "serving packaged ui from " + webRoot);
+  }
+}
+
+/**
+ * Workspace root = the directory containing .git (repo anchor), used only in
+ * dev/e2e. Packaged builds redirect the record via DOKAN_PORT_ROOT, so the
+ * port record never lands in an install folder or a user's home tree.
  */
 function findWorkspaceRoot(): string {
   let dir = process.cwd();
@@ -64,15 +115,18 @@ function findWorkspaceRoot(): string {
   }
 }
 
-
 // An explicitly configured port is authoritative: falling back silently
 // would desync the proxy and point traffic at an unrelated process (greptile
 // P1). Without an explicit port, probe upward and record the winner; the web
 // proxy prefers that record.
 const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
-const portFile = path.resolve(findWorkspaceRoot(), ".dokan-port");
-const portLockDir = path.join(path.dirname(portFile), ".dokan-port.lock");
-const registryDir = path.join(path.dirname(portFile), ".dokan-port.registry");
+const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
+// Packaged builds point the record at a fresh app-data/run folder; create it
+// so the lock mkdir below never fails. Dev's workspace root always exists.
+if (config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
+const portFile = path.resolve(portRecordDir, ".dokan-port");
+const portLockDir = path.join(portRecordDir, ".dokan-port.lock");
+const registryDir = path.join(portRecordDir, ".dokan-port.registry");
 
 async function firstFreePort(start: number, host: string): Promise<number> {
   for (let candidate = start; candidate < start + 25; candidate++) {
@@ -107,7 +161,7 @@ async function reconcileBeforeExit(): Promise<void> {
 }
 
 const server = serve(
-  { fetch: app.fetch, port, hostname: config.host },
+  { fetch: requestHandler, port, hostname: config.host },
   async (info) => {
     // record the port that actually bound: for fallback/ephemeral binds this
     // differs from the configured value and must be what the proxy trusts.

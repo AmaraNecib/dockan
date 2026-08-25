@@ -7,11 +7,12 @@
     "beforeDevCommand": "bun run --filter @dokan/web dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "bun run --filter @dokan/web build",
-    "frontendDist": "../../apps/web/dist"
+    "frontendDist": "../../../apps/web/dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Dokan",
         "width": 1280,
         "height": 800
@@ -24,6 +25,27 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": []
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "externalBin": ["binaries/dokan-api"],
+    "resources": {
+      "../../../apps/web/dist": "ui"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "languages": ["English"]
+      }
+    }
   }
 }

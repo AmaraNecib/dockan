@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "portable": "tauri build --bundles nsis"
+    "sidecar": "bun build --compile ../api/src/main.ts --outfile src-tauri/binaries/dokan-api-x86_64-pc-windows-msvc",
+    "portable": "bun run sidecar && tauri build --bundles nsis"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.0"

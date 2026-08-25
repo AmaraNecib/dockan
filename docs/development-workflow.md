@@ -80,7 +80,62 @@ A ticket is done when:
 Milestones follow the MVP slice order in the domain glossary (stock → invoicing → payments/debts →
 auth → backup). A milestone closes only when all its tickets are merged into `develop`.
 
-## 5. Diagnostics log (developer-facing)
+## 5. Desktop packaging (ticket 15)
+
+### Architecture (production)
+
+The packaged app is a Tauri shell that spawns the **compiled Bun api as a
+sidecar** and points the window at the api's origin:
+
+```
+desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled externalBin)
+     │  env: DOKAN_DATA_DIR  = %APPDATA%/dz.dokan.app
+     │       DOKAN_PORT_ROOT = %APPDATA%/dz.dokan.app/run
+     │       DOKAN_WEB_DIST  = <resource>/ui   (bundled web dist)
+     │       DOKAN_BUILD_SECRET / DOKAN_AUTH_SECRET = baked per-build secrets
+     └─ waits for <.dokan-port> + health probe → navigates window to
+        http://127.0.0.1:<port>
+```
+
+The api serves the bundled UI (static + SPA fallback) **only when
+`DOKAN_WEB_DIST` is set** — dev/e2e never set it, so their behavior is
+unchanged. The webview origin equals the api origin, so the frontend's
+relative `/api/*` calls, auth cookies and sessions work with no CORS and no
+custom protocol. Data, logs and backups live under the OS app-data dir, never
+in the install folder (which holds only the exe, the sidecar and the read-only
+`ui/` assets).
+
+Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
+`bun run dev:desktop` as usual and the window loads the vite devUrl.
+
+### Commands
+
+```bash
+# one-shot: compile sidecar + build NSIS installer
+bun run --filter @dokan/desktop portable
+# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>_x64-setup.exe
+
+# pieces separately
+bun run --filter @dokan/desktop sidecar   # bun build --compile → src-tauri/binaries/
+bun run --filter @dokan/desktop build     # tauri build (release)
+```
+
+The sidecar binary and `target/` are generated artifacts (gitignored); the
+source of the icon master is `tools/generate-icon.py` (PIL) — regenerate the
+icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
+
+### Installer facts
+
+- NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
+  `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
+  automatically by the installer).
+- First run: setup flow types the baked build secret once to create the admin
+  account (see `apps/api/src/auth/admin.ts`). The secrets live in
+  `apps/desktop/src-tauri/src/desktop.rs`.
+- If the app is hard-killed the sidecar may linger; the next launch probes a
+  free port and rewrites the port record, so discovery self-heals.
+
+## 6. Diagnostics log (developer-facing)
 
 Every technical error (and every info/warn entry) is appended to a daily JSONL log:
 

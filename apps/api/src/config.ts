@@ -10,6 +10,16 @@ export type AppConfig = {
   portExplicit: boolean;
   /** root folder holding the SQLite data file, the backups/ and logs/ folders */
   dataDir: string;
+  /** absolute path of the built web UI to serve statically. Set only by the
+   * desktop bootstrap (packaged builds): the desktop webview loads the api's
+   * origin, so the api also serves the UI. Absent in dev/e2e — the vite dev
+   * server and its proxy own the frontend there, unchanged. */
+  webDataDir: string | undefined;
+  /** directory holding the port-record files (.dokan-port, .dokan-port.lock,
+   * .dokan-port.registry). Set by the desktop bootstrap to the OS app-data
+   * dir. Absent in dev/e2e: the record lives at the git workspace root, which
+   * the vite proxy walks up to find. */
+  portRecordDir: string | undefined;
   /** MVP password-reset secret. Optional at boot: the reset procedure refuses
    * to run when absent, so the documented api startup paths never crash. */
   buildSecret: string | undefined;
@@ -33,6 +43,9 @@ const isDriver = (v: string): v is (typeof SUPPORTED_DRIVERS)[number] =>
 
 export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = env.DOKAN_DATA_DIR ?? path.join(process.cwd(), "data");
+  const webDataDir = env.DOKAN_WEB_DIST === undefined || env.DOKAN_WEB_DIST === "" ? undefined : path.resolve(env.DOKAN_WEB_DIST);
+  const portRecordDir =
+    env.DOKAN_PORT_ROOT === undefined || env.DOKAN_PORT_ROOT === "" ? undefined : path.resolve(env.DOKAN_PORT_ROOT);
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -51,6 +64,8 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     port: portIsValid ? parsedPort : 4317,
     portExplicit: portIsValid, 
     dataDir,
+    webDataDir,
+    portRecordDir,
     buildSecret: env.DOKAN_BUILD_SECRET,
     authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",
     version: "0.1.0",

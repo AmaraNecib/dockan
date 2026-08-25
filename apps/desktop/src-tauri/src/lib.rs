@@ -1,6 +1,26 @@
+mod desktop;
+
+use tauri::{Manager, RunEvent};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .run(tauri::generate_context!())
-        .expect("error while running Dokan");
+        .manage(desktop::SidecarState::default())
+        .setup(desktop::setup)
+        .on_window_event(|window, event| {
+            // Closing the last window shuts the app down; take the sidecar
+            // with it so the api never outlives the desktop shell.
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    desktop::kill_sidecar(window.app_handle());
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building Dokan")
+        .run(|app_handle, event| {
+            if let RunEvent::Exit = event {
+                desktop::kill_sidecar(app_handle);
+            }
+        });
 }

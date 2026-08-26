@@ -189,6 +189,12 @@ export function fifoCostForOutflow(
  * dated Jun 3 would replay STOCK_NEGATIVE). Later backdated inflows only add
  * stock, so they cannot invalidate the replay either.
  *
+ * Accepted consequence: when the invoice predates the newest inflow, the
+ * movement lands ON that inflow's timestamp, not on the invoice day — day-
+ * level stockAsOf slices between the two dates show the stock as still
+ * present (the profit report still attributes revenue/COGS to the invoice
+ * date). This is the price of the replay-validity bound the issue asks for.
+ *
  * Same-day rows order by rowid (insertion order) exactly like today; dated
  * rows order by business date rather than wall clock, which is documented
  * here and in ADR-0005. Cost snapshots stay frozen at creation time.

@@ -38,9 +38,11 @@ function toDiscountType(value: string): DiscountType {
 
 /**
  * Resolve a cart quantity draft to its effective line quantity. Empty or
- * non-integer drafts yield 0 (invalid); the draft itself is never rewritten,
- * so clearing the input stays visually empty instead of snapping back to the
- * previous value (the field is NOT a controlled number).
+ * non-integer drafts yield 0 (invalid); the input never rewrites the draft,
+ * so clearing it stays visually empty instead of snapping back to the
+ * previous value (the field is NOT a controlled number). Only an explicit
+ * add-line action (scan / duplicate picker entry) repairs a cleared draft
+ * to a single unit.
  */
 export function parseQuantityDraft(draft: string): number {
   const trimmed = draft.trim();

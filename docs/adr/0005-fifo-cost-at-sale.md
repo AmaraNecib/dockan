@@ -24,9 +24,11 @@ applied by `averageCostAfter`; exact per-line COGS needs an additive column.
 > — the exact, unrounded total of the layers a line consumed (SALE lines store
 > the FIFO layer sum from `fifoOutflowCost`; PURCHASE lines store
 > quantity × unit cost). The profit report now sums `cogsExact` instead of
-> `quantity × costAtSale`, so historical per-line profit is exact. Legacy rows
-> backfill `cogs_exact = quantity × cost_at_sale` (exact for PURCHASE rows,
-> the documented approximation for the pre-#30 SALE stub era).
+> `quantity × costAtSale`, so historical per-line profit is exact from the
+> moment the column exists. Backfill for older rows is `cogs_exact =
+> quantity × cost_at_sale`: exact for PURCHASE rows (cost was the unit cost),
+> and equal to the old report formula for SALE rows written before the exact
+> snapshot — those keep their previous accuracy, only new sales are exact.
 >
 > Issue 43 also widened sale movement timestamps: a SALE invoice that
 > explicitly carries an `invoiceDate` dates its stock movements at that

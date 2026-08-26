@@ -559,6 +559,18 @@ describe("barcodes (ticket 28)", () => {
       legacy.raw.exec("UPDATE invoice_lines SET cogs_exact = 42 WHERE id = 'cogs-purchase-line'");
       await legacyStore.setup();
       expect((await legacyStore.getInvoiceDetail("cogs-purchase"))?.lines[0]?.cogsExact).toBe(42);
+
+      // the self-healing repair is NOT marker-gated: a row that somehow
+      // carries DEFAULT 0 while its cost snapshot is positive (e.g. written
+      // by a build that predates this column) heals on the next boot even
+      // though the marker is present
+      legacy.raw.exec("UPDATE invoice_lines SET cogs_exact = 0 WHERE id = 'cogs-sale-line'");
+      await legacyStore.setup();
+      expect((await legacyStore.getInvoiceDetail("cogs-sale"))?.lines[0]?.cogsExact).toBe(5 * 117);
+      // …and a genuine zero-cost line is never rewritten
+      legacy.raw.exec("UPDATE invoice_lines SET cogs_exact = 0, cost_at_sale = 0 WHERE id = 'cogs-sale-line'");
+      await legacyStore.setup();
+      expect((await legacyStore.getInvoiceDetail("cogs-sale"))?.lines[0]?.cogsExact).toBe(0);
     } finally {
       legacy.close();
       for (let attempt = 0; attempt < 5; attempt++) {

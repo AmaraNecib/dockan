@@ -80,7 +80,96 @@ A ticket is done when:
 Milestones follow the MVP slice order in the domain glossary (stock → invoicing → payments/debts →
 auth → backup). A milestone closes only when all its tickets are merged into `develop`.
 
-## 5. Diagnostics log (developer-facing)
+## 5. Desktop packaging (ticket 15)
+
+### Architecture (production)
+
+The packaged app is a Tauri shell that spawns the **compiled Bun api as a
+sidecar** and points the window at the api's origin:
+
+```
+desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled externalBin)
+     │  env: DOKAN_DATA_DIR  = %APPDATA%/dz.dokan.app
+     │       DOKAN_PORT_ROOT = %APPDATA%/dz.dokan.app/run
+     │       DOKAN_WEB_DIST  = <resource>/ui   (bundled web dist)
+     │  baked: per-customer provisioning secret AND the better-auth
+     │         session-signing secret INLINED into the sidecar exe at build
+     │         time (bun --define), never in env, logs or disk state
+     └─ binds 127.0.0.1:0 (kernel-assigned free port, held as a reservation)
+        → hands the exact port to the child explicitly (DOKAN_PORT)
+        → waits for the child to echo the one-time DOKAN_BOOT_TOKEN at
+        /health-token AND publish its pid's registry entry for that port
+        → navigates window to http://127.0.0.1:<port>
+```
+
+The api serves the bundled UI (static + SPA fallback) **only when
+`DOKAN_WEB_DIST` is set** — dev/e2e never set it, so their behavior is
+unchanged. The webview origin equals the api origin, so the frontend's
+relative `/api/*` calls, auth cookies and sessions work with no CORS and no
+custom protocol. Data, logs and backups live under the OS app-data dir, never
+in the install folder (which holds only the exe, the sidecar and the read-only
+`ui/` assets).
+
+Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
+`bun run dev:desktop` as usual and the window loads the vite devUrl.
+
+### Commands
+
+```bash
+# per-customer release (required): validates + inlines both secrets, builds NSIS
+DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
+DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
+DOKAN_CUSTOMER_SLUG='shop-slug' \
+bun run --filter @dokan/desktop portable
+# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
+# fails loudly when either secret is missing or too short — never ships a default
+
+# pieces separately
+bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
+bun run --filter @dokan/desktop build     # sidecar + tauri build (release)
+```
+
+The sidecar binary and `target/` are generated artifacts (gitignored); the
+source of the icon master is `tools/generate-icon.py` (PIL) — regenerate the
+icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
+
+### Installer facts
+
+- NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
+  `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
+  automatically by the installer).
+- **Per-customer secrets** (PR #51 findings 2 & 5): the vendor picks a
+  unique BUILD_SECRET **and** a unique AUTH_SECRET per shop and passes them
+  at BUILD time — both are inlined into the compiled sidecar exe, never
+  committed, never in runtime env/logs/app-data. The documented release
+  command is:
+
+  ```bash
+  DOKAN_BUILD_SECRET='<unique-per-shop-secret (>=16 chars)>' \
+  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
+  DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
+  bun run --filter @dokan/desktop portable
+  ```
+
+  Missing or weak secrets fail the build loudly; installers built without
+  them are test artifacts only (`cargo build`/`gates` fall back to a
+  secret-less sidecar with a loud warning and are never shipped). A packaged
+  binary that somehow boots without a strong signing secret is refused at
+  startup (the api's packaged-boot guard).
+- **Verified sidecar discovery** (PR #51 finding 1): the shell binds a
+  listener on `127.0.0.1:0` — the kernel assigns a free port and the socket
+  reserves it while the child is spawned, so no local process can race a
+  probe (PR #51 TOCTOU fix: no probe at all anymore). The exact port is
+  passed explicitly (`DOKAN_PORT`, authoritative) and navigation happens only
+  after BOTH the one-time token echo at `/health-token` AND the child-pid
+  registry entry for that port confirm identity — a stale, tampered, decoyed
+  or race-hijacked record or port can never redirect the webview.
+- First run: setup flow types the per-customer secret once to create the admin
+  account (see `apps/api/src/auth/admin.ts`).
+- If the app is hard-killed the sidecar may linger; the next launch probes a
+  free port and rewrites the port record, so discovery self-heals.
+
+## 6. Diagnostics log (developer-facing)
 
 Every technical error (and every info/warn entry) is appended to a daily JSONL log:
 

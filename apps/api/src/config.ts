@@ -10,10 +10,32 @@ export type AppConfig = {
   portExplicit: boolean;
   /** root folder holding the SQLite data file, the backups/ and logs/ folders */
   dataDir: string;
+  /** absolute path of the built web UI to serve statically. Set only by the
+   * desktop bootstrap (packaged builds): the desktop webview loads the api's
+   * origin, so the api also serves the UI. Absent in dev/e2e — the vite dev
+   * server and its proxy own the frontend there, unchanged. */
+  webDataDir: string | undefined;
+  /** directory holding the port-record files (.dokan-port, .dokan-port.lock,
+   * .dokan-port.registry). Set by the desktop bootstrap to the OS app-data
+   * dir. Absent in dev/e2e: the record lives at the git workspace root, which
+   * the vite proxy walks up to find. */
+  portRecordDir: string | undefined;
+  /** one-time per-boot identity handed to the sidecar by the desktop shell
+   * (PR #51 finding 1). When set, the api serves `GET /health-token` which
+   * only answers with the matching token — the shell verifies the server on
+   * its chosen port is really its own child before navigating to it, so a
+   * stale or modified port record can never redirect the webview. Absent in
+   * dev/e2e: no token endpoint exists there. */
+  bootToken: string | undefined;
   /** MVP password-reset secret. Optional at boot: the reset procedure refuses
    * to run when absent, so the documented api startup paths never crash. */
   buildSecret: string | undefined;
-  /** better-auth signing secret; a shared laptop is the threat model, so a static local default is fine */
+  /** better-auth signing secret. Dev/test default only — a packaged build
+   * must carry a baked per-customer secret (PR #51 finding 5): the release
+   * pipeline validates DOKAN_AUTH_SECRET (>= 32 chars) and inlines it with
+   * `bun build --define`, and main.ts refuses to boot a packaged binary
+   * (webDataDir/bootToken present) that would sign sessions with this
+   * shared sentinel. */
   authSecret: string;
   version: string;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
@@ -24,6 +46,15 @@ export type AppConfig = {
   };
 };
 
+/** Sentinel dev/test session-signing secret (PR #51 finding 5). Never valid
+ * in a packaged build: the release pipeline bakes a per-customer secret and
+ * main.ts refuses to boot a packaged binary whose signing secret is this
+ * shared default. Idle value only in dev (`bun run dev:api`) and unit tests. */
+export const DEV_AUTH_SECRET = "dokan-dev-auth-secret";
+
+/** Minimum acceptable length for the per-customer session-signing secret. */
+export const MIN_AUTH_SECRET_LEN = 32;
+
 /** Drivers the store can be built on today. Postgres joins when its adapter
  * lands (ADR-0003); until then, requesting it fails here, at config time. */
 const SUPPORTED_DRIVERS = ["sqlite"] as const;
@@ -33,6 +64,10 @@ const isDriver = (v: string): v is (typeof SUPPORTED_DRIVERS)[number] =>
 
 export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = env.DOKAN_DATA_DIR ?? path.join(process.cwd(), "data");
+  const webDataDir = env.DOKAN_WEB_DIST === undefined || env.DOKAN_WEB_DIST === "" ? undefined : path.resolve(env.DOKAN_WEB_DIST);
+  const portRecordDir =
+    env.DOKAN_PORT_ROOT === undefined || env.DOKAN_PORT_ROOT === "" ? undefined : path.resolve(env.DOKAN_PORT_ROOT);
+  const bootToken = env.DOKAN_BOOT_TOKEN === undefined || env.DOKAN_BOOT_TOKEN === "" ? undefined : env.DOKAN_BOOT_TOKEN;
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -51,8 +86,11 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     port: portIsValid ? parsedPort : 4317,
     portExplicit: portIsValid, 
     dataDir,
+    webDataDir,
+    portRecordDir,
+    bootToken,
     buildSecret: env.DOKAN_BUILD_SECRET,
-    authSecret: env.DOKAN_AUTH_SECRET ?? "dokan-dev-auth-secret",
+    authSecret: env.DOKAN_AUTH_SECRET ?? DEV_AUTH_SECRET,
     version: "0.1.0",
     db: {
       driver: requested,

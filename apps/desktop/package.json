@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
-    "portable": "tauri build --bundles nsis"
+    "sidecar": "bun scripts/sidecar.ts",
+    "build": "bun run sidecar && tauri build",
+    "portable": "bun scripts/release.ts",
+    "test": "bun test"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.0"

@@ -1,7 +1,7 @@
-# Security-fix evidence — PR #51 finding 5 (session forgery) — HEAD 76b8787
+# Security-fix evidence — PR #51 finding 5 (session forgery) — HEAD 4691409
 
 - Branch: `feat/15-desktop-packaging`. Base SHA `3d5763f` (origin/develop).
-  Head SHA `76b8787`.
+  Head SHA `4691409`.
 - Prior rounds: `.scratch/reviews/15/bbfc84d-security-evidence.md` (findings
   1–3, incl. per-customer build secret) and `.scratch/reviews/15/419ddbb-security-evidence.md`
   (TOCTOU). This file covers the session-forgery finding — the committed
@@ -80,7 +80,7 @@ Dev builds still boot without it (sentinel config + full e2e suite).
   env value wins.
 - Existing suites unchanged and green (below).
 
-## Gates (all green on HEAD 76b8787)
+## Gates (all green on HEAD 4691409)
 
 | Gate | Result |
 | --- | --- |

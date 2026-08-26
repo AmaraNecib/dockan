@@ -136,8 +136,10 @@ export function historyWithRemaining<T extends LedgerMovement>(movements: readon
 
 /**
  * Exact FIFO layer cost for a sale plus its rounded unit snapshot.
- * Validation matches fifoCostForOutflow: quantity must be a positive integer
- * and must not exceed the stock projected from `movements` (STOCK_NEGATIVE).
+ * Validation: quantity must be a positive integer and must not exceed the
+ * stock projected from `movements` (STOCK_NEGATIVE). `totalCost` is what the
+ * profit report sums (per-line exact COGS); `unitCost` is the ADR-0005
+ * whole-DZD per-unit snapshot held by `invoice_lines.cost_at_sale`.
  */
 export function fifoOutflowCost(
   movements: readonly LedgerMovement[],
@@ -158,19 +160,6 @@ export function fifoOutflowCost(
     if (remaining === 0) break;
   }
   return { totalCost, unitCost: Math.round(totalCost / quantity) };
-}
-
-/**
- * Average FIFO unit cost for a sale from the current layers. The returned
- * value is an integer DZD snapshot; the ledger itself remains the source of
- * truth for the exact layers and the caller validates the resulting outflow.
- */
-export function fifoCostForOutflow(
-  movements: readonly LedgerMovement[],
-  quantity: number,
-  opts: { fallbackUnitCost?: number } = {},
-): number {
-  return fifoOutflowCost(movements, quantity, opts).unitCost;
 }
 
 /**

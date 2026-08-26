@@ -2,7 +2,7 @@
 
 Ticket #30 records every sale line's cost as the rounded weighted unit cost of
 the FIFO layers that line actually consumes (`costAtSale`, see
-`fifoCostForOutflow` in `apps/api/src/lib/stock-ledger.ts`), so historical sale
+`fifoOutflowCost` in `apps/api/src/lib/stock-ledger.ts`), so historical sale
 profit reflects the first-in-first-out flow of stock. ADR-0002 still governs the
 live `items.costPrice` cache: every inflow blends into the moving weighted
 average, outflows only reduce quantity, and the average is replayed from the

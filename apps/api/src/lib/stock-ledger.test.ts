@@ -3,7 +3,6 @@ import { describe, expect, it } from "bun:test";
 import {
   StockLedgerError,
   averageCostAfter,
-  fifoCostForOutflow,
   fifoOutflowCost,
   historyWithRemaining,
   projectLedger,
@@ -64,19 +63,13 @@ describe("projectLedger — FIFO consumption", () => {
   });
 });
 
-describe("fifoCostForOutflow", () => {
-  it("uses FIFO layers and rounds the consumed weighted unit cost", () => {
+describe("fifoOutflowCost", () => {
+  it("uses FIFO layers and rounds the consumed weighted unit cost into unitCost", () => {
     const movements = [m("PURCHASE", 5, 100), m("PURCHASE", 5, 200)];
-    expect(fifoCostForOutflow(movements, 6)).toBe(117);
+    expect(fifoOutflowCost(movements, 6).unitCost).toBe(117);
     expect(projectLedger([...movements, m("SALE", -6)]).layers).toEqual([{ quantity: 4, unitCost: 200 }]);
   });
 
-  it("rejects an outflow larger than available stock", () => {
-    expect(() => fifoCostForOutflow([m("PURCHASE", 2, 100)], 3)).toThrow(StockLedgerError);
-  });
-});
-
-describe("fifoOutflowCost", () => {
   it("returns the exact unrounded layer sum alongside the rounded unit snapshot", () => {
     // 5×100 + 5×200, 6-unit sale: exact total 700, rounded unit 117
     const cost = fifoOutflowCost([m("PURCHASE", 5, 100), m("PURCHASE", 5, 200)], 6);
@@ -98,9 +91,12 @@ describe("fifoOutflowCost", () => {
     expect(cost.unitCost).toBe(150);
   });
 
-  it("rejects invalid quantity and oversell like fifoCostForOutflow", () => {
-    expect(() => fifoOutflowCost([m("PURCHASE", 2, 100)], 0)).toThrow(/positive integer/);
+  it("rejects an outflow larger than available stock", () => {
     expect(() => fifoOutflowCost([m("PURCHASE", 2, 100)], 3)).toThrow(StockLedgerError);
+  });
+
+  it("rejects an invalid quantity", () => {
+    expect(() => fifoOutflowCost([m("PURCHASE", 2, 100)], 0)).toThrow(/positive integer/);
   });
 });
 

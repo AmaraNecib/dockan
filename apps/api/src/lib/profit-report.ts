@@ -80,7 +80,8 @@ export function computeProfitReport(input: {
   for (const line of saleLines) {
     if (!dateInRange(line.invoiceDate, range)) continue;
     // SAFETY: money is whole DZD integers from the persisted line snapshots;
-    // the product of two safe integers stays exact for realistic shop volumes
+    // revenue sums netTotal and cogs sums cogsExact — both safe integers at
+    // realistic shop volumes
     revenue += line.netTotal;
     cogs += line.cogsExact;
   }

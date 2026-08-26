@@ -81,6 +81,11 @@ export function validateReleaseArtifacts(
     if (!stats.isDirectory()) {
       throw new Error(`Release artifact "${entry}" is not a directory.`);
     }
+    if (readdirSync(full).length === 0) {
+      // an EMPTY ui/ tree validates as a directory but ships a dead UI —
+      // same failure class as the zero-byte guards, refuse it too
+      throw new Error(`Release artifact "${entry}" is an empty directory.`);
+    }
   }
 }
 

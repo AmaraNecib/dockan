@@ -124,7 +124,22 @@ bundle/portable/Dokan-portable.zip
 ## Verification (evidence)
 
 `.scratch/reviews/64/<head-sha>-test-audit.md`, `<head-sha>-code-review.md` plus
-the full gate command block recorded with exit codes.
+
+the full gate command block recorded with exit codes (all green at the final head):
+
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — 13 pass (11 pre-existing + 2 new portable-detection tests)
+- `cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warnings` — clean
+- `bun run typecheck` / `bun run lint` / `bun run test` (turbo) — green (28 desktop tests)
+- `DOKAN_PORT=4337 DOKAN_WEB_PORT=5192 bun run test:e2e -- --workers=1` — 18 pass
+- `.dokan-port` restored byte-exact (`4317`) after e2e
+- Full end-to-end `bun run --filter @dokan/desktop portable` (test secrets) — folder + zip produced; `bundle/` contains only `portable/`
+
+Residual risks (documented, not fixed):
+
+- Portable exe on a machine without WebView2 Runtime needs the bootstrapper install (`embedBootstrapper` attaches to NSIS only).
+- Read-only media (write-protected USB) makes the Rust `ensure_dir(data)` fail; the shell logs loudly and the bundled UI's in-app error states cover it.
+- No migration path from `%APPDATA%` data to portable `data/` (deliberate: switching modes is a manual folder choice).
+- Zip content is only existence/non-empty-verified off Windows (packaging is Windows-only; the zip path is skipIf-gated).
 
 ## Exact commands
 

@@ -96,9 +96,10 @@ export function assemblePortableFolder({
   // typed and non-empty — the app exe, the api sidecar and the ui tree
   validateReleaseArtifacts(releaseRootPath);
 
-  // assemble in a temp dir and rename into place, so a failed run never
-  // leaves a half-built Dokan-portable/ behind
-  const tempDir = path.join(layout.portableRoot, `.tmp-${PORTABLE_BASENAME}`);
+  // assemble in a per-process temp dir and rename into place, so a failed
+  // run never leaves a half-built Dokan-portable/ behind and two concurrent
+  // builds never clobber each other's staging copy
+  const tempDir = path.join(layout.portableRoot, `.tmp-${PORTABLE_BASENAME}-${process.pid}`);
   rmSync(tempDir, { recursive: true, force: true });
 
   // if the canonical folder cannot be removed (a running app holds it open

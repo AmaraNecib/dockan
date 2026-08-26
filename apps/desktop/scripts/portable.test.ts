@@ -128,7 +128,17 @@ describe("portable assembly (issue 64)", () => {
       expect(allNames.some((name) => /setup\.exe$/i.test(name))).toBe(false);
 
       // nothing staged under a temp name survives
-      expect(existsSync(path.join(path.dirname(portableDir), `.tmp-${PORTABLE_BASENAME}`))).toBe(false);
+      expect(
+        existsSync(path.join(path.dirname(portableDir), `.tmp-${PORTABLE_BASENAME}-${process.pid}`)),
+      ).toBe(false);
+
+      // assembly COPIES the app exe — the source in target/release must
+      // survive, and the renamed portable exe must be byte-identical to it
+      // (a renameSync regression would consume the source here)
+      expect(existsSync(path.join(release, RELEASE_EXE_NAME))).toBe(true);
+      expect(readFileSync(path.join(portableDir, PORTABLE_EXE_NAME))).toEqual(
+        readFileSync(path.join(release, RELEASE_EXE_NAME)),
+      );
     });
   });
 
@@ -184,6 +194,16 @@ describe("portable assembly (issue 64)", () => {
       rmSync(path.join(release, RELEASE_EXE_NAME), { force: true });
       expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
         /Release artifact missing: dokan\.exe/,
+      );
+    });
+  });
+
+  it("refuses an empty ui/ directory (would ship a dead UI)", () => {
+    withScopedRelease(({ release }) => {
+      rmSync(path.join(release, UI_RESOURCE_NAME), { recursive: true, force: true });
+      mkdirSync(path.join(release, UI_RESOURCE_NAME));
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
+        /Release artifact "ui" is an empty directory/,
       );
     });
   });
@@ -251,7 +271,8 @@ describe("script-security-utils (issue 64)", () => {
   it("validates the release artifacts: present, correctly typed, non-empty", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-entries-"));
     try {
-      mkdirSync(path.join(dir, "ui"), { recursive: true });
+      mkdirSync(path.join(dir, "ui", "assets"), { recursive: true });
+      writeFileSync(path.join(dir, "ui", "index.html"), "x");
       writeFileSync(path.join(dir, "dokan.exe"), "x");
       writeFileSync(path.join(dir, "dokan-api.exe"), "x");
       expect(() => validateReleaseArtifacts(dir)).not.toThrow();

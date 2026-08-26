@@ -114,10 +114,29 @@ async function buildInstaller(slug: string | undefined): Promise<void> {
 /**
  * Portable target (issue 64): `--no-bundle` means the nsis installer is
  * never produced; the folder + zip come from portable.mjs. Data lives next
- * to the exe at runtime (portable.marker flips the Rust shell).
+ * to the exe at runtime (portable.marker flips the Rust shell). A stale
+ * `bundle/nsis` from an earlier installer run is removed so the portable
+ * output can never ship installer leftovers.
  */
 async function buildPortable(): Promise<void> {
+  // the portable deliverable and its trusted-tar zip are Windows-only; fail
+  // BEFORE a multi-minute tauri build instead of after it with a misleading
+  // “missing dokan.exe” error on POSIX (where cargo emits `dokan`)
+  if (process.platform !== "win32") {
+    console.error(
+      "[dokan] portable packaging is only supported on Windows hosts — use the installer target elsewhere",
+    );
+    process.exit(1);
+  }
+
   await runTauri(["build", "--no-bundle"]);
+
+  const nsisDir = path.resolve("src-tauri/target/release/bundle/nsis");
+  if (fs.existsSync(nsisDir)) {
+    // leftover from a previous `installer` run on this tree — never ship it
+    fs.rmSync(nsisDir, { recursive: true, force: true });
+    console.log("[dokan] removed stale nsis bundle dir from the portable output path");
+  }
 
   const { portableDir, zipPath } = assemblePortable();
   console.log(`[dokan] portable folder ready at ${portableDir}`);
@@ -150,6 +169,9 @@ async function main(): Promise<void> {
   if (requestedTarget(Bun.argv) === "installer") {
     await buildInstaller(slug);
   } else {
+    if (slug !== undefined) {
+      console.log("[dokan] note: DOKAN_CUSTOMER_SLUG only applies to the installer target — the portable folder is customer-neutral");
+    }
     await buildPortable();
   }
 }

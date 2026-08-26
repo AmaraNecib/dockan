@@ -79,6 +79,9 @@
 
 - Baked secrets are extractable from binaries (bounded by per-customer scope;
   honest threat-model note in the design doc; hybrid reset models left open).
-- `DOKAN_AUTH_SECRET` remains a baked per-build constant passed by the shell
-  (separate credential, unchanged by this round).
+- `DOKAN_AUTH_SECRET` was a baked per-build constant passed by the shell at
+  the time of this round — **superseded by the finding-5 round**
+  (`.scratch/reviews/15/76b8787-auth-secret-security-evidence.md`): the
+  committed signing key is gone, AUTH_SECRET is per-customer like
+  BUILD_SECRET, and the shell passes no secrets.
 - Fresh-install smoke on a clean PC stays deferred (blocked by #11 receipts).

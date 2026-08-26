@@ -732,6 +732,19 @@ export function createRpcRouter(deps: RpcDeps) {
               };
             }),
           );
+          // Settlement (owner-approved split): the owner picks how much cash to
+          // hand back now; the remainder is deducted from the invoice's old
+          // debt, capped so the debt can never go negative — any excess flows
+          // back to cash. cashPaidOut + debtOffset always sums to the return
+          // value. All-cash on an unpaid invoice is allowed (the ui warns; the
+          // api only enforces the split's own bounds).
+          const requestedCash = input.cashPaidOut ?? refund.refundTotal;
+          if (requestedCash > refund.refundTotal) {
+            throw new ORPCError("BAD_REQUEST", { message: "REFUND_SPLIT_INVALID" });
+          }
+          const requestedDebt = refund.refundTotal - requestedCash;
+          const debtOffset = Math.min(requestedDebt, invoice.remainingAmount);
+          const cashPaidOut = refund.refundTotal - debtOffset;
 
           // SAFETY: allocation is a database-atomic UPDATE inside the same
           // transaction as the return insert, so separate app processes
@@ -742,6 +755,8 @@ export function createRpcRouter(deps: RpcDeps) {
             returnNumber,
             invoiceId: invoice.id,
             refundAmount: refund.refundTotal,
+            cashPaidOut,
+            debtOffset,
             payoutMethod: input.payoutMethod ?? "CASH",
             reason: input.reason == null || input.reason.trim() === "" ? null : input.reason.trim(),
             status: "PENDING_REVIEW",
@@ -792,9 +807,17 @@ export function createRpcRouter(deps: RpcDeps) {
             const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           }
+          // the debt portion settles the invoice's live claim in the same
+          // unit; the conditional UPDATE is the authoritative guard. The read
+          // above already capped debtOffset at remainingAmount, so it never
+          // violates the boundary inside this serialized transaction (a
+          // second process would serialize behind BEGIN IMMEDIATE).
+          if (debtOffset > 0 && !(await tx.applyDebtOffsetToInvoice(invoice.id, debtOffset))) {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+          }
           await tx.insertActivity({
             type: "RETURN_RECORDED",
-            summary: `تسجيل مرجوع ${returnNumber} بمبلغ ${refund.refundTotal} دج على ${invoice.invoiceNumber}`,
+            summary: `تسجيل مرجوع ${returnNumber} بمبلغ ${refund.refundTotal} دج${debtOffset > 0 ? ` (منه ${debtOffset} دج خصم من الدين)` : ""}`,
             ref: returnId,
           });
           // SAFETY: the return was just created in this transaction; it cannot vanish

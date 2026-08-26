@@ -40,7 +40,45 @@ Refund basis (pure, deterministic, whole DZD): per line,
 `refundUnitPrice = Math.round(netTotal / quantity)` — the per-unit amount the
 customer actually paid after the invoice-level discount allocation;
 line refund = quantity × refundUnitPrice; total = Σ. A free (net 0) line
-refunds 0.
+refunds 0. FULL-line returns refund the line's netTotal EXACTLY (round-half
+would drift by a DZD the customer never paid).
+
+## Settlement (owner-approved split, post-review addition)
+
+The return record stores BOTH `cashPaidOut` and `debtOffset`, which always
+sum to the return value (`refundAmount`). The owner picks the split on the
+return screen — all-cash / all-debt / custom — and the api computes it from
+the single `cashPaidOut` input:
+
+- requestedCash defaults to the whole return value (all-cash); must be within
+  0..refundTotal, else REFUND_SPLIT_INVALID.
+- requestedDebt = refundTotal − requestedCash; the DEBT portion is capped at
+  the invoice's remainingAmount (the debt can never go negative) and any
+  excess flows back to cash, so cashPaidOut + debtOffset = refundAmount
+  always.
+- The debt portion is applied to the invoice in the SAME unit (conditional
+  UPDATE remainingAmount, never below zero, RETURN_DEBT_OFFSET_REFUSED on a
+  violated boundary). The cash side is a cash record: paidAmount is never
+  rewritten.
+- The screen shows collected-so-far (paidAmount) vs the return value and
+  warns when the cash portion exceeds collected — a SOFT warning, no hard
+  block (owner decision (a) from the debate).
+- Deterministic tests: old debt 1000, return 500, split cash 200 / debt 300 →
+  remaining debt 700 and cash out 200; all-cash on an unpaid invoice allowed;
+  debt never negative (excess to cash); each return caps against the debt
+  remaining AFTER previous offsets.
+
+## Profit report and fully-returned lines (post-review addition)
+
+A SALE line whose FULL sold quantity was returned is EXCLUDED from the profit
+report — the goods are back in inventory (or scrapped via reject), so the
+sale is un-booked. This is what unwinds a freebie's booked loss: free line
+(price 0, cogs 200) → sale books −200 → the return puts the item back at cost
+and the report shows no lingering loss (net effect zero over the two
+movements; ledger stock returns to pre-sale, replay non-negative).
+Partially-returned lines stay fully booked (documented limitation: the
+partial refund is a cash record; whole-DZD exactness keeps the report
+deterministic).
 
 ## Ledger semantics (ADR-0002/0005 invariant)
 

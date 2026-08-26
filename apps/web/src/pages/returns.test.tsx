@@ -64,6 +64,8 @@ function makeReturn(status: ReturnDetail["status"], overrides: Partial<ReturnDet
     invoiceDate: "2026-08-26",
     counterpartyName: "يوسف",
     refundAmount: 1700,
+    cashPaidOut: 1700,
+    debtOffset: 0,
     payoutMethod: "CASH",
     reason: null,
     status,

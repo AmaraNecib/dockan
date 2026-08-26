@@ -89,6 +89,14 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
           <dt>{t("returnsRefundTotal")}</dt>
           <dd data-testid="return-voucher-total">{voucher.refundAmount} دج</dd>
         </div>
+        <div className="flex justify-between border-b py-1">
+          <dt>{t("returnsCashNow")}</dt>
+          <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} دج</dd>
+        </div>
+        <div className="flex justify-between border-b py-1">
+          <dt>{t("returnsDebtOffset")}</dt>
+          <dd data-testid="return-voucher-debt">{voucher.debtOffset} دج</dd>
+        </div>
       </dl>
     </article>
   );

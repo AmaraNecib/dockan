@@ -2383,4 +2383,106 @@ describe("returns & refunds", () => {
     expect(fetched.lines[0]).toMatchObject({ description: item.name, refundUnitPrice: 300, refundAmount: 300 });
     expect((await client.returnsList({})).items.some((row) => row.id === created.id)).toBe(true);
   });
+
+  it("applies the exact parent scenario: old debt 1000, return 500, cash 200 / debt 300", async () => {
+    const item = await makeReturnItem("مرجوع-مثال-الوالد", 100, 500);
+    const item2 = await makeReturnItem("مرجوع-مثال-ثان", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item2.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    // two 500-DZD lines so the invoice totals 1000 (old debt) while only one
+    // line is returned — the exact deterministic parent case
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item2.id, quantity: 1 }] });
+    expect(sale.totalAmount).toBe(1_000);
+    expect(sale.remainingAmount).toBe(1_000);
+
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 200 });
+    expect(created.refundAmount).toBe(500);
+    expect(created.cashPaidOut).toBe(200);
+    expect(created.debtOffset).toBe(300);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(700);
+  });
+
+  it("allows all-cash on a fully unpaid invoice and records zero debt offset", async () => {
+    const item = await makeReturnItem("مرجوع-نقد-كامل", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(500);
+    // no cashPaidOut sent = all-cash preset
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    expect(created.cashPaidOut).toBe(500);
+    expect(created.debtOffset).toBe(0);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+  });
+
+  it("never lets the debt go negative: an all-debt split beyond the remaining debt flows to cash", async () => {
+    const item = await makeReturnItem("مرجوع-فائض-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(300);
+    // all-debt request (= cashPaidOut 0) of a 500 return against 300 debt
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(created.refundAmount).toBe(500);
+    expect(created.debtOffset).toBe(300); // capped at the remaining debt
+    expect(created.cashPaidOut).toBe(200); // the excess flows to cash
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
+  });
+
+  it("caps each return against the remaining debt AFTER previous offsets", async () => {
+    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
+    expect(sale.remainingAmount).toBe(2_000);
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(first.debtOffset).toBe(500);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_500);
+    // second all-debt return is capped by the reduced debt
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(second.debtOffset).toBe(500);
+    const third = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(third.debtOffset).toBe(500);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+  });
+
+  it("refuses a cash portion larger than the return value", async () => {
+    const item = await makeReturnItem("مرجوع-تجاوز-نقد", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 501 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "REFUND_SPLIT_INVALID" });
+    expect((await client.returnsList({ invoiceId: sale.id })).items).toHaveLength(0);
+  });
+
+  it("returning a free (0-price) line unwinds its booked loss: report back to baseline, stock back", async () => {
+    const item = await makeReturnItem("مرجوع-هدية-كلفة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    const freebie = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    expect(freebie.lines[0]).toMatchObject({ unitPrice: 0, cogsExact: 200, netTotal: 0 });
+    const afterSale = await report();
+    expect(afterSale.cogs - baseline.cogs).toBe(200); // the loss is booked
+    expect(afterSale.grossProfit - baseline.grossProfit).toBe(-200);
+
+    // the free return: value 0 (net 0), goods back at cost
+    const returned = await client.returnsCreate({ invoiceId: freebie.id, lines: [{ invoiceLineId: freebie.lines[0]!.id, quantity: 1 }] });
+    expect(returned.refundAmount).toBe(0);
+    expect(returned.cashPaidOut).toBe(0);
+    // stock is back: the sale consumed 1, the return put it back
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(1);
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([1, 0, 1]);
+    // the profit report no longer shows the line: no lingering loss
+    const afterReturn = await report();
+    expect(afterReturn.cogs).toBe(baseline.cogs);
+    expect(afterReturn.grossProfit).toBe(baseline.grossProfit);
+  });
 });

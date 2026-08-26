@@ -21,6 +21,8 @@ function makeReturn(): ReturnDetail {
     invoiceDate: "2026-08-26",
     counterpartyName: "يوسف",
     refundAmount: 1700,
+    cashPaidOut: 1700,
+    debtOffset: 0,
     payoutMethod: "CASH",
     reason: "الزبون بدل رأيه",
     status: "PENDING_REVIEW",
@@ -72,6 +74,8 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(view.querySelector('[data-testid="return-voucher-invoice"]')?.textContent).toBe("INV-0101");
     expect(view.querySelector('[data-testid="return-voucher-party"]')?.textContent).toBe("يوسف");
     expect(view.querySelector('[data-testid="return-voucher-total"]')?.textContent).toContain("1700");
+    expect(view.querySelector('[data-testid="return-voucher-cash"]')?.textContent).toContain("1700");
+    expect(view.querySelector('[data-testid="return-voucher-debt"]')?.textContent).toContain("0");
     // one line with its refund unit price and amount
     const line = view.querySelector('[data-testid="return-voucher-line"]')!;
     expect(line.textContent).toContain("بطارية");

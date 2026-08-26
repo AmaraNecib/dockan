@@ -209,6 +209,8 @@ const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; i
     invoiceDate: r.invoice_date,
     counterpartyName: r.counterparty_name,
     refundAmount: r.refundAmount,
+    cashPaidOut: r.cashPaidOut,
+    debtOffset: r.debtOffset,
     payoutMethod: r.payoutMethod,
     reason: r.reason,
     status: r.status,
@@ -441,6 +443,28 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
+  /** Settlement columns (cashPaidOut / debtOffset) for databases that predate
+   * the owner-approved cash/debt split. ALTER when missing (barcode pattern);
+   * rows created before the split carry cash 0 + debt 0 + a real refund, which
+   * the backfill reclassifies as all-cash (they were cash refunds). Not
+   * marker-gated: the row invariant (cash=0 AND debt=0 AND refund>0) cannot
+   * match a genuine post-split row (whose two amounts always sum to the
+   * return value, so at most one is zero). */
+  const ensureReturnsSettlementColumns = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+    const names = new Set(rows.map((row) => row.name));
+    if (rows.length > 0 && !names.has("cash_paid_out")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN cash_paid_out INTEGER NOT NULL DEFAULT 0");
+    }
+    if (rows.length > 0 && !names.has("debt_offset")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN debt_offset INTEGER NOT NULL DEFAULT 0");
+    }
+    if (rows.length > 0) {
+      conn.raw.exec("UPDATE returns SET cash_paid_out = refund_amount WHERE cash_paid_out = 0 AND debt_offset = 0 AND refund_amount > 0");
+    }
+  };
+
   /** Additive ticket #30 columns for databases created before discounts. */
   /** Additive ticket #30 columns created with a durable completion marker.
    * The historical-data backfill is tracked by the marker, NOT by column
@@ -558,6 +582,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
+    ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
 
@@ -778,6 +803,13 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // basis) and costAtSale (rounded snapshot, kept for the DTO); the pure
       // report module owns the formulas. setup() guarantees the column;
       // the self-healing repair keeps every row honest on every boot.
+      // A line whose FULL sold quantity was returned is excluded entirely:
+      // the goods are back in inventory (or scrapped via reject), so the
+      // sale is un-booked — this is what unwinds a free-line's booked loss
+      // (e.g. price 0, cogs 200: the returned line no longer shows −200).
+      // Partially-returned lines stay fully booked (documented: the partial
+      // refund is a cash record; whole-DZD exactness keeps the report
+      // deterministic — see design doc).
       // SAFETY: the SELECT aliases exactly produce these camelCase keys from
       // the fixed column list; the raw result's shape is pinned by the literal
       // query, not by any user input.
@@ -791,6 +823,11 @@ export function createDrizzleStore(conn: Connection): StorePort {
         WHERE i.kind = 'SALE'
           AND i.invoice_date >= substr(${from}, 1, 10)
           AND i.invoice_date <= substr(${to}, 1, 10)
+          AND COALESCE((
+            SELECT SUM(rl.quantity) FROM return_lines rl
+            JOIN returns r ON r.id = rl.return_id
+            WHERE rl.invoice_line_id = l.id
+          ), 0) < l.quantity
       `)) as Array<ProfitSaleLine>;
       return rows;
     },
@@ -897,6 +934,8 @@ export function createDrizzleStore(conn: Connection): StorePort {
             returnNumber: input.returnNumber,
             invoiceId: input.invoiceId,
             refundAmount: input.refundAmount,
+            cashPaidOut: input.cashPaidOut,
+            debtOffset: input.debtOffset,
             payoutMethod: input.payoutMethod,
             reason: input.reason ?? null,
             status: input.status,
@@ -936,6 +975,8 @@ export function createDrizzleStore(conn: Connection): StorePort {
           invoice_date: invoices.invoiceDate,
           counterparty_name: invoices.counterpartyName,
           refundAmount: returns.refundAmount,
+          cashPaidOut: returns.cashPaidOut,
+          debtOffset: returns.debtOffset,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,
@@ -973,6 +1014,8 @@ export function createDrizzleStore(conn: Connection): StorePort {
           invoice_date: invoices.invoiceDate,
           counterparty_name: invoices.counterpartyName,
           refundAmount: returns.refundAmount,
+          cashPaidOut: returns.cashPaidOut,
+          debtOffset: returns.debtOffset,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,
@@ -1021,6 +1064,15 @@ export function createDrizzleStore(conn: Connection): StorePort {
       const totals = new Map<string, number>();
       for (const row of rows) totals.set(row.invoiceLineId, Number(row.quantity ?? 0));
       return totals;
+    },
+    /** same conditional-write guard as applyPaymentToInvoice for the debt side:
+     * the offset can never push an invoice's remaining debt below zero, even
+     * across two processes on the same file. Raw SQL is the driver's job. */
+    async applyDebtOffsetToInvoice(invoiceId: string, amount: number) {
+      const result = conn.raw
+        .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
+        .run(amount, now(), invoiceId, amount);
+      return Number(result.changes) > 0;
     },
     /** Consume the pending review tag on every movement a return created. The
      * flat ledger facts stay untouched; only the review tag transitions. */

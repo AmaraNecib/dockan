@@ -14,7 +14,7 @@ import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 /** returnsList payload the panel should serve, or an error flag / payload for create */
 let returnsData: ReturnDetail[] = [];
 let failReturnsCreate = false;
-let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string } | null = null;
+let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string; cashPaidOut?: number } | null = null;
 
 // The page module imports the rpc client and the router Link at module scope;
 // stub the whole seam + Link (rendered as a plain anchor) so the panel is
@@ -61,7 +61,7 @@ const { returnQuantityError, remainingReturnableFor, ReturnsPanel } = await impo
 const LINE_ID = "00000000-0000-4000-8000-0000000000c1";
 const ITEM_ID = "00000000-0000-4000-8000-0000000000c2";
 
-function makeInvoice(lines: InvoiceDetail["lines"] = []): InvoiceDetail {
+function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900): InvoiceDetail {
   return {
     id: "00000000-0000-4000-8000-0000000000b1",
     invoiceNumber: "INV-0001",
@@ -74,8 +74,8 @@ function makeInvoice(lines: InvoiceDetail["lines"] = []): InvoiceDetail {
     discountValue: null,
     discountAmount: 0,
     totalAmount: 900,
-    paidAmount: 900,
-    remainingAmount: 0,
+    paidAmount,
+    remainingAmount: Math.max(0, 900 - paidAmount),
     notes: null,
     createdAt: "2026-08-26T10:00:00",
     updatedAt: "2026-08-26T10:00:00",
@@ -111,6 +111,8 @@ function returnRecord(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
     invoiceDate: "2026-08-26",
     counterpartyName: "زبون",
     refundAmount: 900,
+    cashPaidOut: 900,
+    debtOffset: 0,
     payoutMethod: "CASH",
     reason: null,
     status: "PENDING_REVIEW",
@@ -295,5 +297,65 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()]));
     await flushAsync();
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.disabled).toBe(true);
+  });
+
+  it("shows the return value, the collected-so-far and a soft cash warning when cash exceeds collected", () => {
+    // paidAmount 0: the default all-cash settlement for a 3600 return warns
+    renderPanel(makeInvoice([saleLine()], 0));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("3600");
+    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toContain("0");
+    expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="returns-cash-warning"]')?.textContent).toContain("القرار لك");
+  });
+
+  it("suppresses the warning when the cash portion stays within what was collected", () => {
+    renderPanel(makeInvoice([saleLine()], 9_000));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeNull();
+  });
+
+  it("sends the custom cash portion when the owner splits the settlement", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
+    act(() => {
+      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "CUSTOM");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!, "1200");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBe(1200);
+  });
+
+  it("sends cash 0 for the all-debt preset", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    act(() => {
+      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "ALL_DEBT");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBe(0);
+  });
+
+  it("refuses a custom cash portion above the return value", () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
+    act(() => {
+      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "CUSTOM");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!, "4000");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("أدخل مبلغاً نقدياً");
+    expect(lastCreateInput).toBeNull();
   });
 });

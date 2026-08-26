@@ -63,6 +63,10 @@ export type ReturnInsert = {
   returnNumber: string;
   invoiceId: string;
   refundAmount: number;
+  /** cash handed back now (whole DZD) */
+  cashPaidOut: number;
+  /** deducted from the invoice's remaining debt; cashPaidOut + debtOffset = refundAmount */
+  debtOffset: number;
   payoutMethod: ReturnPayoutMethod;
   reason: string | null;
   status: ReturnStatus;
@@ -159,6 +163,10 @@ export interface StorePort {
   transitionReturnStatus(returnId: string, to: "ACCEPTED" | "REJECTED_DAMAGED"): Promise<boolean>;
   /** per-line already-returned totals for this invoice (the refund cap key) */
   returnedQuantitiesByLine(invoiceId: string): Promise<Map<string, number>>;
+  /** Atomic debt settlement: debits remainingAmount by amount ONLY while it
+   * still covers the offset. Returns true when the debt moved, false when the
+   * boundary was violated — the caller rolls the unit back in that case. */
+  applyDebtOffsetToInvoice(invoiceId: string, amount: number): Promise<boolean>;
   /** consume the pending review tag on every movement a return created */
   setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">): Promise<void>;
   /** Record the review annotation on the return (the rejection note). */

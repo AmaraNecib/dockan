@@ -417,7 +417,13 @@ export const returnLineSchema = z.object({
  * One return record. The status is the review state machine: a created return
  * is PENDING_REVIEW; accepting consumes the stock movement's pending mark,
  * rejecting (damaged) removes the quantity as a MANUAL_ADJUSTMENT outflow.
- * Money is never rewritten on the invoice — refunds are a cash record here.
+ *
+ * Settlement (owner-approved split): the return value is refundAmount, and
+ * the owner chooses how it is settled — cashPaidOut (cash handed back now)
+ * plus debtOffset (deducted from the invoice's remaining debt). The two ALWAYS
+ * sum to the return value; the debt portion never exceeds the invoice's
+ * remaining debt (any excess flows to cash). Money on the invoice is only
+ * ever reduced via the debt offset; the cash side is a cash record here.
  */
 export const returnSchema = z.object({
   id: idSchema,
@@ -428,8 +434,12 @@ export const returnSchema = z.object({
   invoiceNumber: z.string().min(1),
   invoiceDate: localDateSchema,
   counterpartyName: z.string().trim().min(1).nullable(),
-  /** whole DZD the shop hands back */
+  /** whole DZD the return is worth; cashPaidOut + debtOffset = refundAmount */
   refundAmount: dinarsSchema,
+  /** cash handed back to the customer now (whole DZD) */
+  cashPaidOut: dinarsSchema,
+  /** deducted from the invoice's remaining debt (whole DZD) */
+  debtOffset: dinarsSchema,
   payoutMethod: returnPayoutMethodSchema,
   /** Arabic owner note; rejection reasons ride here too */
   reason: z.string().max(500).nullable(),
@@ -600,6 +610,11 @@ export const returnsCreateInputSchema = z.object({
   reason: z.string().trim().max(500).nullable().optional(),
   /** cash today; credit / debt-credit arrive later without a migration */
   payoutMethod: returnPayoutMethodSchema.optional(),
+  /** how the owner settles the return: cash handed back now (defaults to the
+   * whole return value — all cash). The debt portion is refundTotal minus
+   * this, capped at the invoice's remaining debt; any excess flows back to
+   * cash, so the split always sums to the return value. */
+  cashPaidOut: dinarsSchema.optional(),
 });
 
 export const returnsListInputSchema = z.object({

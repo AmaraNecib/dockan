@@ -211,23 +211,66 @@ export function returnQuantityError(draft: string, remaining: number): "INVALID"
   return null;
 }
 
+/** Whole-DZD value of `quantity` returned units of a SALE line (mirror of the
+ * api's refund math: a full line refunds its netTotal exactly, partials price
+ * at the rounded effective unit). Used only to present the settlement split
+ * before submit — the api recomputes authoritatively. */
+export function lineReturnValue(line: { quantity: number; netTotal: number }, quantity: number): number {
+  if (quantity === line.quantity) return line.netTotal;
+  return quantity * Math.round(line.netTotal / line.quantity);
+}
+
+export type ReturnSettlementPreset = "ALL_CASH" | "ALL_DEBT" | "CUSTOM";
+
+/** Validates a custom cash draft for the settlement split. */
+export function customCashError(draft: string, valueTotal: number): "INVALID" | "EXCEEDS" | null {
+  const trimmed = draft.trim();
+  if (trimmed === "") return null; // untouched = all-debt
+  if (!/^\d+$/u.test(trimmed)) return "INVALID";
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value < 0) return "INVALID";
+  if (value > valueTotal) return "EXCEEDS";
+  return null;
+}
+
 export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const returnsQuery = useQuery(orpc.returnsList.queryOptions({ input: { invoiceId: invoice.id } }));
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
+  const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
+  const [cashDraft, setCashDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [recorded, setRecorded] = useState(false);
 
   const returns = returnsQuery.data?.items ?? [];
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
 
+  // client projection of the return value from the entered drafts (the api
+  // recomputes authoritatively; this only drives the settlement presets)
+  const valueTotal = useMemo(
+    () =>
+      returnableLines.reduce((sum, line) => {
+        const quantity = Number(drafts[line.id] ?? "");
+        if (!Number.isInteger(quantity) || quantity <= 0) return sum;
+        return sum + lineReturnValue(line, quantity);
+      }, 0),
+    [returnableLines, drafts],
+  );
+  const requestedCash =
+    settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
+  const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
+  // collected-so-far on this invoice vs the cash portion: soft warning, never a block
+  const cashExceedsCollected = Number.isFinite(requestedCash) && requestedCash > invoice.paidAmount;
+
   const create = useMutation(
     orpc.returnsCreate.mutationOptions({
       onSuccess: () => {
         setDrafts({});
         setReason("");
+        setCashDraft("");
+        setSettlement("ALL_CASH");
         setError(null);
         setRecorded(true);
         void Promise.all([
@@ -264,11 +307,16 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         return;
       }
     }
+    if (!cashIsValid) {
+      setError(t("returnsInvalidCash"));
+      return;
+    }
     const lines = entered.map((line) => ({ invoiceLineId: line.id, quantity: Number(drafts[line.id]) }));
     void create.mutate({
       invoiceId: invoice.id,
       lines,
       reason: reason.trim() === "" ? undefined : reason.trim(),
+      cashPaidOut: settlement === "ALL_CASH" ? undefined : requestedCash,
     });
   }
 
@@ -340,26 +388,72 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             })}
           </div>
         )}
-        <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1 text-sm">
-            {t("returnsReason")}
-            <input
-              className="rounded border px-3 py-2"
-              value={reason}
+        <div className="grid gap-2 rounded border bg-stone-50 p-3 text-sm">
+          <div className="flex justify-between">
+            <span className="text-stone-500">{t("returnsValue")}</span>
+            <span className="font-medium" data-testid="returns-value">{valueTotal} دج</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-stone-500">{t("returnsCollected")}</span>
+            <span data-testid="returns-collected">{invoice.paidAmount} دج</span>
+          </div>
+          <label className="grid gap-1">
+            {t("returnsSplit")}
+            <select
+              className="rounded border px-2 py-1"
+              value={settlement}
               onChange={(event) => {
-                setReason(event.target.value);
+                // SAFETY: the select renders only the three preset options
+                setSettlement(event.target.value as ReturnSettlementPreset);
                 setRecorded(false);
               }}
-              data-testid="returns-reason"
-            />
-          </label>
-          <label className="grid gap-1 text-sm">
-            {t("returnsPayoutMethod")}
-            <select className="rounded border px-3 py-2" value="CASH" disabled data-testid="returns-method">
-              <option value="CASH">{t("pmtMethod_CASH")}</option>
+              data-testid="returns-settlement"
+            >
+              <option value="ALL_CASH">{t("returnsSplitAllCash")}</option>
+              <option value="ALL_DEBT">{t("returnsSplitAllDebt")}</option>
+              <option value="CUSTOM">{t("returnsSplitCustom")}</option>
             </select>
           </label>
+          {settlement === "CUSTOM" && (
+            <label className="grid gap-1">
+              {t("returnsCashNow")}
+              <input
+                className="rounded border px-2 py-1"
+                inputMode="numeric"
+                value={cashDraft}
+                onChange={(event) => {
+                  setCashDraft(event.target.value);
+                  setRecorded(false);
+                }}
+                placeholder={`0 – ${valueTotal}`}
+                data-testid="returns-cash"
+              />
+            </label>
+          )}
+          {Number.isFinite(requestedCash) && (
+            <div className="flex justify-between">
+              <span className="text-stone-500">{t("returnsCashNow")}</span>
+              <span className="font-medium" data-testid="returns-cash-now">{requestedCash} دج</span>
+            </div>
+          )}
+          {cashExceedsCollected && (
+            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="returns-cash-warning">
+              {t("returnsCashWarning", { paid: invoice.paidAmount })}
+            </p>
+          )}
         </div>
+        <label className="grid gap-1 text-sm">
+          {t("returnsReason")}
+          <input
+            className="rounded border px-3 py-2"
+            value={reason}
+            onChange={(event) => {
+              setReason(event.target.value);
+              setRecorded(false);
+            }}
+            data-testid="returns-reason"
+          />
+        </label>
         <button
           type="submit"
           className="rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50"

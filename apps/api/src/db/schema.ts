@@ -132,8 +132,12 @@ export const returns = sqliteTable("returns", {
   invoiceId: text("invoice_id")
     .notNull()
     .references(() => invoices.id),
-  /** whole DZD the shop hands back to the customer */
+  /** whole DZD the return is worth; cashPaidOut + debtOffset = refundAmount */
   refundAmount: integer("refund_amount").notNull(),
+  /** cash handed back to the customer now (whole DZD) */
+  cashPaidOut: integer("cash_paid_out").notNull(),
+  /** deducted from the invoice's remaining debt (whole DZD) */
+  debtOffset: integer("debt_offset").notNull(),
   /** CASH today; credit / debt-credit arrive later without a migration */
   payoutMethod: text("payout_method", { enum: returnPayoutMethods }).notNull(),
   /** Arabic owner note; rejection reasons ride here too */
@@ -304,7 +308,7 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS invoice_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, refund_unit_price INTEGER NOT NULL, refund_amount INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id)`,

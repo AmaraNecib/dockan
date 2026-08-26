@@ -18,7 +18,7 @@ import { orpc } from "../lib/rpc";
  * snapshots the returnsCreate unit persisted.
  *
  * The auto-print fires exactly once per mount (StrictMode-safe ref gate) once
- * both reads land; a manual "طباعة الآن" button is the escape hatch.
+ * both reads land; a manual "print now" button is the escape hatch.
  */
 export function ReturnVoucherPrintPage() {
   const { t } = useTranslation();

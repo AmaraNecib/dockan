@@ -53,6 +53,9 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
               <p className="text-sm text-stone-600">
                 {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} دج
               </p>
+              <p className="text-xs text-stone-500">
+                {t("returnsCashNow")}: {record.cashPaidOut} دج — {t("returnsDebtOffset")}: {record.debtOffset} دج
+              </p>
               <p className="text-sm text-stone-500">
                 {record.lines.map((line) => `${line.description} ×${line.quantity}`).join("، ")}
               </p>

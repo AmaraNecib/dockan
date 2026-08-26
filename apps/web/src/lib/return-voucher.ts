@@ -30,7 +30,12 @@ export interface ReturnVoucher {
   invoiceDate: string;
   counterpartyName: string | null;
   payoutMethod: string;
+  /** total return value; cashPaidOut + debtOffset = refundAmount */
   refundAmount: number;
+  /** cash handed back to the customer now */
+  cashPaidOut: number;
+  /** deducted from the invoice's remaining debt */
+  debtOffset: number;
   reason: string | null;
   status: string;
   lines: ReturnVoucherLine[];
@@ -50,6 +55,8 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
     counterpartyName: returnDetail.counterpartyName,
     payoutMethod: returnDetail.payoutMethod,
     refundAmount: returnDetail.refundAmount,
+    cashPaidOut: returnDetail.cashPaidOut,
+    debtOffset: returnDetail.debtOffset,
     reason: returnDetail.reason,
     status: returnDetail.status,
     lines: returnDetail.lines.map((line) => ({

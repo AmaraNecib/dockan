@@ -100,6 +100,7 @@ const lineCols = {
   defaultUnitPrice: invoiceLines.defaultUnitPrice,
   unitPrice: invoiceLines.unitPrice,
   costAtSale: invoiceLines.costAtSale,
+  cogsExact: invoiceLines.cogsExact,
   total: invoiceLines.total,
   discountAllocated: invoiceLines.discountAllocated,
   netTotal: invoiceLines.netTotal,
@@ -176,6 +177,7 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
     defaultUnitPrice: r.defaultUnitPrice ?? r.unitPrice,
     unitPrice: r.unitPrice,
     costAtSale: r.costAtSale,
+    cogsExact: r.cogsExact,
     total: r.total,
     discountAllocated: r.discountAllocated ?? 0,
     netTotal: r.netTotal ?? r.total,
@@ -424,6 +426,12 @@ export function createDrizzleStore(conn: Connection): StorePort {
         if (lineRows.length > 0 && !lineNames.has(name)) conn.raw.exec(`ALTER TABLE invoice_lines ADD COLUMN ${name} ${definition}`);
       }
 
+      // Exact per-line COGS (issue 43 follow-up on ADR-0005): one additive
+      // column; legacy rows backfill quantity × cost_at_sale — exact when the
+      // row is a PURCHASE (cost was the unit cost), the documented
+      // approximation for SALE rows (none exist pre-#30; SALE was a stub).
+      if (lineRows.length > 0 && !lineNames.has("cogs_exact")) conn.raw.exec("ALTER TABLE invoice_lines ADD COLUMN cogs_exact INTEGER NOT NULL DEFAULT 0");
+
       // SAFETY: settings.key is PRIMARY KEY; a supported query yields one
       // object with a single string value per row.
       const markerRows = conn.raw.query("SELECT value FROM settings WHERE key = ?").all("migration.saleColumnsV1") as Array<{ value: string }>;
@@ -446,6 +454,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
         conn.raw.exec("UPDATE invoice_lines SET default_unit_price = unit_price WHERE default_unit_price = 0 AND unit_price > 0 AND discount_allocated = 0 AND net_total = 0");
         conn.raw.exec("UPDATE invoice_lines SET net_total = total WHERE net_total = 0 AND discount_allocated = 0 AND total > 0");
         conn.raw.exec("INSERT INTO settings (key, value) VALUES ('migration.saleColumnsV1', 'done') ON CONFLICT(key) DO NOTHING");
+      }
+      // SAFETY: settings.key is PRIMARY KEY; a supported query yields one
+      // object with a single string value per row.
+      const cogsMarker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all("migration.cogsExactV1") as Array<{ value: string }>;
+      if (cogsMarker.length === 0) {
+        // Rows without a meaningful value are the ALTER's DEFAULT-0
+        // placeholders; a real zero-cost line (cost_at_sale = 0) legitimately
+        // owns cogs_exact = 0 and is never touched. quantity assumes the row
+        // is a real line (NOT NULL positive by contract).
+        conn.raw.exec("UPDATE invoice_lines SET cogs_exact = quantity * cost_at_sale WHERE cogs_exact = 0 AND quantity > 0 AND cost_at_sale > 0");
+        conn.raw.exec("INSERT INTO settings (key, value) VALUES ('migration.cogsExactV1', 'done') ON CONFLICT(key) DO NOTHING");
       }
       conn.raw.exec("COMMIT");
     } catch (err) {
@@ -677,14 +696,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
       return rows.map((row) => toExpense(row));
     },
     async listSaleLinesForProfit(from, to) {
-      // raw line facts only: netTotal (revenue basis) and costAtSale×quantity
-      // (COGS basis); the pure report module owns the formulas
+      // raw line facts only: netTotal (revenue basis), cogsExact (exact COGS
+      // basis) and costAtSale (rounded snapshot, kept for the DTO); the pure
+      // report module owns the formulas
       // SAFETY: the SELECT aliases exactly produce these camelCase keys from
       // the fixed column list; the raw result's shape is pinned by the literal
-      // query, not by any user input
+      // query, not by any user input. COALESCE keeps a pre-migration line
+      // (column absent, impossible after setup) from breaking the historian.
       const rows = (await db.all(sql`
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
                l.quantity AS quantity, l.cost_at_sale AS costAtSale,
+               COALESCE(l.cogs_exact, l.quantity * l.cost_at_sale) AS cogsExact,
                l.net_total AS netTotal
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
@@ -793,6 +815,11 @@ export function createDrizzleStore(conn: Connection): StorePort {
             defaultUnitPrice: line.defaultUnitPrice ?? line.unitPrice,
             discountAllocated: line.discountAllocated ?? 0,
             netTotal: line.netTotal ?? line.total,
+            // Write-seam fallback for legacy callers: quantity × the rounded
+            // cost snapshot is the documented approximation (exact on PURCHASE
+            // rows where cost was the unit cost). The sale router always
+            // passes the true layer-sum snapshot.
+            cogsExact: line.cogsExact ?? line.quantity * line.costAtSale,
           })
           .returning(),
       );

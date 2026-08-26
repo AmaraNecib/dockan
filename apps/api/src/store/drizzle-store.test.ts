@@ -423,8 +423,10 @@ describe("barcodes (ticket 28)", () => {
       // post-heal modern rows must survive later setup calls: a zero default
       // price is real for the item, and a fully discounted line's net zero is
       // real too — the restricted WHERE clauses and the marker keep them.
+      // (The table now carries cogs_exact, appended by the first setup; the
+      // value 1×100 is the true layer sum for this 1-unit line.)
       interrupted.raw.exec("INSERT INTO invoices VALUES ('modern-invoice', 'INV-MODERN', 'SALE', NULL, NULL, '2026-02-01', 700, 'PERCENTAGE', 100, 700, 0, 0, 0, NULL, '2026-02-01T00:00:00', '2026-02-01T00:00:00')");
-      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0)");
+      interrupted.raw.exec("INSERT INTO invoice_lines VALUES ('modern-line', 'modern-invoice', NULL, 'منتج مجاني الافتراضي', 1, 0, 700, 100, 700, 700, 0, 100)");
       await interruptedStore.setup();
       const modern = await interruptedStore.getInvoiceDetail("modern-invoice");
       expect(modern?.lines[0]).toMatchObject({ defaultUnitPrice: 0, unitPrice: 700, discountAllocated: 700, netTotal: 0 });
@@ -472,16 +474,22 @@ describe("barcodes (ticket 28)", () => {
       stale.raw.exec("INSERT INTO invoices VALUES ('legacy-late', 'INV-LATE', 'SALE', NULL, NULL, '2026-01-01', 0, NULL, NULL, 0, 200, 0, 200, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
       stale.raw.exec("INSERT INTO invoice_lines VALUES ('legacy-late-line', 'legacy-late', NULL, 'منتج قديم', 1, 0, 200, 100, 200, 0, 0)");
 
-      // byte-identical proof: the modern rows' full column state before setup()
-      // must survive setup() untouched; only the marker lands
+      // byte-identical proof: the modern rows' full PRE-EXISTING column state
+      // before setup() must survive setup() untouched; only the marker lands
+      // (the cogs_exact column is ADDITIVE — a database created before it gets
+      // the backfill quantity × cost_at_sale, exactly like the discount
+      // columns did, so those rows are listed explicitly and the new column
+      // is excluded from the byte-identity check)
+      const legacyCols =
+        "SELECT id, invoice_id, item_id, description, quantity, default_unit_price, unit_price, cost_at_sale, total, discount_allocated, net_total FROM invoice_lines WHERE id = ?";
       const modernRows = ["modern-plain-line", "modern-free-line", "modern-purchase-line"] as const;
-      const before = modernRows.map((id) => stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id));
+      const before = modernRows.map((id) => stale.raw.query(legacyCols).all(id));
 
       const staleStore = createDrizzleStore(stale);
       await staleStore.setup();
 
       for (const [index, id] of modernRows.entries()) {
-        expect(stale.raw.query("SELECT * FROM invoice_lines WHERE id = ?").all(id)).toEqual(before[index]!);
+        expect(stale.raw.query(legacyCols).all(id)).toEqual(before[index]!);
       }
 
       // the modern zero-default snapshots survive untouched…
@@ -506,6 +514,56 @@ describe("barcodes (ticket 28)", () => {
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
           fs.rmSync(staleDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
+  it("adds cogs_exact to pre-column databases, backfills legacy rows, and marks the run", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-cogs-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // a database created before the exact-COGS column existed: invoices +
+      // invoice_lines already carry the discount columns, but no cogs_exact
+      legacy.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE items (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT NOT NULL, cost_price INTEGER NOT NULL, selling_price INTEGER NOT NULL, low_stock_threshold INTEGER NOT NULL, stock_on_hand INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
+      legacy.raw.exec("CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, item_id TEXT, description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)");
+      legacy.raw.exec("INSERT INTO categories VALUES ('cogs-cat', 'قديم', '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO items VALUES ('cogs-item', 'منتج قديم', 'cogs-cat', 100, 200, 5, 1, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      // a pre-#30 PURCHASE line (cost = unit basis) and a legacy SALE line
+      legacy.raw.exec("INSERT INTO invoices VALUES ('cogs-purchase', 'INV-COGS-P', 'PURCHASE', NULL, NULL, '2026-01-01', 600, NULL, NULL, 0, 600, 600, 0, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('cogs-purchase-line', 'cogs-purchase', NULL, 'شراء قديم', 3, 0, 200, 200, 600, 0, 600)");
+      legacy.raw.exec("INSERT INTO invoices VALUES ('cogs-sale', 'INV-COGS-S', 'SALE', NULL, NULL, '2026-01-02', 0, NULL, NULL, 0, 500, 0, 500, NULL, '2026-01-02T00:00:00', '2026-01-02T00:00:00')");
+      legacy.raw.exec("INSERT INTO invoice_lines VALUES ('cogs-sale-line', 'cogs-sale', NULL, 'بيع قديم', 5, 0, 500, 117, 500, 0, 500)");
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+
+      // the write seam exposes the backfilled DTO (exact for the PURCHASE
+      // line, the documented quantity × cost_at_sale approximation for the
+      // legacy SALE line) and the marker is durable
+      const purchase = await legacyStore.getInvoiceDetail("cogs-purchase");
+      expect(purchase?.lines[0]).toMatchObject({ costAtSale: 200, cogsExact: 600 });
+      const sale = await legacyStore.getInvoiceDetail("cogs-sale");
+      expect(sale?.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 5 * 117 });
+      expect(await legacyStore.getSetting("migration.cogsExactV1")).toBe("done");
+
+      // a second setup is a no-op: the marker gating keeps the backfill from
+      // overwriting values (the column exists, the marker is set)
+      legacy.raw.exec("UPDATE invoice_lines SET cogs_exact = 42 WHERE id = 'cogs-purchase-line'");
+      await legacyStore.setup();
+      expect((await legacyStore.getInvoiceDetail("cogs-purchase"))?.lines[0]?.cogsExact).toBe(42);
+    } finally {
+      legacy.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true });
           break;
         } catch {
           Bun.sleepSync(50);

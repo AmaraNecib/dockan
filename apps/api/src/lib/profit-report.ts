@@ -20,6 +20,8 @@ export interface ProfitSaleLine {
   quantity: number;
   /** per-unit FIFO cost snapshot (ADR-0005), whole DZD */
   costAtSale: number;
+  /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
+  cogsExact: number;
   /** line revenue after its allocated share of the invoice discount */
   netTotal: number;
 }
@@ -57,7 +59,8 @@ function dateInRange(date: string, range: ProfitReportRange): boolean {
  *
  * - revenue = Σ line.netTotal over SALE lines in range (#30 allocation makes
  *   Σ netTotal ≡ invoice.totalAmount, so discounts already reduce revenue)
- * - cogs = Σ line.costAtSale × line.quantity (FIFO snapshot cost basis)
+ * - cogs = Σ line.cogsExact (exact per-line layer sum, not the rounded
+ *   quantity × costAtSale product — see docs/adr/0005 for the drift)
  * - operatingExpenses = Σ expenses in range except owner-withdrawal categories
  * - ownerWithdrawals = Σ expenses in range flagged as owner withdrawals
  * - result = grossProfit − operatingExpenses − ownerWithdrawals
@@ -79,7 +82,7 @@ export function computeProfitReport(input: {
     // SAFETY: money is whole DZD integers from the persisted line snapshots;
     // the product of two safe integers stays exact for realistic shop volumes
     revenue += line.netTotal;
-    cogs += line.quantity * line.costAtSale;
+    cogs += line.cogsExact;
   }
 
   const buckets = new Map<string, { total: number; count: number }>();

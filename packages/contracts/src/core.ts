@@ -175,8 +175,12 @@ export const invoiceLineSchema = z.object({
   defaultUnitPrice: dinarsSchema,
   /** actual negotiated price used on this invoice (historical) */
   unitPrice: dinarsSchema,
-  /** snapshot of the FIFO cost consumed by this line */
+  /** snapshot of the FIFO cost consumed by this line (whole DZD unit cost) */
   costAtSale: dinarsSchema,
+  /** exact total COGS of the layers this line consumed, before rounding (the
+   * report sums this instead of quantity × costAtSale, whose per-unit rounding
+   * drifts by up to half a DZD per unit — see docs/adr/0005) */
+  cogsExact: dinarsSchema,
   /** gross line total before the invoice-level discount */
   total: dinarsSchema,
   /** proportional share of the invoice discount for item reporting */

@@ -18,5 +18,19 @@ Tradeoff accepted: `costAtSale` is the FIFO-weighted unit cost rounded to
 whole DZD, so a line's implied COGS (quantity × costAtSale) can drift from the
 exact layer total by up to half a DZD per unit (e.g. layers 2×10 + 1×15, 3-unit
 sale: rounded 12 vs exact 11.67). This matches the whole-DZD rounding already
-applied by `averageCostAfter`; exact per-line COGS would need an additive
-column and is deferred as a follow-up.
+applied by `averageCostAfter`; exact per-line COGS needs an additive column.
+
+> Resolved (issue 43): the additive column landed as `invoice_lines.cogs_exact`
+> — the exact, unrounded total of the layers a line consumed (SALE lines store
+> the FIFO layer sum from `fifoOutflowCost`; PURCHASE lines store
+> quantity × unit cost). The profit report now sums `cogsExact` instead of
+> `quantity × costAtSale`, so historical per-line profit is exact. Legacy rows
+> backfill `cogs_exact = quantity × cost_at_sale` (exact for PURCHASE rows,
+> the documented approximation for the pre-#30 SALE stub era).
+>
+> Issue 43 also widened sale movement timestamps: a SALE invoice that
+> explicitly carries an `invoiceDate` dates its stock movements at that
+> business date, bounded to never precede the item's newest inflow — a dated
+> row can never sort ahead of stock it consumes, so FIFO replay stays valid
+> (see `saleMovementTime` in apps/api/src/lib/stock-ledger.ts). Undated
+> invoices keep wall-clock movement timestamps.

@@ -878,9 +878,18 @@ export function createRpcRouter(deps: RpcDeps) {
             await tx.setReturnReason(existing.id, existing.reason && existing.reason.trim() !== "" ? `${existing.reason} — ${note}` : note);
           }
           const occurredAt = localDateTime();
+          // aggregate the returned quantity per item: one scrapping movement per
+          // item (a return cannot carry two lines of the same item in normal
+          // use, but a direct-API duplicate-item return would otherwise produce
+          // two movements that the report's scrap attribution could not tell
+          // apart). The removal is CLAMPED per item to what is actually on hand.
+          const byItem = new Map<string, number>();
           for (const line of existing.lines) {
             if (line.itemId === null) continue;
-            const item = (await tx.getItemsByIds([line.itemId])).get(line.itemId);
+            byItem.set(line.itemId, (byItem.get(line.itemId) ?? 0) + line.quantity);
+          }
+          for (const [itemId, returnedQty] of byItem) {
+            const item = (await tx.getItemsByIds([itemId])).get(itemId);
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
@@ -888,7 +897,7 @@ export function createRpcRouter(deps: RpcDeps) {
             const projection = projectLedger(movements, { fallbackUnitCost: item.costPrice });
             // clamp: never remove more than is actually in stock (some returned
             // units may already have been resold between create and review)
-            const removal = Math.min(line.quantity, projection.stockOnHand);
+            const removal = Math.min(returnedQty, projection.stockOnHand);
             if (removal <= 0) continue;
             const candidate = {
               kind: "MANUAL_ADJUSTMENT" as const,

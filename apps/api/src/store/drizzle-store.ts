@@ -28,6 +28,7 @@ import type {
 } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
 import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
 
@@ -803,35 +804,53 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // basis) and costAtSale (rounded snapshot, kept for the DTO); the pure
       // report module owns the formulas. setup() guarantees the column;
       // the self-healing repair keeps every row honest on every boot.
-      // A line whose FULL sold quantity was returned is excluded entirely:
-      // the goods are back in inventory, so the sale is un-booked — this is
-      // what unwinds a free-line's booked loss (e.g. price 0, cogs 200: the
-      // returned line no longer shows −200). REJECTED returns do NOT count
-      // toward the exclusion: their goods were scrapped (removed from stock),
-      // a real cost, so the sale stays booked and no loss is hidden.
-      // Partially-returned lines stay fully booked (documented: the partial
-      // refund is a cash record; whole-DZD exactness keeps the report
-      // deterministic — see design doc).
       // SAFETY: the SELECT aliases exactly produce these camelCase keys from
       // the fixed column list; the raw result's shape is pinned by the literal
       // query, not by any user input.
-      const rows = (await db.all(sql`
+      const lines = (await db.all(sql`
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
-               l.quantity AS quantity, l.cost_at_sale AS costAtSale,
-               l.cogs_exact AS cogsExact,
+               l.id AS lineId, l.quantity AS quantity,
+               l.cost_at_sale AS costAtSale, l.cogs_exact AS cogsExact,
                l.net_total AS netTotal
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
           AND i.invoice_date >= substr(${from}, 1, 10)
           AND i.invoice_date <= substr(${to}, 1, 10)
-          AND COALESCE((
-            SELECT SUM(rl.quantity) FROM return_lines rl
-            JOIN returns r ON r.id = rl.return_id
-            WHERE rl.invoice_line_id = l.id
-              AND r.status != 'REJECTED_DAMAGED'
-          ), 0) < l.quantity
-      `)) as Array<ProfitSaleLine>;
+      `)) as Array<ProfitSaleLine & { lineId: string }>;
+      if (lines.length === 0) return [];
+      // per-original-line return aggregates: held (pending/accepted) returns,
+      // rejected returns, and — for the rejected ones — the quantity the reject
+      // actually SCRAPPED (the MANUAL_ADJUSTMENT outflow amount, i.e. the
+      // still-on-hand portion at review time; resold units are never scrapped
+      // by the clamp). One outflow movement per (return, item) exists after the
+      // reject aggregates per item.
+      // SAFETY: the JOIN keys are fixed columns; the aggregation yields one
+      // row per invoice line with its three whole-number sums.
+      const stats = (await db.all(sql`
+        SELECT rl.invoice_line_id AS invoiceLineId,
+               COALESCE(SUM(CASE WHEN r.status != 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS heldQty,
+               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS rejectedQty,
+               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' AND sm.id IS NOT NULL THEN -sm.delta ELSE 0 END), 0) AS rejectedScrapQty
+        FROM return_lines rl
+        JOIN returns r ON r.id = rl.return_id
+        LEFT JOIN stock_movements sm
+          ON sm.ref = r.id AND sm.item_id = rl.item_id
+         AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
+        GROUP BY rl.invoice_line_id
+      `)) as Array<{ invoiceLineId: string; heldQty: number; rejectedQty: number; rejectedScrapQty: number }>;
+      const statsByLine = new Map(stats.map((row) => [row.invoiceLineId, row]));
+      const rows: ProfitSaleLine[] = [];
+      for (const line of lines) {
+        const perLineStats = statsByLine.get(line.lineId);
+        if (perLineStats === undefined) {
+          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, netTotal: line.netTotal });
+          continue;
+        }
+        const booked = bookSaleLineForReturns(line, perLineStats);
+        if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, netTotal: booked.netTotal });
+      }
       return rows;
     },
 

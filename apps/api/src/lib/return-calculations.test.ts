@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  bookSaleLineForReturns,
   computeReturnRefund,
   lineRefundAmount,
   refundUnitPriceFor,
@@ -81,6 +82,31 @@ describe("computeReturnRefund (line refunds + record total)", () => {
     expect(result.refundTotal).toBe(600);
   });
 
+  it("consolidates split entries of one line before pricing (dedupe-first)", () => {
+    // a 101-DZD line over 3 units split as [qty 2, qty 1]: pricing each entry
+    // independently would round twice (34 + 34 = 102); the consolidated sum
+    // is a FULL return and refunds the exact 101
+    const result = computeReturnRefund([
+      { invoiceLineId: "l1", quantity: 2, lineQuantity: 3, netTotal: 101 },
+      { invoiceLineId: "l1", quantity: 1, lineQuantity: 3, netTotal: 101 },
+    ]);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0]).toMatchObject({ invoiceLineId: "l1", quantity: 3, refundUnitPrice: 34, refundAmount: 101 });
+    expect(result.refundTotal).toBe(101);
+  });
+
+  it("consolidates split entries of a PARTIAL return too", () => {
+    // [qty 1, qty 1] of a 3-unit line: the untouched unit stays, the partial
+    // prices once at the rounded unit
+    const result = computeReturnRefund([
+      { invoiceLineId: "l1", quantity: 1, lineQuantity: 3, netTotal: 101 },
+      { invoiceLineId: "l1", quantity: 1, lineQuantity: 3, netTotal: 101 },
+    ]);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0]).toMatchObject({ quantity: 2, refundUnitPrice: 34, refundAmount: 68 });
+    expect(result.refundTotal).toBe(68);
+  });
+
   it("handles an empty request", () => {
     expect(computeReturnRefund([])).toEqual({ lines: [], refundTotal: 0 });
   });
@@ -157,5 +183,42 @@ describe("returnCapViolation (per-line refund cap)", () => {
   it("ignores unknown lines (the router owns that validation)", () => {
     const violation = returnCapViolation([{ invoiceLineId: "nope", quantity: 99 }], lines, new Map());
     expect(violation).toBeNull();
+  });
+});
+describe("bookSaleLineForReturns (profit report per-line booking)", () => {
+  const line = { quantity: 3, netTotal: 900, cogsExact: 300 };
+
+  it("passes a no-return line through exactly", () => {
+    const booked = bookSaleLineForReturns(line, { heldQty: 0, rejectedQty: 0, rejectedScrapQty: 0 });
+    expect(booked).toEqual({ bookedQty: 3, netTotal: 900, cogsExact: 300 });
+  });
+
+  it("excludes a fully-held (pending/accepted) return entirely", () => {
+    const booked = bookSaleLineForReturns(line, { heldQty: 3, rejectedQty: 0, rejectedScrapQty: 0 });
+    expect(booked).toEqual({ bookedQty: 0, netTotal: 0, cogsExact: 0 });
+  });
+
+  it("keeps a fully-rejected (no resale) return fully booked — scrapped = real cost", () => {
+    // freebie-reject convention: the whole line was returned and the reject
+    // scraped everything still on hand
+    const booked = bookSaleLineForReturns({ quantity: 1, netTotal: 0, cogsExact: 200 }, { heldQty: 0, rejectedQty: 1, rejectedScrapQty: 1 });
+    expect(booked).toEqual({ bookedQty: 1, netTotal: 0, cogsExact: 200 });
+  });
+
+  it("un-books only the RESOLD units of a rejected return; the scrapped-now portion stays", () => {
+    // return 3, resell 2, reject scraps the 1 still on hand: the original line
+    // books 1 unit, the resale books the 2 — nothing double-booked
+    const booked = bookSaleLineForReturns(line, { heldQty: 0, rejectedQty: 3, rejectedScrapQty: 1 });
+    expect(booked.bookedQty).toBe(1);
+    expect(booked).toEqual({ bookedQty: 1, netTotal: 300, cogsExact: 100 });
+  });
+
+  it("scales with one whole-DZD rounding when the booked share is partial", () => {
+    // 5 units, netTotal 1000, cogsExact 700; reject scraps 3 of 5 → 2 resold,
+    // so 3 units stay booked in the original line
+    const booked = bookSaleLineForReturns({ quantity: 5, netTotal: 1_000, cogsExact: 700 }, { heldQty: 0, rejectedQty: 5, rejectedScrapQty: 3 });
+    expect(booked.bookedQty).toBe(3);
+    expect(booked.netTotal).toBe(600);
+    expect(booked.cogsExact).toBe(420);
   });
 });

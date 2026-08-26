@@ -2512,4 +2512,59 @@ describe("returns & refunds", () => {
     expect(afterReject.grossProfit - baseline.grossProfit).toBe(-200);
     expect(afterReject.cogs - baseline.cogs).toBe(200);
   });
+
+  it("prices split duplicate entries of one line ONCE (no per-entry rounding over-refund)", async () => {
+    const item = await makeReturnItem("مرجوع-سطر-مقسوم", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    // 3 × 100 with a 199 DZD discount → the line nets 101; per-unit rounding
+    // gives 34, so two entries [qty 2, qty 1] would refund 34+34 = 102 if
+    // priced independently — the fix consolidates to a full-line exact 101
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 199 }, lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(sale.lines[0]).toMatchObject({ netTotal: 101 });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }, { invoiceLineId: sale.lines[0]!.id, quantity: 1 }],
+    });
+    expect(created.refundAmount).toBe(101);
+    expect(created.lines).toHaveLength(1);
+    expect(created.lines[0]).toMatchObject({ invoiceLineId: sale.lines[0]!.id, quantity: 3, refundUnitPrice: 34, refundAmount: 101 });
+    // one SALE-reversal movement for the whole line, stock fully back
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(3);
+    expect(history.movements.filter((movement) => movement.returnMark === "PENDING")).toHaveLength(1);
+  });
+
+  it("reject after a resale books the original line only for the scrapped-now portion (nothing double-booked)", async () => {
+    const item = await makeReturnItem("مرجوع-إعادة-تقرير", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    // sale A: 3 @ 300 (900 rev / 300 cogs)
+    const a = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(a.lines[0]).toMatchObject({ netTotal: 900, cogsExact: 300 });
+    const sold = await report();
+    expect(sold.revenue - baseline.revenue).toBe(900);
+    expect(sold.cogs - baseline.cogs).toBe(300);
+    // customer returns all 3; while pending the line is un-booked
+    const returned = await client.returnsCreate({ invoiceId: a.id, lines: [{ invoiceLineId: a.lines[0]!.id, quantity: 3 }] });
+    const pending = await report();
+    expect(pending.revenue - baseline.revenue).toBe(0);
+    expect(pending.cogs - baseline.cogs).toBe(0);
+    // 2 of the returned units are resold (sale B)
+    const b = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(b.lines[0]).toMatchObject({ netTotal: 600, cogsExact: 200 });
+    // the owner rejects: the clamp scraps only the 1 still on hand
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
+    // original line keeps ONLY the scrapped-now unit (300 rev / 100 cogs);
+    // the resold 2 are booked by B (600 / 200) — every unit booked exactly once
+    expect(afterReject.revenue - baseline.revenue).toBe(900);
+    expect(afterReject.cogs - baseline.cogs).toBe(300);
+  });
 });

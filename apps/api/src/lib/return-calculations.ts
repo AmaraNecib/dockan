@@ -63,9 +63,22 @@ export function lineRefundAmount(quantity: number, netTotal: number, lineQuantit
   return quantity * refundUnitPriceFor(netTotal, lineQuantity);
 }
 
-/** Compute every line's refund plus the record total. Pure and deterministic. */
+/** Compute every line's refund plus the record total. Pure and deterministic.
+ * Quantities are CONSOLIDATED by invoiceLineId FIRST — split entries of the
+ * same line (e.g. a request with [qty 2, qty 1] of one 3-unit line) are
+ * priced once, so the whole line price (or the partial effective unit) is
+ * applied once and rounding can never over-refund. */
 export function computeReturnRefund(lines: readonly ReturnRefundLineInput[]): ReturnRefundComputation {
-  const result = lines.map((line) => {
+  const byLine = new Map<string, ReturnRefundLineInput & { quantity: number }>();
+  for (const line of lines) {
+    const existing = byLine.get(line.invoiceLineId);
+    if (existing === undefined) {
+      byLine.set(line.invoiceLineId, { ...line });
+    } else {
+      byLine.set(line.invoiceLineId, { ...existing, quantity: existing.quantity + line.quantity });
+    }
+  }
+  const result = [...byLine.values()].map((line) => {
     const refundUnitPrice = refundUnitPriceFor(line.netTotal, line.lineQuantity);
     return {
       invoiceLineId: line.invoiceLineId,
@@ -87,6 +100,65 @@ export interface ReturnCapViolation {
   invoiceLineId: string;
   requested: number;
   remaining: number;
+}
+
+/**
+ * Per-original-line return aggregates the profit report needs (the store
+ * reads them; this module turns them into booked revenue/COGS).
+ */
+export interface SaleLineReturnStats {
+  /** returned quantity under PENDING or ACCEPTED returns (goods held in inventory) */
+  heldQty: number;
+  /** returned quantity under REJECTED returns */
+  rejectedQty: number;
+  /** of the rejected quantity, the units the reject physically SCRAPPED — the
+   * still-on-hand portion at review time (the clamp never scraps resold units) */
+  rejectedScrapQty: number;
+}
+
+/** A SALE line's booked revenue/COGS after returns (whole DZD). */
+export interface BookedSaleLine {
+  bookedQty: number;
+  netTotal: number;
+  cogsExact: number;
+}
+
+/**
+ * Whole-DZD revenue/COGS a SALE line books AFTER returns.
+ *
+ * Per unit of the original line:
+ * - held (pending/accepted) returns UN-book the unit: the goods are back in
+ *   inventory, or will be rebooked by a later sale.
+ * - rejected returns un-book only the RESOLD units (rejectedQty −
+ *   rejectedScrapQty): those are a completed sale cycle booked by the RESALE
+ *   invoice, so keeping them in the original line too would double-book
+ *   revenue+COGS. The SCRAPPED-now units stay booked in the original line —
+ *   scrapping is a realized cost of that sale, which is exactly what keeps a
+ *   rejected freebie's loss visible (a fully-scrapped return has scrap = its
+ *   whole quantity, so the line keeps booking).
+ *
+ * bookedQty = sold − heldReturned − (rejectedReturned − rejectedScrap). When
+ * it reaches 0 the line is excluded entirely (exact); when it is less than the
+ * sold count the line's revenue/COGS scale proportionally with ONE whole-DZD
+ * rounding (only reachable in the reject-resale case) — otherwise the exact
+ * cogsExact / netTotal pass through untouched.
+ */
+export function bookSaleLineForReturns(
+  line: { quantity: number; netTotal: number; cogsExact: number },
+  stats: SaleLineReturnStats,
+): BookedSaleLine {
+  const resold = Math.max(0, stats.rejectedQty - stats.rejectedScrapQty);
+  const bookedQty = line.quantity - stats.heldQty - resold;
+  if (bookedQty <= 0) return { bookedQty: 0, netTotal: 0, cogsExact: 0 } satisfies BookedSaleLine;
+  if (bookedQty >= line.quantity) {
+    // the whole line stands: exact snapshots, no drift
+    return { bookedQty, netTotal: line.netTotal, cogsExact: line.cogsExact } satisfies BookedSaleLine;
+  }
+  return {
+    bookedQty,
+    netTotal: Math.round((line.netTotal * bookedQty) / line.quantity),
+    cogsExact: Math.round((line.cogsExact * bookedQty) / line.quantity),
+  } satisfies BookedSaleLine;
 }
 
 /**

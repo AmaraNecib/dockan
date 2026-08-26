@@ -1,11 +1,12 @@
-# Debate — issue 43 (evidence at final head 9dd5e1c)
+# Debate — issue 43 (evidence re-keyed to final code head 13e9927)
 
 Reviewers: critic (reviewer sub-agent, run b2752984) + defender (reviewer
 sub-agent, run 2a9d6db4) over `git diff 0de1265...HEAD` at head f06ce89.
 Both agents verified the FIFO replay-validity claim and tie-break ordering
 before reporting; unit/web/store suites (47/21/52) green at review time.
-The debate's own fixes landed as commit 9dd5e1c (see "Actions taken") — the
-file is re-keyed to the final head; the code-review and test-audit evidence
+The debate's own fixes landed as commit 9dd5e1c (see "Actions taken"); the
+file is re-keyed to the code head 13e9927 — later commits touch only
+.scratch evidence, so this evidence stays valid against the branch head.
 at 9dd5e1c cover that delta independently.
 
 ## Critic findings (severity 1-10)

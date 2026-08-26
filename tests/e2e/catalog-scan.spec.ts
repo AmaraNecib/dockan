@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 28 e2e: catalog search ranking, USB-wedge scan capture at window
+ * Catalog search ranking, USB-wedge scan capture at window
  * level (fast burst + Enter), duplicate protection, and the unknown-scan
  * dialog that never creates data without an explicit choice.
  */

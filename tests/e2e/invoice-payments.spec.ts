@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 8 e2e: later payments on an invoice, in instalments.
+ * Later payments on an invoice, in instalments.
  * A sale is recorded with zero paid via /sale quick-add-with-stock; the
  * invoice is then opened from /invoices where two instalments are recorded,
  * the overpay boundary is refused with the exact Arabic message, the history

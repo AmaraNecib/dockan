@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 10 e2e: settings screen (store identity). Owner edits the store
+ * Settings screen (store identity). Owner edits the store
  * name + phone on /settings; the values persist (DB-backed, proven by a page
  * reload); a saved invoice displays them in its header (the only invoicing
- * view today is the purchase saved-card — sale checkout is ticket #30's PR).
+ * view today is the purchase saved-card; sale checkout is covered by the
+ * sale-checkout spec).
  * Unique names per the parallel-specs shared-DB rule (wisdom 2026-08-24).
  */
 test("settings edit → save → invoice header reflects the store identity", async ({ page }) => {

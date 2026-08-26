@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 30: sale checkout through the existing catalog seams. The flow uses
+ * Sale checkout through the existing catalog seams. The flow uses
  * an unknown scan's explicit create-with-stock choice, the picker, an exact
  * scan, both negotiated-price modes, both invoice discount modes, and an
  * oversell rejection that leaves the cart available.

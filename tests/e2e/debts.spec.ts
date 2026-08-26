@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 9 e2e: debts screen (/debts). After first-time setup, seed a
+ * Debts screen (/debts). After first-time setup, seed a
  * category + item, then create a sale with a typed customer and a partial
  * payment (customer owes us 1500) and a purchase with a typed supplier and a
  * partial payment (we owe the supplier 1200). The debts page must render both

@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 29 e2e: purchase intake (/purchase). Category + two uniquely-named
+ * Purchase intake (/purchase). Category + two uniquely-named
  * items (shared-wiped-database rule) → build lines via the catalog picker and
  * the inline quick-add → save → invoice number card → stock reflected in the
  * items list. The deferred-linking proposal panel renders after save.

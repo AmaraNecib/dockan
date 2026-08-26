@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 /**
- * Ticket 13 e2e: the manual export button creates today's backup file on
+ * The manual export button creates today's backup file on
  * disk under the api's data dir (.e2e-data/backups) and reports success.
  * The daily-on-startup copy is covered by unit tests (idempotency) — this
  * spec proves the user-facing path end to end.

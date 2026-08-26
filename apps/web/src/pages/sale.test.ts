@@ -37,9 +37,29 @@ describe("cart quantity draft (cleared state + deterministic parse)", () => {
     expect(parseQuantityDraft("0042")).toBe(42);
   });
 
-  it("is deterministic: the same draft always resolves the same way", () => {
-    for (const input of ["", "0", "1", "999", "-1", "1e3", "٥"]) {
-      expect(parseQuantityDraft(input)).toBe(parseQuantityDraft(input));
+  it("rejects drafts above the RPC quantity cap instead of surfacing a server error", () => {
+    expect(parseQuantityDraft("9999999999")).toBe(0);
+    expect(parseQuantityDraft("1000001")).toBe(0);
+    expect(parseQuantityDraft("1000000")).toBe(1_000_000);
+    expect(quantityDraftInvalid("9999999999")).toBe(true);
+  });
+
+  it("is deterministic and pins each input's exact resolution (no self-equality)", () => {
+    const cases: Array<[string, number]> = [
+      ["", 0],
+      ["0", 0],
+      ["1", 1],
+      ["999", 999],
+      ["-1", 0],
+      ["1e3", 0],
+      ["1.5", 0],
+      ["٥", 0],
+      ["1_000", 0],
+      ["1000000", 1_000_000],
+      ["1000001", 0],
+    ];
+    for (const [input, expected] of cases) {
+      expect(parseQuantityDraft(input)).toBe(expected);
     }
   });
 });

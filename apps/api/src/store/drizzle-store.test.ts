@@ -571,6 +571,14 @@ describe("barcodes (ticket 28)", () => {
       legacy.raw.exec("UPDATE invoice_lines SET cogs_exact = 0, cost_at_sale = 0 WHERE id = 'cogs-sale-line'");
       await legacyStore.setup();
       expect((await legacyStore.getInvoiceDetail("cogs-sale"))?.lines[0]?.cogsExact).toBe(0);
+
+      // the write seam's fallback: a caller that omits cogsExact (older
+      // adapters/migration tests) gets the documented quantity × cost_at_sale
+      // approximation instead of a schema break
+      const viaSeam = await legacyStore.withTransaction((tx) =>
+        tx.insertInvoiceLine({ invoiceId: "cogs-purchase", itemId: null, description: "بدون قيمة دقيقة", quantity: 2, unitPrice: 50, costAtSale: 50, total: 100 }),
+      );
+      expect(viaSeam.cogsExact).toBe(100);
     } finally {
       legacy.close();
       for (let attempt = 0; attempt < 5; attempt++) {

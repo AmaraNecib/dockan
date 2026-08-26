@@ -37,18 +37,22 @@ function toDiscountType(value: string): DiscountType {
 }
 
 /**
- * Resolve a cart quantity draft to its effective line quantity. Empty or
- * non-integer drafts yield 0 (invalid); the input never rewrites the draft,
- * so clearing it stays visually empty instead of snapping back to the
- * previous value (the field is NOT a controlled number). Only an explicit
- * add-line action (scan / duplicate picker entry) repairs a cleared draft
- * to a single unit.
+ * Resolve a cart quantity draft to its effective line quantity. Empty,
+ * non-integer, or over-cap drafts yield 0 (invalid); the input never rewrites
+ * the draft, so clearing it stays visually empty instead of snapping back to
+ * the previous value (the field is NOT a controlled number). The 1_000_000
+ * cap mirrors the RPC contract's line-quantity max — an oversized draft is
+ * refused client-side instead of surfacing an opaque server error. Only an
+ * explicit add-line action (scan / duplicate picker entry) repairs a cleared
+ * draft to a single unit.
  */
+const MAX_LINE_QUANTITY = 1_000_000;
+
 export function parseQuantityDraft(draft: string): number {
   const trimmed = draft.trim();
   if (trimmed === "" || !/^\d+$/u.test(trimmed)) return 0;
   const value = Number(trimmed);
-  return Number.isSafeInteger(value) && value >= 1 ? value : 0;
+  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_LINE_QUANTITY ? value : 0;
 }
 
 /** True when the draft cannot form a sellable line (empty, zero, or garbage). */

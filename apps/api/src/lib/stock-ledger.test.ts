@@ -137,6 +137,8 @@ describe("saleMovementTime (issue 43 bound)", () => {
     ];
     // invoice dated after the sale: outflows must not count as a bound
     expect(saleMovementTime("2026-06-07", movements)).toBe("2026-06-07T00:00:00");
+    // the outflow's instant is NOT the bound — the result is invoice midnight, not 06-06T15:00
+    expect(saleMovementTime("2026-06-07", movements)).not.toBe("2026-06-06T15:00:00");
   });
 
   it("keeps FIFO replay valid where the un-clamped date would throw STOCK_NEGATIVE", () => {

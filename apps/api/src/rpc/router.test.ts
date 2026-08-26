@@ -1226,9 +1226,12 @@ describe("sale checkout (ticket 30)", () => {
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
     const saleMovement = (await client.itemsHistory({ itemId: item.id })).movements.find((movement) => movement.kind === "SALE")!;
     // no explicit invoiceDate: the movement stays on the wall clock (today),
-    // following the invoice's own business date derived server-side
+    // following the invoice's own business date derived server-side — and it
+    // must NOT land at invoice-day midnight (that is the explicit-dating
+    // behavior, which saleMovementTime clamps to the latest inflow)
     expect(saleMovement.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
     expect(saleMovement.occurredAt.startsWith(sale.invoiceDate)).toBe(true);
+    expect(saleMovement.occurredAt.endsWith("T00:00:00")).toBe(false);
   });
 });
 

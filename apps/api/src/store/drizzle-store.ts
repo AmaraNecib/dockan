@@ -459,15 +459,18 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // Self-healing repair, NOT marker-gated: a pre-migration row (or one
       // written by a build that predates this column) carries cogs_exact = 0
       // while cost_at_sale > 0 → the report would silently understate COGS.
-      // The row invariants make the UPDATE idempotent and re-run-safe: a real
-      // zero-cost line owns cost_at_sale = 0 (its exact COGS is genuinely 0)
-      // and modern rows always write exact > 0 whenever cost_at_sale > 0 (the
-      // exact sum is positive iff some consumed layer cost more than 0). Rows
-      // the migration just backfilled keep their value. A marker is still
-      // written for diagnostics/evidence, but column presence alone can never
-      // skip the repair (greptile-P1 symmetric trap: a rollback to a pre-#43
-      // build writes DEFAULT 0 on naive inserts, and the next #43 boot must
-      // heal those rows even though the marker exists).
+      // The row invariants make the UPDATE idempotent and re-run-safe: rows
+      // the migration just backfilled keep their value, and modern rows
+      // always write exact > 0 whenever cost_at_sale > 0 (a positive exact
+      // sum is possible only when some consumed layer cost more than 0). A
+      // row whose cost_at_sale ROUNDED to zero while its layers cost a
+      // fraction of a DZD is left as the pre-#43 formula reported it — the
+      // exact figure is unrecoverable from the rounded snapshot, and this
+      // repair never claims more accuracy than the old report had. A marker
+      // is still written for diagnostics/evidence, but column presence alone
+      // can never skip the repair (greptile-P1 symmetric trap: a rollback to
+      // a pre-#43 build writes DEFAULT 0 on naive inserts, and the next #43
+      // boot must heal those rows even though the marker exists).
       // SAFETY: settings.key is PRIMARY KEY; a supported query yields one
       // object with a single string value per row.
       const cogsMarker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all("migration.cogsExactV1") as Array<{ value: string }>;

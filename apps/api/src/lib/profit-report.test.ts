@@ -191,8 +191,6 @@ describe("exact per-line COGS (cogsExact)", () => {
     });
     expect(report.cogs).toBe(35);
     expect(report.grossProfit).toBe(90 - 35);
-    // the historical product would silently inflate COGS by the rounding error
-    expect(3 * 12).not.toBe(35);
   });
 
   it("per-line profit reconciles: netTotal − cogsExact is the line's exact margin", () => {

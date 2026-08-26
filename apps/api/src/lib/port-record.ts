@@ -27,14 +27,16 @@ const registryEntrySchema = z.object({ host: z.string(), port: z.number().int().
  * True when the host string binds every network interface (issue #52).
  * Covers every legal textual spelling of the unspecified address: "0.0.0.0"
  * for IPv4, ANY all-zeros-and-colons IPv6 form (::, ::0, 0:0::,
- * 0000:0000:...:0000), and the IPv4-mapped spelling "::ffff:0.0.0.0" —
- * all of them bind the wildcard in node/bun.
+ * 0000:0000:...:0000), and the IPv4-mapped unspecified spellings
+ * "::ffff:0.0.0.0", "::ffff:0:0", "::0.0.0.0" — all bind the wildcard.
  */
 export function isWildcardBindHost(host: string): boolean {
   if (host === "0.0.0.0") return true;
   if (!host.includes(":")) return false;
-  if (host.replace(/[:0]/g, "") === "") return true;
-  return host.toLowerCase() === "::ffff:0.0.0.0";
+  // strip colons, zeros, and dots: what remains is the hex payload of an
+  // IPv4-mapped tail ("ffff") or nothing (pure zero address)
+  const payload = host.replace(/[:0.]/g, "");
+  return payload === "" || payload === "ffff";
 }
 
 /**

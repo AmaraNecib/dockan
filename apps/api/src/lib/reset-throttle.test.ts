@@ -75,4 +75,22 @@ describe("createResetThrottle", () => {
     now += LOCKOUT_MS / 2;
     expect(throttle.check().retryAfterMs).toBe(LOCKOUT_MS / 2);
   });
+
+  it("honors custom tunables", () => {
+    const tuned = createResetThrottle({ now: () => now, maxFailures: 2, lockoutMs: 5_000, windowMs: 60_000 });
+    tuned.recordFailure();
+    expect(tuned.check().allowed).toBe(true);
+    tuned.recordFailure();
+    expect(tuned.check()).toEqual({ allowed: false, retryAfterMs: 5_000 });
+    now += 5_001;
+    expect(tuned.check().allowed).toBe(true);
+  });
+
+  it("never extends the lockout while locked (bounded by construction)", () => {
+    for (let i = 0; i < MAX_FAILURES; i++) fail();
+    const retryAfter = throttle.check().retryAfterMs;
+    // hammering recordFailure from a parallel path cannot stretch the window
+    for (let i = 0; i < MAX_FAILURES * 4; i++) fail();
+    expect(throttle.check().retryAfterMs).toBeLessThanOrEqual(retryAfter);
+  });
 });

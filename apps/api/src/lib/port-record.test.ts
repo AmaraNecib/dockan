@@ -137,6 +137,8 @@ describe("registry", () => {
     expect(probeHostFor("::")).toBe("127.0.0.1");
     expect(probeHostFor("0:0::")).toBe("127.0.0.1");
     expect(probeHostFor("::ffff:0.0.0.0")).toBe("127.0.0.1");
+    expect(probeHostFor("::ffff:0:0")).toBe("127.0.0.1");
+    expect(probeHostFor("::0.0.0.0")).toBe("127.0.0.1");
     expect(probeHostFor("192.168.1.5")).toBe("192.168.1.5");
   });
 

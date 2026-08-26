@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { isWildcardBindHost } from "./lib/port-record";
+import { isWildcardBindHost, probeHostFor } from "./lib/port-record";
 
 export type AppConfig = {
   host: string;
@@ -82,7 +82,10 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   // explicit opt-in naming the same interface, so a stray DOKAN_HOST=0.0.0.0
   // copied from some tutorial fails loudly at boot instead of silently
   // publishing the store to the room.
-  const requestedHost = env.DOKAN_HOST ?? "127.0.0.1";
+  // Blank means unset — same convention as DOKAN_PORT — because "" itself
+  // binds every interface on some runtimes.
+  const hostEnv = env.DOKAN_HOST ?? "";
+  const requestedHost = hostEnv.trim() === "" ? "127.0.0.1" : hostEnv;
   if (isWildcardBindHost(requestedHost) && env.DOKAN_HOST_INTERFACE !== requestedHost) {
     throw new Error(
       `DOKAN_HOST=${requestedHost} binds every network interface and is refused by default. ` +
@@ -97,7 +100,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const portIsValid = Number.isFinite(parsedPort) && parsedPort > 0;
   return {
     host: requestedHost,
-    probeHost: isWildcardBindHost(requestedHost) ? "127.0.0.1" : requestedHost,
+    probeHost: probeHostFor(requestedHost),
     port: portIsValid ? parsedPort : 4317,
     portExplicit: portIsValid, 
     dataDir,

@@ -65,6 +65,11 @@ describe("createAppConfig host binding", () => {
     expect(config.probeHost).toBe("127.0.0.1");
   });
 
+  it("treats a blank DOKAN_HOST as unset (empty string binds every interface on some runtimes)", () => {
+    expect(createAppConfig({ DOKAN_HOST: "" }).host).toBe("127.0.0.1");
+    expect(createAppConfig({ DOKAN_HOST: "   " }).host).toBe("127.0.0.1");
+  });
+
   it("keeps an explicit LAN host without extra opt-in", () => {
     const config = createAppConfig({ DOKAN_HOST: "192.168.1.5" });
     expect(config.host).toBe("192.168.1.5");
@@ -85,7 +90,18 @@ describe("createAppConfig host binding", () => {
   });
 
   it("refuses every wildcard spelling without the opt-in", () => {
-    const spellings = ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0:0::", "0000:0000:0000:0000:0000:0000:0000:0000", "::ffff:0.0.0.0"];
+    const spellings = [
+      "0.0.0.0",
+      "::",
+      "::0",
+      "0:0:0:0:0:0:0:0",
+      "0:0::",
+      "0000:0000:0000:0000:0000:0000:0000:0000",
+      "::ffff:0.0.0.0",
+      "::ffff:0:0",
+      "0:0:0:0:0:ffff:0:0",
+      "::0.0.0.0",
+    ];
     for (const host of spellings) {
       expect(() => createAppConfig({ DOKAN_HOST: host })).toThrow();
     }

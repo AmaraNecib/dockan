@@ -55,9 +55,7 @@ export function createResetThrottle(options: ResetThrottleOptions = {}): ResetTh
       if (lockedUntil > now) {
         return { allowed: false, retryAfterMs: lockedUntil - now };
       }
-      // the lockout lifted: start a fresh window rather than creeping toward
-      // a permanent lock
-      lockedUntil = 0;
+      // pure time comparison: a lifted lockout needs no state mutation here
       return { allowed: true, retryAfterMs: 0 };
     },
 

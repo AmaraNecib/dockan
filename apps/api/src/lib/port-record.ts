@@ -23,12 +23,18 @@ export type LockOpts = { deadlineMs?: number; graceMs?: number };
 
 const registryEntrySchema = z.object({ host: z.string(), port: z.number().int().positive() });
 
-/** Every spelling of "bind every interface" node accepts as a host string. */
-const WILDCARD_BIND_HOSTS: readonly string[] = ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0"];
-
-/** True when the host string binds every network interface (issue #52). */
+/**
+ * True when the host string binds every network interface (issue #52).
+ * Covers every legal textual spelling of the unspecified address: "0.0.0.0"
+ * for IPv4, ANY all-zeros-and-colons IPv6 form (::, ::0, 0:0::,
+ * 0000:0000:...:0000), and the IPv4-mapped spelling "::ffff:0.0.0.0" —
+ * all of them bind the wildcard in node/bun.
+ */
 export function isWildcardBindHost(host: string): boolean {
-  return WILDCARD_BIND_HOSTS.includes(host);
+  if (host === "0.0.0.0") return true;
+  if (!host.includes(":")) return false;
+  if (host.replace(/[:0]/g, "") === "") return true;
+  return host.toLowerCase() === "::ffff:0.0.0.0";
 }
 
 /**

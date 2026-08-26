@@ -20,4 +20,18 @@ describe("constantTimeEqual", () => {
     expect(constantTimeEqual("", "x")).toBe(false);
     expect(constantTimeEqual("x", "")).toBe(false);
   });
+
+  it("never throws on non-ASCII inputs with equal code-unit but different byte length", () => {
+    // "é" and "a" are both one UTF-16 unit but 2 vs 1 UTF-8 bytes — the guard
+    // must compare bytes or timingSafeEqual throws (critic finding)
+    expect(() => constantTimeEqual("é", "a")).not.toThrow();
+    expect(constantTimeEqual("é", "a")).toBe(false);
+    expect(() => constantTimeEqual("مرحبا", "abcde")).not.toThrow();
+  });
+
+  it("handles non-ASCII equal-byte-length mismatches and matches", () => {
+    // both sides are 3 UTF-8 bytes with different content
+    expect(constantTimeEqual("éa", "aé")).toBe(false);
+    expect(constantTimeEqual("مرحبا", "مرحبا")).toBe(true);
+  });
 });

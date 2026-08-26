@@ -85,7 +85,8 @@ describe("createAppConfig host binding", () => {
   });
 
   it("refuses every wildcard spelling without the opt-in", () => {
-    for (const host of ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0"]) {
+    const spellings = ["0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "0:0::", "0000:0000:0000:0000:0000:0000:0000:0000", "::ffff:0.0.0.0"];
+    for (const host of spellings) {
       expect(() => createAppConfig({ DOKAN_HOST: host })).toThrow();
     }
   });
@@ -99,8 +100,10 @@ describe("createAppConfig host binding", () => {
 
   it("accepts the ipv6 wildcard only with the matching opt-in value", () => {
     expect(() => createAppConfig({ DOKAN_HOST: "::", DOKAN_HOST_INTERFACE: "0.0.0.0" })).toThrow();
-    const config = createAppConfig({ DOKAN_HOST: "::", DOKAN_HOST_INTERFACE: "::" });
-    expect(config.host).toBe("::");
+    // an alternate zero-spelling still needs ITS OWN matching opt-in
+    expect(() => createAppConfig({ DOKAN_HOST: "0:0::", DOKAN_HOST_INTERFACE: "::" })).toThrow();
+    const config = createAppConfig({ DOKAN_HOST: "0:0::", DOKAN_HOST_INTERFACE: "0:0::" });
+    expect(config.host).toBe("0:0::");
     expect(config.probeHost).toBe("127.0.0.1");
   });
 });

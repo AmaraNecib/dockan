@@ -70,26 +70,28 @@ pub fn runtime_data_dir(exe_dir: &Path, app_data_dir: PathBuf) -> PathBuf
 
 | File | Role |
 |---|---|
-| `script-security-utils.mjs` | mirror of tuari's: `resolveTrustedTarPath` (System32 `tar.exe`), `validateReleaseResourceEntries` (exact expected entries), `copyValidatedTree` (no symlinks / junctions) |
-| `portable.mjs` | assembly: source `target/release/dokan.exe` + `target/release/resources/`, emit `target/release/bundle/portable/Dokan-portable/` + `.zip` via trusted `tar -a -c -f` (same zip style as tuari) |
-| `release.ts` (rework) | unchanged secret validation + sidecar compile; then dispatch: **default = portable** (`tauri build --bundles none` then `portable.mjs` assembly), **`--installer` = nsis** (existing install + slug rename) |
+| `script-security-utils.mjs` | mirror of tuari's: `resolveTrustedTarPath` (System32 `tar.exe`), `validateReleaseArtifacts` (per-artifact existence/type/non-empty, refuses an empty `ui/`), `copyValidatedTree` (no symlinks / junctions) |
+| `portable.mjs` | assembly: source the **flat** `target/release/` (`dokan.exe` + `dokan-api.exe` + `ui/` — tauri-build 2.6.x copies resources and the external sidecar straight into the release root, NO `resources/` subdir, verified by a real build), emit `target/release/bundle/portable/Dokan-portable/` + `.zip` via trusted `tar -a -c -f` (same zip style as tuari); per-process staging dir (pid-unique); `-new` fallback when the canonical folder is locked |
+| `release.ts` (rework) | unchanged secret validation + sidecar compile; then dispatch: **default = portable** (`tauri build --no-bundle` — the nsis installer is never produced on this path), **`--installer` = nsis** (existing install + slug rename); win32 preflight, stale `bundle/nsis` removal, unknown flags fail loudly |
 
-Portable layout produced:
+Portable layout produced (verified end-to-end with `bun run --filter @dokan/desktop portable` on 2026-08-26):
 
 ```
 bundle/portable/Dokan-portable/
-  Dokan-portable.exe     (renamed from dokan.exe)
-  dokan-api.exe          (sidecar, from resources/)
+  Dokan-portable.exe     (copied from target/release/dokan.exe — byte-identical)
+  dokan-api.exe          (sidecar, from the flat release root)
   ui/                    (built web assets)
   portable.marker        (empty marker)
-bundle/portable/Dokan-portable.zip
+bundle/portable/Dokan-portable.zip   (41.8 MB; entries: ./dokan-api.exe ./Dokan-portable.exe ./portable.marker ./ui/...)
 ```
 
-- NSIS is **avoided in the portable path** by `--bundles none` (tauri CLI maps
-  `--bundles none` to `--no-bundle`; no `*setup.exe` is produced or packaged).
-- `validateReleaseResourceEntries(resourcesDir)` expects exactly
-  `["dokan-api.exe", "ui"]` — a stray/extra file fails the build loudly
-  (mirrors tuari's bin-entry validation intent).
+- NSIS is **avoided in the portable path** by `tauri build --no-bundle` (verified:
+  `bundle/` contains only `portable/`, no `bundle/nsis`, no `*setup.exe`), and a
+  stale `bundle/nsis` from an earlier installer run is removed by release.ts.
+- `validateReleaseArtifacts` guards the app exe, sidecar and ui tree (missing,
+  zero-byte, wrong type, or an empty `ui/` all abort the build loudly); the
+  release root's other build outputs (deps/, build/, .pdb, .cargo-lock) are
+  legit and never shipped.
 - Deterministic-ish zip: same `tar -a -c -f` invocation as tuari.
 
 ### 3. Script wiring

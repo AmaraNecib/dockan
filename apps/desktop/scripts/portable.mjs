@@ -171,6 +171,12 @@ export function assemblePortable(options = {}) {
 }
 
 if (import.meta.main) {
+  // same preflight as release.ts buildPortable: the portable deliverable is
+  // Windows-only — fail clearly instead of “missing dokan.exe” on POSIX
+  if (process.platform !== "win32") {
+    console.error("[dokan] portable packaging is only supported on Windows hosts.");
+    process.exit(1);
+  }
   const { portableDir, zipPath } = assemblePortable();
   console.log(`[dokan] portable folder ready at ${portableDir}`);
   console.log(`[dokan] portable zip ready at ${zipPath}`);

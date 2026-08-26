@@ -1,4 +1,4 @@
-# Test audit — issue 43 (evidence re-keyed to final code head c6eba53)
+# Test audit — issue 43 (evidence re-keyed after develop rebase; head a2b2dd8)
 
 Three reviewer sub-agents (edge-case hunter run dd6dda6c, coverage analyst run
 3b7bbbe9, quality reviewer run cadaea15) audited the changed test files and

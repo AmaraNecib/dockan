@@ -110,7 +110,7 @@ draft:
   the wire seam.
 - Store: migration adds + backfills `cogs_exact` (interrupted-boot self-heal).
 - Web: `sale.test.ts` draft-parsing unit tests.
-- E2E (ticket30.spec.ts, content-only): cleared-quantity regression.
+- E2E (sale-checkout.spec.ts, content-only): cleared-quantity regression.
 
 ## Risks
 

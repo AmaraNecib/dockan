@@ -1,4 +1,4 @@
-# Debate — issue 43 (evidence re-keyed to final code head c6eba53)
+# Debate — issue 43 (evidence re-keyed after develop rebase; head a2b2dd8)
 
 Reviewers: critic (reviewer sub-agent, run b2752984) + defender (reviewer
 sub-agent, run 2a9d6db4) over `git diff 0de1265...HEAD` at head f06ce89.

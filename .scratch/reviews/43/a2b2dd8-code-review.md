@@ -1,4 +1,4 @@
-# Code review — issue 43 (standards + spec, evidence re-keyed to final head c6eba53)
+# Code review — issue 43 (standards + spec, re-keyed after develop rebase; head a2b2dd8)
 
 Two-axis review by parallel reviewer sub-agents (standards run 7431c575, spec
 run 2335b054) over `git diff 0de1265...13e9927`; a delta re-review (run

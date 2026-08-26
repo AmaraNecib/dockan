@@ -10,6 +10,7 @@ import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
+import { createResetThrottle, type ResetThrottle } from "../lib/reset-throttle";
 import { fifoCostForOutflow, historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { createBackup } from "../lib/backups";
@@ -26,6 +27,9 @@ type RpcDeps = {
   logger: AppLogger;
   store: StorePort;
   auth: BetterAuthInstance;
+  /** issue #52: injectable so tests can drive the lockout clock; a fresh
+   * in-memory throttle is created per router when omitted */
+  resetThrottle?: ResetThrottle;
 };
 
 /**
@@ -131,6 +135,13 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
 export function createRpcRouter(deps: RpcDeps) {
   const os = implement(dokanContract).$context<RpcContext>();
 
+  const resetThrottle = deps.resetThrottle ?? createResetThrottle();
+  // issue #52 (debate): reset attempts serialize through this tail so the
+  // lockout gate cannot be raced — without it every request already past
+  // check() carries a full guess through a just-opened window. Reset is a
+  // rare provisioning flow; serialization costs nothing there.
+  let resetTail: Promise<unknown> = Promise.resolve();
+
   const requireSession = async (context: RpcContext) => {
     // SAFETY: getSession validates the cookie against the session store and
     // returns null for anything missing or expired
@@ -164,19 +175,38 @@ export function createRpcRouter(deps: RpcDeps) {
     health: os.health.handler(() => ({ ok: true as const, version: deps.config.version })),
 
     // --- auth ----------------------------------------------------------------
-    authResetPassword: os.authResetPassword.handler(async ({ input }) => {
-      try {
-        return await resetAdminPassword(
-          { db: deps.db, auth: deps.auth, store: deps.store, config: deps.config, logger: deps.logger },
-          input,
-        );
-      } catch (err) {
-        // AppError carries a stable key; surface it so the ui can translate it
-        if (err instanceof AppError) {
-          throw new ORPCError(err.code === "WRONG_BUILD_SECRET" ? "FORBIDDEN" : "BAD_REQUEST", { message: err.code });
+    authResetPassword: os.authResetPassword.handler(({ input }) => {
+      const attempt = resetTail.then(async () => {
+        // issue #52: bound lockout after repeated wrong-secret guesses.
+        // Checked BEFORE any work, and the clear error never reveals whether a
+        // guess was close. Only WRONG_BUILD_SECRET counts as an attempt
+        // (invalid phone / unconfigured secret are operator errors, not
+        // guessing).
+        const status = resetThrottle.check();
+        if (!status.allowed) {
+          deps.logger.warn("RESET_LOCKED", `authResetPassword refused while lockout is active (retry in ~${Math.ceil(status.retryAfterMs / 1000)}s)`);
+          throw new ORPCError("TOO_MANY_REQUESTS", { message: "RESET_LOCKED" });
         }
-        throw err;
-      }
+        try {
+          const result = await resetAdminPassword(
+            { db: deps.db, auth: deps.auth, store: deps.store, config: deps.config, logger: deps.logger },
+            input,
+          );
+          resetThrottle.recordSuccess();
+          return result;
+        } catch (err) {
+          // AppError carries a stable key; surface it so the ui can translate it
+          if (err instanceof AppError) {
+            if (err.code === "WRONG_BUILD_SECRET") resetThrottle.recordFailure();
+            throw new ORPCError(err.code === "WRONG_BUILD_SECRET" ? "FORBIDDEN" : "BAD_REQUEST", { message: err.code });
+          }
+          throw err;
+        }
+      });
+      // SAFETY: the tail must survive rejected attempts or one failure would
+      // poison every later enqueue with an unhandled-rejection chain
+      resetTail = attempt.catch(() => undefined);
+      return attempt;
     }),
 
     // --- categories (ticket 03) ----------------------------------------------

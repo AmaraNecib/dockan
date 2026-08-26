@@ -13,6 +13,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { AppLogger } from "../lib/logger";
+import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
@@ -1927,5 +1928,145 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
     const invoice = await unpaidSaleInvoice("دفعة-ملاحظة-فارغة");
     const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 100, note: "   " });
     expect(paid.payments[0]!.note).toBeNull();
+  });
+});
+
+/**
+ * Issue #52: the authResetPassword lockout wiring. Self-contained app +
+ * injected throttle clock so exhausting attempts here cannot poison the
+ * shared router above, and unlocking is deterministic without real sleeps.
+ */
+describe("authResetPassword throttling", () => {
+  let tDir: string;
+  let tDirBare: string;
+  let tConn: Connection;
+  let tConnBare: Connection;
+  let lockedClient: DokanClient;
+  let bareClient: DokanClient;
+  let now: number;
+  const LOCKOUT_MS = 30_000;
+  const WRONG = { secret: "guess", newPassword: "dokan-1234", phoneNumber: "0550123123" };
+  const CORRECT = { secret: "throttled-secret-1", newPassword: "dokan-1234", phoneNumber: "0550123123" };
+
+  beforeAll(async () => {
+    tDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-throttle-"));
+    const tConfig = createAppConfig({
+      DOKAN_DATA_DIR: tDir,
+      DOKAN_DB_PATH: path.join(tDir, "test.db"),
+      DOKAN_AUTH_SECRET: "test-auth-secret",
+      DOKAN_BUILD_SECRET: "throttled-secret-1",
+    });
+    tConn = openConnection(tConfig);
+    const tStore = createDrizzleStore(tConn);
+    await tStore.setup();
+    const tLogger = new AppLogger(tDir);
+    const tAuth = createAuth(tConn.db, tConfig);
+    now = 1_000_000;
+    const throttle = createResetThrottle({ now: () => now });
+    const tApp = createApp({
+      config: tConfig,
+      logger: tLogger,
+      auth: tAuth,
+      rpcRouter: createRpcRouter({ db: tConn.db, config: tConfig, logger: tLogger, store: tStore, auth: tAuth, resetThrottle: throttle }),
+    });
+    // SAFETY: the typed client from the link implements exactly DokanClient
+    lockedClient = createORPCClient(
+      new RPCLink({
+        url: `http://127.0.0.1:${tConfig.port}/api/rpc`,
+        fetch: (request) => Promise.resolve(tApp.fetch(request)),
+      }),
+    );
+
+    // a second app WITHOUT a build secret proves operator errors never count
+    // toward the lockout (the counting rule is the wire-level behavior)
+    tDirBare = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-throttle-bare-"));
+    const bareConfig = createAppConfig({
+      DOKAN_DATA_DIR: tDirBare,
+      DOKAN_DB_PATH: path.join(tDirBare, "test.db"),
+      DOKAN_AUTH_SECRET: "test-auth-secret",
+      // no DOKAN_BUILD_SECRET: reset always answers BUILD_SECRET_NOT_CONFIGURED
+    });
+    tConnBare = openConnection(bareConfig);
+    const bareStore = createDrizzleStore(tConnBare);
+    await bareStore.setup();
+    const bareLogger = new AppLogger(tDirBare);
+    const bareAuth = createAuth(tConnBare.db, bareConfig);
+    // maxFailures 1: a single mis-counted failure would lock everything
+    const bareThrottle = createResetThrottle({ maxFailures: 1 });
+    const bareApp = createApp({
+      config: bareConfig,
+      logger: bareLogger,
+      auth: bareAuth,
+      rpcRouter: createRpcRouter({
+        db: tConnBare.db,
+        config: bareConfig,
+        logger: bareLogger,
+        store: bareStore,
+        auth: bareAuth,
+        resetThrottle: bareThrottle,
+      }),
+    });
+    bareClient = createORPCClient(
+      new RPCLink({
+        url: `http://127.0.0.1:${bareConfig.port}/api/rpc`,
+        fetch: (request) => Promise.resolve(bareApp.fetch(request)),
+      }),
+    );
+  });
+
+  afterAll(() => {
+    tConn.close();
+    tConnBare.close();
+    // SAFETY: Windows holds the sqlite file briefly after close (same retry
+    // pattern as the shared suite's afterAll above)
+    for (const d of [tDir, tDirBare]) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(d, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
+  it("locks after repeated wrong secrets, gates a CORRECT secret while locked, then unlocks after the wait", async () => {
+    for (let i = 0; i < 4; i++) {
+      // SAFETY: ORPCError exposes .code and .message on rejection
+      await expect(lockedClient.authResetPassword(WRONG)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+        message: "WRONG_BUILD_SECRET",
+      });
+    }
+    // the 5th wrong guess still answers FORBIDDEN (it records failure 5);
+    // the lockout only shows on the NEXT attempt
+    await expect(lockedClient.authResetPassword(WRONG)).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "WRONG_BUILD_SECRET",
+    });
+
+    // even the right secret is gated while locked
+    await expect(lockedClient.authResetPassword(CORRECT)).rejects.toMatchObject({
+      code: "TOO_MANY_REQUESTS",
+      message: "RESET_LOCKED",
+    });
+
+    now += LOCKOUT_MS + 1; // deterministic wait via the injected clock
+    const out = await lockedClient.authResetPassword(CORRECT);
+    expect(out.ok).toBe(true);
+  });
+
+  it("does NOT count operator errors (BUILD_SECRET_NOT_CONFIGURED) as guessing attempts", async () => {
+    // two consecutive unconfig failures with a maxFailures:1 throttle: had the
+    // second counted, it would answer RESET_LOCKED instead
+    await expect(bareClient.authResetPassword(WRONG)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "BUILD_SECRET_NOT_CONFIGURED",
+    });
+    await expect(bareClient.authResetPassword(WRONG)).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "BUILD_SECRET_NOT_CONFIGURED",
+    });
   });
 });

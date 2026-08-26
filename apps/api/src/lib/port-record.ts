@@ -24,11 +24,98 @@ export type LockOpts = { deadlineMs?: number; graceMs?: number };
 const registryEntrySchema = z.object({ host: z.string(), port: z.number().int().positive() });
 
 /**
+ * True when the host string binds every network interface (issue #52): the
+ * IPv4 wildcard "0.0.0.0", ANY all-zero IPv6 address (::, ::0, 0:0::,
+ * 0000:0000:...:0000), and the IPv4-mapped unspecified address
+ * "::ffff:0.0.0.0" (textually also "::ffff:0:0").
+ *
+ * The check PARSES the address (node:net isIP + canonical expansion) instead
+ * of string-collapsing, so specific addresses like ffff::, ::ffff, ::1 or
+ * 2001:db8::1 are never mistaken for wildcards (greptile P1).
+ */
+export function isWildcardBindHost(host: string): boolean {
+  if (net.isIP(host) === 4) return host === "0.0.0.0";
+  const words = parseIpv6Words(host);
+  if (words === null) return false;
+  if (words.every((word) => word === 0)) return true;
+  // the IPv4-mapped unspecified address: 96 zero bits, 0xffff, zero IPv4 tail
+  return (
+    words[0] === 0 &&
+    words[1] === 0 &&
+    words[2] === 0 &&
+    words[3] === 0 &&
+    words[4] === 0 &&
+    words[5] === 0xffff &&
+    words[6] === 0 &&
+    words[7] === 0
+  );
+}
+
+/** Expand a valid IPv6 host string (net.isIP === 6) to its 8 16-bit words. */
+function parseIpv6Words(host: string): number[] | null {
+  let text = host;
+  const lastColon = text.lastIndexOf(":");
+  // a dotted-decimal IPv4 tail is only legal as the final group
+  if (lastColon !== -1 && text.slice(lastColon + 1).includes(".")) {
+    const v4 = parseIpv4Quarter(text.slice(lastColon + 1));
+    if (v4 === null) return null;
+    // fuse the tail back in as two hex groups so "::" compression still
+    // parses: "::ffff:0.0.0.0" becomes "::ffff:0:0"
+    // SAFETY: parseIpv4Quarter always returns exactly two words or null
+    text = `${text.slice(0, lastColon + 1)}${v4[0]!.toString(16)}:${v4[1]!.toString(16)}`;
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] === "" ? [] : halves[0]!.split(":");
+  const right = halves.length === 2 && halves[1] !== "" ? halves[1]!.split(":") : [];
+  const words: number[] = [];
+  for (const group of left) {
+    const word = parseHexGroup(group);
+    if (word === null) return null;
+    words.push(word);
+  }
+  const zeroGroups = 8 - left.length - right.length;
+  if (halves.length === 2) {
+    // "::" must compress at least one zero group, but never negative
+    if (zeroGroups < 1) return null;
+    for (let i = 0; i < zeroGroups; i++) words.push(0);
+  } else if (zeroGroups !== 0) {
+    return null; // no compression marker: exactly 8 groups are required
+  }
+  for (const group of right) {
+    const word = parseHexGroup(group);
+    if (word === null) return null;
+    words.push(word);
+  }
+  return words;
+}
+
+function parseHexGroup(group: string): number | null {
+  if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null;
+  return parseInt(group, 16);
+}
+
+function parseIpv4Quarter(quarter: string): number[] | null {
+  const octets = quarter.split(".");
+  if (octets.length !== 4) return null;
+  const bytes: number[] = [];
+  for (const octet of octets) {
+    if (!/^\d{1,3}$/.test(octet)) return null;
+    const value = Number(octet);
+    if (value > 255) return null;
+    bytes.push(value);
+  }
+  // SAFETY: bytes has exactly 4 elements (length-checked above); a.b.c.d maps
+  // to the 16-bit words (a<<8|b) and (c<<8|d)
+  return [(bytes[0]! << 8) | bytes[1]!, (bytes[2]! << 8) | bytes[3]!];
+}
+
+/**
  * A bind host like 0.0.0.0 or :: cannot be CONNECTED to on Windows for a
  * liveness probe; the probe always targets the loopback the proxy uses.
  */
 export function probeHostFor(bindHost: string): string {
-  if (bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "::0" || bindHost === "0:0:0:0:0:0:0:0") {
+  if (isWildcardBindHost(bindHost)) {
     return "127.0.0.1";
   }
   return bindHost;

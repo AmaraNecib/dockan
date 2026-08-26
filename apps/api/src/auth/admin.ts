@@ -8,6 +8,7 @@ import { accounts, users } from "../db/schema";
 import { AppError } from "../lib/errors";
 import { type AppLogger } from "../lib/logger";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
+import { constantTimeEqual } from "../lib/constant-time";
 import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "./auth";
 
@@ -42,7 +43,9 @@ export async function resetAdminPassword(deps: {
   if (deps.config.buildSecret === undefined) {
     throw new AppError("BUILD_SECRET_NOT_CONFIGURED", "BUILD_SECRET_NOT_CONFIGURED");
   }
-  if (input.secret !== deps.config.buildSecret) {
+  // issue #52: constant-time compare — `!==` would let a local attacker
+  // time-guess the secret byte by byte
+  if (!constantTimeEqual(input.secret, deps.config.buildSecret)) {
     throw new AppError("WRONG_BUILD_SECRET", "WRONG_BUILD_SECRET");
   }
   const username = phoneToUsername(phone);

@@ -261,8 +261,14 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const requestedCash =
     settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
   const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
-  // collected-so-far on this invoice vs the cash portion: soft warning, never a block
-  const cashExceedsCollected = Number.isFinite(requestedCash) && requestedCash > invoice.paidAmount;
+  // mirror the api's settlement so the warning tracks the ACTUAL cash the
+  // server will settle: requested debt is capped at the invoice's remaining
+  // debt and any excess flows back to cash (all-debt beyond the debt swings
+  // into cash, which must warn too)
+  const projectedDebt = Math.min(Math.max(0, valueTotal - requestedCash), invoice.remainingAmount);
+  const settledCash = Number.isFinite(requestedCash) ? valueTotal - projectedDebt : Number.NaN;
+  // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
+  const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 
   const create = useMutation(
     orpc.returnsCreate.mutationOptions({
@@ -430,10 +436,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               />
             </label>
           )}
-          {Number.isFinite(requestedCash) && (
+          {Number.isFinite(settledCash) && (
             <div className="flex justify-between">
               <span className="text-stone-500">{t("returnsCashNow")}</span>
-              <span className="font-medium" data-testid="returns-cash-now">{requestedCash} دج</span>
+              <span className="font-medium" data-testid="returns-cash-now">{settledCash} دج</span>
             </div>
           )}
           {cashExceedsCollected && (

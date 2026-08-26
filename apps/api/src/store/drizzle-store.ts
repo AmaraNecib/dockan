@@ -804,9 +804,11 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // report module owns the formulas. setup() guarantees the column;
       // the self-healing repair keeps every row honest on every boot.
       // A line whose FULL sold quantity was returned is excluded entirely:
-      // the goods are back in inventory (or scrapped via reject), so the
-      // sale is un-booked — this is what unwinds a free-line's booked loss
-      // (e.g. price 0, cogs 200: the returned line no longer shows −200).
+      // the goods are back in inventory, so the sale is un-booked — this is
+      // what unwinds a free-line's booked loss (e.g. price 0, cogs 200: the
+      // returned line no longer shows −200). REJECTED returns do NOT count
+      // toward the exclusion: their goods were scrapped (removed from stock),
+      // a real cost, so the sale stays booked and no loss is hidden.
       // Partially-returned lines stay fully booked (documented: the partial
       // refund is a cash record; whole-DZD exactness keeps the report
       // deterministic — see design doc).
@@ -827,6 +829,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
             SELECT SUM(rl.quantity) FROM return_lines rl
             JOIN returns r ON r.id = rl.return_id
             WHERE rl.invoice_line_id = l.id
+              AND r.status != 'REJECTED_DAMAGED'
           ), 0) < l.quantity
       `)) as Array<ProfitSaleLine>;
       return rows;

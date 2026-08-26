@@ -61,7 +61,7 @@ const { returnQuantityError, remainingReturnableFor, ReturnsPanel } = await impo
 const LINE_ID = "00000000-0000-4000-8000-0000000000c1";
 const ITEM_ID = "00000000-0000-4000-8000-0000000000c2";
 
-function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900): InvoiceDetail {
+function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, totalAmount = 900): InvoiceDetail {
   return {
     id: "00000000-0000-4000-8000-0000000000b1",
     invoiceNumber: "INV-0001",
@@ -73,9 +73,9 @@ function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900): Invo
     discountType: null,
     discountValue: null,
     discountAmount: 0,
-    totalAmount: 900,
+    totalAmount,
     paidAmount,
-    remainingAmount: Math.max(0, 900 - paidAmount),
+    remainingAmount: Math.max(0, totalAmount - paidAmount),
     notes: null,
     createdAt: "2026-08-26T10:00:00",
     updatedAt: "2026-08-26T10:00:00",
@@ -357,5 +357,21 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("أدخل مبلغاً نقدياً");
     expect(lastCreateInput).toBeNull();
+  });
+
+  it("warns when an all-debt split swings into cash beyond what was collected", () => {
+    // remaining 300 < value 500 → the debt cap forces 200 into cash, which the
+    // api will actually settle; the warning must track THAT cash, not the
+    // requested 0
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    act(() => {
+      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "ALL_DEBT");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("200");
+    expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
   });
 });

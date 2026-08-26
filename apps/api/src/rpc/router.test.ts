@@ -2485,4 +2485,31 @@ describe("returns & refunds", () => {
     expect(afterReturn.cogs).toBe(baseline.cogs);
     expect(afterReturn.grossProfit).toBe(baseline.grossProfit);
   });
+
+  it("a REJECTED freebie return keeps the loss: scrapped goods are a real cost", async () => {
+    const item = await makeReturnItem("مرجوع-هدية-مرفوضة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    const freebie = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    const afterSale = await report();
+    expect(afterSale.grossProfit - baseline.grossProfit).toBe(-200);
+    const returned = await client.returnsCreate({ invoiceId: freebie.id, lines: [{ invoiceLineId: freebie.lines[0]!.id, quantity: 1 }] });
+    // the owner rejects: the returned goods are scrapped, not back in inventory
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    // the line stays booked — no hidden loss, the report is back to the
+    // after-sale state (not the pre-sale baseline)
+    const afterReject = await report();
+    expect(afterReject.grossProfit - baseline.grossProfit).toBe(-200);
+    expect(afterReject.cogs - baseline.cogs).toBe(200);
+  });
 });

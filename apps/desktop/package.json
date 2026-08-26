@@ -8,6 +8,7 @@
     "sidecar": "bun scripts/sidecar.ts",
     "build": "bun run sidecar && tauri build",
     "portable": "bun scripts/release.ts",
+    "installer": "bun scripts/release.ts --installer",
     "test": "bun test"
   },
   "devDependencies": {

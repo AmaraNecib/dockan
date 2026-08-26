@@ -15,6 +15,7 @@
     "dev:desktop": "bun run --filter @dokan/desktop dev",
     "desktop:sidecar": "bun run --filter @dokan/desktop sidecar",
     "desktop:portable": "bun run --filter @dokan/desktop portable",
+    "desktop:installer": "bun run --filter @dokan/desktop installer",
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck",

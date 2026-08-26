@@ -44,24 +44,42 @@ export function resolveTrustedTarPath({
  * Validate the tauri release resources folder. The portable folder is built
  * FLAT (on Windows `resource_dir` == the exe's folder, so the sidecar and ui
  * must sit next to the exe), and the resources folder must contain EXACTLY
- * the expected entries — the api sidecar and the ui tree. An unexpected or
- * missing entry aborts packaging instead of silently shipping a broken or
- * bloated bundle.
+ * the expected entries — the api sidecar (a non-empty FILE) and the ui tree
+ * (a DIRECTORY). An unexpected or missing entry — or an expected file that
+ * is empty, so the app would boot into a dead sidecar — aborts packaging
+ * instead of silently shipping a broken or bloated bundle.
  */
 export function validateReleaseResourceEntries(
   resourceDir,
-  expectedEntries = ["dokan-api.exe", "ui"],
+  expectedFiles = ["dokan-api.exe"],
+  expectedDirs = ["ui"],
 ) {
   const actualEntries = readdirSync(resourceDir).sort();
-  const expected = [...expectedEntries].sort();
-  const unexpected = actualEntries.filter((entry) => !expected.includes(entry));
-  const missing = expected.filter((entry) => !actualEntries.includes(entry));
+  const allExpected = [...expectedFiles, ...expectedDirs].sort();
+  const unexpected = actualEntries.filter((entry) => !allExpected.includes(entry));
+  const missing = allExpected.filter((entry) => !actualEntries.includes(entry));
   if (unexpected.length > 0 || missing.length > 0) {
     const details = [
       unexpected.length > 0 ? `unexpected: ${unexpected.join(", ")}` : null,
       missing.length > 0 ? `missing: ${missing.join(", ")}` : null,
     ].filter(Boolean).join("; ");
     throw new Error(`Release resources failed validation (${details}).`);
+  }
+  for (const entry of expectedFiles) {
+    const stats = lstatSync(path.join(resourceDir, entry));
+    if (!stats.isFile()) {
+      throw new Error(`Release resource "${entry}" is not a file.`);
+    }
+    if (stats.size === 0) {
+      // a zero-byte sidecar/exe would ship a build that boots into a dead
+      // api and a 20s startup timeout — refuse it at packaging time
+      throw new Error(`Release resource "${entry}" is empty (0 bytes).`);
+    }
+  }
+  for (const entry of expectedDirs) {
+    if (!lstatSync(path.join(resourceDir, entry)).isDirectory()) {
+      throw new Error(`Release resource "${entry}" is not a directory.`);
+    }
   }
 }
 

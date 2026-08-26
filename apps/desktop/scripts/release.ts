@@ -68,9 +68,16 @@ export function renamedInstaller(fileName: string, slug: string): string {
 /**
  * Which distribution the pipeline should produce. Portable (folder + zip) is
  * the default; `--installer` opts into the nsis installer. An explicit
- * `--portable` is accepted for symmetry and wins over `--installer`.
+ * `--portable` is accepted for symmetry (and wins over `--installer`). Any
+ * OTHER flag fails loudly so a typo'd `--instaler` can never silently
+ * produce the wrong deliverable.
  */
 export function requestedTarget(argv: string[]): "portable" | "installer" {
+  const flags = argv.filter((arg) => arg.startsWith("--"));
+  const unknown = flags.filter((flag) => flag !== FLAG_INSTALLER && flag !== FLAG_PORTABLE);
+  if (unknown.length > 0) {
+    throw new Error(`[dokan] unknown release flag(s): ${unknown.join(", ")} — use --installer or --portable`);
+  }
   if (argv.includes(FLAG_INSTALLER) && !argv.includes(FLAG_PORTABLE)) return "installer";
   return "portable";
 }

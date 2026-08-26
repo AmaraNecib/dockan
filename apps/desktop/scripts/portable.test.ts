@@ -15,15 +15,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  PORTABLE_BASENAME,
   PORTABLE_MARKER,
   PORTABLE_EXE_NAME,
   RELEASE_EXE_NAME,
   SIDECAR_RESOURCE_NAME,
   UI_RESOURCE_NAME,
   assemblePortableFolder,
+  outputNames,
   portableLayout,
+  zipPathFor,
   zipPortable,
 } from "./portable.mjs";
+import { requestedTarget } from "./release";
 import {
   copyValidatedTree,
   resolveTrustedTarPath,
@@ -51,7 +55,7 @@ function cleanupScopedRoot(root) {
  * Fake a complete `tauri build --no-bundle` output (issue 64): the app exe
  * next to a resources folder holding the sidecar and the built ui tree, the
  * way tauri-build lays out `target/release/`. All output lives under a fresh
- * scoped temp dir; callers must clean up with `cleanupScopedRoot(root)`.
+ * scoped temp dir and is removed even when the assertion body throws.
  */
 function fakeReleaseBuild(extraResourceEntries = []) {
   const root = mkdtempSync(path.join(tmpdir(), "dokan-portable-test-"));
@@ -66,6 +70,19 @@ function fakeReleaseBuild(extraResourceEntries = []) {
     writeFileSync(path.join(resources, entry), "extra");
   }
   return { root, release };
+}
+
+/**
+ * Run an assertion body against a scratch fake build and GUARANTEE the
+ * scratch root is removed afterwards (even when the body throws).
+ */
+function withScopedRelease(body, extraResourceEntries = []) {
+  const { root, release } = fakeReleaseBuild(extraResourceEntries);
+  try {
+    return body({ root, release });
+  } finally {
+    cleanupScopedRoot(root);
+  }
 }
 
 function portableFolderEntries(portableDir) {
@@ -93,52 +110,78 @@ function walkNames(dir) {
 
 describe("portable assembly (issue 64)", () => {
   it("assembles a folder with the renamed exe, sidecar, ui tree and the portable marker", () => {
-    const { root, release } = fakeReleaseBuild();
-    const { portableDir } = assemblePortableFolder({ releaseRootPath: release });
+    withScopedRelease(({ release }) => {
+      const { portableDir } = assemblePortableFolder({ releaseRootPath: release });
 
-    const folder = portableFolderEntries(portableDir);
-    expect(folder.has(PORTABLE_EXE_NAME)).toBe(true);
-    expect(folder.has(SIDECAR_RESOURCE_NAME)).toBe(true);
-    expect(folder.has(UI_RESOURCE_NAME)).toBe(true);
-    expect(folder.has(PORTABLE_MARKER)).toBe(true);
-    // the source exe must NOT be copied under its build name
-    expect(folder.has(RELEASE_EXE_NAME)).toBe(false);
-    // the ui tree is deep-copied, not linked or truncated
-    expect(existsSync(path.join(portableDir, UI_RESOURCE_NAME, "assets", "app.js"))).toBe(true);
-    expect(readFileSync(path.join(portableDir, UI_RESOURCE_NAME, "index.html"), "utf8")).toBe("<html />");
-    // the marker is present but EMPTY
-    expect(statSync(path.join(portableDir, PORTABLE_MARKER)).size).toBe(0);
+      const folder = portableFolderEntries(portableDir);
+      expect(folder.has(PORTABLE_EXE_NAME)).toBe(true);
+      expect(folder.has(SIDECAR_RESOURCE_NAME)).toBe(true);
+      expect(folder.has(UI_RESOURCE_NAME)).toBe(true);
+      expect(folder.has(PORTABLE_MARKER)).toBe(true);
+      // the source exe must NOT be copied under its build name
+      expect(folder.has(RELEASE_EXE_NAME)).toBe(false);
+      // the ui tree is deep-copied, not linked or truncated
+      expect(existsSync(path.join(portableDir, UI_RESOURCE_NAME, "assets", "app.js"))).toBe(true);
+      expect(readFileSync(path.join(portableDir, UI_RESOURCE_NAME, "index.html"), "utf8")).toBe("<html />");
+      // the marker is present but EMPTY
+      expect(statSync(path.join(portableDir, PORTABLE_MARKER)).size).toBe(0);
 
-    // the portable output contains NO nsis/installer artifact
-    const allNames = walkNames(path.dirname(portableDir));
-    expect(allNames.some((name) => /setup\.exe$/i.test(name))).toBe(false);
+      // the portable output contains NO nsis/installer artifact
+      const allNames = walkNames(path.dirname(portableDir));
+      expect(allNames.some((name) => /setup\.exe$/i.test(name))).toBe(false);
 
-    cleanupScopedRoot(root);
+      // nothing staged under a temp name survives
+      expect(existsSync(path.join(path.dirname(portableDir), `.tmp-${PORTABLE_BASENAME}`))).toBe(false);
+    });
   });
 
   it("fails loudly on an unexpected release resources entry", () => {
-    const { root, release } = fakeReleaseBuild(["stray.dll"]);
-    expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
-      /Release resources failed validation \(unexpected: stray\.dll\)/,
+    withScopedRelease(
+      ({ release }) => {
+        expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
+          /Release resources failed validation \(unexpected: stray\.dll\)/,
+        );
+      },
+      ["stray.dll"],
     );
-    cleanupScopedRoot(root);
   });
 
   it("fails loudly on a missing sidecar in the release resources", () => {
-    const { root, release } = fakeReleaseBuild();
-    // strip the sidecar, leaving only ui/ (as if the compile step broke)
-    rmSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), { force: true });
-    expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
-      /Release resources failed validation \(missing: dokan-api\.exe\)/,
-    );
-    cleanupScopedRoot(root);
+    withScopedRelease(({ release }) => {
+      // strip the sidecar, leaving only ui/ (as if the compile step broke)
+      rmSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), { force: true });
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
+        /Release resources failed validation \(missing: dokan-api\.exe\)/,
+      );
+    });
+  });
+
+  it("refuses a zero-byte sidecar or app exe (would boot into a dead api)", () => {
+    withScopedRelease(({ release }) => {
+      writeFileSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), "");
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/empty \(0 bytes\)/);
+    });
+    withScopedRelease(({ release }) => {
+      writeFileSync(path.join(release, RELEASE_EXE_NAME), "");
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/empty \(0 bytes\)/);
+    });
+  });
+
+  it("refuses a sidecar that is a directory instead of a file", () => {
+    withScopedRelease(({ release }) => {
+      rmSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), { force: true });
+      mkdirSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME));
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
+        /Release resource "dokan-api\.exe" is not a file/,
+      );
+    });
   });
 
   it("fails loudly when the release exe is missing", () => {
-    const { root, release } = fakeReleaseBuild();
-    rmSync(path.join(release, RELEASE_EXE_NAME), { force: true });
-    expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/Missing release app exe/);
-    cleanupScopedRoot(root);
+    withScopedRelease(({ release }) => {
+      rmSync(path.join(release, RELEASE_EXE_NAME), { force: true });
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/Missing release app exe/);
+    });
   });
 
   it("produces the documented portable layout paths", () => {
@@ -147,6 +190,44 @@ describe("portable assembly (issue 64)", () => {
     expect(layout.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
     expect(layout.appExePath).toBe("C:\\build\\release\\dokan.exe");
     expect(layout.resourcesDir).toBe("C:\\build\\release\\resources");
+    // the zip is always named after its folder, including the `-new` fallback
+    expect(zipPathFor("C:\\build\\release\\bundle\\portable\\Dokan-portable-new")).toBe(
+      "C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip",
+    );
+  });
+
+  it("falls back to a -new folder (and -new zip name) when the canonical folder cannot be replaced", () => {
+    const portableRoot = portableLayout("C:\\build\\release").portableRoot;
+    const canonical = outputNames(portableRoot);
+    expect(canonical.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable");
+    expect(canonical.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
+    // a locked canonical folder (a running app holds it open on Windows)
+    // must fall back to a -new sibling AND name its zip after that folder
+    const fallback = outputNames(portableRoot, { canReplaceCanonical: false });
+    expect(fallback.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new");
+    expect(fallback.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip");
+    expect(zipPathFor(fallback.portableDir)).toBe(fallback.zipPath);
+  });
+});
+
+describe("release.ts target dispatch (issue 64)", () => {
+  it("defaults to the portable folder+zip build", () => {
+    expect(requestedTarget([])).toBe("portable");
+    expect(requestedTarget(["scripts/release.ts"])).toBe("portable");
+  });
+
+  it("--installer selects the nsis installer and --portable is explicit", () => {
+    expect(requestedTarget(["--installer"])).toBe("installer");
+    expect(requestedTarget(["--portable"])).toBe("portable");
+  });
+
+  it("an explicit --portable wins over --installer (symmetry, not a surprise)", () => {
+    expect(requestedTarget(["--portable", "--installer"])).toBe("portable");
+  });
+
+  it("rejects unknown flags loudly instead of silently building the wrong target", () => {
+    expect(() => requestedTarget(["--instaler"])).toThrow(/unknown release flag/);
+    expect(() => requestedTarget(["--installer", "--nope"])).toThrow(/unknown release flag/);
   });
 });
 
@@ -154,14 +235,13 @@ describe("portable zip (issue 64)", () => {
   it.skipIf(process.platform !== "win32")(
     "zips the folder with the trusted tar.exe into Dokan-portable.zip",
     () => {
-      const { root, release } = fakeReleaseBuild();
-      const { portableDir } = assemblePortableFolder({ releaseRootPath: release });
-      const layout = portableLayout(release);
-      const zipPath = zipPortable({ portableDir, zipPath: layout.zipPath });
-      expect(zipPath).toBe(layout.zipPath);
-      expect(existsSync(zipPath)).toBe(true);
-      expect(statSync(zipPath).size).toBeGreaterThan(0);
-      cleanupScopedRoot(root);
+      withScopedRelease(({ release }) => {
+        const { portableDir } = assemblePortableFolder({ releaseRootPath: release });
+        const zipPath = zipPortable({ portableDir });
+        expect(zipPath).toBe(portableLayout(release).zipPath);
+        expect(existsSync(zipPath)).toBe(true);
+        expect(statSync(zipPath).size).toBeGreaterThan(0);
+      });
     },
   );
 });
@@ -169,12 +249,15 @@ describe("portable zip (issue 64)", () => {
 describe("script-security-utils (issue 64)", () => {
   it("validates the exact expected resource entries", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-entries-"));
-    mkdirSync(path.join(dir, "ui"), { recursive: true });
-    writeFileSync(path.join(dir, "dokan-api.exe"), "x");
-    expect(() => validateReleaseResourceEntries(dir)).not.toThrow();
-    writeFileSync(path.join(dir, "surprise.bin"), "x");
-    expect(() => validateReleaseResourceEntries(dir)).toThrow(/unexpected: surprise\.bin/);
-    rmSync(dir, { recursive: true, force: true });
+    try {
+      mkdirSync(path.join(dir, "ui"), { recursive: true });
+      writeFileSync(path.join(dir, "dokan-api.exe"), "x");
+      expect(() => validateReleaseResourceEntries(dir)).not.toThrow();
+      writeFileSync(path.join(dir, "surprise.bin"), "x");
+      expect(() => validateReleaseResourceEntries(dir)).toThrow(/unexpected: surprise\.bin/);
+    } finally {
+      cleanupScopedRoot(dir);
+    }
   });
 
   it("resolves the trusted tar.exe only from System32/Sysnative", () => {
@@ -224,9 +307,9 @@ describe("script-security-utils (issue 64)", () => {
         /Refusing to package symbolic link/,
       );
     } finally {
-      rmSync(sourceDir, { recursive: true, force: true });
-      rmSync(destDir, { recursive: true, force: true });
-      rmSync(junctionTarget, { recursive: true, force: true });
+      cleanupScopedRoot(sourceDir);
+      cleanupScopedRoot(destDir);
+      cleanupScopedRoot(junctionTarget);
     }
   });
 });

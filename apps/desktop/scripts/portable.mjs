@@ -13,7 +13,7 @@
  * produced on this path.
  */
 
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,29 @@ export function portableLayout(releaseRootPath = releaseRoot) {
   };
 }
 
+/** The zip keeps the FOLDER's basename (Dokan-portable.zip or, when the
+ * folder fell back to `-new` because the canonical one was locked,
+ * Dokan-portable-new.zip) so the archive never names a different folder
+ * than it contains. */
+export function zipPathFor(portableDir) {
+  return path.join(path.dirname(portableDir), `${path.basename(portableDir)}.zip`);
+}
+
+/**
+ * Decide the final folder + zip names for a release root. When the canonical
+ * folder cannot be replaced (locked/running app — the Windows case where
+ * rmSync throws), the assembly falls back to a `-new` sibling. Both names
+ * derive from the same base so the zip always names the folder it contains.
+ */
+export function outputNames(
+  portableRoot,
+  { baseName = PORTABLE_BASENAME, canReplaceCanonical = true } = {},
+) {
+  const folderName = canReplaceCanonical ? baseName : `${baseName}-new`;
+  const portableDir = path.join(portableRoot, folderName);
+  return { portableDir, zipPath: path.join(portableRoot, `${folderName}.zip`) };
+}
+
 /**
  * Assemble the portable FOLDER from a finished release build (no zip). All
  * inputs are injectable so tests can fake a complete build in scratch dirs.
@@ -69,6 +92,9 @@ export function assemblePortableFolder({
   if (!existsSync(appExePath)) {
     throw new Error(`Missing release app exe: ${appExePath}. Run tauri build first.`);
   }
+  if (statSync(appExePath).size === 0) {
+    throw new Error(`Release app exe is empty (0 bytes): ${appExePath}.`);
+  }
   if (!existsSync(resourcesDir)) {
     throw new Error(`Missing release resources dir: ${resourcesDir}. Run tauri build first.`);
   }
@@ -78,45 +104,55 @@ export function assemblePortableFolder({
   const tempDir = path.join(layout.portableRoot, `.tmp-${PORTABLE_BASENAME}`);
   rmSync(tempDir, { recursive: true, force: true });
 
-  let finalPortableDir = portableDir;
+  // if the canonical folder cannot be removed (a running app holds it open
+  // on Windows), fall back to a `-new` sibling — the zip follows the folder
+  // name through `outputNames`/`zipPathFor`
+  let canReplaceCanonical = true;
   try {
     rmSync(portableDir, { recursive: true, force: true });
   } catch {
-    // another process holds the folder (e.g. the app running from it): fall
-    // back to a `-new` sibling instead of aborting the whole build
-    finalPortableDir = path.join(layout.portableRoot, `${PORTABLE_BASENAME}-new`);
-    rmSync(finalPortableDir, { recursive: true, force: true });
+    canReplaceCanonical = false;
   }
+  const finalPortableDir = outputNames(layout.portableRoot, { canReplaceCanonical }).portableDir;
+  rmSync(finalPortableDir, { recursive: true, force: true });
 
-  mkdirSync(tempDir, { recursive: true });
+  try {
+    mkdirSync(tempDir, { recursive: true });
 
-  // the app exe, renamed so portable mode is obvious on a USB key
-  copyFileSync(appExePath, path.join(tempDir, portableExeName));
+    // the app exe, renamed so portable mode is obvious on a USB key
+    copyFileSync(appExePath, path.join(tempDir, portableExeName));
 
-  // sidecar + ui flat next to the exe; validate the resources folder first
-  // so a stray or missing file can never ship silently
-  validateReleaseResourceEntries(resourcesDir);
-  copyFileSync(
-    path.join(resourcesDir, SIDECAR_RESOURCE_NAME),
-    path.join(tempDir, SIDECAR_RESOURCE_NAME),
-  );
-  copyValidatedTree(path.join(resourcesDir, UI_RESOURCE_NAME), path.join(tempDir, UI_RESOURCE_NAME));
+    // sidecar + ui flat next to the exe; validate the resources folder first
+    // so a stray, missing, empty or wrong-typed file can never ship silently
+    validateReleaseResourceEntries(resourcesDir);
+    copyFileSync(
+      path.join(resourcesDir, SIDECAR_RESOURCE_NAME),
+      path.join(tempDir, SIDECAR_RESOURCE_NAME),
+    );
+    copyValidatedTree(path.join(resourcesDir, UI_RESOURCE_NAME), path.join(tempDir, UI_RESOURCE_NAME));
 
-  // the marker that flips the Rust shell into portable mode
-  writeFileSync(path.join(tempDir, markerName), "");
+    // the marker that flips the Rust shell into portable mode
+    writeFileSync(path.join(tempDir, markerName), "");
 
-  renameSync(tempDir, finalPortableDir);
+    renameSync(tempDir, finalPortableDir);
+  } catch (error) {
+    // a failed assembly must not leave the staging dir behind
+    rmSync(tempDir, { recursive: true, force: true });
+    throw error;
+  }
   return { portableDir: finalPortableDir };
 }
 
 /**
  * Zip a finished portable folder with the trusted System32 tar.exe
  * (`-a -c -f <zip> -C <dir> .` — the same deterministic-ish style as the
- * sibling project). Returns the zip path.
+ * sibling project). Returns the zip path. The archive must exist and be
+ * non-empty afterwards — an empty folder would "zip successfully" into a
+ * useless empty archive, so that is refused loudly too.
  */
 export function zipPortable({
   portableDir,
-  zipPath,
+  zipPath = zipPathFor(portableDir),
   tarPath = resolveTrustedTarPath(),
 } = {}) {
   const zipResult = spawnSync(tarPath, ["-a", "-c", "-f", zipPath, "-C", portableDir, "."], {
@@ -126,10 +162,14 @@ export function zipPortable({
   if (zipResult.status !== 0) {
     throw new Error("Failed to create portable zip archive.");
   }
+  if (!existsSync(zipPath) || statSync(zipPath).size === 0) {
+    throw new Error(`Portable zip is missing or empty: ${zipPath}`);
+  }
   return zipPath;
 }
 
-/** Assemble the folder, zip it, and report both paths. */
+/** Assemble the folder, zip it (naming the archive after the folder), and
+ * report both paths. */
 export function assemblePortable(options = {}) {
   const { portableDir } = assemblePortableFolder(options);
   const zipPath = zipPortable({ ...options, portableDir });

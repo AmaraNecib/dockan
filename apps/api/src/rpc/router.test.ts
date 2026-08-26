@@ -1070,6 +1070,31 @@ describe("sale checkout (ticket 30)", () => {
     expect(reread.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(reread.discountAmount);
   });
 
+  it("books a free (0-unit-price) sale line at its real FIFO loss, never at 0 loss", async () => {
+    // regression: a freebie must still consume stock AND book its exact COGS,
+    // so the profit report shows the 100% loss (net 0 − cogs 200 = −200)
+    const item = await makeSaleItem("بيع-هدية-كلفة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const baseline = await client.reportsProfit(window);
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    expect(sale.lines[0]).toMatchObject({ unitPrice: 0, costAtSale: 200, cogsExact: 200, netTotal: 0 });
+    expect(sale.totalAmount).toBe(0);
+    // stock consumed normally: the 1 unit is gone, no lingering layer
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    // the report books the exact loss through the wire seam, not a 0
+    const report = await client.reportsProfit(window);
+    expect(report.cogs - baseline.cogs).toBe(200);
+    expect(report.grossProfit - baseline.grossProfit).toBe(-200);
+  });
+
   it("rolls back every sale write when a later line oversells", async () => {
     const first = await makeSaleItem("بيع-تراجع-أ", 100, 200);
     const second = await makeSaleItem("بيع-تراجع-ب", 100, 300);
@@ -2135,5 +2160,477 @@ describe("authResetPassword throttling", () => {
       code: "BAD_REQUEST",
       message: "BUILD_SECRET_NOT_CONFIGURED",
     });
+  });
+});
+
+// returns & refunds: cash refunds, per-line caps, marked stock movements
+// ---------------------------------------------------------------------------
+describe("returns & refunds", () => {
+  async function makeReturnItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({ name, categoryId: categories.items[0]!.id, costPrice, sellingPrice, lowStockThreshold: 0 });
+  }
+
+  it("refuses returns on a missing or non-sale invoice before any write", async () => {
+    await expect(
+      client.returnsCreate({ invoiceId: "00000000-0000-4000-8000-000000000099", lines: [{ invoiceLineId: "00000000-0000-4000-8000-000000000098", quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND", message: "INVOICE_NOT_FOUND" });
+
+    const item = await makeReturnItem("مرجوع-ليست-بيع", 100, 300);
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 2, unitPrice: 100 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: purchase.id, lines: [{ invoiceLineId: purchase.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_SALE" });
+  });
+
+  it("refuses a line that is not on the invoice and an itemless (description-only) line", async () => {
+    const item = await makeReturnItem("مرجوع-سطر-خارجي", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: "00000000-0000-4000-8000-000000000097", quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "LINE_NOT_ON_INVOICE" });
+
+    // inject a description-only SALE line directly (the sale router never
+    // creates one; the store seam does) and prove returns refuse it atomically
+    const itemless = await store.insertInvoiceLine({
+      invoiceId: sale.id,
+      itemId: null,
+      description: "سطر بدون منتج",
+      quantity: 1,
+      defaultUnitPrice: 5,
+      unitPrice: 5,
+      costAtSale: 0,
+      total: 5,
+      discountAllocated: 0,
+      netTotal: 5,
+    });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: itemless.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_LINE_NOT_RETURNABLE" });
+  });
+
+  it("refuses a return over the sold−already-returned cap and leaves the ledger untouched", async () => {
+    const item = await makeReturnItem("مرجوع-حد-الكمية", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    const lineId = sale.lines[0]!.id;
+
+    // 4 units were never sold — the cap is 3
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 4 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+    // and the whole request is refused even when a sibling line fits: atomic
+    const second = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const secondLineId = second.lines[0]!.id;
+    await expect(
+      client.returnsCreate({ invoiceId: second.id, lines: [{ invoiceLineId: secondLineId, quantity: 2 }, { invoiceLineId: secondLineId, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
+
+    const before = await client.itemsHistory({ itemId: item.id });
+    expect(before.stockOnHand).toBe(0);
+    expect((await client.returnsList({ invoiceId: sale.id })).items).toHaveLength(0);
+  });
+
+  it("creates a return: stock straight back in, marked pending, refund from the effective price", async () => {
+    const item = await makeReturnItem("مرجوع-كامل", 100, 900);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    // 2 × 900 with a 100 DZD discount → the customer effectively paid 850/unit
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 100 }, lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(sale.lines[0]?.netTotal).toBe(1_700);
+
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }], reason: "الزبون بدل رأيه" });
+
+    expect(created.returnNumber).toMatch(/^RTN-/);
+    expect(created.invoiceId).toBe(sale.id);
+    expect(created.invoiceNumber).toBe(sale.invoiceNumber);
+    expect(created.status).toBe("PENDING_REVIEW");
+    expect(created.payoutMethod).toBe("CASH");
+    expect(created.refundAmount).toBe(1_700);
+    expect(created.reason).toBe("الزبون بدل رأيه");
+    expect(created.lines).toHaveLength(1);
+    expect(created.lines[0]).toMatchObject({ invoiceLineId: sale.lines[0]!.id, quantity: 2, refundUnitPrice: 850, refundAmount: 1_700 });
+
+    // stock is back and the movement is the marked SALE reversal
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(2);
+    const returnMovement = history.movements.find((movement) => movement.returnMark === "PENDING");
+    expect(returnMovement).toBeDefined();
+    expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "RETURN_RECORDED", ref: created.id });
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
+    expect((await client.activitiesList({})).items.some((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id)).toBe(true);
+
+    // a second return cannot exceed what is left (2 of 2 already returned)
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+  });
+
+  it("partial returns refund only the returned units and cap subsequent returns", async () => {
+    const item = await makeReturnItem("مرجوع-جزئي", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 5 }] });
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    expect(first.refundAmount).toBe(600);
+    // 3 units are still returnable
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 3 }] });
+    expect(second.refundAmount).toBe(900);
+    const remaining = await client.returnsList({ invoiceId: sale.id });
+    expect(remaining.items).toHaveLength(2);
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
+  });
+
+  it("returned units join normal FIFO cost layers — a later sale consumes oldest layers first and replay stays valid", async () => {
+    const item = await makeReturnItem("مرجوع-ففو", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(sale.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    // 5 → 10 → 4 → 6: every step stays non-negative (deterministic replay)
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([5, 10, 4, 6]);
+
+    // the returned layer (at the 150 average) joins behind the remaining 4×200
+    const laterSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(laterSale.lines[0]?.costAtSale).toBe(200);
+    // outflows never move the ADR-0002 average — the return inflow at the
+    // current average leaves it untouched too
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.costPrice).toBe(150);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(5);
+  });
+
+  it("accept consumes the pending mark and can never run twice", async () => {
+    const item = await makeReturnItem("مرجوع-قبول", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.status).toBe("ACCEPTED");
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.returnMark === "ACCEPTED")).toBeDefined();
+    expect(history.movements.find((movement) => movement.returnMark === "PENDING")).toBeUndefined();
+    expect(history.stockOnHand).toBe(2);
+
+    await expect(client.returnsAccept({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
+    await expect(client.returnsReject({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
+  });
+
+  it("reject (damaged) removes the returned quantity as a MANUAL_ADJUSTMENT outflow with an Arabic reason", async () => {
+    const item = await makeReturnItem("مرجوع-تالف", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(2);
+
+    const rejected = await client.returnsReject({ returnId: created.id, reason: "كسر في العبوة" });
+    expect(rejected.status).toBe("REJECTED_DAMAGED");
+    // the rejection note is recorded on the return too, so the voucher and
+    // the returns list tell the full story
+    expect(rejected.reason).toBe("كسر في العبوة");
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(0);
+    const removal = history.movements.find((movement) => movement.kind === "MANUAL_ADJUSTMENT" && movement.delta < 0);
+    expect(removal).toBeDefined();
+    expect(removal?.reason).toContain("RETURN_REJECTED_DAMAGED");
+    expect(removal?.reason).toContain("كسر في العبوة");
+    expect(removal?.ref).toBe(created.id);
+    expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
+    // the full ledger still replays: 2 → 0 → 2 → 0
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([2, 0, 2, 0]);
+  });
+
+  it("reject after some units were resold clamps the removal to available stock and never blocks the review", async () => {
+    // returned goods are salable immediately; by review time some may be gone
+    const item = await makeReturnItem("مرجوع-إعادة-بيع", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 3 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(5);
+    // resell 4 of the 5 on hand → stock 1 (< the 3 returned units)
+    const resale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
+    expect(resale.lines[0]?.costAtSale).toBe(100);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
+
+    const rejected = await client.returnsReject({ returnId: created.id });
+    expect(rejected.status).toBe("REJECTED_DAMAGED");
+    const history = await client.itemsHistory({ itemId: item.id });
+    // the clamp removes only what is physically present: stock 1 → 0
+    expect(history.stockOnHand).toBe(0);
+    const removal = history.movements.find((movement) => movement.kind === "MANUAL_ADJUSTMENT" && movement.delta < 0);
+    expect(removal?.delta).toBe(-1);
+    expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
+    // 5 → 2 → 5 → 1 → 0: the full replay never dips negative
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([5, 2, 5, 1, 0]);
+  });
+
+  it("lists and fetches returns; the voucher source is the stored record", async () => {
+    const item = await makeReturnItem("مرجوع-قائمة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyName: "زبون الإيصال", lines: [{ itemId: item.id, quantity: 1 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+
+    const fetched = await client.returnsGet({ returnId: created.id });
+    expect(fetched.invoiceNumber).toBe(sale.invoiceNumber);
+    expect(fetched.counterpartyName).toBe("زبون الإيصال");
+    expect(fetched.lines[0]).toMatchObject({ description: item.name, refundUnitPrice: 300, refundAmount: 300 });
+    expect((await client.returnsList({})).items.some((row) => row.id === created.id)).toBe(true);
+  });
+
+  it("applies the exact parent scenario: old debt 1000, return 500, cash 200 / debt 300", async () => {
+    const item = await makeReturnItem("مرجوع-مثال-الوالد", 100, 500);
+    const item2 = await makeReturnItem("مرجوع-مثال-ثان", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item2.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    // two 500-DZD lines so the invoice totals 1000 (old debt) while only one
+    // line is returned — the exact deterministic parent case
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item2.id, quantity: 1 }] });
+    expect(sale.totalAmount).toBe(1_000);
+    expect(sale.remainingAmount).toBe(1_000);
+
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 200 });
+    expect(created.refundAmount).toBe(500);
+    expect(created.cashPaidOut).toBe(200);
+    expect(created.debtOffset).toBe(300);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(700);
+  });
+
+  it("allows all-cash on a fully unpaid invoice and records zero debt offset", async () => {
+    const item = await makeReturnItem("مرجوع-نقد-كامل", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(500);
+    // no cashPaidOut sent = all-cash preset
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    expect(created.cashPaidOut).toBe(500);
+    expect(created.debtOffset).toBe(0);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+  });
+
+  it("never lets the debt go negative: an all-debt split beyond the remaining debt flows to cash", async () => {
+    const item = await makeReturnItem("مرجوع-فائض-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(300);
+    // all-debt request (= cashPaidOut 0) of a 500 return against 300 debt
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(created.refundAmount).toBe(500);
+    expect(created.debtOffset).toBe(300); // capped at the remaining debt
+    expect(created.cashPaidOut).toBe(200); // the excess flows to cash
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
+  });
+
+  it("caps each return against the remaining debt AFTER previous offsets", async () => {
+    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
+    expect(sale.remainingAmount).toBe(2_000);
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(first.debtOffset).toBe(500);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_500);
+    // second all-debt return is capped by the reduced debt
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(second.debtOffset).toBe(500);
+    const third = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(third.debtOffset).toBe(500);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+  });
+
+  it("refuses a cash portion larger than the return value", async () => {
+    const item = await makeReturnItem("مرجوع-تجاوز-نقد", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 501 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "REFUND_SPLIT_INVALID" });
+    expect((await client.returnsList({ invoiceId: sale.id })).items).toHaveLength(0);
+  });
+
+  it("returning a free (0-price) line unwinds its booked loss: report back to baseline, stock back", async () => {
+    const item = await makeReturnItem("مرجوع-هدية-كلفة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    const freebie = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    expect(freebie.lines[0]).toMatchObject({ unitPrice: 0, cogsExact: 200, netTotal: 0 });
+    const afterSale = await report();
+    expect(afterSale.cogs - baseline.cogs).toBe(200); // the loss is booked
+    expect(afterSale.grossProfit - baseline.grossProfit).toBe(-200);
+
+    // the free return: value 0 (net 0), goods back at cost
+    const returned = await client.returnsCreate({ invoiceId: freebie.id, lines: [{ invoiceLineId: freebie.lines[0]!.id, quantity: 1 }] });
+    expect(returned.refundAmount).toBe(0);
+    expect(returned.cashPaidOut).toBe(0);
+    // stock is back: the sale consumed 1, the return put it back
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(1);
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([1, 0, 1]);
+    // the profit report no longer shows the line: no lingering loss
+    const afterReturn = await report();
+    expect(afterReturn.cogs).toBe(baseline.cogs);
+    expect(afterReturn.grossProfit).toBe(baseline.grossProfit);
+  });
+
+  it("a REJECTED freebie return keeps the loss: scrapped goods are a real cost", async () => {
+    const item = await makeReturnItem("مرجوع-هدية-مرفوضة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    const freebie = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    const afterSale = await report();
+    expect(afterSale.grossProfit - baseline.grossProfit).toBe(-200);
+    const returned = await client.returnsCreate({ invoiceId: freebie.id, lines: [{ invoiceLineId: freebie.lines[0]!.id, quantity: 1 }] });
+    // the owner rejects: the returned goods are scrapped, not back in inventory
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
+    // the line stays booked — no hidden loss, the report is back to the
+    // after-sale state (not the pre-sale baseline)
+    expect(afterReject.grossProfit - baseline.grossProfit).toBe(-200);
+    expect(afterReject.cogs - baseline.cogs).toBe(200);
+  });
+
+  it("prices split duplicate entries of one line ONCE (no per-entry rounding over-refund)", async () => {
+    const item = await makeReturnItem("مرجوع-سطر-مقسوم", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    // 3 × 100 with a 199 DZD discount → the line nets 101; per-unit rounding
+    // gives 34, so two entries [qty 2, qty 1] would refund 34+34 = 102 if
+    // priced independently — the fix consolidates to a full-line exact 101
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 199 }, lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(sale.lines[0]).toMatchObject({ netTotal: 101 });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }, { invoiceLineId: sale.lines[0]!.id, quantity: 1 }],
+    });
+    expect(created.refundAmount).toBe(101);
+    expect(created.lines).toHaveLength(1);
+    expect(created.lines[0]).toMatchObject({ invoiceLineId: sale.lines[0]!.id, quantity: 3, refundUnitPrice: 34, refundAmount: 101 });
+    // one SALE-reversal movement for the whole line, stock fully back
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(3);
+    expect(history.movements.filter((movement) => movement.returnMark === "PENDING")).toHaveLength(1);
+  });
+
+  it("reject after a resale books the original line only for the scrapped-now portion (nothing double-booked)", async () => {
+    const item = await makeReturnItem("مرجوع-إعادة-تقرير", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    // sale A: 3 @ 300 (900 rev / 300 cogs)
+    const a = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(a.lines[0]).toMatchObject({ netTotal: 900, cogsExact: 300 });
+    const sold = await report();
+    expect(sold.revenue - baseline.revenue).toBe(900);
+    expect(sold.cogs - baseline.cogs).toBe(300);
+    // customer returns all 3; while pending the line is un-booked
+    const returned = await client.returnsCreate({ invoiceId: a.id, lines: [{ invoiceLineId: a.lines[0]!.id, quantity: 3 }] });
+    const pending = await report();
+    expect(pending.revenue - baseline.revenue).toBe(0);
+    expect(pending.cogs - baseline.cogs).toBe(0);
+    // 2 of the returned units are resold (sale B)
+    const b = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(b.lines[0]).toMatchObject({ netTotal: 600, cogsExact: 200 });
+    // the owner rejects: the clamp scraps only the 1 still on hand
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
+    // original line keeps ONLY the scrapped-now unit (300 rev / 100 cogs);
+    // the resold 2 are booked by B (600 / 200) — every unit booked exactly once
+    expect(afterReject.revenue - baseline.revenue).toBe(900);
+    expect(afterReject.cogs - baseline.cogs).toBe(300);
+  });
+
+  it("settles sequential partial returns on a non-even line exactly: 34 + 67 = 101, never 102", async () => {
+    const item = await makeReturnItem("مرجوع-تتابع-تقسيط", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    // 3 × 100 with a 199 DZD discount → the line nets 101, unit round = 34
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 199 }, lines: [{ itemId: item.id, quantity: 3 }] });
+    const lineId = sale.lines[0]!.id;
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(first.refundAmount).toBe(34); // partial at the rounded unit
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 2 }] });
+    expect(second.refundAmount).toBe(67); // completing: the exact remainder
+    expect(first.refundAmount + second.refundAmount).toBe(101);
+    expect((await client.returnsList({ invoiceId: sale.id })).items.reduce((sum, r) => sum + r.refundAmount, 0)).toBe(101);
+    // and the cap now refuses any further return
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+  });
+
+  it("partials then the remainder settle the exact full-line total", async () => {
+    const item = await makeReturnItem("مرجوع-باقي-الخط", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 404 }, lines: [{ itemId: item.id, quantity: 5 }] });
+    // 5 × 100 gross − 404 discount = 96 net, unit round(96/5) = 19
+    expect(sale.lines[0]?.netTotal).toBe(96);
+    const lineId = sale.lines[0]!.id;
+    const a = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(a.refundAmount).toBe(19);
+    const b = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(b.refundAmount).toBe(19);
+    const c = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 3 }] });
+    expect(c.refundAmount).toBe(58); // 96 − 38, the exact remainder (3×19 = 57 would under-refund)
+    expect(a.refundAmount + b.refundAmount + c.refundAmount).toBe(96);
+  });
+
+  it("attributes the reject scrap per LINE for a same-item multi-line return (no double count)", async () => {
+    const item = await makeReturnItem("مرجوع-سطران-نفس-المنتج", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    // sale with TWO lines of the same item: A(2) + B(1)
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }, { itemId: item.id, quantity: 1 }] });
+    expect(sale.lines).toHaveLength(2);
+    const lineA = sale.lines[0]!;
+    const lineB = sale.lines[1]!;
+    const returned = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineA.id, quantity: 2 }, { invoiceLineId: lineB.id, quantity: 1 }] });
+    expect(returned.lines).toHaveLength(2);
+    // resell 2 of the returned units, then reject: only 1 unit is still on hand
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
+    // FIFO allocation scrapes 1 unit off line A (A: rejected 2, scrap 1 →
+    // bookedQty 1); line B's unit was resold and is booked by the resale (2
+    // units 600 / 200). Booked: A 1 unit (300 / 100) + resale 2 (600 / 200) =
+    // revenue 900, cogs 300 — every unit exactly once.
+    expect(afterReject.revenue - baseline.revenue).toBe(900);
+    expect(afterReject.cogs - baseline.cogs).toBe(300);
   });
 });

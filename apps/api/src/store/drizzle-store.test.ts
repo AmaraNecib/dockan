@@ -1343,3 +1343,256 @@ try {
     expect(detail?.remainingAmount).toBe(200);
   });
 });
+
+describe("returns seam (cash refunds + review marks)", () => {
+  async function makeSaleFixture(name: string, unitPrice: number) {
+    const category = (await store.listCategories())[0]!;
+    const item = await store.createItem({ name, categoryId: category.id, costPrice: 200, sellingPrice: unitPrice });
+    await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 10, unitCost: 200, reason: null, ref: null, occurredAt: stamp() });
+    const invoice = await store.insertInvoice({
+      invoiceNumber: `INV-${Math.floor(Math.random() * 1_000_000)}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون المرتجعات",
+      invoiceDate: localDate(),
+      totalAmount: unitPrice,
+      paidAmount: unitPrice,
+      remainingAmount: 0,
+      notes: null,
+    });
+    const line = await store.insertInvoiceLine({
+      invoiceId: invoice.id,
+      itemId: item.id,
+      description: name,
+      quantity: 1,
+      defaultUnitPrice: unitPrice,
+      unitPrice,
+      costAtSale: 200,
+      total: unitPrice,
+      discountAllocated: 0,
+      netTotal: unitPrice,
+    });
+    return { item, invoice, line };
+  }
+
+  it("allocates return numbers sequentially from the seeded sequence", async () => {
+    const first = await store.allocateReturnNumber();
+    expect(first).toMatch(/^RTN-\d{4}$/);
+    const second = await store.allocateReturnNumber();
+    expect(Number(second.slice(4))).toBe(Number(first.slice(4)) + 1);
+  });
+
+  it("persists a return with lines and reads the full detail (invoice identity joined)", async () => {
+    const { invoice, line } = await makeSaleFixture("مرجوع-متجر", 900);
+    const { id } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 900,
+      cashPaidOut: 900,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: "الزبون غير راضٍ",
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    await store.insertReturnLine({
+      returnId: id,
+      invoiceLineId: line.id,
+      itemId: line.itemId,
+      description: line.description,
+      quantity: 1,
+      refundUnitPrice: 900,
+      refundAmount: 900,
+    });
+
+    const detail = await store.getReturnDetail(id);
+    expect(detail?.returnNumber).toMatch(/^RTN-/);
+    expect(detail?.invoiceId).toBe(invoice.id);
+    expect(detail?.invoiceNumber).toBe(invoice.invoiceNumber);
+    expect(detail?.counterpartyName).toBe("زبون المرتجعات");
+    expect(detail?.refundAmount).toBe(900);
+    expect(detail?.payoutMethod).toBe("CASH");
+    expect(detail?.status).toBe("PENDING_REVIEW");
+    expect(detail?.lines).toHaveLength(1);
+    expect(detail?.lines[0]).toMatchObject({ invoiceLineId: line.id, quantity: 1, refundUnitPrice: 900, refundAmount: 900 });
+  });
+
+  it("lists returns scoped to one invoice and sums returned quantities per line", async () => {
+    const a = await makeSaleFixture("مرجوع-أ", 100);
+    const b = await makeSaleFixture("مرجوع-ب", 200);
+    const firstId = (await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: a.invoice.id,
+      refundAmount: 100,
+      cashPaidOut: 100,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    })).id;
+    await store.insertReturnLine({
+      returnId: firstId,
+      invoiceLineId: a.line.id,
+      itemId: a.line.itemId,
+      description: a.line.description,
+      quantity: 1,
+      refundUnitPrice: 100,
+      refundAmount: 100,
+    });
+    await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: b.invoice.id,
+      refundAmount: 200,
+      cashPaidOut: 200,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+
+    const scoped = await store.listReturns({ invoiceId: a.invoice.id });
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0]?.invoiceId).toBe(a.invoice.id);
+    // earlier tests in this file also insert returns — only the scoped count is exact
+    expect((await store.listReturns({})).length).toBeGreaterThanOrEqual(2);
+
+    const totals = await store.returnedByLine(a.invoice.id);
+    expect(totals.get(a.line.id)?.quantity).toBe(1);
+    expect(totals.get(a.line.id)?.refundAmount).toBe(100);
+  });
+
+  it("transitions status exactly once (conditional guard) and consumes the pending marks", async () => {
+    const { invoice, line } = await makeSaleFixture("مرجوع-مراجعة", 500);
+    const { id: returnId } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 500,
+      cashPaidOut: 500,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    const movement = await store.insertStockMovement({
+      itemId: line.itemId!,
+      kind: "SALE",
+      delta: 1,
+      unitCost: 200,
+      reason: null,
+      ref: returnId,
+      returnMark: "PENDING",
+      occurredAt: stamp(),
+    });
+    expect(movement.returnMark).toBe("PENDING");
+
+    // the conditional transition refuses a second review
+    expect(await store.transitionReturnStatus(returnId, "ACCEPTED")).toBe(true);
+    expect(await store.transitionReturnStatus(returnId, "ACCEPTED")).toBe(false);
+    expect((await store.getReturnDetail(returnId))?.status).toBe("ACCEPTED");
+
+    await store.setReturnMarks(returnId, "ACCEPTED");
+    expect((await store.getReturnDetail(returnId))?.status).toBe("ACCEPTED");
+    // the movement's flat facts are untouched; only the review tag moved
+    const listed = (await store.listStockMovements(line.itemId!)).find((movement) => movement.returnMark !== null);
+    expect(listed?.delta).toBe(1);
+    expect(listed?.kind).toBe("SALE");
+    expect(listed?.returnMark).toBe("ACCEPTED");
+
+    // an already-consumed return can never be rejected
+    expect(await store.transitionReturnStatus(returnId, "REJECTED_DAMAGED")).toBe(false);
+  });
+
+  it("applies a debt offset to the invoice and never lets the debt go below zero", async () => {
+    const { item } = await makeSaleFixture("مرجوع-خصم-الدين", 800);
+    const invoice = await store.insertInvoice({
+      invoiceNumber: `INV-${Math.floor(Math.random() * 1_000_000)}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون الدين",
+      invoiceDate: localDate(),
+      totalAmount: 1_000,
+      paidAmount: 200,
+      remainingAmount: 800,
+      notes: null,
+    });
+    void item;
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 500)).toBe(true);
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(300);
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 301)).toBe(false); // boundary refused
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(300);
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 300)).toBe(true); // exact settlement
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(0);
+  });
+
+  it("upgrades a pre-settlement returns table: adds cash_paid_out/debt_offset and backfills legacy rows as all-cash", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    // the pre-split returns table shape (no cash_paid_out/debt_offset), plus
+    // the invoices rows setup() needs for the FK — then one legacy return row
+    legacy.raw.exec(
+      "CREATE TABLE returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    );
+    legacy.raw.exec(
+      "CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    );
+    legacy.raw
+      .query("INSERT INTO invoices (id, invoice_number, kind, invoice_date, total_amount, paid_amount, remaining_amount, created_at, updated_at) VALUES (?, ?, 'SALE', '2026-08-26', 900, 0, 900, '2026-08-26T10:00:00', '2026-08-26T10:00:00')")
+      .run("00000000-0000-4000-8000-0000000000ff", "INV-LEGACY");
+    legacy.raw
+      .query("INSERT INTO returns (id, return_number, invoice_id, refund_amount, payout_method, reason, status, occurred_at, created_at, updated_at) VALUES (?, 'RTN-0001', ?, 900, 'CASH', NULL, 'PENDING_REVIEW', '2026-08-26T10:30:00', '2026-08-26T10:30:00', '2026-08-26T10:30:00')")
+      .run("00000000-0000-4000-8000-0000000000ee", "00000000-0000-4000-8000-0000000000ff");
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup(); // must ALTER + backfill
+    // SAFETY: PRAGMA table_info returns rows shaped { name }
+    // SAFETY: PRAGMA table_info returns rows shaped { name }
+    const rows = legacy.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+    const cols = rows.map((r) => r.name);
+    expect(cols).toContain("cash_paid_out");
+    expect(cols).toContain("debt_offset");
+    // the legacy row is reclassified as all-cash (cash = refund, debt 0); the
+    // literal query returns one row per return with the two settlement columns
+    // SAFETY: the SELECT lists fixed columns; the cast promises their exact names
+    const legacyRow = legacy.raw.query("SELECT cash_paid_out, debt_offset FROM returns WHERE return_number = 'RTN-0001'").all() as Array<{ cash_paid_out: number; debt_offset: number }>;
+    expect(legacyRow[0]).toEqual({ cash_paid_out: 900, debt_offset: 0 });
+    // and the upgrade is idempotent: a second setup leaves the row untouched
+    await legacyStore.setup();
+    // SAFETY: same literal SELECT and column names as above
+    const again = legacy.raw.query("SELECT cash_paid_out, debt_offset FROM returns WHERE return_number = 'RTN-0001'").all() as Array<{ cash_paid_out: number; debt_offset: number }>;
+    expect(again[0]).toEqual({ cash_paid_out: 900, debt_offset: 0 });
+    legacy.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+        break;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
+  });
+
+  it("records the review annotation on the return record", async () => {
+    const { invoice } = await makeSaleFixture("مرجوع-سبب", 400);
+    const { id: returnId } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 400,
+      cashPaidOut: 400,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: "الزبون بدل رأيه",
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("الزبون بدل رأيه");
+    await store.setReturnReason(returnId, "الزبون بدل رأيه — كسر في العبوة");
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("الزبون بدل رأيه — كسر في العبوة");
+    await store.setReturnReason(returnId, "ملاحظة ثانية");
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("ملاحظة ثانية");
+  });
+});

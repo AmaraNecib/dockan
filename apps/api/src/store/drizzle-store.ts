@@ -19,15 +19,18 @@ import type {
   ItemUpdate,
   PartyCreate,
   Payment,
+  ReturnDetail,
+  ReturnMark,
   Settings,
   SettingsUpdate,
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, StockLink, StorePort } from "./port";
+import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -138,8 +141,19 @@ const movementCols = {
   unitCost: stockMovements.unitCost,
   reason: stockMovements.reason,
   ref: stockMovements.ref,
+  returnMark: stockMovements.returnMark,
   occurredAt: stockMovements.occurredAt,
   createdAt: stockMovements.createdAt,
+};
+const returnLineCols = {
+  id: returnLines.id,
+  returnId: returnLines.returnId,
+  invoiceLineId: returnLines.invoiceLineId,
+  itemId: returnLines.itemId,
+  description: returnLines.description,
+  quantity: returnLines.quantity,
+  refundUnitPrice: returnLines.refundUnitPrice,
+  refundAmount: returnLines.refundAmount,
 };
 
 // returning() yields snake_case rows; these mappers convert the seven shapes
@@ -185,7 +199,38 @@ const toInvoiceLine = (r: typeof invoiceLines.$inferSelect): InvoiceLine =>
 const toPayment = (r: typeof payments.$inferSelect): Payment =>
   ({ id: r.id, invoiceId: r.invoiceId, amount: r.amount, method: r.method, note: r.note, paidAt: r.paidAt, createdAt: r.createdAt }) satisfies Payment;
 const toMovement = (r: typeof stockMovements.$inferSelect): StockMovement =>
-  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+  ({ id: r.id, itemId: r.itemId, kind: r.kind, delta: r.delta, unitCost: r.unitCost, reason: r.reason, ref: r.ref, returnMark: r.returnMark, occurredAt: r.occurredAt, createdAt: r.createdAt }) satisfies StockMovement;
+/** The movement rows carry return_mark; the contracts shape exposes it as returnMark. */
+const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; invoice_date: string; counterparty_name: string | null }): ReturnDetail =>
+  ({
+    id: r.id,
+    returnNumber: r.returnNumber,
+    invoiceId: r.invoiceId,
+    invoiceNumber: r.invoice_number,
+    invoiceDate: r.invoice_date,
+    counterpartyName: r.counterparty_name,
+    refundAmount: r.refundAmount,
+    cashPaidOut: r.cashPaidOut,
+    debtOffset: r.debtOffset,
+    payoutMethod: r.payoutMethod,
+    reason: r.reason,
+    status: r.status,
+    occurredAt: r.occurredAt,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    lines: [],
+  }) satisfies ReturnDetail;
+const toReturnLine = (r: typeof returnLines.$inferSelect): ReturnDetail["lines"][number] =>
+  ({
+    id: r.id,
+    returnId: r.returnId,
+    invoiceLineId: r.invoiceLineId,
+    itemId: r.itemId,
+    description: r.description,
+    quantity: r.quantity,
+    refundUnitPrice: r.refundUnitPrice,
+    refundAmount: r.refundAmount,
+  }) satisfies ReturnDetail["lines"][number];
 const toExpenseCategory = (r: typeof expenseCategories.$inferSelect): ExpenseCategory =>
   ({ id: r.id, name: r.name, isOwnerWithdrawal: r.isOwnerWithdrawal === 1, createdAt: r.createdAt, updatedAt: r.updatedAt }) satisfies ExpenseCategory;
 const toExpense = (r: typeof expenses.$inferSelect): Expense =>
@@ -388,6 +433,39 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
+  /** Legacy databases predate stock_movements.return_mark (a nullable review
+   * tag; null = not a return movement). CREATE TABLE IF NOT EXISTS cannot add
+   * it, so ALTER here when missing — the barcode pattern. */
+  const ensureStockMovementsReturnMarkColumn = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(stock_movements)").all() as Array<{ name: string }>;
+    if (rows.length > 0 && !rows.some((row) => row.name === "return_mark")) {
+      conn.raw.exec("ALTER TABLE stock_movements ADD COLUMN return_mark TEXT");
+    }
+  };
+
+  /** Settlement columns (cashPaidOut / debtOffset) for databases that predate
+   * the owner-approved cash/debt split. ALTER when missing (barcode pattern);
+   * rows created before the split carry cash 0 + debt 0 + a real refund, which
+   * the backfill reclassifies as all-cash (they were cash refunds). Not
+   * marker-gated: the row invariant (cash=0 AND debt=0 AND refund>0) cannot
+   * match a genuine post-split row (whose two amounts always sum to the
+   * return value, so at most one is zero). */
+  const ensureReturnsSettlementColumns = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+    const names = new Set(rows.map((row) => row.name));
+    if (rows.length > 0 && !names.has("cash_paid_out")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN cash_paid_out INTEGER NOT NULL DEFAULT 0");
+    }
+    if (rows.length > 0 && !names.has("debt_offset")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN debt_offset INTEGER NOT NULL DEFAULT 0");
+    }
+    if (rows.length > 0) {
+      conn.raw.exec("UPDATE returns SET cash_paid_out = refund_amount WHERE cash_paid_out = 0 AND debt_offset = 0 AND refund_amount > 0");
+    }
+  };
+
   /** Additive ticket #30 columns for databases created before discounts. */
   /** Additive ticket #30 columns created with a durable completion marker.
    * The historical-data backfill is tracked by the marker, NOT by column
@@ -504,6 +582,8 @@ export function createDrizzleStore(conn: Connection): StorePort {
   async function setup(): Promise<void> {
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
+    ensureStockMovementsReturnMarkColumn();
+    ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
 
@@ -518,6 +598,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
         ELSE 0
       END) FROM invoices), 0) + 1
       WHERE NOT EXISTS (SELECT 1 FROM invoice_number_sequence WHERE id = 1)
+    `);
+
+    // Same conditional seed for the return number sequence (RTN-%04d), so two
+    // processes booting an existing database converge on one counter.
+    await db.run(sql`
+      INSERT INTO return_number_sequence (id, next_number)
+      SELECT 1, COALESCE((SELECT MAX(CASE
+        WHEN return_number GLOB 'RTN-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+        ELSE 0
+      END) FROM returns), 0) + 1
+      WHERE NOT EXISTS (SELECT 1 FROM return_number_sequence WHERE id = 1)
     `);
 
     const categoriesCount = await db.$count(categories);
@@ -624,6 +715,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
             unitCost: movement.unitCost ?? null,
             reason: movement.reason ?? null,
             ref: movement.ref ?? null,
+            returnMark: movement.returnMark ?? null,
             occurredAt: movement.occurredAt,
             createdAt: now(),
           })
@@ -715,17 +807,51 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // SAFETY: the SELECT aliases exactly produce these camelCase keys from
       // the fixed column list; the raw result's shape is pinned by the literal
       // query, not by any user input.
-      const rows = (await db.all(sql`
+      const lines = (await db.all(sql`
         SELECT l.invoice_id AS invoiceId, i.invoice_date AS invoiceDate,
-               l.quantity AS quantity, l.cost_at_sale AS costAtSale,
-               l.cogs_exact AS cogsExact,
+               l.id AS lineId, l.quantity AS quantity,
+               l.cost_at_sale AS costAtSale, l.cogs_exact AS cogsExact,
                l.net_total AS netTotal
         FROM invoice_lines l
         JOIN invoices i ON i.id = l.invoice_id
         WHERE i.kind = 'SALE'
           AND i.invoice_date >= substr(${from}, 1, 10)
           AND i.invoice_date <= substr(${to}, 1, 10)
-      `)) as Array<ProfitSaleLine>;
+      `)) as Array<ProfitSaleLine & { lineId: string }>;
+      if (lines.length === 0) return [];
+      // per-original-line return aggregates: held (pending/accepted) returns,
+      // rejected returns, and — for the rejected ones — the quantity the reject
+      // actually SCRAPPED (the MANUAL_ADJUSTMENT outflow amount, i.e. the
+      // still-on-hand portion at review time; resold units are never scrapped
+      // by the clamp). Each reject movement carries its return line's id as a
+      // reason suffix (`#<lineId>`), so a multi-line return of one item
+      // attributes the scrap to the exact owning line.
+      // SAFETY: the JOIN keys are fixed columns; the aggregation yields one
+      // row per invoice line with its three whole-number sums.
+      const stats = (await db.all(sql`
+        SELECT rl.invoice_line_id AS invoiceLineId,
+               COALESCE(SUM(CASE WHEN r.status != 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS heldQty,
+               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' THEN rl.quantity ELSE 0 END), 0) AS rejectedQty,
+               COALESCE(SUM(CASE WHEN r.status = 'REJECTED_DAMAGED' AND sm.id IS NOT NULL THEN -sm.delta ELSE 0 END), 0) AS rejectedScrapQty
+        FROM return_lines rl
+        JOIN returns r ON r.id = rl.return_id
+        LEFT JOIN stock_movements sm
+          ON sm.ref = r.id AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
+         AND substr(sm.reason, -(length(rl.id) + 1)) = '#' || rl.id
+        GROUP BY rl.invoice_line_id
+      `)) as Array<{ invoiceLineId: string; heldQty: number; rejectedQty: number; rejectedScrapQty: number }>;
+      const statsByLine = new Map(stats.map((row) => [row.invoiceLineId, row]));
+      const rows: ProfitSaleLine[] = [];
+      for (const line of lines) {
+        const perLineStats = statsByLine.get(line.lineId);
+        if (perLineStats === undefined) {
+          rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: line.quantity, costAtSale: line.costAtSale, cogsExact: line.cogsExact, netTotal: line.netTotal });
+          continue;
+        }
+        const booked = bookSaleLineForReturns(line, perLineStats);
+        if (booked.bookedQty <= 0) continue; // fully returned, nothing booked
+        rows.push({ invoiceId: line.invoiceId, invoiceDate: line.invoiceDate, quantity: booked.bookedQty, costAtSale: line.costAtSale, cogsExact: booked.cogsExact, netTotal: booked.netTotal });
+      }
       return rows;
     },
 
@@ -798,6 +924,193 @@ export function createDrizzleStore(conn: Connection): StorePort {
         }
       }
       return best;
+    },
+    async allocateReturnNumber() {
+      // SAFETY: this statement has fixed SQL identifiers and no user input;
+      // SQLite serializes the UPDATE across database connections. Reading the
+      // existing maximum in the same statement also keeps manually inserted
+      // RTN-* rows from moving the sequence backwards.
+      const rows = conn.raw
+        .query(`
+          UPDATE return_number_sequence
+          SET next_number = MAX(
+            next_number,
+            COALESCE((SELECT MAX(CASE
+              WHEN return_number GLOB 'RTN-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+              ELSE 0
+            END) FROM returns), 0) + 1
+          ) + 1
+          WHERE id = 1
+          RETURNING printf('RTN-%04d', next_number - 1) AS return_number
+        `)
+        .all() as Array<{ return_number: string }>;
+      // SAFETY: setup seeds exactly one singleton row before store use; the
+      // UPDATE ... RETURNING therefore yields exactly one formatted number.
+      return firstRowOf(rows).return_number;
+    },
+    async insertReturn(input: ReturnInsert) {
+      const row = firstRowOf(
+        await db
+          .insert(returns)
+          .values({
+            id: id(),
+            returnNumber: input.returnNumber,
+            invoiceId: input.invoiceId,
+            refundAmount: input.refundAmount,
+            cashPaidOut: input.cashPaidOut,
+            debtOffset: input.debtOffset,
+            payoutMethod: input.payoutMethod,
+            reason: input.reason ?? null,
+            status: input.status,
+            occurredAt: input.occurredAt,
+            createdAt: now(),
+            updatedAt: now(),
+          })
+          .returning({ id: returns.id }),
+      );
+      return { id: row.id };
+    },
+    async insertReturnLine(line: ReturnLineInsert) {
+      await db
+        .insert(returnLines)
+        .values({
+          id: id(),
+          returnId: line.returnId,
+          invoiceLineId: line.invoiceLineId,
+          itemId: line.itemId ?? null,
+          description: line.description,
+          quantity: line.quantity,
+          refundUnitPrice: line.refundUnitPrice,
+          refundAmount: line.refundAmount,
+        })
+        .run();
+    },
+    /** One return header joined to its invoice identity (for the voucher/list).
+     * Returns the contract shape with an empty line list — the caller resolves
+     * lines when it needs them. */
+    async getReturnHeader(returnId: string) {
+      const rows = await db
+        .select({
+          id: returns.id,
+          returnNumber: returns.returnNumber,
+          invoiceId: returns.invoiceId,
+          invoice_number: invoices.invoiceNumber,
+          invoice_date: invoices.invoiceDate,
+          counterparty_name: invoices.counterpartyName,
+          refundAmount: returns.refundAmount,
+          cashPaidOut: returns.cashPaidOut,
+          debtOffset: returns.debtOffset,
+          payoutMethod: returns.payoutMethod,
+          reason: returns.reason,
+          status: returns.status,
+          occurredAt: returns.occurredAt,
+          createdAt: returns.createdAt,
+          updatedAt: returns.updatedAt,
+        })
+        .from(returns)
+        .innerJoin(invoices, eq(invoices.id, returns.invoiceId))
+        .where(eq(returns.id, returnId))
+        .limit(1);
+      const header = rows[0];
+      return header === undefined ? undefined : toReturn(header);
+    },
+    async getReturnDetail(returnId: string) {
+      const header = await this.getReturnHeader(returnId);
+      if (header === undefined) return undefined;
+      const lineRows = await db
+        .select(returnLineCols)
+        .from(returnLines)
+        .where(eq(returnLines.returnId, returnId))
+        .orderBy(returnLines.id);
+      return { ...header, lines: lineRows.map((row) => toReturnLine(row)) } satisfies ReturnDetail;
+    },
+    async listReturns(filters: { invoiceId?: string }) {
+      const conds: SQL[] = [];
+      if (filters.invoiceId !== undefined) conds.push(eq(returns.invoiceId, filters.invoiceId));
+      const where = conds.length ? and(...conds) : undefined;
+      const headers = await db
+        .select({
+          id: returns.id,
+          returnNumber: returns.returnNumber,
+          invoiceId: returns.invoiceId,
+          invoice_number: invoices.invoiceNumber,
+          invoice_date: invoices.invoiceDate,
+          counterparty_name: invoices.counterpartyName,
+          refundAmount: returns.refundAmount,
+          cashPaidOut: returns.cashPaidOut,
+          debtOffset: returns.debtOffset,
+          payoutMethod: returns.payoutMethod,
+          reason: returns.reason,
+          status: returns.status,
+          occurredAt: returns.occurredAt,
+          createdAt: returns.createdAt,
+          updatedAt: returns.updatedAt,
+        })
+        .from(returns)
+        .innerJoin(invoices, eq(invoices.id, returns.invoiceId))
+        .where(where)
+        // newest first; NO row cap — a pending return must stay reachable for
+        // review forever (a fixed limit could strand an unreviewed mark)
+        .orderBy(desc(returns.createdAt), sql`returns.rowid DESC`);
+      const lineRows =
+        headers.length === 0
+          ? []
+          : await db.select(returnLineCols).from(returnLines).where(inArray(returnLines.returnId, headers.map((header) => header.id))).orderBy(returnLines.id);
+      const linesByReturn = new Map<string, ReturnDetail["lines"]>();
+      for (const row of lineRows) {
+        const list = linesByReturn.get(row.returnId) ?? [];
+        list.push(toReturnLine(row));
+        linesByReturn.set(row.returnId, list);
+      }
+      return headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[];
+    },
+    /** Authoritative review guard: the conditional UPDATE refuses a return that
+     * is no longer pending, so two processes can never both consume the mark.
+     * Raw SQL is fine here: this file is the driver adapter (ADR-0003), and
+     * applyPaymentToInvoice already uses the same raw connection in-tx. */
+    async transitionReturnStatus(returnId: string, to: "ACCEPTED" | "REJECTED_DAMAGED") {
+      const result = conn.raw
+        .query(`UPDATE returns SET status = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_REVIEW'`)
+        .run(to, now(), returnId);
+      return Number(result.changes) > 0;
+    },
+    async returnedByLine(invoiceId: string) {
+      // SAFETY: the JOIN keys are fixed columns; the aggregation yields one
+      // row per invoice line with its summed returned quantity and refund.
+      const rows = (await db.all(sql`
+        SELECT rl.invoice_line_id AS invoiceLineId, SUM(rl.quantity) AS quantity, SUM(rl.refund_amount) AS refundAmount
+        FROM return_lines rl
+        JOIN returns r ON r.id = rl.return_id
+        WHERE r.invoice_id = ${invoiceId}
+        GROUP BY rl.invoice_line_id
+      `)) as Array<{ invoiceLineId: string; quantity: number | null; refundAmount: number | null }>;
+      const totals = new Map<string, { quantity: number; refundAmount: number }>();
+      for (const row of rows) {
+        totals.set(row.invoiceLineId, { quantity: Number(row.quantity ?? 0), refundAmount: Number(row.refundAmount ?? 0) });
+      }
+      return totals;
+    },
+    /** same conditional-write guard as applyPaymentToInvoice for the debt side:
+     * the offset can never push an invoice's remaining debt below zero, even
+     * across two processes on the same file. Raw SQL is the driver's job. */
+    async applyDebtOffsetToInvoice(invoiceId: string, amount: number) {
+      const result = conn.raw
+        .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
+        .run(amount, now(), invoiceId, amount);
+      return Number(result.changes) > 0;
+    },
+    /** Consume the pending review tag on every movement a return created. The
+     * flat ledger facts stay untouched; only the review tag transitions. */
+    async setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">) {
+      await db
+        .update(stockMovements)
+        .set({ returnMark: mark })
+        .where(and(eq(stockMovements.ref, returnId), eq(stockMovements.returnMark, "PENDING")))
+        .run();
+    },
+    /** Record the review annotation on the return (the rejection note). */
+    async setReturnReason(returnId: string, reason: string) {
+      await db.update(returns).set({ reason, updatedAt: now() }).where(eq(returns.id, returnId)).run();
     },
     async insertInvoice(inv: InvoiceInsert) {
       const row = firstRowOf(

@@ -1,11 +1,11 @@
-# Test audit — issue 43 (evidence re-keyed to final code head 13e9927)
+# Test audit — issue 43 (evidence re-keyed to final code head e1e303f)
 
 Three reviewer sub-agents (edge-case hunter run dd6dda6c, coverage analyst run
 3b7bbbe9, quality reviewer run cadaea15) audited the changed test files and
 sources at head 9dd5e1c. Suites green at audit time: api 353/0, web 89/0
 (later +1 after the cap test fix → 90). The audit's own fixes landed as
 commit 0af03f1; later commits touch only .scratch evidence, so this evidence
-stays valid against the branch head (13e9927).
+stays valid against the branch head (e1e303f).
 
 ## Criteria → tests map (coverage analyst)
 

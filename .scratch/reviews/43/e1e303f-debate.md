@@ -1,11 +1,11 @@
-# Debate — issue 43 (evidence re-keyed to final code head 13e9927)
+# Debate — issue 43 (evidence re-keyed to final code head e1e303f)
 
 Reviewers: critic (reviewer sub-agent, run b2752984) + defender (reviewer
 sub-agent, run 2a9d6db4) over `git diff 0de1265...HEAD` at head f06ce89.
 Both agents verified the FIFO replay-validity claim and tie-break ordering
 before reporting; unit/web/store suites (47/21/52) green at review time.
 The debate's own fixes landed as commit 9dd5e1c (see "Actions taken"); the
-file is re-keyed to the code head 13e9927 — later commits touch only
+file is re-keyed to the code head e1e303f — later commits touch only
 .scratch evidence, so this evidence stays valid against the branch head.
 at 9dd5e1c cover that delta independently.
 
@@ -67,8 +67,10 @@ at 9dd5e1c cover that delta independently.
 - Explicit-invoiceDate-only backdating keeps undated flows byte-identical;
   clamp generalizes "last purchase" to any inflow (MANUAL_ADJUSTMENT layers)
   → 9/10.
-- `fifoCostForOutflow` delegation preserves the public API and all callers
-  → 10/10.
+- `fifoCostForOutflow` delegation preserves the public API through the
+  router switch → 10/10 (later rescinded at code-review: the wrapper lost its
+  last production caller and was removed in e1e303f; tests merged into
+  `fifoOutflowCost`).
 - String-draft quantity pins the root cause (Number("") === 0 → guard snap)
   and blocks submit without corrupting the cart → 9/10.
 

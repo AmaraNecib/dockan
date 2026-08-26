@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 import {
   copyValidatedTree,
   resolveTrustedTarPath,
-  validateReleaseResourceEntries,
+  validateReleaseArtifacts,
 } from "./script-security-utils.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,7 +49,10 @@ export function portableLayout(releaseRootPath = releaseRoot) {
     portableRoot,
     portableDir: path.join(portableRoot, PORTABLE_BASENAME),
     zipPath: path.join(portableRoot, `${PORTABLE_BASENAME}.zip`),
-    resourcesDir: path.join(releaseRootPath, "resources"),
+    // the release root is FLAT: tauri-build copies the resources map and the
+    // external sidecar straight into target/release (no resources/ subdir)
+    uiSourcePath: path.join(releaseRootPath, UI_RESOURCE_NAME),
+    sidecarSourcePath: path.join(releaseRootPath, SIDECAR_RESOURCE_NAME),
     appExePath: path.join(releaseRootPath, RELEASE_EXE_NAME),
   };
 }
@@ -87,17 +90,11 @@ export function assemblePortableFolder({
   portableExeName = PORTABLE_EXE_NAME,
 } = {}) {
   const layout = portableLayout(releaseRootPath);
-  const { resourcesDir, appExePath, portableDir } = layout;
+  const { sidecarSourcePath: sidecarSource, uiSourcePath: uiSource, appExePath } = layout;
 
-  if (!existsSync(appExePath)) {
-    throw new Error(`Missing release app exe: ${appExePath}. Run tauri build first.`);
-  }
-  if (statSync(appExePath).size === 0) {
-    throw new Error(`Release app exe is empty (0 bytes): ${appExePath}.`);
-  }
-  if (!existsSync(resourcesDir)) {
-    throw new Error(`Missing release resources dir: ${resourcesDir}. Run tauri build first.`);
-  }
+  // every artifact the folder is built from must be present, correctly
+  // typed and non-empty — the app exe, the api sidecar and the ui tree
+  validateReleaseArtifacts(releaseRootPath);
 
   // assemble in a temp dir and rename into place, so a failed run never
   // leaves a half-built Dokan-portable/ behind
@@ -109,7 +106,7 @@ export function assemblePortableFolder({
   // name through `outputNames`/`zipPathFor`
   let canReplaceCanonical = true;
   try {
-    rmSync(portableDir, { recursive: true, force: true });
+    rmSync(layout.portableDir, { recursive: true, force: true });
   } catch {
     canReplaceCanonical = false;
   }
@@ -122,14 +119,10 @@ export function assemblePortableFolder({
     // the app exe, renamed so portable mode is obvious on a USB key
     copyFileSync(appExePath, path.join(tempDir, portableExeName));
 
-    // sidecar + ui flat next to the exe; validate the resources folder first
-    // so a stray, missing, empty or wrong-typed file can never ship silently
-    validateReleaseResourceEntries(resourcesDir);
-    copyFileSync(
-      path.join(resourcesDir, SIDECAR_RESOURCE_NAME),
-      path.join(tempDir, SIDECAR_RESOURCE_NAME),
-    );
-    copyValidatedTree(path.join(resourcesDir, UI_RESOURCE_NAME), path.join(tempDir, UI_RESOURCE_NAME));
+    // sidecar + ui shipped flat next to the exe (Windows resource_dir ==
+    // exe dir, so the Rust shell finds them with zero configuration)
+    copyFileSync(sidecarSource, path.join(tempDir, SIDECAR_RESOURCE_NAME));
+    copyValidatedTree(uiSource, path.join(tempDir, UI_RESOURCE_NAME));
 
     // the marker that flips the Rust shell into portable mode
     writeFileSync(path.join(tempDir, markerName), "");

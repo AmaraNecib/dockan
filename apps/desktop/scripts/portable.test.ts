@@ -31,7 +31,7 @@ import { requestedTarget } from "./release";
 import {
   copyValidatedTree,
   resolveTrustedTarPath,
-  validateReleaseResourceEntries,
+  validateReleaseArtifacts,
 } from "./script-security-utils.mjs";
 
 const TEMP_ROOT = path.resolve(tmpdir());
@@ -52,23 +52,20 @@ function cleanupScopedRoot(root) {
 }
 
 /**
- * Fake a complete `tauri build --no-bundle` output (issue 64): the app exe
- * next to a resources folder holding the sidecar and the built ui tree, the
- * way tauri-build lays out `target/release/`. All output lives under a fresh
- * scoped temp dir and is removed even when the assertion body throws.
+ * Fake a complete `tauri build --no-bundle` output (issue 64) the way this
+ * repo's tauri-build actually lays it out: the app exe, the sidecar and the
+ * ui tree FLAT in `target/release/` (no resources/ subdir — verified by a
+ * real build on 2026-08-26). All output lives under a fresh scoped temp dir
+ * and is removed even when the assertion body throws.
  */
-function fakeReleaseBuild(extraResourceEntries = []) {
+function fakeReleaseBuild() {
   const root = mkdtempSync(path.join(tmpdir(), "dokan-portable-test-"));
   const release = path.join(root, "release");
-  const resources = path.join(release, "resources");
-  mkdirSync(path.join(resources, UI_RESOURCE_NAME, "assets"), { recursive: true });
+  mkdirSync(path.join(release, UI_RESOURCE_NAME, "assets"), { recursive: true });
   writeFileSync(path.join(release, RELEASE_EXE_NAME), "fake-app-exe");
-  writeFileSync(path.join(resources, SIDECAR_RESOURCE_NAME), "fake-sidecar");
-  writeFileSync(path.join(resources, UI_RESOURCE_NAME, "index.html"), "<html />");
-  writeFileSync(path.join(resources, UI_RESOURCE_NAME, "assets", "app.js"), "console.log(1);");
-  for (const entry of extraResourceEntries) {
-    writeFileSync(path.join(resources, entry), "extra");
-  }
+  writeFileSync(path.join(release, SIDECAR_RESOURCE_NAME), "fake-sidecar");
+  writeFileSync(path.join(release, UI_RESOURCE_NAME, "index.html"), "<html />");
+  writeFileSync(path.join(release, UI_RESOURCE_NAME, "assets", "app.js"), "console.log(1);");
   return { root, release };
 }
 
@@ -76,8 +73,8 @@ function fakeReleaseBuild(extraResourceEntries = []) {
  * Run an assertion body against a scratch fake build and GUARANTEE the
  * scratch root is removed afterwards (even when the body throws).
  */
-function withScopedRelease(body, extraResourceEntries = []) {
-  const { root, release } = fakeReleaseBuild(extraResourceEntries);
+function withScopedRelease(body) {
+  const { root, release } = fakeReleaseBuild();
   try {
     return body({ root, release });
   } finally {
@@ -135,30 +132,35 @@ describe("portable assembly (issue 64)", () => {
     });
   });
 
-  it("fails loudly on an unexpected release resources entry", () => {
-    withScopedRelease(
-      ({ release }) => {
-        expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
-          /Release resources failed validation \(unexpected: stray\.dll\)/,
-        );
-      },
-      ["stray.dll"],
-    );
+  it("ignores unrelated release-root build outputs (deps/, build/, .pdb, lockfiles)", () => {
+    withScopedRelease(({ release }) => {
+      // cargo/tauri leave plenty of non-shippable output in target/release;
+      // the portable folder must only ever take the three real artifacts
+      mkdirSync(path.join(release, "deps"), { recursive: true });
+      mkdirSync(path.join(release, ".fingerprint"), { recursive: true });
+      writeFileSync(path.join(release, "dokan.pdb"), "symbols");
+      writeFileSync(path.join(release, ".cargo-lock"), "lock");
+      const { portableDir } = assemblePortableFolder({ releaseRootPath: release });
+      const folder = portableFolderEntries(portableDir);
+      expect(folder.has("dokan.pdb")).toBe(false);
+      expect(folder.has(".cargo-lock")).toBe(false);
+      expect(folder.has("deps")).toBe(false);
+    });
   });
 
-  it("fails loudly on a missing sidecar in the release resources", () => {
+  it("fails loudly on a missing sidecar in the release tree", () => {
     withScopedRelease(({ release }) => {
       // strip the sidecar, leaving only ui/ (as if the compile step broke)
-      rmSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), { force: true });
+      rmSync(path.join(release, SIDECAR_RESOURCE_NAME), { force: true });
       expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
-        /Release resources failed validation \(missing: dokan-api\.exe\)/,
+        /Release artifact missing: dokan-api\.exe/,
       );
     });
   });
 
   it("refuses a zero-byte sidecar or app exe (would boot into a dead api)", () => {
     withScopedRelease(({ release }) => {
-      writeFileSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), "");
+      writeFileSync(path.join(release, SIDECAR_RESOURCE_NAME), "");
       expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/empty \(0 bytes\)/);
     });
     withScopedRelease(({ release }) => {
@@ -169,18 +171,20 @@ describe("portable assembly (issue 64)", () => {
 
   it("refuses a sidecar that is a directory instead of a file", () => {
     withScopedRelease(({ release }) => {
-      rmSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME), { force: true });
-      mkdirSync(path.join(release, "resources", SIDECAR_RESOURCE_NAME));
+      rmSync(path.join(release, SIDECAR_RESOURCE_NAME), { force: true });
+      mkdirSync(path.join(release, SIDECAR_RESOURCE_NAME));
       expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
-        /Release resource "dokan-api\.exe" is not a file/,
+        /Release artifact "dokan-api\.exe" is not a file/,
       );
     });
   });
 
-  it("fails loudly when the release exe is missing", () => {
+  it("fails loudly when the release app exe is missing", () => {
     withScopedRelease(({ release }) => {
       rmSync(path.join(release, RELEASE_EXE_NAME), { force: true });
-      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(/Missing release app exe/);
+      expect(() => assemblePortableFolder({ releaseRootPath: release })).toThrow(
+        /Release artifact missing: dokan\.exe/,
+      );
     });
   });
 
@@ -189,11 +193,8 @@ describe("portable assembly (issue 64)", () => {
     expect(layout.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable");
     expect(layout.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
     expect(layout.appExePath).toBe("C:\\build\\release\\dokan.exe");
-    expect(layout.resourcesDir).toBe("C:\\build\\release\\resources");
-    // the zip is always named after its folder, including the `-new` fallback
-    expect(zipPathFor("C:\\build\\release\\bundle\\portable\\Dokan-portable-new")).toBe(
-      "C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip",
-    );
+    expect(layout.sidecarSourcePath).toBe("C:\\build\\release\\dokan-api.exe");
+    expect(layout.uiSourcePath).toBe("C:\\build\\release\\ui");
   });
 
   it("falls back to a -new folder (and -new zip name) when the canonical folder cannot be replaced", () => {
@@ -247,14 +248,19 @@ describe("portable zip (issue 64)", () => {
 });
 
 describe("script-security-utils (issue 64)", () => {
-  it("validates the exact expected resource entries", () => {
+  it("validates the release artifacts: present, correctly typed, non-empty", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-entries-"));
     try {
       mkdirSync(path.join(dir, "ui"), { recursive: true });
+      writeFileSync(path.join(dir, "dokan.exe"), "x");
       writeFileSync(path.join(dir, "dokan-api.exe"), "x");
-      expect(() => validateReleaseResourceEntries(dir)).not.toThrow();
-      writeFileSync(path.join(dir, "surprise.bin"), "x");
-      expect(() => validateReleaseResourceEntries(dir)).toThrow(/unexpected: surprise\.bin/);
+      expect(() => validateReleaseArtifacts(dir)).not.toThrow();
+      // a missing artifact is reported by name
+      rmSync(path.join(dir, "dokan-api.exe"), { force: true });
+      expect(() => validateReleaseArtifacts(dir)).toThrow(/Release artifact missing: dokan-api\.exe/);
+      // a zero-byte artifact is refused
+      writeFileSync(path.join(dir, "dokan-api.exe"), "");
+      expect(() => validateReleaseArtifacts(dir)).toThrow(/empty \(0 bytes\)/);
     } finally {
       cleanupScopedRoot(dir);
     }

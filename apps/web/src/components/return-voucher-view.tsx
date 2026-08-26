@@ -75,8 +75,8 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
                 <tr key={`${line.description}-${index}`} className="border-b last:border-0" data-testid="return-voucher-line">
                   <td className="p-1">{line.description}</td>
                   <td className="p-1">{line.quantity}</td>
-                  <td className="p-1">{line.refundUnitPrice} دج</td>
-                  <td className="p-1">{line.refundAmount} دج</td>
+                  <td className="p-1">{line.refundUnitPrice} {t("dzd")}</td>
+                  <td className="p-1">{line.refundAmount} {t("dzd")}</td>
                 </tr>
               ))}
             </tbody>
@@ -87,15 +87,15 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
       <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1 text-base font-bold">
           <dt>{t("returnsRefundTotal")}</dt>
-          <dd data-testid="return-voucher-total">{voucher.refundAmount} دج</dd>
+          <dd data-testid="return-voucher-total">{voucher.refundAmount} {t("dzd")}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
           <dt>{t("returnsCashNow")}</dt>
-          <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} دج</dd>
+          <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} {t("dzd")}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
           <dt>{t("returnsDebtOffset")}</dt>
-          <dd data-testid="return-voucher-debt">{voucher.debtOffset} دج</dd>
+          <dd data-testid="return-voucher-debt">{voucher.debtOffset} {t("dzd")}</dd>
         </div>
       </dl>
     </article>

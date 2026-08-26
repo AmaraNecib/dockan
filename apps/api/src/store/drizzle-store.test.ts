@@ -1458,8 +1458,9 @@ describe("returns seam (cash refunds + review marks)", () => {
     // earlier tests in this file also insert returns — only the scoped count is exact
     expect((await store.listReturns({})).length).toBeGreaterThanOrEqual(2);
 
-    const totals = await store.returnedQuantitiesByLine(a.invoice.id);
-    expect(totals.get(a.line.id)).toBe(1);
+    const totals = await store.returnedByLine(a.invoice.id);
+    expect(totals.get(a.line.id)?.quantity).toBe(1);
+    expect(totals.get(a.line.id)?.refundAmount).toBe(100);
   });
 
   it("transitions status exactly once (conditional guard) and consumes the pending marks", async () => {

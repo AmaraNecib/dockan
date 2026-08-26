@@ -316,6 +316,14 @@ const resources = {
       returnsInvalidQuantity: "أدخل كمية صحيحة أكبر من صفر",
       returnsExceedsRemaining: "الكمية تتجاوز المتبقي القابل للإرجاع ({{remaining}})",
       returnsNoLines: "اختر كمية لسطر واحد على الأقل",
+      // locale-neutral api strings rendered here; the api itself emits keys
+      activityReturnRecorded: "تسجيل مرجوع {{number}} بمبلغ {{amount}} دج على {{invoice}}",
+      activityReturnRecordedDebt: "تسجيل مرجوع {{number}} بمبلغ {{amount}} دج على {{invoice}} (منه {{debt}} دج خصم من الدين)",
+      activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} ({{amount}} دج)",
+      historyReasonReturnRecorded: "مرجوع",
+      historyReasonReturnRejected: "مرجوع تالف {{context}}",
+      /** whole-DZD unit suffix; the api never embeds it in strings */
+      dzd: "دج",
       returnNumber: "رقم المرجوع",
       returnVoucher: "إيصال المرجوع",
       returnVoucherTitle: "إيصال مرجوع",

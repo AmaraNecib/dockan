@@ -107,6 +107,49 @@ describe("computeReturnRefund (line refunds + record total)", () => {
     expect(result.refundTotal).toBe(68);
   });
 
+  it("is SEQUENCE-AWARE: qty 1 then qty 2 on a non-even line settles 101 exactly (rounding only at the last partial)", () => {
+    const first = computeReturnRefund([{ invoiceLineId: "l1", quantity: 1, lineQuantity: 3, netTotal: 101 }], new Map());
+    expect(first.lines[0]).toMatchObject({ quantity: 1, refundAmount: 34 });
+    const second = computeReturnRefund(
+      [{ invoiceLineId: "l1", quantity: 2, lineQuantity: 3, netTotal: 101 }],
+      new Map([["l1", { quantity: 1, refundAmount: 34 }]]),
+    );
+    expect(second.lines[0]).toMatchObject({ quantity: 2, refundAmount: 67 });
+    expect(first.refundTotal + second.refundTotal).toBe(101);
+  });
+
+  it("settles the EXACT remainder when the last partial completes the line", () => {
+    // 5 units, net 101, unit 20: partials 1 + 1 (20 + 20), then the completing 3
+    const partial = computeReturnRefund([{ invoiceLineId: "l1", quantity: 1, lineQuantity: 5, netTotal: 101 }], new Map());
+    expect(partial.refundTotal).toBe(20);
+    const again = computeReturnRefund(
+      [{ invoiceLineId: "l1", quantity: 1, lineQuantity: 5, netTotal: 101 }],
+      new Map([["l1", { quantity: 1, refundAmount: 20 }]]),
+    );
+    expect(again.refundTotal).toBe(20);
+    const last = computeReturnRefund(
+      [{ invoiceLineId: "l1", quantity: 3, lineQuantity: 5, netTotal: 101 }],
+      new Map([["l1", { quantity: 2, refundAmount: 40 }]]),
+    );
+    // the remainder, not 3 × 20 = 60
+    expect(last.lines[0]).toMatchObject({ quantity: 3, refundAmount: 61 });
+    expect(partial.refundTotal + again.refundTotal + last.refundTotal).toBe(101);
+  });
+
+  it("many partials of 1 on a non-even line never over-refund cumulatively before completion", () => {
+    let prior = new Map<string, { quantity: number; refundAmount: number }>();
+    let cumulative = 0;
+    for (const returned of [1, 1, 1, 1, 1, 1]) {
+      const step = computeReturnRefund([{ invoiceLineId: "l1", quantity: returned, lineQuantity: 6, netTotal: 101 }], prior);
+      const amount = step.refundTotal;
+      cumulative += amount;
+      expect(cumulative).toBeLessThanOrEqual(101);
+      prior = new Map([["l1", { quantity: (prior.get("l1")?.quantity ?? 0) + returned, refundAmount: cumulative }]]);
+    }
+    const last = computeReturnRefund([{ invoiceLineId: "l1", quantity: 1, lineQuantity: 6, netTotal: 101 }], prior);
+    expect(cumulative + last.refundTotal).toBe(101);
+  });
+
   it("handles an empty request", () => {
     expect(computeReturnRefund([])).toEqual({ lines: [], refundTotal: 0 });
   });

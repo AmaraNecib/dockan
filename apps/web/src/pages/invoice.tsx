@@ -345,7 +345,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             {returns.map((record) => (
               <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
                 <td className="p-2" dir="ltr">{record.returnNumber}</td>
-                <td className="p-2 font-medium">{record.refundAmount} دج</td>
+                <td className="p-2 font-medium">{record.refundAmount} {t("dzd")}</td>
                 <td className="p-2" data-testid={`returns-status-${record.status}`}>{t(`returnsStatus_${record.status}`)}</td>
                 <td className="p-2">
                   <Link
@@ -397,11 +397,11 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         <div className="grid gap-2 rounded border bg-stone-50 p-3 text-sm">
           <div className="flex justify-between">
             <span className="text-stone-500">{t("returnsValue")}</span>
-            <span className="font-medium" data-testid="returns-value">{valueTotal} دج</span>
+            <span className="font-medium" data-testid="returns-value">{valueTotal} {t("dzd")}</span>
           </div>
           <div className="flex justify-between">
             <span className="text-stone-500">{t("returnsCollected")}</span>
-            <span data-testid="returns-collected">{invoice.paidAmount} دج</span>
+            <span data-testid="returns-collected">{invoice.paidAmount} {t("dzd")}</span>
           </div>
           <label className="grid gap-1">
             {t("returnsSplit")}
@@ -439,7 +439,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           {Number.isFinite(settledCash) && (
             <div className="flex justify-between">
               <span className="text-stone-500">{t("returnsCashNow")}</span>
-              <span className="font-medium" data-testid="returns-cash-now">{settledCash} دج</span>
+              <span className="font-medium" data-testid="returns-cash-now">{settledCash} {t("dzd")}</span>
             </div>
           )}
           {cashExceedsCollected && (

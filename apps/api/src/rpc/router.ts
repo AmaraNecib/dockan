@@ -705,14 +705,17 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           // the refund cap is per invoice line: sold − already returned (the
           // sums include duplicate entries WITHIN this request, so an item
-          // can never be returned past what it sold)
-          const alreadyReturned = await tx.returnedQuantitiesByLine(invoice.id);
+          // can never be returned past what it sold). The per-line aggregates
+          // also feed the sequence-aware refund (cumulative refunded value
+          // and how much of the line remains unreturned).
+          const returnedByLine = await tx.returnedByLine(invoice.id);
+          const alreadyReturnedQty = new Map([...returnedByLine].map(([lineId, row]) => [lineId, row.quantity]));
           // SAFETY: every requested line was resolved above, so the violation
           // check indexes the same line set the refund math uses
           const violation = returnCapViolation(
             input.lines,
             invoice.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
-            alreadyReturned,
+            alreadyReturnedQty,
           );
           if (violation !== null) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
@@ -720,7 +723,9 @@ export function createRpcRouter(deps: RpcDeps) {
 
           // refund math reads the authoritative line snapshots (netTotal after
           // the allocated invoice discount, divided by the line's SOLD count), never
-          // client-sent prices — a partial return prices at what the customer paid
+          // client-sent prices — a partial return prices at what the customer
+          // paid, and the COMPLETING return settles the exact remainder so the
+          // line never over-refunds cumulatively
           const refund = computeReturnRefund(
             input.lines.map((entry) => {
               const line = linesById.get(entry.invoiceLineId)!;
@@ -731,6 +736,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 lineQuantity: line.quantity,
               };
             }),
+            returnedByLine,
           );
           // Settlement (owner-approved split): the owner picks how much cash to
           // hand back now; the remainder is deducted from the invoice's old
@@ -798,8 +804,10 @@ export function createRpcRouter(deps: RpcDeps) {
               kind: "SALE",
               delta: lineRefund.quantity,
               unitCost: item.costPrice,
-              // visible marker in the item history: this stock-in is a return
-              reason: "مرجوع",
+              // visible marker in the item history: this stock-in is a return.
+              // Locale-neutral key; the ui translates it (the ref carries the
+              // return number).
+              reason: "RETURN_RECORDED",
               ref: returnId,
               returnMark: "PENDING",
               occurredAt,
@@ -817,7 +825,8 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({
             type: "RETURN_RECORDED",
-            summary: `تسجيل مرجوع ${returnNumber} بمبلغ ${refund.refundTotal} دج${debtOffset > 0 ? ` (منه ${debtOffset} دج خصم من الدين)` : ""}`,
+            // locale-neutral tokens: key + data; the activity ui translates
+            summary: `RETURN_RECORDED ${returnNumber} ${refund.refundTotal} ${invoice.invoiceNumber} ${debtOffset}`, 
             ref: returnId,
           });
           // SAFETY: the return was just created in this transaction; it cannot vanish
@@ -844,7 +853,8 @@ export function createRpcRouter(deps: RpcDeps) {
           await tx.setReturnMarks(existing.id, "ACCEPTED");
           await tx.insertActivity({
             type: "RETURN_REVIEWED",
-            summary: `قبول مرجوع ${existing.returnNumber} (${existing.refundAmount} دج)`,
+            // locale-neutral tokens; the activity ui translates
+            summary: `RETURN_REVIEWED ${existing.returnNumber} ACCEPTED ${existing.refundAmount}`,
             ref: existing.id,
           });
           // SAFETY: the return was just read in this handler; it cannot vanish mid-transaction
@@ -853,13 +863,16 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
     // Review reject (damaged): instead of accepting, the quantity is removed
-    // as a MANUAL_ADJUSTMENT outflow (Arabic reason) in the same unit that
-    // consumes the mark — the shop's stock ends exactly where it was before
-    // the return, and the ledger stays append-only. The removal is CLAMPED to
-    // what is actually on hand: returned goods are salable immediately, so by
-    // review time some may already have been resold, and removing more than
-    // exists would drive the replay negative. Whatever is still available is
-    // scrapped; the resold units were legitimate sales.
+    // as a MANUAL_ADJUSTMENT outflow in the same unit that consumes the mark —
+    // the shop's stock ends exactly where it was before the return, and the
+    // ledger stays append-only. The removal is CLAMPED to what is actually on
+    // hand (returned goods are salable immediately, so by review time some may
+    // already have been resold), allocated across the return's lines of each
+    // item first-come-first-served. ONE scrapping movement per RETURN LINE,
+    // each carrying the line's id as a reason suffix — the profit report's
+    // scrap attribution joins on that suffix so a multi-line return of one
+    // item never double-attributes a movement. Reasons/summaries are
+    // locale-neutral keys; the ui translates.
     returnsReject: os.returnsReject.handler(
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
@@ -871,37 +884,30 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_PENDING" });
           }
           const note = input.reason && input.reason.trim() !== "" ? input.reason.trim() : null;
-          const reason = `مرجوع تالف ${existing.returnNumber}${note ? ` — ${note}` : ""}`;
+          const reasonKey = `RETURN_REJECTED_DAMAGED ${existing.returnNumber}${note ? ` — ${note}` : ""}`;
           if (note !== null) {
             // the review annotation lands on the return record too, so the
             // voucher and the returns list tell the full story
             await tx.setReturnReason(existing.id, existing.reason && existing.reason.trim() !== "" ? `${existing.reason} — ${note}` : note);
           }
           const occurredAt = localDateTime();
-          // aggregate the returned quantity per item: one scrapping movement per
-          // item (a return cannot carry two lines of the same item in normal
-          // use, but a direct-API duplicate-item return would otherwise produce
-          // two movements that the report's scrap attribution could not tell
-          // apart). The removal is CLAMPED per item to what is actually on hand.
-          const byItem = new Map<string, number>();
-          for (const line of existing.lines) {
-            if (line.itemId === null) continue;
-            byItem.set(line.itemId, (byItem.get(line.itemId) ?? 0) + line.quantity);
-          }
-          for (const [itemId, returnedQty] of byItem) {
+          const itemIds = [...new Set(existing.lines.flatMap((line) => (line.itemId === null ? [] : [line.itemId]))) ];
+          for (const itemId of itemIds) {
             const item = (await tx.getItemsByIds([itemId])).get(itemId);
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
+            const linesOfItem = existing.lines.filter((line) => line.itemId === itemId);
+            const returnedQty = linesOfItem.reduce((sum, line) => sum + line.quantity, 0);
             const movements = await tx.listStockMovements(item.id);
             const projection = projectLedger(movements, { fallbackUnitCost: item.costPrice });
             // clamp: never remove more than is actually in stock (some returned
             // units may already have been resold between create and review)
-            const removal = Math.min(returnedQty, projection.stockOnHand);
-            if (removal <= 0) continue;
+            const removalBudget = Math.min(returnedQty, projection.stockOnHand);
+            if (removalBudget <= 0) continue;
             const candidate = {
               kind: "MANUAL_ADJUSTMENT" as const,
-              delta: -removal,
+              delta: -removalBudget,
               unitCost: null,
               occurredAt,
               seq: undefined,
@@ -910,22 +916,32 @@ export function createRpcRouter(deps: RpcDeps) {
             // negative; the whole-history projection still fails loudly on
             // corrupt history before anything is written.
             const stockAfter = projectLedger([...movements, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
-            await tx.insertStockMovement({
-              itemId: item.id,
-              kind: "MANUAL_ADJUSTMENT",
-              delta: -removal,
-              unitCost: null,
-              reason,
-              ref: existing.id,
-              occurredAt,
-            });
+            // allocate the scrapped units across this item's return lines,
+            // first-come-first-served; each line's movement carries its id as
+            // the reason suffix for exact report attribution
+            let remaining = removalBudget;
+            for (const line of linesOfItem) {
+              const take = Math.min(line.quantity, remaining);
+              if (take <= 0) continue;
+              await tx.insertStockMovement({
+                itemId: item.id,
+                kind: "MANUAL_ADJUSTMENT",
+                delta: -take,
+                unitCost: null,
+                reason: `${reasonKey} #${line.id}`,
+                ref: existing.id,
+                occurredAt,
+              });
+              remaining -= take;
+            }
             const newCost = weightedAverageCost([...movements, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
           await tx.insertActivity({
             type: "RETURN_REVIEWED",
-            summary: `رفض مرجوع ${existing.returnNumber} (تالف)`,
+            // locale-neutral tokens; the activity ui translates
+            summary: `RETURN_REVIEWED ${existing.returnNumber} REJECTED ${existing.refundAmount}`,
             ref: existing.id,
           });
           // SAFETY: the return was just read in this handler; it cannot vanish mid-transaction

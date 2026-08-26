@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -14,6 +15,26 @@ function formatActivityReference(type: string, ref: string): string {
     return ref.split(/[\\/]/).filter(Boolean).at(-1) ?? ref;
   }
   return ref.slice(0, 8);
+}
+
+/** Translate the locale-neutral activity summaries the returns feature emits
+ * (`RETURN_RECORDED <rtn> <amount> <invoice> <debt>` and `RETURN_REVIEWED
+ * <rtn> <ACCEPTED|REJECTED> <amount>`). Unknown/legacy summaries render raw
+ * exactly as before. The api stays locale-neutral; this page owns the copy.
+ */
+function activitySummaryText(t: TFunction, type: string, summary: string): string {
+  const tokens = summary.split(" ");
+  if (type === "RETURN_RECORDED" && tokens[0] === "RETURN_RECORDED" && tokens.length >= 5) {
+    const [, number, amount, invoice, debt] = tokens;
+    return Number(debt) > 0
+      ? t("activityReturnRecordedDebt", { number, amount, invoice, debt })
+      : t("activityReturnRecorded", { number, amount, invoice });
+  }
+  if (type === "RETURN_REVIEWED" && tokens[0] === "RETURN_REVIEWED" && tokens.length >= 4) {
+    const [, number, action, amount] = tokens;
+    return t("activityReturnReviewed", { number, action: t(action === "ACCEPTED" ? "returnsAcceptBtn" : "returnsRejectBtn"), amount });
+  }
+  return summary;
 }
 
 /**
@@ -64,7 +85,7 @@ export function ActivityLogPage() {
                 <td className="p-3">
                   <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-700">{t(`activityType_${entry.type}`)}</span>
                 </td>
-                <td className="p-3">{entry.summary}</td>
+                <td className="p-3">{activitySummaryText(t, entry.type, entry.summary)}</td>
                 {/* Entity refs are compact; backup refs display their safe local filename. */}
                 <td className="p-3 font-mono text-xs text-stone-500" dir="ltr" data-testid="activity-ref">
                   {entry.ref ? formatActivityReference(entry.type, entry.ref) : "—"}

@@ -161,8 +161,9 @@ export interface StorePort {
   getReturnHeader(returnId: string): Promise<ReturnDetail | undefined>;
   /** authoritative review guard: true only when the return was still pending */
   transitionReturnStatus(returnId: string, to: "ACCEPTED" | "REJECTED_DAMAGED"): Promise<boolean>;
-  /** per-line already-returned totals for this invoice (the refund cap key) */
-  returnedQuantitiesByLine(invoiceId: string): Promise<Map<string, number>>;
+  /** per-line already-returned totals for this invoice (quantity for the cap,
+   * refundAmount for the sequence-aware refund remainder) */
+  returnedByLine(invoiceId: string): Promise<Map<string, { quantity: number; refundAmount: number }>>;
   /** Atomic debt settlement: debits remainingAmount by amount ONLY while it
    * still covers the offset. Returns true when the debt moved, false when the
    * boundary was violated — the caller rolls the unit back in that case. */

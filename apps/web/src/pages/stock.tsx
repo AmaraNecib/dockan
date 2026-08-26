@@ -120,6 +120,19 @@ function kindLabel(t: (key: string) => string, kind: string): string {
   return t("historyKind_MANUAL_ADJUSTMENT");
 }
 
+/** Translate the locale-neutral reasons the returns feature stores on stock
+ * movements (`RETURN_RECORDED`, `RETURN_REJECTED_DAMAGED <RTN>[ — <note>]`).
+ * Unknown/legacy reasons (opening, purchase corrections) render raw. The api
+ * stores keys; this view owns the copy. */
+function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+  if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
+  if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
+    const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();
+    return t("historyReasonReturnRejected", { context: rest });
+  }
+  return reason;
+}
+
 export function ItemHistoryPage() {
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
@@ -162,7 +175,7 @@ export function ItemHistoryPage() {
                     <span className="mr-2 text-xs text-stone-500">({t("historyOpening")})</span>
                   )}
                   {movement.reason !== null && movement.reason !== "opening" && (
-                    <span className="mr-2 text-xs text-stone-500">({movement.reason})</span>
+                    <span className="mr-2 text-xs text-stone-500">({movementReasonText(t, movement.reason)})</span>
                   )}
                 </td>
                 <td className={`p-3 ${movement.delta > 0 ? "text-green-700" : "text-red-700"}`}>

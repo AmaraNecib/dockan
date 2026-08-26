@@ -63,28 +63,49 @@ export function lineRefundAmount(quantity: number, netTotal: number, lineQuantit
   return quantity * refundUnitPriceFor(netTotal, lineQuantity);
 }
 
-/** Compute every line's refund plus the record total. Pure and deterministic.
+/**
+ * Compute every line's refund plus the record total. Pure and deterministic.
+ *
  * Quantities are CONSOLIDATED by invoiceLineId FIRST — split entries of the
  * same line (e.g. a request with [qty 2, qty 1] of one 3-unit line) are
- * priced once, so the whole line price (or the partial effective unit) is
- * applied once and rounding can never over-refund. */
-export function computeReturnRefund(lines: readonly ReturnRefundLineInput[]): ReturnRefundComputation {
-  const byLine = new Map<string, ReturnRefundLineInput & { quantity: number }>();
+ * priced once.
+ *
+ * Pricing is SEQUENCE-AWARE per line: `prior` carries what earlier returns on
+ * the same line already refunded (quantity + whole-DZD amount). A partial
+ * return prices at `qty × round(net/sold)`, capped so the cumulative refund
+ * can never exceed the line's net; the COMPLETING return — the one that
+ * returns the last unreturned units (prior + this request's qty = sold) —
+ * settles the exact remainder `net − alreadyRefunded`, rounding only at the
+ * last partial. Consequence: qty 1 then qty 2 on a 101-DZD/3-unit line
+ * settles 34 then 67 — 101 exactly, never 34 + 68 = 102.
+ */
+export function computeReturnRefund(
+  lines: readonly ReturnRefundLineInput[],
+  prior?: ReadonlyMap<string, { quantity: number; refundAmount: number }>,
+): ReturnRefundComputation {
+  const consolidated = new Map<string, ReturnRefundLineInput & { quantity: number }>();
   for (const line of lines) {
-    const existing = byLine.get(line.invoiceLineId);
+    const existing = consolidated.get(line.invoiceLineId);
     if (existing === undefined) {
-      byLine.set(line.invoiceLineId, { ...line });
+      consolidated.set(line.invoiceLineId, { ...line });
     } else {
-      byLine.set(line.invoiceLineId, { ...existing, quantity: existing.quantity + line.quantity });
+      consolidated.set(line.invoiceLineId, { ...existing, quantity: existing.quantity + line.quantity });
     }
   }
-  const result = [...byLine.values()].map((line) => {
+  const result = [...consolidated.values()].map((line) => {
     const refundUnitPrice = refundUnitPriceFor(line.netTotal, line.lineQuantity);
+    const priorQty = prior?.get(line.invoiceLineId)?.quantity ?? 0;
+    const priorRefund = prior?.get(line.invoiceLineId)?.refundAmount ?? 0;
+    const remaining = Math.max(0, line.netTotal - priorRefund);
+    // completing return: every unreturned unit comes back — settle the exact
+    // remainder so the line's cumulative refund is netTotal precisely
+    const completing = priorQty + line.quantity >= line.lineQuantity;
+    const refundAmount = completing ? remaining : Math.min(line.quantity * refundUnitPrice, remaining);
     return {
       invoiceLineId: line.invoiceLineId,
       quantity: line.quantity,
       refundUnitPrice,
-      refundAmount: line.quantity === line.lineQuantity ? line.netTotal : line.quantity * refundUnitPrice,
+      refundAmount,
     };
   });
   const refundTotal = result.reduce((sum, line) => sum + line.refundAmount, 0);

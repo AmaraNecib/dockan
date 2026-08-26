@@ -2257,7 +2257,7 @@ describe("returns & refunds", () => {
     expect(history.stockOnHand).toBe(2);
     const returnMovement = history.movements.find((movement) => movement.returnMark === "PENDING");
     expect(returnMovement).toBeDefined();
-    expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "مرجوع", ref: created.id });
+    expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "RETURN_RECORDED", ref: created.id });
     expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
     expect((await client.activitiesList({})).items.some((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id)).toBe(true);
 
@@ -2339,7 +2339,7 @@ describe("returns & refunds", () => {
     expect(history.stockOnHand).toBe(0);
     const removal = history.movements.find((movement) => movement.kind === "MANUAL_ADJUSTMENT" && movement.delta < 0);
     expect(removal).toBeDefined();
-    expect(removal?.reason).toContain("مرجوع تالف");
+    expect(removal?.reason).toContain("RETURN_REJECTED_DAMAGED");
     expect(removal?.reason).toContain("كسر في العبوة");
     expect(removal?.ref).toBe(created.id);
     expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
@@ -2506,9 +2506,9 @@ describe("returns & refunds", () => {
     // the owner rejects: the returned goods are scrapped, not back in inventory
     await client.returnsReject({ returnId: returned.id });
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
     // the line stays booked — no hidden loss, the report is back to the
     // after-sale state (not the pre-sale baseline)
-    const afterReject = await report();
     expect(afterReject.grossProfit - baseline.grossProfit).toBe(-200);
     expect(afterReject.cogs - baseline.cogs).toBe(200);
   });
@@ -2564,6 +2564,72 @@ describe("returns & refunds", () => {
     const afterReject = await report();
     // original line keeps ONLY the scrapped-now unit (300 rev / 100 cogs);
     // the resold 2 are booked by B (600 / 200) — every unit booked exactly once
+    expect(afterReject.revenue - baseline.revenue).toBe(900);
+    expect(afterReject.cogs - baseline.cogs).toBe(300);
+  });
+
+  it("settles sequential partial returns on a non-even line exactly: 34 + 67 = 101, never 102", async () => {
+    const item = await makeReturnItem("مرجوع-تتابع-تقسيط", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    // 3 × 100 with a 199 DZD discount → the line nets 101, unit round = 34
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 199 }, lines: [{ itemId: item.id, quantity: 3 }] });
+    const lineId = sale.lines[0]!.id;
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(first.refundAmount).toBe(34); // partial at the rounded unit
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 2 }] });
+    expect(second.refundAmount).toBe(67); // completing: the exact remainder
+    expect(first.refundAmount + second.refundAmount).toBe(101);
+    expect((await client.returnsList({ invoiceId: sale.id })).items.reduce((sum, r) => sum + r.refundAmount, 0)).toBe(101);
+    // and the cap now refuses any further return
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+  });
+
+  it("partials then the remainder settle the exact full-line total", async () => {
+    const item = await makeReturnItem("مرجوع-باقي-الخط", 100, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 404 }, lines: [{ itemId: item.id, quantity: 5 }] });
+    // 5 × 100 gross − 404 discount = 96 net, unit round(96/5) = 19
+    expect(sale.lines[0]?.netTotal).toBe(96);
+    const lineId = sale.lines[0]!.id;
+    const a = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(a.refundAmount).toBe(19);
+    const b = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    expect(b.refundAmount).toBe(19);
+    const c = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 3 }] });
+    expect(c.refundAmount).toBe(58); // 96 − 38, the exact remainder (3×19 = 57 would under-refund)
+    expect(a.refundAmount + b.refundAmount + c.refundAmount).toBe(96);
+  });
+
+  it("attributes the reject scrap per LINE for a same-item multi-line return (no double count)", async () => {
+    const item = await makeReturnItem("مرجوع-سطران-نفس-المنتج", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const report = async () => client.reportsProfit(window);
+    const baseline = await report();
+    // sale with TWO lines of the same item: A(2) + B(1)
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }, { itemId: item.id, quantity: 1 }] });
+    expect(sale.lines).toHaveLength(2);
+    const lineA = sale.lines[0]!;
+    const lineB = sale.lines[1]!;
+    const returned = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineA.id, quantity: 2 }, { invoiceLineId: lineB.id, quantity: 1 }] });
+    expect(returned.lines).toHaveLength(2);
+    // resell 2 of the returned units, then reject: only 1 unit is still on hand
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
+    await client.returnsReject({ returnId: returned.id });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    const afterReject = await report();
+    // FIFO allocation scrapes 1 unit off line A (A: rejected 2, scrap 1 →
+    // bookedQty 1); line B's unit was resold and is booked by the resale (2
+    // units 600 / 200). Booked: A 1 unit (300 / 100) + resale 2 (600 / 200) =
+    // revenue 900, cogs 300 — every unit exactly once.
     expect(afterReject.revenue - baseline.revenue).toBe(900);
     expect(afterReject.cogs - baseline.cogs).toBe(300);
   });

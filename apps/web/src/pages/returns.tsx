@@ -51,13 +51,13 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
             <div>
               <p dir="ltr" className="font-semibold">{record.returnNumber}</p>
               <p className="text-sm text-stone-600">
-                {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} دج
+                {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} {t("dzd")}
               </p>
               <p className="text-xs text-stone-500">
-                {t("returnsCashNow")}: {record.cashPaidOut} دج — {t("returnsDebtOffset")}: {record.debtOffset} دج
+                {t("returnsCashNow")}: {record.cashPaidOut} {t("dzd")} — {t("returnsDebtOffset")}: {record.debtOffset} {t("dzd")}
               </p>
               <p className="text-sm text-stone-500">
-                {record.lines.map((line) => `${line.description} ×${line.quantity}`).join("، ")}
+                {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}
               </p>
             </div>
             <div className="flex items-center gap-2">

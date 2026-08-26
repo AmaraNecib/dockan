@@ -823,8 +823,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // rejected returns, and — for the rejected ones — the quantity the reject
       // actually SCRAPPED (the MANUAL_ADJUSTMENT outflow amount, i.e. the
       // still-on-hand portion at review time; resold units are never scrapped
-      // by the clamp). One outflow movement per (return, item) exists after the
-      // reject aggregates per item.
+      // by the clamp). Each reject movement carries its return line's id as a
+      // reason suffix (`#<lineId>`), so a multi-line return of one item
+      // attributes the scrap to the exact owning line.
       // SAFETY: the JOIN keys are fixed columns; the aggregation yields one
       // row per invoice line with its three whole-number sums.
       const stats = (await db.all(sql`
@@ -835,8 +836,8 @@ export function createDrizzleStore(conn: Connection): StorePort {
         FROM return_lines rl
         JOIN returns r ON r.id = rl.return_id
         LEFT JOIN stock_movements sm
-          ON sm.ref = r.id AND sm.item_id = rl.item_id
-         AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
+          ON sm.ref = r.id AND sm.kind = 'MANUAL_ADJUSTMENT' AND sm.delta < 0
+         AND substr(sm.reason, -(length(rl.id) + 1)) = '#' || rl.id
         GROUP BY rl.invoice_line_id
       `)) as Array<{ invoiceLineId: string; heldQty: number; rejectedQty: number; rejectedScrapQty: number }>;
       const statsByLine = new Map(stats.map((row) => [row.invoiceLineId, row]));
@@ -1073,18 +1074,20 @@ export function createDrizzleStore(conn: Connection): StorePort {
         .run(to, now(), returnId);
       return Number(result.changes) > 0;
     },
-    async returnedQuantitiesByLine(invoiceId: string) {
+    async returnedByLine(invoiceId: string) {
       // SAFETY: the JOIN keys are fixed columns; the aggregation yields one
-      // row per invoice line with its summed returned quantity.
+      // row per invoice line with its summed returned quantity and refund.
       const rows = (await db.all(sql`
-        SELECT rl.invoice_line_id AS invoiceLineId, SUM(rl.quantity) AS quantity
+        SELECT rl.invoice_line_id AS invoiceLineId, SUM(rl.quantity) AS quantity, SUM(rl.refund_amount) AS refundAmount
         FROM return_lines rl
         JOIN returns r ON r.id = rl.return_id
         WHERE r.invoice_id = ${invoiceId}
         GROUP BY rl.invoice_line_id
-      `)) as Array<{ invoiceLineId: string; quantity: number | null }>;
-      const totals = new Map<string, number>();
-      for (const row of rows) totals.set(row.invoiceLineId, Number(row.quantity ?? 0));
+      `)) as Array<{ invoiceLineId: string; quantity: number | null; refundAmount: number | null }>;
+      const totals = new Map<string, { quantity: number; refundAmount: number }>();
+      for (const row of rows) {
+        totals.set(row.invoiceLineId, { quantity: Number(row.quantity ?? 0), refundAmount: Number(row.refundAmount ?? 0) });
+      }
       return totals;
     },
     /** same conditional-write guard as applyPaymentToInvoice for the debt side:

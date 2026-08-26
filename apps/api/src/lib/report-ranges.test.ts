@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { localDate, localDateTime } from "./logger";
-import { resolveReportRange } from "./report-ranges";
+import { resolveBoundsWindow, resolveReportRange } from "./report-ranges";
 
 /**
  * Date-boundary tests in Algeria local time (Africa/Algiers, UTC+1, no DST).
@@ -126,5 +126,51 @@ describe("report ranges (Algeria local time)", () => {
     const range = resolveReportRange("CURRENT_MONTH", now, { from: "2020-01-01T00:00:00", to: "2020-02-01T00:00:00" });
     expect(range.from).toBe("2026-01-01T00:00:00");
     expect(range.to).toBe("2026-01-31T23:59:59");
+  });
+});
+
+describe("half-open bounds window (resolveBoundsWindow)", () => {
+  const now = new Date("2026-01-15T12:30:00Z"); // 13:30 locally
+
+  it("clamps an absent upper bound to the injected now (Algeria-local)", () => {
+    const range = resolveBoundsWindow("2025-12-01T00:00:00", undefined, now);
+    expect(localDateTime(now)).toBe("2026-01-15T13:30:00");
+    expect(range).toEqual({ preset: "CUSTOM", from: "2025-12-01T00:00:00", to: "2026-01-15T13:30:00" });
+  });
+
+  it("opens at the beginning of records when the lower bound is absent", () => {
+    const range = resolveBoundsWindow(undefined, "2025-12-31T23:59:59", now);
+    expect(range).toEqual({ preset: "CUSTOM", from: "0001-01-01T00:00:00", to: "2025-12-31T23:59:59" });
+  });
+
+  it("passes an explicit from+to pair through unchanged", () => {
+    const range = resolveBoundsWindow("2025-11-01T08:00:00", "2025-11-30T18:30:00", now);
+    expect(range).toEqual({ preset: "CUSTOM", from: "2025-11-01T08:00:00", to: "2025-11-30T18:30:00" });
+  });
+
+  it("falls back to the current local month when both bounds are absent", () => {
+    const range = resolveBoundsWindow(undefined, undefined, now);
+    expect(range).toEqual({ preset: "CUSTOM", from: "2026-01-01T00:00:00", to: "2026-01-31T23:59:59" });
+  });
+
+  it("clamps through the local-midnight hour-24 edge when the instant is midnight", () => {
+    // 2026-03-15T23:00:00Z is 2026-03-16T00:00:00 locally — exactly midnight
+    const midnight = new Date("2026-03-15T23:00:00Z");
+    expect(localDateTime(midnight)).toBe("2026-03-16T00:00:00");
+    const range = resolveBoundsWindow("2026-03-01T00:00:00", undefined, midnight);
+    expect(range.to).toBe("2026-03-16T00:00:00");
+  });
+
+  it("is pure and idempotent for identical inputs", () => {
+    const first = resolveBoundsWindow("2025-12-01T00:00:00", undefined, now);
+    const second = resolveBoundsWindow("2025-12-01T00:00:00", undefined, now);
+    expect(second).toEqual(first);
+  });
+
+  it("keeps a from exactly at the now instant inclusive (single-instant window)", () => {
+    // from == localDateTime(now): the clamped upper bound meets the lower
+    // bound, so the window is one instant — never empty or rejected
+    const range = resolveBoundsWindow("2026-01-15T13:30:00", undefined, now);
+    expect(range).toEqual({ preset: "CUSTOM", from: "2026-01-15T13:30:00", to: "2026-01-15T13:30:00" });
   });
 });

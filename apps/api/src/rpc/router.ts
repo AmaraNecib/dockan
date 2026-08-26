@@ -13,6 +13,7 @@ import { AppError } from "../lib/errors";
 import { createResetThrottle, type ResetThrottle } from "../lib/reset-throttle";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
+import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
 import type { ReportRangePreset } from "@dokan/contracts";
@@ -662,6 +663,227 @@ export function createRpcRouter(deps: RpcDeps) {
           // (SAFETY: the invoice was just read in this handler; it cannot
           // vanish mid-transaction)
           return (await tx.getInvoiceDetail(detail.id))!;
+        }),
+      ),
+    ),
+
+    // --- returns & refunds ----------------------------------------------------
+    returnsGet: os.returnsGet.handler(
+      guardedInput(async ({ returnId }) => {
+        const detail = await deps.store.getReturnDetail(returnId);
+        if (detail === undefined) {
+          throw new ORPCError("NOT_FOUND", { message: "RETURN_NOT_FOUND" });
+        }
+        return detail;
+      }),
+    ),
+    // Cash refund against a past SALE. One BEGIN IMMEDIATE unit owns the whole
+    // write: return record + lines + one marked SALE-reversal movement per line
+    // (stock straight back in, review-pending) + the live stock/cost caches +
+    // the audit entry — so a failure anywhere rolls everything back and the
+    // returned goods can never half-land in the ledger.
+    returnsCreate: os.returnsCreate.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const invoice = await tx.getInvoiceDetail(input.invoiceId);
+          if (invoice === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "INVOICE_NOT_FOUND" });
+          }
+          if (invoice.kind !== "SALE") {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_SALE" });
+          }
+          const linesById = new Map(invoice.lines.map((line) => [line.id, line]));
+          for (const entry of input.lines) {
+            const line = linesById.get(entry.invoiceLineId);
+            if (line === undefined) {
+              throw new ORPCError("BAD_REQUEST", { message: "LINE_NOT_ON_INVOICE" });
+            }
+            if (line.itemId === null) {
+              // description-only lines have no stock to return
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_NOT_RETURNABLE" });
+            }
+          }
+          // the refund cap is per invoice line: sold − already returned (the
+          // sums include duplicate entries WITHIN this request, so an item
+          // can never be returned past what it sold)
+          const alreadyReturned = await tx.returnedQuantitiesByLine(invoice.id);
+          // SAFETY: every requested line was resolved above, so the violation
+          // check indexes the same line set the refund math uses
+          const violation = returnCapViolation(
+            input.lines,
+            invoice.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
+            alreadyReturned,
+          );
+          if (violation !== null) {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
+          }
+
+          // refund math reads the authoritative line snapshots (netTotal after
+          // the allocated invoice discount, divided by the line's SOLD count), never
+          // client-sent prices — a partial return prices at what the customer paid
+          const refund = computeReturnRefund(
+            input.lines.map((entry) => {
+              const line = linesById.get(entry.invoiceLineId)!;
+              return {
+                invoiceLineId: entry.invoiceLineId,
+                quantity: entry.quantity,
+                netTotal: line.netTotal,
+                lineQuantity: line.quantity,
+              };
+            }),
+          );
+
+          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // transaction as the return insert, so separate app processes
+          // cannot select the same RTN-#### between a read and the insert.
+          const returnNumber = await tx.allocateReturnNumber();
+          const occurredAt = localDateTime();
+          const { id: returnId } = await tx.insertReturn({
+            returnNumber,
+            invoiceId: invoice.id,
+            refundAmount: refund.refundTotal,
+            payoutMethod: input.payoutMethod ?? "CASH",
+            reason: input.reason == null || input.reason.trim() === "" ? null : input.reason.trim(),
+            status: "PENDING_REVIEW",
+            occurredAt,
+          });
+          for (const lineRefund of refund.lines) {
+            // SAFETY: the line was validated to have an item above; the map is immutable while it runs
+            const line = linesById.get(lineRefund.invoiceLineId)!;
+            const item = (await tx.getItemsByIds([line.itemId!])).get(line.itemId!);
+            if (item === undefined) {
+              throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            }
+            await tx.insertReturnLine({
+              returnId,
+              invoiceLineId: line.id,
+              itemId: item.id,
+              description: line.description,
+              quantity: lineRefund.quantity,
+              refundUnitPrice: lineRefund.refundUnitPrice,
+              refundAmount: lineRefund.refundAmount,
+            });
+            // Returned units join the FIFO layers straight away at the item's
+            // current weighted average — "pure cost into the basis", no
+            // special valuation (ADR-0002/0005 unchanged). One movement per
+            // line, marked PENDING for the owner's review.
+            const existing = await tx.listStockMovements(item.id);
+            const candidate = {
+              kind: "SALE" as const,
+              delta: lineRefund.quantity,
+              unitCost: item.costPrice,
+              occurredAt,
+              seq: undefined,
+            };
+            // an inflow can never dip stock, but the whole-history projection
+            // still fails loudly on corrupt history before any write
+            const stockAfter = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
+            await tx.insertStockMovement({
+              itemId: item.id,
+              kind: "SALE",
+              delta: lineRefund.quantity,
+              unitCost: item.costPrice,
+              // visible marker in the item history: this stock-in is a return
+              reason: "مرجوع",
+              ref: returnId,
+              returnMark: "PENDING",
+              occurredAt,
+            });
+            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
+            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+          }
+          await tx.insertActivity({
+            type: "RETURN_RECORDED",
+            summary: `تسجيل مرجوع ${returnNumber} بمبلغ ${refund.refundTotal} دج على ${invoice.invoiceNumber}`,
+            ref: returnId,
+          });
+          // SAFETY: the return was just created in this transaction; it cannot vanish
+          return (await tx.getReturnDetail(returnId))!;
+        }),
+      ),
+    ),
+    returnsList: os.returnsList.handler(guardedInput(async ({ invoiceId }) => ({ items: await deps.store.listReturns({ invoiceId }) }))),
+    // Review accept: consumes the pending stock mark — the returned goods are
+    // confirmed salable. The ledger facts are untouched; only the review tag
+    // transitions, in the same unit as the status (append-only preserved).
+    returnsAccept: os.returnsAccept.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const existing = await tx.getReturnDetail(input.returnId);
+          if (existing === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "RETURN_NOT_FOUND" });
+          }
+          // the conditional UPDATE is the authoritative guard: a stale read can
+          // never consume the mark twice
+          if (!(await tx.transitionReturnStatus(existing.id, "ACCEPTED"))) {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_PENDING" });
+          }
+          await tx.setReturnMarks(existing.id, "ACCEPTED");
+          await tx.insertActivity({
+            type: "RETURN_REVIEWED",
+            summary: `قبول مرجوع ${existing.returnNumber} (${existing.refundAmount} دج)`,
+            ref: existing.id,
+          });
+          // SAFETY: the return was just read in this handler; it cannot vanish mid-transaction
+          return (await tx.getReturnDetail(existing.id))!;
+        }),
+      ),
+    ),
+    // Review reject (damaged): instead of accepting, the quantity is removed
+    // as a MANUAL_ADJUSTMENT outflow (Arabic reason) in the same unit that
+    // consumes the mark — the shop's stock ends exactly where it was before
+    // the return, and the ledger stays append-only.
+    returnsReject: os.returnsReject.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const existing = await tx.getReturnDetail(input.returnId);
+          if (existing === undefined) {
+            throw new ORPCError("NOT_FOUND", { message: "RETURN_NOT_FOUND" });
+          }
+          if (!(await tx.transitionReturnStatus(existing.id, "REJECTED_DAMAGED"))) {
+            throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_PENDING" });
+          }
+          const reason = `مرجوع تالف ${existing.returnNumber}${input.reason && input.reason.trim() !== "" ? ` — ${input.reason.trim()}` : ""}`;
+          const occurredAt = localDateTime();
+          for (const line of existing.lines) {
+            if (line.itemId === null) continue;
+            const item = (await tx.getItemsByIds([line.itemId])).get(line.itemId);
+            if (item === undefined) {
+              throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            }
+            const movements = await tx.listStockMovements(item.id);
+            const candidate = {
+              kind: "MANUAL_ADJUSTMENT" as const,
+              delta: -line.quantity,
+              unitCost: null,
+              occurredAt,
+              seq: undefined,
+            };
+            // SAFETY: the return inflow exists in the ledger (ref = return id,
+            // inserted in the create unit), so the reversal can never drive
+            // stock negative; the whole-history projection still fails loudly
+            // on corrupt history before anything is written.
+            const stockAfter = projectLedger([...movements, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
+            await tx.insertStockMovement({
+              itemId: item.id,
+              kind: "MANUAL_ADJUSTMENT",
+              delta: -line.quantity,
+              unitCost: null,
+              reason,
+              ref: existing.id,
+              occurredAt,
+            });
+            const newCost = weightedAverageCost([...movements, candidate], { fallbackUnitCost: item.costPrice });
+            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+          }
+          await tx.setReturnMarks(existing.id, "REJECTED");
+          await tx.insertActivity({
+            type: "RETURN_REVIEWED",
+            summary: `رفض مرجوع ${existing.returnNumber} (تالف)`,
+            ref: existing.id,
+          });
+          // SAFETY: the return was just read in this handler; it cannot vanish mid-transaction
+          return (await tx.getReturnDetail(existing.id))!;
         }),
       ),
     ),

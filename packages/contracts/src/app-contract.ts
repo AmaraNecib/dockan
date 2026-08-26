@@ -41,6 +41,12 @@ import {
   purchasesProposalOutputSchema,
   resetPasswordInputSchema,
   resetPasswordOutputSchema,
+  returnDetailSchema,
+  returnsCreateInputSchema,
+  returnsGetInputSchema,
+  returnsListInputSchema,
+  returnsListOutputSchema,
+  returnsReviewInputSchema,
   settingsSchema,
   settingsUpdateInputSchema,
   stockAddManualInputSchema,
@@ -86,6 +92,17 @@ export const dokanContract = {
   invoicesGet: oc.input(z.object({ id: z.string().uuid() })).output(invoiceDetailSchema),
   invoicesList: oc.input(invoiceListInputSchema).output(invoiceListOutputSchema),
   invoicesPay: oc.input(invoicePayInputSchema).output(invoiceDetailSchema),
+
+  // --- returns & refunds ----------------------------------------------------
+  returnsGet: oc.input(returnsGetInputSchema).output(returnDetailSchema),
+  /** cash refunds against a past SALE; refund math + caps live on the api */
+  returnsCreate: oc.input(returnsCreateInputSchema).output(returnDetailSchema),
+  /** all returns, optionally scoped to one invoice (review page + invoice panel) */
+  returnsList: oc.input(returnsListInputSchema).output(returnsListOutputSchema),
+  /** owner confirms the returned goods: consumes the pending stock mark */
+  returnsAccept: oc.input(returnsReviewInputSchema).output(returnDetailSchema),
+  /** owner flags the returned goods as damaged: MANUAL_ADJUSTMENT removal */
+  returnsReject: oc.input(returnsReviewInputSchema).output(returnDetailSchema),
 
   // --- purchase intake (ticket 29) ------------------------------------------
   /** per-line preview: how much of this purchase can link to earlier uninvoiced stock */

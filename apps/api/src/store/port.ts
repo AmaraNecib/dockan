@@ -15,6 +15,10 @@ import type {
   ItemUpdate,
   PartyCreate,
   Payment,
+  ReturnDetail,
+  ReturnMark,
+  ReturnPayoutMethod,
+  ReturnStatus,
   Settings,
   SettingsUpdate,
   StockMovement,
@@ -46,7 +50,6 @@ export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "su
 export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact"> &
   Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact">>;
 
-/** Attribution record between a purchase invoice and earlier uninvoiced stock. */
 export interface StockLink {
   id: string;
   invoiceId: string;
@@ -54,6 +57,30 @@ export interface StockLink {
   quantity: number;
   createdAt: string;
 }
+
+/** Raw return facts the adapter persists; the router owns review-state rules. */
+export type ReturnInsert = {
+  returnNumber: string;
+  invoiceId: string;
+  refundAmount: number;
+  payoutMethod: ReturnPayoutMethod;
+  reason: string | null;
+  status: ReturnStatus;
+  occurredAt: string;
+};
+
+export type ReturnLineInsert = {
+  returnId: string;
+  invoiceLineId: string;
+  itemId: string | null;
+  description: string;
+  quantity: number;
+  refundUnitPrice: number;
+  refundAmount: number;
+};
+
+/** Summed returned quantity per invoice line (the refund cap key). */
+export type ReturnedQuantityByLine = Map<string, number>;
 
 /**
  * StorePort — the persistence seam. Procedures and use cases depend on this
@@ -80,7 +107,7 @@ export interface StorePort {
 
   // --- stock ledger (ticket 27) --------------------------------------------
   /** append-only; no update or delete exists by design */
-  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt">): Promise<StockMovement>;
+  insertStockMovement(movement: Omit<StockMovement, "id" | "createdAt" | "returnMark"> & Partial<Pick<StockMovement, "returnMark">>): Promise<StockMovement>;
   /** ordered by occurred_at, then insertion order (seq = rowid tiebreaker) */
   listStockMovements(itemId: string): Promise<Array<StockMovement & { seq: number }>>;
   countStockMovements(itemId: string): Promise<number>;
@@ -119,6 +146,21 @@ export interface StorePort {
   withTransactionImmediate<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
   /** Reserves the next invoice number atomically in the database. */
   allocateInvoiceNumber(): Promise<string>;
+  /** Reserves the next return number (RTN-%04d) atomically in the database. */
+  allocateReturnNumber(): Promise<string>;
+  insertReturn(input: ReturnInsert): Promise<{ id: string }>;
+  insertReturnLine(line: ReturnLineInsert): Promise<void>;
+  /** full return with lines, newest-first; optional invoice scope */
+  listReturns(filters: { invoiceId?: string }): Promise<ReturnDetail[]>;
+  getReturnDetail(returnId: string): Promise<ReturnDetail | undefined>;
+  /** return header joined to its invoice identity (internal + diagnostics) */
+  getReturnHeader(returnId: string): Promise<ReturnDetail | undefined>;
+  /** authoritative review guard: true only when the return was still pending */
+  transitionReturnStatus(returnId: string, to: "ACCEPTED" | "REJECTED_DAMAGED"): Promise<boolean>;
+  /** per-line already-returned totals for this invoice (the refund cap key) */
+  returnedQuantitiesByLine(invoiceId: string): Promise<Map<string, number>>;
+  /** consume the pending review tag on every movement a return created */
+  setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">): Promise<void>;
   /** Legacy read seam retained for diagnostics and existing callers. */
   lastInvoiceNumber(): Promise<string | undefined>;
   insertInvoice(inv: InvoiceInsert): Promise<Invoice>;

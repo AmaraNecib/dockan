@@ -13,6 +13,8 @@ import { SalePage } from "./pages/sale";
 import { InvoicesPage } from "./pages/invoices";
 import { InvoicePage } from "./pages/invoice";
 import { ReceiptPrintPage } from "./pages/receipt-print";
+import { ReturnVoucherPrintPage } from "./pages/return-print";
+import { ReturnsPage } from "./pages/returns";
 import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
 import { ExpensesPage } from "./pages/expenses";
@@ -52,6 +54,9 @@ const rootRoute = createRootRoute({
             </Link>
             <Link to="/invoices" className="text-stone-600 hover:text-stone-900">
               {t("navInvoices")}
+            </Link>
+            <Link to="/returns" className="text-stone-600 hover:text-stone-900">
+              {t("navReturns")}
             </Link>
             <Link to="/expenses" className="text-stone-600 hover:text-stone-900">
               {t("navExpenses")}
@@ -95,6 +100,12 @@ const invoicePrintRoute = createRoute({
   path: "/invoices/$invoiceId/print",
   component: ReceiptPrintPage,
 });
+const returnVoucherPrintRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/invoices/$invoiceId/returns/$returnId/print",
+  component: ReturnVoucherPrintPage,
+});
+const returnsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/returns", component: ReturnsPage });
 const expensesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/expenses", component: ExpensesPage });
 const reportsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/reports", component: ReportsPage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
@@ -113,6 +124,8 @@ const routeTree = rootRoute.addChildren([
   invoicesRoute,
   invoiceRoute,
   invoicePrintRoute,
+  returnVoucherPrintRoute,
+  returnsRoute,
   expensesRoute,
   reportsRoute,
   settingsRoute,

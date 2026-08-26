@@ -1070,6 +1070,31 @@ describe("sale checkout (ticket 30)", () => {
     expect(reread.lines.reduce((sum, line) => sum + line.discountAllocated, 0)).toBe(reread.discountAmount);
   });
 
+  it("books a free (0-unit-price) sale line at its real FIFO loss, never at 0 loss", async () => {
+    // regression: a freebie must still consume stock AND book its exact COGS,
+    // so the profit report shows the 100% loss (net 0 − cogs 200 = −200)
+    const item = await makeSaleItem("بيع-هدية-كلفة", 200, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 200, kind: "PURCHASE" });
+    const window = {
+      preset: "CUSTOM" as const,
+      customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`,
+      customTo: `${item.createdAt.slice(0, 10)}T23:59:59`,
+    };
+    const baseline = await client.reportsProfit(window);
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [{ itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 0 } }],
+    });
+    expect(sale.lines[0]).toMatchObject({ unitPrice: 0, costAtSale: 200, cogsExact: 200, netTotal: 0 });
+    expect(sale.totalAmount).toBe(0);
+    // stock consumed normally: the 1 unit is gone, no lingering layer
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
+    // the report books the exact loss through the wire seam, not a 0
+    const report = await client.reportsProfit(window);
+    expect(report.cogs - baseline.cogs).toBe(200);
+    expect(report.grossProfit - baseline.grossProfit).toBe(-200);
+  });
+
   it("rolls back every sale write when a later line oversells", async () => {
     const first = await makeSaleItem("بيع-تراجع-أ", 100, 200);
     const second = await makeSaleItem("بيع-تراجع-ب", 100, 300);
@@ -2135,5 +2160,201 @@ describe("authResetPassword throttling", () => {
       code: "BAD_REQUEST",
       message: "BUILD_SECRET_NOT_CONFIGURED",
     });
+  });
+});
+
+// returns & refunds: cash refunds, per-line caps, marked stock movements
+// ---------------------------------------------------------------------------
+describe("returns & refunds", () => {
+  async function makeReturnItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({ name, categoryId: categories.items[0]!.id, costPrice, sellingPrice, lowStockThreshold: 0 });
+  }
+
+  it("refuses returns on a missing or non-sale invoice before any write", async () => {
+    await expect(
+      client.returnsCreate({ invoiceId: "00000000-0000-4000-8000-000000000099", lines: [{ invoiceLineId: "00000000-0000-4000-8000-000000000098", quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND", message: "INVOICE_NOT_FOUND" });
+
+    const item = await makeReturnItem("مرجوع-ليست-بيع", 100, 300);
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 2, unitPrice: 100 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: purchase.id, lines: [{ invoiceLineId: purchase.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_SALE" });
+  });
+
+  it("refuses a line that is not on the invoice and an itemless (description-only) line", async () => {
+    const item = await makeReturnItem("مرجوع-سطر-خارجي", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: "00000000-0000-4000-8000-000000000097", quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "LINE_NOT_ON_INVOICE" });
+
+    // inject a description-only SALE line directly (the sale router never
+    // creates one; the store seam does) and prove returns refuse it atomically
+    const itemless = await store.insertInvoiceLine({
+      invoiceId: sale.id,
+      itemId: null,
+      description: "سطر بدون منتج",
+      quantity: 1,
+      defaultUnitPrice: 5,
+      unitPrice: 5,
+      costAtSale: 0,
+      total: 5,
+      discountAllocated: 0,
+      netTotal: 5,
+    });
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: itemless.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_LINE_NOT_RETURNABLE" });
+  });
+
+  it("refuses a return over the sold−already-returned cap and leaves the ledger untouched", async () => {
+    const item = await makeReturnItem("مرجوع-حد-الكمية", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    const lineId = sale.lines[0]!.id;
+
+    // 4 units were never sold — the cap is 3
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 4 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+    // and the whole request is refused even when a sibling line fits: atomic
+    const second = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const secondLineId = second.lines[0]!.id;
+    await expect(
+      client.returnsCreate({ invoiceId: second.id, lines: [{ invoiceLineId: secondLineId, quantity: 2 }, { invoiceLineId: secondLineId, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
+
+    const before = await client.itemsHistory({ itemId: item.id });
+    expect(before.stockOnHand).toBe(0);
+    expect((await client.returnsList({ invoiceId: sale.id })).items).toHaveLength(0);
+  });
+
+  it("creates a return: stock straight back in, marked pending, refund from the effective price", async () => {
+    const item = await makeReturnItem("مرجوع-كامل", 100, 900);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    // 2 × 900 with a 100 DZD discount → the customer effectively paid 850/unit
+    const sale = await client.invoicesCreate({ kind: "SALE", discount: { type: "AMOUNT", value: 100 }, lines: [{ itemId: item.id, quantity: 2 }] });
+    expect(sale.lines[0]?.netTotal).toBe(1_700);
+
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }], reason: "الزبون بدل رأيه" });
+
+    expect(created.returnNumber).toMatch(/^RTN-/);
+    expect(created.invoiceId).toBe(sale.id);
+    expect(created.invoiceNumber).toBe(sale.invoiceNumber);
+    expect(created.status).toBe("PENDING_REVIEW");
+    expect(created.payoutMethod).toBe("CASH");
+    expect(created.refundAmount).toBe(1_700);
+    expect(created.reason).toBe("الزبون بدل رأيه");
+    expect(created.lines).toHaveLength(1);
+    expect(created.lines[0]).toMatchObject({ invoiceLineId: sale.lines[0]!.id, quantity: 2, refundUnitPrice: 850, refundAmount: 1_700 });
+
+    // stock is back and the movement is the marked SALE reversal
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(2);
+    const returnMovement = history.movements.find((movement) => movement.returnMark === "PENDING");
+    expect(returnMovement).toBeDefined();
+    expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "مرجوع", ref: created.id });
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
+    expect((await client.activitiesList({})).items.some((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id)).toBe(true);
+
+    // a second return cannot exceed what is left (2 of 2 already returned)
+    await expect(client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "RETURN_EXCEEDS_RETURNABLE",
+    });
+  });
+
+  it("partial returns refund only the returned units and cap subsequent returns", async () => {
+    const item = await makeReturnItem("مرجوع-جزئي", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 5 }] });
+    const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    expect(first.refundAmount).toBe(600);
+    // 3 units are still returnable
+    const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 3 }] });
+    expect(second.refundAmount).toBe(900);
+    const remaining = await client.returnsList({ invoiceId: sale.id });
+    expect(remaining.items).toHaveLength(2);
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
+  });
+
+  it("returned units join normal FIFO cost layers — a later sale consumes oldest layers first and replay stays valid", async () => {
+    const item = await makeReturnItem("مرجوع-ففو", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(sale.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
+    await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    // 5 → 10 → 4 → 6: every step stays non-negative (deterministic replay)
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([5, 10, 4, 6]);
+
+    // the returned layer (at the 150 average) joins behind the remaining 4×200
+    const laterSale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(laterSale.lines[0]?.costAtSale).toBe(200);
+    // outflows never move the ADR-0002 average — the return inflow at the
+    // current average leaves it untouched too
+    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.costPrice).toBe(150);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(5);
+  });
+
+  it("accept consumes the pending mark and can never run twice", async () => {
+    const item = await makeReturnItem("مرجوع-قبول", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.status).toBe("ACCEPTED");
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((movement) => movement.returnMark === "ACCEPTED")).toBeDefined();
+    expect(history.movements.find((movement) => movement.returnMark === "PENDING")).toBeUndefined();
+    expect(history.stockOnHand).toBe(2);
+
+    await expect(client.returnsAccept({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
+    await expect(client.returnsReject({ returnId: created.id })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_NOT_PENDING" });
+  });
+
+  it("reject (damaged) removes the returned quantity as a MANUAL_ADJUSTMENT outflow with an Arabic reason", async () => {
+    const item = await makeReturnItem("مرجوع-تالف", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(2);
+
+    const rejected = await client.returnsReject({ returnId: created.id, reason: "كسر في العبوة" });
+    expect(rejected.status).toBe("REJECTED_DAMAGED");
+    expect(rejected.reason).toBeNull(); // rejection note rides the movement reason, not the return record
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(0);
+    const removal = history.movements.find((movement) => movement.kind === "MANUAL_ADJUSTMENT" && movement.delta < 0);
+    expect(removal).toBeDefined();
+    expect(removal?.reason).toContain("مرجوع تالف");
+    expect(removal?.reason).toContain("كسر في العبوة");
+    expect(removal?.ref).toBe(created.id);
+    expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
+    // the full ledger still replays: 2 → 0 → 2 → 0
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([2, 0, 2, 0]);
+  });
+
+  it("lists and fetches returns; the voucher source is the stored record", async () => {
+    const item = await makeReturnItem("مرجوع-قائمة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyName: "زبون الإيصال", lines: [{ itemId: item.id, quantity: 1 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+
+    const fetched = await client.returnsGet({ returnId: created.id });
+    expect(fetched.invoiceNumber).toBe(sale.invoiceNumber);
+    expect(fetched.counterpartyName).toBe("زبون الإيصال");
+    expect(fetched.lines[0]).toMatchObject({ description: item.name, refundUnitPrice: 300, refundAmount: 300 });
+    expect((await client.returnsList({})).items.some((row) => row.id === created.id)).toBe(true);
   });
 });

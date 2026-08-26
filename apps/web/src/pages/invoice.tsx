@@ -1,9 +1,9 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { InvoiceDetail, PaymentMethod } from "@dokan/contracts";
+import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { InvoiceHeader } from "@/components/invoice-header";
 
@@ -183,6 +183,198 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   );
 }
 
+/**
+ * Router-free returns panel (invoice detail). Shows this invoice's return
+ * history (with voucher print links) and a new-return form: per-line quantity
+ * drafts capped at the remaining-returnable (draft-string pattern from the
+ * sale cart), an optional Arabic reason, and CASH payout today. The api owns
+ * the authoritative cap; this panel mirrors it client-side so an oversized
+ * draft fails as a field error, not an opaque server error.
+ */
+/** returns a line's still-returnable quantity from the current return list */
+export function remainingReturnableFor(line: { id: string; quantity: number }, returns: readonly ReturnDetail[]): number {
+  const already = returns.reduce(
+    (sum, record) => sum + record.lines.filter((entry) => entry.invoiceLineId === line.id).reduce((inner, entry) => inner + entry.quantity, 0),
+    0,
+  );
+  return Math.max(0, line.quantity - already);
+}
+
+/** Pure boundary check shared with the unit tests (mirrors the api cap). */
+export function returnQuantityError(draft: string, remaining: number): "INVALID" | "EXCEEDS" | null {
+  const trimmed = draft.trim();
+  if (trimmed === "") return null; // an untouched line is not part of the return
+  if (!/^\d+$/u.test(trimmed)) return "INVALID";
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value <= 0) return "INVALID";
+  if (value > remaining) return "EXCEEDS";
+  return null;
+}
+
+export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const returnsQuery = useQuery(orpc.returnsList.queryOptions({ input: { invoiceId: invoice.id } }));
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [recorded, setRecorded] = useState(false);
+
+  const returns = returnsQuery.data?.items ?? [];
+  const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
+
+  const create = useMutation(
+    orpc.returnsCreate.mutationOptions({
+      onSuccess: () => {
+        setDrafts({});
+        setReason("");
+        setError(null);
+        setRecorded(true);
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: { invoiceId: invoice.id } }) }),
+          queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
+          queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+        ]);
+      },
+      onError: (err) => {
+        setRecorded(false);
+        setError(tError(err.message));
+      },
+    }),
+  );
+
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setRecorded(false);
+    const entered = returnableLines.filter((line) => (drafts[line.id] ?? "").trim() !== "");
+    if (entered.length === 0) {
+      setError(t("returnsNoLines"));
+      return;
+    }
+    for (const line of entered) {
+      const remaining = remainingReturnableFor(line, returns);
+      const invalid = returnQuantityError(drafts[line.id] ?? "", remaining);
+      if (invalid === "INVALID") {
+        setError(t("returnsInvalidQuantity"));
+        return;
+      }
+      if (invalid === "EXCEEDS") {
+        setError(t("returnsExceedsRemaining", { remaining }));
+        return;
+      }
+    }
+    const lines = entered.map((line) => ({ invoiceLineId: line.id, quantity: Number(drafts[line.id]) }));
+    void create.mutate({
+      invoiceId: invoice.id,
+      lines,
+      reason: reason.trim() === "" ? undefined : reason.trim(),
+    });
+  }
+
+  return (
+    <div className="rounded border bg-white p-4" data-testid="returns-panel">
+      <h2 className="font-semibold">{t("returnsTitle")}</h2>
+      {returns.length === 0 ? (
+        <p className="mt-2 text-sm text-stone-500" data-testid="returns-empty">{t("returnsEmpty")}</p>
+      ) : (
+        <table className="mt-2 w-full text-sm" data-testid="returns-history">
+          <thead>
+            <tr className="border-b text-right text-stone-500">
+              <th className="p-2">{t("returnNumber")}</th>
+              <th className="p-2">{t("returnsRefundTotal")}</th>
+              <th className="p-2">{t("returnsStatus")}</th>
+              <th className="p-2">{t("returnVoucher")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {returns.map((record) => (
+              <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
+                <td className="p-2" dir="ltr">{record.returnNumber}</td>
+                <td className="p-2 font-medium">{record.refundAmount} دج</td>
+                <td className="p-2" data-testid={`returns-status-${record.status}`}>{t(`returnsStatus_${record.status}`)}</td>
+                <td className="p-2">
+                  <Link
+                    to="/invoices/$invoiceId/returns/$returnId/print"
+                    params={{ invoiceId: invoice.id, returnId: record.id }}
+                    className="text-sm text-stone-700 underline"
+                    data-testid={`return-print-${record.returnNumber}`}
+                  >
+                    {t("returnVoucher")}
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
+        <h3 className="text-sm font-semibold">{t("returnsRecordTitle")}</h3>
+        {returnableLines.length === 0 ? (
+          <p className="text-sm text-stone-500" data-testid="returns-no-lines">{t("returnsNoLines")}</p>
+        ) : (
+          <div className="grid gap-2">
+            {returnableLines.map((line) => {
+              const remaining = remainingReturnableFor(line, returns);
+              return (
+                <label key={line.id} className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm">
+                  <span>
+                    {line.description}
+                    <span className="ml-2 text-stone-500">{t("returnsRemaining", { remaining })}</span>
+                  </span>
+                  <input
+                    className="w-24 rounded border px-2 py-1"
+                    inputMode="numeric"
+                    value={drafts[line.id] ?? ""}
+                    onChange={(event) => {
+                      setDrafts((current) => ({ ...current, [line.id]: event.target.value }));
+                      setRecorded(false);
+                    }}
+                    disabled={remaining === 0 || create.isPending}
+                    aria-label={`${t("returnQuantity")} ${line.description}`}
+                    data-testid={`returns-qty-${line.description}`}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          <label className="grid gap-1 text-sm">
+            {t("returnsReason")}
+            <input
+              className="rounded border px-3 py-2"
+              value={reason}
+              onChange={(event) => {
+                setReason(event.target.value);
+                setRecorded(false);
+              }}
+              data-testid="returns-reason"
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            {t("returnsPayoutMethod")}
+            <select className="rounded border px-3 py-2" value="CASH" disabled data-testid="returns-method">
+              <option value="CASH">{t("pmtMethod_CASH")}</option>
+            </select>
+          </label>
+        </div>
+        <button
+          type="submit"
+          className="rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50"
+          disabled={create.isPending}
+          data-testid="returns-submit"
+        >
+          {t("returnsSave")}
+        </button>
+        {error && <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="returns-error">{error}</p>}
+        {recorded && <p role="status" className="text-sm text-green-700" data-testid="returns-done">{t("returnsSaved")}</p>}
+      </form>
+    </div>
+  );
+}
+
 export function InvoicePage() {
   const { t } = useTranslation();
   const { invoiceId } = useParams({ from: "/invoices/$invoiceId" });
@@ -263,6 +455,8 @@ export function InvoicePage() {
       </div>
 
       <PaymentPanel invoice={invoice} />
+
+      <ReturnsPanel invoice={invoice} />
     </section>
   );
 }

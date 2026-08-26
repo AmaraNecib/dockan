@@ -1343,3 +1343,156 @@ try {
     expect(detail?.remainingAmount).toBe(200);
   });
 });
+
+describe("returns seam (cash refunds + review marks)", () => {
+  async function makeSaleFixture(name: string, unitPrice: number) {
+    const category = (await store.listCategories())[0]!;
+    const item = await store.createItem({ name, categoryId: category.id, costPrice: 200, sellingPrice: unitPrice });
+    await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 10, unitCost: 200, reason: null, ref: null, occurredAt: stamp() });
+    const invoice = await store.insertInvoice({
+      invoiceNumber: `INV-${Math.floor(Math.random() * 1_000_000)}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون المرتجعات",
+      invoiceDate: localDate(),
+      totalAmount: unitPrice,
+      paidAmount: unitPrice,
+      remainingAmount: 0,
+      notes: null,
+    });
+    const line = await store.insertInvoiceLine({
+      invoiceId: invoice.id,
+      itemId: item.id,
+      description: name,
+      quantity: 1,
+      defaultUnitPrice: unitPrice,
+      unitPrice,
+      costAtSale: 200,
+      total: unitPrice,
+      discountAllocated: 0,
+      netTotal: unitPrice,
+    });
+    return { item, invoice, line };
+  }
+
+  it("allocates return numbers sequentially from the seeded sequence", async () => {
+    const first = await store.allocateReturnNumber();
+    expect(first).toMatch(/^RTN-\d{4}$/);
+    const second = await store.allocateReturnNumber();
+    expect(Number(second.slice(4))).toBe(Number(first.slice(4)) + 1);
+  });
+
+  it("persists a return with lines and reads the full detail (invoice identity joined)", async () => {
+    const { invoice, line } = await makeSaleFixture("مرجوع-متجر", 900);
+    const { id } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 900,
+      payoutMethod: "CASH",
+      reason: "الزبون غير راضٍ",
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    await store.insertReturnLine({
+      returnId: id,
+      invoiceLineId: line.id,
+      itemId: line.itemId,
+      description: line.description,
+      quantity: 1,
+      refundUnitPrice: 900,
+      refundAmount: 900,
+    });
+
+    const detail = await store.getReturnDetail(id);
+    expect(detail?.returnNumber).toMatch(/^RTN-/);
+    expect(detail?.invoiceId).toBe(invoice.id);
+    expect(detail?.invoiceNumber).toBe(invoice.invoiceNumber);
+    expect(detail?.counterpartyName).toBe("زبون المرتجعات");
+    expect(detail?.refundAmount).toBe(900);
+    expect(detail?.payoutMethod).toBe("CASH");
+    expect(detail?.status).toBe("PENDING_REVIEW");
+    expect(detail?.lines).toHaveLength(1);
+    expect(detail?.lines[0]).toMatchObject({ invoiceLineId: line.id, quantity: 1, refundUnitPrice: 900, refundAmount: 900 });
+  });
+
+  it("lists returns scoped to one invoice and sums returned quantities per line", async () => {
+    const a = await makeSaleFixture("مرجوع-أ", 100);
+    const b = await makeSaleFixture("مرجوع-ب", 200);
+    const firstId = (await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: a.invoice.id,
+      refundAmount: 100,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    })).id;
+    await store.insertReturnLine({
+      returnId: firstId,
+      invoiceLineId: a.line.id,
+      itemId: a.line.itemId,
+      description: a.line.description,
+      quantity: 1,
+      refundUnitPrice: 100,
+      refundAmount: 100,
+    });
+    await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: b.invoice.id,
+      refundAmount: 200,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+
+    const scoped = await store.listReturns({ invoiceId: a.invoice.id });
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0]?.invoiceId).toBe(a.invoice.id);
+    // earlier tests in this file also insert returns — only the scoped count is exact
+    expect((await store.listReturns({})).length).toBeGreaterThanOrEqual(2);
+
+    const totals = await store.returnedQuantitiesByLine(a.invoice.id);
+    expect(totals.get(a.line.id)).toBe(1);
+  });
+
+  it("transitions status exactly once (conditional guard) and consumes the pending marks", async () => {
+    const { invoice, line } = await makeSaleFixture("مرجوع-مراجعة", 500);
+    const { id: returnId } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 500,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    const movement = await store.insertStockMovement({
+      itemId: line.itemId!,
+      kind: "SALE",
+      delta: 1,
+      unitCost: 200,
+      reason: null,
+      ref: returnId,
+      returnMark: "PENDING",
+      occurredAt: stamp(),
+    });
+    expect(movement.returnMark).toBe("PENDING");
+
+    // the conditional transition refuses a second review
+    expect(await store.transitionReturnStatus(returnId, "ACCEPTED")).toBe(true);
+    expect(await store.transitionReturnStatus(returnId, "ACCEPTED")).toBe(false);
+    expect((await store.getReturnDetail(returnId))?.status).toBe("ACCEPTED");
+
+    await store.setReturnMarks(returnId, "ACCEPTED");
+    expect((await store.getReturnDetail(returnId))?.status).toBe("ACCEPTED");
+    // the movement's flat facts are untouched; only the review tag moved
+    const listed = (await store.listStockMovements(line.itemId!)).find((movement) => movement.returnMark !== null);
+    expect(listed?.delta).toBe(1);
+    expect(listed?.kind).toBe("SALE");
+    expect(listed?.returnMark).toBe("ACCEPTED");
+
+    // an already-consumed return can never be rejected
+    expect(await store.transitionReturnStatus(returnId, "REJECTED_DAMAGED")).toBe(false);
+  });
+});

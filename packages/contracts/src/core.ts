@@ -26,6 +26,11 @@ export const localDateTimeSchema = z.string().regex(
 // built from them so the api's drizzle schema can import the same literals.
 export const invoiceKinds = ["SALE", "PURCHASE"] as const;
 export const paymentMethods = ["CASH", "BANK"] as const;
+/** cash refunds today; credit / debt-credit land as later values without a migration */
+export const returnPayoutMethods = ["CASH"] as const;
+/** review tag on a return-originated stock movement: created pending, consumed by review */
+export const returnMarks = ["PENDING", "ACCEPTED", "REJECTED"] as const;
+export const returnStatuses = ["PENDING_REVIEW", "ACCEPTED", "REJECTED_DAMAGED"] as const;
 /** append-only stock ledger movement kinds (ticket 27) */
 export const movementKinds = ["PURCHASE", "SALE", "MANUAL_ADJUSTMENT"] as const;
 export const activityTypes = [
@@ -40,6 +45,8 @@ export const activityTypes = [
   "PAYMENT_RECORDED",
   "BACKUP_CREATED",
   "STOCK_ADJUSTED",
+  "RETURN_RECORDED",
+  "RETURN_REVIEWED",
   "SETTINGS_UPDATED",
   "EXPENSE_RECORDED",
   "EXPENSE_CATEGORY_CREATED",
@@ -231,6 +238,12 @@ export const activityTypeSchema = z.enum(activityTypes);
 
 export const movementKindSchema = z.enum(movementKinds);
 
+/** Review tag a return-originated stock movement carries; null = not a return. */
+export const returnMarkSchema = z.enum(returnMarks);
+
+export const returnPayoutMethodSchema = z.enum(returnPayoutMethods);
+export const returnStatusSchema = z.enum(returnStatuses);
+
 /** One append-only ledger row (ticket 27). Raw fact — never rewritten. */
 export const stockMovementSchema = z.object({
   id: idSchema,
@@ -243,6 +256,8 @@ export const stockMovementSchema = z.object({
   reason: z.string().nullable(),
   /** linked invoice id when the movement originates from one */
   ref: z.string().nullable(),
+  /** review tag on a return-originated movement; null otherwise */
+  returnMark: returnMarkSchema.nullable(),
   occurredAt: localDateTimeSchema,
   createdAt: localDateTimeSchema,
 });
@@ -374,6 +389,58 @@ export const debtSummarySchema = z.object({
 export const invoiceDetailSchema = invoiceSchema.extend({
   lines: z.array(invoiceLineSchema),
   payments: z.array(paymentSchema),
+});
+
+// ---------------------------------------------------------------------------
+// Returns & refunds (cash today, payoutMethod future-proofs credit)
+// ---------------------------------------------------------------------------
+
+/** One refunded invoice line. `refundUnitPrice` is a whole-DZD snapshot of the
+ * per-unit amount the customer actually paid (net of the allocated invoice
+ * discount), so the voucher never recomputes money later. */
+export const returnLineSchema = z.object({
+  id: idSchema,
+  returnId: idSchema,
+  /** the original SALE invoice line this unit came from */
+  invoiceLineId: idSchema,
+  itemId: idSchema.nullable(),
+  /** snapshot of the item name at return time */
+  description: z.string(),
+  quantity: z.number().int().positive(),
+  /** effective per-unit refund: round(netTotal / sold line quantity) at return time */
+  refundUnitPrice: dinarsSchema,
+  /** quantity × refundUnitPrice, whole DZD */
+  refundAmount: dinarsSchema,
+});
+
+/**
+ * One return record. The status is the review state machine: a created return
+ * is PENDING_REVIEW; accepting consumes the stock movement's pending mark,
+ * rejecting (damaged) removes the quantity as a MANUAL_ADJUSTMENT outflow.
+ * Money is never rewritten on the invoice — refunds are a cash record here.
+ */
+export const returnSchema = z.object({
+  id: idSchema,
+  /** auto-suggested RTN-%04d, unique */
+  returnNumber: z.string().min(1),
+  invoiceId: idSchema,
+  /** denormalized for the voucher and list views (join is one-to-one) */
+  invoiceNumber: z.string().min(1),
+  invoiceDate: localDateSchema,
+  counterpartyName: z.string().trim().min(1).nullable(),
+  /** whole DZD the shop hands back */
+  refundAmount: dinarsSchema,
+  payoutMethod: returnPayoutMethodSchema,
+  /** Arabic owner note; rejection reasons ride here too */
+  reason: z.string().max(500).nullable(),
+  status: returnStatusSchema,
+  occurredAt: localDateTimeSchema,
+  createdAt: localDateTimeSchema,
+  updatedAt: localDateTimeSchema,
+});
+
+export const returnDetailSchema = returnSchema.extend({
+  lines: z.array(returnLineSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -519,6 +586,36 @@ export const invoicePayInputSchema = z.object({
   note: z.string().nullable().optional(),
 });
 
+export const returnLineInputSchema = z.object({
+  invoiceLineId: idSchema,
+  /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
+  quantity: z.number().int().positive().max(1_000_000),
+});
+
+export const returnsCreateInputSchema = z.object({
+  invoiceId: idSchema,
+  lines: z.array(returnLineInputSchema).min(1),
+  /** Arabic owner note; the reason string on the record */
+  reason: z.string().trim().max(500).nullable().optional(),
+  /** cash today; credit / debt-credit arrive later without a migration */
+  payoutMethod: returnPayoutMethodSchema.optional(),
+});
+
+export const returnsListInputSchema = z.object({
+  /** optional scope: only this invoice's returns */
+  invoiceId: idSchema.optional(),
+});
+
+export const returnsReviewInputSchema = z.object({
+  returnId: idSchema,
+  /** rejection note appended to the standard damaged-return reason */
+  reason: z.string().trim().max(500).optional(),
+});
+
+export const returnsGetInputSchema = z.object({
+  returnId: idSchema,
+});
+
 export const invoiceListInputSchema = z.object({
   kind: invoiceKindSchema.optional(),
   /** UNPAID | PARTIAL | PAID — derived from remainingAmount */
@@ -654,6 +751,10 @@ export const invoiceListOutputSchema = z.object({
   totalCount: z.number().int().min(0),
 });
 
+export const returnsListOutputSchema = z.object({
+  items: z.array(returnDetailSchema),
+});
+
 export const itemHistoryOutputSchema = z.object({
   movements: z.array(stockMovementWithBalanceSchema),
   stockOnHand: z.number().int().min(0),
@@ -717,6 +818,11 @@ export type InvoiceLine = z.infer<typeof invoiceLineSchema>;
 export type Invoice = z.infer<typeof invoiceSchema>;
 export type InvoiceDetail = z.infer<typeof invoiceDetailSchema>;
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
+export type ReturnPayoutMethod = z.infer<typeof returnPayoutMethodSchema>;
+export type ReturnMark = z.infer<typeof returnMarkSchema>;
+export type ReturnStatus = z.infer<typeof returnStatusSchema>;
+export type ReturnLine = z.infer<typeof returnLineSchema>;
+export type ReturnDetail = z.infer<typeof returnDetailSchema>;
 export type Payment = z.infer<typeof paymentSchema>;
 export type Activity = z.infer<typeof activitySchema>;
 export type ActivityType = z.infer<typeof activityTypeSchema>;
@@ -745,6 +851,10 @@ export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
 export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;
 export type PurchaseAllocation = z.infer<typeof purchaseAllocationSchema>;
+export type ReturnLineInput = z.infer<typeof returnLineInputSchema>;
+export type ReturnsCreate = z.infer<typeof returnsCreateInputSchema>;
+export type ReturnsListFilters = z.infer<typeof returnsListInputSchema>;
+export type ReturnsReview = z.infer<typeof returnsReviewInputSchema>;
 export type ExpenseCategoryCreate = z.infer<typeof expenseCategoryCreateInputSchema>;
 export type ExpenseCreate = z.infer<typeof expenseCreateInputSchema>;
 export type ExpenseListFilters = z.infer<typeof expenseListInputSchema>;

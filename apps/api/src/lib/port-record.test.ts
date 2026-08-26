@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   forgetPort,
+  isWildcardBindHost,
   portIsReachable,
   probeHostFor,
   publishPort,
@@ -131,6 +132,43 @@ describe("withPortFileLock", () => {
   });
 });
 
+describe("isWildcardBindHost", () => {
+  it("flags every legal wildcard spelling", () => {
+    const wildcards = [
+      "0.0.0.0",
+      "::",
+      "::0",
+      "0:0::",
+      "0:0:0:0:0:0:0:0",
+      "0000:0000:0000:0000:0000:0000:0000:0000",
+      "::ffff:0:0",
+      "::ffff:0.0.0.0",
+      "0:0:0:0:0:ffff:0:0",
+      "0:0:0:0:0:ffff:0.0.0.0",
+      "::0.0.0.0",
+      "0:0:0:0:0:0:0.0.0.0",
+    ];
+    for (const host of wildcards) expect(isWildcardBindHost(host)).toBe(true);
+  });
+
+  it("never flags specific addresses (regression: ffff:: / ::ffff collapse under string-stripping)", () => {
+    const specific = [
+      "ffff::",
+      "::ffff",
+      "::1",
+      "2001:db8::1",
+      "::ffff:1.2.3.4",
+      "::ffff:0:0:0",
+      "fe80::1",
+      "::ffff:255.255.255.255",
+      "192.168.1.5",
+      "127.0.0.1",
+      "hello",
+    ];
+    for (const host of specific) expect(isWildcardBindHost(host)).toBe(false);
+  });
+});
+
 describe("registry", () => {
   it("normalizes wildcard bind hosts to a probeable loopback", () => {
     expect(probeHostFor("0.0.0.0")).toBe("127.0.0.1");
@@ -140,6 +178,12 @@ describe("registry", () => {
     expect(probeHostFor("::ffff:0:0")).toBe("127.0.0.1");
     expect(probeHostFor("::0.0.0.0")).toBe("127.0.0.1");
     expect(probeHostFor("192.168.1.5")).toBe("192.168.1.5");
+  });
+
+  it("keeps specific IPv6 hosts untouched by the probe rewrite (regression: ::1, ffff::)", () => {
+    expect(probeHostFor("::1")).toBe("::1");
+    expect(probeHostFor("ffff::")).toBe("ffff::");
+    expect(probeHostFor("2001:db8::1")).toBe("2001:db8::1");
   });
 
   it("parses JSON entries, prunes dead pids, accepts legacy bare-int entries", () => {

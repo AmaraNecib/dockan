@@ -76,6 +76,14 @@ describe("createAppConfig host binding", () => {
     expect(config.probeHost).toBe("192.168.1.5");
   });
 
+  it("accepts specific IPv6 hosts without any opt-in (regression: never wildcard)", () => {
+    for (const host of ["ffff::", "::ffff", "::1", "2001:db8::1"]) {
+      const config = createAppConfig({ DOKAN_HOST: host });
+      expect(config.host).toBe(host);
+      expect(config.probeHost).toBe(host);
+    }
+  });
+
   it("refuses a wildcard host unless DOKAN_HOST_INTERFACE opts in (fail loudly)", () => {
     let error: unknown;
     try {

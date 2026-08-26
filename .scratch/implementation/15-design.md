@@ -129,6 +129,36 @@ unbindable while alive and re-bindable after release; a kernel-assigned port
 never collides with an occupied one; `registry_owned_by` rejects missing,
 wrong, longer (`43189` ≠ `4318`) and wrong-host entries.
 
+### Finding 5 — committed session-signing secret (done)
+
+**Vulnerability:** the released Rust shell contained a COMMITTED
+`PRODUCTION_AUTH_SECRET` constant forwarded to the child as
+`DOKAN_AUTH_SECRET` — the better-auth session-signing key. Anyone who could
+read the binary or the source could extract it, forge admin session cookies,
+and pass every protected RPC on EVERY install (one shared key for the whole
+fleet). The per-customer round covered DOKAN_BUILD_SECRET only; the signing
+key stayed shared.
+
+**Fix — mirror the build-secret pipeline exactly:**
+1. `DOKAN_AUTH_SECRET` (>= 32 chars) is now REQUIRED at release build time
+   and inlined into the sidecar exe with the same `bun build --define` seam
+   as the build secret (scripts/sidecar.ts + release.ts; per-customer value
+   supplied by the vendor).
+2. Missing/weak AUTH_SECRET fails the build loudly (exit 1) — the committed
+   `PRODUCTION_AUTH_SECRET` constant is deleted from desktop.rs and the shell
+   no longer passes any secret to the child. Dev/test keep the explicit
+   `DEV_AUTH_SECRET` sentinel only outside packaged builds; a packaged binary
+   whose signing secret is missing/weak/sentinel is refused at boot (main.ts
+   packaged-boot guard), so no shipped binary can sign sessions with a shared
+   key even if misbuilt.
+3. Leak scan: no auth secret in env-passing, logs, port-record, app-data or
+   committed files.
+4. Tests: pipeline unit tests assert release builds exit 1 without
+   `DOKAN_AUTH_SECRET` (missing and weak); live verification of a compiled
+   sidecar: a session signed by the INLINED secret is accepted by a protected
+   RPC and a token signed by any other secret is rejected; dev builds still
+   boot without it (config sentinel + e2e).
+
 ### Finding 2 — per-customer build secret (done, parent decision)
 
 **Decision (parent): option 2 — per-customer secret, no shared committed
@@ -168,12 +198,15 @@ produced with `DOKAN_CUSTOMER_SLUG=acme-shop`.
   is rebuild + reinstall with a fresh secret. The shared-laptop threat model
   is casual co-users, not RE attackers, and the session model (server-side
   sessions, better-auth signing secret held separately) is unchanged.
-- **At runtime the secret is never written**: not to committed files, not to
-  logs (the reset procedure logs no secret), not to the port record or
-  app-data; the shell passes it nowhere (the child's env is clean).
-- The better-auth signing secret (`DOKAN_AUTH_SECRET`, baked in the Rust
-  shell) is a separate credential protecting session cookies; the two are
-  deliberately independent.
+- **At runtime the secrets are never written**: not to committed files, not
+  to logs (the reset procedure logs no secret), not to the port record or
+  app-data; the shell passes neither to the child (the child's env is clean).
+- The better-auth session-signing secret (`DOKAN_AUTH_SECRET`, PR #51 finding
+  5) is a SECOND per-customer credential protecting session cookies, inlined
+  into the sidecar at build time exactly like the provisioning secret. The
+  two are deliberately independent — a per-customer build must vary BOTH so
+  the fleet never silently shares a signing key. The shell holds neither; the
+  api reads both from the binary via `bun build --define` seams in main.ts.
 
 ### Future: hybrid reset models (open)
 

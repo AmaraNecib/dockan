@@ -92,9 +92,9 @@ desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled ext
      │  env: DOKAN_DATA_DIR  = %APPDATA%/dz.dokan.app
      │       DOKAN_PORT_ROOT = %APPDATA%/dz.dokan.app/run
      │       DOKAN_WEB_DIST  = <resource>/ui   (bundled web dist)
-     │       DOKAN_AUTH_SECRET = baked better-auth signing secret
-     │  baked: per-customer provisioning secret INLINED into the sidecar exe
-     │         at build time (bun --define), never in env, logs or disk state
+     │  baked: per-customer provisioning secret AND the better-auth
+     │         session-signing secret INLINED into the sidecar exe at build
+     │         time (bun --define), never in env, logs or disk state
      └─ binds 127.0.0.1:0 (kernel-assigned free port, held as a reservation)
         → hands the exact port to the child explicitly (DOKAN_PORT)
         → waits for the child to echo the one-time DOKAN_BOOT_TOKEN at
@@ -116,12 +116,13 @@ Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 ### Commands
 
 ```bash
-# per-customer release (required): validates + inlines the secret, builds NSIS
+# per-customer release (required): validates + inlines both secrets, builds NSIS
 DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
+DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
 DOKAN_CUSTOMER_SLUG='shop-slug' \
 bun run --filter @dokan/desktop portable
 # → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
-# fails loudly when the secret is missing or <16 chars — never ships a default
+# fails loudly when either secret is missing or too short — never ships a default
 
 # pieces separately
 bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
@@ -137,20 +138,24 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
 - NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
   `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
   automatically by the installer).
-- **Per-customer provisioning secret** (PR #51 finding 2): the vendor picks a
-  unique secret per shop and passes it at BUILD time — it is inlined into the
-  compiled sidecar exe, never committed, never in runtime env/logs/app-data.
-  The documented release command is:
+- **Per-customer secrets** (PR #51 findings 2 & 5): the vendor picks a
+  unique BUILD_SECRET **and** a unique AUTH_SECRET per shop and passes them
+  at BUILD time — both are inlined into the compiled sidecar exe, never
+  committed, never in runtime env/logs/app-data. The documented release
+  command is:
 
   ```bash
   DOKAN_BUILD_SECRET='<unique-per-shop-secret (>=16 chars)>' \
+  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
   DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
   bun run --filter @dokan/desktop portable
   ```
 
-  Missing or weak (<16 chars) secrets fail the build loudly; installers built
-  without a secret are test artifacts only (`cargo build`/`gates` fall back to
-  a secret-less sidecar with a loud warning and are never shipped).
+  Missing or weak secrets fail the build loudly; installers built without
+  them are test artifacts only (`cargo build`/`gates` fall back to a
+  secret-less sidecar with a loud warning and are never shipped). A packaged
+  binary that somehow boots without a strong signing secret is refused at
+  startup (the api's packaged-boot guard).
 - **Verified sidecar discovery** (PR #51 finding 1): the shell binds a
   listener on `127.0.0.1:0` — the kernel assigns a free port and the socket
   reserves it while the child is spawned, so no local process can race a

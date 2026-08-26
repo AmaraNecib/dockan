@@ -13,7 +13,7 @@ import {
 
 import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
-import { createAppConfig } from "./config";
+import { createAppConfig, DEV_AUTH_SECRET, MIN_AUTH_SECRET_LEN } from "./config";
 import { openConnection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
@@ -35,6 +35,34 @@ const config = createAppConfig();
 // secret available for the reset procedure; in dev it reads the shell env as
 // before. It is a comparison-only credential — never logged, never stored.
 config.buildSecret ??= process.env.DOKAN_BUILD_SECRET;
+
+// Per-customer session-signing secret (PR #51 finding 5): mirrors the build
+// secret seam exactly — the release pipeline inlines DOKAN_AUTH_SECRET with
+// the SAME `bun build --define` mechanism, replacing the expression below
+// with a string literal. Packaged builds never set the env var at runtime,
+// so this fill is what makes better-auth sign sessions with the per-customer
+// key. The dev/test sentinel (DEV_AUTH_SECRET) can never reach a packaged
+// binary: the pipeline requires >= 32 chars AND the packaged-boot guard below
+// refuses to start without it.
+config.authSecret = process.env.DOKAN_AUTH_SECRET ?? config.authSecret;
+
+// PR #51 finding 5 packaged-boot guard: the desktop shell signals "packaged"
+// by setting webDataDir/bootToken, so a packaged binary must NEVER sign
+// sessions with the shared dev sentinel — extracting it from the binary would
+// forge admin sessions fleet-wide. The release pipeline validates the secret
+// at build time; this is the runtime backstop for a misbuilt/downgraded
+// artifact.
+if (
+  (config.webDataDir !== undefined || config.bootToken !== undefined) &&
+  (config.authSecret.length < MIN_AUTH_SECRET_LEN || config.authSecret === DEV_AUTH_SECRET)
+) {
+  console.error(
+    "[dokan] refusing to boot: packaged build without a strong per-customer DOKAN_AUTH_SECRET (>= " +
+      `${MIN_AUTH_SECRET_LEN} chars) — rebuild via ` +
+      "`bun run --filter @dokan/desktop portable` with DOKAN_AUTH_SECRET set.",
+  );
+  process.exit(1);
+}
 
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),

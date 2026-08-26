@@ -26,12 +26,13 @@
 //! `bun run dev:api` + `bun run dev:desktop` and the window loads the vite
 //! devUrl unchanged.
 //!
-//! Provisioning secret (PR #51 finding 2): the per-customer build secret is
-//! inlined into the compiled sidecar at build time (see
-//! apps/desktop/scripts/sidecar.ts) — it is never passed through this
-//! crate's env, written to disk, or logged at runtime; the api's reset
-//! procedure reads it from the binary. This crate only passes the
-//! better-auth signing secret.
+//! Provisioning AND session-signing secrets (PR #51 findings 2 & 5): BOTH
+//! per-customer secrets are inlined into the compiled sidecar at build time
+//! (see apps/desktop/scripts/sidecar.ts) — neither is ever passed through
+//! this crate's env, written to disk, or logged at runtime; the api's reset
+//! procedure and better-auth session signing read them from the binary. This
+//! crate passes NO secrets to the child; only the port, the data dir and the
+//! one-time boot token are ever in the child's environment.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -41,10 +42,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::{App, AppHandle, Manager, WebviewWindow};
-
-/// Baked per-build signing secret for better-auth so the shared-laptop
-/// session-cookie signing is not the dev default.
-const PRODUCTION_AUTH_SECRET: &str = "430b09b331c94ffc0a90f1eb9b92c9246fa504976b4214b415a558ff56544e3e";
 
 // The api's default port (4317) is a dev-only fallback now: the packaged
 // shell binds a listener on port 0 and the kernel assigns the port (PR #51
@@ -114,10 +111,10 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .env("DOKAN_WEB_DIST", resource_dir.join("ui"))
         .env("DOKAN_PORT", port.to_string())
         .env("DOKAN_BOOT_TOKEN", &boot_token)
-        // The per-customer provisioning secret is NOT passed here: it is
-        // inlined into the compiled sidecar at build time (PR #51 finding 2),
-        // so it never appears in the runtime environment, logs or app-data.
-        .env("DOKAN_AUTH_SECRET", std::env::var("DOKAN_AUTH_SECRET").unwrap_or_else(|_| PRODUCTION_AUTH_SECRET.to_string()))
+        // The per-customer provisioning AND session-signing secrets are NOT
+        // passed here: both are inlined into the compiled sidecar at build
+        // time (PR #51 findings 2 & 5), so neither ever appears in the
+        // runtime environment, logs or app-data.
         .spawn()?;
     let child_pid = child.id();
 

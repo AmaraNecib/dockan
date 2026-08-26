@@ -119,9 +119,17 @@ New activity types: RETURN_RECORDED, RETURN_REVIEWED.
 
 ## Risks
 
-- Refund basis is a policy choice (effective-per-unit after discount); the
-  round() is whole-DZD floor-toward by definition and clearly documented.
-- Reject auto-removes the full returned quantity (owner can adjust further via
-  the stock screen); documented.
+- Refund basis is a policy choice (effective-per-unit after discount); full-line
+  returns refund netTotal EXACTLY (the round-half-up unit could otherwise
+  refund a DZD the customer never paid — fixed in review, cab527a); partials
+  keep the rounded unit.
+- Reject auto-removes the returned quantity CLAMPED to stock actually on hand
+  (returned goods are salable immediately; some may be resold by review time —
+  a full reversal would deadlock the review on STOCK_NEGATIVE, fixed cab527a).
+  A reject can never block; whatever was resold stays a legitimate sale.
 - `return_mark` is mutable workflow state on an otherwise append-only row —
   only the review tag ever changes, never ledger facts.
+- OPEN DECISION (parent): a cash refund may pay out more than the invoice
+  actually collected (paidAmount). Quantity caps are per owner decision; the
+  money cap was deliberately NOT coded (counter sales routinely record
+  paidAmount=0) — surfaced in the crew report decisionRequest.

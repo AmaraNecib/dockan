@@ -1612,23 +1612,35 @@ describe("from-only windows clamp to now (half-open bounds)", () => {
     const future = await client.expensesCreate({ categoryId: op.id, amount: 222, occurredAt: "2099-06-30T12:00:00" });
     const ids = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
 
-    // from-only: the window is [from, now] — the future row must not leak in
-    const fromOnly = await client.expensesList({ from: "2020-01-01T00:00:00" });
+    // from-only (+ category filter ANDs with the window): the window is
+    // [from, now] — the future row must not leak in
+    const fromOnly = await client.expensesList({ from: "2020-01-01T00:00:00", categoryIds: [op.id] });
     expect(ids(fromOnly.items)).toContain(past.id);
     expect(ids(fromOnly.items)).not.toContain(future.id);
 
-    // to-only stays open-ended from the beginning of records (unchanged)
+    // custom pair without a preset, single lower bound: same half-open filler
+    const pairOnly = await client.expensesList({ customFrom: "2020-01-01T00:00:00" });
+    expect(ids(pairOnly.items)).toContain(past.id);
+    expect(ids(pairOnly.items)).not.toContain(future.id);
+
+    // bare to-only stays open-ended from the beginning of records (unchanged)
     const toOnly = await client.expensesList({ to: "2099-12-31T23:59:59" });
     expect(ids(toOnly.items)).toContain(past.id);
     expect(ids(toOnly.items)).toContain(future.id);
 
-    // from+to keeps the exact window (unchanged); 2020-08 is this test's own
+    // from+to keeps the exact window (unchanged); scoped to the op category so
+    // 2020-08 stays this test's own slice of the shared store
     const mid = await client.expensesCreate({ categoryId: op.id, amount: 333, occurredAt: "2020-08-10T12:00:00" });
-    const both = await client.expensesList({ from: "2020-08-01T00:00:00", to: "2020-08-31T23:59:59" });
+    const both = await client.expensesList({ categoryIds: [op.id], from: "2020-08-01T00:00:00", to: "2020-08-31T23:59:59" });
     expect(ids(both.items)).toEqual([mid.id]);
 
     // a from-only window starting in the future is contradictory → INVALID_RANGE
     await expect(client.expensesList({ from: "2099-01-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
+    // CUSTOM is the preset's own customFrom/customTo pair — bare from/to stay
+    // a no-preset alternative (documented precedence: preset wins)
+    await expect(
+      client.expensesList({ preset: "CUSTOM", from: "2020-01-01T00:00:00", to: "2020-01-31T23:59:59" }),
+    ).rejects.toThrow(/INVALID_RANGE/);
   });
 
   it("a from-only profit report (CUSTOM with only customFrom) excludes future-dated expenses", async () => {
@@ -1641,10 +1653,24 @@ describe("from-only windows clamp to now (half-open bounds)", () => {
     const fromRow = fromOnly.byCategory.find((entry) => entry.categoryId === category.id);
     expect(fromRow).toMatchObject({ total: 111, count: 1 });
 
-    // to-only report stays open-ended from the beginning of records (unchanged)
+    // to-only report opens at the beginning of records — same half-open filler
+    // as bare to-only (the custom pair previously rejected any single bound;
+    // the wire now accepts one, deliberately, see the resolver docstring)
     const toOnly = await client.reportsProfit({ preset: "CUSTOM", customTo: "2099-12-31T23:59:59" });
     const toRow = toOnly.byCategory.find((entry) => entry.categoryId === category.id);
     expect(toRow).toMatchObject({ total: 333, count: 2 });
+
+    // a future-dated SALE invoice follows the same clamp: invisible from-only
+    const categories = await client.categoriesList();
+    const item = await client.itemsCreate({ name: "ربح-أفق-مستقبلي", categoryId: categories.items[0]!.id, costPrice: 100, sellingPrice: 300, lowStockThreshold: 0 });
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const baselineFrom = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00" });
+    await client.invoicesCreate({ kind: "SALE", invoiceDate: "2020-01-10", lines: [{ itemId: item.id, quantity: 1 }] });
+    await client.invoicesCreate({ kind: "SALE", invoiceDate: "2099-06-30", lines: [{ itemId: item.id, quantity: 1 }] });
+    const afterFrom = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00" });
+    // deltas are exact: the 2099 invoice would add 300 revenue / 100 COGS too
+    expect(afterFrom.revenue - baselineFrom.revenue).toBe(300);
+    expect(afterFrom.cogs - baselineFrom.cogs).toBe(100);
 
     // an explicit CUSTOM with no bounds is still a caller bug in both procedures
     await expect(client.expensesList({ preset: "CUSTOM" })).rejects.toThrow(/INVALID_RANGE/);

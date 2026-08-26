@@ -166,4 +166,11 @@ describe("half-open bounds window (resolveBoundsWindow)", () => {
     const second = resolveBoundsWindow("2025-12-01T00:00:00", undefined, now);
     expect(second).toEqual(first);
   });
+
+  it("keeps a from exactly at the now instant inclusive (single-instant window)", () => {
+    // from == localDateTime(now): the clamped upper bound meets the lower
+    // bound, so the window is one instant — never empty or rejected
+    const range = resolveBoundsWindow("2026-01-15T13:30:00", undefined, now);
+    expect(range).toEqual({ preset: "CUSTOM", from: "2026-01-15T13:30:00", to: "2026-01-15T13:30:00" });
+  });
 });

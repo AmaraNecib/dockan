@@ -49,36 +49,32 @@ function resolveWindow(input: {
   to?: string;
 }): ProfitReportRange {
   const now = new Date();
+  // resolve the caller's bounds half-open and reject a disordered window
+  const windowOrThrow = (from: string | undefined, to: string | undefined): ProfitReportRange => {
+    const range = resolveBoundsWindow(from, to, now);
+    if (range.from > range.to) {
+      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+    }
+    return range;
+  };
   if (input.preset !== undefined) {
     if (input.preset === "CUSTOM") {
       // an explicit CUSTOM window with no bounds is a caller bug — nothing to resolve
       if (input.customFrom === undefined && input.customTo === undefined) {
         throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
       }
-      const range = resolveBoundsWindow(input.customFrom, input.customTo, now);
-      if (range.from > range.to) {
-        throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
-      }
-      return range;
+      return windowOrThrow(input.customFrom, input.customTo);
     }
     return resolveReportRange(input.preset, now, { from: input.customFrom, to: input.customTo });
   }
   // custom pair without a preset acts as a CUSTOM window, so a client bug
   // surfaces as a window, not as wrong-but-successful data
   if (input.customFrom !== undefined || input.customTo !== undefined) {
-    const range = resolveBoundsWindow(input.customFrom, input.customTo, now);
-    if (range.from > range.to) {
-      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
-    }
-    return range;
+    return windowOrThrow(input.customFrom, input.customTo);
   }
   // preset absent: honor caller-supplied bounds, half-open; neither bound sent
   // defaults to the current month
-  const range = resolveBoundsWindow(input.from, input.to, now);
-  if (range.from > range.to) {
-    throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
-  }
-  return range;
+  return windowOrThrow(input.from, input.to);
 }
 
 /** reason prefix burned into purchase-line corrections; the line id rides as

@@ -594,7 +594,8 @@ export const returnLineInputSchema = z.object({
 
 export const returnsCreateInputSchema = z.object({
   invoiceId: idSchema,
-  lines: z.array(returnLineInputSchema).min(1),
+  /** bounded so one request can never drive an unbounded transaction */
+  lines: z.array(returnLineInputSchema).min(1).max(200),
   /** Arabic owner note; the reason string on the record */
   reason: z.string().trim().max(500).nullable().optional(),
   /** cash today; credit / debt-credit arrive later without a migration */

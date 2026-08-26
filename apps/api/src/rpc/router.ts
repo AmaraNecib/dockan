@@ -832,7 +832,11 @@ export function createRpcRouter(deps: RpcDeps) {
     // Review reject (damaged): instead of accepting, the quantity is removed
     // as a MANUAL_ADJUSTMENT outflow (Arabic reason) in the same unit that
     // consumes the mark — the shop's stock ends exactly where it was before
-    // the return, and the ledger stays append-only.
+    // the return, and the ledger stays append-only. The removal is CLAMPED to
+    // what is actually on hand: returned goods are salable immediately, so by
+    // review time some may already have been resold, and removing more than
+    // exists would drive the replay negative. Whatever is still available is
+    // scrapped; the resold units were legitimate sales.
     returnsReject: os.returnsReject.handler(
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
@@ -843,7 +847,13 @@ export function createRpcRouter(deps: RpcDeps) {
           if (!(await tx.transitionReturnStatus(existing.id, "REJECTED_DAMAGED"))) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_PENDING" });
           }
-          const reason = `مرجوع تالف ${existing.returnNumber}${input.reason && input.reason.trim() !== "" ? ` — ${input.reason.trim()}` : ""}`;
+          const note = input.reason && input.reason.trim() !== "" ? input.reason.trim() : null;
+          const reason = `مرجوع تالف ${existing.returnNumber}${note ? ` — ${note}` : ""}`;
+          if (note !== null) {
+            // the review annotation lands on the return record too, so the
+            // voucher and the returns list tell the full story
+            await tx.setReturnReason(existing.id, existing.reason && existing.reason.trim() !== "" ? `${existing.reason} — ${note}` : note);
+          }
           const occurredAt = localDateTime();
           for (const line of existing.lines) {
             if (line.itemId === null) continue;
@@ -852,22 +862,26 @@ export function createRpcRouter(deps: RpcDeps) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
             const movements = await tx.listStockMovements(item.id);
+            const projection = projectLedger(movements, { fallbackUnitCost: item.costPrice });
+            // clamp: never remove more than is actually in stock (some returned
+            // units may already have been resold between create and review)
+            const removal = Math.min(line.quantity, projection.stockOnHand);
+            if (removal <= 0) continue;
             const candidate = {
               kind: "MANUAL_ADJUSTMENT" as const,
-              delta: -line.quantity,
+              delta: -removal,
               unitCost: null,
               occurredAt,
               seq: undefined,
             };
-            // SAFETY: the return inflow exists in the ledger (ref = return id,
-            // inserted in the create unit), so the reversal can never drive
-            // stock negative; the whole-history projection still fails loudly
-            // on corrupt history before anything is written.
+            // SAFETY: the clamp guarantees the reversal never drives stock
+            // negative; the whole-history projection still fails loudly on
+            // corrupt history before anything is written.
             const stockAfter = projectLedger([...movements, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
             await tx.insertStockMovement({
               itemId: item.id,
               kind: "MANUAL_ADJUSTMENT",
-              delta: -line.quantity,
+              delta: -removal,
               unitCost: null,
               reason,
               ref: existing.id,

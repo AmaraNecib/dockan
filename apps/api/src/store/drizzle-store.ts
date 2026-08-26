@@ -430,10 +430,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
   };
 
-  /** Issue 59: databases created before returns predate
-   * stock_movements.return_mark (a nullable review tag; null = not a return
-   * movement). CREATE TABLE IF NOT EXISTS cannot add it, so ALTER here when
-   * missing — the barcode pattern. */
+  /** Legacy databases predate stock_movements.return_mark (a nullable review
+   * tag; null = not a return movement). CREATE TABLE IF NOT EXISTS cannot add
+   * it, so ALTER here when missing — the barcode pattern. */
   const ensureStockMovementsReturnMarkColumn = (): void => {
     // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
     const rows = conn.raw.query("PRAGMA table_info(stock_movements)").all() as Array<{ name: string }>;
@@ -984,8 +983,9 @@ export function createDrizzleStore(conn: Connection): StorePort {
         .from(returns)
         .innerJoin(invoices, eq(invoices.id, returns.invoiceId))
         .where(where)
-        .orderBy(desc(returns.createdAt), sql`returns.rowid DESC`)
-        .limit(200);
+        // newest first; NO row cap — a pending return must stay reachable for
+        // review forever (a fixed limit could strand an unreviewed mark)
+        .orderBy(desc(returns.createdAt), sql`returns.rowid DESC`);
       const lineRows =
         headers.length === 0
           ? []
@@ -1030,6 +1030,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
         .set({ returnMark: mark })
         .where(and(eq(stockMovements.ref, returnId), eq(stockMovements.returnMark, "PENDING")))
         .run();
+    },
+    /** Record the review annotation on the return (the rejection note). */
+    async setReturnReason(returnId: string, reason: string) {
+      await db.update(returns).set({ reason, updatedAt: now() }).where(eq(returns.id, returnId)).run();
     },
     async insertInvoice(inv: InvoiceInsert) {
       const row = firstRowOf(

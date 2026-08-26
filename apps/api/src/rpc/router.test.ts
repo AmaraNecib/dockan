@@ -2331,7 +2331,9 @@ describe("returns & refunds", () => {
 
     const rejected = await client.returnsReject({ returnId: created.id, reason: "كسر في العبوة" });
     expect(rejected.status).toBe("REJECTED_DAMAGED");
-    expect(rejected.reason).toBeNull(); // rejection note rides the movement reason, not the return record
+    // the rejection note is recorded on the return too, so the voucher and
+    // the returns list tell the full story
+    expect(rejected.reason).toBe("كسر في العبوة");
 
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.stockOnHand).toBe(0);
@@ -2343,6 +2345,30 @@ describe("returns & refunds", () => {
     expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
     // the full ledger still replays: 2 → 0 → 2 → 0
     expect(history.movements.map((movement) => movement.stockAfter)).toEqual([2, 0, 2, 0]);
+  });
+
+  it("reject after some units were resold clamps the removal to available stock and never blocks the review", async () => {
+    // returned goods are salable immediately; by review time some may be gone
+    const item = await makeReturnItem("مرجوع-إعادة-بيع", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 3 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 3 }] });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(5);
+    // resell 4 of the 5 on hand → stock 1 (< the 3 returned units)
+    const resale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
+    expect(resale.lines[0]?.costAtSale).toBe(100);
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
+
+    const rejected = await client.returnsReject({ returnId: created.id });
+    expect(rejected.status).toBe("REJECTED_DAMAGED");
+    const history = await client.itemsHistory({ itemId: item.id });
+    // the clamp removes only what is physically present: stock 1 → 0
+    expect(history.stockOnHand).toBe(0);
+    const removal = history.movements.find((movement) => movement.kind === "MANUAL_ADJUSTMENT" && movement.delta < 0);
+    expect(removal?.delta).toBe(-1);
+    expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
+    // 5 → 2 → 5 → 1 → 0: the full replay never dips negative
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([5, 2, 5, 1, 0]);
   });
 
   it("lists and fetches returns; the voucher source is the stored record", async () => {

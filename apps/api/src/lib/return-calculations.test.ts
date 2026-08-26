@@ -50,11 +50,27 @@ describe("computeReturnRefund (line refunds + record total)", () => {
     expect(result.refundTotal).toBe(2_200);
   });
 
-  it("keeps the total exact when rounding would drop one DZD per line", () => {
+  it("keeps a FULL return exact: quantity === lineQuantity refunds netTotal precisely", () => {
     const result = computeReturnRefund([{ invoiceLineId: "l1", quantity: 3, lineQuantity: 3, netTotal: 1_000 }]);
-    // 3 × round(333.33) = 999 — the whole-DZD remainder is a documented loss
-    expect(result.lines[0]).toMatchObject({ refundUnitPrice: 333, refundAmount: 999 });
-    expect(result.refundTotal).toBe(999);
+    // the displayed unit is the rounded effective price, but the amount is the
+    // exact net total (333 × 3 would under-refund the customer by 1 DZD)
+    expect(result.lines[0]).toMatchObject({ refundUnitPrice: 333, refundAmount: 1_000 });
+    expect(result.refundTotal).toBe(1_000);
+    // uneven split: round-half-up per-unit would refund 3 × 34 = 102 — one DZD
+    // the customer never paid; the full return stays exactly 101
+    const uneven = computeReturnRefund([{ invoiceLineId: "l1", quantity: 3, lineQuantity: 3, netTotal: 101 }]);
+    expect(uneven.lines[0]).toMatchObject({ refundUnitPrice: 34, refundAmount: 101 });
+  });
+
+  it("rounds PARTIAL returns at the effective unit price (whole-DZD remainder is documented)", () => {
+    const result = computeReturnRefund([{ invoiceLineId: "l1", quantity: 2, lineQuantity: 3, netTotal: 101 }]);
+    expect(result.lines[0]).toMatchObject({ refundUnitPrice: 34, refundAmount: 68 });
+    expect(result.refundTotal).toBe(68);
+  });
+
+  it("rejects a negative net total defensively", () => {
+    expect(() => refundUnitPriceFor(-5, 3)).toThrow(/non-negative/);
+    expect(() => refundUnitPriceFor(Number.NaN, 3)).toThrow(/non-negative/);
   });
 
   it("prices partial returns at the effective per-unit price of the WHOLE line", () => {

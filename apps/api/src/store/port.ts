@@ -161,6 +161,8 @@ export interface StorePort {
   returnedQuantitiesByLine(invoiceId: string): Promise<Map<string, number>>;
   /** consume the pending review tag on every movement a return created */
   setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">): Promise<void>;
+  /** Record the review annotation on the return (the rejection note). */
+  setReturnReason(returnId: string, reason: string): Promise<void>;
   /** Legacy read seam retained for diagnostics and existing callers. */
   lastInvoiceNumber(): Promise<string | undefined>;
   insertInvoice(inv: InvoiceInsert): Promise<Invoice>;

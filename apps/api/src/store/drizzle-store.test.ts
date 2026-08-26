@@ -1495,4 +1495,22 @@ describe("returns seam (cash refunds + review marks)", () => {
     // an already-consumed return can never be rejected
     expect(await store.transitionReturnStatus(returnId, "REJECTED_DAMAGED")).toBe(false);
   });
+
+  it("records the review annotation on the return record", async () => {
+    const { invoice } = await makeSaleFixture("مرجوع-سبب", 400);
+    const { id: returnId } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 400,
+      payoutMethod: "CASH",
+      reason: "الزبون بدل رأيه",
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("الزبون بدل رأيه");
+    await store.setReturnReason(returnId, "الزبون بدل رأيه — كسر في العبوة");
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("الزبون بدل رأيه — كسر في العبوة");
+    await store.setReturnReason(returnId, "ملاحظة ثانية");
+    expect((await store.getReturnDetail(returnId))?.reason).toBe("ملاحظة ثانية");
+  });
 });

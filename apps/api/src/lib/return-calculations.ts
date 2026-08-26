@@ -1,17 +1,20 @@
 /**
- * Pure returns math (issue 59, seam 1). No IO, no clocks — every function
- * takes line facts and already-returned quantities as data and returns
- * derived values. The router owns persistence and validation; this module
- * only does whole-DZD refund arithmetic and the per-line cap bookkeeping, so
- * money decisions are unit-testable without SQL.
+ * Pure returns math (seam 1). No IO, no clocks — every function takes line
+ * facts and already-returned quantities as data and returns derived values.
+ * The router owns persistence and validation; this module only does whole-DZD
+ * refund arithmetic and the per-line cap bookkeeping, so money decisions are
+ * unit-testable without SQL.
  *
  * Refund basis (documented decision): the customer gets back, per returned
  * unit, the effective per-unit amount they actually paid — the line's net
  * total (gross minus the allocated invoice-discount share) divided by its
- * quantity, rounded to whole DZD like every other money figure in the app.
- * A line's refund is quantity × that unit; the record total is the sum.
- * Refunding at the pre-discount unitPrice instead would over-refund whenever
- * the invoice carried a discount.
+ * SOLD quantity, rounded to whole DZD like every other money figure in the
+ * app. A FULL-line return is the exact special case: when every sold unit
+ * comes back, the refund is the line's net total precisely (round-half drift
+ * would refund a DZD the customer never paid). A line's partial refund is
+ * quantity × that unit; the record total is the sum. Refunding at the
+ * pre-discount unitPrice instead would over-refund whenever the invoice
+ * carried a discount.
  */
 
 export interface ReturnRefundLineInput {
@@ -44,11 +47,19 @@ export interface ReturnRefundComputation {
 /** Effective per-unit price the customer paid, rounded to whole DZD. */
 export function refundUnitPriceFor(netTotal: number, lineQuantity: number): number {
   if (!Number.isInteger(lineQuantity) || lineQuantity <= 0) throw new Error("line quantity must be a positive integer");
+  if (!Number.isFinite(netTotal) || netTotal < 0) throw new Error("net total must be a non-negative whole DZD amount");
   return Math.round(netTotal / lineQuantity);
 }
 
-/** The whole-DZD refund for `quantity` returned units of one line. */
+/**
+ * The whole-DZD refund for `quantity` returned units of one line. A full
+ * return (every sold unit back) refunds the line's net total EXACTLY — the
+ * round-half-up unit price could otherwise refund one DZD the customer never
+ * paid (e.g. net 101 over 3 units). Partial returns price at the rounded
+ * effective unit price.
+ */
 export function lineRefundAmount(quantity: number, netTotal: number, lineQuantity: number): number {
+  if (quantity === lineQuantity) return netTotal;
   return quantity * refundUnitPriceFor(netTotal, lineQuantity);
 }
 
@@ -60,7 +71,7 @@ export function computeReturnRefund(lines: readonly ReturnRefundLineInput[]): Re
       invoiceLineId: line.invoiceLineId,
       quantity: line.quantity,
       refundUnitPrice,
-      refundAmount: line.quantity * refundUnitPrice,
+      refundAmount: line.quantity === line.lineQuantity ? line.netTotal : line.quantity * refundUnitPrice,
     };
   });
   const refundTotal = result.reduce((sum, line) => sum + line.refundAmount, 0);

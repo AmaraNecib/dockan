@@ -43,3 +43,18 @@ New unit regressions (port-record.test.ts + config.test.ts): 0.0.0.0 / :: /
 stays "::1". Content of the original three reviews is unaffected (this change
 touches only the wildcard predicate and its tests, within item 3's scope).
 Gates re-run green at 8f948cb: typecheck, lint, 321 unit tests, 17 e2e.
+
+---
+
+## Re-key — develop rebase (PR #51 packaging), `ce5c149`
+
+origin/develop advanced to 3976e1b (PR #51: per-customer DOKAN_AUTH_SECRET,
+webDataDir/portRecordDir/bootToken config seam). Rebased; apps/api/src/config.ts
++ config.test.ts conflicted (add/add) and were resolved preserving BOTH intents:
+#51's packaged-build fields + DEV_AUTH_SECRET/MIN_AUTH_SECRET_LEN + its tests, and
+#52's host-binding guard (probeHostFor reuse, blank-host normalization,
+DOKAN_HOST_INTERFACE opt-in) + its 8 host tests. config.ts auto-merged cleanly
+(no markers); config.test.ts kept both describe blocks. Reviewable files
+merged but my #52 content in them is unchanged from the reviewed state — the
+#51 additions are the other PR's intent, verified by full gates re-run at
+ce5c149: typecheck, lint, 334 unit tests, 17 e2e.

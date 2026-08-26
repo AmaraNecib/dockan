@@ -80,14 +80,64 @@ export function outputNames(
   return { portableDir, zipPath: path.join(portableRoot, `${folderName}.zip`) };
 }
 
+/** How many removal attempts for a locked portable output folder. */
+export const LOCK_RETRY_ATTEMPTS = 3;
+/** Sleep between removal attempts (ms) — transient locks (antivirus scans,
+ * brief handles) usually clear within a few hundred ms. */
+export const LOCK_RETRY_DELAY_MS = 150;
+
+/** Synchronous bounded sleep (the assembly is synchronous; 150ms in a CLI
+ * packaging script is fine). Injected in tests so retries run instantly. */
+export function sleepSync(ms) {
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
+}
+
+/**
+ * Remove a portable output folder (`rmSync -r --force`) with a bounded
+ * retry. Returns TRUE when the folder is gone (or never existed) and FALSE
+ * when it is still held by another process after all attempts. It only ever
+ * touches exactly `folderPath` — never a parent or sibling. `remove` and
+ * `sleep` are injectable so tests can simulate a locked folder
+ * deterministically (Bun's rmSync ignores Windows open-handle locks, so an
+ * OS-level lock is not reliably simulatable).
+ */
+export function tryRemoveOutputFolder(
+  folderPath,
+  {
+    attempts = LOCK_RETRY_ATTEMPTS,
+    delayMs = LOCK_RETRY_DELAY_MS,
+    remove = (p) => rmSync(p, { recursive: true, force: true }),
+    sleep = sleepSync,
+  } = {},
+) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      remove(folderPath);
+      if (!existsSync(folderPath)) {
+        return true;
+      }
+    } catch {
+      // fall through to the next attempt
+    }
+    if (attempt < attempts) {
+      sleep(delayMs);
+    }
+  }
+  return false;
+}
+
 /**
  * Assemble the portable FOLDER from a finished release build (no zip). All
  * inputs are injectable so tests can fake a complete build in scratch dirs.
+ * `removeOutputFolder` is the removal-until-free strategy; tests inject a
+ * wrapper over [`tryRemoveOutputFolder`] with fake remove/sleep fns.
  */
 export function assemblePortableFolder({
   releaseRootPath = releaseRoot,
   markerName = PORTABLE_MARKER,
   portableExeName = PORTABLE_EXE_NAME,
+  removeOutputFolder = tryRemoveOutputFolder,
 } = {}) {
   const layout = portableLayout(releaseRootPath);
   const { sidecarSourcePath: sidecarSource, uiSourcePath: uiSource, appExePath } = layout;
@@ -102,17 +152,23 @@ export function assemblePortableFolder({
   const tempDir = path.join(layout.portableRoot, `.tmp-${PORTABLE_BASENAME}-${process.pid}`);
   rmSync(tempDir, { recursive: true, force: true });
 
-  // if the canonical folder cannot be removed (a running app holds it open
-  // on Windows), fall back to a `-new` sibling — the zip follows the folder
-  // name through `outputNames`/`zipPathFor`
-  let canReplaceCanonical = true;
-  try {
-    rmSync(layout.portableDir, { recursive: true, force: true });
-  } catch {
-    canReplaceCanonical = false;
-  }
+  // remove the existing canonical output with a bounded retry; when it
+  // stays locked (a running app holds it open on Windows), fall back to a
+  // `-new` sibling — the zip follows the folder name via `outputNames`
+  const canonical = layout.portableDir;
+  const canReplaceCanonical = removeOutputFolder(canonical);
   const finalPortableDir = outputNames(layout.portableRoot, { canReplaceCanonical }).portableDir;
-  rmSync(finalPortableDir, { recursive: true, force: true });
+
+  // the selected output folder must be free — a `-new` that is ALSO locked
+  // is a real conflict: fail loudly with an actionable message instead of
+  // silently skipping or packing into a partial/stale layout
+  if (finalPortableDir !== canonical && !removeOutputFolder(finalPortableDir)) {
+    throw new Error(
+      `Portable output folders are locked by another process: both ${canonical} ` +
+        `and ${layout.portableRoot}/${PORTABLE_BASENAME}-new could not be removed. ` +
+        `Close the running app (or remove ${layout.portableRoot}/${PORTABLE_BASENAME}*) and retry.`,
+    );
+  }
 
   try {
     mkdirSync(tempDir, { recursive: true });

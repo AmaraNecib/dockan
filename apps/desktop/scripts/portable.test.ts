@@ -21,9 +21,11 @@ import {
   RELEASE_EXE_NAME,
   SIDECAR_RESOURCE_NAME,
   UI_RESOURCE_NAME,
+  LOCK_RETRY_ATTEMPTS,
   assemblePortableFolder,
   outputNames,
   portableLayout,
+  tryRemoveOutputFolder,
   zipPathFor,
   zipPortable,
 } from "./portable.mjs";
@@ -228,6 +230,126 @@ describe("portable assembly (issue 64)", () => {
     expect(fallback.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new");
     expect(fallback.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip");
     expect(zipPathFor(fallback.portableDir)).toBe(fallback.zipPath);
+  });
+});
+
+/**
+ * Inject a removal strategy into [`assemblePortableFolder`]: the given paths
+ * act as if held open by another process (removal throws); everything else
+ * uses the real fs. Retries run instantly (zero delay, no real sleep) so the
+ * regression tests are deterministic without relying on Windows handle
+ * semantics (Bun's rmSync ignores open-handle locks).
+ */
+function lockedRemoveWrapper(lockedPaths) {
+  const locked = new Set(lockedPaths.map((p) => path.resolve(p)));
+  const remove = (p) => {
+    if (locked.has(path.resolve(p))) {
+      throw new Error("EBUSY: portable output folder is locked");
+    }
+    rmSync(p, { recursive: true, force: true });
+  };
+  return (dir) =>
+    tryRemoveOutputFolder(dir, { remove, sleep: () => {}, attempts: LOCK_RETRY_ATTEMPTS, delayMs: 0 });
+}
+
+describe("portable output lock handling (issue 64 / PR #65)", () => {
+  it("tryRemoveOutputFolder retries exactly the bounded attempts and reports a persistent lock", () => {
+    const dir = path.join(tmpdir(), "dokan-lock-bounded");
+    let calls = 0;
+    const ok = tryRemoveOutputFolder(dir, {
+      attempts: 3,
+      delayMs: 0,
+      remove: () => {
+        calls += 1;
+        throw new Error("EBUSY");
+      },
+      sleep: () => {},
+    });
+    expect(ok).toBe(false);
+    expect(calls).toBe(3);
+  });
+
+  it("tryRemoveOutputFolder succeeds once a transient lock clears", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dokan-lock-transient-"));
+    let calls = 0;
+    const ok = tryRemoveOutputFolder(dir, {
+      attempts: 3,
+      delayMs: 0,
+      remove: () => {
+        calls += 1;
+        if (calls < 3) {
+          throw new Error("EBUSY");
+        }
+        rmSync(dir, { recursive: true, force: true });
+      },
+      sleep: () => {},
+    });
+    expect(ok).toBe(true);
+    expect(calls).toBe(3);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("tryRemoveOutputFolder treats an absent folder as removable", () => {
+    const dir = path.join(tmpdir(), "dokan-lock-absent");
+    rmSync(dir, { recursive: true, force: true });
+    expect(tryRemoveOutputFolder(dir, { attempts: 3, delayMs: 0, sleep: () => {} })).toBe(true);
+  });
+
+  it("fails loudly when BOTH output folders are locked: actionable error, no partial output, scoped cleanup", () => {
+    withScopedRelease(({ release }) => {
+      const layout = portableLayout(release);
+      // both candidate outputs already exist and are “locked”
+      mkdirSync(layout.portableDir, { recursive: true });
+      writeFileSync(path.join(layout.portableDir, "canonical.txt"), "busy");
+      const newDir = path.join(layout.portableRoot, `${PORTABLE_BASENAME}-new`);
+      mkdirSync(newDir, { recursive: true });
+      writeFileSync(path.join(newDir, "new.txt"), "busy");
+      // a sentinel OUTSIDE the scoped bundle/portable output dir must survive
+      const sentinelOutsidePortable = path.join(layout.portableRoot, "..", "portable-sentinel.txt");
+      writeFileSync(sentinelOutsidePortable, "keep-me");
+
+      const removeOutputFolder = lockedRemoveWrapper([layout.portableDir, newDir]);
+      let error;
+      try {
+        assemblePortableFolder({ releaseRootPath: release, removeOutputFolder });
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeDefined();
+      expect(String(error.message)).toMatch(/locked by another process/);
+      expect(String(error.message)).toMatch(/close the running app/i);
+      expect(String(error.message)).toMatch(/Dokan-portable\*/);
+
+      // nothing outside the scoped portable output dir was deleted
+      expect(readFileSync(sentinelOutsidePortable, "utf8")).toBe("keep-me");
+      // no partial assembly happened: no renamed exe, no staging leftover
+      expect(existsSync(path.join(layout.portableDir, PORTABLE_EXE_NAME))).toBe(false);
+      expect(
+        existsSync(path.join(layout.portableRoot, `.tmp-${PORTABLE_BASENAME}-${process.pid}`)),
+      ).toBe(false);
+      // the locked folders were untouched
+      expect(readFileSync(path.join(layout.portableDir, "canonical.txt"), "utf8")).toBe("busy");
+      expect(readFileSync(path.join(newDir, "new.txt"), "utf8")).toBe("busy");
+    });
+  });
+
+  it("keeps the -new fallback when ONLY the canonical folder is locked", () => {
+    withScopedRelease(({ release }) => {
+      const layout = portableLayout(release);
+      mkdirSync(layout.portableDir, { recursive: true });
+      writeFileSync(path.join(layout.portableDir, "canonical.txt"), "busy");
+
+      const removeOutputFolder = lockedRemoveWrapper([layout.portableDir]);
+      const { portableDir } = assemblePortableFolder({ releaseRootPath: release, removeOutputFolder });
+      expect(portableDir).toBe(path.join(layout.portableRoot, `${PORTABLE_BASENAME}-new`));
+      expect(zipPathFor(portableDir)).toBe(
+        path.join(layout.portableRoot, `${PORTABLE_BASENAME}-new.zip`),
+      );
+      // the locked canonical folder is left untouched; the -new one is complete
+      expect(readFileSync(path.join(layout.portableDir, "canonical.txt"), "utf8")).toBe("busy");
+      expect(existsSync(path.join(portableDir, PORTABLE_EXE_NAME))).toBe(true);
+      expect(statSync(path.join(portableDir, PORTABLE_MARKER)).size).toBe(0);
+    });
   });
 });
 

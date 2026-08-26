@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 12 e2e smoke: real flows (category + item creation) land entries in
+ * E2E smoke: real flows (category + item creation) land entries in
  * the activity log screen, newest first, in Arabic.
  * Unique names per the parallel-specs shared-DB rule (wisdom 2026-08-24).
  */

@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 14 e2e: the diagnostics viewer is admin-session-guarded, reachable
+ * The diagnostics viewer is admin-session-guarded, reachable
  * from the nav, and renders today's JSONL log tail (newest first). A raw
  * unauthenticated RPC call seeds a real RPC_ERROR row with a stable DKN code
  * so the code badge is proven end to end.

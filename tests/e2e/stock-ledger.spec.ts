@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 27 e2e flow: create an item, add stock manually through the ledger,
+ * E2E flow: create an item, add stock manually through the ledger,
  * verify the raised stock in the items list, open the item history and check
  * the derived stock-after column, then confirm an oversell is rejected and
  * changes nothing. (Opening-row backfill behavior is covered by store tests.)

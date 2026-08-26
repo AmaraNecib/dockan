@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 /**
- * Ticket 31: expenses + profit reports. Specs share one wiped-at-boot sqlite
+ * Expenses + profit reports. Specs share one wiped-at-boot sqlite
  * database and run sequentially, so unique names are used and monetary
  * assertions on the CURRENT_MONTH report are deltas against a baseline (other
  * specs sell items in the current month). Expenses are only ever recorded by

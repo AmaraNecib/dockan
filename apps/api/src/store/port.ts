@@ -33,6 +33,8 @@ export interface ProfitSaleLine {
   invoiceDate: string;
   quantity: number;
   costAtSale: number;
+  /** exact total COGS of the layers this line consumed (unrounded FIFO sum) */
+  cogsExact: number;
   netTotal: number;
 }
 
@@ -41,8 +43,8 @@ export interface ProfitSaleLine {
  * returns the complete historical response shape with safe zero defaults. */
 export type InvoiceInsert = Omit<Invoice, "id" | "createdAt" | "updatedAt" | "subtotalAmount" | "discountType" | "discountValue" | "discountAmount"> &
   Partial<Pick<Invoice, "subtotalAmount" | "discountType" | "discountValue" | "discountAmount">>;
-export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal"> &
-  Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal">>;
+export type InvoiceLineInsert = Omit<InvoiceLine, "id" | "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact"> &
+  Partial<Pick<InvoiceLine, "defaultUnitPrice" | "discountAllocated" | "netTotal" | "cogsExact">>;
 
 /** Attribution record between a purchase invoice and earlier uninvoiced stock. */
 export interface StockLink {
@@ -98,7 +100,7 @@ export interface StorePort {
   /** raw rows inside the optional category/range filters (ordering happens in
    * the pure module, so sort behavior is unit-tested without SQL) */
   listExpenseRecords(filters: { categoryIds?: string[]; from?: string; to?: string }): Promise<Expense[]>;
-  /** raw SALE line facts (netTotal/costAtSale) for invoices dated in [from, to] */
+  /** raw SALE line facts (netTotal/costAtSale/cogsExact) for invoices dated in [from, to] */
   listSaleLinesForProfit(from: string, to: string): Promise<ProfitSaleLine[]>;
 
   listCustomers(): Promise<Customer[]>;

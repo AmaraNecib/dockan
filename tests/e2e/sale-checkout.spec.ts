@@ -114,4 +114,16 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toContainText("الكمية غير متوفرة");
   await expect(oversellQty).toHaveValue("2");
+
+  // A cleared quantity field must STAY cleared (the draft is not a controlled
+  // number that snaps back), and saving with an empty/invalid quantity is
+  // refused without corrupting the cart.
+  await oversellQty.fill("");
+  await expect(oversellQty).toHaveValue("");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل كمية صحيحة");
+  await expect(page.getByTestId("sale-lines")).toContainText(oversellName);
+  // typing a fresh value after the cleared draft still works
+  await oversellQty.fill("1");
+  await expect(oversellQty).toHaveValue("1");
 });

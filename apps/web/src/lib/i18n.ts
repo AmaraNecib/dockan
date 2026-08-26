@@ -227,6 +227,7 @@ const resources = {
       saleInvalidPaid: "أدخل مبلغاً صحيحاً غير سالب",
       saleInvalidDiscount: "أدخل خصماً صحيحاً (المبلغ عدد صحيح أو النسبة بين 0 و100)",
       saleInvalidOverride: "أدخل تعديلاً صحيحاً للسعر (المبلغ عدد صحيح أو النسبة بين 0 و100)",
+      saleInvalidQuantity: "أدخل كمية صحيحة (عدد صحيح أكبر من صفر)",
       PURCHASE_REQUIRES_INFLOW: "حركة المشتريات يجب أن تكون إدخالاً للمخزون (كمية موجبة)",
       LINK_EXCEEDS_LINE: "الكمية المطلوب ربطها تتجاوز كمية سطر الفاتورة",
       ITEM_NOT_ON_INVOICE: "المنتج ليس على هذه الفاتورة",

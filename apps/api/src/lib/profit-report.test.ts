@@ -44,8 +44,8 @@ describe("profit report — reconciliation on a worked example", () => {
     // Sales in range: 3 × 1000 (100-DZD discount) and 2 × 1500, no discount.
     // Revenue = netTotals 2900 + 3000 = 5900; COGS = 3×400 + 2×700 = 2600.
     const saleLines = [
-      { invoiceId: "inv-1", invoiceDate: "2026-02-05", quantity: 3, costAtSale: 400, netTotal: 2_900 },
-      { invoiceId: "inv-2", invoiceDate: "2026-02-20", quantity: 2, costAtSale: 700, netTotal: 3_000 },
+      { invoiceId: "inv-1", invoiceDate: "2026-02-05", quantity: 3, costAtSale: 400, cogsExact: 1_200, netTotal: 2_900 },
+      { invoiceId: "inv-2", invoiceDate: "2026-02-20", quantity: 2, costAtSale: 700, cogsExact: 1_400, netTotal: 3_000 },
     ];
     // Expenses in range: rent 500 + electricity 200 operating, 300 withdrawal.
     const expenses = [
@@ -85,7 +85,7 @@ describe("profit report — reconciliation on a worked example", () => {
 
   it("a minimal single-sale report still reconciles exactly", () => {
     const report = computeProfitReport({
-      saleLines: [{ invoiceId: "inv-1", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, netTotal: 250 }],
+      saleLines: [{ invoiceId: "inv-1", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 250 }],
       expenses: [],
       categories: [opCategory],
       range,
@@ -106,9 +106,9 @@ describe("profit report — window semantics (documented)", () => {
     const midDay = { preset: "CUSTOM" as const, from: "2026-02-05T14:00:00", to: "2026-02-06T10:00:00" };
     const report = computeProfitReport({
       saleLines: [
-        { invoiceId: "a", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, netTotal: 200 }, // before 14:00, same day → in
-        { invoiceId: "b", invoiceDate: "2026-02-06", quantity: 1, costAtSale: 100, netTotal: 200 }, // after 10:00, same day → in
-        { invoiceId: "c", invoiceDate: "2026-02-07", quantity: 1, costAtSale: 100, netTotal: 200 }, // outside → out
+        { invoiceId: "a", invoiceDate: "2026-02-05", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // before 14:00, same day → in
+        { invoiceId: "b", invoiceDate: "2026-02-06", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // after 10:00, same day → in
+        { invoiceId: "c", invoiceDate: "2026-02-07", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // outside → out
       ],
       expenses: [
         { categoryId: opCategory.id, amount: 50, occurredAt: "2026-02-05T09:00:00" }, // before from → out
@@ -128,9 +128,9 @@ describe("profit report — range slicing", () => {
   it("excludes invoices and expenses outside the window", () => {
     const report = computeProfitReport({
       saleLines: [
-        { invoiceId: "in", invoiceDate: "2026-03-01", quantity: 1, costAtSale: 100, netTotal: 200 }, // next month
-        { invoiceId: "in", invoiceDate: "2026-02-01", quantity: 1, costAtSale: 100, netTotal: 200 }, // first day
-        { invoiceId: "in", invoiceDate: "2026-02-28", quantity: 1, costAtSale: 100, netTotal: 200 }, // last day
+        { invoiceId: "in", invoiceDate: "2026-03-01", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // next month
+        { invoiceId: "in", invoiceDate: "2026-02-01", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // first day
+        { invoiceId: "in", invoiceDate: "2026-02-28", quantity: 1, costAtSale: 100, cogsExact: 100, netTotal: 200 }, // last day
       ],
       expenses: [
         expense({ categoryId: opCategory.id, amount: 999, occurredAt: "2026-01-31T23:59:59" }), // just before
@@ -150,7 +150,7 @@ describe("COGS vs expenses separation", () => {
   it("a SALE invoice contributes revenue/COGS only; an expense contributes nothing to COGS", () => {
     // A purchase invoice never appears in the report at all.
     const report = computeProfitReport({
-      saleLines: [{ invoiceId: "sale-1", invoiceDate: "2026-02-10", quantity: 4, costAtSale: 150, netTotal: 1_000 }],
+      saleLines: [{ invoiceId: "sale-1", invoiceDate: "2026-02-10", quantity: 4, costAtSale: 150, cogsExact: 600, netTotal: 1_000 }],
       expenses: [expense({ categoryId: opCategory.id, amount: 700 })],
       categories: [opCategory],
       range,
@@ -166,7 +166,7 @@ describe("COGS vs expenses separation", () => {
   it("revenue is derived from post-discount netTotals (discounts shrink profit, not COGS)", () => {
     const report = computeProfitReport({
       saleLines: [
-        { invoiceId: "a", invoiceDate: "2026-02-10", quantity: 3, costAtSale: 400, netTotal: 2_900 }, // 100 discount
+        { invoiceId: "a", invoiceDate: "2026-02-10", quantity: 3, costAtSale: 400, cogsExact: 1_200, netTotal: 2_900 }, // 100 discount
       ],
       expenses: [],
       categories: [opCategory],
@@ -176,6 +176,33 @@ describe("COGS vs expenses separation", () => {
     expect(report.cogs).toBe(1_200);
     expect(report.grossProfit).toBe(1_700); // discount already reduced revenue
     expect(report.resultAfterExpenses).toBe(1_700);
+  });
+});
+
+describe("exact per-line COGS (cogsExact)", () => {
+  it("sums the unrounded layer snapshot, not the rounded costAtSale product", () => {
+    // ADR-0005 drift example: layers 2×10 + 1×15, 3-unit sale → rounded unit
+    // 12 (product 36) while the exact layer sum is 35.
+    const report = computeProfitReport({
+      saleLines: [{ invoiceId: "drift", invoiceDate: "2026-02-10", quantity: 3, costAtSale: 12, cogsExact: 35, netTotal: 90 }],
+      expenses: [],
+      categories: [],
+      range,
+    });
+    expect(report.cogs).toBe(35);
+    expect(report.grossProfit).toBe(90 - 35);
+  });
+
+  it("per-line profit reconciles: netTotal − cogsExact is the line's exact margin", () => {
+    const lines = [
+      { invoiceId: "a", invoiceDate: "2026-02-10", quantity: 6, costAtSale: 117, cogsExact: 700, netTotal: 1_800 },
+      { invoiceId: "b", invoiceDate: "2026-02-12", quantity: 2, costAtSale: 200, cogsExact: 400, netTotal: 600 },
+    ];
+    const report = computeProfitReport({ saleLines: lines, expenses: [], categories: [], range });
+    // the first line's rounded product (6 × 117 = 702) would overstate COGS
+    expect(report.cogs).toBe(1_100);
+    expect(report.grossProfit).toBe(1_300);
+    expect(report.revenue - report.cogs).toBe(report.grossProfit);
   });
 });
 

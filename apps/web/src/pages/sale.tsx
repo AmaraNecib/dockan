@@ -15,7 +15,8 @@ type OverrideType = "" | "AMOUNT" | "PERCENTAGE";
 type DiscountType = "" | "AMOUNT" | "PERCENTAGE";
 type SaleLine = {
   item: Item;
-  quantity: number;
+  /** raw quantity input text; empty is a valid transient draft while typing */
+  quantityDraft: string;
   overrideType: OverrideType;
   overrideValue: string;
 };
@@ -33,6 +34,30 @@ function toOverrideType(value: string): OverrideType {
 
 function toDiscountType(value: string): DiscountType {
   return value === "AMOUNT" || value === "PERCENTAGE" ? value : "";
+}
+
+/**
+ * Resolve a cart quantity draft to its effective line quantity. Empty,
+ * non-integer, or over-cap drafts yield 0 (invalid); the input never rewrites
+ * the draft, so clearing it stays visually empty instead of snapping back to
+ * the previous value (the field is NOT a controlled number). The 1_000_000
+ * cap mirrors the RPC contract's line-quantity max — an oversized draft is
+ * refused client-side instead of surfacing an opaque server error. Only an
+ * explicit add-line action (scan / duplicate picker entry) repairs a cleared
+ * draft to a single unit.
+ */
+const MAX_LINE_QUANTITY = 1_000_000;
+
+export function parseQuantityDraft(draft: string): number {
+  const trimmed = draft.trim();
+  if (trimmed === "" || !/^\d+$/u.test(trimmed)) return 0;
+  const value = Number(trimmed);
+  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_LINE_QUANTITY ? value : 0;
+}
+
+/** True when the draft cannot form a sellable line (empty, zero, or garbage). */
+export function quantityDraftInvalid(draft: string): boolean {
+  return parseQuantityDraft(draft) < 1;
 }
 
 function actualPrice(line: SaleLine): number {
@@ -83,8 +108,12 @@ export function SalePage() {
   const addLine = (item: Item) => {
     setLines((current) => {
       const existing = current.find((line) => line.item.id === item.id);
-      if (existing) return current.map((line) => (line.item.id === item.id ? { ...line, quantity: line.quantity + 1 } : line));
-      return [...current, { item, quantity: 1, overrideType: "", overrideValue: "" }];
+      if (existing) {
+        // a scanned/added unit bumps the effective quantity by one, repairing
+        // an invalid (cleared) draft to a single unit
+        return current.map((line) => (line.item.id === item.id ? { ...line, quantityDraft: String(parseQuantityDraft(line.quantityDraft) + 1) } : line));
+      }
+      return [...current, { item, quantityDraft: "1", overrideType: "", overrideValue: "" }];
     });
     setPickerOpen(false);
   };
@@ -128,7 +157,7 @@ export function SalePage() {
     }),
   );
 
-  const subtotal = lines.reduce((sum, line) => sum + line.quantity * actualPrice(line), 0);
+  const subtotal = lines.reduce((sum, line) => sum + parseQuantityDraft(line.quantityDraft) * actualPrice(line), 0);
   const enteredDiscount = nonNegativeOr(discountValue, 0);
   const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
   const total = subtotal - discountAmount;
@@ -158,11 +187,15 @@ export function SalePage() {
         setError(t("saleInvalidOverride"));
         return;
       }
+      if (quantityDraftInvalid(line.quantityDraft)) {
+        setError(t("saleInvalidQuantity"));
+        return;
+      }
     }
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {
         itemId: line.item.id,
-        quantity: line.quantity,
+        quantity: parseQuantityDraft(line.quantityDraft),
       };
       if (line.overrideType !== "") {
         invoiceLine.priceOverride = { type: line.overrideType, value: Number(line.overrideValue) };
@@ -269,7 +302,7 @@ export function SalePage() {
         {lines.length === 0 ? <p className="text-sm text-stone-500">{t("saleLinesEmpty")}</p> : (
           <table className="w-full" data-testid="sale-lines">
             <thead><tr className="border-b text-right text-sm text-stone-500"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-            <tbody>{lines.map((line, index) => { const price = actualPrice(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" inputMode="numeric" value={String(line.quantity)} onChange={(event) => { const quantity = Number(event.target.value); if (Number.isInteger(quantity) && quantity >= 1) setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantity } : entry)); }} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2">{line.item.sellingPrice}</td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-stone-500">{price} دج</span></td><td className="p-2">{line.quantity * price}</td><td className="p-2"><button type="button" className="text-red-600" aria-label={`${t("saleRemove")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>✕</button></td></tr>; })}</tbody>
+            <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2">{line.item.sellingPrice}</td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-stone-500">{price} دج</span></td><td className="p-2">{quantity * price}</td><td className="p-2"><button type="button" className="text-red-600" aria-label={`${t("saleRemove")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>✕</button></td></tr>; })}</tbody>
           </table>
         )}
       </div>

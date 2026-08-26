@@ -10,8 +10,59 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { overrideInputInvalid } = await import("./sale");
+const { overrideInputInvalid, parseQuantityDraft, quantityDraftInvalid } = await import("./sale");
 
+describe("cart quantity draft (cleared state + deterministic parse)", () => {
+  it("parses a cleared or whitespace draft to 0 (invalid, never stuck)", () => {
+    expect(parseQuantityDraft("")).toBe(0);
+    expect(parseQuantityDraft("   ")).toBe(0);
+    expect(quantityDraftInvalid("")).toBe(true);
+  });
+
+  it("parses positive integers and rejects zero, negatives, fractions, and garbage", () => {
+    expect(parseQuantityDraft("1")).toBe(1);
+    expect(parseQuantityDraft("12")).toBe(12);
+    expect(parseQuantityDraft(" 7 ")).toBe(7);
+    expect(parseQuantityDraft("0")).toBe(0);
+    expect(parseQuantityDraft("-3")).toBe(0);
+    expect(parseQuantityDraft("2.5")).toBe(0);
+    expect(parseQuantityDraft("abc")).toBe(0);
+    expect(parseQuantityDraft("12x")).toBe(0);
+    expect(quantityDraftInvalid("0")).toBe(true);
+    expect(quantityDraftInvalid("2.5")).toBe(true);
+  });
+
+  it("accepts a whole multi-digit value and trims surrounding spaces", () => {
+    expect(quantityDraftInvalid("42")).toBe(false);
+    expect(parseQuantityDraft("0042")).toBe(42);
+  });
+
+  it("rejects drafts above the RPC quantity cap instead of surfacing a server error", () => {
+    expect(parseQuantityDraft("9999999999")).toBe(0);
+    expect(parseQuantityDraft("1000001")).toBe(0);
+    expect(parseQuantityDraft("1000000")).toBe(1_000_000);
+    expect(quantityDraftInvalid("9999999999")).toBe(true);
+  });
+
+  it("is deterministic and pins each input's exact resolution (no self-equality)", () => {
+    const cases: Array<[string, number]> = [
+      ["", 0],
+      ["0", 0],
+      ["1", 1],
+      ["999", 999],
+      ["-1", 0],
+      ["1e3", 0],
+      ["1.5", 0],
+      ["٥", 0],
+      ["1_000", 0],
+      ["1000000", 1_000_000],
+      ["1000001", 0],
+    ];
+    for (const [input, expected] of cases) {
+      expect(parseQuantityDraft(input)).toBe(expected);
+    }
+  });
+});
 describe("overrideInputInvalid (sale line price override)", () => {
   it("accepts lines without a chosen override type", () => {
     expect(overrideInputInvalid({ overrideType: "", overrideValue: "" })).toBe(false);

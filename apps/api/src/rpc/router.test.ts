@@ -1166,6 +1166,73 @@ describe("sale checkout (ticket 30)", () => {
     ).rejects.toThrow(/DISCOUNT_ONLY_SALE/);
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(1);
   });
+
+  it("snapshots the exact per-line COGS (cogsExact) alongside the rounded costAtSale", async () => {
+    const item = await makeSaleItem("بيع-كلفة-دقيقة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const invoice = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    // 5×100 + 1×200 consumed: exact total 700 while the rounded unit is 117
+    expect(invoice.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
+    const reread = await client.invoicesGet({ id: invoice.id });
+    expect(reread.lines[0]?.cogsExact).toBe(700);
+  });
+
+  it("carries exact per-line COGS through the profit report seam", async () => {
+    const item = await makeSaleItem("بيع-تقرير-دقيق", 100, 300);
+    // the router suite shares one database: assert deltas for today's window,
+    // exactly like the profit-report wire tests below
+    const window = { preset: "CUSTOM" as const, customFrom: `${item.createdAt.slice(0, 10)}T00:00:00`, customTo: `${item.createdAt.slice(0, 10)}T23:59:59` };
+    const baseline = await client.reportsProfit(window);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(sale.lines[0]!.cogsExact).toBe(700);
+    const report = await client.reportsProfit(window);
+    // the report sums the exact layer snapshot, not 6 × 117 = 702
+    expect(report.cogs - baseline.cogs).toBe(700);
+  });
+
+  it("dates an explicit-invoiceDate sale's movements at the invoice business date", async () => {
+    const item = await makeSaleItem("بيع-مؤرخ-الحركة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE", occurredAt: "2035-06-01T08:00:00" });
+    await client.invoicesCreate({ kind: "SALE", invoiceDate: "2035-06-03", lines: [{ itemId: item.id, quantity: 2 }] });
+    const saleMovement = (await client.itemsHistory({ itemId: item.id })).movements.find((movement) => movement.kind === "SALE")!;
+    // no inflow postdates the invoice: the movement lands at invoice-day midnight
+    expect(saleMovement.occurredAt).toBe("2035-06-03T00:00:00");
+  });
+
+  it("bounded backdating: a dated sale never sorts ahead of stock it consumes", async () => {
+    const item = await makeSaleItem("بيع-حد-الرجعية", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE", occurredAt: "2035-06-01T08:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 200, kind: "PURCHASE", occurredAt: "2035-06-05T09:00:00" });
+    // invoice dated BETWEEN the two purchases; the 6 units only exist after Jun 5
+    const invoice = await client.invoicesCreate({ kind: "SALE", invoiceDate: "2035-06-03", lines: [{ itemId: item.id, quantity: 6 }] });
+    // clamped to the newest inflow, so the full ledger still replays cleanly
+    expect(invoice.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(2);
+    const saleMovement = history.movements.find((movement) => movement.kind === "SALE")!;
+    expect(saleMovement.occurredAt).toBe("2035-06-05T09:00:00");
+    // chronological stockAfter proves the replay never dipped: 5 → 8 → 2
+    expect(history.movements.map((movement) => movement.stockAfter)).toEqual([5, 8, 2]);
+  });
+
+  it("keeps default (undated) sales on today's wall-clock movements, not backdated", async () => {
+    const item = await makeSaleItem("بيع-غير-مؤرخ", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 2, unitPrice: 90 }] });
+    expect(purchase.lines[0]).toMatchObject({ costAtSale: 90, cogsExact: 180 });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    const saleMovement = (await client.itemsHistory({ itemId: item.id })).movements.find((movement) => movement.kind === "SALE")!;
+    // no explicit invoiceDate: the movement stays on the wall clock (today),
+    // following the invoice's own business date derived server-side — and it
+    // must NOT land at invoice-day midnight (that is the explicit-dating
+    // behavior, which saleMovementTime clamps to the latest inflow)
+    expect(saleMovement.occurredAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    expect(saleMovement.occurredAt.startsWith(sale.invoiceDate)).toBe(true);
+    expect(saleMovement.occurredAt.endsWith("T00:00:00")).toBe(false);
+  });
 });
 
 // ticket 14 — diagnostics log tail (stable DKN codes + viewer input)

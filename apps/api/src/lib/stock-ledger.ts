@@ -26,6 +26,14 @@ export interface FifoLayer {
   unitCost: number;
 }
 
+/** Exact layer cost of one outflow: `totalCost` before rounding, plus the
+ * ADR-0005 whole-DZD per-unit snapshot. The report sums `totalCost` because
+ * `quantity × unitCost` drifts by up to half a DZD per unit. */
+export interface FifoOutflowCost {
+  totalCost: number;
+  unitCost: number;
+}
+
 export interface LedgerProjection {
   stockOnHand: number;
   layers: FifoLayer[];
@@ -127,15 +135,17 @@ export function historyWithRemaining<T extends LedgerMovement>(movements: readon
 }
 
 /**
- * Average FIFO unit cost for a sale from the current layers. The returned
- * value is an integer DZD snapshot; the ledger itself remains the source of
- * truth for the exact layers and the caller validates the resulting outflow.
+ * Exact FIFO layer cost for a sale plus its rounded unit snapshot.
+ * Validation: quantity must be a positive integer and must not exceed the
+ * stock projected from `movements` (STOCK_NEGATIVE). `totalCost` is what the
+ * profit report sums (per-line exact COGS); `unitCost` is the ADR-0005
+ * whole-DZD per-unit snapshot held by `invoice_lines.cost_at_sale`.
  */
-export function fifoCostForOutflow(
+export function fifoOutflowCost(
   movements: readonly LedgerMovement[],
   quantity: number,
   opts: { fallbackUnitCost?: number } = {},
-): number {
+): FifoOutflowCost {
   if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("quantity must be a positive integer");
   const projection = projectLedger(movements, opts);
   if (quantity > projection.stockOnHand) {
@@ -149,7 +159,44 @@ export function fifoCostForOutflow(
     remaining -= take;
     if (remaining === 0) break;
   }
-  return Math.round(totalCost / quantity);
+  return { totalCost, unitCost: Math.round(totalCost / quantity) };
+}
+
+/**
+ * Movement timestamp for a sale whose invoice explicitly carries a business
+ * date (`invoiceDate`, Algeria-local). The profit report already attributes
+ * revenue/COGS to that date; this rule carries the same dating into the stock
+ * ledger so the item history and day-level stockAsOf slices agree with the
+ * invoice.
+ *
+ * Bound: never earlier than the newest INFLOW (delta > 0) movement for the
+ * item — the issue's "never before the last purchase movement" generalized,
+ * because a positive MANUAL_ADJUSTMENT also adds cost layers. A dated sale
+ * therefore always sorts after every inflow that existed when it was created,
+ * so FIFO replay can never consume layers that did not exist at the sale's
+ * date (un-clamped, e.g. [5@100 on Jun 1, 3@200 on Jun 5] with a 6-unit sale
+ * dated Jun 3 would replay STOCK_NEGATIVE). Later backdated inflows only add
+ * stock, so they cannot invalidate the replay either.
+ *
+ * Accepted consequence: when the invoice predates the newest inflow, the
+ * movement lands ON that inflow's timestamp, not on the invoice day — day-
+ * level stockAsOf slices between the two dates show the stock as still
+ * present (the profit report still attributes revenue/COGS to the invoice
+ * date). This is the price of the replay-validity bound the issue asks for.
+ *
+ * Same-day rows order by rowid (insertion order) exactly like today; dated
+ * rows order by business date rather than wall clock, which is documented
+ * here and in ADR-0005. Cost snapshots stay frozen at creation time.
+ */
+export function saleMovementTime(invoiceDate: string, movements: readonly LedgerMovement[]): string {
+  let latestInflow = "";
+  for (const movement of movements) {
+    if (movement.delta > 0 && movement.occurredAt > latestInflow) {
+      latestInflow = movement.occurredAt;
+    }
+  }
+  const dayStart = `${invoiceDate}T00:00:00`;
+  return latestInflow !== "" && latestInflow > dayStart ? latestInflow : dayStart;
 }
 
 /** ADR-0002 weighted average after an inflow lands on top of current holdings. */

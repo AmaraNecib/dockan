@@ -39,8 +39,8 @@ const invoice: InvoiceDetail = {
   createdAt: "2026-08-25T10:00:00",
   updatedAt: "2026-08-25T10:00:00",
   lines: [
-    { id: "l1", invoiceId: "inv-1", itemId: "00000000-0000-4000-8000-000000000002", description: "بطارية", quantity: 2, defaultUnitPrice: 600, unitPrice: 550, costAtSale: 400, total: 1100, discountAllocated: 100, netTotal: 1000 },
-    { id: "l2", invoiceId: "inv-1", itemId: null, description: "تركيب", quantity: 1, defaultUnitPrice: 100, unitPrice: 100, costAtSale: 0, total: 100, discountAllocated: 50, netTotal: 50 },
+    { id: "l1", invoiceId: "inv-1", itemId: "00000000-0000-4000-8000-000000000002", description: "بطارية", quantity: 2, defaultUnitPrice: 600, unitPrice: 550, costAtSale: 400, cogsExact: 800, total: 1100, discountAllocated: 100, netTotal: 1000 },
+    { id: "l2", invoiceId: "inv-1", itemId: null, description: "تركيب", quantity: 1, defaultUnitPrice: 100, unitPrice: 100, costAtSale: 0, cogsExact: 0, total: 100, discountAllocated: 50, netTotal: 50 },
   ],
   payments,
 };

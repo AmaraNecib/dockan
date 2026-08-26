@@ -11,7 +11,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
 import { createResetThrottle, type ResetThrottle } from "../lib/reset-throttle";
-import { fifoCostForOutflow, historyWithRemaining, projectLedger, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
@@ -436,6 +436,11 @@ export function createRpcRouter(deps: RpcDeps) {
           const paidAmount = input.initialPaid ?? 0;
           if (paidAmount > totals.totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
           const invoiceDate = input.invoiceDate ?? localDate();
+          // Undated invoices keep wall-clock movement timestamps exactly as
+          // before; an EXPLICIT invoiceDate backdates the stock movements too
+          // (saleMovementTime bounds them), so the item history and day-level
+          // stockAsOf slices agree with the invoice's business date.
+          const backdated = input.invoiceDate !== undefined;
           // SAFETY: allocation is a database-atomic UPDATE inside the same
           // transaction as the invoice insert, so separate app processes
           // cannot select the same INV-#### between a read and the insert.
@@ -462,7 +467,7 @@ export function createRpcRouter(deps: RpcDeps) {
               const item = itemsById.get(line.itemId)!;
               const calculated = totals.lines[index]!;
               const existing = await tx.listStockMovements(item.id);
-              const occurredAt = localDateTime();
+              const occurredAt = backdated ? saleMovementTime(invoiceDate, existing) : localDateTime();
               const candidate = {
                 kind: "SALE" as const,
                 delta: -line.quantity,
@@ -471,8 +476,11 @@ export function createRpcRouter(deps: RpcDeps) {
                 seq: undefined,
               };
               let costAtSale: number;
+              let cogsExact: number;
               try {
-                costAtSale = fifoCostForOutflow(existing, line.quantity, { fallbackUnitCost: item.costPrice });
+                const cost = fifoOutflowCost(existing, line.quantity, { fallbackUnitCost: item.costPrice });
+                costAtSale = cost.unitCost;
+                cogsExact = cost.totalCost;
                 projectLedger([...existing, candidate]);
               } catch (err) {
                 if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
@@ -486,6 +494,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 defaultUnitPrice: item.sellingPrice,
                 unitPrice: calculated.unitPrice,
                 costAtSale,
+                cogsExact,
                 total: calculated.grossTotal,
                 discountAllocated: calculated.discountAllocated,
                 netTotal: calculated.netTotal,
@@ -563,6 +572,7 @@ export function createRpcRouter(deps: RpcDeps) {
               defaultUnitPrice: item.costPrice,
               unitPrice: unitCost,
               costAtSale: unitCost,
+              cogsExact: line.quantity * unitCost,
               total: line.quantity * unitCost,
               discountAllocated: 0,
               netTotal: line.quantity * unitCost,

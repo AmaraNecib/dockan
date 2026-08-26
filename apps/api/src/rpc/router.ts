@@ -15,7 +15,7 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
 import type { ReportRangePreset } from "@dokan/contracts";
-import { currentMonthRange, resolveReportRange, validCustomRange } from "../lib/report-ranges";
+import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
 import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
 
 export type RpcContext = { request: Request };
@@ -30,9 +30,16 @@ type RpcDeps = {
 
 /**
  * Resolve the inclusive Algeria-local window for expense listing and profit
- * reports. A preset (or an explicit from/to pair) wins; an absent preset and
- * absent bounds default to the current month — the spec's default range.
- * Custom bounds must be present and ordered, else INVALID_RANGE.
+ * reports. Precedence: an explicit preset wins; non-CUSTOM presets own their
+ * window (stale custom bounds never narrow them). A CUSTOM preset or a custom
+ * pair sent without a preset resolves the given bounds half-open — an absent
+ * upper bound clamps to now (the contract's current-time boundary), an absent
+ * lower bound opens at the beginning of records; an explicit CUSTOM with no
+ * bounds at all is INVALID_RANGE. With no preset and no custom pair, bare
+ * from/to bounds resolve the same half-open way; neither bound sent defaults
+ * to the current month — the spec's default range. Resolved bounds must be
+ * ordered, else INVALID_RANGE. One instant is read for the whole resolution
+ * so a call straddling local midnight never mixes two clocks.
  */
 function resolveWindow(input: {
   preset?: ReportRangePreset;
@@ -41,34 +48,37 @@ function resolveWindow(input: {
   from?: string;
   to?: string;
 }): ProfitReportRange {
+  const now = new Date();
   if (input.preset !== undefined) {
-    const range = resolveReportRange(input.preset, new Date(), { from: input.customFrom, to: input.customTo });
-    if (input.preset === "CUSTOM" && !validCustomRange(input.customFrom, input.customTo)) {
-      throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+    if (input.preset === "CUSTOM") {
+      // an explicit CUSTOM window with no bounds is a caller bug — nothing to resolve
+      if (input.customFrom === undefined && input.customTo === undefined) {
+        throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+      }
+      const range = resolveBoundsWindow(input.customFrom, input.customTo, now);
+      if (range.from > range.to) {
+        throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
+      }
+      return range;
     }
-    return range;
+    return resolveReportRange(input.preset, now, { from: input.customFrom, to: input.customTo });
   }
-  // preset absent: honor caller-supplied bounds. preset + bounds together is a
-  // documented precedence (preset wins); customFrom/customTo without a preset
-  // act as a CUSTOM window, so a client bug surfaces as a window, not as
-  // wrong-but-successful data.
+  // custom pair without a preset acts as a CUSTOM window, so a client bug
+  // surfaces as a window, not as wrong-but-successful data
   if (input.customFrom !== undefined || input.customTo !== undefined) {
-    const range = resolveReportRange("CUSTOM", new Date(), { from: input.customFrom, to: input.customTo });
-    if (!validCustomRange(range.from, range.to)) {
+    const range = resolveBoundsWindow(input.customFrom, input.customTo, now);
+    if (range.from > range.to) {
       throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
     }
     return range;
   }
-  // single instant for the whole default-window computation so a call that
-  // straddles local midnight never mixes two months together
-  const month = currentMonthRange();
-  const from = input.from ?? (input.to === undefined ? month.from : "0001-01-01T00:00:00");
-  const to = input.to ?? (input.from === undefined ? month.to : "9999-12-31T23:59:59");
-  if (from > to) {
+  // preset absent: honor caller-supplied bounds, half-open; neither bound sent
+  // defaults to the current month
+  const range = resolveBoundsWindow(input.from, input.to, now);
+  if (range.from > range.to) {
     throw new ORPCError("BAD_REQUEST", { message: "INVALID_RANGE" });
   }
-  // bounds-only windows are "custom" by origin (the report page echoes preset)
-  return { preset: "CUSTOM" as const, from, to };
+  return range;
 }
 
 /** reason prefix burned into purchase-line corrections; the line id rides as

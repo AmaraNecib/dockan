@@ -317,9 +317,12 @@ export const reportRangePresets = [
 export const reportRangePresetSchema = z.enum(reportRangePresets);
 
 /**
- * Report window selection. `CUSTOM` requires both `customFrom` and `customTo`;
- * other presets ignore them (the api computes the window in Algeria local
- * time — see apps/api/src/lib/report-ranges.ts). Both bounds are inclusive.
+ * Report window selection. `CUSTOM` resolves the custom pair half-open: a
+ * missing lower bound opens at the beginning of records and a missing upper
+ * bound clamps to now (Algeria-local) so a from-only report can never see
+ * future-dated rows; at least one bound is required. Other presets ignore
+ * the pair (the api computes the window in Algeria local time — see
+ * apps/api/src/lib/report-ranges.ts). Both bounds are inclusive.
  */
 export const profitReportInputSchema = z.object({
   preset: reportRangePresetSchema,
@@ -567,7 +570,10 @@ export const expenseListInputSchema = z.object({
    * the profit report). When absent and no from/to bounds are sent, the
    * window defaults to the current month. */
   preset: reportRangePresetSchema.optional(),
-  /** required together when preset = CUSTOM */
+  /** CUSTOM window bounds; at least one bound is required with a CUSTOM
+   * preset, and a lone bound is half-open exactly like from/to below (a
+   * missing upper clamps to now, a missing lower opens at the beginning of
+   * records). */
   customFrom: localDateTimeSchema.optional(),
   customTo: localDateTimeSchema.optional(),
   /** inclusive local-datetime bounds; an alternative to a preset. Half-open:

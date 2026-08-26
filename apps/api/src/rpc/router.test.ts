@@ -1604,6 +1604,54 @@ describe("profit report (ticket 31) — wire reconciliation", () => {
   });
 });
 
+describe("from-only windows clamp to now (half-open bounds)", () => {
+  it("a from-only expensesList keeps past rows and excludes future-dated ones", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    const past = await client.expensesCreate({ categoryId: op.id, amount: 111, occurredAt: "2020-01-15T12:00:00" });
+    const future = await client.expensesCreate({ categoryId: op.id, amount: 222, occurredAt: "2099-06-30T12:00:00" });
+    const ids = (rows: readonly { id: string }[]) => rows.map((row) => row.id);
+
+    // from-only: the window is [from, now] — the future row must not leak in
+    const fromOnly = await client.expensesList({ from: "2020-01-01T00:00:00" });
+    expect(ids(fromOnly.items)).toContain(past.id);
+    expect(ids(fromOnly.items)).not.toContain(future.id);
+
+    // to-only stays open-ended from the beginning of records (unchanged)
+    const toOnly = await client.expensesList({ to: "2099-12-31T23:59:59" });
+    expect(ids(toOnly.items)).toContain(past.id);
+    expect(ids(toOnly.items)).toContain(future.id);
+
+    // from+to keeps the exact window (unchanged); 2020-08 is this test's own
+    const mid = await client.expensesCreate({ categoryId: op.id, amount: 333, occurredAt: "2020-08-10T12:00:00" });
+    const both = await client.expensesList({ from: "2020-08-01T00:00:00", to: "2020-08-31T23:59:59" });
+    expect(ids(both.items)).toEqual([mid.id]);
+
+    // a from-only window starting in the future is contradictory → INVALID_RANGE
+    await expect(client.expensesList({ from: "2099-01-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
+  });
+
+  it("a from-only profit report (CUSTOM with only customFrom) excludes future-dated expenses", async () => {
+    const category = await client.expenseCategoriesCreate({ name: "حدود-انطلاقة" });
+    await client.expensesCreate({ categoryId: category.id, amount: 111, occurredAt: "2020-01-15T12:00:00" });
+    await client.expensesCreate({ categoryId: category.id, amount: 222, occurredAt: "2099-06-30T12:00:00" });
+
+    // from-only report: window is [customFrom, now] — only the past row counts
+    const fromOnly = await client.reportsProfit({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00" });
+    const fromRow = fromOnly.byCategory.find((entry) => entry.categoryId === category.id);
+    expect(fromRow).toMatchObject({ total: 111, count: 1 });
+
+    // to-only report stays open-ended from the beginning of records (unchanged)
+    const toOnly = await client.reportsProfit({ preset: "CUSTOM", customTo: "2099-12-31T23:59:59" });
+    const toRow = toOnly.byCategory.find((entry) => entry.categoryId === category.id);
+    expect(toRow).toMatchObject({ total: 333, count: 2 });
+
+    // an explicit CUSTOM with no bounds is still a caller bug in both procedures
+    await expect(client.expensesList({ preset: "CUSTOM" })).rejects.toThrow(/INVALID_RANGE/);
+    await expect(client.reportsProfit({ preset: "CUSTOM" })).rejects.toThrow(/INVALID_RANGE/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ticket 8 — later payments on invoices (instalments, never above remaining)
 // ---------------------------------------------------------------------------

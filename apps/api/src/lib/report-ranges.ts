@@ -98,7 +98,32 @@ export function currentMonthRange(now: Date = new Date()): LocalRange {
   return resolveReportRange("CURRENT_MONTH", now);
 }
 
-/** True when a customer-supplied custom window is usable (both bounds, ordered). */
-export function validCustomRange(from: string | undefined, to: string | undefined): boolean {
-  return from !== undefined && to !== undefined && from !== "" && to !== "" && from <= to;
+/** The earliest representable local instant — the lower filler for a window
+ * with no `from`, so a to-only query opens "since the beginning of records"
+ * (the contract's half-open semantics). */
+const RECORDS_BEGINNING = "0001-01-01T00:00:00";
+
+/**
+ * Resolve caller-supplied bounds into an inclusive CUSTOM window, half-open:
+ * an absent lower bound opens at the beginning of records; an absent upper
+ * bound clamps to `now` in Algeria-local time — the same clock the report
+ * windows use — so a from-only window can never leak future-dated rows. Both
+ * bounds absent falls back to the caller's default window (the current month
+ * for expense listings). Pure and clock-injectable: one instant governs the
+ * whole resolution, and identical inputs always yield the identical window.
+ */
+export function resolveBoundsWindow(
+  from: string | undefined,
+  to: string | undefined,
+  now: Date = new Date(),
+  fallback: LocalRange = currentMonthRange(now),
+): LocalRange {
+  if (from === undefined && to === undefined) {
+    return { preset: "CUSTOM", from: fallback.from, to: fallback.to };
+  }
+  return {
+    preset: "CUSTOM",
+    from: from ?? RECORDS_BEGINNING,
+    to: to ?? localDateTime(now),
+  };
 }

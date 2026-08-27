@@ -1,6 +1,6 @@
 # Issue #68 — Debate evidence
 
-Base: `f4d4674` · Head: `ec54a2d` · Branch: `fix/68-return-debt`
+Base: `f4d4674` · Head: `4ed341f` · Branch: `fix/68-return-debt`
 
 Run as two parallel reviewer sub-agents (critic + defender) over
 `git diff f4d4674...HEAD -- apps/`, the design doc, and the issue context.
@@ -44,6 +44,6 @@ Run as two parallel reviewer sub-agents (critic + defender) over
 
 ## Result
 
-All four actionable critic findings fixed in `ec54a2d`; the design decision
+All four actionable critic findings fixed in `4ed341f`; the design decision
 set (defer-to-accept, min-cap, cash-immediate) confirmed by the defender and
 retained. Both reviewers ran the full API + web returns suites green.

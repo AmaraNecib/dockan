@@ -1,6 +1,6 @@
 # Issue #68 — Test-audit evidence
 
-Base: `f4d4674` · Head: `18ee20c` · Branch: `fix/68-return-debt`
+Base: `f4d4674` · Head: `581bcd8` · Branch: `fix/68-return-debt`
 
 Three parallel reviewer agents (edge-case hunter, coverage analyst, quality
 reviewer) over the changed test/source files and the design doc.
@@ -16,7 +16,7 @@ guarded by the conditional UPDATE.
 Findings → actions:
 1. 🟠 Migration was two autocommit statements; a crash between ALTER and
    backfill would make the next boot skip the backfill forever (the exact
-   greptile P1 class ensureSaleColumns guards). → **Fixed at 18ee20c**: ALTER +
+   greptile P1 class ensureSaleColumns guards). → **Fixed at 581bcd8**: ALTER +
    backfill wrapped in one BEGIN IMMEDIATE/COMMIT with ROLLBACK on error.
 2. 🟠 Legacy REJECTED rows (backfilled debtApplied > 0) contradicted the
    “لم يُطبّق” label. → **Fixed**: new `debtOffsetDisplay` helper: REJECTED
@@ -51,5 +51,5 @@ newlines added. Test names, async handling, assertion quality confirmed.
 
 ## Result
 
-All three agents' actionable findings addressed in `18ee20c`; final suites:
+All three agents' actionable findings addressed in `581bcd8`; final suites:
 API 423 pass / 0 fail, web 130 pass / 0 fail, typecheck + lint clean.

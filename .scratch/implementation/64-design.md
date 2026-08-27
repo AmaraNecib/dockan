@@ -92,6 +92,13 @@ bundle/portable/Dokan-portable.zip   (41.8 MB; entries: ./dokan-api.exe ./Dokan-
   zero-byte, wrong type, or an empty `ui/` all abort the build loudly); the
   release root's other build outputs (deps/, build/, .pdb, .cargo-lock) are
   legit and never shipped.
+- **Lock handling (PR #65 finding 5):** output-folder removal is a bounded
+  retry (`tryRemoveOutputFolder`, 3 attempts, 150ms sync delay). When the
+  canonical `Dokan-portable` stays locked it falls back to `-new` unchanged;
+  when BOTH are locked the build FAILS LOUDLY (`Portable output folders are
+  locked by another process — close the running app (or remove
+  `bundle/portable`/`Dokan-portable*`) and retry`) — never a silent skip,
+  never a partial folder/zip, never a touch outside `bundle/portable`.
 - Deterministic-ish zip: same `tar -a -c -f` invocation as tuari.
 
 ### 3. Script wiring
@@ -135,6 +142,7 @@ the full gate command block recorded with exit codes (all green at the final hea
 - `DOKAN_PORT=4337 DOKAN_WEB_PORT=5192 bun run test:e2e -- --workers=1` — 18 pass
 - `.dokan-port` restored byte-exact (`4317`) after e2e
 - Full end-to-end `bun run --filter @dokan/desktop portable` (test secrets) — folder + zip produced; `bundle/` contains only `portable/`
+- PR #65 finding 5 regression: both-locked simulate → actionable error, no partial output, scoped cleanup; only-canonical-locked → `-new` fallback preserved (33+ desktop tests green)
 
 Residual risks (documented, not fixed):
 

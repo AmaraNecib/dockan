@@ -256,6 +256,7 @@ describe("portable output lock handling (issue 64 / PR #65)", () => {
   it("tryRemoveOutputFolder retries exactly the bounded attempts and reports a persistent lock", () => {
     const dir = path.join(tmpdir(), "dokan-lock-bounded");
     let calls = 0;
+    let sleeps = 0;
     const ok = tryRemoveOutputFolder(dir, {
       attempts: 3,
       delayMs: 0,
@@ -263,10 +264,30 @@ describe("portable output lock handling (issue 64 / PR #65)", () => {
         calls += 1;
         throw new Error("EBUSY");
       },
-      sleep: () => {},
+      sleep: () => {
+        sleeps += 1;
+      },
     });
     expect(ok).toBe(false);
     expect(calls).toBe(3);
+    // a bounded retry sleeps between attempts, never after the last one
+    expect(sleeps).toBe(2);
+  });
+
+  it("tryRemoveOutputFolder re-checks existence when a remove does not throw yet leaves the dir", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dokan-lock-persist-"));
+    // a remove that succeeds WITHOUT deleting (e.g. a silent no-op) must not
+    // be mistaken for success — the existsSync re-check drives a retry and
+    // eventually reports the folder as still busy
+    const ok = tryRemoveOutputFolder(dir, {
+      attempts: 2,
+      delayMs: 0,
+      remove: () => {},
+      sleep: () => {},
+    });
+    expect(ok).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("tryRemoveOutputFolder succeeds once a transient lock clears", () => {

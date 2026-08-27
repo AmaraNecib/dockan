@@ -28,8 +28,12 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   await page.getByLabel("الاسم", { exact: true }).fill(`بطارية-${stamp}`);
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("350");
-  // tie the item to the category created above so the table shows its NAME
-  await page.getByLabel("التصنيف").selectOption({ label: `زيوت-${stamp}` });
+  // tie the item to the category created above so the table shows its NAME; the
+  // dropdown options arrive via an async categories query, so wait for the
+  // option before selecting (prevents a race with the fetch)
+  const categorySelect = page.getByLabel("التصنيف");
+  await expect(categorySelect.locator("option", { hasText: `زيوت-${stamp}` })).toHaveCount(1);
+  await categorySelect.selectOption({ label: `زيوت-${stamp}` });
   await expect(page.getByTestId("profit-preview")).toHaveText("الربح لكل وحدة: 150 دج");
 
   await page.getByRole("button", { name: "حفظ" }).click();

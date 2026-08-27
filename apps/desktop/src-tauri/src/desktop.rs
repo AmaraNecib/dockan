@@ -7,7 +7,10 @@
 //! serves the built UI (`DOKAN_WEB_DIST`) and the window is navigated to
 //! `http://127.0.0.1:<port>` — same origin, cookies and session work with no
 //! CORS and no custom-protocol proxy. Data, logs, backups and the port record
-//! all live under the OS app-data dir, never in the install folder.
+//! live under the OS app-data dir in installed mode, or NEXT TO THE EXE
+//! (`<exe-dir>/data`) in portable mode — a `portable.marker` file shipped
+//! beside the exe flips the runtime to portable (issue 64): the marker sits
+//! there and the folder is copyable anywhere and runs in place.
 //!
 //! Sidecar discovery (PR #51 findings 1 & TOCTOU): the shell spawns the
 //! child, so the shell OWNS the port. It binds a listener on `127.0.0.1:0` —
@@ -46,6 +49,12 @@ use tauri::{App, AppHandle, Manager, WebviewWindow};
 // The api's default port (4317) is a dev-only fallback now: the packaged
 // shell binds a listener on port 0 and the kernel assigns the port (PR #51
 // TOCTOU fix), so the shell never probes or predicts a port.
+
+/// Name of the marker file that switches the app into portable mode (issue
+/// 64). The portable distribution ships it EMPTY next to `Dokan-portable.exe`
+/// (see apps/desktop/scripts/portable.mjs); an installed app never has it, so
+/// data stays in the OS app-data dir.
+pub const PORTABLE_MARKER: &str = "portable.marker";
 
 /// Entropy of the one-time boot token in bytes (64 hex chars).
 const BOOT_TOKEN_LEN: usize = 32;
@@ -86,8 +95,27 @@ pub fn kill_sidecar(app: &AppHandle) {
     }
 }
 
+/// Resolve the runtime data dir. Portable mode (marker file present next to
+/// the exe) keeps ALL app data — sqlite, logs, backups, port records — next
+/// to the exe under `data/`, so the whole folder is copyable and runs in
+/// place on any machine (issue 64). Without the marker the installed layout
+/// is unchanged: the OS app-data dir (`%APPDATA%\dz.dokan.app`). `exe_dir`
+/// is injectable so tests can pin a fake path; everything downstream derives
+/// from the returned dir (`run/`, backups, logs, the port record).
+fn runtime_data_dir(exe_dir: &Path, app_data_dir: PathBuf) -> PathBuf {
+    if exe_dir.join(PORTABLE_MARKER).is_file() {
+        exe_dir.join("data")
+    } else {
+        app_data_dir
+    }
+}
+
 fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
-    let data_dir = ensure_dir(app.path().app_data_dir()?)?;
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .expect("current exe has no parent directory")
+        .to_path_buf();
+    let data_dir = ensure_dir(runtime_data_dir(&exe_dir, app.path().app_data_dir()?))?;
     let port_root = ensure_dir(data_dir.join("run"))?;
     let resource_dir = app.path().resource_dir()?;
 
@@ -289,6 +317,43 @@ mod tests {
 
     fn http200(body: &str) -> String {
         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", body.len(), body)
+    }
+
+    #[test]
+    fn runtime_data_dir_is_exe_adjacent_when_the_portable_marker_sits_next_to_the_exe() {
+        // issue 64: the portable distribution drops an EMPTY `portable.marker`
+        // beside Dokan-portable.exe; data must then live next to the exe
+        // (sqlite, backups/, logs/, run/ + port records) so the folder is
+        // copyable and runs in place.
+        let exe_dir = std::env::temp_dir().join(format!("dokan-portable-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::write(exe_dir.join(PORTABLE_MARKER), "").unwrap();
+        let installed = std::env::temp_dir().join("dokan-installed-app-data");
+        assert_eq!(
+            runtime_data_dir(&exe_dir, installed.clone()),
+            exe_dir.join("data"),
+            "marker present: data must resolve next to the exe"
+        );
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    #[test]
+    fn runtime_data_dir_falls_back_to_the_os_app_data_dir_without_the_marker() {
+        // installed mode is unchanged by portable support: no marker next to
+        // the exe means %APPDATA%\dz.dokan.app keeps owning the data
+        let exe_dir = std::env::temp_dir().join(format!("dokan-installed-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let installed = std::env::temp_dir().join("dokan-installed-app-data");
+        assert_eq!(runtime_data_dir(&exe_dir, installed.clone()), installed);
+        // a marker that is a DIRECTORY (someone created a folder with that
+        // name) must not flip portable mode either
+        std::fs::create_dir_all(exe_dir.join(PORTABLE_MARKER)).unwrap();
+        assert_eq!(
+            runtime_data_dir(&exe_dir, installed.clone()),
+            installed,
+            "a directory named like the marker is not a marker"
+        );
+        let _ = std::fs::remove_dir_all(&exe_dir);
     }
 
     #[test]

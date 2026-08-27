@@ -2533,21 +2533,51 @@ describe("returns & refunds", () => {
     expect((await client.reportsDebts()).owedToUs.some((row) => (row.counterpartyName ?? row.counterpartyId) === "test")).toBe(true);
   });
 
+  it("accepting a pre-#68 PENDING return (offset backfilled as applied) never double-relieves (#68)", async () => {
+    // simulate the upgraded legacy state: the invoice's debt was ALREADY
+    // reduced by the old code (remaining 0), and the migration backfill set
+    // debt_applied = debt_offset on the PENDING return row
+    const invoiceId = "00000000-0000-4000-8000-0000000000a1";
+    const returnId = "00000000-0000-4000-8000-0000000000a2";
+    conn.raw
+      .query(
+        `INSERT INTO invoices (id, invoice_number, kind, counterparty_name, invoice_date, subtotal_amount, discount_amount, total_amount, paid_amount, remaining_amount, created_at, updated_at)
+         VALUES (?, 'INV-LEGACY', 'SALE', 'test', '2026-08-01', 0, 0, 10000, 10000, 0, '2026-08-01T00:00:00', '2026-08-01T00:00:00')`,
+      )
+      .run(invoiceId);
+    conn.raw
+      .query(
+        `INSERT INTO returns (id, return_number, invoice_id, refund_amount, cash_paid_out, debt_offset, debt_applied, payout_method, status, occurred_at, created_at, updated_at)
+         VALUES (?, 'RTN-LEGACY', ?, 10000, 5000, 5000, 5000, 'CASH', 'PENDING_REVIEW', '2026-08-01T10:00:00', '2026-08-01T10:00:00', '2026-08-01T10:00:00')`,
+      )
+      .run(returnId, invoiceId);
+
+    const accepted = await client.returnsAccept({ returnId });
+    expect(accepted.status).toBe("ACCEPTED");
+    // nothing new was applied: the invoice stays at 0 and debtApplied stays 5000
+    expect(accepted.debtApplied).toBe(5_000);
+    expect((await client.invoicesGet({ id: invoiceId })).remainingAmount).toBe(0);
+  });
+
+
   it("accepting an over-promised offset caps it at the debt still owed (#68)", async () => {
     const item = await makeReturnItem("مرجوع-تجاوز-قبول", 100, 1_000);
     const item2 = await makeReturnItem("مرجوع-تجاوز-قبول-ب", 100, 1_000);
     await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
     await client.stockAddManual({ itemId: item2.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
-    // two SALE lines of 2000 net each; two all-debt returns of 2000 against a
-    // single 2000 debt cannot both fully relieve it
+    // two SALE lines of 2000 net each (total 4000), but only 2000 was paid, so
+    // the debt is 2000 — TWO all-debt returns can each record a 2000 promise
+    // at creation (each individually capped at the then-debt), aggregating past
+    // what the invoice actually owes. That over-promise must surface at accept.
     const sale = await client.invoicesCreate({
       kind: "SALE",
+      initialPaid: 2_000,
       lines: [
         { itemId: item.id, quantity: 2, priceOverride: { type: "AMOUNT", value: 1_000 } },
         { itemId: item2.id, quantity: 2, priceOverride: { type: "AMOUNT", value: 1_000 } },
       ],
     });
-    expect(sale.remainingAmount).toBe(4_000);
+    expect(sale.remainingAmount).toBe(2_000);
     const first = await client.returnsCreate({
       invoiceId: sale.id,
       cashPaidOut: 0,
@@ -2560,13 +2590,16 @@ describe("returns & refunds", () => {
     });
     expect(first.debtOffset).toBe(2_000);
     expect(second.debtOffset).toBe(2_000);
-    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(4_000);
-
-    // accepting the first applies its full offset; the second is capped to the
-    // remaining 2000 and never pushes the debt below zero
-    await client.returnsAccept({ returnId: first.id });
+    // neither touches the invoice while pending (#68)
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(2_000);
-    await client.returnsAccept({ returnId: second.id });
+
+    // accepting the first applies its full promise; the second is CAPPED at
+    // the 0 still owed — applied 0, never negative, debtApplied stays 0
+    const acceptedFirst = await client.returnsAccept({ returnId: first.id });
+    expect(acceptedFirst.debtApplied).toBe(2_000);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
+    const acceptedSecond = await client.returnsAccept({ returnId: second.id });
+    expect(acceptedSecond.debtApplied).toBe(0);
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
   });
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { ReturnDetail } from "@dokan/contracts";
 
-import { buildReturnVoucher } from "./return-voucher";
+import { buildReturnVoucher, debtOffsetDisplay } from "./return-voucher";
 
 const settings = { storeName: "متجر الكرامة", storePhone: "+213661234567" };
 
@@ -73,5 +73,24 @@ describe("buildReturnVoucher", () => {
   it("renders a rejected voucher with its review status", () => {
     const voucher = buildReturnVoucher(makeReturn({ status: "REJECTED_DAMAGED" }), settings);
     expect(voucher.status).toBe("REJECTED_DAMAGED");
+  });
+});
+
+describe("debtOffsetDisplay (status-aware debt line, #68)", () => {
+  it("shows the pending promise as on-acceptance", () => {
+    expect(debtOffsetDisplay("PENDING_REVIEW", 400, 0)).toEqual({ labelKey: "returnsDebtOffsetPending", value: 400 });
+  });
+
+  it("shows the ACCEPTED applied amount, even when the cap applied less than promised", () => {
+    expect(debtOffsetDisplay("ACCEPTED", 400, 250)).toEqual({ labelKey: "returnsDebtOffsetApplied", value: 250 });
+    expect(debtOffsetDisplay("ACCEPTED", 400, 0)).toEqual({ labelKey: "returnsDebtOffsetApplied", value: 0 });
+  });
+
+  it("shows a NEW rejected return's cancelled promise as not applied", () => {
+    expect(debtOffsetDisplay("REJECTED_DAMAGED", 400, 0)).toEqual({ labelKey: "returnsDebtOffsetNotApplied", value: 400 });
+  });
+
+  it("shows a LEGACY rejected row (offset applied pre-#68) as applied", () => {
+    expect(debtOffsetDisplay("REJECTED_DAMAGED", 400, 400)).toEqual({ labelKey: "returnsDebtOffsetApplied", value: 400 });
   });
 });

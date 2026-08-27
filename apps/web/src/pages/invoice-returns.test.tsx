@@ -377,9 +377,9 @@ describe("ReturnsPanel (new-return form + history)", () => {
   });
 
   it("notes that the debt portion applies only on acceptance (#68)", () => {
-    // remaining debt 300 out of 500: an all-debt split on 1 unit projects a
-    // 300 debt portion — the panel must tell the counter owner the invoice
-    // keeps its debt until the return is accepted
+    // invoice total 400, paid 100 → remaining 300; an ALL_DEBT split on the
+    // 500 line projects a 300 debt portion — the panel must tell the counter
+    // owner the invoice keeps its debt until the return is accepted
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     act(() => {
@@ -392,5 +392,12 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(note).toBeTruthy();
     expect(note?.textContent).toContain("عند قبول المرجوع");
     expect(note?.textContent).toContain("تبقى مدينة");
+  });
+
+  it("hides the acceptance note when the settlement carries no debt portion (#68)", () => {
+    // the default all-cash settlement on a fully unpaid invoice has no debt
+    renderPanel(makeInvoice([saleLine()], 0));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-note"]')).toBeNull();
   });
 });

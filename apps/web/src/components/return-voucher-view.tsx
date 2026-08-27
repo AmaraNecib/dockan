@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import type { ReturnVoucher } from "../lib/return-voucher";
+import { debtOffsetDisplay, type ReturnVoucher } from "../lib/return-voucher";
 
 /**
  * Return voucher printing — the print-only voucher layout (mirror of
@@ -12,6 +12,7 @@ import type { ReturnVoucher } from "../lib/return-voucher";
  */
 export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
   const { t } = useTranslation();
+  const debt = debtOffsetDisplay(voucher.status, voucher.debtOffset, voucher.debtApplied);
 
   return (
     <article dir="rtl" className="rounded border bg-white p-6" data-testid="return-voucher-view">
@@ -94,8 +95,8 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
           <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} {t("dzd")}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt>{t(voucher.status === "ACCEPTED" ? "returnsDebtOffsetApplied" : voucher.status === "REJECTED_DAMAGED" ? "returnsDebtOffsetNotApplied" : "returnsDebtOffsetPending")}</dt>
-          <dd data-testid="return-voucher-debt">{voucher.status === "ACCEPTED" ? voucher.debtApplied : voucher.debtOffset} {t("dzd")}</dd>
+          <dt>{t(debt.labelKey)}</dt>
+          <dd data-testid="return-voucher-debt">{debt.value} {t("dzd")}</dd>
         </div>
       </dl>
     </article>

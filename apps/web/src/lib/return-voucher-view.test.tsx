@@ -54,8 +54,9 @@ afterEach(() => {
   host.remove();
 });
 
-function renderVoucher(voucher: ReturnVoucherType) {
-  const root = createRoot(host);
+function renderVoucher(voucher: ReturnVoucherType, container?: HTMLElement) {
+  const target = container ?? host;
+  const root = createRoot(target);
   roots.push(root);
   act(() => {
     root.render(<ReturnVoucherView voucher={voucher} />);
@@ -84,5 +85,44 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(line.textContent).toContain("1700");
     expect(view.querySelector('[data-testid="return-voucher-status"]')?.textContent).toContain("قيد المراجعة");
     expect(view.querySelector('[data-testid="return-voucher-reason"]')?.textContent).toContain("الزبون بدل رأيه");
+  });
+
+  it("prints the debt portion by review state: pending promise, applied amount, cancelled promise (#68)", () => {
+    // each case gets a FRESH container so the previous root stays untouched
+    const pendingBox = document.createElement("div");
+    host.appendChild(pendingBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "PENDING_REVIEW", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), pendingBox);
+    let view = pendingBox.querySelector('[data-testid="return-voucher-view"]')!;
+    let debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
+    expect(debtRow.textContent).toContain("400");
+    expect(view.textContent).toContain("خصم من الدين (عند القبول)");
+
+    // accepted with a capped apply: print the REAL relieved amount, not the promise
+    const acceptedBox = document.createElement("div");
+    host.appendChild(acceptedBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "ACCEPTED", debtOffset: 400, debtApplied: 250, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), acceptedBox);
+    view = acceptedBox.querySelector('[data-testid="return-voucher-view"]')!;
+    debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
+    expect(debtRow.textContent).toContain("250");
+    expect(debtRow.textContent).not.toContain("400");
+    expect(view.textContent).toContain("خصم من الدين (مطبّق)");
+
+    // rejected (new behavior): the promised deduction never happened
+    const rejectedBox = document.createElement("div");
+    host.appendChild(rejectedBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), rejectedBox);
+    view = rejectedBox.querySelector('[data-testid="return-voucher-view"]')!;
+    debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
+    expect(debtRow.textContent).toContain("400");
+    expect(view.textContent).toContain("خصم من الدين (لم يُطبّق)");
+
+    // legacy rejected row whose offset was applied pre-#68: reads as applied
+    const legacyBox = document.createElement("div");
+    host.appendChild(legacyBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, debtApplied: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), legacyBox);
+    view = legacyBox.querySelector('[data-testid="return-voucher-view"]')!;
+    debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
+    expect(debtRow.textContent).toContain("400");
+    expect(view.textContent).toContain("خصم من الدين (مطبّق)");
   });
 });

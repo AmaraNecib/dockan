@@ -465,16 +465,26 @@ export function createDrizzleStore(conn: Connection): StorePort {
     if (rows.length > 0) {
       conn.raw.exec("UPDATE returns SET cash_paid_out = refund_amount WHERE cash_paid_out = 0 AND debt_offset = 0 AND refund_amount > 0");
     }
-    // #68: the app_lied portion. Legacy (pre-fix) rows had their ENTIRE
+    // #68: the applied portion. Legacy (pre-fix) rows had their ENTIRE
     // debtOffset applied at creation — the old code settled the debt in the
     // same unit as the insert and never reverted it on accept/reject — so the
     // backfill marks every existing row as fully applied. New rows are created
     // with debt_applied = 0 and gain their portion on acceptance. This is what
     // lets returnsAccept apply min(debtOffset − debtApplied, remaining) and
     // never double-relieve a debt that was already settled pre-fix.
+    // The ALTER + backfill are ONE transaction (the ensureSaleColumns marker
+    // pattern): a boot interrupted between them rolls back, so the next setup
+    // re-runs the pair instead of silently skipping the backfill forever.
     if (rows.length > 0 && !names.has("debt_applied")) {
-      conn.raw.exec("ALTER TABLE returns ADD COLUMN debt_applied INTEGER NOT NULL DEFAULT 0");
-      conn.raw.exec("UPDATE returns SET debt_applied = debt_offset");
+      conn.raw.exec("BEGIN IMMEDIATE");
+      try {
+        conn.raw.exec("ALTER TABLE returns ADD COLUMN debt_applied INTEGER NOT NULL DEFAULT 0");
+        conn.raw.exec("UPDATE returns SET debt_applied = debt_offset");
+        conn.raw.exec("COMMIT");
+      } catch (error) {
+        conn.raw.exec("ROLLBACK");
+        throw error;
+      }
     }
   };
 

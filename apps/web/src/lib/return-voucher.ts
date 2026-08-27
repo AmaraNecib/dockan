@@ -36,6 +36,8 @@ export interface ReturnVoucher {
   cashPaidOut: number;
   /** deducted from the invoice's remaining debt */
   debtOffset: number;
+  /** portion of debtOffset already applied to the invoice (#68: acceptance applies it) */
+  debtApplied: number;
   reason: string | null;
   status: string;
   lines: ReturnVoucherLine[];
@@ -57,6 +59,7 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
     refundAmount: returnDetail.refundAmount,
     cashPaidOut: returnDetail.cashPaidOut,
     debtOffset: returnDetail.debtOffset,
+    debtApplied: returnDetail.debtApplied,
     reason: returnDetail.reason,
     status: returnDetail.status,
     lines: returnDetail.lines.map((line) => ({
@@ -66,4 +69,24 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
       refundAmount: line.refundAmount,
     })),
   };
+}
+
+/**
+ * What the debt portion line should display (#68): the ACCEPTED label always
+ * shows the amount really applied (debtApplied), which can be less than the
+ * recorded promise after the accept-time cap; PENDING shows the recorded
+ * promise as applying on acceptance. REJECTED is special: new returns apply
+ * nothing (show the promise as “not applied”), while a LEGACY row backfilled
+ * with debtApplied > 0 was already settled at creation and reads as applied.
+ */
+export function debtOffsetDisplay(status: ReturnVoucher["status"], debtOffset: number, debtApplied: number) {
+  if (status === "ACCEPTED") {
+    return { labelKey: "returnsDebtOffsetApplied" as const, value: debtApplied };
+  }
+  if (status === "REJECTED_DAMAGED") {
+    return debtApplied > 0
+      ? { labelKey: "returnsDebtOffsetApplied" as const, value: debtApplied }
+      : { labelKey: "returnsDebtOffsetNotApplied" as const, value: debtOffset };
+  }
+  return { labelKey: "returnsDebtOffsetPending" as const, value: debtOffset };
 }

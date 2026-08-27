@@ -305,6 +305,12 @@ const resources = {
       returnsSplitCustom: "تقسيم مخصص",
       returnsCashNow: "نقداً الآن",
       returnsDebtOffset: "خصم من الدين",
+      // issue #68: the returns card shows the debt label by review state — a
+      // PENDING return's deduction applies only when the owner accepts the goods
+      returnsDebtOffsetPending: "خصم من الدين (عند القبول)",
+      returnsDebtOffsetApplied: "خصم من الدين (مطبّق)",
+      returnsDebtOffsetNotApplied: "خصم من الدين (لم يُطبّق)",
+      returnsDebtAppliesOnAccept: "خصم الدين يُطبّق عند قبول المرجوع — الفاتورة تبقى مدينة حتى ذلك الحين",
       returnsCashWarning: "تنبيه: المبلغ النقدي ({{paid}} دج المحصل في الفاتورة) يتجاوز ما حُصّل فعلاً — القرار لك",
       returnsInvalidCash: "أدخل مبلغاً نقدياً صحيحاً ضمن قيمة المرجوع",      returnsStatus: "الحالة",
       returnsStatus_PENDING_REVIEW: "قيد المراجعة",

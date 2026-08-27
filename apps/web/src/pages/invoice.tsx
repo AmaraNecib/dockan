@@ -442,6 +442,11 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               <span className="font-medium" data-testid="returns-cash-now">{settledCash} {t("dzd")}</span>
             </div>
           )}
+          {projectedDebt > 0 && (
+            <p className="text-xs text-stone-500" data-testid="returns-debt-note">
+              {t("returnsDebtAppliesOnAccept")}
+            </p>
+          )}
           {cashExceedsCollected && (
             <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="returns-cash-warning">
               {t("returnsCashWarning", { paid: invoice.paidAmount })}

@@ -66,6 +66,7 @@ function makeReturn(status: ReturnDetail["status"], overrides: Partial<ReturnDet
     refundAmount: 1700,
     cashPaidOut: 1700,
     debtOffset: 0,
+    debtApplied: 0,
     payoutMethod: "CASH",
     reason: null,
     status,
@@ -180,5 +181,28 @@ describe("ReturnsReviewList (accept / reject review flow)", () => {
     expect(row.textContent).toContain("قيد المراجعة");
     expect(row.textContent).toContain("1700 دج");
     expect(host.querySelector('[data-testid="returns-print-RTN-0001"]')).toBeTruthy();
+  });
+
+  it("labels the debt portion by review state (#68): pending reads as on-acceptance", () => {
+    renderList([makeReturn("PENDING_REVIEW", { debtOffset: 300, cashPaidOut: 1400 })]);
+    const row = host.querySelector('[data-testid="returns-review-RTN-0001"]')!;
+    // the pending card must not claim the deduction is already applied
+    expect(row.textContent).toContain("خصم من الدين (عند القبول)");
+    expect(row.textContent).toContain("300 دج");
+  });
+
+  it("labels an accepted return with the APPLIED amount and a rejected one as not applied (#68)", () => {
+    // the accepted card must show debtApplied (what acceptance really relieved,
+    // possibly less than the recorded debtOffset after the accept-time cap)
+    renderList([
+      makeReturn("ACCEPTED", { returnNumber: "RTN-0002", debtOffset: 400, debtApplied: 250, cashPaidOut: 1300 }),
+      makeReturn("REJECTED_DAMAGED", { returnNumber: "RTN-0003", debtOffset: 400, cashPaidOut: 1300 }),
+    ]);
+    const accepted = host.querySelector('[data-testid="returns-review-RTN-0002"]')!;
+    const rejected = host.querySelector('[data-testid="returns-review-RTN-0003"]')!;
+    expect(accepted.textContent).toContain("خصم من الدين (مطبّق)");
+    expect(accepted.textContent).toContain("250 دج");
+    expect(accepted.textContent).not.toContain("400 دج");
+    expect(rejected.textContent).toContain("خصم من الدين (لم يُطبّق)");
   });
 });

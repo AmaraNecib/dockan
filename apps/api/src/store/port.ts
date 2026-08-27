@@ -169,6 +169,8 @@ export interface StorePort {
    * still covers the offset. Returns true when the debt moved, false when the
    * boundary was violated — the caller rolls the unit back in that case. */
   applyDebtOffsetToInvoice(invoiceId: string, amount: number): Promise<boolean>;
+  /** record how much of a return's promised debtOffset was actually applied (#68) */
+  setDebtApplied(returnId: string, amount: number): Promise<void>;
   /** consume the pending review tag on every movement a return created */
   setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">): Promise<void>;
   /** Record the review annotation on the return (the rejection note). */

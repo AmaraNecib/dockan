@@ -187,6 +187,20 @@ describe("items", () => {
     void catId;
   });
 
+  it("itemsList rows carry the category name next to categoryId (issue 67)", async () => {
+    const category = await client.categoriesCreate({ name: "قطع غيار" });
+    const created = await client.itemsCreate({
+      name: "فلتر هواء",
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 150,
+    });
+    const listed = await client.itemsList();
+    const row = listed.items.find((i) => i.id === created.id)!;
+    expect(row.categoryName).toBe("قطع غيار");
+    expect(row.categoryId).toBe(category.id);
+  });
+
   it("reports low stock only when on-hand is at or below the threshold", async () => {
     const categories = await client.categoriesList();
     const created = await client.itemsCreate({

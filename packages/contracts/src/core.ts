@@ -803,6 +803,11 @@ export const lowStockOutputSchema = z.object({
   items: z.array(itemSchema),
 });
 
+/** item rows as returned by listItems: the owning category's display name
+ * comes pre-joined so the UI never renders the raw categoryId (issue 67). */
+export const itemListItemSchema = itemSchema.extend({ categoryName: z.string().nullable() });
+export const itemListOutputSchema = z.object({ items: z.array(itemListItemSchema) });
+
 export const activityListOutputSchema = z.object({
   items: z.array(activitySchema),
 });
@@ -860,6 +865,7 @@ export type CatalogMatch = z.infer<typeof catalogMatchSchema>;
 
 export type ItemCreate = z.infer<typeof itemCreateInputSchema>;
 export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;
+export type ItemListItem = z.infer<typeof itemListItemSchema>;
 export type PartyCreate = z.infer<typeof partyCreateInputSchema>;
 export type InvoiceCreate = z.infer<typeof invoiceCreateInputSchema>;
 export type InvoicePay = z.infer<typeof invoicePayInputSchema>;

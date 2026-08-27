@@ -100,8 +100,11 @@ as designed in #59.
 ## 3. UI copy changes (make the state legible)
 
 - Returns review card: status-aware debt label —
-  `PENDING_REVIEW` → «خصم من الدين (عند القبول)», `ACCEPTED` → «خصم من الدين (مطبّق)»,
-  `REJECTED_DAMAGED` → «خصم من الدين (لم يُطبّق)».
+  `PENDING_REVIEW` → «خصم من الدين (عند القبول)», `ACCEPTED` → «خصم من الدين (مطبّق)»
+  showing the amount really applied (`debtApplied`, possibly less than the recorded
+  promise after the accept-time cap), `REJECTED_DAMAGED` → «خصم من الدين (لم يُطبّق)»
+  with one exception: a LEGACY rejected row whose offset the migration backfilled as
+  applied reads as «مطبّق» (that debt relief happened pre-#68 and stays).
 - Invoice return panel: when a debt portion is projected, add a one-line note
   «خصم الدين يُطبّق عند قبول المرجوع» so the counter owner is not surprised that the invoice
   keeps its debt while pending.

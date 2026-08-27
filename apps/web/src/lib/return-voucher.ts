@@ -47,7 +47,8 @@ export interface ReturnVoucher {
  * Project a stored return record + store settings into a print-ready voucher.
  * Pure: no DOM, no i18n, no network — unit-testable without a renderer.
  */
-export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Settings): ReturnVoucher {  return {
+export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Settings): ReturnVoucher {
+  return {
     storeName: settings.storeName,
     storePhone: settings.storePhone,
     returnNumber: returnDetail.returnNumber,

@@ -374,4 +374,22 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("200");
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
   });
+
+  it("notes that the debt portion applies only on acceptance (#68)", () => {
+    // remaining debt 300 out of 500: an all-debt split on 1 unit projects a
+    // 300 debt portion — the panel must tell the counter owner the invoice
+    // keeps its debt until the return is accepted
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    act(() => {
+      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(select, "ALL_DEBT");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const note = host.querySelector('[data-testid="returns-debt-note"]');
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("300 دج");
+    expect(note?.textContent).toContain("عند قبول المرجوع");
+  });
 });

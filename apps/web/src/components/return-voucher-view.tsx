@@ -94,7 +94,7 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
           <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} {t("dzd")}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt>{t("returnsDebtOffset")}</dt>
+          <dt>{t(voucher.status === "ACCEPTED" ? "returnsDebtOffsetApplied" : voucher.status === "REJECTED_DAMAGED" ? "returnsDebtOffsetNotApplied" : "returnsDebtOffsetPending")}</dt>
           <dd data-testid="return-voucher-debt">{voucher.debtOffset} {t("dzd")}</dd>
         </div>
       </dl>

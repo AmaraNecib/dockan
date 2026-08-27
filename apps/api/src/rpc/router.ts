@@ -815,14 +815,10 @@ export function createRpcRouter(deps: RpcDeps) {
             const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
             await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           }
-          // the debt portion settles the invoice's live claim in the same
-          // unit; the conditional UPDATE is the authoritative guard. The read
-          // above already capped debtOffset at remainingAmount, so it never
-          // violates the boundary inside this serialized transaction (a
-          // second process would serialize behind BEGIN IMMEDIATE).
-          if (debtOffset > 0 && !(await tx.applyDebtOffsetToInvoice(invoice.id, debtOffset))) {
-            throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
-          }
+          // #68: the debt portion is NOT settled while the return is pending —
+          // the voucher records the owner's chosen split, but the invoice keeps
+          // its debt until the owner accepts the goods (a rejected return never
+          // relieves it). The ledger application moves to returnsAccept.
           await tx.insertActivity({
             type: "RETURN_RECORDED",
             // locale-neutral tokens: key + data; the activity ui translates
@@ -851,6 +847,21 @@ export function createRpcRouter(deps: RpcDeps) {
             throw new ORPCError("BAD_REQUEST", { message: "RETURN_NOT_PENDING" });
           }
           await tx.setReturnMarks(existing.id, "ACCEPTED");
+          // #68: the promised debt offset settles NOW, capped at the debt still
+          // owed — two pending returns recorded against the same debt can each
+          // carry the full promise, and the first acceptance shrinks it, so the
+          // second may only relieve what remains (it never pushes below zero).
+          // Only an ACCEPTED return relieves debt; a rejected one never does.
+          const acceptedInvoice = await tx.getInvoiceDetail(existing.invoiceId);
+          if (acceptedInvoice !== undefined && existing.debtOffset > 0) {
+            const applied = Math.min(existing.debtOffset, acceptedInvoice.remainingAmount);
+            // SAFETY: applied <= the read remaining, so the conditional UPDATE
+            // boundary can only be tripped by corruption; failing loudly then
+            // keeps the accept and the money visible instead of half-applying.
+            if (applied > 0 && !(await tx.applyDebtOffsetToInvoice(existing.invoiceId, applied))) {
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+            }
+          }
           await tx.insertActivity({
             type: "RETURN_REVIEWED",
             // locale-neutral tokens; the activity ui translates

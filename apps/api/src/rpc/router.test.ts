@@ -2398,7 +2398,7 @@ describe("returns & refunds", () => {
     expect((await client.returnsList({})).items.some((row) => row.id === created.id)).toBe(true);
   });
 
-  it("applies the exact parent scenario: old debt 1000, return 500, cash 200 / debt 300", async () => {
+  it("defers the debt offset to acceptance: old debt 1000, return 500, cash 200 / debt 300", async () => {
     const item = await makeReturnItem("مرجوع-مثال-الوالد", 100, 500);
     const item2 = await makeReturnItem("مرجوع-مثال-ثان", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
@@ -2413,6 +2413,13 @@ describe("returns & refunds", () => {
     expect(created.refundAmount).toBe(500);
     expect(created.cashPaidOut).toBe(200);
     expect(created.debtOffset).toBe(300);
+    expect(created.status).toBe("PENDING_REVIEW");
+    // #68: while PENDING the debt is untouched — the promised deduction is
+    // applied only when the owner accepts the return
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_000);
+
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.status).toBe("ACCEPTED");
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(700);
   });
 
@@ -2438,23 +2445,128 @@ describe("returns & refunds", () => {
     expect(created.refundAmount).toBe(500);
     expect(created.debtOffset).toBe(300); // capped at the remaining debt
     expect(created.cashPaidOut).toBe(200); // the excess flows to cash
+    // #68: the cap is recorded on the voucher; the ledger applies it at accept
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(300);
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.status).toBe("ACCEPTED");
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
   });
 
-  it("caps each return against the remaining debt AFTER previous offsets", async () => {
+  it("applies accepted offsets sequentially, capping each against the debt still owed (#68)", async () => {
     const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
     expect(sale.remainingAmount).toBe(2_000);
+    // all three returns are recorded while the debt is still 2000: each cap is
+    // 500, and NONE of them touches the invoice while pending (#68)
     const first = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
     expect(first.debtOffset).toBe(500);
-    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_500);
-    // second all-debt return is capped by the reduced debt
     const second = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
     expect(second.debtOffset).toBe(500);
     const third = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
     expect(third.debtOffset).toBe(500);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(2_000);
+
+    // each acceptance applies its own recorded offset against what is still owed
+    await client.returnsAccept({ returnId: first.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_500);
+    await client.returnsAccept({ returnId: second.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(1_000);
+    await client.returnsAccept({ returnId: third.id });
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+  });
+
+  it("keeps the debt on the debts page while a return is pending (#68 user scenario)", async () => {
+    const item = await makeReturnItem("مرجوع-قضية-68", 100, 500);
+    const item2 = await makeReturnItem("مرجوع-قضية-68-ب", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item2.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    // customer "test": INV total 10000, paid 5000 → remaining 5000
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyName: "test",
+      initialPaid: 5_000,
+      lines: [
+        { itemId: item.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 5_000 } },
+        { itemId: item2.id, quantity: 1, priceOverride: { type: "AMOUNT", value: 5_000 } },
+      ],
+    });
+    expect(sale.remainingAmount).toBe(5_000);
+
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      cashPaidOut: 5_000,
+      lines: [
+        { invoiceLineId: sale.lines[0]!.id, quantity: 1 },
+        { invoiceLineId: sale.lines[1]!.id, quantity: 1 },
+      ],
+    });
+    expect(created.status).toBe("PENDING_REVIEW");
+    expect(created.refundAmount).toBe(10_000);
+    expect(created.cashPaidOut).toBe(5_000);
+    expect(created.debtOffset).toBe(5_000);
+
+    // the debts page STILL lists the customer while the return is pending
+    const whilePending = await client.reportsDebts();
+    expect(whilePending.owedToUs.some((row) => (row.counterpartyName ?? row.counterpartyId) === "test" && row.remainingTotal === 5_000)).toBe(true);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(5_000);
+
+    // accepting applies the promised 5000 offset: the debt is now really zeroed
+    await client.returnsAccept({ returnId: created.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
+    expect((await client.reportsDebts()).owedToUs.some((row) => (row.counterpartyName ?? row.counterpartyId) === "test")).toBe(false);
+  });
+
+  it("a REJECTED return never applies its debt offset (#68)", async () => {
+    const item = await makeReturnItem("مرجوع-رفض-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyName: "test", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(500);
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
+    expect(created.debtOffset).toBe(500);
+
+    const rejected = await client.returnsReject({ returnId: created.id, reason: "كسر في العبوة" });
+    expect(rejected.status).toBe("REJECTED_DAMAGED");
+    // damaged goods: the promised deduction is cancelled, the customer still owes
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+    expect((await client.reportsDebts()).owedToUs.some((row) => (row.counterpartyName ?? row.counterpartyId) === "test")).toBe(true);
+  });
+
+  it("accepting an over-promised offset caps it at the debt still owed (#68)", async () => {
+    const item = await makeReturnItem("مرجوع-تجاوز-قبول", 100, 1_000);
+    const item2 = await makeReturnItem("مرجوع-تجاوز-قبول-ب", 100, 1_000);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item2.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    // two SALE lines of 2000 net each; two all-debt returns of 2000 against a
+    // single 2000 debt cannot both fully relieve it
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [
+        { itemId: item.id, quantity: 2, priceOverride: { type: "AMOUNT", value: 1_000 } },
+        { itemId: item2.id, quantity: 2, priceOverride: { type: "AMOUNT", value: 1_000 } },
+      ],
+    });
+    expect(sale.remainingAmount).toBe(4_000);
+    const first = await client.returnsCreate({
+      invoiceId: sale.id,
+      cashPaidOut: 0,
+      lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }],
+    });
+    const second = await client.returnsCreate({
+      invoiceId: sale.id,
+      cashPaidOut: 0,
+      lines: [{ invoiceLineId: sale.lines[1]!.id, quantity: 2 }],
+    });
+    expect(first.debtOffset).toBe(2_000);
+    expect(second.debtOffset).toBe(2_000);
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(4_000);
+
+    // accepting the first applies its full offset; the second is capped to the
+    // remaining 2000 and never pushes the debt below zero
+    await client.returnsAccept({ returnId: first.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(2_000);
+    await client.returnsAccept({ returnId: second.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
   });
 
   it("refuses a cash portion larger than the return value", async () => {

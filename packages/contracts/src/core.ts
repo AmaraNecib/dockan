@@ -440,6 +440,12 @@ export const returnSchema = z.object({
   cashPaidOut: dinarsSchema,
   /** deducted from the invoice's remaining debt (whole DZD) */
   debtOffset: dinarsSchema,
+  /** portion of the recorded debtOffset already applied to the invoice
+   * (whole DZD). Pre-#68 returns were applied in full at creation; #68 defers
+   * the application to acceptance, so new returns carry 0 until the owner
+   * accepts. Applying never exceeds debtOffset, and the ledger reads this to
+   * avoid double-relief when a legacy and a new return mix. */
+  debtApplied: dinarsSchema,
   payoutMethod: returnPayoutMethodSchema,
   /** Arabic owner note; rejection reasons ride here too */
   reason: z.string().max(500).nullable(),

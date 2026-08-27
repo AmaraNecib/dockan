@@ -406,6 +406,57 @@ describe("barcodes (ticket 28)", () => {
     }
   });
 
+  it("migrates a pre-#68 returns table: adds debt_applied and marks legacy rows fully applied", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-legacy-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      // the pre-#68 shape: settles the debt at creation, has cash_paid_out /
+      // debt_offset but no debt_applied — a PENDING return with a 5000 offset
+      // that was ALREADY applied to the invoice by the old code
+      legacy.raw.exec(
+        "CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "CREATE TABLE returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL, refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "INSERT INTO invoices VALUES ('legacy-inv', 'INV-LEGACY', 'SALE', NULL, 'قديم', '2026-01-01', 10000, 5000, 5000, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+      );
+      legacy.raw.exec(
+        "INSERT INTO returns VALUES ('legacy-ret', 'RTN-LEGACY', 'legacy-inv', 10000, 5000, 5000, 'CASH', NULL, 'PENDING_REVIEW', '2026-01-01T10:00:00', '2026-01-01T10:00:00', '2026-01-01T10:00:00')",
+      );
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const cols = legacy.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toContain("debt_applied");
+      // the backfill marks the legacy row as fully applied, so the new accept
+      // path (debtOffset − debtApplied) can never double-relieve the invoice
+      const migrated = await legacyStore.getReturnDetail("legacy-ret");
+      expect(migrated?.debtOffset).toBe(5_000);
+      expect(migrated?.debtApplied).toBe(5_000);
+
+      // re-running setup is idempotent (ALTER + backfill do not fire again)
+      await legacyStore.setup();
+      const again = await legacyStore.getReturnDetail("legacy-ret");
+      expect(again?.debtApplied).toBe(5_000);
+    } finally {
+      legacy.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(legacyDir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
   it("heals an interrupted sale-column migration on the next setup (schema present, backfill not applied)", async () => {
     const interruptedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-interrupted-"));
     const interrupted = openConnection(

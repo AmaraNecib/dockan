@@ -36,6 +36,8 @@ export interface ReturnVoucher {
   cashPaidOut: number;
   /** deducted from the invoice's remaining debt */
   debtOffset: number;
+  /** portion of debtOffset already applied to the invoice (#68: acceptance applies it) */
+  debtApplied: number;
   reason: string | null;
   status: string;
   lines: ReturnVoucherLine[];
@@ -57,6 +59,7 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
     refundAmount: returnDetail.refundAmount,
     cashPaidOut: returnDetail.cashPaidOut,
     debtOffset: returnDetail.debtOffset,
+    debtApplied: returnDetail.debtApplied,
     reason: returnDetail.reason,
     status: returnDetail.status,
     lines: returnDetail.lines.map((line) => ({

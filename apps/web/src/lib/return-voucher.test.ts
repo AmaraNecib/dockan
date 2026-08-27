@@ -17,6 +17,7 @@ function makeReturn(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
     refundAmount: 1700,
     cashPaidOut: 1700,
     debtOffset: 0,
+    debtApplied: 0,
     payoutMethod: "CASH",
     reason: "الزبون بدل رأيه",
     status: "PENDING_REVIEW",

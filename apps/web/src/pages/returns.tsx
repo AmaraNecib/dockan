@@ -54,7 +54,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
                 {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} {t("dzd")}
               </p>
               <p className="text-xs text-stone-500">
-                {t("returnsCashNow")}: {record.cashPaidOut} {t("dzd")} — {t(record.status === "ACCEPTED" ? "returnsDebtOffsetApplied" : record.status === "REJECTED_DAMAGED" ? "returnsDebtOffsetNotApplied" : "returnsDebtOffsetPending")}: {record.debtOffset} {t("dzd")}
+                {t("returnsCashNow")}: {record.cashPaidOut} {t("dzd")} — {t(record.status === "ACCEPTED" ? "returnsDebtOffsetApplied" : record.status === "REJECTED_DAMAGED" ? "returnsDebtOffsetNotApplied" : "returnsDebtOffsetPending")}: {record.status === "ACCEPTED" ? record.debtApplied : record.debtOffset} {t("dzd")}
               </p>
               <p className="text-sm text-stone-500">
                 {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}

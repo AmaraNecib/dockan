@@ -212,6 +212,7 @@ const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; i
     refundAmount: r.refundAmount,
     cashPaidOut: r.cashPaidOut,
     debtOffset: r.debtOffset,
+    debtApplied: r.debtApplied,
     payoutMethod: r.payoutMethod,
     reason: r.reason,
     status: r.status,
@@ -463,6 +464,17 @@ export function createDrizzleStore(conn: Connection): StorePort {
     }
     if (rows.length > 0) {
       conn.raw.exec("UPDATE returns SET cash_paid_out = refund_amount WHERE cash_paid_out = 0 AND debt_offset = 0 AND refund_amount > 0");
+    }
+    // #68: the app_lied portion. Legacy (pre-fix) rows had their ENTIRE
+    // debtOffset applied at creation — the old code settled the debt in the
+    // same unit as the insert and never reverted it on accept/reject — so the
+    // backfill marks every existing row as fully applied. New rows are created
+    // with debt_applied = 0 and gain their portion on acceptance. This is what
+    // lets returnsAccept apply min(debtOffset − debtApplied, remaining) and
+    // never double-relieve a debt that was already settled pre-fix.
+    if (rows.length > 0 && !names.has("debt_applied")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN debt_applied INTEGER NOT NULL DEFAULT 0");
+      conn.raw.exec("UPDATE returns SET debt_applied = debt_offset");
     }
   };
 
@@ -963,6 +975,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
             refundAmount: input.refundAmount,
             cashPaidOut: input.cashPaidOut,
             debtOffset: input.debtOffset,
+            debtApplied: 0,
             payoutMethod: input.payoutMethod,
             reason: input.reason ?? null,
             status: input.status,
@@ -1004,6 +1017,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
           refundAmount: returns.refundAmount,
           cashPaidOut: returns.cashPaidOut,
           debtOffset: returns.debtOffset,
+          debtApplied: returns.debtApplied,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,
@@ -1043,6 +1057,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
           refundAmount: returns.refundAmount,
           cashPaidOut: returns.cashPaidOut,
           debtOffset: returns.debtOffset,
+          debtApplied: returns.debtApplied,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,
@@ -1102,6 +1117,13 @@ export function createDrizzleStore(conn: Connection): StorePort {
         .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
         .run(amount, now(), invoiceId, amount);
       return Number(result.changes) > 0;
+    },
+    /** Record how much of a return's promised debtOffset was actually applied
+     * (#68). Written in the same unit as the accept, so the review card and
+     * voucher can show the real relieved amount, and a later re-review never
+     * double-relieves (the refund math reads debtOffset − debtApplied). */
+    async setDebtApplied(returnId: string, amount: number) {
+      await db.update(returns).set({ debtApplied: amount, updatedAt: now() }).where(eq(returns.id, returnId)).run();
     },
     /** Consume the pending review tag on every movement a return created. The
      * flat ledger facts stay untouched; only the review tag transitions. */

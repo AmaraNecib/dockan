@@ -113,6 +113,7 @@ function returnRecord(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
     refundAmount: 900,
     cashPaidOut: 900,
     debtOffset: 0,
+    debtApplied: 0,
     payoutMethod: "CASH",
     reason: null,
     status: "PENDING_REVIEW",
@@ -389,7 +390,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     });
     const note = host.querySelector('[data-testid="returns-debt-note"]');
     expect(note).toBeTruthy();
-    expect(note?.textContent).toContain("300 دج");
     expect(note?.textContent).toContain("عند قبول المرجوع");
+    expect(note?.textContent).toContain("تبقى مدينة");
   });
 });

@@ -852,14 +852,22 @@ export function createRpcRouter(deps: RpcDeps) {
           // carry the full promise, and the first acceptance shrinks it, so the
           // second may only relieve what remains (it never pushes below zero).
           // Only an ACCEPTED return relieves debt; a rejected one never does.
+          // debtOffset − debtApplied skips the portion that was already settled
+          // at creation by pre-#68 builds, so an upgrade can never double-relieve.
           const acceptedInvoice = await tx.getInvoiceDetail(existing.invoiceId);
-          if (acceptedInvoice !== undefined && existing.debtOffset > 0) {
-            const applied = Math.min(existing.debtOffset, acceptedInvoice.remainingAmount);
-            // SAFETY: applied <= the read remaining, so the conditional UPDATE
-            // boundary can only be tripped by corruption; failing loudly then
-            // keeps the accept and the money visible instead of half-applying.
-            if (applied > 0 && !(await tx.applyDebtOffsetToInvoice(existing.invoiceId, applied))) {
-              throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+          if (acceptedInvoice !== undefined) {
+            const stillPromised = Math.max(0, existing.debtOffset - existing.debtApplied);
+            const applied = Math.min(stillPromised, acceptedInvoice.remainingAmount);
+            // SAFETY: the read happens inside this BEGIN IMMEDIATE unit and
+            // applied <= remaining, so the conditional UPDATE boundary can only
+            // be tripped by corruption — the whole unit would then roll back,
+            // which is why the reviewer-visible state stays consistent.
+            if (applied > 0) {
+              if (!(await tx.applyDebtOffsetToInvoice(existing.invoiceId, applied))) {
+                throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+              }
+              const totalApplied = existing.debtApplied + applied;
+              await tx.setDebtApplied(existing.id, totalApplied);
             }
           }
           await tx.insertActivity({

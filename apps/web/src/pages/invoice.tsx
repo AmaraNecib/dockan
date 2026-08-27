@@ -444,7 +444,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           )}
           {projectedDebt > 0 && (
             <p className="text-xs text-stone-500" data-testid="returns-debt-note">
-              {t("returnsDebtAppliesOnAccept", { debt: projectedDebt })}
+              {t("returnsDebtAppliesOnAccept")}
             </p>
           )}
           {cashExceedsCollected && (

@@ -2527,6 +2527,7 @@ describe("returns & refunds", () => {
 
     const rejected = await client.returnsReject({ returnId: created.id, reason: "كسر في العبوة" });
     expect(rejected.status).toBe("REJECTED_DAMAGED");
+    expect(rejected.debtApplied).toBe(0);
     // damaged goods: the promised deduction is cancelled, the customer still owes
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
     expect((await client.reportsDebts()).owedToUs.some((row) => (row.counterpartyName ?? row.counterpartyId) === "test")).toBe(true);

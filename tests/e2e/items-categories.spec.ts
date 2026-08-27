@@ -28,6 +28,8 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   await page.getByLabel("الاسم", { exact: true }).fill(`بطارية-${stamp}`);
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("350");
+  // tie the item to the category created above so the table shows its NAME
+  await page.getByLabel("التصنيف").selectOption({ label: `زيوت-${stamp}` });
   await expect(page.getByTestId("profit-preview")).toHaveText("الربح لكل وحدة: 150 دج");
 
   await page.getByRole("button", { name: "حفظ" }).click();
@@ -35,6 +37,7 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   // 3. The item appears in the list with a low badge (stock 0 <= threshold 5)
   const batteryRow = page.getByRole("row", { name: new RegExp(`بطارية-${stamp}`) });
   await expect(batteryRow).toBeVisible();
+  await expect(batteryRow).toContainText(`زيوت-${stamp}`); // category NAME, not a UUID
   await expect(batteryRow.getByText("منخفض")).toBeVisible();
 
   // 4. The dashboard lists it under low stock

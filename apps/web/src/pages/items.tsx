@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Link } from "@tanstack/react-router";
-import type { Item, ItemCreate } from "@dokan/contracts";
+import type { ItemListItem, ItemCreate } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -412,7 +412,7 @@ function ItemList() {
         </tr>
       </thead>
       <tbody>
-        {items.data?.items.map((item: Item) => (
+        {items.data?.items.map((item: ItemListItem) => (
           <tr key={item.id} className="border-b last:border-0">
             <td className="p-3">{item.name}</td>
             <td className="p-3">
@@ -424,7 +424,7 @@ function ItemList() {
                 "—"
               )}
             </td>
-            <td className="p-3">{item.categoryId}</td>
+            <td className="p-3">{item.categoryName ?? "—"}</td>
             <td className="p-3">{item.costPrice}</td>
             <td className="p-3">{item.sellingPrice}</td>
             <td className="p-3">{item.sellingPrice - item.costPrice}</td>

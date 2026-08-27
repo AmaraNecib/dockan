@@ -12,6 +12,7 @@ import type {
   InvoiceListFilters,
   Item,
   ItemCreate,
+  ItemListItem,
   ItemUpdate,
   PartyCreate,
   Payment,
@@ -99,7 +100,7 @@ export interface StorePort {
   listCategories(): Promise<Category[]>;
   createCategory(input: { name: string }): Promise<Category>;
 
-  listItems(): Promise<Item[]>;
+  listItems(): Promise<ItemListItem[]>;
   listLowStockItems(): Promise<Item[]>;
   getItemsByIds(ids: string[]): Promise<Map<string, Item>>;
   /** exact normalized-barcode lookup; undefined when no item carries it */

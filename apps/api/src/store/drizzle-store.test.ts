@@ -259,6 +259,20 @@ describe("categories", () => {
 });
 
 describe("items", () => {
+  it("listItems carries the category name next to categoryId (issue 67)", async () => {
+    const category = await store.createCategory({ name: "سوائل محركات" });
+    const item = await store.createItem({
+      name: "زيت مكينة 5w30",
+      categoryId: category.id,
+      costPrice: 500,
+      sellingPrice: 600,
+    });
+    const listed = await store.listItems();
+    const row = listed.find((i) => i.id === item.id)!;
+    expect(row.categoryName).toBe("سوائل محركات");
+    expect(row.categoryId).toBe(category.id);
+  });
+
   it("creates with stock 0 and default threshold, updates, low-stock list", async () => {
     const cats = await store.listCategories();
     const categoryId = cats[0]!.id;

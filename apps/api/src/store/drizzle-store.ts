@@ -653,7 +653,11 @@ export function createDrizzleStore(conn: Connection): StorePort {
 
     // --- items ---------------------------------------------------------------
     async listItems() {
-      return db.select(itemCols).from(items).orderBy(items.name);
+      return db
+        .select({ ...itemCols, categoryName: categories.name })
+        .from(items)
+        .leftJoin(categories, eq(items.categoryId, categories.id))
+        .orderBy(items.name);
     },
     async listLowStockItems() {
       return db.select(itemCols).from(items).where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`).orderBy(items.stockOnHand, items.name);

@@ -26,6 +26,7 @@ import {
   invoicePayInputSchema,
   itemCreateInputSchema,
   itemCreateWithStockInputSchema,
+  itemListOutputSchema,
   itemSchema,
   itemUpdateInputSchema,
   itemHistoryOutputSchema,
@@ -69,7 +70,7 @@ export const dokanContract = {
   categoriesCreate: oc.input(categoryCreateInputSchema).output(categorySchema),
 
   // --- items ---------------------------------------------------------------
-  itemsList: oc.output(z.object({ items: z.array(itemSchema) })),
+  itemsList: oc.output(itemListOutputSchema),
   itemsCreate: oc.input(itemCreateInputSchema).output(itemSchema),
   itemsCreateWithStock: oc.input(itemCreateWithStockInputSchema).output(itemSchema),
   itemsUpdate: oc.input(itemUpdateInputSchema).output(itemSchema),

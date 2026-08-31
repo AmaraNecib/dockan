@@ -121,7 +121,7 @@ export function ExpensesPage() {
     <section data-testid="expenses-page">
       <h1 className="text-xl font-bold">{t("expensesTitle")}</h1>
 
-      <form className="mt-4 grid gap-4 rounded border bg-white p-4" onSubmit={submit} data-testid="expense-form">
+      <form className="mt-4 grid gap-4 rounded border bg-card p-4" onSubmit={submit} data-testid="expense-form">
         <h2 className="font-semibold">{t("expensesRecordTitle")}</h2>
         <div className="grid grid-cols-2 gap-3">
           <label className="grid gap-1">
@@ -150,17 +150,17 @@ export function ExpensesPage() {
           </label>
         </div>
         <div className="flex items-center gap-3">
-          <button type="submit" className="rounded-lg bg-stone-900 px-4 py-2 text-white disabled:opacity-50" disabled={createExpense.isPending} data-testid="expense-save">
+          <button type="submit" className="rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" disabled={createExpense.isPending} data-testid="expense-save">
             {t("expenseSave")}
           </button>
           {saved && <span className="text-sm text-green-700" data-testid="expense-saved">{t("expenseSaved")}</span>}
         </div>
-        {error && <p className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" role="alert" data-testid="expense-error">{error}</p>}
+        {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
       </form>
 
       <div className="mt-6 grid gap-4">
         <h2 className="font-semibold">{t("expensesHistoryTitle")}</h2>
-        <div className="grid gap-3 rounded border bg-white p-4" data-testid="expense-filters">
+        <div className="grid gap-3 rounded border bg-card p-4" data-testid="expense-filters">
           <div className="grid grid-cols-3 gap-3">
             <label className="grid gap-1">
               {t("expensesRange")}
@@ -198,7 +198,7 @@ export function ExpensesPage() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              className={`rounded-full border px-3 py-1 text-sm ${selectedCategoryIds.size === 0 ? "bg-stone-900 text-white" : "bg-white text-stone-700"}`}
+              className={`rounded-full border px-3 py-1 text-sm ${selectedCategoryIds.size === 0 ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
               onClick={() => setSelectedCategoryIds(new Set())}
               data-testid="expense-filter-all"
             >
@@ -210,7 +210,7 @@ export function ExpensesPage() {
                 <button
                   key={category.id}
                   type="button"
-                  className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-stone-900 text-white" : "bg-white text-stone-700"}`}
+                  className={`rounded-full border px-3 py-1 text-sm ${active ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
                   onClick={() => toggleCategory(category.id)}
                   data-testid={`expense-filter-${category.id}`}
                 >
@@ -222,13 +222,13 @@ export function ExpensesPage() {
         </div>
 
         {history.isPending ? (
-          <p className="rounded border bg-white p-4 text-stone-500" data-testid="expenses-loading">{t("expensesLoading")}</p>
+          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
         ) : history.data === undefined || history.data.items.length === 0 ? (
-          <p className="rounded border bg-white p-4 text-stone-500" data-testid="expenses-empty">{t("expensesEmpty")}</p>
+          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-empty">{t("expensesEmpty")}</p>
         ) : (
-          <table className="w-full rounded border bg-white" data-testid="expense-history">
+          <table className="w-full rounded border bg-card" data-testid="expense-history">
             <thead>
-              <tr className="border-b text-right text-sm text-stone-500">
+              <tr className="border-b text-right text-sm text-muted-foreground">
                 <th className="p-3">{t("expenseColDate")}</th>
                 <th className="p-3">{t("expenseColCategory")}</th>
                 <th className="p-3">{t("expenseColNote")}</th>
@@ -241,12 +241,12 @@ export function ExpensesPage() {
                 const withdrawal = category?.isOwnerWithdrawal === true;
                 return (
                   <tr key={entry.id} className={`border-b last:border-0 ${withdrawal ? "bg-amber-50" : ""}`} data-testid="expense-row">
-                    <td className="p-3 text-sm whitespace-nowrap text-stone-600" dir="ltr">{entry.occurredAt}</td>
+                    <td className="p-3 text-sm whitespace-nowrap text-muted-foreground" dir="ltr">{entry.occurredAt}</td>
                     <td className="p-3">
                       {category?.name ?? entry.categoryId.slice(0, 8)}
                       {withdrawal && <span className="mr-2 rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900">{t("expensesWithdrawalBadge")}</span>}
                     </td>
-                    <td className="p-3 text-sm text-stone-600" data-testid="expense-row-note">{entry.note ?? "—"}</td>
+                    <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
                     <td className="p-3 font-semibold">{entry.amount} دج</td>
                   </tr>
                 );

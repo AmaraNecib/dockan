@@ -64,7 +64,7 @@ export function StockForm() {
   }
 
   return (
-    <form className="mt-4 grid gap-3 rounded border bg-white p-4" onSubmit={submit} data-testid="stock-form">
+    <form className="mt-4 grid gap-3 rounded border bg-card p-4" onSubmit={submit} data-testid="stock-form">
       <h2 className="font-semibold">{t("stockAddTitle")}</h2>
       <label className="grid gap-1">
         {t("stockItem")}
@@ -98,7 +98,7 @@ export function StockForm() {
         <input className="rounded border px-3 py-2" value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
       {error && (
-        <p className="text-sm text-red-600" data-testid="stock-error">
+        <p className="text-sm text-destructive" data-testid="stock-error">
           {error}
         </p>
       )}
@@ -107,7 +107,7 @@ export function StockForm() {
           {t("stockAdded")}
         </p>
       )}
-      <button className="rounded-lg bg-stone-900 py-2 text-white" type="submit" disabled={adjust.isPending}>
+      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={adjust.isPending}>
         {t("stockAddBtn")}
       </button>
     </form>
@@ -141,23 +141,23 @@ export function ItemHistoryPage() {
 
   return (
     <section>
-      <Link to="/items" className="text-sm text-stone-600 hover:text-stone-900">
+      <Link to="/items" className="text-sm text-muted-foreground hover:text-foreground">
         ← {t("historyBack")}
       </Link>
       <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}</h1>
 
       {history.isPending || !history.data ? (
-        <div className="mt-4 grid gap-3 rounded border bg-white p-3">
+        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
       ) : history.data.movements.length === 0 ? (
-        <p className="mt-4 rounded border bg-white p-3 text-stone-500">{t("historyEmpty")}</p>
+        <p className="mt-4 rounded border bg-card p-3 text-muted-foreground">{t("historyEmpty")}</p>
       ) : (
-        <table className="mt-4 w-full rounded border bg-white" data-testid="history-table">
+        <table className="mt-4 w-full rounded border bg-card" data-testid="history-table">
           <thead>
-            <tr className="border-b text-right text-sm text-stone-500">
+            <tr className="border-b text-right text-sm text-muted-foreground">
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("historyKind")}</th>
               <th className="p-3">{t("historyDelta")}</th>
@@ -172,13 +172,13 @@ export function ItemHistoryPage() {
                 <td className="p-3">
                   {kindLabel(t, movement.kind)}
                   {movement.reason === "opening" && (
-                    <span className="mr-2 text-xs text-stone-500">({t("historyOpening")})</span>
+                    <span className="mr-2 text-xs text-muted-foreground">({t("historyOpening")})</span>
                   )}
                   {movement.reason !== null && movement.reason !== "opening" && (
-                    <span className="mr-2 text-xs text-stone-500">({movementReasonText(t, movement.reason)})</span>
+                    <span className="mr-2 text-xs text-muted-foreground">({movementReasonText(t, movement.reason)})</span>
                   )}
                 </td>
-                <td className={`p-3 ${movement.delta > 0 ? "text-green-700" : "text-red-700"}`}>
+                <td className={`p-3 ${movement.delta > 0 ? "text-green-700" : "text-destructive"}`}>
                   {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
                 </td>
                 <td className="p-3">{movement.unitCost ?? "—"}</td>

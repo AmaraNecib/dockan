@@ -6,6 +6,7 @@ import type { Item } from "@dokan/contracts";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
+import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -133,7 +134,7 @@ export function PurchasePage() {
       <h1 className="text-xl font-bold">{t("purchasesTitle")}</h1>
 
       {savedInvoice && (
-        <div className="mt-4 rounded border bg-white p-4" data-testid="purchase-saved">
+        <div className="mt-4 rounded border bg-card p-4" data-testid="purchase-saved">
           <InvoiceHeader />
           <p className="mt-2 font-semibold text-green-700" data-testid="purchase-saved-number">
             {t("purchasesSaved", { number: savedInvoice.invoiceNumber })}
@@ -147,7 +148,7 @@ export function PurchasePage() {
 
       {!savedInvoice && (
         <div className="mt-4 grid gap-4" data-testid="purchase-form">
-          <div className="grid gap-3 rounded border bg-white p-4">
+          <div className="grid gap-3 rounded border bg-card p-4">
             <label className="grid gap-1">
               {t("purchasesSupplier")}
               <input className="rounded border px-3 py-2" value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="purchase-supplier" />
@@ -164,11 +165,11 @@ export function PurchasePage() {
             </div>
           </div>
 
-          <div className="grid gap-3 rounded border bg-white p-4">
+          <div className="grid gap-3 rounded border bg-card p-4">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">{t("purchasesLinesTitle")}</h2>
               <div className="flex gap-2">
-                <button type="button" className="rounded-lg bg-stone-900 px-3 py-1.5 text-sm text-white" onClick={() => setPickerOpen(true)} data-testid="purchase-open-picker">
+                <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={() => setPickerOpen(true)} data-testid="purchase-open-picker">
                   {t("purchasesAddItem")}
                 </button>
                 <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={() => setQuickOpen((open) => !open)} data-testid="purchase-toggle-quick">
@@ -179,7 +180,7 @@ export function PurchasePage() {
 
             {quickOpen && (
               <form
-                className="grid gap-3 rounded border bg-stone-50 p-3"
+                className="grid gap-3 rounded bg-accent p-3"
                 // SAFETY: preventDefault keeps the SPA from native-posting;
                 // stopPropagation keeps the event away from any wrapper form
                 onSubmit={(e) => {
@@ -224,18 +225,18 @@ export function PurchasePage() {
                     <input className="rounded border px-3 py-2" required inputMode="numeric" value={quickUnitCost} onChange={(e) => setQuickUnitCost(e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
-                <button className="rounded-lg bg-stone-900 py-2 text-white" type="submit" disabled={createItem.isPending}>
+                <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={createItem.isPending}>
                   {t("purchasesQuickAddBtn")}
                 </button>
               </form>
             )}
 
             {lines.length === 0 ? (
-              <p className="text-sm text-stone-500">{t("purchasesLinesEmpty")}</p>
+              <p className="text-sm text-muted-foreground">{t("purchasesLinesEmpty")}</p>
             ) : (
               <table className="w-full" data-testid="purchase-lines">
                 <thead>
-                  <tr className="border-b text-right text-sm text-stone-500">
+                  <tr className="border-b text-right text-sm text-muted-foreground">
                     <th className="p-2">{t("itemsName")}</th>
                     <th className="p-2">{t("purchasesLineQty")}</th>
                     <th className="p-2">{t("purchasesLineCost")}</th>
@@ -277,7 +278,7 @@ export function PurchasePage() {
                       </td>
                       <td className="p-2">{line.quantity * line.unitCost}</td>
                       <td className="p-2">
-                        <button type="button" className="text-red-600" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
+                        <button type="button" className="text-destructive" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
                           ✕
                         </button>
                       </td>
@@ -287,16 +288,16 @@ export function PurchasePage() {
               </table>
             )}
             <p className="text-left font-semibold" data-testid="purchase-total">
-              {t("purchasesTotal")}: {total} دج
+              {t("purchasesTotal")}: <Amount value={total} />
             </p>
           </div>
 
           {error && (
-            <p className="text-sm text-red-600" data-testid="purchase-error">
+            <p className="text-sm text-destructive" data-testid="purchase-error">
               {error}
             </p>
           )}
-          <button className="rounded-lg bg-stone-900 py-2 text-white" type="button" onClick={submit} disabled={createInvoice.isPending} data-testid="purchase-save">
+          <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="button" onClick={submit} disabled={createInvoice.isPending} data-testid="purchase-save">
             {t("purchasesSave")}
           </button>
         </div>
@@ -332,10 +333,10 @@ export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
   const linkable = (proposal.data?.items ?? []).filter((row) => row.proposedLinkQty > 0);
 
   return (
-    <div className="mt-3 rounded border bg-stone-50 p-3" data-testid="link-proposal">
+    <div className="mt-3 rounded bg-accent p-3" data-testid="link-proposal">
       <h3 className="font-semibold">{t("purchasesProposalTitle")}</h3>
       {proposal.isPending ? null : linkable.length === 0 ? (
-        <p className="mt-1 text-sm text-stone-500">{t("purchasesProposalEmpty")}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("purchasesProposalEmpty")}</p>
       ) : (
         <ul className="mt-2 grid gap-2">
           {linkable.map((row) => (
@@ -345,7 +346,7 @@ export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
               </span>
               <button
                 type="button"
-                className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white disabled:opacity-50"
+                className="rounded-lg bg-primary px-3 py-1 text-sm text-primary-foreground disabled:opacity-50"
                 disabled={link.isPending}
                 onClick={() => link.mutate({ invoiceId, allocations: [{ itemId: row.itemId, quantity: row.proposedLinkQty }] })}
               >

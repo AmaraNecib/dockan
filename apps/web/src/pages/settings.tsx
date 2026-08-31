@@ -51,11 +51,11 @@ export function SettingsPage() {
   return (
     <section>
       <h1 className="text-xl font-bold">{t("settingsTitle")}</h1>
-      <p className="mt-1 text-sm text-stone-600">{t("settingsHint")}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{t("settingsHint")}</p>
 
       {settings.isError ? (
         <div
-          className="mt-4 flex items-center justify-between rounded border bg-red-50 p-3 text-sm text-red-700"
+          className="mt-4 flex items-center justify-between rounded border bg-destructive/10 p-3 text-sm text-destructive"
           role="alert"
           data-testid="settings-get-error"
         >
@@ -65,14 +65,14 @@ export function SettingsPage() {
           </button>
         </div>
       ) : pending ? (
-        <div className="mt-4 grid gap-3 rounded border bg-white p-4">
+        <div className="mt-4 grid gap-3 rounded border bg-card p-4">
           {[0, 1].map((row) => (
             <Skeleton key={row} className="h-8 w-full" />
           ))}
         </div>
       ) : (
         <form
-          className="mt-4 grid gap-4 rounded border bg-white p-4"
+          className="mt-4 grid gap-4 rounded border bg-card p-4"
           onSubmit={(event) => {
             event.preventDefault();
             setMessage(null);
@@ -109,14 +109,14 @@ export function SettingsPage() {
             </p>
           )}
           {error && (
-            <p className="text-sm text-red-600" role="alert" data-testid="settings-error">
+            <p className="text-sm text-destructive" role="alert" data-testid="settings-error">
               {error}
             </p>
           )}
 
           <button
             type="submit"
-            className="rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50"
+            className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
             disabled={save.isPending}
             data-testid="settings-save"
           >

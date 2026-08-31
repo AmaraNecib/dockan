@@ -47,7 +47,7 @@ export default defineConfig({
     // crashing (the user is an accountant, not a developer)
     host: "127.0.0.1",
     port: Number(process.env.DOKAN_WEB_PORT ?? 5173),
-    strictPort: false,
+    strictPort: true,
     // same-origin API: the webview never talks to the Bun api directly,
     // so auth cookies stay same-origin and no CORS config is needed
     proxy: {

@@ -43,7 +43,7 @@ export function ReturnVoucherPrintPage() {
   }, [ready, returnId]);
 
   if (detail.isPending || settings.isPending) {
-    return <p className="text-sm text-stone-500" data-testid="return-voucher-loading">{t("expensesLoading")}</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="return-voucher-loading">{t("expensesLoading")}</p>;
   }
   if (detail.isError || settings.isError || detail.data === undefined || settings.data === undefined) {
     const detailError = detail.error instanceof Error ? detail.error.message : undefined;
@@ -51,7 +51,7 @@ export function ReturnVoucherPrintPage() {
     return (
       <section className="grid gap-4" data-testid="return-voucher-error">
         <h1 className="text-xl font-bold">{t("returnVoucherTitle")}</h1>
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="return-voucher-error-text">
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="return-voucher-error-text">
           {tError(detailError ?? settingsError)}
         </p>
         <Link to="/invoices/$invoiceId" params={{ invoiceId }} className="text-sm underline">
@@ -69,14 +69,14 @@ export function ReturnVoucherPrintPage() {
         <Link
           to="/invoices/$invoiceId"
           params={{ invoiceId }}
-          className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100"
+          className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
           data-testid="return-voucher-back"
         >
           {t("returnVoucherBack")}
         </Link>
         <button
           type="button"
-          className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
+          className="rounded-lg bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/80"
           onClick={() => {
             printTriggered.current = returnId;
             window.print();

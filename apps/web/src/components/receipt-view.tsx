@@ -15,33 +15,33 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
   const { t } = useTranslation();
 
   return (
-    <article dir="rtl" className="rounded border bg-white p-6" data-testid="receipt-view">
-      <header className="border-b border-stone-300 pb-3 text-center">
+    <article dir="rtl" className="rounded border bg-card p-6" data-testid="receipt-view">
+      <header className="border-b border-border pb-3 text-center">
         <h1 className="text-xl font-bold" data-testid="receipt-store">{receipt.storeName}</h1>
         {receipt.storePhone && (
-          <p dir="ltr" className="mt-1 text-sm text-stone-500" data-testid="receipt-phone">
+          <p dir="ltr" className="mt-1 text-sm text-muted-foreground" data-testid="receipt-phone">
             {receipt.storePhone}
           </p>
         )}
-        <p className="mt-1 text-sm text-stone-500">{t("invoiceKind")}: {t(`invoiceKind_${receipt.kind}`)}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("invoiceKind")}: {t(`invoiceKind_${receipt.kind}`)}</p>
       </header>
 
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("invoiceNumber")}</dt>
+          <dt className="text-muted-foreground">{t("invoiceNumber")}</dt>
           <dd dir="ltr" data-testid="receipt-number">{receipt.invoiceNumber}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("invoiceDate")}</dt>
+          <dt className="text-muted-foreground">{t("invoiceDate")}</dt>
           <dd dir="ltr" data-testid="receipt-date">{receipt.invoiceDate}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("invoiceParty")}</dt>
+          <dt className="text-muted-foreground">{t("invoiceParty")}</dt>
           <dd data-testid="receipt-party">{receipt.counterpartyName ?? "—"}</dd>
         </div>
         {receipt.notes && (
           <div className="flex justify-between border-b py-1">
-            <dt className="text-stone-500">{t("purchasesNotes")}</dt>
+            <dt className="text-muted-foreground">{t("purchasesNotes")}</dt>
             <dd data-testid="receipt-notes">{receipt.notes}</dd>
           </div>
         )}
@@ -52,7 +52,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
           <h2 className="mt-4 font-semibold">{t("invoiceLinesTitle")}</h2>
           <table className="mt-2 w-full text-sm">
             <thead>
-              <tr className="border-b text-right text-stone-500">
+              <tr className="border-b text-right text-muted-foreground">
                 <th className="p-1">{t("itemsName")}</th>
                 <th className="p-1">{t("saleQuantity")}</th>
                 <th className="p-1">{t("saleActualPrice")}</th>
@@ -75,11 +75,11 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
 
       <dl className="receipt-totals mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("saleSubtotal")}</dt>
+          <dt className="text-muted-foreground">{t("saleSubtotal")}</dt>
           <dd data-testid="receipt-subtotal">{receipt.subtotalAmount} دج</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("saleDiscount")}</dt>
+          <dt className="text-muted-foreground">{t("saleDiscount")}</dt>
           <dd data-testid="receipt-discount">{receipt.discountAmount > 0 ? `-${receipt.discountAmount}` : "0"} دج</dd>
         </div>
         <div className="flex justify-between border-b py-1 font-semibold">
@@ -97,13 +97,13 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
       </dl>
 
       {receipt.payments.length === 0 ? (
-        <p className="mt-4 text-sm text-stone-500" data-testid="receipt-payments-empty">{t("pmtEmpty")}</p>
+        <p className="mt-4 text-sm text-muted-foreground" data-testid="receipt-payments-empty">{t("pmtEmpty")}</p>
       ) : (
         <section className="mt-4">
           <h2 className="font-semibold">{t("pmtTitle")}</h2>
           <table className="mt-2 w-full text-sm">
             <thead>
-              <tr className="border-b text-right text-stone-500">
+              <tr className="border-b text-right text-muted-foreground">
                 <th className="p-1">{t("pmtDate")}</th>
                 <th className="p-1">{t("pmtAmount")}</th>
                 <th className="p-1">{t("pmtMethod")}</th>
@@ -116,7 +116,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
                   <td className="p-1" dir="ltr">{payment.paidAt}</td>
                   <td className="p-1">{payment.amount} دج</td>
                   <td className="p-1">{t(`pmtMethod_${payment.method}`)}</td>
-                  <td className="p-1 text-stone-500">{payment.note ?? "—"}</td>
+                  <td className="p-1 text-muted-foreground">{payment.note ?? "—"}</td>
                 </tr>
               ))}
             </tbody>

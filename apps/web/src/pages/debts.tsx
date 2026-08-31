@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { DebtSummary } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Amount } from "@/components/ui/amount";
 
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
@@ -47,31 +48,31 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
         data-testid="debts-person"
         aria-expanded={expanded}
         aria-controls={`${groupLabel}-${partyId(signature)}-invoices`}
-        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-right hover:bg-stone-50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-stone-400"
+        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-right hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring"
         onClick={onToggle}
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
-        <span className="text-sm text-stone-500" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
-        <span className="font-semibold" data-testid="debts-person-total">{row.remainingTotal} دج</span>
-        <span className="text-xs text-stone-400" aria-hidden="true">{expanded ? "▲" : "▼"}</span>
+        <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
+        <span className="font-semibold" data-testid="debts-person-total"><Amount value={row.remainingTotal} /></span>
+        <span className="text-xs text-muted-foreground/60" aria-hidden="true">{expanded ? "▲" : "▼"}</span>
       </button>
 
       {expanded && (
-        <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-stone-50 px-4 py-3">
-          <h3 className="text-sm font-semibold text-stone-600">{t("debtsInvoicesTitle")}</h3>
+        <div id={`${groupLabel}-${partyId(signature)}-invoices`} className="border-t bg-accent px-4 py-3">
+          <h3 className="text-sm font-semibold text-muted-foreground">{t("debtsInvoicesTitle")}</h3>
           {invoices.isPending ? (
             <div className="mt-2 grid gap-2">
               <Skeleton className="h-6 w-full" />
               <Skeleton className="h-6 w-full" />
             </div>
           ) : invoices.isError ? (
-            <p className="mt-2 text-sm text-red-600" role="alert">{tError(invoices.error.message)}</p>
+            <p className="mt-2 text-sm text-destructive" role="alert">{tError(invoices.error.message)}</p>
           ) : (invoices.data?.items ?? []).length === 0 ? (
-            <p className="mt-2 text-sm text-stone-500">{t("debtsEmpty")}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{t("debtsEmpty")}</p>
           ) : (
             <table className="mt-2 w-full text-sm" data-testid="debts-invoices">
               <thead>
-                <tr className="border-b text-stone-500">
+                <tr className="border-b text-muted-foreground">
                   <th className="p-2 text-right font-medium">{t("debtsInvNumber")}</th>
                   <th className="p-2 text-right font-medium">{t("debtsInvDate")}</th>
                   <th className="p-2 text-right font-medium">{t("debtsInvTotal")}</th>
@@ -83,8 +84,8 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
                   <tr key={invoice.id} data-testid="debts-invoice-row">
                     <td className="p-2" dir="ltr">{invoice.invoiceNumber}</td>
                     <td className="p-2">{invoice.invoiceDate}</td>
-                    <td className="p-2">{invoice.totalAmount} دج</td>
-                    <td className="p-2 font-semibold">{invoice.remainingAmount} دج</td>
+                    <td className="p-2"><Amount value={invoice.totalAmount} /></td>
+                    <td className="p-2 font-semibold"><Amount value={invoice.remainingAmount} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -109,20 +110,20 @@ function DebtGroup({ title, rows, label, emptyLabel, openSignature, onToggle }: 
   const groupCount = rows.reduce((sum, row) => sum + row.invoiceCount, 0);
 
   return (
-    <section data-testid={label} aria-labelledby={`${label}-title`} className="rounded border bg-white">
+    <section data-testid={label} aria-labelledby={`${label}-title`} className="rounded border bg-card">
       <header className="flex items-baseline justify-between border-b px-4 py-3">
         <h2 id={`${label}-title`} className="font-semibold">{title}</h2>
         {rows.length > 0 && (
-          <p className="text-sm text-stone-500">
-            {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-stone-900">{groupTotal} دج</span>
+          <p className="text-sm text-muted-foreground">
+            {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={groupTotal} /></span>
             {" · "}
-            {t("debtsInvoiceCount")}: <span data-testid={`${label}-count`} className="font-semibold text-stone-900">{groupCount}</span>
+            {t("debtsInvoiceCount")}: <span data-testid={`${label}-count`} className="font-semibold text-foreground">{groupCount}</span>
           </p>
         )}
       </header>
 
       {rows.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-stone-500" data-testid={`${label}-empty`}>{emptyLabel}</p>
+        <p className="px-4 py-4 text-sm text-muted-foreground" data-testid={`${label}-empty`}>{emptyLabel}</p>
       ) : (
         <ul className="divide-y">
           {rows.map((row) => (
@@ -161,7 +162,7 @@ export function DebtsPage() {
           <Skeleton className="h-24 w-full" />
         </div>
       ) : debts.isError ? (
-        <p className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert">
+        <p className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive" role="alert">
           {tError(debts.error.message)}
         </p>
       ) : (

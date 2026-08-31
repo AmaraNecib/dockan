@@ -15,11 +15,11 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
   const debt = debtOffsetDisplay(voucher.status, voucher.debtOffset, voucher.debtApplied);
 
   return (
-    <article dir="rtl" className="rounded border bg-white p-6" data-testid="return-voucher-view">
-      <header className="border-b border-stone-300 pb-3 text-center">
+    <article dir="rtl" className="rounded border bg-card p-6" data-testid="return-voucher-view">
+      <header className="border-b border-border pb-3 text-center">
         <h1 className="text-xl font-bold" data-testid="return-voucher-store">{voucher.storeName}</h1>
         {voucher.storePhone && (
-          <p dir="ltr" className="mt-1 text-sm text-stone-500" data-testid="return-voucher-phone">
+          <p dir="ltr" className="mt-1 text-sm text-muted-foreground" data-testid="return-voucher-phone">
             {voucher.storePhone}
           </p>
         )}
@@ -28,32 +28,32 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
 
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("returnNumber")}</dt>
+          <dt className="text-muted-foreground">{t("returnNumber")}</dt>
           <dd dir="ltr" data-testid="return-voucher-number">{voucher.returnNumber}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("returnVoucherInvoice")}</dt>
+          <dt className="text-muted-foreground">{t("returnVoucherInvoice")}</dt>
           <dd dir="ltr" data-testid="return-voucher-invoice">{voucher.invoiceNumber}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("invoiceDate")}</dt>
+          <dt className="text-muted-foreground">{t("invoiceDate")}</dt>
           <dd dir="ltr" data-testid="return-voucher-date">{voucher.invoiceDate}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("invoiceParty")}</dt>
+          <dt className="text-muted-foreground">{t("invoiceParty")}</dt>
           <dd data-testid="return-voucher-party">{voucher.counterpartyName ?? "—"}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("returnsPayoutMethod")}</dt>
+          <dt className="text-muted-foreground">{t("returnsPayoutMethod")}</dt>
           <dd data-testid="return-voucher-method">{t(`pmtMethod_${voucher.payoutMethod}`)}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
-          <dt className="text-stone-500">{t("returnsStatus")}</dt>
+          <dt className="text-muted-foreground">{t("returnsStatus")}</dt>
           <dd data-testid="return-voucher-status">{t(`returnsStatus_${voucher.status}`)}</dd>
         </div>
         {voucher.reason && (
           <div className="flex justify-between border-b py-1 col-span-2">
-            <dt className="text-stone-500">{t("returnsReason")}</dt>
+            <dt className="text-muted-foreground">{t("returnsReason")}</dt>
             <dd data-testid="return-voucher-reason">{voucher.reason}</dd>
           </div>
         )}
@@ -64,7 +64,7 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
           <h2 className="mt-4 font-semibold">{t("returnVoucherLines")}</h2>
           <table className="mt-2 w-full text-sm" data-testid="return-voucher-lines">
             <thead>
-              <tr className="border-b text-right text-stone-500">
+              <tr className="border-b text-right text-muted-foreground">
                 <th className="p-1">{t("itemsName")}</th>
                 <th className="p-1">{t("saleQuantity")}</th>
                 <th className="p-1">{t("returnsRefundUnit")}</th>

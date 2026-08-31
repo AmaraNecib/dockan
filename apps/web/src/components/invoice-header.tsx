@@ -19,12 +19,12 @@ export function InvoiceHeader() {
   const settings = useQuery(orpc.settingsGet.queryOptions());
 
   return (
-    <header className="border-b border-stone-200 pb-2" data-testid="invoice-header">
+    <header className="border-b border-border pb-2" data-testid="invoice-header">
       {settings.isPending ? (
         <Skeleton className="h-5 w-40" data-testid="invoice-header-loading" />
       ) : settings.isError ? (
         <div role="alert" className="flex items-center justify-between gap-2" data-testid="invoice-header-error">
-          <span className="text-sm text-red-700">{t("activityError")}</span>
+          <span className="text-sm text-destructive">{t("activityError")}</span>
           <button
             type="button"
             className="text-sm underline"
@@ -38,7 +38,7 @@ export function InvoiceHeader() {
         <>
           <p className="font-bold">{settings.data.storeName}</p>
           {settings.data.storePhone && (
-            <p dir="ltr" className="text-sm text-stone-500">
+            <p dir="ltr" className="text-sm text-muted-foreground">
               {settings.data.storePhone}
             </p>
           )}

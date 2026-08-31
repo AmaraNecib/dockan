@@ -83,6 +83,7 @@ export type LogContext = {
   invoiceNumber?: string;
   itemName?: string;
   driver?: string;
+  storeName?: string;
 };
 
 export type LogEntry = {
@@ -129,7 +130,13 @@ export class AppLogger {
     // mirror non-info events to stdout so `bun run dev:api` shows them live
     if (entry.level !== "info") {
       // eslint-disable-next-line no-console -- dev mirroring
-      console[entry.level](`[${entry.ts}] ${entry.event}${entry.code ? ` (${entry.code})` : ""} ${entry.message}`);
+      const prefix = `[${entry.ts}] ${entry.event}${entry.code ? ` (${entry.code})` : ""}`;
+      if (entry.level === "error") {
+        console.error(`${prefix} \x1b[31m${entry.message}\x1b[0m`);
+        if (entry.stack) console.error(`  \x1b[90m${entry.stack.split("\n").slice(1, 4).join("\n  ")}\x1b[0m`);
+      } else {
+        console.warn(`${prefix} ${entry.message}`);
+      }
     }
   }
 

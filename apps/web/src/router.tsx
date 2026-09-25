@@ -36,7 +36,18 @@ const itemHistoryRoute = createRoute({
 const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/backups", component: BackupsPage });
 const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/activity", component: ActivityLogPage });
 const purchaseRoute = createRoute({ getParentRoute: () => rootRoute, path: "/purchase", component: PurchasePage });
-const saleRoute = createRoute({ getParentRoute: () => rootRoute, path: "/sale", component: SalePage });
+const saleRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/sale",
+  // The header "New Sale" action re-navigates here with an incrementing `fresh`
+  // token; remountDeps remounts SalePage when the token changes so the form (and
+  // any post-save confirmation) always starts clean instead of keeping a draft.
+  validateSearch: (search: Record<string, unknown>): { fresh?: number } => ({
+    fresh: typeof search.fresh === "number" ? search.fresh : undefined,
+  }),
+  remountDeps: ({ search }) => search.fresh,
+  component: SalePage,
+});
 const debtsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/debts", component: DebtsPage });
 const invoicesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices", component: InvoicesPage });
 const invoiceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices/$invoiceId", component: InvoicePage });

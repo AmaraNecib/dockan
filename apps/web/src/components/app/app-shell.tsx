@@ -99,11 +99,16 @@ export function AppShell() {
           <Button
             asChild
             data-testid="new-sale-button"
+            aria-label={t("saleNew")}
             className="gap-1.5"
           >
-            <Link to="/sale">
+            <Link
+              to="/sale"
+              replace={activeKey === "sale"}
+              search={(prev: { fresh?: number }) => ({ ...prev, fresh: (prev.fresh ?? 0) + 1 })}
+            >
               <ShoppingBag size={18} />
-              <span>{t("saleNew")}</span>
+              <span className="hidden sm:inline">{t("saleNew")}</span>
             </Link>
           </Button>
 

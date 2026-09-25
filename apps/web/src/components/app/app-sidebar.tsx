@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, UserRound } from "lucide-react";
@@ -8,6 +8,9 @@ import { NAV_GROUPS, type NavItem } from "./navigation";
 
 export const SIDEBAR_EXPANDED_WIDTH = 240;
 export const SIDEBAR_COLLAPSED_WIDTH = 64;
+
+/** Items of the collapsible group (the "System" cluster); used to keep it open while it holds the active route. */
+const COLLAPSIBLE_GROUP_ITEMS = NAV_GROUPS.find((group) => group.collapsible)?.items ?? [];
 
 export type ShellUser = {
   name: string | null;
@@ -43,7 +46,14 @@ interface AppSidebarProps {
 
 export function AppSidebar({ collapsed, activeKey, user, onExpand }: AppSidebarProps) {
   const { t } = useTranslation();
-  const [systemOpen, setSystemOpen] = useState(false);
+  const systemHasActive = activeKey !== null && COLLAPSIBLE_GROUP_ITEMS.some((item) => item.key === activeKey);
+  const [systemOpen, setSystemOpen] = useState(systemHasActive);
+
+  // Never hide the current page's link (and aria-current) behind the collapsed
+  // group: open it whenever the active route lives inside, including on load.
+  useEffect(() => {
+    if (systemHasActive) setSystemOpen(true);
+  }, [activeKey, systemHasActive]);
 
   return (
     <aside

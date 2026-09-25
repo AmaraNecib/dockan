@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { expectSelectOption } from "./select-helpers";
 
 /**
  * E2E smoke: real flows (category + item creation) land entries in
@@ -24,8 +25,7 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   await expect(page.getByText("سجل-تصنيف-12", { exact: true })).toBeVisible();
 
   await page.goto("/items");
-  const categoryOption = page.getByRole("combobox").locator("option", { hasText: "سجل-تصنيف-12" });
-  await expect(categoryOption).toHaveCount(1);
+  await expectSelectOption(page, page.getByLabel("التصنيف"), "سجل-تصنيف-12");
   await page.getByLabel("الاسم", { exact: true }).fill("سجل-منتج-12");
   await page.getByLabel("سعر الشراء (دج)").fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");

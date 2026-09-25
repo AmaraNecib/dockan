@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * E2E flow: create an item, add stock manually through the ledger,
@@ -36,7 +37,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
 
   // 2. record a manual stock-in of 6 units at 2000 DZD
   const stockForm = page.getByTestId("stock-form");
-  await stockForm.getByRole("combobox").selectOption({ label: "مكواة 27" });
+  await chooseSelectOption(page, stockForm.getByRole("combobox"), "مكواة 27");
   await page.getByTestId("stock-delta").fill("6");
   await stockForm.getByLabel("تكلفة الوحدة (دج)").fill("2000");
   await stockForm.getByRole("button", { name: "تسجيل" }).click();
@@ -60,7 +61,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
 
   // 5. overselling is rejected by the api with a translated error…
   await page.goto("/items");
-  await page.getByTestId("stock-form").getByRole("combobox").selectOption({ label: "مكواة 27" });
+  await chooseSelectOption(page, page.getByTestId("stock-form").getByRole("combobox"), "مكواة 27");
   await page.getByTestId("stock-delta").fill("-99");
   await page.getByTestId("stock-form").getByRole("button", { name: "تسجيل" }).click();
   await expect(page.getByTestId("stock-error")).toContainText("الكمية غير متوفرة في المخزون");

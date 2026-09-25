@@ -7,6 +7,7 @@ import type { Item } from "@dokan/contracts";
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { Amount } from "@/components/ui/amount";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -199,14 +200,26 @@ export function PurchasePage() {
                   </label>
                   <label className="grid gap-1">
                     {t("purchasesQuickCategory")}
-                    <select className="rounded border px-3 py-2" value={quickCategoryId} onChange={(e) => setQuickCategoryId(e.target.value)}>
-                      <option value="">—</option>
-                      {categories.data?.items.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.name}
-                        </option>
-                      ))}
-                    </select>
+                    <Select
+                      value={quickCategoryId}
+                      onValueChange={(value) => setQuickCategoryId(value ?? "")}
+                      items={[
+                        { value: "", label: "—" },
+                        ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
+                      ]}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="—" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">—</SelectItem>
+                        {categories.data?.items.map((category) => (
+                          <SelectItem key={category.id} value={category.id}>
+                            {category.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                   <label className="grid gap-1">
                     {t("itemsSell")}

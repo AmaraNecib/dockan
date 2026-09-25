@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Purchase intake (/purchase). Category + two uniquely-named
@@ -31,9 +32,8 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
 
   await page.goto("/items");
-  const categoryOption = page.getByRole("combobox").locator("option", { hasText: categoryName });
-  await expect(categoryOption).toHaveCount(1);
-  await page.getByRole("combobox").first().selectOption({ label: categoryName });
+  const itemCategory = page.getByLabel("التصنيف");
+  await chooseSelectOption(page, itemCategory, categoryName);
 
   await page.getByTestId("item-name").fill(batteryName);
   await page.getByLabel("سعر الشراء (دج)").fill("1200");
@@ -57,7 +57,7 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   // line 2 through the inline quick-add (creates the item and lands it as a line)
   await page.getByTestId("purchase-toggle-quick").click();
   await page.getByTestId("quick-name").fill(filterName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByTestId("purchase-quick-form").getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر البيع (دج)").fill("1400");
   await page.getByTestId("quick-qty").fill("3");
   await page.getByTestId("quick-cost").fill("900");

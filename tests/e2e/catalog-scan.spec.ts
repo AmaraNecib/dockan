@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { expectSelectOption } from "./select-helpers";
 
 /**
  * Catalog search ranking, USB-wedge scan capture at window
@@ -25,8 +26,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
 
   await page.goto("/items");
   // the form needs the category list loaded before it can submit
-  const categoryOption = page.getByRole("combobox").locator("option", { hasText: "زيوت" });
-  await expect(categoryOption).toHaveCount(1);
+  await expectSelectOption(page, page.getByLabel("التصنيف"), "زيوت");
 
   await page.getByTestId("item-name").fill("زيت محرك 5W30");
   await page.getByLabel("سعر الشراء (دج)").fill("900");
@@ -155,8 +155,7 @@ test("stale scan lookups never overwrite newer results", async ({ page }) => {
   await page.getByRole("button", { name: "إضافة" }).click();
   await expect(page.getByText("زينة", { exact: true })).toBeVisible();
   await page.goto("/items");
-  const categoryOption = page.getByRole("combobox").locator("option", { hasText: "زينة" });
-  await expect(categoryOption).toHaveCount(1);
+  await expectSelectOption(page, page.getByLabel("التصنيف"), "زينة");
   await page.getByTestId("item-name").fill("نظارة مرايا");
   await page.getByTestId("item-barcode").fill("9990000000011");
   await page.getByLabel("سعر الشراء (دج)").fill("150");
@@ -208,8 +207,7 @@ test("scan while focus is inside an input commits through the editable regime", 
   await page.getByRole("button", { name: "إضافة" }).click();
   await expect(page.getByText("عدد", { exact: true })).toBeVisible();
   await page.goto("/items");
-  const categoryOption = page.getByRole("combobox").locator("option", { hasText: "عدد" });
-  await expect(categoryOption).toHaveCount(1);
+  await expectSelectOption(page, page.getByLabel("التصنيف"), "عدد");
   await page.getByTestId("item-name").fill("مفتاح فلتر");
   await page.getByTestId("item-barcode").fill("8880000000019");
   await page.getByLabel("سعر الشراء (دج)").fill("300");

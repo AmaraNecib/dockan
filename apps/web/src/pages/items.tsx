@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate } from "@dokan/contracts";
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
@@ -318,14 +319,23 @@ function ItemForm({
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("itemsCategory")}
-          <select className="rounded border px-3 py-2" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-            {categories.data?.items.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-            {categories.data?.items.length === 0 && <option value="">{t("itemsChooseCategory")}</option>}
-          </select>
+          <Select
+            value={categoryId}
+            onValueChange={(value) => setCategoryId(value ?? "")}
+            items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={categories.data?.items.length === 0 ? t("itemsChooseCategory") : undefined} />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.data?.items.map((category) => (
+                <SelectItem key={category.id} value={category.id}>
+                  {category.name}
+                </SelectItem>
+              ))}
+              {categories.data?.items.length === 0 && <SelectItem value="">{t("itemsChooseCategory")}</SelectItem>}
+            </SelectContent>
+          </Select>
         </label>
         <label className="grid gap-1">
           {t("itemsBarcode")}

@@ -6,6 +6,7 @@ import type { ReportRangePreset } from "@dokan/contracts";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
  * Ticket 31 — expenses (/expenses). Record a raw expense against one of the
@@ -126,15 +127,30 @@ export function ExpensesPage() {
         <div className="grid grid-cols-2 gap-3">
           <label className="grid gap-1">
             {t("expenseCategory")}
-            <select className="rounded border px-3 py-2" value={categoryId} onChange={(event) => setCategoryId(event.target.value)} data-testid="expense-category">
-              <option value="">—</option>
-              {categories.data?.items.map((category) => (
-                <option key={category.id} value={category.id}>
-                  {category.name}
-                  {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={categoryId}
+              onValueChange={(value) => setCategoryId(value ?? "")}
+              items={[
+                { value: "", label: "—" },
+                ...(categories.data?.items.map((category) => ({
+                  value: category.id,
+                  label: `${category.name}${category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}`,
+                })) ?? []),
+              ]}
+            >
+              <SelectTrigger className="w-full" data-testid="expense-category">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">—</SelectItem>
+                {categories.data?.items.map((category) => (
+                  <SelectItem key={category.id} value={category.id}>
+                    {category.name}
+                    {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
           <label className="grid gap-1">
             {t("expenseAmount")}
@@ -164,23 +180,56 @@ export function ExpensesPage() {
           <div className="grid grid-cols-3 gap-3">
             <label className="grid gap-1">
               {t("expensesRange")}
-              <select className="rounded border px-3 py-2" value={preset} onChange={(event) => setPreset(toPreset(event.target.value))} data-testid="expense-range-preset">
-                {PRESET_KEYS.map((key) => <option key={key} value={key}>{t(`rangePreset_${key}`)}</option>)}
-              </select>
+              <Select
+                value={preset}
+                onValueChange={(value) => setPreset(toPreset(value ?? ""))}
+                items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
+              >
+                <SelectTrigger className="w-full" data-testid="expense-range-preset">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRESET_KEYS.map((key) => <SelectItem key={key} value={key}>{t(`rangePreset_${key}`)}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </label>
             <label className="grid gap-1">
               {t("expensesSortBy")}
-              <select className="rounded border px-3 py-2" value={sortBy} onChange={(event) => setSortBy(event.target.value === "amount" ? "amount" : "occurredAt")} data-testid="expense-sort-by">
-                <option value="occurredAt">{t("expensesSortByDate")}</option>
-                <option value="amount">{t("expensesSortByAmount")}</option>
-              </select>
+              <Select
+                value={sortBy}
+                onValueChange={(value) => setSortBy(value === "amount" ? "amount" : "occurredAt")}
+                items={[
+                  { value: "occurredAt", label: t("expensesSortByDate") },
+                  { value: "amount", label: t("expensesSortByAmount") },
+                ]}
+              >
+                <SelectTrigger className="w-full" data-testid="expense-sort-by">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="occurredAt">{t("expensesSortByDate")}</SelectItem>
+                  <SelectItem value="amount">{t("expensesSortByAmount")}</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
             <label className="grid gap-1">
               {t("expensesRange")}
-              <select className="rounded border px-3 py-2" value={sortDir} onChange={(event) => setSortDir(event.target.value === "asc" ? "asc" : "desc")} data-testid="expense-sort-dir">
-                <option value="desc">{t("expensesSortDesc")}</option>
-                <option value="asc">{t("expensesSortAsc")}</option>
-              </select>
+              <Select
+                value={sortDir}
+                onValueChange={(value) => setSortDir(value === "asc" ? "asc" : "desc")}
+                items={[
+                  { value: "desc", label: t("expensesSortDesc") },
+                  { value: "asc", label: t("expensesSortAsc") },
+                ]}
+              >
+                <SelectTrigger className="w-full" data-testid="expense-sort-dir">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="desc">{t("expensesSortDesc")}</SelectItem>
+                  <SelectItem value="asc">{t("expensesSortAsc")}</SelectItem>
+                </SelectContent>
+              </Select>
             </label>
           </div>
           {preset === "CUSTOM" && (

@@ -3,6 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
@@ -68,13 +69,22 @@ export function StockForm() {
       <h2 className="font-semibold">{t("stockAddTitle")}</h2>
       <label className="grid gap-1">
         {t("stockItem")}
-        <select className="rounded border px-3 py-2" value={itemId} onChange={(e) => setItemId(e.target.value)}>
-          {items.data?.items.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={itemId}
+          onValueChange={(value) => setItemId(value ?? "")}
+          items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {items.data?.items.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">

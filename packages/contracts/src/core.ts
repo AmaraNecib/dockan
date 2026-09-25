@@ -483,6 +483,9 @@ export const firstTimeSetupInputSchema = z.object({
   password: z.string().min(4),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
+  // provisioning creates the first owner and closes setup, so it is gated by
+  // the same build secret that protects a password reset
+  secret: z.string().min(1),
 });
 
 export const firstTimeSetupOutputSchema = z.object({

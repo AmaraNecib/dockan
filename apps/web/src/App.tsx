@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { authClient, useSession } from "./lib/auth-client";
@@ -22,12 +22,41 @@ export function RequireSession({ children }: { children: ReactNode }) {
 
 /** Decides whether to show setup, login, or forgot-password. */
 function AuthGate() {
+  const { t } = useTranslation();
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [checkFailed, setCheckFailed] = useState(false);
   const [view, setView] = useState<"login" | "forgot">("login");
 
-  useEffect(() => {
-    rpcClient.needsSetup().then((res) => setNeedsSetup(res.needsSetup)).catch(() => setNeedsSetup(false));
+  const checkSetup = useCallback(() => {
+    setNeedsSetup(null);
+    setCheckFailed(false);
+    rpcClient
+      .needsSetup()
+      .then((res) => setNeedsSetup(res.needsSetup))
+      // A failed check must not read as "setup not needed". On an empty
+      // installation that shows login, which has no account to accept, and the
+      // owner has to guess that refreshing would help.
+      .catch(() => setCheckFailed(true));
   }, []);
+
+  useEffect(() => {
+    checkSetup();
+  }, [checkSetup]);
+
+  if (checkFailed) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert">
+            {t("startupCheckFailed")}
+          </p>
+          <button type="button" onClick={checkSetup} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80" data-testid="startup-retry">
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   if (needsSetup === null) return <LoadingScreen />;
 
@@ -52,6 +81,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
   const [storeAddress, setStoreAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -66,6 +96,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
         password,
         storeName,
         storeAddress: storeAddress || undefined,
+        secret,
       });
       onDone();
     } catch (err) {
@@ -103,6 +134,10 @@ function SetupPage({ onDone }: { onDone: () => void }) {
           {t("password")}
           <input type="password" className="rounded border border-input bg-background px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={4} />
         </label>
+        <label className="mt-3 grid gap-1 text-sm">
+          {t("setupSecret")}
+          <input type="password" className="rounded border border-input bg-background px-3 py-2" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" data-testid="setup-secret" />
+        </label>
 
         {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
@@ -128,14 +163,21 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const loginName = (normalizeAlgerianPhone(username) ?? "").slice(1);
-    const result = await authClient.signIn.username({ username: loginName, password });
-    if (result.error) {
-      setError(tError(result.error.message ?? "UNEXPECTED"));
+    try {
+      const loginName = (normalizeAlgerianPhone(username) ?? "").slice(1);
+      const result = await authClient.signIn.username({ username: loginName, password });
+      if (result.error) {
+        setError(tError(result.error.message ?? "UNEXPECTED"));
+        return;
+      }
+      window.location.reload();
+    } catch (err) {
+      // a rejected call (network or proxy failure) must still release the
+      // button, or the user cannot retry without reloading the page
+      setError(err instanceof Error ? tError(err.message) : t("unexpected"));
+    } finally {
       setBusy(false);
-      return;
     }
-    window.location.reload();
   }
 
   return (
@@ -215,7 +257,7 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
 
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupSecret")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" />
+          <input type="password" className="rounded border border-input bg-background px-3 py-2" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}

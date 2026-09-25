@@ -23,6 +23,7 @@ const resources = {
       home: "تم تسجيل الدخول بنجاح",
       homeHint: "يمكنك القدوم إلى المتجر وبدء البيع.",
       unexpected: "حدث خطأ غير متوقع",
+      startupCheckFailed: "تعذّر الاتصال بالخادم. تأكد من تشغيله ثم أعد المحاولة.",
       dialogClose: "إغلاق",
       navCategories: "التصنيفات",
       navItems: "المنتجات",

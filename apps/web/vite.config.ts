@@ -44,10 +44,12 @@ export default defineConfig({
   },
   server: {
     // changeable: if the dev port is taken, vite picks another instead of
-    // crashing (the user is an accountant, not a developer)
+    // crashing (the user is an accountant, not a developer) — but only when no
+    // port was asked for. An explicit DOKAN_WEB_PORT (e2e, scripts) stays strict
+    // so the waiting client is not left pointing at a port nobody listens on.
     host: "127.0.0.1",
     port: Number(process.env.DOKAN_WEB_PORT ?? 5173),
-    strictPort: true,
+    strictPort: process.env.DOKAN_WEB_PORT !== undefined,
     // same-origin API: the webview never talks to the Bun api directly,
     // so auth cookies stay same-origin and no CORS config is needed
     proxy: {

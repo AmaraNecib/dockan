@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config";
 import { rankCatalog } from "../lib/catalog-search";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
+import { constantTimeEqual } from "../lib/constant-time";
 import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
@@ -184,6 +185,17 @@ export function createRpcRouter(deps: RpcDeps) {
     }),
 
     firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
+      // Provisioning creates the first owner and closes setup to everyone else,
+      // so it is gated by the same build secret that protects a password reset.
+      // Without this, any client that reached a fresh installation first could
+      // claim ownership before the shop owner did.
+      if (deps.config.buildSecret === undefined) {
+        throw new ORPCError("BAD_REQUEST", { message: "BUILD_SECRET_NOT_CONFIGURED" });
+      }
+      if (!constantTimeEqual(input.secret, deps.config.buildSecret)) {
+        throw new ORPCError("FORBIDDEN", { message: "WRONG_BUILD_SECRET" });
+      }
+
       const phone = normalizeAlgerianPhone(input.phoneNumber);
       if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
       const username = phoneToUsername(phone);
@@ -1325,11 +1337,19 @@ export function createRpcRouter(deps: RpcDeps) {
             : input.storePhone === null || input.storePhone.trim() === ""
               ? null
               : requireStorePhone(input.storePhone);
+        // the address travels with the identity: an empty or cleared value
+        // means "remove it", not "leave the stored one alone"
+        const storeAddress =
+          input.storeAddress === undefined
+            ? undefined
+            : input.storeAddress === null || input.storeAddress.trim() === ""
+              ? null
+              : input.storeAddress.trim();
         // identity write + audit land in ONE transaction: a failed audit
         // insert rolls the settings change back instead of persisting an
         // un-audited identity that a retry would misrepresent (greptile P1)
         return deps.store.withTransaction(async (tx) => {
-          const updated = await tx.updateSettings({ storeName: input.storeName, storePhone });
+          const updated = await tx.updateSettings({ storeName: input.storeName, storePhone, storeAddress });
           await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
           return updated;
         });

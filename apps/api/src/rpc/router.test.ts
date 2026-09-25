@@ -526,6 +526,22 @@ describe("settings (ticket 10)", () => {
     });
   });
 
+  it("persists and clears the store address through settingsUpdate", async () => {
+    // the setup form collects an address, so the settings write has to carry it
+    // through: forwarding only name and phone reported success while leaving the
+    // stored address untouched
+    const saved = await client.settingsUpdate({ storeAddress: "شارع الاستقلال 12" });
+    expect(saved.storeAddress).toBe("شارع الاستقلال 12");
+    expect((await client.settingsGet()).storeAddress).toBe("شارع الاستقلال 12");
+
+    // an explicit null or empty string clears it rather than leaving it alone
+    for (const clearWith of [null, ""]) {
+      const cleared = await client.settingsUpdate({ storeAddress: clearWith });
+      expect(cleared.storeAddress).toBeNull();
+      expect((await client.settingsGet()).storeAddress).toBeNull();
+    }
+  });
+
   it("clears the phone with an explicit null or an empty string", async () => {
     await client.settingsUpdate({ storeName: "متجر السيارات", storePhone: "0550123123" });
     for (const clearWith of [null, ""]) {
@@ -2864,13 +2880,39 @@ describe("first-time setup provisioning", () => {
     return { conn: instanceConn, store: instanceStore, client: clientFor(instanceStore), clientFor };
   };
 
+  const SETUP_SECRET = "test-build-secret-123";
+
   const setupCalls = (client: DokanClient, ownerName: string, phoneNumber: string) =>
     client.firstTimeSetup({
       ownerName,
       phoneNumber,
       password: "pass-1234",
       storeName: `متجر ${ownerName}`,
+      secret: SETUP_SECRET,
     });
+
+  it("refuses to provision for anyone without the build secret", async () => {
+    const inst = await openInstance();
+
+    // Provisioning closes setup to everyone else, so an unprotected call would
+    // let any client that reached a fresh installation become the owner.
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "متطفل",
+        phoneNumber: "0550999999",
+        password: "pass-1234",
+        storeName: "متجر",
+        secret: "wrong-secret",
+      }),
+    ).rejects.toThrow();
+
+    // refused before anything was written
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+
+    // and the real owner can still set up
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+  });
 
   it("provisions exactly one owner when two setups race", async () => {
     const inst = await openInstance();
@@ -2925,6 +2967,7 @@ describe("first-time setup provisioning", () => {
         password: "pass-1234",
         storeName: "متجر",
         storeAddress: "شارع الاستقلال 12",
+        secret: SETUP_SECRET,
       }),
     ).rejects.toThrow();
 
@@ -2940,6 +2983,7 @@ describe("first-time setup provisioning", () => {
         password: "pass-1234",
         storeName: "متجر",
         storeAddress: "شارع الاستقلال 12",
+        secret: SETUP_SECRET,
       }),
     ).resolves.toEqual({ ok: true });
     expect(await inst.store.getSettings()).toEqual({

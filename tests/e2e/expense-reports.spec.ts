@@ -131,6 +131,19 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   const baselineWithdrawalsAbs = await readAbs("report-withdrawals");
   const baselineResult = await read("report-result");
 
+  // the localized range label renders an RTL Arabic sentence with each date
+  // LTR-isolated, and no raw ISO timestamp / clock time leaks through
+  const rangeLabel = page.getByTestId("report-range-label");
+  await expect(rangeLabel).toHaveAttribute("dir", "rtl");
+  await expect(rangeLabel).toContainText("من");
+  await expect(rangeLabel).toContainText("إلى");
+  await expect(rangeLabel).not.toContainText(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  const rangeDates = page.locator("[data-testid='report-range-label'] > span[dir='ltr']");
+  await expect(rangeDates).toHaveCount(2);
+  // each isolated span carries the day/month/year, including the Arabic month name
+  await expect(rangeDates.nth(0)).toContainText(/[\u0600-\u06FF]/);
+  await expect(rangeDates.nth(1)).toContainText(/[\u0600-\u06FF]/);
+
   // expenses land exactly as deltas in the report (expense lines render with
   // a leading minus, so magnitudes are compared)
   await page.goto("/expenses");

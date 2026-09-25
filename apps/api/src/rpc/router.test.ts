@@ -2914,6 +2914,21 @@ describe("first-time setup provisioning", () => {
     await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
   });
 
+  it("refuses uniformly once set up, so the secret cannot be probed", async () => {
+    const inst = await openInstance();
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+
+    // a completed installation must not tell a right guess from a wrong one,
+    // or this public procedure becomes an oracle for the secret that also
+    // unlocks a password reset. Both attempts must fail the same way: if a
+    // wrong secret produced WRONG_BUILD_SECRET, this assertion would fail.
+    const attempt = (secret: string) =>
+      inst.client.firstTimeSetup({ ownerName: "متطفل", phoneNumber: "0550222222", password: "pass-1234", storeName: "متجر", secret });
+
+    await expect(attempt("wrong-secret")).rejects.toThrow("SETUP_ALREADY_DONE");
+    await expect(attempt(SETUP_SECRET)).rejects.toThrow("SETUP_ALREADY_DONE");
+  });
+
   it("provisions exactly one owner when two setups race", async () => {
     const inst = await openInstance();
     expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });

@@ -185,14 +185,30 @@ export function createRpcRouter(deps: RpcDeps) {
     }),
 
     firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
+      // Order matters. On an installation that already has an owner, every
+      // caller must get the same refusal: checking the secret first turned this
+      // public procedure into an oracle that told a right guess from a wrong
+      // one, and a right guess is enough to reset the owner's password through
+      // authResetPassword. The transaction below re-checks existence to close
+      // the race; this check only makes the refusal uniform.
+      const alreadySetup = await deps.db.select({ id: users.id }).from(users).limit(1);
+      if (alreadySetup.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
+
+      // the same lockout the reset path uses, so guesses are bounded and are
+      // counted against one shared budget
+      const status = resetThrottle.check();
+      if (!status.allowed) {
+        deps.logger.warn("SETUP_LOCKED", `firstTimeSetup refused while lockout is active (retry in ~${Math.ceil(status.retryAfterMs / 1000)}s)`);
+        throw new ORPCError("TOO_MANY_REQUESTS", { message: "RESET_LOCKED" });
+      }
+
       // Provisioning creates the first owner and closes setup to everyone else,
       // so it is gated by the same build secret that protects a password reset.
-      // Without this, any client that reached a fresh installation first could
-      // claim ownership before the shop owner did.
       if (deps.config.buildSecret === undefined) {
         throw new ORPCError("BAD_REQUEST", { message: "BUILD_SECRET_NOT_CONFIGURED" });
       }
       if (!constantTimeEqual(input.secret, deps.config.buildSecret)) {
+        resetThrottle.recordFailure();
         throw new ORPCError("FORBIDDEN", { message: "WRONG_BUILD_SECRET" });
       }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { authClient, useSession } from "./lib/auth-client";
@@ -26,17 +26,26 @@ function AuthGate() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [checkFailed, setCheckFailed] = useState(false);
   const [view, setView] = useState<"login" | "forgot">("login");
+  // only the newest check may write state: Strict Mode starts two of them, and
+  // without this a slow failure can overwrite a success and strand the owner on
+  // the retry screen after a check that actually worked
+  const checkSeqRef = useRef(0);
 
   const checkSetup = useCallback(() => {
+    const seq = ++checkSeqRef.current;
     setNeedsSetup(null);
     setCheckFailed(false);
     rpcClient
       .needsSetup()
-      .then((res) => setNeedsSetup(res.needsSetup))
+      .then((res) => {
+        if (seq === checkSeqRef.current) setNeedsSetup(res.needsSetup);
+      })
       // A failed check must not read as "setup not needed". On an empty
       // installation that shows login, which has no account to accept, and the
       // owner has to guess that refreshing would help.
-      .catch(() => setCheckFailed(true));
+      .catch(() => {
+        if (seq === checkSeqRef.current) setCheckFailed(true);
+      });
   }, []);
 
   useEffect(() => {

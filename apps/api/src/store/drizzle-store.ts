@@ -404,16 +404,25 @@ export function createDrizzleStore(conn: Connection): StorePort {
   const rebuildLegacyAuthTables = (): void => {
     const tables = ["user", "session", "account", "verification"] as const;
     const looksLegacy = (table: string): boolean => {
-      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
-      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-      const names = new Set(rows.map((row) => row.name));
-      return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+      try {
+        // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+        const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (rows.length === 0) return false; // table does not exist yet
+        const names = new Set(rows.map((row) => row.name));
+        return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+      } catch {
+        return false; // table missing on fresh db
+      }
     };
     const legacyTables = tables.filter(looksLegacy);
     const occupied = legacyTables.filter((table) => {
-      // SAFETY: COUNT(*) returns one row with a numeric count
-      const rows = conn.raw.query(`SELECT COUNT(*) AS count FROM ${table}`).all() as Array<{ count: number }>;
-      return Number(rows[0]?.count ?? 0) > 0;
+      try {
+        // SAFETY: COUNT(*) returns one row with a numeric count
+        const rows = conn.raw.query(`SELECT COUNT(*) AS count FROM ${table}`).all() as Array<{ count: number }>;
+        return Number(rows[0]?.count ?? 0) > 0;
+      } catch {
+        return false;
+      }
     });
     if (occupied.length > 0) {
       throw new Error(`cannot rebuild non-empty legacy auth tables: ${occupied.join(", ")}`);

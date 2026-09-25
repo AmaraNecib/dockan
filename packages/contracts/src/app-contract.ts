@@ -42,6 +42,9 @@ import {
   purchasesProposalOutputSchema,
   resetPasswordInputSchema,
   resetPasswordOutputSchema,
+  needsSetupOutputSchema,
+  firstTimeSetupInputSchema,
+  firstTimeSetupOutputSchema,
   returnDetailSchema,
   returnsCreateInputSchema,
   returnsGetInputSchema,
@@ -63,6 +66,8 @@ export const dokanContract = {
   health: oc.output(healthOutputSchema),
 
   // --- auth ----------------------------------------------------------------
+  needsSetup: oc.output(needsSetupOutputSchema),
+  firstTimeSetup: oc.input(firstTimeSetupInputSchema).output(firstTimeSetupOutputSchema),
   authResetPassword: oc.input(resetPasswordInputSchema).output(resetPasswordOutputSchema),
 
   // --- categories ----------------------------------------------------------

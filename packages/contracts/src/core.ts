@@ -471,6 +471,22 @@ export const resetPasswordInputSchema = z.object({
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
 });
 
+export const needsSetupOutputSchema = z.object({
+  needsSetup: z.boolean(),
+});
+
+export const firstTimeSetupInputSchema = z.object({
+  ownerName: z.string().trim().min(1),
+  phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
+  password: z.string().min(4),
+  storeName: z.string().trim().min(1),
+  storeAddress: z.string().trim().optional(),
+});
+
+export const firstTimeSetupOutputSchema = z.object({
+  ok: z.literal(true),
+});
+
 export const categoryCreateInputSchema = z.object({
   name: z.string().trim().min(1),
 });

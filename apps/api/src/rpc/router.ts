@@ -1,10 +1,12 @@
 import { implement, ORPCError } from "@orpc/server";
 import { dokanContract, normalizeBarcode, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
 import { rankCatalog } from "../lib/catalog-search";
-import { normalizeAlgerianPhone } from "../lib/phone";
+import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
 import type { DrizzleDb } from "../db/connection";
+import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
@@ -176,6 +178,58 @@ export function createRpcRouter(deps: RpcDeps) {
     health: os.health.handler(() => ({ ok: true as const, version: deps.config.version })),
 
     // --- auth ----------------------------------------------------------------
+    needsSetup: os.needsSetup.handler(async () => {
+      const rows = await deps.db.select({ id: users.id }).from(users).limit(1);
+      return { needsSetup: rows.length === 0 };
+    }),
+
+    firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
+      // only allowed when no users exist
+      const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
+      if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
+
+      const phone = normalizeAlgerianPhone(input.phoneNumber);
+      if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
+      const username = phoneToUsername(phone);
+
+      const ctx = await deps.auth.$context;
+      const hashed = await ctx.password.hash(input.password);
+
+      const userId = randomUUID();
+      await deps.db.insert(users).values({
+        id: userId,
+        name: input.ownerName,
+        image: null,
+        username,
+        phoneNumber: phone,
+        phoneNumberVerified: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).run();
+
+      await deps.db.insert(accounts).values({
+        id: randomUUID(),
+        userId,
+        accountId: userId,
+        providerId: "credential",
+        issuer: "local:credential",
+        accessToken: null,
+        refreshToken: null,
+        idToken: null,
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        scope: null,
+        password: hashed,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }).run();
+
+      await deps.store.updateSettings({ storeName: input.storeName, storePhone: phone });
+      await deps.store.setSetting("adminUserId", userId);
+      await deps.store.insertActivity({ type: "PASSWORD_RESET", summary: `إعداد أولي للمتجر (${input.storeName})` });
+      deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
+      return { ok: true as const };
+    }),
     authResetPassword: os.authResetPassword.handler(({ input }) => {
       const attempt = resetTail.then(async () => {
         // issue #52: bound lockout after repeated wrong-secret guesses.

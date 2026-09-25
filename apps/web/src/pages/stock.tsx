@@ -26,6 +26,11 @@ export function StockForm() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  // Submit falls back to the first item when nothing was picked, so surface
+  // that same choice in the trigger: the operator must always see the item the
+  // movement will be recorded against (greptile PR #80).
+  const selectedItemId = itemId || items.data?.items[0]?.id || "";
+
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
       onSuccess: () => {
@@ -46,9 +51,8 @@ export function StockForm() {
     event.preventDefault();
     setError(null);
     setDone(false);
-    const chosenItem = itemId || items.data?.items[0]?.id;
     const parsedDelta = Number(delta);
-    if (!chosenItem) {
+    if (!selectedItemId) {
       setError(t("itemsEmpty"));
       return;
     }
@@ -57,7 +61,7 @@ export function StockForm() {
       return;
     }
     void adjust.mutate({
-      itemId: chosenItem,
+      itemId: selectedItemId,
       delta: parsedDelta,
       unitCost: parsedDelta > 0 && unitCost !== "" ? Number(unitCost) : undefined,
       reason: reason === "" ? undefined : reason,
@@ -70,7 +74,7 @@ export function StockForm() {
       <label className="grid gap-1">
         {t("stockItem")}
         <Select
-          value={itemId}
+          value={selectedItemId}
           onValueChange={(value) => setItemId(value ?? "")}
           items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
         >

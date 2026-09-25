@@ -172,7 +172,7 @@ describe("item-picker-dialog keyboard behavior", () => {
     pressKey("ArrowDown", input);
     expect(input.getAttribute("aria-activedescendant")).toBe(options()[0]!.id);
     expect(options()[0]!.getAttribute("aria-selected")).toBe("true");
-    expect(options()[0]!.querySelector("button")!.className).toContain("bg-stone-200");
+    expect(options()[0]!.querySelector("button")!.className).toContain("bg-accent");
 
     // Down advances, then wraps to the first row at the end.
     pressKey("ArrowDown", input);

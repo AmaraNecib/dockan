@@ -404,13 +404,22 @@ export function createDrizzleStore(conn: Connection): StorePort {
   const rebuildLegacyAuthTables = (): void => {
     const tables = ["user", "session", "account", "verification"] as const;
     const looksLegacy = (table: string): boolean => {
-      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
-      const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-      const names = new Set(rows.map((row) => row.name));
-      return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+      try {
+        // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+        const rows = conn.raw.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (rows.length === 0) return false; // table does not exist yet
+        const names = new Set(rows.map((row) => row.name));
+        return names.has("account_id") || names.has("provider_id") || names.has("user_id") || names.has("expires_at");
+      } catch {
+        return false; // table missing on fresh db
+      }
     };
     const legacyTables = tables.filter(looksLegacy);
     const occupied = legacyTables.filter((table) => {
+      // The table exists: its schema read succeeded above. A count failure is a
+      // real error, not "empty", and swallowing it here would let startup reach
+      // DROP TABLE and delete populated credential or session rows. Let it
+      // abort the rebuild instead.
       // SAFETY: COUNT(*) returns one row with a numeric count
       const rows = conn.raw.query(`SELECT COUNT(*) AS count FROM ${table}`).all() as Array<{ count: number }>;
       return Number(rows[0]?.count ?? 0) > 0;
@@ -1332,11 +1341,13 @@ export function createDrizzleStore(conn: Connection): StorePort {
     async getSettings(): Promise<Settings> {
       const name = await this.getSetting("storeName");
       const phone = await this.getSetting("storePhone");
-      return { storeName: name ?? "Dokan", storePhone: phone ? phone : null };
+      const address = await this.getSetting("storeAddress");
+      return { storeName: name ?? "Dokan", storePhone: phone ? phone : null, storeAddress: address ? address : null };
     },
     async updateSettings(patch: SettingsUpdate): Promise<Settings> {
       if (patch.storeName !== undefined) await this.setSetting("storeName", patch.storeName);
       if (patch.storePhone !== undefined) await this.setSetting("storePhone", patch.storePhone ?? "");
+      if (patch.storeAddress !== undefined) await this.setSetting("storeAddress", patch.storeAddress ?? "");
       return this.getSettings();
     },
 

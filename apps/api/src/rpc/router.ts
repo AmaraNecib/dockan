@@ -1,10 +1,13 @@
 import { implement, ORPCError } from "@orpc/server";
 import { dokanContract, normalizeBarcode, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
 import { rankCatalog } from "../lib/catalog-search";
-import { normalizeAlgerianPhone } from "../lib/phone";
+import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
+import { constantTimeEqual } from "../lib/constant-time";
 import type { DrizzleDb } from "../db/connection";
+import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
@@ -176,6 +179,96 @@ export function createRpcRouter(deps: RpcDeps) {
     health: os.health.handler(() => ({ ok: true as const, version: deps.config.version })),
 
     // --- auth ----------------------------------------------------------------
+    needsSetup: os.needsSetup.handler(async () => {
+      const rows = await deps.db.select({ id: users.id }).from(users).limit(1);
+      return { needsSetup: rows.length === 0 };
+    }),
+
+    firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
+      // Order matters. On an installation that already has an owner, every
+      // caller must get the same refusal: checking the secret first turned this
+      // public procedure into an oracle that told a right guess from a wrong
+      // one, and a right guess is enough to reset the owner's password through
+      // authResetPassword. The transaction below re-checks existence to close
+      // the race; this check only makes the refusal uniform.
+      const alreadySetup = await deps.db.select({ id: users.id }).from(users).limit(1);
+      if (alreadySetup.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
+
+      // the same lockout the reset path uses, so guesses are bounded and are
+      // counted against one shared budget
+      const status = resetThrottle.check();
+      if (!status.allowed) {
+        deps.logger.warn("SETUP_LOCKED", `firstTimeSetup refused while lockout is active (retry in ~${Math.ceil(status.retryAfterMs / 1000)}s)`);
+        throw new ORPCError("TOO_MANY_REQUESTS", { message: "RESET_LOCKED" });
+      }
+
+      // Provisioning creates the first owner and closes setup to everyone else,
+      // so it is gated by the same build secret that protects a password reset.
+      if (deps.config.buildSecret === undefined) {
+        throw new ORPCError("BAD_REQUEST", { message: "BUILD_SECRET_NOT_CONFIGURED" });
+      }
+      if (!constantTimeEqual(input.secret, deps.config.buildSecret)) {
+        resetThrottle.recordFailure();
+        throw new ORPCError("FORBIDDEN", { message: "WRONG_BUILD_SECRET" });
+      }
+
+      const phone = normalizeAlgerianPhone(input.phoneNumber);
+      if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
+      const username = phoneToUsername(phone);
+
+      // Hashing is the slow step and needs no lock, so it runs before the unit.
+      const ctx = await deps.auth.$context;
+      const hashed = await ctx.password.hash(input.password);
+
+      // The "no users yet" check and every provisioning write commit as one
+      // BEGIN IMMEDIATE unit. Checking before the awaited hash let two
+      // concurrent setups both pass and create competing owners, and a failure
+      // after the user insert left a user row that made needsSetup false, so
+      // setup could never be retried while no credential worked.
+      return deps.store.withTransactionImmediate(async (tx) => {
+        const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
+        if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
+
+        const userId = randomUUID();
+        await deps.db.insert(users).values({
+          id: userId,
+          name: input.ownerName,
+          image: null,
+          username,
+          phoneNumber: phone,
+          phoneNumberVerified: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).run();
+
+        await deps.db.insert(accounts).values({
+          id: randomUUID(),
+          userId,
+          accountId: userId,
+          providerId: "credential",
+          issuer: "local:credential",
+          accessToken: null,
+          refreshToken: null,
+          idToken: null,
+          accessTokenExpiresAt: null,
+          refreshTokenExpiresAt: null,
+          scope: null,
+          password: hashed,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).run();
+
+        await tx.updateSettings({
+          storeName: input.storeName,
+          storePhone: phone,
+          storeAddress: input.storeAddress ?? null,
+        });
+        await tx.setSetting("adminUserId", userId);
+        await tx.insertActivity({ type: "STORE_SETUP", summary: `STORE_SETUP ${input.storeName}` });
+        deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
+        return { ok: true as const };
+      });
+    }),
     authResetPassword: os.authResetPassword.handler(({ input }) => {
       const attempt = resetTail.then(async () => {
         // issue #52: bound lockout after repeated wrong-secret guesses.
@@ -1260,11 +1353,19 @@ export function createRpcRouter(deps: RpcDeps) {
             : input.storePhone === null || input.storePhone.trim() === ""
               ? null
               : requireStorePhone(input.storePhone);
+        // the address travels with the identity: an empty or cleared value
+        // means "remove it", not "leave the stored one alone"
+        const storeAddress =
+          input.storeAddress === undefined
+            ? undefined
+            : input.storeAddress === null || input.storeAddress.trim() === ""
+              ? null
+              : input.storeAddress.trim();
         // identity write + audit land in ONE transaction: a failed audit
         // insert rolls the settings change back instead of persisting an
         // un-audited identity that a retry would misrepresent (greptile P1)
         return deps.store.withTransaction(async (tx) => {
-          const updated = await tx.updateSettings({ storeName: input.storeName, storePhone });
+          const updated = await tx.updateSettings({ storeName: input.storeName, storePhone, storeAddress });
           await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
           return updated;
         });

@@ -1,5 +1,4 @@
-import { Link, Outlet, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { useTranslation } from "react-i18next";
+import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 
 import { CategoriesPage } from "./pages/categories";
 import { DashboardPage } from "./pages/dashboard";
@@ -19,65 +18,11 @@ import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
 import { ExpensesPage } from "./pages/expenses";
 import { ReportsPage } from "./pages/reports";
+import { AppShell } from "./components/app/app-shell";
 import "./lib/i18n";
 
 const rootRoute = createRootRoute({
-  component: () => {
-    const { t } = useTranslation();
-    return (
-      <div className="min-h-screen bg-stone-100 text-stone-900">
-        <header className="border-b bg-white print-hidden">
-          <nav className="mx-auto flex max-w-3xl items-center gap-4 p-3">
-            <Link to="/" className="font-bold">
-              {t("appTitle")}
-            </Link>
-            <Link to="/categories" className="text-stone-600 hover:text-stone-900">
-              {t("navCategories")}
-            </Link>
-            <Link to="/items" className="text-stone-600 hover:text-stone-900">
-              {t("navItems")}
-            </Link>
-            <Link to="/backups" className="text-stone-600 hover:text-stone-900">
-              {t("navBackups")}
-            </Link>
-            <Link to="/activity" className="text-stone-600 hover:text-stone-900">
-              {t("navActivity")}
-            </Link>
-            <Link to="/purchase" className="text-stone-600 hover:text-stone-900">
-              {t("navPurchases")}
-            </Link>
-            <Link to="/sale" className="text-stone-600 hover:text-stone-900">
-              {t("navSales")}
-            </Link>
-            <Link to="/debts" className="text-stone-600 hover:text-stone-900">
-              {t("navDebts")}
-            </Link>
-            <Link to="/invoices" className="text-stone-600 hover:text-stone-900">
-              {t("navInvoices")}
-            </Link>
-            <Link to="/returns" className="text-stone-600 hover:text-stone-900">
-              {t("navReturns")}
-            </Link>
-            <Link to="/expenses" className="text-stone-600 hover:text-stone-900">
-              {t("navExpenses")}
-            </Link>
-            <Link to="/reports" className="text-stone-600 hover:text-stone-900">
-              {t("navReports")}
-            </Link>
-            <Link to="/settings" className="text-stone-600 hover:text-stone-900">
-              {t("navSettings")}
-            </Link>
-            <Link to="/diagnostics" className="text-stone-600 hover:text-stone-900">
-              {t("navDiagnostics")}
-            </Link>
-          </nav>
-        </header>
-        <main className="mx-auto max-w-3xl p-4">
-          <Outlet />
-        </main>
-      </div>
-    );
-  },
+  component: AppShell,
 });
 
 const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: DashboardPage });

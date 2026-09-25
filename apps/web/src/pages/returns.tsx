@@ -41,7 +41,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
   );
 
   if (returns.length === 0) {
-    return <p className="text-sm text-stone-500" data-testid="returns-list-empty">{t("returnsEmpty")}</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="returns-list-empty">{t("returnsEmpty")}</p>;
   }
 
   return (
@@ -49,23 +49,23 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
       {returns.map((record) => {
         const debt = debtOffsetDisplay(record.status, record.debtOffset, record.debtApplied);
         return (
-        <article key={record.id} className="rounded border bg-white p-4" data-testid={`returns-review-${record.returnNumber}`}>
+        <article key={record.id} className="rounded border bg-card p-4" data-testid={`returns-review-${record.returnNumber}`}>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p dir="ltr" className="font-semibold">{record.returnNumber}</p>
-              <p className="text-sm text-stone-600">
+              <p className="text-sm text-muted-foreground">
                 {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} {t("dzd")}
               </p>
-              <p className="text-xs text-stone-500">
+              <p className="text-xs text-muted-foreground">
                 {t("returnsCashNow")}: {record.cashPaidOut} {t("dzd")} — {t(debt.labelKey)}: {debt.value} {t("dzd")}
               </p>
-              <p className="text-sm text-stone-500">
+              <p className="text-sm text-muted-foreground">
                 {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}
               </p>
             </div>
             <div className="flex items-center gap-2">
               <span
-                className={`rounded-full px-2 py-0.5 text-xs ${record.status === "PENDING_REVIEW" ? "bg-amber-100 text-amber-800" : record.status === "ACCEPTED" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}
+                className={`rounded-full px-2 py-0.5 text-xs ${record.status === "PENDING_REVIEW" ? "bg-amber-500/10 text-amber-600" : record.status === "ACCEPTED" ? "bg-green-500/10 text-green-700" : "bg-destructive/10 text-destructive"}`}
                 data-testid={`returns-status-${record.status}`}
               >
                 {t(`returnsStatus_${record.status}`)}
@@ -73,7 +73,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
               <Link
                 to="/invoices/$invoiceId/returns/$returnId/print"
                 params={{ invoiceId: record.invoiceId, returnId: record.id }}
-                className="text-sm text-stone-700 underline"
+                className="text-sm text-foreground underline"
                 data-testid={`returns-print-${record.returnNumber}`}
               >
                 {t("returnVoucher")}
@@ -118,7 +118,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
                 </button>
               </div>
               {(accept.error !== null || reject.error !== null) && (
-                <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700" data-testid="returns-review-error">
+                <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-xs text-destructive" data-testid="returns-review-error">
                   {tError((accept.error instanceof Error ? accept.error.message : undefined) ?? (reject.error instanceof Error ? reject.error.message : undefined))}
                 </p>
               )}
@@ -135,14 +135,14 @@ export function ReturnsPage() {
   const { t } = useTranslation();
   const query = useQuery(orpc.returnsList.queryOptions({ input: {} }));
   if (query.isPending) {
-    return <p className="text-sm text-stone-500" data-testid="returns-loading">{t("expensesLoading")}</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="returns-loading">{t("expensesLoading")}</p>;
   }
   if (query.isError || query.data === undefined) {
     const message = query.error instanceof Error ? query.error.message : undefined;
     return (
       <section className="grid gap-4" data-testid="returns-error">
         <h1 className="text-xl font-bold">{t("returnsTitle")}</h1>
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="returns-error-text">{tError(message)}</p>
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="returns-error-text">{tError(message)}</p>
       </section>
     );
   }

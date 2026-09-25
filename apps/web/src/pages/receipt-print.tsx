@@ -50,7 +50,7 @@ export function ReceiptPrintPage() {
   }, [ready, invoiceId]);
 
   if (detail.isPending || settings.isPending) {
-    return <p className="text-sm text-stone-500" data-testid="receipt-loading">{t("expensesLoading")}</p>;
+    return <p className="text-sm text-muted-foreground" data-testid="receipt-loading">{t("expensesLoading")}</p>;
   }
   if (detail.isError || settings.isError || detail.data === undefined || settings.data === undefined) {
     const detailError = detail.error instanceof Error ? detail.error.message : undefined;
@@ -58,7 +58,7 @@ export function ReceiptPrintPage() {
     return (
       <section className="grid gap-4" data-testid="receipt-error">
         <h1 className="text-xl font-bold">{t("invoiceTitle")}</h1>
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="receipt-error-text">
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="receipt-error-text">
           {tError(detailError ?? settingsError)}
         </p>
         <Link to="/invoices/$invoiceId" params={{ invoiceId }} className="text-sm underline">
@@ -76,14 +76,14 @@ export function ReceiptPrintPage() {
         <Link
           to="/invoices/$invoiceId"
           params={{ invoiceId }}
-          className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100"
+          className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
           data-testid="receipt-back"
         >
           {t("receiptBack")}
         </Link>
         <button
           type="button"
-          className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
+          className="rounded-lg bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/80"
           onClick={() => {
             // a manual print arms the same gate: no double dialog if the
             // pending auto-print timer is still armed

@@ -12,6 +12,7 @@ import { createAuth, type BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
+import { accounts, users } from "../db/schema";
 import { AppLogger } from "../lib/logger";
 import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
@@ -506,7 +507,7 @@ describe("settings (ticket 10)", () => {
   });
 
   it("reports the seeded defaults before any edit", async () => {
-    expect(await client.settingsGet()).toEqual({ storeName: "Dokan", storePhone: null });
+    expect(await client.settingsGet()).toEqual({ storeName: "Dokan", storePhone: null, storeAddress: null });
   });
 
   it("normalizes a loose Algerian phone, persists, and audits the change", async () => {
@@ -514,15 +515,31 @@ describe("settings (ticket 10)", () => {
       storeName: "متجر السيارات",
       storePhone: "066 12 34 56 7",
     });
-    expect(updated).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567" });
+    expect(updated).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567", storeAddress: null });
     // persisted: a fresh read (no local cache in this client) sees the same
-    expect(await client.settingsGet()).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567" });
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر السيارات", storePhone: "+213661234567", storeAddress: null });
 
     const activities = await client.activitiesList({});
     expect(activities.items[0]).toMatchObject({
       type: "SETTINGS_UPDATED",
       summary: "تحديث إعدادات المتجر",
     });
+  });
+
+  it("persists and clears the store address through settingsUpdate", async () => {
+    // the setup form collects an address, so the settings write has to carry it
+    // through: forwarding only name and phone reported success while leaving the
+    // stored address untouched
+    const saved = await client.settingsUpdate({ storeAddress: "شارع الاستقلال 12" });
+    expect(saved.storeAddress).toBe("شارع الاستقلال 12");
+    expect((await client.settingsGet()).storeAddress).toBe("شارع الاستقلال 12");
+
+    // an explicit null or empty string clears it rather than leaving it alone
+    for (const clearWith of [null, ""]) {
+      const cleared = await client.settingsUpdate({ storeAddress: clearWith });
+      expect(cleared.storeAddress).toBeNull();
+      expect((await client.settingsGet()).storeAddress).toBeNull();
+    }
   });
 
   it("clears the phone with an explicit null or an empty string", async () => {
@@ -555,7 +572,7 @@ describe("settings (ticket 10)", () => {
       expect(code).toContain("INVALID_PHONE_NUMBER");
     }
     // nothing changed: name untouched, phone still the accepted one
-    expect(await client.settingsGet()).toEqual({ storeName: "متجر ثابت", storePhone: "+213550123123" });
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر ثابت", storePhone: "+213550123123", storeAddress: null });
   });
 
   it("rolls the identity write back when the audit insert fails (atomicity)", async () => {
@@ -606,7 +623,7 @@ describe("settings (ticket 10)", () => {
     ).rejects.toThrow();
 
     // identity unchanged AND no phantom audit row appeared
-    expect(await client.settingsGet()).toEqual({ storeName: "متجر ذرّي", storePhone: "+213550123123" });
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر ذرّي", storePhone: "+213550123123", storeAddress: null });
     const auditAfter = (await store.listActivities(100)).filter((a) => a.type === "SETTINGS_UPDATED").length;
     expect(auditAfter).toBe(auditBefore);
   });
@@ -2792,5 +2809,202 @@ describe("returns & refunds", () => {
     // revenue 900, cogs 300 — every unit exactly once.
     expect(afterReject.revenue - baseline.revenue).toBe(900);
     expect(afterReject.cogs - baseline.cogs).toBe(300);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// First-run setup provisioning (greptile PR #74)
+// ---------------------------------------------------------------------------
+
+/**
+ * Setup is the only unauthenticated write that can create an owner, so these
+ * cover the two ways it could hand out a broken or duplicated account: two
+ * concurrent setups racing, and a partial failure that leaves a user row but no
+ * working credential.
+ */
+describe("first-time setup provisioning", () => {
+  const teardown: Array<() => void> = [];
+  afterAll(() => {
+    for (const close of teardown) close();
+  });
+
+  const openInstance = async () => {
+    const instanceDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-setup-"));
+    const instanceConfig = createAppConfig({
+      DOKAN_DATA_DIR: instanceDir,
+      DOKAN_DB_PATH: path.join(instanceDir, "setup.db"),
+      DOKAN_AUTH_SECRET: "test-auth-secret",
+      DOKAN_BUILD_SECRET: "test-build-secret-123",
+    });
+    const instanceConn = openConnection(instanceConfig);
+    const instanceStore = createDrizzleStore(instanceConn);
+    // a fresh database has no tables until the store creates them
+    await instanceStore.setup();
+    const instanceLogger = new AppLogger(instanceDir);
+    const instanceAuth = createAuth(instanceConn.db, instanceConfig);
+
+    const clientFor = (storeFor: StorePort): DokanClient => {
+      const app = createApp({
+        config: instanceConfig,
+        logger: instanceLogger,
+        auth: instanceAuth,
+        rpcRouter: createRpcRouter({
+          db: instanceConn.db,
+          config: instanceConfig,
+          logger: instanceLogger,
+          store: storeFor,
+          auth: instanceAuth,
+        }),
+      });
+      const link = new RPCLink({
+        url: () => `http://127.0.0.1:${instanceConfig.port}/api/rpc`,
+        // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+        fetch: (request) => Promise.resolve(app.fetch(new Request(request))),
+      });
+      return createORPCClient(link);
+    };
+
+    teardown.push(() => {
+      instanceConn.close();
+      // Windows keeps the sqlite/WAL handles briefly after close
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(instanceDir, { recursive: true, force: true });
+          return;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    });
+
+    return { conn: instanceConn, store: instanceStore, client: clientFor(instanceStore), clientFor };
+  };
+
+  const SETUP_SECRET = "test-build-secret-123";
+
+  const setupCalls = (client: DokanClient, ownerName: string, phoneNumber: string) =>
+    client.firstTimeSetup({
+      ownerName,
+      phoneNumber,
+      password: "pass-1234",
+      storeName: `متجر ${ownerName}`,
+      secret: SETUP_SECRET,
+    });
+
+  it("refuses to provision for anyone without the build secret", async () => {
+    const inst = await openInstance();
+
+    // Provisioning closes setup to everyone else, so an unprotected call would
+    // let any client that reached a fresh installation become the owner.
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "متطفل",
+        phoneNumber: "0550999999",
+        password: "pass-1234",
+        storeName: "متجر",
+        secret: "wrong-secret",
+      }),
+    ).rejects.toThrow();
+
+    // refused before anything was written
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+
+    // and the real owner can still set up
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+  });
+
+  it("refuses uniformly once set up, so the secret cannot be probed", async () => {
+    const inst = await openInstance();
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+
+    // a completed installation must not tell a right guess from a wrong one,
+    // or this public procedure becomes an oracle for the secret that also
+    // unlocks a password reset. Both attempts must fail the same way: if a
+    // wrong secret produced WRONG_BUILD_SECRET, this assertion would fail.
+    const attempt = (secret: string) =>
+      inst.client.firstTimeSetup({ ownerName: "متطفل", phoneNumber: "0550222222", password: "pass-1234", storeName: "متجر", secret });
+
+    await expect(attempt("wrong-secret")).rejects.toThrow("SETUP_ALREADY_DONE");
+    await expect(attempt(SETUP_SECRET)).rejects.toThrow("SETUP_ALREADY_DONE");
+  });
+
+  it("provisions exactly one owner when two setups race", async () => {
+    const inst = await openInstance();
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+
+    // The existence check and the writes must share one BEGIN IMMEDIATE unit.
+    // Before that, both requests passed the check while the password hash was
+    // pending and each created an owner.
+    const results = await Promise.allSettled([
+      setupCalls(inst.client, "أ", "0550111111"),
+      setupCalls(inst.client, "ب", "0550222222"),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+
+    const userRows = await inst.conn.db.select({ id: users.id }).from(users);
+    expect(userRows).toHaveLength(1);
+    const accountRows = await inst.conn.db.select({ id: accounts.id }).from(accounts);
+    expect(accountRows).toHaveLength(1);
+
+    // the store points at whichever request won, and only that one
+    const settings = await inst.store.getSettings();
+    expect(["متجر أ", "متجر ب"]).toContain(settings.storeName);
+
+    // and setup is closed afterwards
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false });
+    await expect(setupCalls(inst.client, "ج", "0550333333")).rejects.toThrow();
+  });
+
+  it("rolls back a failed setup so it can be retried, and keeps the address", async () => {
+    const inst = await openInstance();
+
+    // A store whose audit write fails inside the unit. Every provisioning write
+    // must roll back with it: a surviving user row would make needsSetup false
+    // and the installation could never be set up again.
+    const failingStore: StorePort = {
+      ...inst.store,
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        inst.store.withTransactionImmediate((realTx: StorePort) =>
+          fn({
+            ...realTx,
+            insertActivity: async () => {
+              throw new Error("audit-boom");
+            },
+          }),
+        ),
+    };
+
+    await expect(
+      inst.clientFor(failingStore).firstTimeSetup({
+        ownerName: "مالك",
+        phoneNumber: "0550111111",
+        password: "pass-1234",
+        storeName: "متجر",
+        storeAddress: "شارع الاستقلال 12",
+        secret: SETUP_SECRET,
+      }),
+    ).rejects.toThrow();
+
+    const afterFailure = await inst.conn.db.select({ id: users.id }).from(users);
+    expect(afterFailure).toHaveLength(0);
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+
+    // the retry succeeds, and the address the form sent is retained
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "مالك",
+        phoneNumber: "0550111111",
+        password: "pass-1234",
+        storeName: "متجر",
+        storeAddress: "شارع الاستقلال 12",
+        secret: SETUP_SECRET,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(await inst.store.getSettings()).toEqual({
+      storeName: "متجر",
+      storePhone: "+213550111111",
+      storeAddress: "شارع الاستقلال 12",
+    });
   });
 });

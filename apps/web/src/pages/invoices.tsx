@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import type { InvoiceKind } from "@dokan/contracts";
 
 import { orpc } from "../lib/rpc";
+import { Amount } from "@/components/ui/amount";
+import { Skeleton } from "@/components/ui/skeleton";
 
 type KindFilter = "" | InvoiceKind;
 type StatusFilter = "" | "UNPAID" | "PARTIAL" | "PAID";
@@ -70,17 +72,21 @@ export function InvoicesPage() {
       </div>
 
       {list.isPending ? (
-        <p className="mt-4 text-sm text-stone-500">{t("activityError")}</p>
+        <div className="mt-4 grid gap-2">
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-full" />
+        </div>
       ) : list.isError ? (
-        <p role="alert" className="mt-4 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="invoices-error">
+        <p role="alert" className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
           {t("activityError")}
         </p>
       ) : list.data.items.length === 0 ? (
-        <p className="mt-4 text-sm text-stone-500" data-testid="invoices-empty">{t("invoicesEmpty")}</p>
+        <p className="mt-4 text-sm text-muted-foreground" data-testid="invoices-empty">{t("invoicesEmpty")}</p>
       ) : (
         <table className="mt-4 w-full" data-testid="invoices-table">
           <thead>
-            <tr className="border-b text-right text-sm text-stone-500">
+            <tr className="border-b text-right text-sm text-muted-foreground">
               <th className="p-2">{t("invoiceNumber")}</th>
               <th className="p-2">{t("invoiceKind")}</th>
               <th className="p-2">{t("invoiceParty")}</th>
@@ -97,13 +103,13 @@ export function InvoicesPage() {
                 <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
                 <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
                 <td className="p-2" dir="ltr">{invoice.invoiceDate}</td>
-                <td className="p-2">{invoice.totalAmount} دج</td>
-                <td className="p-2" data-testid={`invoice-remaining-${invoice.invoiceNumber}`}>{invoice.remainingAmount} دج</td>
+                <td className="p-2"><Amount value={invoice.totalAmount} /></td>
+                <td className="p-2" data-testid={`invoice-remaining-${invoice.invoiceNumber}`}><Amount value={invoice.remainingAmount} /></td>
                 <td className="p-2">
                   <Link
                     to="/invoices/$invoiceId"
                     params={{ invoiceId: invoice.id }}
-                    className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100"
+                    className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
                     data-testid={`invoice-open-${invoice.invoiceNumber}`}
                   >
                     {t("invoicesOpen")}

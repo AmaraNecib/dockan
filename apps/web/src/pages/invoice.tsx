@@ -90,14 +90,14 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   }
 
   return (
-    <div className="rounded border bg-white p-4" data-testid="pmt-panel">
+    <div className="rounded border bg-card p-4" data-testid="pmt-panel">
       <h2 className="font-semibold">{t("pmtTitle")}</h2>
       {invoice.payments.length === 0 ? (
-        <p className="mt-2 text-sm text-stone-500" data-testid="pmt-empty">{t("pmtEmpty")}</p>
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="pmt-empty">{t("pmtEmpty")}</p>
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="pmt-history">
           <thead>
-            <tr className="border-b text-right text-stone-500">
+            <tr className="border-b text-right text-muted-foreground">
               <th className="p-2">{t("pmtDate")}</th>
               <th className="p-2">{t("pmtAmount")}</th>
               <th className="p-2">{t("pmtMethod")}</th>
@@ -110,7 +110,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
                 <td className="p-2" dir="ltr">{payment.paidAt}</td>
                 <td className="p-2 font-medium">{payment.amount} دج</td>
                 <td className="p-2">{t(`pmtMethod_${payment.method}`)}</td>
-                <td className="p-2 text-stone-500">{payment.note ?? "—"}</td>
+                <td className="p-2 text-muted-foreground">{payment.note ?? "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -169,14 +169,14 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         ) : (
           <button
             type="submit"
-            className="rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50"
+            className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
             disabled={pay.isPending}
             data-testid="pmt-submit"
           >
             {t("pmtRecord")}
           </button>
         )}
-        {error && <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="pmt-error">{error}</p>}
+        {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="pmt-error">{error}</p>}
         {recorded && <p role="status" className="text-sm text-green-700" data-testid="pmt-done">{t("pmtRecorded")}</p>}
       </form>
     </div>
@@ -327,14 +327,14 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   }
 
   return (
-    <div className="rounded border bg-white p-4" data-testid="returns-panel">
+    <div className="rounded border bg-card p-4" data-testid="returns-panel">
       <h2 className="font-semibold">{t("returnsTitle")}</h2>
       {returns.length === 0 ? (
-        <p className="mt-2 text-sm text-stone-500" data-testid="returns-empty">{t("returnsEmpty")}</p>
+        <p className="mt-2 text-sm text-muted-foreground" data-testid="returns-empty">{t("returnsEmpty")}</p>
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="returns-history">
           <thead>
-            <tr className="border-b text-right text-stone-500">
+            <tr className="border-b text-right text-muted-foreground">
               <th className="p-2">{t("returnNumber")}</th>
               <th className="p-2">{t("returnsRefundTotal")}</th>
               <th className="p-2">{t("returnsStatus")}</th>
@@ -351,7 +351,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                   <Link
                     to="/invoices/$invoiceId/returns/$returnId/print"
                     params={{ invoiceId: invoice.id, returnId: record.id }}
-                    className="text-sm text-stone-700 underline"
+                    className="text-sm text-foreground underline"
                     data-testid={`return-print-${record.returnNumber}`}
                   >
                     {t("returnVoucher")}
@@ -366,7 +366,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
         <h3 className="text-sm font-semibold">{t("returnsRecordTitle")}</h3>
         {returnableLines.length === 0 ? (
-          <p className="text-sm text-stone-500" data-testid="returns-no-lines">{t("returnsNoLines")}</p>
+          <p className="text-sm text-muted-foreground" data-testid="returns-no-lines">{t("returnsNoLines")}</p>
         ) : (
           <div className="grid gap-2">
             {returnableLines.map((line) => {
@@ -375,7 +375,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                 <label key={line.id} className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm">
                   <span>
                     {line.description}
-                    <span className="ml-2 text-stone-500">{t("returnsRemaining", { remaining })}</span>
+                    <span className="ml-2 text-muted-foreground">{t("returnsRemaining", { remaining })}</span>
                   </span>
                   <input
                     className="w-24 rounded border px-2 py-1"
@@ -394,13 +394,13 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             })}
           </div>
         )}
-        <div className="grid gap-2 rounded border bg-stone-50 p-3 text-sm">
+        <div className="grid gap-2 rounded border bg-accent p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-stone-500">{t("returnsValue")}</span>
+            <span className="text-muted-foreground">{t("returnsValue")}</span>
             <span className="font-medium" data-testid="returns-value">{valueTotal} {t("dzd")}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-stone-500">{t("returnsCollected")}</span>
+            <span className="text-muted-foreground">{t("returnsCollected")}</span>
             <span data-testid="returns-collected">{invoice.paidAmount} {t("dzd")}</span>
           </div>
           <label className="grid gap-1">
@@ -438,17 +438,17 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           )}
           {Number.isFinite(settledCash) && (
             <div className="flex justify-between">
-              <span className="text-stone-500">{t("returnsCashNow")}</span>
+              <span className="text-muted-foreground">{t("returnsCashNow")}</span>
               <span className="font-medium" data-testid="returns-cash-now">{settledCash} {t("dzd")}</span>
             </div>
           )}
           {projectedDebt > 0 && (
-            <p className="text-xs text-stone-500" data-testid="returns-debt-note">
+            <p className="text-xs text-muted-foreground" data-testid="returns-debt-note">
               {t("returnsDebtAppliesOnAccept")}
             </p>
           )}
           {cashExceedsCollected && (
-            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="returns-cash-warning">
+            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-600" data-testid="returns-cash-warning">
               {t("returnsCashWarning", { paid: invoice.paidAmount })}
             </p>
           )}
@@ -467,13 +467,13 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         </label>
         <button
           type="submit"
-          className="rounded-lg bg-stone-900 py-2 text-white disabled:opacity-50"
+          className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
           disabled={create.isPending}
           data-testid="returns-submit"
         >
           {t("returnsSave")}
         </button>
-        {error && <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="returns-error">{error}</p>}
+        {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="returns-error">{error}</p>}
         {recorded && <p role="status" className="text-sm text-green-700" data-testid="returns-done">{t("returnsSaved")}</p>}
       </form>
     </div>
@@ -487,14 +487,14 @@ export function InvoicePage() {
   const detail = useQuery(orpc.invoicesGet.queryOptions({ input: { id: invoiceId } }));
 
   if (detail.isPending) {
-    return <p className="text-sm text-stone-500">{t("activityError")}</p>;
+    return <p className="text-sm text-muted-foreground">{t("activityError")}</p>;
   }
   if (detail.isError || detail.data === undefined) {
     const detailError = detail.error instanceof Error ? detail.error.message : undefined;
     return (
       <section className="grid gap-4" data-testid="invoice-error">
         <h1 className="text-xl font-bold">{t("invoiceTitle")}</h1>
-        <p role="alert" className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700" data-testid="invoice-error-text">{tError(detailError)}</p>
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoice-error-text">{tError(detailError)}</p>
         <Link to="/invoices" className="text-sm underline">{t("invoiceBack")}</Link>
       </section>
     );
@@ -511,22 +511,22 @@ export function InvoicePage() {
           <Link
             to="/invoices/$invoiceId/print"
             params={{ invoiceId }}
-            className="rounded-lg bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
+            className="rounded-lg bg-primary px-3 py-1 text-sm text-primary-foreground hover:bg-primary/80"
             data-testid="invoice-print"
           >
             {t("invoicePrint")}
           </Link>
-          <Link to="/invoices" className="rounded-lg border px-3 py-1 text-sm hover:bg-stone-100" data-testid="invoice-back">{t("invoiceBack")}</Link>
+          <Link to="/invoices" className="rounded-lg border px-3 py-1 text-sm hover:bg-muted" data-testid="invoice-back">{t("invoiceBack")}</Link>
         </div>
       </div>
 
-      <div className="rounded border bg-white p-4">
+      <div className="rounded border bg-card p-4">
         <InvoiceHeader />
         <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
-          <div className="flex justify-between border-b py-1"><dt className="text-stone-500">{t("invoiceNumber")}</dt><dd data-testid="invoice-number">{invoice.invoiceNumber}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-stone-500">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-stone-500">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-stone-500">{t("invoiceDate")}</dt><dd dir="ltr" data-testid="invoice-date">{invoice.invoiceDate}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceNumber")}</dt><dd data-testid="invoice-number">{invoice.invoiceNumber}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDate")}</dt><dd dir="ltr" data-testid="invoice-date">{invoice.invoiceDate}</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total">{invoice.totalAmount} دج</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid">{invoice.paidAmount} دج</dd></div>
           <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining">{remaining} دج</dd></div>
@@ -537,7 +537,7 @@ export function InvoicePage() {
             <h2 className="mt-4 font-semibold">{t("invoiceLinesTitle")}</h2>
             <table className="mt-2 w-full text-sm">
               <thead>
-                <tr className="border-b text-right text-stone-500">
+                <tr className="border-b text-right text-muted-foreground">
                   <th className="p-2">{t("itemsName")}</th>
                   <th className="p-2">{t("saleQuantity")}</th>
                   <th className="p-2">{t("saleActualPrice")}</th>

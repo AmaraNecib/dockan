@@ -10,7 +10,7 @@ import { useModalDialog } from "@/lib/use-modal-dialog";
 /** LTR-isolated barcode text inside the RTL layout */
 function Barcode({ code }: { code: string }) {
   return (
-    <span dir="ltr" className="font-mono text-xs text-stone-500">
+    <span dir="ltr" className="font-mono text-xs text-muted-foreground">
       {code}
     </span>
   );
@@ -87,7 +87,7 @@ export function ItemPickerDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-start justify-center bg-black/30 pt-24"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       data-testid="picker-dialog"
       onMouseDown={handleBackdrop}
     >
@@ -96,7 +96,7 @@ export function ItemPickerDialog({
         role="dialog"
         aria-modal="true"
         aria-label={t("itemsSearchPlaceholder")}
-        className="w-full max-w-lg rounded-2xl border bg-white p-4 shadow-lg"
+        className="w-full max-w-xl rounded-2xl border bg-popover p-4 shadow-lg max-h-[calc(100dvh-2rem)] overflow-y-auto"
       >
         <input
           ref={inputRef}
@@ -106,7 +106,7 @@ export function ItemPickerDialog({
           aria-controls="picker-results"
           aria-expanded={debounced.length > 0}
           aria-activedescendant={visibleActiveIndex !== null ? `picker-option-${matches[visibleActiveIndex]!.item.id}` : undefined}
-          className="w-full rounded border px-3 py-2"
+          className="w-full rounded border px-4 py-3 text-base"
           placeholder={t("itemsSearchPlaceholder")}
           value={query}
           onChange={(e) => {
@@ -140,7 +140,7 @@ export function ItemPickerDialog({
         {debounced.length > 0 && search.data?.exact && (
           <button
             type="button"
-            className="mt-2 w-full rounded border bg-stone-50 p-2 text-right hover:bg-stone-100"
+            className="mt-2 w-full rounded border bg-accent p-2 text-right hover:bg-accent/80"
             onClick={() => onSelect(search.data!.exact!.item)}
           >
             {search.data.exact.item.name} <Barcode code={search.data.exact.item.barcode ?? ""} />
@@ -163,13 +163,13 @@ export function ItemPickerDialog({
                 <button
                   type="button"
                   tabIndex={-1}
-                  className={`flex w-full items-center justify-between rounded p-2 text-right ${isActive ? "bg-stone-200 ring-2 ring-inset ring-stone-500" : "hover:bg-stone-100"}`}
+                  className={`flex w-full items-center justify-between rounded p-2 text-right ${isActive ? "bg-accent ring-2 ring-inset ring-ring" : "hover:bg-accent/80"}`}
                   onClick={() => onSelect(match.item)}
                 >
                   <span>{match.item.name}</span>
                   <span className="flex items-center gap-2">
                     {match.item.barcode && <Barcode code={match.item.barcode} />}
-                    <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-600">{t(matchBadgeKey(match.matchedBy))}</span>
+                    <span className="rounded bg-accent px-2 py-0.5 text-xs text-accent-foreground">{t(matchBadgeKey(match.matchedBy))}</span>
                   </span>
                 </button>
               </li>
@@ -177,7 +177,7 @@ export function ItemPickerDialog({
           })}
         </ul>
         {debounced.length > 0 && !search.isPending && matches.length === 0 && !search.data?.exact && (
-          <p className="mt-2 text-sm text-stone-500">{t("itemsSearchEmpty")}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{t("itemsSearchEmpty")}</p>
         )}
       </div>
     </div>

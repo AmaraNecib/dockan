@@ -4,7 +4,7 @@ import type { ReturnDetail } from "@dokan/contracts";
 
 import { buildReturnVoucher, debtOffsetDisplay } from "./return-voucher";
 
-const settings = { storeName: "متجر الكرامة", storePhone: "+213661234567" };
+const settings = { storeName: "متجر الكرامة", storePhone: "+213661234567", storeAddress: null };
 
 function makeReturn(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
   return {

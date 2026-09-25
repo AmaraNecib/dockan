@@ -36,6 +36,7 @@ export const movementKinds = ["PURCHASE", "SALE", "MANUAL_ADJUSTMENT"] as const;
 export const activityTypes = [
   "LOGIN",
   "PASSWORD_RESET",
+  "STORE_SETUP",
   "CATEGORY_CREATED",
   "ITEM_CREATED",
   "ITEM_UPDATED",
@@ -278,6 +279,7 @@ export const activitySchema = z.object({
 export const settingsSchema = z.object({
   storeName: z.string().trim().min(1),
   storePhone: z.string().trim().nullable(),
+  storeAddress: z.string().trim().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -471,6 +473,25 @@ export const resetPasswordInputSchema = z.object({
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
 });
 
+export const needsSetupOutputSchema = z.object({
+  needsSetup: z.boolean(),
+});
+
+export const firstTimeSetupInputSchema = z.object({
+  ownerName: z.string().trim().min(1),
+  phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
+  password: z.string().min(4),
+  storeName: z.string().trim().min(1),
+  storeAddress: z.string().trim().optional(),
+  // provisioning creates the first owner and closes setup, so it is gated by
+  // the same build secret that protects a password reset
+  secret: z.string().min(1),
+});
+
+export const firstTimeSetupOutputSchema = z.object({
+  ok: z.literal(true),
+});
+
 export const categoryCreateInputSchema = z.object({
   name: z.string().trim().min(1),
 });
@@ -657,6 +678,7 @@ export const logsTailInputSchema = z.object({
 export const settingsUpdateInputSchema = z.object({
   storeName: z.string().trim().min(1).optional(),
   storePhone: z.string().trim().nullable().optional(),
+  storeAddress: z.string().trim().nullable().optional(),
 });
 
 export const stockAddManualInputSchema = z.object({

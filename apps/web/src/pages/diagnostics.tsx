@@ -34,9 +34,9 @@ function parseRow(line: string): LogRow | null {
 }
 
 const levelStyle = {
-  info: "bg-stone-100 text-stone-600",
-  warn: "bg-amber-100 text-amber-800",
-  error: "bg-red-100 text-red-800",
+  info: "bg-muted text-muted-foreground",
+  warn: "bg-amber-500/10 text-amber-600",
+  error: "bg-destructive/10 text-destructive",
 } as const;
 
 function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
@@ -44,35 +44,35 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
   if (row === null) {
     // malformed line — show it as-is so nothing is silently dropped
     return (
-      <pre dir="ltr" className="overflow-x-auto rounded border bg-white p-3 font-mono text-xs text-stone-500">
+      <pre dir="ltr" className="overflow-x-auto rounded border bg-card p-3 font-mono text-xs text-muted-foreground">
         {raw}
       </pre>
     );
   }
   return (
-    <article className="rounded border bg-white p-3" data-testid="diagnostics-row">
+    <article className="rounded border bg-card p-3" data-testid="diagnostics-row">
       <header className="flex flex-wrap items-center gap-2 text-sm">
-        <time className="font-mono text-xs text-stone-500" dir="ltr">
+        <time className="font-mono text-xs text-muted-foreground" dir="ltr">
           {row.ts}
         </time>
         <span className={`rounded px-1.5 py-0.5 text-xs ${levelStyle[row.level]}`}>{row.level}</span>
-        <span className="rounded bg-stone-200 px-1.5 py-0.5 text-xs text-stone-700">{row.event}</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{row.event}</span>
         {row.code && (
-          <span className="rounded bg-stone-900 px-1.5 py-0.5 font-mono text-xs text-white" dir="ltr" data-testid="diagnostics-code">
+          <span className="rounded bg-primary px-1.5 py-0.5 font-mono text-xs text-primary-foreground" dir="ltr" data-testid="diagnostics-code">
             {row.code}
           </span>
         )}
         {row.errorName && (
-          <span className="font-mono text-xs text-stone-400" dir="ltr">
+          <span className="font-mono text-xs text-muted-foreground/60" dir="ltr">
             {row.errorName}
           </span>
         )}
       </header>
-      <p className="mt-1.5 text-sm text-stone-800">{row.message}</p>
+      <p className="mt-1.5 text-sm text-foreground">{row.message}</p>
       {row.stack && (
         <details className="mt-1.5">
-          <summary className="cursor-pointer text-xs text-stone-500 hover:text-stone-800">{t("diagnosticsStack")}</summary>
-          <pre dir="ltr" className="mt-1.5 overflow-x-auto rounded bg-stone-50 p-2 font-mono text-xs text-stone-600">
+          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{t("diagnosticsStack")}</summary>
+          <pre dir="ltr" className="mt-1.5 overflow-x-auto rounded bg-accent p-2 font-mono text-xs text-muted-foreground">
             {row.stack}
           </pre>
         </details>
@@ -96,28 +96,28 @@ export function DiagnosticsPage() {
       <h1 className="text-xl font-bold" data-testid="diagnostics-title">
         {t("diagnosticsTitle")}
       </h1>
-      <p className="mt-1 text-sm text-stone-600">{t("diagnosticsHint")}</p>
+      <p className="mt-1 text-sm text-muted-foreground">{t("diagnosticsHint")}</p>
       {logs.data && (
-        <p className="mt-1 text-xs text-stone-500" data-testid="diagnostics-file">
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="diagnostics-file">
           {t("diagnosticsFile")} <span dir="ltr" className="font-mono">{logs.data.file}</span>
         </p>
       )}
 
       {logs.isError ? (
-        <div className="mt-4 flex items-center justify-between rounded border bg-red-50 p-3 text-sm text-red-700">
+        <div className="mt-4 flex items-center justify-between rounded border bg-destructive/10 p-3 text-sm text-destructive">
           <span>{t("activityError")}</span>
           <button type="button" className="underline" onClick={() => void logs.refetch()}>
             {t("itemsSearchRetry")}
           </button>
         </div>
       ) : logs.isPending || !logs.data ? (
-        <div className="mt-4 grid gap-3 rounded border bg-white p-3">
+        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-14 w-full" />
           ))}
         </div>
       ) : logs.data.lines.length === 0 ? (
-        <p className="mt-4 rounded border bg-white p-4 text-stone-500">{t("diagnosticsEmpty")}</p>
+        <p className="mt-4 rounded border bg-card p-4 text-muted-foreground">{t("diagnosticsEmpty")}</p>
       ) : (
         <div className="mt-4 grid gap-2" data-testid="diagnostics-list">
           {/* the api tail is newest-last (chronological); the viewer shows newest first.

@@ -6,6 +6,7 @@ import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Amount } from "@/components/ui/amount";
 
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
@@ -79,8 +80,8 @@ export function ItemsPage() {
         <p
           className={
             notice.tone === "error"
-              ? "mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700"
-              : "mt-2 rounded border bg-green-50 p-2 text-sm text-green-800"
+              ? "mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive"
+              : "mt-2 rounded border bg-green-500/10 p-2 text-sm text-green-700"
           }
           data-testid={notice.tone === "error" ? "scan-error" : "scan-found"}
           role="status"
@@ -132,7 +133,7 @@ function CatalogSearch() {
   });
 
   return (
-    <div className="mt-4 rounded border bg-white p-3">
+    <div className="mt-4 rounded border bg-card p-3">
       <input
         className="w-full rounded border px-3 py-2"
         placeholder={t("itemsSearchPlaceholder")}
@@ -142,7 +143,7 @@ function CatalogSearch() {
         data-testid="catalog-search"
       />
       {search.isError && (
-        <div className="mt-2 flex items-center justify-between rounded border bg-red-50 p-2 text-sm text-red-700">
+        <div className="mt-2 flex items-center justify-between rounded border bg-destructive/10 p-2 text-sm text-destructive">
           <span>{t("itemsSearchError")}</span>
           <button type="button" className="underline" onClick={() => void search.refetch()}>
             {t("itemsSearchRetry")}
@@ -152,7 +153,7 @@ function CatalogSearch() {
       {debounced.length > 0 && !search.isError && (
         <ul className="mt-2" data-testid="search-results">
           {search.data?.exact && (
-            <li className="flex items-center justify-between rounded bg-stone-50 p-2 font-semibold">
+            <li className="flex items-center justify-between rounded bg-accent p-2 font-semibold">
               <span>{search.data.exact.item.name}</span>
               <span dir="ltr" className="font-mono text-xs">
                 {search.data.exact.item.barcode}
@@ -164,20 +165,20 @@ function CatalogSearch() {
               <span>{match.item.name}</span>
               <span className="flex items-center gap-2">
                 {match.item.barcode && (
-                  <span dir="ltr" className="font-mono text-xs text-stone-500">
+                  <span dir="ltr" className="font-mono text-xs text-muted-foreground">
                     {match.item.barcode}
                   </span>
                 )}
-                <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-600">{t(matchBadgeKey(match.matchedBy))}</span>
+                <span className="rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">{t(matchBadgeKey(match.matchedBy))}</span>
               </span>
             </li>
           ))}
           {debounced.length > 0 && !search.isPending && !search.isError && !search.data?.exact && (search.data?.matches.length ?? 0) === 0 && (
-            <li className="p-2 text-sm text-stone-500">{t("itemsSearchEmpty")}</li>
+            <li className="p-2 text-sm text-muted-foreground">{t("itemsSearchEmpty")}</li>
           )}
         </ul>
       )}
-      <button type="button" className="mt-2 text-sm text-stone-600 underline" onClick={() => setPickerOpen(true)} data-testid="open-picker">
+      <button type="button" className="mt-2 text-sm text-muted-foreground underline" onClick={() => setPickerOpen(true)} data-testid="open-picker">
         {t("itemsOpenPicker")}
       </button>
       <ItemPickerDialog
@@ -309,7 +310,7 @@ function ItemForm({
   }
 
   return (
-    <form className="mt-4 grid gap-3 rounded border bg-white p-4" onSubmit={submit}>
+    <form className="mt-4 grid gap-3 rounded border bg-card p-4" onSubmit={submit}>
       <label className="grid gap-1">
         {t("itemsName")}
         <input className="rounded border px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
@@ -363,15 +364,15 @@ function ItemForm({
           />
         </label>
       )}
-      <p className="text-sm text-stone-600" data-testid="profit-preview">
+      <p className="text-sm text-muted-foreground" data-testid="profit-preview">
         {profit !== null ? t("itemsProfitPerUnit", { profit }) : "…"}
       </p>
       {error && (
-        <p className="text-sm text-red-600" data-testid="form-error">
+        <p className="text-sm text-destructive" data-testid="form-error">
           {error}
         </p>
       )}
-      <button className="rounded-lg bg-stone-900 py-2 text-white" type="submit" data-testid="item-save">
+      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" data-testid="item-save">
         {t("itemsSave")}
       </button>
     </form>
@@ -385,7 +386,7 @@ function ItemList() {
   // first load: skeleton rows matching the table shape so layout does not jump
   if (items.isPending || !items.data) {
     return (
-      <div className="mt-6 grid gap-3 rounded border bg-white p-3">
+      <div className="mt-6 grid gap-3 rounded border bg-card p-3">
         {[0, 1, 2, 3].map((row) => (
           <Skeleton key={row} className="h-6 w-full" />
         ))}
@@ -394,13 +395,13 @@ function ItemList() {
   }
 
   if (items.data.items.length === 0) {
-    return <p className="mt-6 rounded border bg-white p-3 text-stone-500">{t("itemsEmpty")}</p>;
+    return <p className="mt-6 rounded border bg-card p-3 text-muted-foreground">{t("itemsEmpty")}</p>;
   }
 
   return (
-    <table className="mt-6 w-full rounded border bg-white">
+    <table className="mt-6 w-full rounded border bg-card">
       <thead>
-        <tr className="border-b text-right text-sm text-stone-500">
+        <tr className="border-b text-right text-sm text-muted-foreground">
           <th className="p-3">{t("itemsName")}</th>
           <th className="p-3">{t("itemsBarcode")}</th>
           <th className="p-3">{t("itemsCategory")}</th>
@@ -425,16 +426,16 @@ function ItemList() {
               )}
             </td>
             <td className="p-3">{item.categoryName ?? "—"}</td>
-            <td className="p-3">{item.costPrice}</td>
-            <td className="p-3">{item.sellingPrice}</td>
-            <td className="p-3">{item.sellingPrice - item.costPrice}</td>
+            <td className="p-3"><Amount value={item.costPrice} /></td>
+            <td className="p-3"><Amount value={item.sellingPrice} /></td>
+            <td className="p-3"><Amount value={item.sellingPrice - item.costPrice} /></td>
             <td className="p-3">
               <span data-testid="stock-after-cell">
-                {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-red-600">{t("itemsLowBadge")}</span>}
+                {item.stockOnHand} {item.stockOnHand <= item.lowStockThreshold && <span className="text-xs text-destructive">{t("itemsLowBadge")}</span>}
               </span>
             </td>
             <td className="p-3">
-              <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-stone-600 underline hover:text-stone-900">
+              <Link to="/items/$itemId/history" params={{ itemId: item.id }} className="text-muted-foreground underline hover:text-foreground">
                 {t("historyLink")}
               </Link>
             </td>

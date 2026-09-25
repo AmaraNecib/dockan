@@ -27,10 +27,10 @@ export function UnknownScanDialog({
   const { panelRef } = useModalDialog<HTMLDivElement>(true, onClose);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30" data-testid="unknown-scan-dialog" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={t("scanUnknownTitle")} className="w-full max-w-sm rounded-2xl border bg-white p-5 shadow-lg">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="unknown-scan-dialog" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={t("scanUnknownTitle")} className="w-full max-w-md rounded-2xl border bg-popover p-5 shadow-lg">
         <h2 className="text-lg font-bold">{t("scanUnknownTitle")}</h2>
-        <p className="mt-1 text-sm text-stone-500">
+        <p className="mt-1 text-sm text-muted-foreground">
           {t("scanUnknownCode")}:{" "}
           <span dir="ltr" className="font-mono">
             {code}

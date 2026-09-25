@@ -24,6 +24,10 @@ function formatActivityReference(type: string, ref: string): string {
  */
 function activitySummaryText(t: TFunction, type: string, summary: string): string {
   const tokens = summary.split(" ");
+  if (type === "STORE_SETUP" && tokens[0] === "STORE_SETUP" && tokens.length >= 2) {
+    // the store name is free text, so everything after the token is the name
+    return t("activityStoreSetup", { name: tokens.slice(1).join(" ") });
+  }
   if (type === "RETURN_RECORDED" && tokens[0] === "RETURN_RECORDED" && tokens.length >= 5) {
     const [, number, amount, invoice, debt] = tokens;
     return Number(debt) > 0
@@ -52,24 +56,24 @@ export function ActivityLogPage() {
       <h1 className="text-xl font-bold">{t("activityTitle")}</h1>
 
       {activities.isError ? (
-        <div className="mt-4 flex items-center justify-between rounded border bg-red-50 p-3 text-sm text-red-700">
+        <div className="mt-4 flex items-center justify-between rounded border bg-destructive/10 p-3 text-sm text-destructive">
           <span>{t("activityError")}</span>
           <button type="button" className="underline" onClick={() => void activities.refetch()}>
             {t("itemsSearchRetry")}
           </button>
         </div>
       ) : activities.isPending || !activities.data ? (
-        <div className="mt-4 grid gap-3 rounded border bg-white p-3">
+        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
       ) : activities.data.items.length === 0 ? (
-        <p className="mt-4 rounded border bg-white p-4 text-stone-500">{t("activityEmpty")}</p>
+        <p className="mt-4 rounded border bg-card p-4 text-muted-foreground">{t("activityEmpty")}</p>
       ) : (
-        <table className="mt-4 w-full rounded border bg-white" data-testid="activity-table">
+        <table className="mt-4 w-full rounded border bg-card" data-testid="activity-table">
           <thead>
-            <tr className="border-b text-right text-sm text-stone-500">
+            <tr className="border-b text-right text-sm text-muted-foreground">
               <th className="p-3">{t("historyDate")}</th>
               <th className="p-3">{t("activityType")}</th>
               <th className="p-3">{t("activitySummary")}</th>
@@ -79,15 +83,15 @@ export function ActivityLogPage() {
           <tbody>
             {activities.data.items.map((entry) => (
               <tr key={entry.id} className="border-b last:border-0">
-                <td className="p-3 whitespace-nowrap text-sm text-stone-600" dir="ltr">
+                <td className="p-3 whitespace-nowrap text-sm text-muted-foreground" dir="ltr">
                   {entry.at}
                 </td>
                 <td className="p-3">
-                  <span className="rounded bg-stone-200 px-2 py-0.5 text-xs text-stone-700">{t(`activityType_${entry.type}`)}</span>
+                  <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
                 </td>
                 <td className="p-3">{activitySummaryText(t, entry.type, entry.summary)}</td>
                 {/* Entity refs are compact; backup refs display their safe local filename. */}
-                <td className="p-3 font-mono text-xs text-stone-500" dir="ltr" data-testid="activity-ref">
+                <td className="p-3 font-mono text-xs text-muted-foreground" dir="ltr" data-testid="activity-ref">
                   {entry.ref ? formatActivityReference(entry.type, entry.ref) : "—"}
                 </td>
               </tr>

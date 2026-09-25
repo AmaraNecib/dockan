@@ -43,26 +43,26 @@ export function CategoriesPage() {
           placeholder={t("categoriesNewName")}
           required
         />
-        <button className="rounded-lg bg-stone-900 px-4 py-2 text-white" type="submit">
+        <button className="rounded-lg bg-primary px-4 py-2 text-primary-foreground" type="submit">
           {t("categoriesAdd")}
         </button>
       </form>
-      {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 
       {categories.isPending || !categories.data ? (
-        <div className="mt-4 grid gap-3 rounded border bg-white p-3">
+        <div className="mt-4 grid gap-3 rounded border bg-card p-3">
           {[0, 1, 2].map((row) => (
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
       ) : (
-        <ul className="mt-4 divide-y rounded border bg-white">
+        <ul className="mt-4 divide-y rounded border bg-card">
           {categories.data.items.map((category) => (
             <li key={category.id} className="p-3">
               {category.name}
             </li>
           ))}
-          {categories.data.items.length === 0 && <li className="p-3 text-stone-500">{t("categoriesEmpty")}</li>}
+          {categories.data.items.length === 0 && <li className="p-3 text-muted-foreground">{t("categoriesEmpty")}</li>}
         </ul>
       )}
     </section>

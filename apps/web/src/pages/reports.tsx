@@ -47,9 +47,9 @@ export function ReportsPage() {
   return (
     <section data-testid="reports-page">
       <h1 className="text-xl font-bold">{t("reportsTitle")}</h1>
-      <p className="mt-1 text-xs text-stone-500">{t("reportsRangeHint")}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{t("reportsRangeHint")}</p>
 
-      <div className="mt-4 grid gap-3 rounded border bg-white p-4">
+      <div className="mt-4 grid gap-3 rounded border bg-card p-4">
         <div className="grid grid-cols-3 gap-3">
           <label className="grid gap-1">
             {t("expensesRange")}
@@ -71,17 +71,17 @@ export function ReportsPage() {
           )}
         </div>
         {report.data !== undefined && (
-          <p className="text-sm text-stone-500" dir="ltr" data-testid="report-range-label">
+          <p className="text-sm text-muted-foreground" dir="ltr" data-testid="report-range-label">
             {report.data.range.from} → {report.data.range.to}
           </p>
         )}
         {report.data !== undefined && (
-          <p className="text-xs text-stone-500" data-testid="report-day-hint">{t("reportsSellByDayHint")}</p>
+          <p className="text-xs text-muted-foreground" data-testid="report-day-hint">{t("reportsSellByDayHint")}</p>
         )}
       </div>
 
       {report.isError ? (
-        <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" data-testid="report-error">
+        <div className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive" role="alert" data-testid="report-error">
           {tError(report.error?.message)}
         </div>
       ) : report.isPending || report.data === undefined ? (
@@ -90,20 +90,20 @@ export function ReportsPage() {
         </div>
       ) : (
         <>
-          <dl className="mt-4 grid gap-px overflow-hidden rounded border bg-stone-200" data-testid="report-figures">
-            <div className="flex justify-between bg-white p-3">
+          <dl className="mt-4 grid gap-px overflow-hidden rounded border bg-muted" data-testid="report-figures">
+            <div className="flex justify-between bg-card p-3">
               <dt>{t("reportRevenue")}</dt>
               <dd className="font-semibold" data-testid="report-revenue">{report.data.revenue} دج</dd>
             </div>
-            <div className="flex justify-between bg-white p-3">
+            <div className="flex justify-between bg-card p-3">
               <dt>{t("reportCogs")}</dt>
               <dd className="font-semibold" data-testid="report-cogs">-{report.data.cogs} دج</dd>
             </div>
-            <div className="flex justify-between bg-white p-3">
+            <div className="flex justify-between bg-card p-3">
               <dt>{t("reportGrossProfit")}</dt>
               <dd className="font-semibold" data-testid="report-gross-profit">{report.data.grossProfit} دج</dd>
             </div>
-            <div className="flex justify-between bg-white p-3">
+            <div className="flex justify-between bg-card p-3">
               <dt>{t("reportOperatingExpenses")}</dt>
               <dd className="font-semibold" data-testid="report-operating">-{report.data.operatingExpenses} دج</dd>
             </div>
@@ -111,7 +111,7 @@ export function ReportsPage() {
               <dt>{t("reportOwnerWithdrawals")}</dt>
               <dd className="font-semibold" data-testid="report-withdrawals">-{report.data.ownerWithdrawals} دج</dd>
             </div>
-            <div className={`flex justify-between border-t p-3 text-lg font-bold ${report.data.resultAfterExpenses < 0 ? "bg-red-50 text-red-700" : "bg-white"}`}>
+            <div className={`flex justify-between border-t p-3 text-lg font-bold ${report.data.resultAfterExpenses < 0 ? "bg-destructive/10 text-destructive" : "bg-card"}`}>
               <dt>{t("reportResult")}</dt>
               <dd data-testid="report-result">
                 {report.data.resultAfterExpenses} دج
@@ -122,11 +122,11 @@ export function ReportsPage() {
 
           <h2 className="mt-6 font-semibold">{t("reportByCategory")}</h2>
           {report.data.byCategory.length === 0 ? (
-            <p className="mt-2 rounded border bg-white p-4 text-stone-500" data-testid="report-breakdown-empty">{t("reportsEmpty")}</p>
+            <p className="mt-2 rounded border bg-card p-4 text-muted-foreground" data-testid="report-breakdown-empty">{t("reportsEmpty")}</p>
           ) : (
-            <table className="mt-2 w-full rounded border bg-white" data-testid="report-breakdown">
+            <table className="mt-2 w-full rounded border bg-card" data-testid="report-breakdown">
               <thead>
-                <tr className="border-b text-right text-sm text-stone-500">
+                <tr className="border-b text-right text-sm text-muted-foreground">
                   <th className="p-3">{t("expenseColCategory")}</th>
                   <th className="p-3">{t("expenseCount")}</th>
                   <th className="p-3">{t("expenseColAmount")}</th>

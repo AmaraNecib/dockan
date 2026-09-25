@@ -81,6 +81,23 @@ export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "over
   return !Number.isInteger(value) || value < 0 || value > 100;
 }
 
+/**
+ * Debt a pending SALE will carry: `total` minus whatever the raw paid draft
+ * records as the initial payment. Mirrors the commit invariant
+ * `initialPaid: paid === 0 ? undefined : paid` — an empty or zero draft leaves
+ * the whole total unpaid (carried as customer debt), a partial payment leaves
+ * the remainder, and a draft covering the total leaves none. Invalid drafts
+ * report `valid: false` so the pre-commit preview can stay hidden while
+ * `submit` surfaces its own validation error.
+ */
+export function saleDebt(total: number, paidDraft: string): { valid: boolean; debt: number } {
+  const paid = paidDraft === "" ? undefined : Number(paidDraft);
+  const valid = paid === undefined || (Number.isInteger(paid) && paid >= 0);
+  if (!valid) return { valid: false, debt: 0 };
+  const effectivePaid = paid !== undefined && paid > 0 ? paid : 0;
+  return { valid: true, debt: Math.max(total - effectivePaid, 0) };
+}
+
 export function SalePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -94,6 +111,7 @@ export function SalePage() {
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedNumber, setSavedNumber] = useState<string | null>(null);
+  const [savedDebt, setSavedDebt] = useState<number | null>(null);
 
   const [quickMode, setQuickMode] = useState<QuickAddMode | null>(null);
   const [quickName, setQuickName] = useState("");
@@ -105,6 +123,9 @@ export function SalePage() {
   // Only the newest lookup may open the unknown-scan choice or add a line;
   // this prevents a slow older response from overwriting a later scan.
   const scanSeqRef = useRef(0);
+  // Debt carried by the invoice being committed, captured from the pre-commit
+  // totals so the success screen can surface it without an extra request.
+  const pendingDebtRef = useRef<number | null>(null);
 
   const addLine = (item: Item) => {
     setLines((current) => {
@@ -143,6 +164,8 @@ export function SalePage() {
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
         setSavedNumber(invoice.invoiceNumber);
+        setSavedDebt(pendingDebtRef.current);
+        pendingDebtRef.current = null;
         setLines([]);
         setCustomer("");
         setDiscountType("");
@@ -162,6 +185,9 @@ export function SalePage() {
   const enteredDiscount = nonNegativeOr(discountValue, 0);
   const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
   const total = subtotal - discountAmount;
+
+  // Live debt preview for the pending sale — see `saleDebt` for the invariant.
+  const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
 
   function submit() {
     setError(null);
@@ -210,6 +236,7 @@ export function SalePage() {
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
+    pendingDebtRef.current = paidInputValid && totalDebt > 0 ? totalDebt : null;
     void createInvoice.mutate(invoiceInput);
   }
 
@@ -264,7 +291,7 @@ export function SalePage() {
       <section data-testid="sale-saved" className="grid gap-4">
         <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
         <div className="rounded border bg-card p-5">
-          <p className="font-semibold text-green-700" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}</p>
+          <p className="font-semibold text-green-700" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}{savedDebt !== null && savedDebt > 0 && <span data-testid="sale-saved-debt">{" "}{t("saleDebtSavedPrefix")} <Amount value={savedDebt} /> {t("saleDebtCustomer")}</span>}</p>
           <button type="button" className="mt-4 rounded-lg border px-3 py-2" onClick={() => setSavedNumber(null)}>{t("saleNew")}</button>
         </div>
       </section>
@@ -312,9 +339,14 @@ export function SalePage() {
         <h2 className="font-semibold">{t("saleTotalsTitle")}</h2>
         <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === ""} data-testid="sale-discount-value" /></label></div>
         <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
+        {paidInputValid && totalDebt > 0 && (
+          <p className="rounded border border-amber-600/30 bg-amber-500/10 p-2 text-sm" data-testid="sale-debt-notice">
+            {t("saleDebtWillBeCreated")} <Amount value={totalDebt} /> {t("saleDebtCustomer")}
+          </p>
+        )}
+        {error && <p className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
+        <button type="button" className="mt-2 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</button>
       </div>
-      {error && <p className="mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
-      <button type="button" className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending} data-testid="sale-save">{t("saleSave")}</button>
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />
       {unknownCode !== null && <UnknownScanDialog code={unknownCode} onClose={() => setUnknownCode(null)} onCreate={() => { setUnknownCode(null); openQuick("EMPTY", unknownCode); }} onCreateWithStock={() => { setUnknownCode(null); openQuick("STOCK", unknownCode); }} onManualLine={() => { setUnknownCode(null); setPickerOpen(true); }} />}

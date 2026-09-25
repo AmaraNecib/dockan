@@ -217,6 +217,10 @@ const resources = {
       saleDiscount: "الخصم",
       saleTotal: "المجموع النهائي",
       saleSave: "إتمام البيع",
+      saleSaving: "جارٍ الحفظ…",
+      saleDebtWillBeCreated: "سيُنشأ دين",
+      saleDebtSavedPrefix: "— دين",
+      saleDebtCustomer: "للزبون",
       saleSaved: "تم حفظ فاتورة البيع رقم {{number}}",
       saleNew: "بيع جديد",
       // ticket 9 — debts screen (who owes whom)

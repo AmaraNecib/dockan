@@ -10,7 +10,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { overrideInputInvalid, parseQuantityDraft, quantityDraftInvalid } = await import("./sale");
+const { overrideInputInvalid, parseQuantityDraft, quantityDraftInvalid, saleDebt } = await import("./sale");
 
 describe("cart quantity draft (cleared state + deterministic parse)", () => {
   it("parses a cleared or whitespace draft to 0 (invalid, never stuck)", () => {
@@ -92,5 +92,29 @@ describe("overrideInputInvalid (sale line price override)", () => {
     expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "101" })).toBe(true);
     expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "-1" })).toBe(true);
     expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "12.5" })).toBe(true);
+  });
+});
+
+describe("saleDebt (pre-commit customer debt preview)", () => {
+  it("treats an empty or zero paid draft as the whole total becoming debt", () => {
+    expect(saleDebt(1000, "")).toEqual({ valid: true, debt: 1000 });
+    expect(saleDebt(1000, "0")).toEqual({ valid: true, debt: 1000 });
+  });
+
+  it("leaves the remainder as debt after a partial payment", () => {
+    expect(saleDebt(1000, "400")).toEqual({ valid: true, debt: 600 });
+    expect(saleDebt(750, "250")).toEqual({ valid: true, debt: 500 });
+  });
+
+  it("reports no debt once the draft covers the total (overpayment capped at zero)", () => {
+    expect(saleDebt(1000, "1000")).toEqual({ valid: true, debt: 0 });
+    expect(saleDebt(1000, "1500")).toEqual({ valid: true, debt: 0 });
+    expect(saleDebt(0, "")).toEqual({ valid: true, debt: 0 });
+  });
+
+  it("flags invalid drafts so the preview stays hidden until submit validates them", () => {
+    expect(saleDebt(1000, "-5")).toEqual({ valid: false, debt: 0 });
+    expect(saleDebt(1000, "12.5")).toEqual({ valid: false, debt: 0 });
+    expect(saleDebt(1000, "abc")).toEqual({ valid: false, debt: 0 });
   });
 });

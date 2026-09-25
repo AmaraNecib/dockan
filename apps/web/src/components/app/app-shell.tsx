@@ -71,7 +71,7 @@ export function AppShell() {
   });
 
   return (
-    <div dir="rtl" className="flex h-screen overflow-hidden bg-background text-foreground">
+    <div dir="rtl" className="flex h-screen overflow-hidden bg-background text-foreground print:h-auto print:overflow-visible">
       <AppSidebar
         collapsed={collapsed}
         activeKey={activeKey}
@@ -123,7 +123,7 @@ export function AppShell() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto print:overflow-visible">
           <div className="mx-auto w-full max-w-7xl px-6 py-6" style={{ minHeight: 0 }}>
             <Outlet />
           </div>

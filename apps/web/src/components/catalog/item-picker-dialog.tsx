@@ -96,7 +96,7 @@ export function ItemPickerDialog({
         role="dialog"
         aria-modal="true"
         aria-label={t("itemsSearchPlaceholder")}
-        className="w-full max-w-xl rounded-2xl border bg-popover p-4 shadow-lg"
+        className="w-full max-w-xl rounded-2xl border bg-popover p-4 shadow-lg max-h-[calc(100dvh-2rem)] overflow-y-auto"
       >
         <input
           ref={inputRef}

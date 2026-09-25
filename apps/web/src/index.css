@@ -208,4 +208,23 @@ body {
   [data-testid="receipt-view"] .receipt-totals {
     break-inside: avoid;
   }
+  /* Printing drops background graphics by default. In dark mode the receipt and
+     voucher carry light text on a dark card, so force a paper-safe scheme or the
+     labels, totals, and payment rows print white on white. */
+  [data-testid="receipt-view"],
+  [data-testid="return-voucher-view"] {
+    background: #fff !important;
+    color: #000 !important;
+    border: 0 !important;
+  }
+  [data-testid="receipt-view"] *,
+  [data-testid="return-voucher-view"] * {
+    background: transparent !important;
+    color: #000 !important;
+    border-color: #bbb !important;
+  }
+  [data-testid="receipt-view"] .text-muted-foreground,
+  [data-testid="return-voucher-view"] .text-muted-foreground {
+    color: #555 !important;
+  }
 }

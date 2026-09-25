@@ -12,7 +12,7 @@ import { buildReceipt } from "./receipt";
  * arithmetic that could disagree with the invoice detail).
  */
 
-const settings: Settings = { storeName: "دكان التجربة", storePhone: "+213550123123" };
+const settings: Settings = { storeName: "دكان التجربة", storePhone: "+213550123123", storeAddress: null };
 
 const payments: InvoiceDetail["payments"] = [
   { id: "p1", invoiceId: "inv-1", amount: 300, method: "CASH", note: "أول دفعة", paidAt: "2026-08-25T10:01:00", createdAt: "2026-08-25T10:01:00" },
@@ -53,7 +53,7 @@ describe("buildReceipt — store identity + invoice header", () => {
   });
 
   it("keeps a null store phone null (no invented placeholder)", () => {
-    const receipt = buildReceipt(invoice, { storeName: "دكان", storePhone: null });
+    const receipt = buildReceipt(invoice, { storeName: "دكان", storePhone: null, storeAddress: null });
     expect(receipt.storePhone).toBeNull();
   });
 

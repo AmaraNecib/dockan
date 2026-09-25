@@ -14,12 +14,12 @@ export type ShellUser = {
   phone: string | null;
 };
 
-/** A letter or two for the avatar. Falls back to the phone's first digits, then "؟". */
-function avatarText(user: ShellUser | null): string {
+/** A letter or two for the avatar, or null when there is nothing to show. */
+function avatarText(user: ShellUser | null): string | null {
   const name = user?.name?.trim();
   if (!name) {
     const digits = user?.phone?.replace(/\D/g, "");
-    return digits && digits.length > 0 ? digits.slice(0, 2) : "؟";
+    return digits && digits.length > 0 ? digits.slice(0, 2) : null;
   }
   if (/[a-z]/i.test(name)) {
     const parts = name.trim().split(/\s+/);
@@ -138,7 +138,7 @@ export function AppSidebar({ collapsed, activeKey, user, onExpand }: AppSidebarP
 
 function AvatarGlyph({ user }: { user: ShellUser | null }) {
   const text = avatarText(user);
-  if (text === "؟") return <UserRound size={14} />;
+  if (text === null) return <UserRound size={14} />;
   return <span dir="ltr">{text}</span>;
 }
 

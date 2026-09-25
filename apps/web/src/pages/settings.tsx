@@ -21,6 +21,7 @@ export function SettingsPage() {
 
   const [storeName, setStoreName] = useState("");
   const [storePhone, setStorePhone] = useState("");
+  const [storeAddress, setStoreAddress] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +32,7 @@ export function SettingsPage() {
     if (!settings.data || hydrated) return;
     setStoreName(settings.data.storeName);
     setStorePhone(settings.data.storePhone ?? "");
+    setStoreAddress(settings.data.storeAddress ?? "");
     setHydrated(true);
   }, [settings.data, hydrated]);
 
@@ -77,7 +79,12 @@ export function SettingsPage() {
             event.preventDefault();
             setMessage(null);
             const phone = storePhone.trim();
-            void save.mutate({ storeName: storeName.trim(), storePhone: phone === "" ? null : phone });
+            const address = storeAddress.trim();
+            void save.mutate({
+              storeName: storeName.trim(),
+              storePhone: phone === "" ? null : phone,
+              storeAddress: address === "" ? null : address,
+            });
           }}
         >
           <label className="grid gap-1">
@@ -100,6 +107,15 @@ export function SettingsPage() {
               inputMode="tel"
               dir="ltr"
               data-testid="settings-phone"
+            />
+          </label>
+          <label className="grid gap-1">
+            {t("settingsStoreAddress")}
+            <input
+              className="rounded border px-3 py-2"
+              value={storeAddress}
+              onChange={(e) => setStoreAddress(e.target.value)}
+              data-testid="settings-address"
             />
           </label>
 

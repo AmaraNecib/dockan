@@ -24,6 +24,10 @@ function formatActivityReference(type: string, ref: string): string {
  */
 function activitySummaryText(t: TFunction, type: string, summary: string): string {
   const tokens = summary.split(" ");
+  if (type === "STORE_SETUP" && tokens[0] === "STORE_SETUP" && tokens.length >= 2) {
+    // the store name is free text, so everything after the token is the name
+    return t("activityStoreSetup", { name: tokens.slice(1).join(" ") });
+  }
   if (type === "RETURN_RECORDED" && tokens[0] === "RETURN_RECORDED" && tokens.length >= 5) {
     const [, number, amount, invoice, debt] = tokens;
     return Number(debt) > 0

@@ -184,51 +184,62 @@ export function createRpcRouter(deps: RpcDeps) {
     }),
 
     firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
-      // only allowed when no users exist
-      const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
-      if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
-
       const phone = normalizeAlgerianPhone(input.phoneNumber);
       if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
       const username = phoneToUsername(phone);
 
+      // Hashing is the slow step and needs no lock, so it runs before the unit.
       const ctx = await deps.auth.$context;
       const hashed = await ctx.password.hash(input.password);
 
-      const userId = randomUUID();
-      await deps.db.insert(users).values({
-        id: userId,
-        name: input.ownerName,
-        image: null,
-        username,
-        phoneNumber: phone,
-        phoneNumberVerified: 1,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }).run();
+      // The "no users yet" check and every provisioning write commit as one
+      // BEGIN IMMEDIATE unit. Checking before the awaited hash let two
+      // concurrent setups both pass and create competing owners, and a failure
+      // after the user insert left a user row that made needsSetup false, so
+      // setup could never be retried while no credential worked.
+      return deps.store.withTransactionImmediate(async (tx) => {
+        const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
+        if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
 
-      await deps.db.insert(accounts).values({
-        id: randomUUID(),
-        userId,
-        accountId: userId,
-        providerId: "credential",
-        issuer: "local:credential",
-        accessToken: null,
-        refreshToken: null,
-        idToken: null,
-        accessTokenExpiresAt: null,
-        refreshTokenExpiresAt: null,
-        scope: null,
-        password: hashed,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }).run();
+        const userId = randomUUID();
+        await deps.db.insert(users).values({
+          id: userId,
+          name: input.ownerName,
+          image: null,
+          username,
+          phoneNumber: phone,
+          phoneNumberVerified: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).run();
 
-      await deps.store.updateSettings({ storeName: input.storeName, storePhone: phone });
-      await deps.store.setSetting("adminUserId", userId);
-      await deps.store.insertActivity({ type: "PASSWORD_RESET", summary: `إعداد أولي للمتجر (${input.storeName})` });
-      deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
-      return { ok: true as const };
+        await deps.db.insert(accounts).values({
+          id: randomUUID(),
+          userId,
+          accountId: userId,
+          providerId: "credential",
+          issuer: "local:credential",
+          accessToken: null,
+          refreshToken: null,
+          idToken: null,
+          accessTokenExpiresAt: null,
+          refreshTokenExpiresAt: null,
+          scope: null,
+          password: hashed,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }).run();
+
+        await tx.updateSettings({
+          storeName: input.storeName,
+          storePhone: phone,
+          storeAddress: input.storeAddress ?? null,
+        });
+        await tx.setSetting("adminUserId", userId);
+        await tx.insertActivity({ type: "STORE_SETUP", summary: `STORE_SETUP ${input.storeName}` });
+        deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
+        return { ok: true as const };
+      });
     }),
     authResetPassword: os.authResetPassword.handler(({ input }) => {
       const attempt = resetTail.then(async () => {

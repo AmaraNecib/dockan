@@ -36,6 +36,7 @@ export const movementKinds = ["PURCHASE", "SALE", "MANUAL_ADJUSTMENT"] as const;
 export const activityTypes = [
   "LOGIN",
   "PASSWORD_RESET",
+  "STORE_SETUP",
   "CATEGORY_CREATED",
   "ITEM_CREATED",
   "ITEM_UPDATED",
@@ -278,6 +279,7 @@ export const activitySchema = z.object({
 export const settingsSchema = z.object({
   storeName: z.string().trim().min(1),
   storePhone: z.string().trim().nullable(),
+  storeAddress: z.string().trim().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -673,6 +675,7 @@ export const logsTailInputSchema = z.object({
 export const settingsUpdateInputSchema = z.object({
   storeName: z.string().trim().min(1).optional(),
   storePhone: z.string().trim().nullable().optional(),
+  storeAddress: z.string().trim().nullable().optional(),
 });
 
 export const stockAddManualInputSchema = z.object({

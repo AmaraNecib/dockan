@@ -67,7 +67,7 @@ type ReturnVoucherType = ReturnType<typeof buildReturnVoucher>;
 
 describe("ReturnVoucherView (printable voucher document)", () => {
   it("renders the store identity, return + invoice numbers, lines and refund total", () => {
-    const voucher = buildReturnVoucher(makeReturn(), { storeName: "متجر الكرامة", storePhone: "+213661234567" });
+    const voucher = buildReturnVoucher(makeReturn(), { storeName: "متجر الكرامة", storePhone: "+213661234567", storeAddress: null });
     renderVoucher(voucher);
     const view = host.querySelector('[data-testid="return-voucher-view"]')!;
     expect(view.querySelector('[data-testid="return-voucher-store"]')?.textContent).toBe("متجر الكرامة");
@@ -91,7 +91,7 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     // each case gets a FRESH container so the previous root stays untouched
     const pendingBox = document.createElement("div");
     host.appendChild(pendingBox);
-    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "PENDING_REVIEW", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), pendingBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "PENDING_REVIEW", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null, storeAddress: null }), pendingBox);
     let view = pendingBox.querySelector('[data-testid="return-voucher-view"]')!;
     let debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
     expect(debtRow.textContent).toContain("400");
@@ -100,7 +100,7 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     // accepted with a capped apply: print the REAL relieved amount, not the promise
     const acceptedBox = document.createElement("div");
     host.appendChild(acceptedBox);
-    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "ACCEPTED", debtOffset: 400, debtApplied: 250, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), acceptedBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "ACCEPTED", debtOffset: 400, debtApplied: 250, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null, storeAddress: null }), acceptedBox);
     view = acceptedBox.querySelector('[data-testid="return-voucher-view"]')!;
     debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
     expect(debtRow.textContent).toContain("250");
@@ -110,7 +110,7 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     // rejected (new behavior): the promised deduction never happened
     const rejectedBox = document.createElement("div");
     host.appendChild(rejectedBox);
-    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), rejectedBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null, storeAddress: null }), rejectedBox);
     view = rejectedBox.querySelector('[data-testid="return-voucher-view"]')!;
     debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
     expect(debtRow.textContent).toContain("400");
@@ -119,7 +119,7 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     // legacy rejected row whose offset was applied pre-#68: reads as applied
     const legacyBox = document.createElement("div");
     host.appendChild(legacyBox);
-    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, debtApplied: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null }), legacyBox);
+    renderVoucher(buildReturnVoucher({ ...makeReturn(), status: "REJECTED_DAMAGED", debtOffset: 400, debtApplied: 400, cashPaidOut: 1300 }, { storeName: "متجر", storePhone: null, storeAddress: null }), legacyBox);
     view = legacyBox.querySelector('[data-testid="return-voucher-view"]')!;
     debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
     expect(debtRow.textContent).toContain("400");

@@ -9,18 +9,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { orpc } from "../lib/rpc";
 
 /**
- * Page-local Arabic copy for the KPI labels this screen introduces. The shared
- * i18n catalog is off-limits to this lane (other lanes edit it concurrently),
- * so the new strings live here; labels that already have a key reuse t().
- */
-const COPY = {
-  salesToday: "مبيعات اليوم",
-  lowStock: "منتجات منخفضة",
-  recentInvoices: "أحدث الفواتير",
-  newSale: "بيع جديد",
-} as const;
-
-/**
  * "YYYY-MM-DD" in Algeria local time — the same clock the api stamps
  * invoiceDate with (logger.localDate). Using the browser's timezone would
  * shift the "today" window for an owner travelling or a misconfigured clock,
@@ -83,7 +71,7 @@ export function DashboardPage() {
           className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
           data-testid="dashboard-new-sale"
         >
-          {COPY.newSale}
+          {t("dashboardNewSale")}
         </Link>
         <Link
           to="/debts"
@@ -96,7 +84,7 @@ export function DashboardPage() {
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <KpiCard
-          label={COPY.salesToday}
+          label={t("dashboardSalesToday")}
           testId="dashboard-sales-today"
           value={
             todaySales.data === undefined ? (
@@ -135,7 +123,7 @@ export function DashboardPage() {
         />
 
         <KpiCard
-          label={COPY.lowStock}
+          label={t("dashboardLowStockKpi")}
           testId="dashboard-low-stock"
           value={
             lowStock.data === undefined ? (
@@ -151,7 +139,7 @@ export function DashboardPage() {
         />
       </div>
 
-      <h2 className="mt-6 font-semibold">{COPY.recentInvoices}</h2>
+      <h2 className="mt-6 font-semibold">{t("dashboardRecentInvoices")}</h2>
       {recentInvoices.data === undefined ? (
         recentInvoices.isPending ? (
           <div className="mt-2 grid gap-3 rounded border bg-card p-3">

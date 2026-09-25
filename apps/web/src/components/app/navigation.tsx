@@ -31,27 +31,30 @@ export type NavGroup = {
   items: NavItem[];
 };
 
-/** Main sections stay flat; the rarely-used utilities collapse into one sub-group. */
+/** Primary group holds the daily sale→money workflow (sale/purchase/invoices/debts/
+ * returns). The rarely-used catalog (categories, items) and back-office pages
+ * (expenses, reports, backups, activity, diagnostics, settings) collapse into one
+ * collapsible sub-group. Every page stays reachable; nothing is deleted. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "shellGroupMain",
     items: [
-      { key: "dashboard", labelKey: "dashboardTitle", to: "/", icon: Gauge },
-      { key: "categories", labelKey: "navCategories", to: "/categories", icon: Tags },
-      { key: "items", labelKey: "navItems", to: "/items", icon: Package },
-      { key: "purchase", labelKey: "navPurchases", to: "/purchase", icon: ShoppingCart },
       { key: "sale", labelKey: "navSales", to: "/sale", icon: ShoppingBag },
+      { key: "purchase", labelKey: "navPurchases", to: "/purchase", icon: ShoppingCart },
       { key: "invoices", labelKey: "navInvoices", to: "/invoices", icon: FileText },
       { key: "debts", labelKey: "navDebts", to: "/debts", icon: HandCoins },
       { key: "returns", labelKey: "navReturns", to: "/returns", icon: RotateCcw },
-      { key: "expenses", labelKey: "navExpenses", to: "/expenses", icon: Wallet },
-      { key: "reports", labelKey: "navReports", to: "/reports", icon: BarChart3 },
     ],
   },
   {
     labelKey: "shellGroupSystem",
     collapsible: true,
     items: [
+      { key: "dashboard", labelKey: "dashboardTitle", to: "/", icon: Gauge },
+      { key: "categories", labelKey: "navCategories", to: "/categories", icon: Tags },
+      { key: "items", labelKey: "navItems", to: "/items", icon: Package },
+      { key: "expenses", labelKey: "navExpenses", to: "/expenses", icon: Wallet },
+      { key: "reports", labelKey: "navReports", to: "/reports", icon: BarChart3 },
       { key: "backups", labelKey: "navBackups", to: "/backups", icon: HardDriveDownload },
       { key: "activity", labelKey: "navActivity", to: "/activity", icon: Activity },
       { key: "diagnostics", labelKey: "navDiagnostics", to: "/diagnostics", icon: Stethoscope },

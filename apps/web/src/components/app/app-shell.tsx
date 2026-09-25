@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { CircleHelp, LogOut, PanelLeft } from "lucide-react";
+import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -95,6 +95,17 @@ export function AppShell() {
           <div className="min-w-0 flex-1 truncate px-2 text-sm font-medium">
             {activeTitleKey ? t(activeTitleKey) : t("appTitle")}
           </div>
+
+          <Button
+            asChild
+            data-testid="new-sale-button"
+            className="gap-1.5"
+          >
+            <Link to="/sale">
+              <ShoppingBag size={18} />
+              <span>{t("saleNew")}</span>
+            </Link>
+          </Button>
 
           <div className="flex items-center gap-1">
             <ThemeToggle />

@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
@@ -14,7 +14,7 @@ import { orpc } from "../lib/rpc";
  * shift the "today" window for an owner travelling or a misconfigured clock,
  * so the shop's home timezone is pinned here too.
  */
-function algeriaLocalDate(now: Date = new Date()): string {
+export function algeriaLocalDate(now: Date = new Date()): string {
   return now.toLocaleString("en-CA", {
     timeZone: "Africa/Algiers",
     year: "numeric",
@@ -33,6 +33,9 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
   );
 }
 
+/** How often the dashboard re-reads the Algeria-local day. */
+const DAY_TICK_MS = 60_000;
+
 /**
  * Landing screen (/). Answers "how is my shop today?" with the figures an
  * owner acts on hour to hour: today's sales, money owed to the shop, low
@@ -40,9 +43,18 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
  * figures point at (/sale, /debts). Every number comes from an existing query;
  * a failed one degrades to a neutral placeholder instead of blanking the page.
  */
-export function DashboardPage() {
+export function DashboardPage({ dayTickMs = DAY_TICK_MS }: { dayTickMs?: number } = {}) {
   const { t } = useTranslation();
-  const today = algeriaLocalDate();
+  const [today, setToday] = useState(() => algeriaLocalDate());
+
+  // A dashboard left open across midnight must roll its "sales today" window
+  // onto the new Algeria-local day; the tick only re-renders when the date
+  // string actually changes. `dayTickMs` lets tests roll midnight without
+  // waiting a minute.
+  useEffect(() => {
+    const id = setInterval(() => setToday(algeriaLocalDate()), dayTickMs);
+    return () => clearInterval(id);
+  }, [dayTickMs]);
 
   const todaySales = useQuery(
     orpc.invoicesList.queryOptions({ input: { kind: "SALE", fromDate: today, toDate: today } }),
@@ -51,8 +63,9 @@ export function DashboardPage() {
   const lowStock = useQuery(orpc.itemsLowStock.queryOptions());
   const recentInvoices = useQuery(orpc.invoicesList.queryOptions({ input: {} }));
 
-  // invoicesList caps at 200 rows, so >200 sales in one day would undercount; a
-  // realistic shop day stays far below that (documented api limit).
+  // invoicesList caps at 200 rows and the contract exposes no pagination, so a
+  // >200-sale day undercounts. Kept as a documented at-a-glance floor rather
+  // than faked client-side; an exact daily total needs an api sum procedure.
   const salesTotal = (todaySales.data?.items ?? []).reduce((sum, invoice) => sum + invoice.totalAmount, 0);
   const owedToUsTotal = (debts.data?.owedToUs ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
   const weOweTotal = (debts.data?.weOwe ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
@@ -153,58 +166,64 @@ export function DashboardPage() {
       ) : recent.length === 0 ? (
         <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
       ) : (
-        <table className="mt-2 w-full rounded border bg-card text-sm" data-testid="dashboard-recents">
-          <thead>
-            <tr className="border-b text-right text-muted-foreground">
-              <th className="p-2 font-medium">{t("invoiceNumber")}</th>
-              <th className="p-2 font-medium">{t("invoiceKind")}</th>
-              <th className="p-2 font-medium">{t("invoiceParty")}</th>
-              <th className="p-2 font-medium">{t("invoiceDate")}</th>
-              <th className="p-2 font-medium">{t("invoiceTotal")}</th>
-              <th className="p-2 font-medium">{t("invoiceRemaining")}</th>
-              <th className="p-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {recent.map((invoice) => (
-              <tr key={invoice.id} className="border-b last:border-0" data-testid="dashboard-recent-row">
-                <td className="p-2 font-medium" dir="ltr">
-                  {invoice.invoiceNumber}
-                </td>
-                <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
-                <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
-                <td className="p-2" dir="ltr">
-                  {invoice.invoiceDate}
-                </td>
-                <td className="p-2">
-                  <Amount value={invoice.totalAmount} />
-                </td>
-                <td className="p-2">
-                  <Amount value={invoice.remainingAmount} />
-                </td>
-                <td className="p-2">
-                  <Link
-                    to="/invoices/$invoiceId"
-                    params={{ invoiceId: invoice.id }}
-                    className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
-                    data-testid={`dashboard-recent-open-${invoice.invoiceNumber}`}
-                  >
-                    {t("invoicesOpen")}
-                  </Link>
-                </td>
+        <div className="mt-2 overflow-x-auto rounded border bg-card">
+          <table className="w-full min-w-[44rem] text-sm" data-testid="dashboard-recents">
+            <thead>
+              <tr className="border-b text-right text-muted-foreground">
+                <th className="p-2 font-medium">{t("invoiceNumber")}</th>
+                <th className="p-2 font-medium">{t("invoiceKind")}</th>
+                <th className="p-2 font-medium">{t("invoiceParty")}</th>
+                <th className="p-2 font-medium">{t("invoiceDate")}</th>
+                <th className="p-2 font-medium">{t("invoiceTotal")}</th>
+                <th className="p-2 font-medium">{t("invoiceRemaining")}</th>
+                <th className="p-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {recent.map((invoice) => (
+                <tr key={invoice.id} className="border-b last:border-0" data-testid="dashboard-recent-row">
+                  <td className="p-2 font-medium" dir="ltr">
+                    {invoice.invoiceNumber}
+                  </td>
+                  <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
+                  <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
+                  <td className="p-2" dir="ltr">
+                    {invoice.invoiceDate}
+                  </td>
+                  <td className="p-2">
+                    <Amount value={invoice.totalAmount} />
+                  </td>
+                  <td className="p-2">
+                    <Amount value={invoice.remainingAmount} />
+                  </td>
+                  <td className="p-2">
+                    <Link
+                      to="/invoices/$invoiceId"
+                      params={{ invoiceId: invoice.id }}
+                      className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
+                      data-testid={`dashboard-recent-open-${invoice.invoiceNumber}`}
+                    >
+                      {t("invoicesOpen")}
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <h2 className="mt-6 font-semibold">{t("dashboardLowStock")}</h2>
       {lowStock.data === undefined ? (
-        <div className="mt-2 grid gap-3 rounded border bg-card p-3">
-          {[0, 1].map((row) => (
-            <Skeleton key={row} className="h-6 w-full" />
-          ))}
-        </div>
+        lowStock.isPending ? (
+          <div className="mt-2 grid gap-3 rounded border bg-card p-3">
+            {[0, 1].map((row) => (
+              <Skeleton key={row} className="h-6 w-full" />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-2 text-muted-foreground">{dash}</p>
+        )
       ) : lowStock.data.items.length === 0 ? (
         <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
       ) : (

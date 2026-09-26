@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
@@ -8,20 +8,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { orpc } from "../lib/rpc";
 
-/**
- * "YYYY-MM-DD" in Algeria local time — the same clock the api stamps
- * invoiceDate with (logger.localDate). Using the browser's timezone would
- * shift the "today" window for an owner travelling or a misconfigured clock,
- * so the shop's home timezone is pinned here too.
- */
-export function algeriaLocalDate(now: Date = new Date()): string {
-  return now.toLocaleString("en-CA", {
-    timeZone: "Africa/Algiers",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-}
+/** How often the landing summary refetches so an open dashboard stays current. */
+const REFRESH_MS = 60_000;
 
 function KpiCard({ label, value, detail, testId }: { label: string; value: ReactNode; detail?: ReactNode; testId?: string }) {
   return (
@@ -33,61 +21,16 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
   );
 }
 
-/** How often the dashboard re-reads the Algeria-local day. */
-const DAY_TICK_MS = 60_000;
-
-/** How often the landing figures refetch so an open dashboard stays current. */
-const REFRESH_MS = 60_000;
-
 /**
- * Landing screen (/). Answers "how is my shop today?" with the figures an
- * owner acts on hour to hour: today's sales, money owed to the shop, low
- * stock, and the newest invoices — plus one-tap entry to the two screens the
- * figures point at (/sale, /debts). Every number comes from an existing query;
- * a failed one degrades to a neutral placeholder instead of blanking the page.
+ * Landing screen (/). Answers "how is my shop today?" from ONE server aggregate
+ * (issue 84): the server's own local day, the day's exact sales, both debt
+ * directions, low stock, and the five newest invoices by creation time. The
+ * page derives nothing — no device clock, no summing a capped list, no
+ * re-sorting a page the api ordered by business date.
  */
-export function DashboardPage({
-  dayTickMs = DAY_TICK_MS,
-  refreshMs = REFRESH_MS,
-}: { dayTickMs?: number; refreshMs?: number } = {}) {
+export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
-  const [today, setToday] = useState(() => algeriaLocalDate());
-
-  // A dashboard left open across midnight must roll its "sales today" window
-  // onto the new Algeria-local day; the tick only re-renders when the date
-  // string actually changes. `dayTickMs` lets tests roll midnight without
-  // waiting a minute.
-  useEffect(() => {
-    const id = setInterval(() => setToday(algeriaLocalDate()), dayTickMs);
-    return () => clearInterval(id);
-  }, [dayTickMs]);
-
-  // Every figure refetches on the same cadence so a dashboard left open during
-  // the day never shows hours-old numbers. `refreshMs` is the test seam.
-  const todaySales = useQuery({
-    ...orpc.invoicesList.queryOptions({ input: { kind: "SALE", fromDate: today, toDate: today } }),
-    refetchInterval: refreshMs,
-  });
-  const debts = useQuery({ ...orpc.reportsDebts.queryOptions(), refetchInterval: refreshMs });
-  const lowStock = useQuery({ ...orpc.itemsLowStock.queryOptions(), refetchInterval: refreshMs });
-  const recentInvoices = useQuery({ ...orpc.invoicesList.queryOptions({ input: {} }), refetchInterval: refreshMs });
-
-  // invoicesList returns at most 200 rows while totalCount covers every match,
-  // so a >200-sale day is a floor — disclosed on the card, never shown as an
-  // exact total. An exact figure needs an api sum procedure (follow-up).
-  const salesTotal = (todaySales.data?.items ?? []).reduce((sum, invoice) => sum + invoice.totalAmount, 0);
-  const salesCapped = todaySales.data !== undefined && todaySales.data.totalCount > todaySales.data.items.length;
-  const owedToUsTotal = (debts.data?.owedToUs ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
-  const weOweTotal = (debts.data?.weOwe ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
-  const lowStockCount = lowStock.data?.items.length ?? 0;
-  // The api orders by business date first, so its top rows can be an older
-  // future-dated invoice while a just-entered backdated one sits lower. Sort by
-  // creation time so the five shown really are the newest entries.
-  const recent = [...(recentInvoices.data?.items ?? [])]
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .slice(0, 5);
-
-  const dash = <span className="text-muted-foreground">—</span>;
+  const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
 
   return (
     <section data-testid="dashboard-page">
@@ -110,149 +53,135 @@ export function DashboardPage({
         </Link>
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <KpiCard
-          label={t("dashboardSalesToday")}
-          testId="dashboard-sales-today"
-          value={
-            todaySales.data === undefined ? (
-              todaySales.isPending ? (
-                <Skeleton className="inline-block h-8 w-16" />
-              ) : (
-                dash
-              )
-            ) : (
-              <Amount value={salesTotal} />
-            )
-          }
-          detail={salesCapped ? t("dashboardSalesCapped") : undefined}
-        />
-
-        <KpiCard
-          label={t("debtsOwedToUs")}
-          testId="dashboard-debt-owed"
-          value={
-            debts.data === undefined ? (
-              debts.isPending ? (
-                <Skeleton className="inline-block h-8 w-16" />
-              ) : (
-                dash
-              )
-            ) : (
-              <Amount value={owedToUsTotal} />
-            )
-          }
-          detail={
-            debts.data === undefined ? undefined : (
-              <>
-                {t("debtsWeOwe")}: <Amount value={weOweTotal} />
-              </>
-            )
-          }
-        />
-
-        <KpiCard
-          label={t("dashboardLowStockKpi")}
-          testId="dashboard-low-stock"
-          value={
-            lowStock.data === undefined ? (
-              lowStock.isPending ? (
-                <Skeleton className="inline-block h-8 w-10" />
-              ) : (
-                dash
-              )
-            ) : (
-              lowStockCount
-            )
-          }
-        />
-      </div>
-
-      <h2 className="mt-6 font-semibold">{t("dashboardRecentInvoices")}</h2>
-      {recentInvoices.data === undefined ? (
-        recentInvoices.isPending ? (
+      {summary.isPending ? (
+        <>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {[0, 1, 2].map((card) => (
+              <div key={card} className="rounded border bg-card p-3">
+                <Skeleton className="h-8 w-16" />
+                <Skeleton className="mt-2 h-4 w-24" />
+              </div>
+            ))}
+          </div>
+          <Skeleton className="mt-6 h-5 w-32" />
           <div className="mt-2 grid gap-3 rounded border bg-card p-3">
             {[0, 1, 2].map((row) => (
               <Skeleton key={row} className="h-6 w-full" />
             ))}
           </div>
-        ) : (
-          <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
-        )
-      ) : recent.length === 0 ? (
-        <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
-      ) : (
-        <div className="mt-2 overflow-x-auto rounded border bg-card">
-          <table className="w-full min-w-[44rem] text-sm" data-testid="dashboard-recents">
-            <thead>
-              <tr className="border-b text-right text-muted-foreground">
-                <th className="p-2 font-medium">{t("invoiceNumber")}</th>
-                <th className="p-2 font-medium">{t("invoiceKind")}</th>
-                <th className="p-2 font-medium">{t("invoiceParty")}</th>
-                <th className="p-2 font-medium">{t("invoiceDate")}</th>
-                <th className="p-2 font-medium">{t("invoiceTotal")}</th>
-                <th className="p-2 font-medium">{t("invoiceRemaining")}</th>
-                <th className="p-2" />
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((invoice) => (
-                <tr key={invoice.id} className="border-b last:border-0" data-testid="dashboard-recent-row">
-                  <td className="p-2 font-medium" dir="ltr">
-                    {invoice.invoiceNumber}
-                  </td>
-                  <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
-                  <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
-                  <td className="p-2" dir="ltr">
-                    {invoice.invoiceDate}
-                  </td>
-                  <td className="p-2">
-                    <Amount value={invoice.totalAmount} />
-                  </td>
-                  <td className="p-2">
-                    <Amount value={invoice.remainingAmount} />
-                  </td>
-                  <td className="p-2">
-                    <Link
-                      to="/invoices/$invoiceId"
-                      params={{ invoiceId: invoice.id }}
-                      className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
-                      data-testid={`dashboard-recent-open-${invoice.invoiceNumber}`}
-                    >
-                      {t("invoicesOpen")}
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <h2 className="mt-6 font-semibold">{t("dashboardLowStock")}</h2>
-      {lowStock.data === undefined ? (
-        lowStock.isPending ? (
+          <Skeleton className="mt-6 h-5 w-32" />
           <div className="mt-2 grid gap-3 rounded border bg-card p-3">
             {[0, 1].map((row) => (
               <Skeleton key={row} className="h-6 w-full" />
             ))}
           </div>
-        ) : (
-          <p className="mt-2 text-muted-foreground">{dash}</p>
-        )
-      ) : lowStock.data.items.length === 0 ? (
-        <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
+        </>
+      ) : summary.data === undefined ? (
+        <p className="mt-4 rounded border bg-card p-4 text-muted-foreground" role="alert" data-testid="dashboard-error">
+          {t("dashboardError")}
+        </p>
       ) : (
-        <ul className="mt-2 divide-y rounded border bg-card" data-testid="dashboard-low-stock-list">
-          {lowStock.data.items.map((item) => (
-            <li key={item.id} className="flex justify-between p-3">
-              <span>{item.name}</span>
-              <span className="font-semibold">
-                {item.stockOnHand} / {item.lowStockThreshold}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {t("dashboardDay")}:{" "}
+            <span dir="ltr" data-testid="dashboard-day">
+              {summary.data.day}
+            </span>
+          </p>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <KpiCard
+              label={t("dashboardSalesToday")}
+              testId="dashboard-sales-today"
+              value={<Amount value={summary.data.salesTotal} />}
+              detail={
+                <>
+                  {t("dashboardSalesCount")}: {summary.data.salesCount}
+                </>
+              }
+            />
+
+            <KpiCard
+              label={t("debtsOwedToUs")}
+              testId="dashboard-debt-owed"
+              value={<Amount value={summary.data.owedToUs} />}
+              detail={
+                <>
+                  {t("debtsWeOwe")}: <Amount value={summary.data.weOwe} />
+                </>
+              }
+            />
+
+            <KpiCard label={t("dashboardLowStockKpi")} testId="dashboard-low-stock" value={summary.data.lowStockCount} />
+          </div>
+
+          <h2 className="mt-6 font-semibold">{t("dashboardRecentInvoices")}</h2>
+          {summary.data.recentInvoices.length === 0 ? (
+            <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
+          ) : (
+            <div className="mt-2 overflow-x-auto rounded border bg-card">
+              <table className="w-full min-w-[44rem] text-sm" data-testid="dashboard-recents">
+                <thead>
+                  <tr className="border-b text-right text-muted-foreground">
+                    <th className="p-2 font-medium">{t("invoiceNumber")}</th>
+                    <th className="p-2 font-medium">{t("invoiceKind")}</th>
+                    <th className="p-2 font-medium">{t("invoiceParty")}</th>
+                    <th className="p-2 font-medium">{t("invoiceDate")}</th>
+                    <th className="p-2 font-medium">{t("invoiceTotal")}</th>
+                    <th className="p-2 font-medium">{t("invoiceRemaining")}</th>
+                    <th className="p-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.data.recentInvoices.map((invoice) => (
+                    <tr key={invoice.id} className="border-b last:border-0" data-testid="dashboard-recent-row">
+                      <td className="p-2 font-medium" dir="ltr">
+                        {invoice.invoiceNumber}
+                      </td>
+                      <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
+                      <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
+                      <td className="p-2" dir="ltr">
+                        {invoice.invoiceDate}
+                      </td>
+                      <td className="p-2">
+                        <Amount value={invoice.totalAmount} />
+                      </td>
+                      <td className="p-2">
+                        <Amount value={invoice.remainingAmount} />
+                      </td>
+                      <td className="p-2">
+                        <Link
+                          to="/invoices/$invoiceId"
+                          params={{ invoiceId: invoice.id }}
+                          className="rounded-lg border px-3 py-1 text-sm hover:bg-muted"
+                          data-testid={`dashboard-recent-open-${invoice.invoiceNumber}`}
+                        >
+                          {t("invoicesOpen")}
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <h2 className="mt-6 font-semibold">{t("dashboardLowStock")}</h2>
+          {summary.data.lowStockItems.length === 0 ? (
+            <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
+          ) : (
+            <ul className="mt-2 divide-y rounded border bg-card" data-testid="dashboard-low-stock-list">
+              {summary.data.lowStockItems.map((item) => (
+                <li key={item.id} className="flex justify-between p-3">
+                  <span>{item.name}</span>
+                  <span className="font-semibold">
+                    {item.stockOnHand} / {item.lowStockThreshold}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </section>
   );

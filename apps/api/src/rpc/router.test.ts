@@ -13,7 +13,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
-import { AppLogger } from "../lib/logger";
+import { AppLogger, localDate } from "../lib/logger";
 import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
@@ -3006,5 +3006,23 @@ describe("first-time setup provisioning", () => {
       storePhone: "+213550111111",
       storeAddress: "شارع الاستقلال 12",
     });
+  });
+});
+
+describe("dashboard summary (issue 84)", () => {
+  it("returns the server's own local day with the newest invoice first", async () => {
+    const category = await client.categoriesCreate({ name: `لوحة-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({ name: `مادة-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 150, stockOnHand: 1 });
+    const created = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    const summary = await client.dashboardSummary();
+
+    // the day comes from the server clock, never the device
+    expect(summary.day).toBe(localDate());
+    // the just-created invoice is the newest by creation time, so it heads the list
+    expect(summary.recentInvoices[0]?.invoiceNumber).toBe(created.invoiceNumber);
+    expect(summary.salesCount).toBeGreaterThanOrEqual(1);
+    expect(summary.salesTotal).toBeGreaterThanOrEqual(created.totalAmount);
+    expect(summary.lowStockItems.length).toBe(summary.lowStockCount);
   });
 });

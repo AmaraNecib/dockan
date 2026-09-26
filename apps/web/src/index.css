@@ -183,6 +183,8 @@ body {
     &:focus-visible {
       outline: 0.125rem solid var(--ring);
       outline-offset: 0.125rem;
+      /* sticky chrome (header + checkout bar) must not cover a focused control */
+      scroll-margin-block: 4.5rem 13rem;
     }
   }
 }

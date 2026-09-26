@@ -89,7 +89,7 @@ for (const viewport of [
     // without the content container having scrolled at all.
     await expect(page.getByTestId("sale-discount-type")).toBeVisible();
     expect(await page.locator("main").evaluate((element) => element.scrollTop)).toBe(0);
-    await expect(page.getByTestId("sale-save")).toBeInViewport();
+    await expect(page.getByTestId("sale-save")).toBeInViewport({ ratio: 1 });
     await page.getByTestId("sale-save").click();
     await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
   });
@@ -118,6 +118,6 @@ test("the checkout bar stays pinned while a long invoice scrolls", async ({ page
   await page.locator("main").evaluate((element) => {
     element.scrollTop = Math.floor(element.scrollHeight / 2);
   });
-  await expect(page.getByTestId("sale-save")).toBeInViewport();
-  await expect(page.getByTestId("sale-total")).toBeInViewport();
+  await expect(page.getByTestId("sale-save")).toBeInViewport({ ratio: 1 });
+  await expect(page.getByTestId("sale-total")).toBeInViewport({ ratio: 1 });
 });

@@ -25,7 +25,7 @@ export function EmptyState({ title, hint, icon, action }: EmptyStateProps) {
           {icon}
         </div>
       )}
-      <p className="font-medium">{title}</p>
+      <h3 className="font-medium">{title}</h3>
       {hint !== undefined && <p className="max-w-md text-sm text-muted-foreground">{hint}</p>}
       {action !== undefined && <div className="mt-2">{action}</div>}
     </div>

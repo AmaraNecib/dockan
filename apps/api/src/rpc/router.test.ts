@@ -13,7 +13,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
-import { AppLogger, localDate } from "../lib/logger";
+import { AppLogger } from "../lib/logger";
 import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
@@ -3017,17 +3017,48 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await client.dashboardSummary();
 
-    // the day comes from the server clock, never the device
-    expect(summary.day).toBe(localDate());
-    // the just-created invoice is the newest by creation time, so it heads the list
+    const day = summary.day;
+    expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
     expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
-    expect(summary.salesCount).toBeGreaterThanOrEqual(1);
-    expect(summary.salesTotal).toBeGreaterThanOrEqual(created.totalAmount);
+
+    const daySales = await client.invoicesList({ kind: "SALE", fromDate: day, toDate: day });
+    // listInvoices caps at 200 rows; beyond that the sum below would under-count
+    expect(daySales.totalCount).toBe(daySales.items.length);
+    const expectedSalesTotal = daySales.items.reduce((sum, invoice) => sum + invoice.totalAmount, 0);
+    expect(summary.salesTotal).toBe(expectedSalesTotal);
+    expect(summary.salesCount).toBe(daySales.totalCount);
     // on a healthy store these sections must be populated, not degraded: null
     // means the read failed, so comparing the count alone would let an
     // unexpectedly broken response pass
     expect(summary.lowStockItems).not.toBeNull();
     expect(summary.lowStockCount).not.toBeNull();
     expect(summary.lowStockItems?.length ?? null).toBe(summary.lowStockCount);
+  });
+
+  it("reports the day the server clock says, not the wall clock", async () => {
+    // 2026-08-24T23:00:00Z is midnight in Algiers, so the day must roll over.
+    // The expectation is a literal, so a wrong timezone or format in the
+    // production helper cannot agree with itself here.
+    const pinned = new Date("2026-08-24T23:00:00Z");
+    const pinnedApp = createApp({
+      config,
+      logger,
+      auth,
+      rpcRouter: createRpcRouter({ db: conn.db, config, logger, store, auth, now: () => pinned }),
+    });
+    const pinnedLink = new RPCLink({
+      url: () => `http://127.0.0.1:${config.port}/api/rpc`,
+      // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+      fetch: (request) => {
+        const headers = Object.fromEntries(request.headers.entries());
+        if (cookie !== "") headers.cookie = cookie;
+        return Promise.resolve(pinnedApp.fetch(new Request(request, { headers })));
+      },
+    });
+    const pinnedClient: DokanClient = createORPCClient(pinnedLink);
+
+    const summary = await pinnedClient.dashboardSummary();
+    expect(summary.day).toBe("2026-08-25");
   });
 });

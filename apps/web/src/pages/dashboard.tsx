@@ -8,7 +8,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { orpc } from "../lib/rpc";
 
-/** How often the landing summary refetches so an open dashboard stays current. */
+/**
+ * How often the landing summary refetches so an open dashboard stays current.
+ *
+ * Deliberate: the server's local day is only re-read on this tick, so across
+ * midnight the displayed day can lag by up to 60s. A shorter interval was
+ * rejected — the lag self-heals on the next tick.
+ */
 const REFRESH_MS = 60_000;
 
 function KpiCard({ label, value, detail, testId }: { label: string; value: ReactNode; detail?: ReactNode; testId?: string }) {
@@ -82,6 +88,15 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
         </p>
       ) : (
         <>
+          {summary.isRefetchError && (
+            <p
+              className="mt-4 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-600"
+              role="status"
+              data-testid="dashboard-stale"
+            >
+              {t("dashboardStaleRefresh")}
+            </p>
+          )}
           <p className="mt-2 text-xs text-muted-foreground">
             {t("dashboardDay")}:{" "}
             <span dir="ltr" data-testid="dashboard-day">

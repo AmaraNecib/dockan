@@ -146,7 +146,10 @@ function movementReasonText(t: (key: string, vars?: Record<string, string>) => s
     return t("historyReasonReturnRejected", { context: rest });
   }
   if (reason.startsWith("INVOICE_CORRECTION")) {
-    return t("historyReasonInvoiceCorrection", { number: reason.split(" ")[1] ?? "" });
+    // the stored reason is "<token> <invoice> #<lineId>"; the line id is what
+    // tells two corrections of the same item on one invoice apart, so it stays
+    const [, number, line] = reason.split(" ");
+    return t("historyReasonInvoiceCorrection", { number: number ?? "", line: line ?? "" });
   }
   return reason;
 }

@@ -23,7 +23,7 @@ function formatActivityReference(type: string, ref: string): string {
  * summaries (pre-token Arabic rows) render raw exactly as before. The api
  * stays locale-neutral; this page owns the copy.
  */
-function activitySummaryText(t: TFunction, summary: string): string {
+export function activitySummaryText(t: TFunction, summary: string): string {
   const tokens = summary.split(" ");
   const tag = tokens[0];
   // locale-neutral tokens emitted by the api: the tag is the action and the

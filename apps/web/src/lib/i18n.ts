@@ -373,7 +373,7 @@ const resources = {
       activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} ({{amount}} دج)",
       historyReasonReturnRecorded: "مرجوع",
       historyReasonReturnRejected: "مرجوع تالف {{context}}",
-      historyReasonInvoiceCorrection: "تصحيح فاتورة {{number}}",
+      historyReasonInvoiceCorrection: "تصحيح فاتورة {{number}} {{line}}",
       /** whole-DZD unit suffix; the api never embeds it in strings */
       dzd: "دج",
       returnNumber: "رقم المرجوع",

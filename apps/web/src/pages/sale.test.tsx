@@ -254,12 +254,22 @@ async function scan(code: string): Promise<void> {
   });
 }
 
-function setInput(host: HTMLElement, testId: string, value: string): void {
-  const input = host.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
-  if (input === null) throw new Error(`missing input ${testId}`);
+function setElementValue(input: HTMLInputElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setInput(host: HTMLElement, testId: string, value: string): void {
+  const input = host.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
+  if (input === null) throw new Error(`missing input ${testId}`);
+  setElementValue(input, value);
+}
+
+function setSelect(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function saveButton(host: HTMLElement): HTMLButtonElement {
@@ -361,5 +371,46 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("600");
     expect(notice?.textContent).not.toContain("1000");
+  });
+
+  it("makes the sale non-editable while the commit is in flight", async () => {
+    const host = await mountSale();
+    await scan("555");
+    // give the line an override so the override-value input renders too
+    await act(async () => {
+      const overrideType = host.querySelector<HTMLSelectElement>('select[aria-label$="نوع تعديل السعر"]');
+      if (overrideType === null) throw new Error("missing override type select");
+      setSelect(overrideType, "AMOUNT");
+    });
+    await act(async () => {
+      const overrideValue = host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+      if (overrideValue === null) throw new Error("missing override value input");
+      setElementValue(overrideValue, "900");
+      setInput(host, "sale-customer", "أمين");
+      setInput(host, "sale-paid", "400");
+    });
+
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const disabled = (selector: string): boolean =>
+      host.querySelector<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(selector)?.disabled ?? false;
+    expect(disabled('[data-testid="sale-customer"]')).toBe(true);
+    expect(disabled('[data-testid="sale-paid"]')).toBe(true);
+    expect(disabled('[data-testid="sale-open-picker"]')).toBe(true);
+    expect(disabled('[data-testid="sale-quick-add"]')).toBe(true);
+    expect(disabled('[data-testid="sale-quick-stock-add"]')).toBe(true);
+    expect(disabled('[data-testid="sale-discount-type"]')).toBe(true);
+    expect(disabled('[data-testid="sale-discount-value"]')).toBe(true);
+    expect(disabled('input[aria-label$="الكمية"]')).toBe(true);
+    expect(disabled('select[aria-label$="نوع تعديل السعر"]')).toBe(true);
+    expect(disabled('input[aria-label$="قيمة تعديل السعر"]')).toBe(true);
+    expect(disabled('button[aria-label^="حذف"]')).toBe(true);
+
+    // the frozen notice still reflects the submitted sale (900 total - 400 paid)
+    const notice = host.querySelector('[data-testid="sale-debt-notice"]');
+    expect(notice?.textContent).toContain("500");
+    expect(notice?.textContent).toContain("للزبون");
   });
 });

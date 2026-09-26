@@ -117,6 +117,7 @@ async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}
     card: (testId: string) => container.querySelector<HTMLElement>(`[data-testid='${testId}']`),
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='dashboard-recent-row']")),
     error: () => container.querySelector<HTMLElement>("[data-testid='dashboard-error']"),
+    stale: () => container.querySelector<HTMLElement>("[data-testid='dashboard-stale']"),
     skeletons: () => container.querySelectorAll("[data-slot='skeleton']"),
     unmount: async () => {
       await act(async () => root.unmount());
@@ -218,6 +219,20 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(page.error()?.getAttribute("role")).toBe("alert");
     expect(page.error()?.textContent).toContain(i18n.t("dashboardError"));
     expect(page.skeletons().length).toBe(0);
+    await page.unmount();
+  });
+
+  it("keeps the last good figures and flags them stale when a background refetch fails", async () => {
+    const page = await mount(queryClient, { refreshMs: 20 }); // 20ms refresh keeps the test fast
+    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7500") ?? false)).toBe(true);
+    expect(page.stale()).toBeNull();
+
+    failSummary = true;
+    expect(await waitFor(() => page.stale() !== null)).toBe(true);
+    expect(page.stale()?.getAttribute("role")).toBe("status");
+    expect(page.stale()?.textContent).toContain(i18n.t("dashboardStaleRefresh"));
+    expect(page.card("dashboard-sales-today")?.textContent).toContain("7500");
+    expect(page.error()).toBeNull();
     await page.unmount();
   });
 

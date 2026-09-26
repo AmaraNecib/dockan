@@ -72,6 +72,7 @@ const resources = {
       dashboardSectionUnavailable: "تعذّر تحميل هذا القسم، أعد المحاولة",
       dashboardNewSale: "بيع جديد",
       dashboardError: "تعذّر تحميل ملخص اليوم",
+      dashboardStaleRefresh: "تعذّر تحديث البيانات، قد تكون الأرقام المعروضة قديمة",
       dashboardItemsCount: "عدد المنتجات",
       dashboardCategoriesCount: "عدد التصنيفات",
       dashboardLowStock: "منتجات على وشك النفاد",

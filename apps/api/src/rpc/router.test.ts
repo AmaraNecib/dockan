@@ -13,11 +13,24 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
-import { AppLogger, localDate } from "../lib/logger";
+import { AppLogger } from "../lib/logger";
 import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
+
+/**
+ * Africa/Algiers "YYYY-MM-DD" computed independently of the app's `localDate()`
+ * helper, so the dashboard day assertion fails when that helper is wrong.
+ */
+function algiersToday(): string {
+  return new Date().toLocaleString("en-CA", {
+    timeZone: "Africa/Algiers",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
 
 /**
  * Wire-seam tests for the merged router. The typed oRPC client calls the real
@@ -3017,12 +3030,17 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await client.dashboardSummary();
 
-    // the day comes from the server clock, never the device
-    expect(summary.day).toBe(localDate());
-    // the just-created invoice is the newest by creation time, so it heads the list
+    const day = algiersToday();
+    expect(summary.day).toBe(day);
+
     expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
-    expect(summary.salesCount).toBeGreaterThanOrEqual(1);
-    expect(summary.salesTotal).toBeGreaterThanOrEqual(created.totalAmount);
+
+    const daySales = await client.invoicesList({ kind: "SALE", fromDate: day, toDate: day });
+    // listInvoices caps at 200 rows; beyond that the sum below would under-count
+    expect(daySales.totalCount).toBe(daySales.items.length);
+    const expectedSalesTotal = daySales.items.reduce((sum, invoice) => sum + invoice.totalAmount, 0);
+    expect(summary.salesTotal).toBe(expectedSalesTotal);
+    expect(summary.salesCount).toBe(daySales.totalCount);
     // on a healthy store these sections must be populated, not degraded: null
     // means the read failed, so comparing the count alone would let an
     // unexpectedly broken response pass

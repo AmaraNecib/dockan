@@ -1,4 +1,5 @@
 import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { z } from "zod";
 
 import { CategoriesPage } from "./pages/categories";
 import { DashboardPage } from "./pages/dashboard";
@@ -19,10 +20,19 @@ import { DebtsPage } from "./pages/debts";
 import { ExpensesPage } from "./pages/expenses";
 import { ReportsPage } from "./pages/reports";
 import { AppShell } from "./components/app/app-shell";
+import { SaleDraftProvider } from "./components/app/sale-draft";
 import "./lib/i18n";
 
+function RootShell() {
+  return (
+    <SaleDraftProvider>
+      <AppShell />
+    </SaleDraftProvider>
+  );
+}
+
 const rootRoute = createRootRoute({
-  component: AppShell,
+  component: RootShell,
 });
 
 const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: DashboardPage });
@@ -36,15 +46,19 @@ const itemHistoryRoute = createRoute({
 const backupsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/backups", component: BackupsPage });
 const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: "/activity", component: ActivityLogPage });
 const purchaseRoute = createRoute({ getParentRoute: () => rootRoute, path: "/purchase", component: PurchasePage });
+const saleSearchSchema = z.object({
+  // The header action re-navigates to /sale with an incrementing `fresh` token.
+  // Coercing keeps URL strings working; anything unparseable falls back to
+  // undefined rather than throwing out of the route's search validation.
+  fresh: z.coerce.number().int().nonnegative().optional().catch(undefined),
+});
+
 const saleRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/sale",
-  // The header "New Sale" action re-navigates here with an incrementing `fresh`
-  // token; remountDeps remounts SalePage when the token changes so the form (and
-  // any post-save confirmation) always starts clean instead of keeping a draft.
-  validateSearch: (search: Record<string, unknown>): { fresh?: number } => ({
-    fresh: typeof search.fresh === "number" ? search.fresh : undefined,
-  }),
+  // remountDeps remounts SalePage when `fresh` changes, so the header's New Sale
+  // action starts a clean form (see the draft guard in app-shell's NewSaleAction).
+  validateSearch: (search) => saleSearchSchema.parse(search),
   remountDeps: ({ search }) => search.fresh,
   component: SalePage,
 });
@@ -67,7 +81,7 @@ const reportsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/repo
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
 const diagnosticsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/diagnostics", component: DiagnosticsPage });
 
-const routeTree = rootRoute.addChildren([
+export const routeTree = rootRoute.addChildren([
   dashboardRoute,
   categoriesRoute,
   itemsRoute,

@@ -1,16 +1,25 @@
 import { useState } from "react";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { AppSidebar, type ShellUser } from "./app-sidebar";
 import { ThemeToggle } from "./theme-toggle";
 import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
 import { NAV_GROUPS, activeNavKey } from "./navigation";
+import { useSaleDraft } from "./sale-draft";
 
 const SIDEBAR_KEY = "dokan.sidebar.collapsed";
 
@@ -30,6 +39,91 @@ function pageTitleFor(activeKey: string | null): string | null {
     if (item) return item.labelKey;
   }
   return null;
+}
+
+interface NewSaleActionProps {
+  activeKey: string | null;
+}
+
+/**
+ * The header's persistent "New Sale" action. It starts a fresh sale by bumping
+ * the route's `fresh` token (see the sale route's remountDeps), but never at the
+ * cost of live work: it is disabled while a save is in flight, and it asks first
+ * when the form holds an unsaved draft.
+ */
+function NewSaleAction({ activeKey }: NewSaleActionProps) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { draftDirty, savePending } = useSaleDraft();
+  const [discardOpen, setDiscardOpen] = useState(false);
+
+  function goToNewSale() {
+    void navigate({
+      to: "/sale",
+      replace: activeKey === "sale",
+      search: (prev: { fresh?: number }) => ({ ...prev, fresh: (prev.fresh ?? 0) + 1 }),
+    });
+  }
+
+  function handleNewSale() {
+    if (savePending) return;
+    if (draftDirty) {
+      setDiscardOpen(true);
+      return;
+    }
+    goToNewSale();
+  }
+
+  return (
+    <>
+      <Button
+        data-testid="new-sale-button"
+        aria-label={t("saleNew")}
+        className="gap-1.5"
+        onClick={handleNewSale}
+        disabled={savePending}
+      >
+        <ShoppingBag size={18} />
+        <span className="hidden sm:inline">{t("saleNew")}</span>
+      </Button>
+      <DiscardSaleDialog
+        open={discardOpen}
+        onOpenChange={setDiscardOpen}
+        onConfirm={() => {
+          setDiscardOpen(false);
+          goToNewSale();
+        }}
+      />
+    </>
+  );
+}
+
+interface DiscardSaleDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}
+
+function DiscardSaleDialog({ open, onOpenChange, onConfirm }: DiscardSaleDialogProps) {
+  const { t } = useTranslation();
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPopup className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t("saleDiscardTitle")}</DialogTitle>
+          <DialogDescription>{t("saleDiscardDesc")}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            {t("dialogClose")}
+          </Button>
+          <Button variant="destructive" onClick={onConfirm} data-testid="new-sale-discard-confirm">
+            {t("saleDiscardConfirm")}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
 }
 
 export function AppShell() {
@@ -96,21 +190,7 @@ export function AppShell() {
             {activeTitleKey ? t(activeTitleKey) : t("appTitle")}
           </div>
 
-          <Button
-            asChild
-            data-testid="new-sale-button"
-            aria-label={t("saleNew")}
-            className="gap-1.5"
-          >
-            <Link
-              to="/sale"
-              replace={activeKey === "sale"}
-              search={(prev: { fresh?: number }) => ({ ...prev, fresh: (prev.fresh ?? 0) + 1 })}
-            >
-              <ShoppingBag size={18} />
-              <span className="hidden sm:inline">{t("saleNew")}</span>
-            </Link>
-          </Button>
+          <NewSaleAction activeKey={activeKey} />
 
           <div className="flex items-center gap-1">
             <ThemeToggle />

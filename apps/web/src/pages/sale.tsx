@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceCreate, Item } from "@dokan/contracts";
@@ -7,6 +7,7 @@ import { Amount } from "@/components/ui/amount";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
+import { useSaleDraft } from "@/components/app/sale-draft";
 
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { orpc, rpcClient } from "../lib/rpc";
@@ -156,6 +157,31 @@ export function SalePage() {
       },
       onError: (err) => setError(tError(err.message)),
     }),
+  );
+
+  const { setDraftDirty, setSavePending } = useSaleDraft();
+  const draftDirty =
+    lines.length > 0 ||
+    customer.trim() !== "" ||
+    discountType !== "" ||
+    discountValue.trim() !== "" ||
+    paidNow.trim() !== "";
+  const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
+
+  useEffect(() => {
+    setDraftDirty(draftDirty);
+  }, [draftDirty, setDraftDirty]);
+  useEffect(() => {
+    setSavePending(savePending);
+  }, [savePending, setSavePending]);
+  // Leaving the sale screen (or resetting to a fresh sale) clears both flags so
+  // the header action never warns about a draft that no longer exists.
+  useEffect(
+    () => () => {
+      setDraftDirty(false);
+      setSavePending(false);
+    },
+    [setDraftDirty, setSavePending],
   );
 
   const subtotal = lines.reduce((sum, line) => sum + parseQuantityDraft(line.quantityDraft) * actualPrice(line), 0);

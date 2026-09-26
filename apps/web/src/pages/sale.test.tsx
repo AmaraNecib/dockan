@@ -24,6 +24,16 @@ interface CapturedInvoiceInput {
   lines?: Array<{ itemId: string; quantity: number }>;
 }
 
+/** Subset of the tanstack mutation options the page passes through. */
+interface ItemMutationOptions {
+  onSuccess?: (item: { id: string; name: string; sellingPrice: number }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+interface InvoiceMutationOptions {
+  onSuccess?: (invoice: InvoiceResponse) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
 let scanPrice = 1000;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
@@ -45,7 +55,7 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     itemsCreate: {
-      mutationOptions: (opts?: Record<string, unknown>) => ({
+      mutationOptions: (opts?: ItemMutationOptions) => ({
         mutationFn: async () => {
           throw new Error("itemsCreate unused in this test");
         },
@@ -53,7 +63,7 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     itemsCreateWithStock: {
-      mutationOptions: (opts?: Record<string, unknown>) => ({
+      mutationOptions: (opts?: ItemMutationOptions) => ({
         mutationFn: async () => {
           throw new Error("itemsCreateWithStock unused in this test");
         },
@@ -63,7 +73,7 @@ mock.module("@/lib/rpc", () => ({
     // The commit is settled manually by the test so it can observe the pending
     // label and pick the invoice the server "returns".
     invoicesCreate: {
-      mutationOptions: (opts?: Record<string, unknown>) => ({
+      mutationOptions: (opts?: InvoiceMutationOptions) => ({
         mutationFn: (input: CapturedInvoiceInput) => {
           lastInvoiceInput = input;
           return new Promise<InvoiceResponse>((resolve) => {
@@ -268,12 +278,14 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(notice?.textContent).toContain("غير منسوب");
     expect(notice?.textContent).not.toContain("للزبون");
     expect(notice?.textContent).toContain("1000");
+    expect(notice?.textContent).toContain("تقديري");
 
     await act(async () => setInput(host, "sale-customer", "أمين"));
     notice = host.querySelector('[data-testid="sale-debt-notice"]');
     expect(notice?.textContent).toContain("سيُنشأ دين");
     expect(notice?.textContent).toContain("للزبون");
     expect(notice?.textContent).not.toContain("غير منسوب");
+    expect(notice?.textContent).toContain("تقديري");
   });
 
   it("shows the saving label while pending, then the server remaining (not cart math) as the debt", async () => {
@@ -297,7 +309,7 @@ describe("SalePage commit states (greptile round-2)", () => {
       lines: [{ itemId: "item-222", quantity: 1 }],
     });
 
-    expect(typeof resolveInvoice).toBe("function");
+    expect(resolveInvoice).not.toBeNull();
     await act(async () => {
       resolveInvoice?.({ invoiceNumber: "INV-77", remainingAmount: 650, counterpartyName: "أمين" });
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -307,6 +319,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(savedDebt?.textContent).toContain("650");
     expect(savedDebt?.textContent).not.toContain("600");
     expect(savedDebt?.textContent).toContain("للزبون");
+    expect(savedDebt?.textContent).not.toContain("تقديري");
   });
 
   it("surfaces an unattributed remainder in the confirmation when the sale has no customer", async () => {
@@ -325,5 +338,28 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(savedDebt?.textContent).toContain("غير منسوب");
     expect(savedDebt?.textContent).not.toContain("للزبون");
     expect(savedDebt?.textContent).toContain("1000");
+  });
+
+  it("freezes the pre-save notice to the submitted values while the commit is pending", async () => {
+    const host = await mountSale();
+    await scan("444");
+    await act(async () => {
+      setInput(host, "sale-customer", "أمين");
+      setInput(host, "sale-paid", "400"); // partial -> notice estimates 600
+    });
+    expect(host.querySelector('[data-testid="sale-debt-notice"]')?.textContent).toContain("600");
+
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // The request is in flight; editing the live field to the full amount must
+    // not hide the debt the invoice still records.
+    await act(async () => {
+      setInput(host, "sale-paid", "1000");
+    });
+    const notice = host.querySelector('[data-testid="sale-debt-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("600");
+    expect(notice?.textContent).not.toContain("1000");
   });
 });

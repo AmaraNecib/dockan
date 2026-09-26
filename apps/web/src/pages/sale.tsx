@@ -81,6 +81,12 @@ export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "over
   return !Number.isInteger(value) || value < 0 || value > 100;
 }
 
+/** Whether a pre-commit paid draft is usable, and the debt it leaves. */
+export interface SaleDebt {
+  valid: boolean;
+  debt: number;
+}
+
 /**
  * Debt a pending SALE will carry: `total` minus whatever the raw paid draft
  * records as the initial payment. Mirrors the commit invariant
@@ -92,7 +98,7 @@ export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "over
  * invalid: invoice creation rejects an overpayment, so it is not a zero-debt
  * commit.
  */
-export function saleDebt(total: number, paidDraft: string): { valid: boolean; debt: number } {
+export function saleDebt(total: number, paidDraft: string): SaleDebt {
   const paid = paidDraft === "" ? undefined : Number(paidDraft);
   const valid = paid === undefined || (Number.isInteger(paid) && paid >= 0 && paid <= total);
   if (!valid) return { valid: false, debt: 0 };
@@ -115,6 +121,9 @@ export function SalePage() {
   const [savedNumber, setSavedNumber] = useState<string | null>(null);
   const [savedDebt, setSavedDebt] = useState<number | null>(null);
   const [savedCustomer, setSavedCustomer] = useState<string | null>(null);
+  // Pre-save notice frozen at submit time: the pending request already carries
+  // these values, so in-flight edits must not contradict it.
+  const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);
 
   const [quickMode, setQuickMode] = useState<QuickAddMode | null>(null);
   const [quickName, setQuickName] = useState("");
@@ -191,6 +200,11 @@ export function SalePage() {
 
   // Live debt preview for the pending sale — see `saleDebt` for the invariant.
   const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
+  const liveNotice: SaleDebt = { valid: paidInputValid, debt: totalDebt };
+  // While a commit is in flight the request carries the values captured at
+  // click time, so keep showing those instead of recomputing from editable
+  // fields (editing a partial payment to full must not hide the recorded debt).
+  const notice = createInvoice.isPending && submittedNotice !== null ? submittedNotice : liveNotice;
   // Only claim a customer debt when a party name is present; otherwise the
   // unpaid remainder is unattributed and the Debts screen (grouped by party)
   // cannot show it.
@@ -244,6 +258,7 @@ export function SalePage() {
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
+    setSubmittedNotice(liveNotice);
     void createInvoice.mutate(invoiceInput);
   }
 
@@ -346,9 +361,9 @@ export function SalePage() {
         <h2 className="font-semibold">{t("saleTotalsTitle")}</h2>
         <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === ""} data-testid="sale-discount-value" /></label></div>
         <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
-        {paidInputValid && totalDebt > 0 && (
+        {notice.valid && notice.debt > 0 && (
           <p className="rounded border border-amber-600/30 bg-amber-500/10 p-2 text-sm" data-testid="sale-debt-notice">
-            {hasCustomer ? t("saleDebtWillBeCreated") : t("saleRemainderWillBeCreated")} <Amount value={totalDebt} /> {hasCustomer && t("saleDebtCustomer")}
+            {hasCustomer ? t("saleDebtWillBeCreated") : t("saleRemainderWillBeCreated")} <Amount value={notice.debt} /> {hasCustomer && t("saleDebtCustomer")} {t("saleDebtEstimate")}
           </p>
         )}
         {error && <p className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}

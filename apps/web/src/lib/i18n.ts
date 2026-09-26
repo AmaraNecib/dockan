@@ -223,6 +223,7 @@ const resources = {
       saleDebtCustomer: "للزبون",
       saleRemainderWillBeCreated: "سيُنشأ مبلغ متبقٍ غير منسوب",
       saleRemainderSavedPrefix: "— مبلغ متبقٍ غير منسوب",
+      saleDebtEstimate: "(تقديري)",
       saleSaved: "تم حفظ فاتورة البيع رقم {{number}}",
       saleNew: "بيع جديد",
       // ticket 9 — debts screen (who owes whom)

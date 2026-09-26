@@ -36,6 +36,9 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
 /** How often the dashboard re-reads the Algeria-local day. */
 const DAY_TICK_MS = 60_000;
 
+/** How often the landing figures refetch so an open dashboard stays current. */
+const REFRESH_MS = 60_000;
+
 /**
  * Landing screen (/). Answers "how is my shop today?" with the figures an
  * owner acts on hour to hour: today's sales, money owed to the shop, low
@@ -43,7 +46,10 @@ const DAY_TICK_MS = 60_000;
  * figures point at (/sale, /debts). Every number comes from an existing query;
  * a failed one degrades to a neutral placeholder instead of blanking the page.
  */
-export function DashboardPage({ dayTickMs = DAY_TICK_MS }: { dayTickMs?: number } = {}) {
+export function DashboardPage({
+  dayTickMs = DAY_TICK_MS,
+  refreshMs = REFRESH_MS,
+}: { dayTickMs?: number; refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const [today, setToday] = useState(() => algeriaLocalDate());
 
@@ -56,21 +62,30 @@ export function DashboardPage({ dayTickMs = DAY_TICK_MS }: { dayTickMs?: number 
     return () => clearInterval(id);
   }, [dayTickMs]);
 
-  const todaySales = useQuery(
-    orpc.invoicesList.queryOptions({ input: { kind: "SALE", fromDate: today, toDate: today } }),
-  );
-  const debts = useQuery(orpc.reportsDebts.queryOptions());
-  const lowStock = useQuery(orpc.itemsLowStock.queryOptions());
-  const recentInvoices = useQuery(orpc.invoicesList.queryOptions({ input: {} }));
+  // Every figure refetches on the same cadence so a dashboard left open during
+  // the day never shows hours-old numbers. `refreshMs` is the test seam.
+  const todaySales = useQuery({
+    ...orpc.invoicesList.queryOptions({ input: { kind: "SALE", fromDate: today, toDate: today } }),
+    refetchInterval: refreshMs,
+  });
+  const debts = useQuery({ ...orpc.reportsDebts.queryOptions(), refetchInterval: refreshMs });
+  const lowStock = useQuery({ ...orpc.itemsLowStock.queryOptions(), refetchInterval: refreshMs });
+  const recentInvoices = useQuery({ ...orpc.invoicesList.queryOptions({ input: {} }), refetchInterval: refreshMs });
 
-  // invoicesList caps at 200 rows and the contract exposes no pagination, so a
-  // >200-sale day undercounts. Kept as a documented at-a-glance floor rather
-  // than faked client-side; an exact daily total needs an api sum procedure.
+  // invoicesList returns at most 200 rows while totalCount covers every match,
+  // so a >200-sale day is a floor — disclosed on the card, never shown as an
+  // exact total. An exact figure needs an api sum procedure (follow-up).
   const salesTotal = (todaySales.data?.items ?? []).reduce((sum, invoice) => sum + invoice.totalAmount, 0);
+  const salesCapped = todaySales.data !== undefined && todaySales.data.totalCount > todaySales.data.items.length;
   const owedToUsTotal = (debts.data?.owedToUs ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
   const weOweTotal = (debts.data?.weOwe ?? []).reduce((sum, row) => sum + row.remainingTotal, 0);
   const lowStockCount = lowStock.data?.items.length ?? 0;
-  const recent = (recentInvoices.data?.items ?? []).slice(0, 5);
+  // The api orders by business date first, so its top rows can be an older
+  // future-dated invoice while a just-entered backdated one sits lower. Sort by
+  // creation time so the five shown really are the newest entries.
+  const recent = [...(recentInvoices.data?.items ?? [])]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 5);
 
   const dash = <span className="text-muted-foreground">—</span>;
 
@@ -110,6 +125,7 @@ export function DashboardPage({ dayTickMs = DAY_TICK_MS }: { dayTickMs?: number 
               <Amount value={salesTotal} />
             )
           }
+          detail={salesCapped ? t("dashboardSalesCapped") : undefined}
         />
 
         <KpiCard

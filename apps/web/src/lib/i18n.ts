@@ -65,6 +65,7 @@ const resources = {
       navReports: "التقارير",
       dashboardTitle: "الرئيسية",
       dashboardSalesToday: "مبيعات اليوم",
+      dashboardSalesCapped: "أكثر من 200 فاتورة، الرقم حد أدنى",
       dashboardLowStockKpi: "منتجات منخفضة",
       dashboardRecentInvoices: "أحدث الفواتير",
       dashboardNewSale: "بيع جديد",

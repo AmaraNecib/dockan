@@ -7,7 +7,7 @@ import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDate } from "../lib/logger";
 import { createDrizzleStore } from "./drizzle-store";
-import type { StorePort } from "./port";
+import type { StoreLogger, StorePort } from "./port";
 
 /**
  * dashboardSummary store seam (issue 84). The landing screen's aggregates must
@@ -32,14 +32,14 @@ function removeTempDirRetry(dir: string): void {
   }
 }
 
-async function freshStoreWithConn(): Promise<{ store: StorePort; conn: Connection }> {
+async function freshStoreWithConn(logger?: StoreLogger): Promise<{ store: StorePort; conn: Connection }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-dash-"));
   tempDirs.push(dir);
   const conn = openConnection(
     createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
   );
   conns.push(conn);
-  const store = createDrizzleStore(conn);
+  const store = createDrizzleStore(conn, logger);
   await store.setup();
   return { store, conn };
 }
@@ -162,7 +162,10 @@ describe("dashboardSummary (issue 84)", () => {
   });
 
   it("keeps the money figures when one optional section cannot be read", async () => {
-    const { store, conn } = await freshStoreWithConn();
+    const warnings: string[] = [];
+    const { store, conn } = await freshStoreWithConn({
+      warn: (event, message) => warnings.push(`${event}: ${message}`),
+    });
     const day = localDate();
     await seedInvoice(store, { invoiceNumber: "DASH-KEEP", kind: "SALE", invoiceDate: day, totalAmount: 4_000, paidAmount: 1_000, remainingAmount: 3_000 });
 
@@ -181,6 +184,10 @@ describe("dashboardSummary (issue 84)", () => {
     // and the sections that failed say so instead of reading as zero or empty
     expect(result.lowStockCount).toBeNull();
     expect(result.lowStockItems).toBeNull();
+
+    // a partial response still succeeds at the RPC layer, so the cause has to
+    // be reported here or it is lost entirely
+    expect(warnings.some((w) => w.startsWith("DASHBOARD_SECTION_FAILED") && w.includes("lowStock"))).toBe(true);
   });
 
   it("returns zeros and an empty list on an empty store", async () => {

@@ -72,7 +72,7 @@ fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
 
 const logger = new AppLogger(config.dataDir);
 const conn = openConnection(config);
-const store = createDrizzleStore(conn);
+const store = createDrizzleStore(conn, logger);
 
 await store.setup();
 

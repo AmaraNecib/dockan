@@ -44,6 +44,14 @@ export interface ProfitSaleLine {
 }
 
 /**
+ * Minimal logging seam for degraded reads. Structural on purpose: the store
+ * reports a failure without importing the app logger, so it stays testable.
+ */
+export type StoreLogger = {
+  warn(event: string, message: string): void;
+};
+
+/**
  * Landing-screen aggregates (issue 84) computed in one store read. The day is
  * supplied by the caller (the router's server clock), so the store stays
  * clock-free; every money figure is a SQL aggregate over the raw rows.

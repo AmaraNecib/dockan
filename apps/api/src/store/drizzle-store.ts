@@ -30,7 +30,7 @@ import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -331,7 +331,7 @@ type DebtSummaryRow = {
  * speaks StorePort (ADR-0003). A postgres adapter replaces this file, not
  * anything above it.
  */
-export function createDrizzleStore(conn: Connection): StorePort {
+export function createDrizzleStore(conn: Connection, logger?: StoreLogger): StorePort {
   const { db } = conn;
 
   /**
@@ -1383,6 +1383,19 @@ export function createDrizzleStore(conn: Connection): StorePort {
           .orderBy(items.stockOnHand, items.name),
         db.select(invoiceCols).from(invoices).orderBy(desc(invoices.createdAt), sql`rowid DESC`).limit(5),
       ]);
+
+      // A rejected read is reported here: the partial response still succeeds at
+      // the RPC layer, so without this the cause would leave no trace anywhere.
+      for (const [section, result] of [
+        ["lowStockCount", lowStockCountResult],
+        ["lowStockItems", lowStockRowsResult],
+        ["recentInvoices", recentRowsResult],
+      ] as const) {
+        if (result.status === "rejected") {
+          logger?.warn("DASHBOARD_SECTION_FAILED", `${section} read failed: ${String(result.reason)}`);
+        }
+      }
+
       return {
         salesTotal: Number(salesRows[0]?.total ?? 0),
         salesCount: Number(salesRows[0]?.count ?? 0),

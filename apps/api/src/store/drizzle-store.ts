@@ -30,7 +30,7 @@ import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -1313,6 +1313,61 @@ export function createDrizzleStore(conn: Connection): StorePort {
           latestInvoiceDate: r.latest_date == null ? null : String(r.latest_date),
         } satisfies DebtSummary;
       });
+    },
+    async dashboardSummary(day: string): Promise<DashboardAggregates> {
+      // One aggregate read for the landing screen (issue 84). The day's sales
+      // are summed in SQL (never a capped invoicesList page), both debt
+      // directions and the low-stock count are aggregates, and the newest
+      // invoices are ordered by creation time — the api's business-date-first
+      // order would push a just-created backdated invoice off the page. The
+      // debt predicates mirror debtSummaries() exactly (kind + unpaid +
+      // attributed to a party), so the card agrees with the /debts screen it
+      // links to and never claims a debt nobody can follow up.
+      const [salesRows, owedRows, weOweRows, lowStockCountRows, lowStockRows, recentRows] = await Promise.all([
+        db
+          .select({ total: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`, count: sql<number>`COUNT(*)` })
+          .from(invoices)
+          .where(and(eq(invoices.kind, "SALE"), eq(invoices.invoiceDate, day))),
+        db
+          .select({ total: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)` })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.kind, "SALE"),
+              sql`${invoices.remainingAmount} > 0`,
+              sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
+            ),
+          ),
+        db
+          .select({ total: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)` })
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.kind, "PURCHASE"),
+              sql`${invoices.remainingAmount} > 0`,
+              sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
+            ),
+          ),
+        db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(items)
+          .where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`),
+        db
+          .select(itemCols)
+          .from(items)
+          .where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`)
+          .orderBy(items.stockOnHand, items.name),
+        db.select(invoiceCols).from(invoices).orderBy(desc(invoices.createdAt), sql`rowid DESC`).limit(5),
+      ]);
+      return {
+        salesTotal: Number(salesRows[0]?.total ?? 0),
+        salesCount: Number(salesRows[0]?.count ?? 0),
+        owedToUs: Number(owedRows[0]?.total ?? 0),
+        weOwe: Number(weOweRows[0]?.total ?? 0),
+        lowStockCount: Number(lowStockCountRows[0]?.count ?? 0),
+        lowStockItems: lowStockRows,
+        recentInvoices: recentRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
+      };
     },
 
     // --- activities + settings ----------------------------------------------

@@ -10,6 +10,7 @@ import {
   categoryCreateInputSchema,
   categorySchema,
   customerSchema,
+  dashboardSummaryOutputSchema,
   debtsByPartyInputSchema,
   debtsOutputSchema,
   expenseCategoryCreateInputSchema,
@@ -120,6 +121,11 @@ export const dokanContract = {
   reportsDebts: oc.output(debtsOutputSchema),
   /** ticket 31 — profit report computed from raw records at read time */
   reportsProfit: oc.input(profitReportInputSchema).output(profitReportOutputSchema),
+
+  // --- dashboard (issue 84) ------------------------------------------------
+  /** one aggregate read for the landing screen: the server's day, the day's
+   * exact sales, both debt directions, low stock, and the newest invoices */
+  dashboardSummary: oc.output(dashboardSummaryOutputSchema),
 
   // --- expenses (ticket 31) -------------------------------------------------
   expenseCategoriesList: oc.output(z.object({ items: z.array(expenseCategorySchema) })),

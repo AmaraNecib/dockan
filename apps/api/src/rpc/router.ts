@@ -1277,6 +1277,16 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
+    // --- dashboard (issue 84) ------------------------------------------------
+    dashboardSummary: os.dashboardSummary.handler(
+      guarded(async () => {
+        // The server's own Algeria-local day is the single source of truth;
+        // the client never derives the day from the device clock.
+        const day = localDate();
+        return { day, ...(await deps.store.dashboardSummary(day)) };
+      }),
+    ),
+
     // --- expenses (ticket 31) ------------------------------------------------
     expenseCategoriesList: os.expenseCategoriesList.handler(guarded(async () => ({ items: await deps.store.listExpenseCategories() }))),
     expenseCategoriesCreate: os.expenseCategoriesCreate.handler(

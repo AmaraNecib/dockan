@@ -811,6 +811,31 @@ export const debtsOutputSchema = z.object({
   weOwe: z.array(debtSummarySchema),
 });
 
+/**
+ * Landing-screen payload (issue 84). `day` is the server's own Algeria-local
+ * date — never the device clock — and every money figure is aggregated in
+ * SQL, so the client renders exactly what the server counted: no capped list
+ * is summed and no page is re-sorted client-side.
+ */
+export const dashboardSummaryOutputSchema = z.object({
+  /** the server's Algeria-local day, "YYYY-MM-DD" */
+  day: localDateSchema,
+  /** exact sum of SALE invoice totals dated `day`, computed in SQL */
+  salesTotal: dinarsSchema,
+  /** number of SALE invoices dated `day` */
+  salesCount: z.number().int().min(0),
+  /** party-attributed unpaid SALE debt — mirrors the debts screen's drill-down */
+  owedToUs: dinarsSchema,
+  /** party-attributed unpaid PURCHASE debt */
+  weOwe: dinarsSchema,
+  /** count of items at or below their low-stock threshold */
+  lowStockCount: z.number().int().min(0),
+  /** low-stock rows for the detail list, ordered by on-hand then name */
+  lowStockItems: z.array(itemSchema),
+  /** the five newest invoices by creation time, newest first */
+  recentInvoices: z.array(invoiceSchema),
+});
+
 export const debtsByPartyInputSchema = z
   .object({
     kind: invoiceKindSchema,
@@ -880,6 +905,7 @@ export type StockMovement = z.infer<typeof stockMovementSchema>;
 export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
+export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 export type Expense = z.infer<typeof expenseSchema>;
 export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;

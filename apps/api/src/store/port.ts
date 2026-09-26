@@ -43,6 +43,26 @@ export interface ProfitSaleLine {
   netTotal: number;
 }
 
+/**
+ * Landing-screen aggregates (issue 84) computed in one store read. The day is
+ * supplied by the caller (the router's server clock), so the store stays
+ * clock-free; every money figure is a SQL aggregate over the raw rows.
+ */
+export interface DashboardAggregates {
+  /** exact sum of SALE invoice totals dated the supplied day */
+  salesTotal: number;
+  salesCount: number;
+  /** party-attributed remaining debt across unpaid SALE invoices (agrees with the debts screen) */
+  owedToUs: number;
+  /** party-attributed remaining debt across unpaid PURCHASE invoices */
+  weOwe: number;
+  lowStockCount: number;
+  /** low-stock rows for the detail list, ordered by on-hand then name */
+  lowStockItems: Item[];
+  /** five newest invoices by creation time, newest first */
+  recentInvoices: Invoice[];
+}
+
 /** Additive invoice fields are optional at the write seam so older adapters and
  * migration tests can keep inserting the pre-discount shape. The adapter
  * returns the complete historical response shape with safe zero defaults. */
@@ -196,6 +216,10 @@ export interface StorePort {
    * so the two seams never disagree on identity. */
   listUnpaidInvoicesByParty(kind: Invoice["kind"], counterpartyId: string | null, counterpartyName: string | null): Promise<Invoice[]>;
   debtSummaries(): Promise<DebtSummary[]>;
+  /** one aggregate read for the landing screen (issue 84): the day's sales
+   * summed in SQL, both debt directions, low stock, and the newest invoices
+   * by creation time — never a capped list re-summed or re-sorted client-side. */
+  dashboardSummary(day: string): Promise<DashboardAggregates>;
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
   listActivities(limit: number): Promise<Activity[]>;

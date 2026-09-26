@@ -32,6 +32,26 @@ function withSeconds(value: string): string | undefined {
   return value.length === 16 ? `${value}:00` : value;
 }
 
+/**
+ * The api resolves the report window to Algeria-local ISO moments
+ * ("YYYY-MM-DDTHH:mm:ss"). Render only the calendar day in the Arabic (ar)
+ * locale — e.g. "1 أغسطس 2026" — and drop the time-of-day. Latin digits are
+ * forced so the day/year stay Western numerals; each date is bidi-isolated at
+ * the call site so the RTL sentence keeps the numbers in reading order.
+ */
+const dayFormatter = new Intl.DateTimeFormat("ar", {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+  numberingSystem: "latn",
+});
+
+function formatLocalDay(value: string): string {
+  // localDateTime strings carry no timezone, so `new Date` parses them as
+  // device-local — which matches the app's Algeria-local convention.
+  return dayFormatter.format(new Date(value));
+}
+
 export function ReportsPage() {
   const { t } = useTranslation();
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
@@ -71,8 +91,11 @@ export function ReportsPage() {
           )}
         </div>
         {report.data !== undefined && (
-          <p className="text-sm text-muted-foreground" dir="ltr" data-testid="report-range-label">
-            {report.data.range.from} → {report.data.range.to}
+          <p className="text-sm text-muted-foreground" dir="rtl" data-testid="report-range-label">
+            {t("expensesCustomFrom")}{" "}
+            <span dir="ltr">{formatLocalDay(report.data.range.from)}</span>{" "}
+            {t("expensesCustomTo")}{" "}
+            <span dir="ltr">{formatLocalDay(report.data.range.to)}</span>
           </p>
         )}
         {report.data !== undefined && (

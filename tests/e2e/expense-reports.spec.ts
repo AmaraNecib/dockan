@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 
 /**
  * Expenses + profit reports. Specs share one wiped-at-boot sqlite
@@ -32,14 +33,10 @@ function parseAmount(text: string | null): number {
   return match === null ? NaN : Number(match[0]);
 }
 
-/** Select an expense category by its display name (the withdrawal category's
- * option label carries a badge suffix, so match by option text, not label).
- * getAttribute auto-waits for the option to exist without a visibility check. */
+/** Select an expense category by its visible label. The withdrawal category
+ * includes a badge suffix, so the shared helper uses a partial accessible name. */
 async function selectExpenseCategory(page: import("@playwright/test").Page, name: string) {
-  const option = page.getByTestId("expense-category").locator("option", { hasText: name }).first();
-  const value = await option.getAttribute("value");
-  if (value === null) throw new Error(`no expense category option named ${name}`);
-  await page.getByTestId("expense-category").selectOption(value);
+  await chooseSelectOption(page, page.getByTestId("expense-category"), name);
 }
 
 test("record expenses, filter and sort history, and see them in the profit report", async ({ page }) => {
@@ -55,8 +52,8 @@ test("record expenses, filter and sort history, and see them in the profit repor
 
   // the seeded categories include a distinct owner-withdrawal option
   const categorySelect = page.getByTestId("expense-category");
-  await expect(categorySelect.locator("option", { hasText: "كراء المحل" })).toHaveCount(1);
-  await expect(categorySelect.locator("option", { hasText: withdrawalName })).toHaveCount(1);
+  await expectSelectOption(page, categorySelect, "كراء المحل");
+  await expectSelectOption(page, categorySelect, withdrawalName);
 
   // record an operating expense with a note
   await selectExpenseCategory(page, "كراء المحل");
@@ -75,8 +72,8 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(withdrawalRow).toContainText("سحب المالك");
 
   // sort by amount ascending: the withdrawal (3000) precedes rent (5000)
-  await page.getByTestId("expense-sort-by").selectOption("amount");
-  await page.getByTestId("expense-sort-dir").selectOption("asc");
+  await chooseSelectOption(page, page.getByTestId("expense-sort-by"), "المبلغ");
+  await chooseSelectOption(page, page.getByTestId("expense-sort-dir"), "تصاعدي");
   const rows = page.getByTestId("expense-history").locator("tbody tr");
   await expect(rows.first()).toContainText(withdrawalAmount);
   await expect(rows.last()).toContainText("5000");
@@ -96,7 +93,7 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(page.getByTestId("expense-history")).not.toContainText("777");
 
   // …and appears only inside its own custom window
-  await page.getByTestId("expense-range-preset").selectOption("CUSTOM");
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
   await page.getByTestId("expense-custom-from").fill("2020-01-01T00:00");
   await page.getByTestId("expense-custom-to").fill("2020-01-31T23:59");
   await expect(page.getByTestId("expense-history")).toContainText("777");

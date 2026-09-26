@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate } from "@dokan/contracts";
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
@@ -213,6 +214,11 @@ function ItemForm({
   const [initialStock, setInitialStock] = useState("");
   const [error, setError] = useState<string | null>(null);
 
+  // Submit falls back to the first category when none was picked, so surface
+  // that same choice in the trigger: the operator must always see the category
+  // the item will be filed under (greptile PR #80).
+  const selectedCategoryId = categoryId || categories.data?.items[0]?.id || "";
+
   // prefill from an unknown-scan choice
   useEffect(() => {
     if (seed !== null) {
@@ -271,8 +277,7 @@ function ItemForm({
       setError(t("itemsSellAboveCost"));
       return;
     }
-    const chosenCategory = categoryId || categories.data?.items[0]?.id;
-    if (!chosenCategory) {
+    if (!selectedCategoryId) {
       setError(t("itemsChooseCategory"));
       return;
     }
@@ -294,7 +299,7 @@ function ItemForm({
     }
     const base: ItemCreate = {
       name,
-      categoryId: chosenCategory,
+      categoryId: selectedCategoryId,
       costPrice: Number(cost) || 0,
       sellingPrice: selling,
       // blank means default 5; 0 is a legitimate threshold (warn at zero)
@@ -318,14 +323,23 @@ function ItemForm({
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("itemsCategory")}
-          <select className="rounded border px-3 py-2" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-            {categories.data?.items.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-            {categories.data?.items.length === 0 && <option value="">{t("itemsChooseCategory")}</option>}
-          </select>
+          <Select
+            value={selectedCategoryId}
+            onValueChange={(value) => setCategoryId(value ?? "")}
+            items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder={categories.data?.items.length === 0 ? t("itemsChooseCategory") : undefined} />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.data?.items.map((category) => (
+                <SelectItem key={category.id} value={category.id}>
+                  {category.name}
+                </SelectItem>
+              ))}
+              {categories.data?.items.length === 0 && <SelectItem value="">{t("itemsChooseCategory")}</SelectItem>}
+            </SelectContent>
+          </Select>
         </label>
         <label className="grid gap-1">
           {t("itemsBarcode")}

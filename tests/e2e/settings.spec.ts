@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Settings screen (store identity). Owner edits the store
@@ -49,7 +50,7 @@ test("settings edit → save → invoice header reflects the store identity", as
   await expect(page.getByTestId("purchase-form")).toBeVisible();
   await page.getByTestId("purchase-toggle-quick").click();
   await page.getByTestId("quick-name").fill(itemName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByTestId("purchase-quick-form").getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("quick-qty").fill("2");
   await page.getByTestId("quick-cost").fill("600");

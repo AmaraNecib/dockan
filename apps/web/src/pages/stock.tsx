@@ -3,6 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
@@ -25,6 +26,11 @@ export function StockForm() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  // Submit falls back to the first item when nothing was picked, so surface
+  // that same choice in the trigger: the operator must always see the item the
+  // movement will be recorded against (greptile PR #80).
+  const selectedItemId = itemId || items.data?.items[0]?.id || "";
+
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
       onSuccess: () => {
@@ -45,9 +51,8 @@ export function StockForm() {
     event.preventDefault();
     setError(null);
     setDone(false);
-    const chosenItem = itemId || items.data?.items[0]?.id;
     const parsedDelta = Number(delta);
-    if (!chosenItem) {
+    if (!selectedItemId) {
       setError(t("itemsEmpty"));
       return;
     }
@@ -56,7 +61,7 @@ export function StockForm() {
       return;
     }
     void adjust.mutate({
-      itemId: chosenItem,
+      itemId: selectedItemId,
       delta: parsedDelta,
       unitCost: parsedDelta > 0 && unitCost !== "" ? Number(unitCost) : undefined,
       reason: reason === "" ? undefined : reason,
@@ -68,13 +73,22 @@ export function StockForm() {
       <h2 className="font-semibold">{t("stockAddTitle")}</h2>
       <label className="grid gap-1">
         {t("stockItem")}
-        <select className="rounded border px-3 py-2" value={itemId} onChange={(e) => setItemId(e.target.value)}>
-          {items.data?.items.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={selectedItemId}
+          onValueChange={(value) => setItemId(value ?? "")}
+          items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
+        >
+          <SelectTrigger className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {items.data?.items.map((item) => (
+              <SelectItem key={item.id} value={item.id}>
+                {item.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">

@@ -7,6 +7,7 @@ import type { InvoiceKind } from "@dokan/contracts";
 
 import { orpc } from "../lib/rpc";
 import { Amount } from "@/components/ui/amount";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type KindFilter = "" | InvoiceKind;
@@ -38,36 +39,53 @@ export function InvoicesPage() {
       <div className="mt-4 grid grid-cols-2 gap-3">
         <label className="grid gap-1 text-sm">
           {t("invoiceKind")}
-          <select
-            className="rounded border px-3 py-2"
+          <Select
             value={kind}
-            onChange={(event) => {
-              // SAFETY: the select renders only "" / SALE / PURCHASE options, so the target value is in KindFilter
-              setKind(event.target.value as KindFilter);
+            onValueChange={(value) => {
+              // SAFETY: the select renders only "" / SALE / PURCHASE options, so the value is in KindFilter
+              setKind((value ?? "") as KindFilter);
             }}
-            data-testid="invoices-kind-filter"
+            items={[
+              { value: "", label: t("invoicesFilterAll") },
+              { value: "SALE", label: t("invoicesFilterSale") },
+              { value: "PURCHASE", label: t("invoicesFilterPurchase") },
+            ]}
           >
-            <option value="">{t("invoicesFilterAll")}</option>
-            <option value="SALE">{t("invoicesFilterSale")}</option>
-            <option value="PURCHASE">{t("invoicesFilterPurchase")}</option>
-          </select>
+            <SelectTrigger className="w-full" data-testid="invoices-kind-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{t("invoicesFilterAll")}</SelectItem>
+              <SelectItem value="SALE">{t("invoicesFilterSale")}</SelectItem>
+              <SelectItem value="PURCHASE">{t("invoicesFilterPurchase")}</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
         <label className="grid gap-1 text-sm">
           {t("invoicesStatusFilter")}
-          <select
-            className="rounded border px-3 py-2"
+          <Select
             value={status}
-            onChange={(event) => {
-              // SAFETY: the select renders only "" / UNPAID / PARTIAL / PAID options, so the target value is in StatusFilter
-              setStatus(event.target.value as StatusFilter);
+            onValueChange={(value) => {
+              // SAFETY: the select renders only "" / UNPAID / PARTIAL / PAID options, so the value is in StatusFilter
+              setStatus((value ?? "") as StatusFilter);
             }}
-            data-testid="invoices-status-filter"
+            items={[
+              { value: "", label: t("invoicesStatusAll") },
+              { value: "UNPAID", label: t("invoicesStatusUnpaid") },
+              { value: "PARTIAL", label: t("invoicesStatusPartial") },
+              { value: "PAID", label: t("invoicesStatusPaid") },
+            ]}
           >
-            <option value="">{t("invoicesStatusAll")}</option>
-            <option value="UNPAID">{t("invoicesStatusUnpaid")}</option>
-            <option value="PARTIAL">{t("invoicesStatusPartial")}</option>
-            <option value="PAID">{t("invoicesStatusPaid")}</option>
-          </select>
+            <SelectTrigger className="w-full" data-testid="invoices-status-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">{t("invoicesStatusAll")}</SelectItem>
+              <SelectItem value="UNPAID">{t("invoicesStatusUnpaid")}</SelectItem>
+              <SelectItem value="PARTIAL">{t("invoicesStatusPartial")}</SelectItem>
+              <SelectItem value="PAID">{t("invoicesStatusPaid")}</SelectItem>
+            </SelectContent>
+          </Select>
         </label>
       </div>
 

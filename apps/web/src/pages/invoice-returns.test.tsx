@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // initializes i18next (ar) for useTranslation; also resolves option labels
 
 import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
@@ -189,6 +189,37 @@ async function flushAsync() {
   });
 }
 
+/** act-wrapped polling so floating-ui positioning and Base UI store updates settle. */
+async function waitFor(predicate: () => boolean) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (predicate()) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error("condition not met within timeout");
+}
+
+/** Opens the settlement Select and commits the option whose label matches `label`. */
+async function pickSettlement(label: string) {
+  const trigger = host.querySelector<HTMLElement>('[data-testid="returns-settlement"]')!;
+  act(() => {
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const optionText = (element: HTMLElement) => (element.textContent ?? "").trim();
+  await waitFor(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).some((element) => optionText(element) === label),
+  );
+  const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((element) => optionText(element) === label)!;
+  act(() => {
+    // Base UI items arm mouse selection on pointerdown, then commit on click.
+    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+    option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
+  });
+}
+
 describe("returnQuantityError (per-line return cap boundary)", () => {
   it("treats an untouched (empty) line as not part of the return", () => {
     expect(returnQuantityError("", 4)).toBeNull();
@@ -319,12 +350,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
   it("sends the custom cash portion when the owner splits the settlement", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
-    act(() => {
-      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "CUSTOM");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSettlement(i18n.t("returnsSplitCustom"));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!, "1200");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -334,60 +360,40 @@ describe("ReturnsPanel (new-return form + history)", () => {
   it("sends cash 0 for the all-debt preset", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
-    act(() => {
-      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "ALL_DEBT");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(lastCreateInput?.cashPaidOut).toBe(0);
   });
 
-  it("refuses a custom cash portion above the return value", () => {
+  it("refuses a custom cash portion above the return value", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
-    act(() => {
-      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "CUSTOM");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSettlement(i18n.t("returnsSplitCustom"));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!, "4000");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("أدخل مبلغاً نقدياً");
     expect(lastCreateInput).toBeNull();
   });
 
-  it("warns when an all-debt split swings into cash beyond what was collected", () => {
+  it("warns when an all-debt split swings into cash beyond what was collected", async () => {
     // remaining 300 < value 500 → the debt cap forces 200 into cash, which the
     // api will actually settle; the warning must track THAT cash, not the
     // requested 0
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
-    act(() => {
-      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "ALL_DEBT");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("200");
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
   });
 
-  it("notes that the debt portion applies only on acceptance (#68)", () => {
+  it("notes that the debt portion applies only on acceptance (#68)", async () => {
     // invoice total 400, paid 100 → remaining 300; an ALL_DEBT split on the
     // 500 line projects a 300 debt portion — the panel must tell the counter
     // owner the invoice keeps its debt until the return is accepted
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
-    act(() => {
-      const select = host.querySelector<HTMLSelectElement>('[data-testid="returns-settlement"]')!;
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-      setter.call(select, "ALL_DEBT");
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
     const note = host.querySelector('[data-testid="returns-debt-note"]');
     expect(note).toBeTruthy();
     expect(note?.textContent).toContain("عند قبول المرجوع");

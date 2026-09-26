@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { InvoiceHeader } from "@/components/invoice-header";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -135,20 +136,27 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           </label>
           <label className="grid gap-1 text-sm">
             {t("pmtMethod")}
-            <select
-              className="rounded border px-3 py-2"
+            <Select
               value={method}
-              onChange={(event) => {
-                // SAFETY: the select renders only the CASH / BANK options, so the target value is a PaymentMethod
-                setMethod(event.target.value as PaymentMethod);
+              onValueChange={(value) => {
+                // SAFETY: the select renders only the CASH / BANK options, so the value is a PaymentMethod
+                setMethod((value ?? "CASH") as PaymentMethod);
                 setRecorded(false);
               }}
               disabled={remaining === 0}
-              data-testid="pmt-method"
+              items={[
+                { value: "CASH", label: t("pmtMethod_CASH") },
+                { value: "BANK", label: t("pmtMethod_BANK") },
+              ]}
             >
-              <option value="CASH">{t("pmtMethod_CASH")}</option>
-              <option value="BANK">{t("pmtMethod_BANK")}</option>
-            </select>
+              <SelectTrigger className="w-full" data-testid="pmt-method">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="CASH">{t("pmtMethod_CASH")}</SelectItem>
+                <SelectItem value="BANK">{t("pmtMethod_BANK")}</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           <label className="grid gap-1 text-sm">
             {t("pmtNoteLabel")}
@@ -405,20 +413,28 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           </div>
           <label className="grid gap-1">
             {t("returnsSplit")}
-            <select
-              className="rounded border px-2 py-1"
+            <Select
               value={settlement}
-              onChange={(event) => {
+              onValueChange={(value) => {
                 // SAFETY: the select renders only the three preset options
-                setSettlement(event.target.value as ReturnSettlementPreset);
+                setSettlement((value ?? "ALL_CASH") as ReturnSettlementPreset);
                 setRecorded(false);
               }}
-              data-testid="returns-settlement"
+              items={[
+                { value: "ALL_CASH", label: t("returnsSplitAllCash") },
+                { value: "ALL_DEBT", label: t("returnsSplitAllDebt") },
+                { value: "CUSTOM", label: t("returnsSplitCustom") },
+              ]}
             >
-              <option value="ALL_CASH">{t("returnsSplitAllCash")}</option>
-              <option value="ALL_DEBT">{t("returnsSplitAllDebt")}</option>
-              <option value="CUSTOM">{t("returnsSplitCustom")}</option>
-            </select>
+              <SelectTrigger className="w-full" data-testid="returns-settlement">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL_CASH">{t("returnsSplitAllCash")}</SelectItem>
+                <SelectItem value="ALL_DEBT">{t("returnsSplitAllDebt")}</SelectItem>
+                <SelectItem value="CUSTOM">{t("returnsSplitCustom")}</SelectItem>
+              </SelectContent>
+            </Select>
           </label>
           {settlement === "CUSTOM" && (
             <label className="grid gap-1">

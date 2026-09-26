@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * E2E flow: create a category, create an item with the live profit
@@ -32,8 +33,7 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   // dropdown options arrive via an async categories query, so wait for the
   // option before selecting (prevents a race with the fetch)
   const categorySelect = page.getByLabel("التصنيف");
-  await expect(categorySelect.locator("option", { hasText: `زيوت-${stamp}` })).toHaveCount(1);
-  await categorySelect.selectOption({ label: `زيوت-${stamp}` });
+  await chooseSelectOption(page, categorySelect, `زيوت-${stamp}`);
   await expect(page.getByTestId("profit-preview")).toHaveText("الربح لكل وحدة: 150 دج");
 
   await page.getByRole("button", { name: "حفظ" }).click();

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Debts screen (/debts). After first-time setup, seed a
@@ -31,7 +32,7 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
 
   await page.goto("/items");
-  await page.getByRole("combobox").first().selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByTestId("item-name").fill(itemName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");

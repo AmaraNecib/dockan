@@ -91,6 +91,8 @@ export function SettingsPage() {
             {t("settingsStoreName")}
             <input
               className="rounded border px-3 py-2"
+              name="storeName"
+              autoComplete="organization"
               value={storeName}
               onChange={(e) => setStoreName(e.target.value)}
               required
@@ -101,9 +103,12 @@ export function SettingsPage() {
             {t("settingsStorePhone")}
             <input
               className="rounded border px-3 py-2"
+              type="tel"
+              name="storePhone"
               value={storePhone}
               onChange={(e) => setStorePhone(e.target.value)}
               placeholder={t("settingsPhoneHint")}
+              autoComplete="tel"
               inputMode="tel"
               dir="ltr"
               data-testid="settings-phone"
@@ -113,6 +118,8 @@ export function SettingsPage() {
             {t("settingsStoreAddress")}
             <input
               className="rounded border px-3 py-2"
+              name="storeAddress"
+              autoComplete="street-address"
               value={storeAddress}
               onChange={(e) => setStoreAddress(e.target.value)}
               data-testid="settings-address"

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
 
 /**
@@ -10,19 +11,7 @@ import { chooseSelectOption, expectSelectOption } from "./select-helpers";
  */
 
 async function ensureAuthed(page: import("@playwright/test").Page) {
-  await page.goto("/");
-  // Always (re)run the first-time setup/reset path: authResetPassword is
-  // idempotent (create-or-reuse + upsert), so this deterministically
-  // provisions the admin in any database state without racing the initial
-  // render of the login screen.
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  await signIn(page);
 }
 
 /** Read the displayed amount (may be negative) out of a report figure cell.

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openSystemNav, signIn } from "./auth-helpers";
 
 /**
  * Later payments on an invoice, in instalments.
@@ -9,16 +10,8 @@ import { expect, test } from "@playwright/test";
  * log shows the PAYMENT_RECORDED entries with the invoice number.
  */
 test("invoice payments: instalments, overpay refusal, history, and audit", async ({ page }) => {
-  // 0. first-time setup + sign in (idempotent reset path on the shared db)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // 0. sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
 
   const stamp = Date.now().toString();
   const categoryName = `دفعات-تصنيف-${stamp}`;
@@ -97,6 +90,7 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   expect(payRequests).toBe(payRequestsAfterFirst + 1);
 
   // 7. both instalments landed in the activity log as PAYMENT_RECORDED
+  await openSystemNav(page);
   await page.getByRole("link", { name: "سجل النشاط" }).click();
   // skip the SALE_CREATED entry (its summary also carries the invoice number)
   const auditRows = page

@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -371,52 +374,117 @@ export function SalePage() {
   return (
     <section data-testid="sale-form">
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
-      <div className="mt-4 grid gap-4 rounded border bg-card p-4">
-        <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1">{t("saleCustomer")}<input className="rounded border px-3 py-2" value={customer} onChange={(event) => setCustomer(event.target.value)} disabled={createInvoice.isPending} data-testid="sale-customer" /></label>
-          <label className="grid gap-1">{t("salePaid")}<input className="rounded border px-3 py-2" inputMode="numeric" value={paidNow} onChange={(event) => setPaidNow(event.target.value)} disabled={createInvoice.isPending} data-testid="sale-paid" /></label>
-        </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <button type="button" className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending} data-testid="sale-open-picker">{t("saleAddItem")}</button>
-          <button type="button" className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" onClick={() => openQuick("EMPTY")} disabled={createInvoice.isPending} data-testid="sale-quick-add">{t("saleQuickAdd")}</button>
-          <button type="button" className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" onClick={() => openQuick("STOCK")} disabled={createInvoice.isPending} data-testid="sale-quick-stock-add">{t("saleQuickStockBtn")}</button>
-          <span className="text-xs text-muted-foreground">{t("saleScanHint")}</span>
+
+      <div className="mt-4 grid gap-4">
+        <div className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
+          <label className="grid gap-1 text-sm font-medium">
+            {t("saleCustomer")}
+            <input
+              className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+              name="counterpartyName"
+              autoComplete="off"
+              value={customer}
+              onChange={(event) => setCustomer(event.target.value)}
+              disabled={createInvoice.isPending}
+              data-testid="sale-customer"
+            />
+          </label>
+          <label className="grid gap-1 text-sm font-medium">
+            {t("salePaid")}
+            <input
+              className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+              name="initialPaid"
+              autoComplete="off"
+              inputMode="numeric"
+              value={paidNow}
+              onChange={(event) => setPaidNow(event.target.value)}
+              disabled={createInvoice.isPending}
+              data-testid="sale-paid"
+            />
+          </label>
         </div>
 
-        {quickMode !== null && (
-          <form className="grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form">
-            <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1">{t("saleQuickName")}<input className="rounded border px-3 py-2" value={quickName} onChange={(event) => setQuickName(event.target.value)} required data-testid="sale-quick-name" /></label>
-              <label className="grid gap-1">{t("saleQuickBarcode")}<input dir="ltr" className="rounded border px-3 py-2" value={quickBarcode} onChange={(event) => setQuickBarcode(event.target.value)} data-testid="sale-quick-barcode" /></label>
-              <label className="grid gap-1">{t("itemsCategory")}<select className="rounded border px-3 py-2" value={quickCategoryId} onChange={(event) => setQuickCategoryId(event.target.value)}>{categories.data?.items.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
-              <label className="grid gap-1">{t("itemsCost")}<input className="rounded border px-3 py-2" inputMode="numeric" value={quickCost} onChange={(event) => setQuickCost(event.target.value)} required /></label>
-              <label className="grid gap-1">{t("itemsSell")}<input className="rounded border px-3 py-2" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
-              {quickMode === "STOCK" && <label className="grid gap-1">{t("saleQuickStock")}<input className="rounded border px-3 py-2" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} required data-testid="sale-quick-stock" /></label>}
+        <div className="rounded border border-border bg-card">
+          {/* One primary path (the list picker); the two create paths are
+              demoted to outline so a first-day user is not asked to choose
+              between equal-looking actions. */}
+          <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+            <h2 className="me-auto text-sm font-semibold">{t("invoiceLinesTitle")}</h2>
+            {lines.length > 0 && (
+              <Button data-testid="sale-open-picker" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
+                {t("saleAddItem")}
+              </Button>
+            )}
+            <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick("EMPTY")} disabled={createInvoice.isPending}>
+              {t("saleQuickAdd")}
+            </Button>
+            <Button variant="outline" data-testid="sale-quick-stock-add" onClick={() => openQuick("STOCK")} disabled={createInvoice.isPending}>
+              {t("saleQuickStockBtn")}
+            </Button>
+          </div>
+
+          {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
+
+          {quickMode !== null && (
+            <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form">
+              <div className="grid grid-cols-2 gap-3">
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" value={quickName} onChange={(event) => setQuickName(event.target.value)} required data-testid="sale-quick-name" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" value={quickBarcode} onChange={(event) => setQuickBarcode(event.target.value)} data-testid="sale-quick-barcode" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCategory")}<select className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCategory" value={quickCategoryId} onChange={(event) => setQuickCategoryId(event.target.value)}>{categories.data?.items.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quickCost} onChange={(event) => setQuickCost(event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
+                {quickMode === "STOCK" && <label className="grid gap-1 text-sm font-medium">{t("saleQuickStock")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} required data-testid="sale-quick-stock" /></label>}
+              </div>
+              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => setQuickMode(null)}>{t("dialogClose")}</Button></div>
+            </form>
+          )}
+
+          <div className="p-4">
+            {lines.length === 0 ? (
+              <div data-testid="sale-empty">
+                <EmptyState
+                  icon={<ScanBarcode size={28} />}
+                  title={t("saleEmptyTitle")}
+                  hint={t("saleScanHint")}
+                  action={
+                    <Button size="lg" data-testid="sale-open-picker" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending}>
+                      {t("saleAddItem")}
+                    </Button>
+                  }
+                />
+              </div>
+            ) : (
+              <table className="w-full" data-testid="sale-lines">
+                <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
+                <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Checkout bar: the total and the finish action stay in the viewport at
+          short window heights. It exists only once there is something to
+          check out, so the discount controls cannot appear on an empty
+          invoice. */}
+      {lines.length > 0 && (
+        <div className="sticky bottom-0 z-10 -mx-6 mt-4 border-t border-border bg-card px-6 py-3" data-testid="sale-checkout-bar">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<select className="h-9 w-40 rounded-lg border border-input bg-background px-3 text-sm" name="discountType" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} disabled={createInvoice.isPending} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label>
+              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
+              <dl className="ms-auto flex items-center gap-6 text-sm"><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex items-baseline gap-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
             </div>
-            <div className="flex gap-2"><button type="submit" className="rounded-lg bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</button><button type="button" className="rounded-lg border px-3 py-2" onClick={() => setQuickMode(null)}>{t("dialogClose")}</button></div>
-          </form>
-        )}
-
-        {lines.length === 0 ? <p className="text-sm text-muted-foreground">{t("saleLinesEmpty")}</p> : (
-          <table className="w-full" data-testid="sale-lines">
-            <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-            <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="text-destructive disabled:opacity-50" aria-label={`${t("saleRemove")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))} disabled={createInvoice.isPending}>✕</button></td></tr>; })}</tbody>
-          </table>
-        )}
-      </div>
-
-      <div className="mt-4 grid gap-3 rounded border bg-card p-4">
-        <h2 className="font-semibold">{t("saleTotalsTitle")}</h2>
-        <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} disabled={createInvoice.isPending} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label></div>
-        <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
-        {notice.valid && notice.debt > 0 && (
-          <p className="rounded border border-amber-600/30 bg-amber-500/10 p-2 text-sm" data-testid="sale-debt-notice">
-            {hasCustomer ? t("saleDebtWillBeCreated") : t("saleRemainderWillBeCreated")} <Amount value={notice.debt} /> {hasCustomer && t("saleDebtCustomer")} {t("saleDebtEstimate")}
-          </p>
-        )}
-        {error && <p className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
-        <button type="button" className="mt-2 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending || createItem.isPending || createWithStock.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</button>
-      </div>
+            {notice.valid && notice.debt > 0 && (
+              <p className="rounded border border-amber-600/30 bg-amber-500/10 p-2 text-sm" data-testid="sale-debt-notice">
+                {hasCustomer ? t("saleDebtWillBeCreated") : t("saleRemainderWillBeCreated")} <Amount value={notice.debt} /> {hasCustomer && t("saleDebtCustomer")} {t("saleDebtEstimate")}
+              </p>
+            )}
+            {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
+            <Button size="lg" className="w-full" onClick={submit} disabled={createInvoice.isPending || createItem.isPending || createWithStock.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</Button>
+          </div>
+        </div>
+      )}
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />
       {unknownCode !== null && <UnknownScanDialog code={unknownCode} onClose={() => setUnknownCode(null)} onCreate={() => { setUnknownCode(null); openQuick("EMPTY", unknownCode); }} onCreateWithStock={() => { setUnknownCode(null); openQuick("STOCK", unknownCode); }} onManualLine={() => { setUnknownCode(null); setPickerOpen(true); }} />}

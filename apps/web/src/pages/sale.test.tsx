@@ -470,3 +470,63 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-111", quantity: 1 }]);
   });
 });
+
+describe("SalePage learnability (issue #94)", () => {
+  it("teaches the first step on an empty invoice and hides checkout-only controls", async () => {
+    const host = await mountSale();
+
+    const empty = host.querySelector('[data-testid="sale-empty"]');
+    expect(empty).not.toBeNull();
+    expect(empty?.textContent).toContain("أضف أول منتج إلى الفاتورة");
+    expect(empty?.textContent).toContain("امسح باركود المنتج أو اختره من القائمة");
+
+    // checkout-only controls cannot occupy an empty invoice
+    expect(host.querySelector('[data-testid="sale-checkout-bar"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-type"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-value"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-save"]')).toBeNull();
+
+    // both create paths stay reachable (E2E testids), demoted but present
+    expect(host.querySelector('[data-testid="sale-quick-add"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-quick-stock-add"]')).not.toBeNull();
+  });
+
+  it("opens the catalog picker from the empty state's pressable action", async () => {
+    const host = await mountSale();
+    const pickerAction = host.querySelector<HTMLButtonElement>('[data-testid="sale-empty"] [data-testid="sale-open-picker"]');
+    expect(pickerAction).not.toBeNull();
+
+    await act(async () => {
+      pickerAction?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="picker-dialog"]')).not.toBeNull();
+  });
+
+  it("reveals the discount controls and checkout bar only once a line exists", async () => {
+    const host = await mountSale();
+    await scan("777");
+
+    expect(host.querySelector('[data-testid="sale-empty"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-checkout-bar"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-type"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-discount-value"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="sale-save"]')).not.toBeNull();
+
+    // exactly one picker action is on screen at any time
+    expect(host.querySelectorAll('[data-testid="sale-open-picker"]').length).toBe(1);
+  });
+
+  it("surfaces a submit error inside the checkout bar once a line exists", async () => {
+    const host = await mountSale();
+    await scan("888");
+    await act(async () => setInput(host, "sale-paid", "-5"));
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const bar = host.querySelector('[data-testid="sale-checkout-bar"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.querySelector('[data-testid="sale-error"]')).not.toBeNull();
+    expect(bar?.textContent).toContain("أدخل مبلغاً صحيحاً غير سالب");
+  });
+});

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { signIn } from "./auth-helpers";
 import { expectSelectOption } from "./select-helpers";
 
 /**
@@ -7,16 +8,8 @@ import { expectSelectOption } from "./select-helpers";
  * dialog that never creates data without an explicit choice.
  */
 test("catalog search, wedge scanning, and the unknown-scan path", async ({ page }) => {
-  // 0. first-time setup + sign in (the session guard is part of the seam)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // 0. sign in (the session guard is part of the seam)
+  await signIn(page);
 
   // 1. seed: a category + two items, one carrying a barcode
   await page.goto("/categories");
@@ -138,16 +131,8 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
 });
 
 test("stale scan lookups never overwrite newer results", async ({ page }) => {
-  // auth is idempotent in the shared e2e database (build-secret reset path)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
 
   // seed a known item with a barcode so one scan resolves exactly
   await page.goto("/categories");
@@ -190,16 +175,8 @@ test("stale scan lookups never overwrite newer results", async ({ page }) => {
 });
 
 test("scan while focus is inside an input commits through the editable regime", async ({ page }) => {
-  // auth is idempotent in the shared e2e database (build-secret reset path)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
 
   // seed a known item with its own barcode so the test is order-independent
   await page.goto("/categories");

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openSystemNav, signIn } from "./auth-helpers";
 
 /**
  * Returns & refunds e2e: a sale is recorded, the customer returns the unit on
@@ -9,16 +10,8 @@ import { expect, test } from "@playwright/test";
  * mark is consumed).
  */
 test("sale → cash return → stock back (marked) + voucher route + review accept", async ({ page }) => {
-  // 0. first-time setup + sign in
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // 0. sign in
+  await signIn(page);
 
   // 1. a known store identity so the voucher's header is asserted, not assumed
   const stamp = Date.now().toString();
@@ -100,6 +93,7 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(page.getByTestId("invoice-page")).toBeVisible();
 
   // 6. stock is back in the item history, visibly marked as a return
+  await openSystemNav(page);
   await page.getByRole("link", { name: "المنتجات" }).click();
   const itemRow = page.getByRole("row", { name: new RegExp(itemName) });
   await expect(itemRow.getByTestId("stock-after-cell")).toContainText("2");

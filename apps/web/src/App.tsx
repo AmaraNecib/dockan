@@ -125,23 +125,23 @@ function SetupPage({ onDone }: { onDone: () => void }) {
 
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupOwnerName")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} required />
+          <input className="rounded border border-input bg-background px-3 py-2" name="ownerName" autoComplete="name" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} required />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupStoreName")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={storeName} onChange={(e) => setStoreName(e.target.value)} required />
+          <input className="rounded border border-input bg-background px-3 py-2" name="storeName" autoComplete="organization" value={storeName} onChange={(e) => setStoreName(e.target.value)} required />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupStoreAddress")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={storeAddress} onChange={(e) => setStoreAddress(e.target.value)} />
+          <input className="rounded border border-input bg-background px-3 py-2" name="storeAddress" autoComplete="street-address" value={storeAddress} onChange={(e) => setStoreAddress(e.target.value)} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder="0550123456" />
+          <input type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder="0550123456" />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
-          <input type="password" className="rounded border border-input bg-background px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={4} />
+          <input type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required minLength={4} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupSecret")}
@@ -198,7 +198,7 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
         <h2 className="mt-6 font-semibold">{t("loginHeading")}</h2>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required dir="ltr" />
+          <input type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required dir="ltr" />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
@@ -270,7 +270,7 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input className="rounded border border-input bg-background px-3 py-2" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" />
+          <input type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}

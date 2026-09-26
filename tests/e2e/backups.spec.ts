@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { signIn } from "./auth-helpers";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,15 +10,7 @@ import path from "node:path";
  * spec proves the user-facing path end to end.
  */
 test("manual export backup creates today's file", async ({ page }) => {
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  await signIn(page);
 
   // startup already made today's daily copy; capture it so we can tell the
   // manual export apart by mtime afterwards if names collide (same name!)

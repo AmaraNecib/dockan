@@ -3023,6 +3023,11 @@ describe("dashboard summary (issue 84)", () => {
     expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
     expect(summary.salesCount).toBeGreaterThanOrEqual(1);
     expect(summary.salesTotal).toBeGreaterThanOrEqual(created.totalAmount);
+    // on a healthy store these sections must be populated, not degraded: null
+    // means the read failed, so comparing the count alone would let an
+    // unexpectedly broken response pass
+    expect(summary.lowStockItems).not.toBeNull();
+    expect(summary.lowStockCount).not.toBeNull();
     expect(summary.lowStockItems?.length ?? null).toBe(summary.lowStockCount);
   });
 });

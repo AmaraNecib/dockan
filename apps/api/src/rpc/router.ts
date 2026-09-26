@@ -1283,7 +1283,18 @@ export function createRpcRouter(deps: RpcDeps) {
         // The server's own Algeria-local day is the single source of truth;
         // the client never derives the day from the device clock.
         const day = localDate();
-        return { day, ...(await deps.store.dashboardSummary(day)) };
+        const summary = await deps.store.dashboardSummary(day);
+        // A section that failed reads as null and the page shows it as
+        // unavailable. Without this the failure would leave no trace at all,
+        // because the partial response still succeeds at the RPC layer.
+        const unavailable = [
+          summary.lowStockCount === null ? "lowStock" : null,
+          summary.recentInvoices === null ? "recentInvoices" : null,
+        ].filter((section) => section !== null);
+        if (unavailable.length > 0) {
+          deps.logger.warn("DASHBOARD_PARTIAL", `dashboard sections unavailable: ${unavailable.join(", ")}`);
+        }
+        return { day, ...summary };
       }),
     ),
 

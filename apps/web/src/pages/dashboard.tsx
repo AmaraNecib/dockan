@@ -123,6 +123,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
                   summary.data.lowStockCount
                 )
               }
+              detail={summary.data.lowStockCount === null ? t("dashboardSectionUnavailable") : undefined}
             />
           </div>
 

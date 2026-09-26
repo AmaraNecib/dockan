@@ -29,9 +29,9 @@ type DashboardSummary = {
   salesCount: number;
   owedToUs: number;
   weOwe: number;
-  lowStockCount: number;
-  lowStockItems: { id: string; name: string; stockOnHand: number; lowStockThreshold: number }[];
-  recentInvoices: Invoice[];
+  lowStockCount: number | null;
+  lowStockItems: { id: string; name: string; stockOnHand: number; lowStockThreshold: number }[] | null;
+  recentInvoices: Invoice[] | null;
 };
 
 let summary: DashboardSummary;
@@ -171,6 +171,26 @@ describe("DashboardPage summary (issue 84)", () => {
 
     expect(page.card("dashboard-low-stock")?.textContent).toContain("1");
     expect(page.card("dashboard-low-stock-list")?.textContent).toContain("0 / 5");
+    await page.unmount();
+  });
+
+  it("shows a failed section as unavailable without hiding the figures", async () => {
+    // null is "this read failed", which must look different from an empty shop
+    summary.lowStockCount = null;
+    summary.lowStockItems = null;
+    summary.recentInvoices = null;
+
+    const page = await mount(queryClient);
+
+    // the money figures still render: one failing section must not blank them
+    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7500") ?? false)).toBe(true);
+    expect(page.card("dashboard-debt-owed")?.textContent).toContain("7000");
+
+    // and each failed section says so rather than reading as zero or empty
+    expect(page.card("dashboard-low-stock")?.textContent).toContain(i18n.t("dashboardSectionUnavailable"));
+    expect(page.card("dashboard-low-stock-unavailable")?.textContent).toBe(i18n.t("dashboardSectionUnavailable"));
+    expect(page.card("dashboard-recents-unavailable")?.textContent).toBe(i18n.t("dashboardSectionUnavailable"));
+
     await page.unmount();
   });
 

@@ -175,6 +175,21 @@ function normalizeInvoiceLegacy(row: typeof invoices.$inferSelect): Pick<Invoice
   };
 }
 
+/**
+ * Map invoice rows for the recent list. A malformed legacy row can throw inside
+ * normalizeInvoiceLegacy, and that must degrade this one section rather than
+ * reject the whole summary and blank the money figures that already succeeded.
+ * Sitting outside the allSettled boundary is exactly how the original bug
+ * worked, so the guard lives here.
+ */
+function mapRecentInvoices(rows: Array<typeof invoices.$inferSelect>): Invoice[] | null {
+  try {
+    return rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }) satisfies Invoice);
+  } catch {
+    return null;
+  }
+}
+
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
@@ -1376,10 +1391,7 @@ export function createDrizzleStore(conn: Connection): StorePort {
         lowStockCount:
           lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
         lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,
-        recentInvoices:
-          recentRowsResult.status === "fulfilled"
-            ? recentRowsResult.value.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }))
-            : null,
+        recentInvoices: recentRowsResult.status === "fulfilled" ? mapRecentInvoices(recentRowsResult.value) : null,
       };
     },
 

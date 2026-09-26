@@ -226,6 +226,9 @@ const resources = {
       saleDebtEstimate: "(تقديري)",
       saleSaved: "تم حفظ فاتورة البيع رقم {{number}}",
       saleNew: "بيع جديد",
+      saleDiscardTitle: "بدء بيع جديد؟",
+      saleDiscardDesc: "سيتم فقدان الأسطر والزبون غير المحفوظين. هل تريد بدء بيع جديد؟",
+      saleDiscardConfirm: "بدء بيع جديد",
       // ticket 9 — debts screen (who owes whom)
       navDebts: "الديون",
       debtsTitle: "الديون",

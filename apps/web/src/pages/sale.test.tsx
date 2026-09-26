@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { SaleDraftProvider } from "@/components/app/sale-draft";
+
 // React 19 act() requires the environment flag to be set explicitly.
 // SAFETY: only this flag is written; globalThis keeps every other property.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -237,7 +239,11 @@ async function mountSale(): Promise<HTMLElement> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <SalePage />
+        {/* SalePage publishes its draft and pending flags through this provider,
+            which the shell mounts above it; the harness must supply it too */}
+        <SaleDraftProvider>
+          <SalePage />
+        </SaleDraftProvider>
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));

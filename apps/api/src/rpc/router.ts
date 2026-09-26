@@ -34,6 +34,9 @@ type RpcDeps = {
   /** issue #52: injectable so tests can drive the lockout clock; a fresh
    * in-memory throttle is created per router when omitted */
   resetThrottle?: ResetThrottle;
+  /** injectable so tests can pin the server day instead of reading the wall
+   * clock; the real clock is used when omitted */
+  now?: () => Date;
 };
 
 /**
@@ -1280,10 +1283,7 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- dashboard (issue 84) ------------------------------------------------
     dashboardSummary: os.dashboardSummary.handler(
       guarded(async () => {
-        // The server's own Algeria-local day is the single source of truth;
-        // the client never derives the day from the device clock. A section that
-        // fails comes back null and the store logs the cause.
-        const day = localDate();
+        const day = localDate(deps.now?.() ?? new Date());
         return { day, ...(await deps.store.dashboardSummary(day)) };
       }),
     ),

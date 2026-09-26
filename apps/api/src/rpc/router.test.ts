@@ -13,7 +13,7 @@ import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
-import { AppLogger, localDate } from "../lib/logger";
+import { AppLogger } from "../lib/logger";
 import { createResetThrottle } from "../lib/reset-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
@@ -3017,8 +3017,8 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await client.dashboardSummary();
 
-    const day = localDate();
-    expect(summary.day).toBe(day);
+    const day = summary.day;
+    expect(day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
     expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
 
@@ -3034,5 +3034,31 @@ describe("dashboard summary (issue 84)", () => {
     expect(summary.lowStockItems).not.toBeNull();
     expect(summary.lowStockCount).not.toBeNull();
     expect(summary.lowStockItems?.length ?? null).toBe(summary.lowStockCount);
+  });
+
+  it("reports the day the server clock says, not the wall clock", async () => {
+    // 2026-08-24T23:00:00Z is midnight in Algiers, so the day must roll over.
+    // The expectation is a literal, so a wrong timezone or format in the
+    // production helper cannot agree with itself here.
+    const pinned = new Date("2026-08-24T23:00:00Z");
+    const pinnedApp = createApp({
+      config,
+      logger,
+      auth,
+      rpcRouter: createRpcRouter({ db: conn.db, config, logger, store, auth, now: () => pinned }),
+    });
+    const pinnedLink = new RPCLink({
+      url: () => `http://127.0.0.1:${config.port}/api/rpc`,
+      // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+      fetch: (request) => {
+        const headers = Object.fromEntries(request.headers.entries());
+        if (cookie !== "") headers.cookie = cookie;
+        return Promise.resolve(pinnedApp.fetch(new Request(request, { headers })));
+      },
+    });
+    const pinnedClient: DokanClient = createORPCClient(pinnedLink);
+
+    const summary = await pinnedClient.dashboardSummary();
+    expect(summary.day).toBe("2026-08-25");
   });
 });

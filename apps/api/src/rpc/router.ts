@@ -1281,7 +1281,8 @@ export function createRpcRouter(deps: RpcDeps) {
     dashboardSummary: os.dashboardSummary.handler(
       guarded(async () => {
         // The server's own Algeria-local day is the single source of truth;
-        // the client never derives the day from the device clock.
+        // the client never derives the day from the device clock. A section that
+        // fails comes back null and the store logs the cause.
         const day = localDate();
         return { day, ...(await deps.store.dashboardSummary(day)) };
       }),

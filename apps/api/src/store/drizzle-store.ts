@@ -30,7 +30,7 @@ import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -175,6 +175,21 @@ function normalizeInvoiceLegacy(row: typeof invoices.$inferSelect): Pick<Invoice
   };
 }
 
+/**
+ * Map invoice rows for the recent list. A malformed legacy row can throw inside
+ * normalizeInvoiceLegacy, and that must degrade this one section rather than
+ * reject the whole summary and blank the money figures that already succeeded.
+ * Sitting outside the allSettled boundary is exactly how the original bug
+ * worked, so the guard lives here.
+ */
+function mapRecentInvoices(rows: Array<typeof invoices.$inferSelect>): Invoice[] | null {
+  try {
+    return rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }) satisfies Invoice);
+  } catch {
+    return null;
+  }
+}
+
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
@@ -316,7 +331,7 @@ type DebtSummaryRow = {
  * speaks StorePort (ADR-0003). A postgres adapter replaces this file, not
  * anything above it.
  */
-export function createDrizzleStore(conn: Connection): StorePort {
+export function createDrizzleStore(conn: Connection, logger?: StoreLogger): StorePort {
   const { db } = conn;
 
   /**
@@ -1323,7 +1338,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // debt predicates mirror debtSummaries() exactly (kind + unpaid +
       // attributed to a party), so the card agrees with the /debts screen it
       // links to and never claims a debt nobody can follow up.
-      const [salesRows, owedRows, weOweRows, lowStockCountRows, lowStockRows, recentRows] = await Promise.all([
+      // The three money reads are the headline figures. If one of them cannot
+      // be read the whole answer is unavailable, and the caller shows its error
+      // state rather than a page of numbers it cannot vouch for.
+      const [salesRows, owedRows, weOweRows] = await Promise.all([
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`, count: sql<number>`COUNT(*)` })
           .from(invoices)
@@ -1348,6 +1366,12 @@ export function createDrizzleStore(conn: Connection): StorePort {
               sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
             ),
           ),
+      ]);
+
+      // The remaining sections degrade on their own. A single Promise.all over
+      // all six reads meant one failing low-stock read blanked the sales and
+      // debt figures that had already succeeded.
+      const [lowStockCountResult, lowStockRowsResult, recentRowsResult] = await Promise.allSettled([
         db
           .select({ count: sql<number>`COUNT(*)` })
           .from(items)
@@ -1359,14 +1383,28 @@ export function createDrizzleStore(conn: Connection): StorePort {
           .orderBy(items.stockOnHand, items.name),
         db.select(invoiceCols).from(invoices).orderBy(desc(invoices.createdAt), sql`rowid DESC`).limit(5),
       ]);
+
+      // A rejected read is reported here: the partial response still succeeds at
+      // the RPC layer, so without this the cause would leave no trace anywhere.
+      for (const [section, result] of [
+        ["lowStockCount", lowStockCountResult],
+        ["lowStockItems", lowStockRowsResult],
+        ["recentInvoices", recentRowsResult],
+      ] as const) {
+        if (result.status === "rejected") {
+          logger?.warn("DASHBOARD_SECTION_FAILED", `${section} read failed: ${String(result.reason)}`);
+        }
+      }
+
       return {
         salesTotal: Number(salesRows[0]?.total ?? 0),
         salesCount: Number(salesRows[0]?.count ?? 0),
         owedToUs: Number(owedRows[0]?.total ?? 0),
         weOwe: Number(weOweRows[0]?.total ?? 0),
-        lowStockCount: Number(lowStockCountRows[0]?.count ?? 0),
-        lowStockItems: lowStockRows,
-        recentInvoices: recentRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
+        lowStockCount:
+          lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
+        lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,
+        recentInvoices: recentRowsResult.status === "fulfilled" ? mapRecentInvoices(recentRowsResult.value) : null,
       };
     },
 

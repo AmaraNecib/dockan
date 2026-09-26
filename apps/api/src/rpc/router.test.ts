@@ -481,6 +481,13 @@ describe("activity log (ticket 12)", () => {
     // the item creation comes before the adjustment
     const typesInOrder = all.items.slice(0, 2).map((a) => a.type);
     expect(typesInOrder).toEqual(["STOCK_ADJUSTED", "ITEM_CREATED"]);
+    // summaries are locale-neutral tokens; the web layer owns the Arabic copy
+    expect(all.items[0]!.summary).toBe(`STOCK_ADJUSTED ${created.name}`);
+    expect(all.items[1]!.summary).toBe(`ITEM_CREATED ${created.name}`);
+    // the token prefix itself is ASCII, whatever the free-text name contains
+    for (const entry of all.items) {
+      expect(entry.summary.split(" ")[0]).toMatch(/^[A-Z_]+$/);
+    }
     // every row carries an Algeria-local timestamp
     for (const entry of all.items) {
       expect(entry.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
@@ -522,7 +529,7 @@ describe("settings (ticket 10)", () => {
     const activities = await client.activitiesList({});
     expect(activities.items[0]).toMatchObject({
       type: "SETTINGS_UPDATED",
-      summary: "تحديث إعدادات المتجر",
+      summary: "SETTINGS_UPDATED",
     });
   });
 
@@ -974,6 +981,33 @@ describe("purchase intake (ticket 29)", () => {
     await expect(
       client.purchasesCorrectLine({ lineId: "00000000-0000-4000-8000-000000000002", quantity: 1, unitCost: 50 }),
     ).rejects.toThrow(/LINE_NOT_FOUND/);
+  });
+
+  it("keeps recognizing pre-token Arabic correction rows when computing the effective quantity", async () => {
+    const item = await makeItem("تصحيح-قديم", 100);
+    const invoice = await client.invoicesCreate({
+      kind: "PURCHASE",
+      lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }],
+    });
+    const line = invoice.lines[0]!;
+    // Simulate a correction written by the OLD code that took the line to 5:
+    // a +5@200 inflow then a −10 reversal, both carrying the Arabic prefix.
+    // Same timestamp as the original intake + a later rowid keeps the ledger
+    // projection non-negative while still exercising the legacy read path.
+    const originalAt = (await client.itemsHistory({ itemId: item.id })).movements.at(-1)!.occurredAt;
+    const legacyReason = `تصحيح فاتورة ${invoice.invoiceNumber} #${line.id}`;
+    await store.insertStockMovement({ itemId: item.id, kind: "PURCHASE", delta: 5, unitCost: 200, reason: legacyReason, ref: invoice.id, occurredAt: originalAt });
+    await store.insertStockMovement({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -10, unitCost: null, reason: legacyReason, ref: invoice.id, occurredAt: originalAt });
+    await store.setItemStockAndCost(item.id, 5, 150);
+
+    await client.purchasesCorrectLine({ lineId: line.id, quantity: 7, unitCost: 150 });
+
+    // 7, not 2: a stale prefix matcher would reverse the full original 10.
+    const listed = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(listed.stockOnHand).toBe(7);
+    // The new correction rows carry the locale-neutral token, never Arabic.
+    const newReasons = (await client.itemsHistory({ itemId: item.id })).movements.slice(-2).map((movement) => movement.reason);
+    expect(newReasons.every((reason) => reason?.startsWith("INVOICE_CORRECTION") === true)).toBe(true);
   });
 });
 

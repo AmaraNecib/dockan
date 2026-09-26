@@ -88,10 +88,20 @@ function resolveWindow(input: {
   return windowOrThrow(input.from, input.to);
 }
 
-/** reason prefix burned into purchase-line corrections; the line id rides as
- * a #suffix so N corrections of one line reverse the PREVIOUS effective
- * quantity instead of re-reversing the untouched original */
-const CORRECTION_REASON_PREFIX = "تصحيح فاتورة";
+/** Locale-neutral token burned into NEW purchase-line corrections; the line id
+ * rides as a #suffix so N corrections of one line reverse the PREVIOUS effective
+ * quantity instead of re-reversing the untouched original. The ui translates it. */
+const CORRECTION_REASON_PREFIX = "INVOICE_CORRECTION";
+
+/** Corrections written before the token change carry this Arabic prefix. The
+ * read path matches it too (never writes it again) so historical rows keep
+ * reversing the right quantity instead of silently drifting stock. */
+const LEGACY_CORRECTION_REASON_PREFIX = "تصحيح فاتورة";
+
+/** True for both the neutral token and the pre-token Arabic prefix. */
+function isCorrectionReason(reason: string): boolean {
+  return reason.startsWith(CORRECTION_REASON_PREFIX) || reason.startsWith(LEGACY_CORRECTION_REASON_PREFIX);
+}
 
 /** total invoiced quantity per item across a detail's lines (description-only
  * lines carry no item and are skipped) */
@@ -320,7 +330,7 @@ export function createRpcRouter(deps: RpcDeps) {
               throw new ORPCError("CONFLICT", { message: "CATEGORY_EXISTS" });
             }
             const category = await tx.createCategory({ name: input.name });
-            await tx.insertActivity({ type: "CATEGORY_CREATED", summary: `إنشاء تصنيف ${input.name}` });
+            await tx.insertActivity({ type: "CATEGORY_CREATED", summary: `CATEGORY_CREATED ${input.name}` });
             return category;
           });
         } catch (err) {
@@ -346,7 +356,7 @@ export function createRpcRouter(deps: RpcDeps) {
         return withBarcodeConflict(async () => {
           return deps.store.withTransaction(async (tx) => {
             const item = await tx.createItem({ ...input, barcode });
-            await tx.insertActivity({ type: "ITEM_CREATED", summary: `إنشاء منتج ${input.name}`, ref: item.id });
+            await tx.insertActivity({ type: "ITEM_CREATED", summary: `ITEM_CREATED ${input.name}`, ref: item.id });
             return item;
           });
         });
@@ -378,7 +388,7 @@ export function createRpcRouter(deps: RpcDeps) {
             await tx.setItemStockAndCost(item.id, input.stockOnHand, input.costPrice);
             await tx.insertActivity({
               type: "ITEM_CREATED",
-              summary: `إنشاء منتج ${input.name} بمخزون أولي ${input.stockOnHand}`,
+              summary: `ITEM_CREATED_WITH_STOCK ${input.stockOnHand} ${input.name}`,
               ref: item.id,
             });
             return { ...item, stockOnHand: input.stockOnHand };
@@ -405,7 +415,7 @@ export function createRpcRouter(deps: RpcDeps) {
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
-            await tx.insertActivity({ type: "ITEM_UPDATED", summary: `تعديل منتج ${item.name}`, ref: item.id });
+            await tx.insertActivity({ type: "ITEM_UPDATED", summary: `ITEM_UPDATED ${item.name}`, ref: item.id });
             return item;
           }),
         );
@@ -474,7 +484,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const newCost =
             input.delta > 0 ? weightedAverageCost([...existing, candidate]) : item.costPrice;
           await tx.setItemStockAndCost(item.id, stockAfter, newCost);
-          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تسوية مخزون ${item.name}`, ref: item.id });
+          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `STOCK_ADJUSTED ${item.name}`, ref: item.id });
           return movement;
         });
       }),
@@ -622,7 +632,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 }),
               );
             }
-            await tx.insertActivity({ type: "SALE_CREATED", summary: `فاتورة بيع ${invoiceNumber}`, ref: invoice.id });
+            await tx.insertActivity({ type: "SALE_CREATED", summary: `SALE_CREATED ${invoiceNumber}`, ref: invoice.id });
             return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         }
 
@@ -700,7 +710,7 @@ export function createRpcRouter(deps: RpcDeps) {
               }),
             );
           }
-          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `فاتورة شراء ${invoiceNumber} من ${input.counterpartyName ?? "مورد"}`, ref: invoice.id });
+          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${input.counterpartyName ? ` ${input.counterpartyName}` : ""}`, ref: invoice.id });
           return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         });
       }),
@@ -752,7 +762,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({
             type: "PAYMENT_RECORDED",
-            summary: `تسجيل دفعة ${input.amount} دج على ${detail.invoiceNumber}`,
+            summary: `PAYMENT_RECORDED ${input.amount} ${detail.invoiceNumber}`,
             ref: detail.id,
           });
           // return the fresh header + appended history from inside the unit
@@ -1145,7 +1155,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           await tx.insertActivity({
             type: "STOCK_ADJUSTED",
-            summary: `ربط مخزون سابق بفاتورة ${detail.invoiceNumber}`,
+            summary: `STOCK_LINKED ${detail.invoiceNumber}`,
             ref: detail.id,
           });
           return { linked, remainderMoved };
@@ -1180,7 +1190,8 @@ export function createRpcRouter(deps: RpcDeps) {
             .filter(
               (movement) =>
                 movement.ref === detail.id &&
-                movement.reason?.startsWith(CORRECTION_REASON_PREFIX) === true &&
+                movement.reason !== null &&
+                isCorrectionReason(movement.reason) &&
                 movement.reason.endsWith(suffix),
             )
             .reduce((sum, movement) => sum + movement.delta, 0);
@@ -1240,7 +1251,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const stockAfter = projectLedger(all).stockOnHand;
           const newCost = weightedAverageCost(all, { fallbackUnitCost: item.costPrice });
           await tx.setItemStockAndCost(item.id, stockAfter, newCost);
-          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `تصحيح شراء ${item.name}`, ref: item.id });
+          await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `PURCHASE_CORRECTED ${item.name}`, ref: item.id });
           const refreshed = await tx.getInvoiceDetail(detail.id);
           // SAFETY: the invoice was just read inside this handler; it cannot vanish mid-transaction
           return refreshed!;
@@ -1302,8 +1313,7 @@ export function createRpcRouter(deps: RpcDeps) {
             const category = await tx.createExpenseCategory(input);
             // the flag choice rides in the audit summary so a misclassification
             // is traceable (the flag itself is create-only today, by design)
-            const withdrawalMark = input.isOwnerWithdrawal === true ? " (سحب مالك)" : "";
-            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `إنشاء تصنيف مصاريف ${input.name}${withdrawalMark}` });
+            await tx.insertActivity({ type: "EXPENSE_CATEGORY_CREATED", summary: `EXPENSE_CATEGORY_CREATED ${input.isOwnerWithdrawal === true ? "WITHDRAWAL" : "OPERATING"} ${input.name}` });
             return category;
           });
         } catch (err) {
@@ -1330,7 +1340,7 @@ export function createRpcRouter(deps: RpcDeps) {
             note: input.note ?? null,
             occurredAt: input.occurredAt ?? localDateTime(),
           });
-          await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `تسجيل مصروف ${input.amount} دج`, ref: expense.id });
+          await tx.insertActivity({ type: "EXPENSE_RECORDED", summary: `EXPENSE_RECORDED ${input.amount}`, ref: expense.id });
           return expense;
         });
       }),
@@ -1377,7 +1387,7 @@ export function createRpcRouter(deps: RpcDeps) {
         // un-audited identity that a retry would misrepresent (greptile P1)
         return deps.store.withTransaction(async (tx) => {
           const updated = await tx.updateSettings({ storeName: input.storeName, storePhone, storeAddress });
-          await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "تحديث إعدادات المتجر" });
+          await tx.insertActivity({ type: "SETTINGS_UPDATED", summary: "SETTINGS_UPDATED" });
           return updated;
         });
       }),
@@ -1397,7 +1407,7 @@ export function createRpcRouter(deps: RpcDeps) {
         const result = await createBackup({ store: deps.store, dataDir: deps.config.dataDir });
         await deps.store.insertActivity({
           type: "BACKUP_CREATED",
-          summary: `نسخة احتياطية ${result.path.split(/[\\/]/).pop()}`,
+          summary: `BACKUP_CREATED ${result.path.split(/[\\/]/).pop()}`,
           ref: result.path,
         });
         return result;

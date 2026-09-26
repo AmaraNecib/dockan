@@ -17,24 +17,53 @@ function formatActivityReference(type: string, ref: string): string {
   return ref.slice(0, 8);
 }
 
-/** Translate the locale-neutral activity summaries the returns feature emits
- * (`RETURN_RECORDED <rtn> <amount> <invoice> <debt>` and `RETURN_REVIEWED
- * <rtn> <ACCEPTED|REJECTED> <amount>`). Unknown/legacy summaries render raw
- * exactly as before. The api stays locale-neutral; this page owns the copy.
+/** Translate the locale-neutral activity summaries the api stores: a stable
+ * ASCII tag followed by positional data fields (`CATEGORY_CREATED <name>`,
+ * `RETURN_RECORDED <rtn> <amount> <invoice> <debt>`, ...). Unknown/legacy
+ * summaries (pre-token Arabic rows) render raw exactly as before. The api
+ * stays locale-neutral; this page owns the copy.
  */
-function activitySummaryText(t: TFunction, type: string, summary: string): string {
+function activitySummaryText(t: TFunction, summary: string): string {
   const tokens = summary.split(" ");
-  if (type === "STORE_SETUP" && tokens[0] === "STORE_SETUP" && tokens.length >= 2) {
+  const tag = tokens[0];
+  // locale-neutral tokens emitted by the api: the tag is the action and the
+  // remaining fields are data, with the single free-text field (a name or
+  // filename) always last so embedded spaces survive the split.
+  if (tag === "STORE_SETUP" && tokens.length >= 2) {
     // the store name is free text, so everything after the token is the name
     return t("activityStoreSetup", { name: tokens.slice(1).join(" ") });
   }
-  if (type === "RETURN_RECORDED" && tokens[0] === "RETURN_RECORDED" && tokens.length >= 5) {
+  if (tag === "CATEGORY_CREATED" && tokens.length >= 2) return t("activityCategoryCreated", { name: tokens.slice(1).join(" ") });
+  if (tag === "ITEM_CREATED_WITH_STOCK" && tokens.length >= 3) return t("activityItemCreatedWithStock", { name: tokens.slice(2).join(" "), stock: tokens[1] });
+  if (tag === "ITEM_CREATED" && tokens.length >= 2) return t("activityItemCreated", { name: tokens.slice(1).join(" ") });
+  if (tag === "ITEM_UPDATED" && tokens.length >= 2) return t("activityItemUpdated", { name: tokens.slice(1).join(" ") });
+  if (tag === "STOCK_ADJUSTED" && tokens.length >= 2) return t("activityStockAdjusted", { name: tokens.slice(1).join(" ") });
+  if (tag === "STOCK_LINKED" && tokens.length >= 2) return t("activityStockLinked", { number: tokens[1] });
+  if (tag === "PURCHASE_CORRECTED" && tokens.length >= 2) return t("activityPurchaseCorrected", { name: tokens.slice(1).join(" ") });
+  if (tag === "SALE_CREATED" && tokens.length >= 2) return t("activitySaleCreated", { number: tokens[1] });
+  if (tag === "PURCHASE_CREATED" && tokens.length >= 2) {
+    const party = tokens.length >= 3 ? tokens.slice(2).join(" ") : t("activitySupplierDefault");
+    return t("activityPurchaseCreated", { number: tokens[1], party });
+  }
+  if (tag === "PAYMENT_RECORDED" && tokens.length >= 3) return t("activityPaymentRecorded", { number: tokens[2], amount: tokens[1] });
+  if (tag === "EXPENSE_CATEGORY_CREATED" && tokens.length >= 3) {
+    const name = tokens.slice(2).join(" ");
+    return tokens[1] === "WITHDRAWAL"
+      ? t("activityExpenseCategoryCreatedWithdrawal", { name })
+      : t("activityExpenseCategoryCreated", { name });
+  }
+  if (tag === "EXPENSE_RECORDED" && tokens.length >= 2) return t("activityExpenseRecorded", { amount: tokens[1] });
+  if (tag === "SETTINGS_UPDATED") return t("activitySettingsUpdated");
+  if (tag === "BACKUP_CREATED" && tokens.length >= 2) return t("activityBackupCreated", { file: tokens.slice(1).join(" ") });
+  if (tag === "DAILY_BACKUP" && tokens.length >= 2) return t("activityDailyBackup", { file: tokens.slice(1).join(" ") });
+  if (tag === "PASSWORD_RESET" && tokens.length >= 2) return t("activityPasswordReset", { phone: tokens.slice(1).join(" ") });
+  if (tag === "RETURN_RECORDED" && tokens.length >= 5) {
     const [, number, amount, invoice, debt] = tokens;
     return Number(debt) > 0
       ? t("activityReturnRecordedDebt", { number, amount, invoice, debt })
       : t("activityReturnRecorded", { number, amount, invoice });
   }
-  if (type === "RETURN_REVIEWED" && tokens[0] === "RETURN_REVIEWED" && tokens.length >= 4) {
+  if (tag === "RETURN_REVIEWED" && tokens.length >= 4) {
     const [, number, action, amount] = tokens;
     return t("activityReturnReviewed", { number, action: t(action === "ACCEPTED" ? "returnsAcceptBtn" : "returnsRejectBtn"), amount });
   }
@@ -89,7 +118,7 @@ export function ActivityLogPage() {
                 <td className="p-3">
                   <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
                 </td>
-                <td className="p-3">{activitySummaryText(t, entry.type, entry.summary)}</td>
+                <td className="p-3">{activitySummaryText(t, entry.summary)}</td>
                 {/* Entity refs are compact; backup refs display their safe local filename. */}
                 <td className="p-3 font-mono text-xs text-muted-foreground" dir="ltr" data-testid="activity-ref">
                   {entry.ref ? formatActivityReference(entry.type, entry.ref) : "—"}

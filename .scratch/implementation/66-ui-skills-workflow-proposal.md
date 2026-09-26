@@ -25,7 +25,7 @@ A change is in the UI seam when it touches any of:
 
 Everything else (hooks, lib, api, tests, desktop rust) is out of this matrix.
 
-There is a deliberate gap. `apps/web/src/lib/i18n.ts`, RTL direction, and Arabic copy are not covered by a locked skill today. `impeccable` holds `clarify` and `typeset`, but it is pinned at v3.9.1 (see below), so it cannot be required yet. Until that changes, copy and RTL edits map to `accessibility` only, which is weaker than they deserve.
+There is a deliberate gap. `apps/web/src/lib/i18n.ts`, RTL direction, and Arabic copy are not covered by a locked skill today. `impeccable` holds `clarify` and `typeset` and is now refreshable at v4.4.0 (see below), so those sub-commands can be added as required rows once someone has run its setup and confirmed the sub-commands still exist under those names. Until then, copy and RTL edits map to `accessibility` only, which is weaker than they deserve.
 
 ### Threshold
 
@@ -99,21 +99,31 @@ One line per required skill. Guard Phase 2 checks the section exists and the SHA
 
 A lane can write that header without opening the skill. The text is cheap. The only real check is the fresh-context reviewer re-loading the named skills and judging the code against them. That reviewer must be able to say "the header claims `accessibility` but the dialog has no focus trap and no accessible name", and that finding must block. If the reviewer only checks that the section exists, the whole thing becomes name-dropping with paperwork. The reviewer instruction is the load-bearing part, not the header format.
 
-## impeccable is pinned at v3.9.1
+## impeccable is at v4.4.0 and is now lock-managed
 
-`.agents/skills/impeccable` is not in `skills-lock.json`. It ships through its own channel, `npx impeccable update`. On 2026-09-26 that channel is broken upstream:
+`.agents/skills/impeccable` was pinned at v3.9.1 and absent from `skills-lock.json`. It ships through its own channel, `npx impeccable update`, and that channel is still broken upstream:
 
 ```
 $ npx impeccable update --project --yes
-Updating the this project install: D:\projects\mani-project\worktrees\ui-skills (.agents)
-Checking for updates...
+$ npx impeccable install --project --yes --force
 Download failed: Could not verify skill bundle: HTTP 404. Nothing was installed; retry or update the CLI. If this persists, report it at https://github.com/pbakaus/impeccable/issues/479
 exit 1
 ```
 
-`npx impeccable check` returns the same 404. The CLI itself is `4.1.0` (`npx impeccable --version`), and `impeccable@3.9.1` is not published on npm (npm returns `ETARGET`), so the CLI version is not a way to pin the skill. The installed skill stays at v3.9.1 until pbakaus/impeccable#479 is fixed.
+`npx impeccable check` returns the same 404, the CLI resolves to `4.1.0`, and `impeccable@3.9.1` is not published on npm (`ETARGET`), so the CLI version is not a way to pin the skill.
 
-Consequence for this proposal: keep `impeccable` out of the required set. A required skill that cannot be refreshed is a liability, and its sub-commands (`clarify`, `typeset`, `layout`) are not separately locked. Retry the update when the issue closes, then record the new version in `.agents/skills/impeccable/SOURCE.md`.
+The way through is the generic skills CLI, which clones the repository instead of fetching a bundle:
+
+```
+npx skills add pbakaus/impeccable
+```
+
+That upgraded the skill to **v4.4.0** and added it to `skills-lock.json` for the first time, so it now refreshes through the same lock-driven path as every other vendored skill. `.agents/skills/impeccable/SOURCE.md` records the failing commands, the working one, and what v4 expects at setup.
+
+Two consequences for this proposal:
+
+1. `impeccable` is no longer a liability to require. It can be refreshed like the rest, so its sub-commands are candidates for the copy and RTL rows — subject to confirming they exist under those names in v4.4.0, since v4 restructured `reference/` substantially.
+2. Its setup changed. v4.4.0 expects `scripts/impeccable context` to run once per session and reads `PRODUCT.md` and `DESIGN.md`; this repository keeps its design context in `.impeccable.md`. Any row that requires `impeccable` inherits that setup work first.
 
 ## Open questions for sign-off
 

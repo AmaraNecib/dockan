@@ -135,11 +135,17 @@ export function SalePage() {
   // Only the newest lookup may open the unknown-scan choice or add a line;
   // this prevents a slow older response from overwriting a later scan.
   const scanSeqRef = useRef(0);
+  // Live "a commit is in flight" flag. Async callbacks (e.g. a quick-add that
+  // settles after Save) read this ref instead of a render-time isPending value,
+  // whose captured copy would be stale, so they cannot mutate the cart once a
+  // commit has started.
+  const commitRef = useRef(false);
 
   const addLine = (item: Item) => {
-    // The sale is frozen once a commit is in flight: ignore late adds (scanner
-    // or an already-open dialog) so the cart cannot drift from the request.
-    if (createInvoice.isPending) return;
+    // The sale is frozen once a commit is in flight: ignore late adds (scanner,
+    // an already-open dialog, or a quick-add that settles after Save) so the
+    // cart cannot drift from the request.
+    if (commitRef.current) return;
     setLines((current) => {
       const existing = current.find((line) => line.item.id === item.id);
       if (existing) {
@@ -175,6 +181,7 @@ export function SalePage() {
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
+        commitRef.current = false;
         setSavedNumber(invoice.invoiceNumber);
         // Confirmation uses the invoice the server actually wrote: its
         // remaining amount is authoritative, unlike cart-price math which can
@@ -192,7 +199,10 @@ export function SalePage() {
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
         ]);
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        commitRef.current = false;
+        setError(tError(err.message));
+      },
     }),
   );
 
@@ -262,6 +272,7 @@ export function SalePage() {
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
     setSubmittedNotice(liveNotice);
+    commitRef.current = true;
     void createInvoice.mutate(invoiceInput);
   }
 
@@ -370,7 +381,7 @@ export function SalePage() {
           </p>
         )}
         {error && <p className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
-        <button type="button" className="mt-2 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</button>
+        <button type="button" className="mt-2 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending || createItem.isPending || createWithStock.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</button>
       </div>
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />

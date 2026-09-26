@@ -37,13 +37,14 @@ interface InvoiceMutationOptions {
 let scanPrice = 1000;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
+let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
 
 // The page pulls its data/mutations through orpc.*; mock the rpc module so the
 // pure helpers and the rendered commit states are driven by fixtures.
 mock.module("@/lib/rpc", () => ({
   orpc: {
     categoriesList: {
-      queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: [] }) }),
+      queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }) }),
     },
     // ItemPickerDialog evaluates this useQuery even while closed (before its
     // `if (!open) return null` guard), so the stub must exist on mount.
@@ -56,9 +57,10 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsCreate: {
       mutationOptions: (opts?: ItemMutationOptions) => ({
-        mutationFn: async () => {
-          throw new Error("itemsCreate unused in this test");
-        },
+        mutationFn: () =>
+          new Promise<{ id: string; name: string; sellingPrice: number }>((resolve) => {
+            resolveItemCreate = resolve;
+          }),
         ...opts,
       }),
     },
@@ -213,6 +215,7 @@ beforeEach(() => {
   scanPrice = 1000;
   lastInvoiceInput = null;
   resolveInvoice = null;
+  resolveItemCreate = null;
 });
 
 afterEach(async () => {
@@ -412,5 +415,52 @@ describe("SalePage commit states (greptile round-2)", () => {
     const notice = host.querySelector('[data-testid="sale-debt-notice"]');
     expect(notice?.textContent).toContain("500");
     expect(notice?.textContent).toContain("للزبون");
+  });
+
+  it("disables the sale Save while a quick-add is outstanding", async () => {
+    const host = await mountSale();
+    await scan("222");
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(resolveItemCreate).not.toBeNull();
+    expect(saveButton(host).disabled).toBe(true);
+  });
+
+  it("does not add a late quick-add line to a sale already being committed", async () => {
+    const host = await mountSale();
+    await scan("111"); // one line in the cart
+
+    // open + fill the quick-add form but leave it unsubmitted
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+
+    // commit the sale; the quick form stays open while the request is in flight
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // submit the quick form and let its creation settle AFTER the sale started
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(resolveItemCreate).not.toBeNull();
+    await act(async () => {
+      resolveItemCreate?.({ id: "item-quick", name: "منتج سريع", sellingPrice: 700 });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // the late line was never appended, and the invoice took only the original line
+    expect(host.querySelectorAll("tbody tr").length).toBe(1);
+    expect(host.querySelector("tbody tr td")?.textContent).toBe("منتج 111");
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-111", quantity: 1 }]);
   });
 });

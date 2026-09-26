@@ -160,12 +160,20 @@ export function SalePage() {
   );
 
   const { setDraftDirty, setSavePending } = useSaleDraft();
+  // Quick-add inputs count too: a half-created item in that form is live work the
+  // header's New Sale action must not silently discard.
+  const quickDraft =
+    quickName.trim() !== "" ||
+    quickBarcode.trim() !== "" ||
+    quickCost.trim() !== "" ||
+    quickSell.trim() !== "";
   const draftDirty =
     lines.length > 0 ||
     customer.trim() !== "" ||
     discountType !== "" ||
     discountValue.trim() !== "" ||
-    paidNow.trim() !== "";
+    paidNow.trim() !== "" ||
+    quickDraft;
   const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
 
   useEffect(() => {

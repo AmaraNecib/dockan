@@ -211,4 +211,43 @@ describe("sale route reset (header New Sale action)", () => {
     await waitFor(() => buttonByTestId("new-sale-button").disabled);
     expect(buttonByTestId("new-sale-button").disabled).toBe(true);
   });
+
+  it("treats an in-progress quick-add item as a draft", async () => {
+    await mountSaleRoute();
+
+    await act(async () => buttonByTestId("sale-quick-add").click());
+    await waitFor(() => document.querySelector('[data-testid="sale-quick-name"]') !== null);
+    await act(async () => typeInto(inputByTestId("sale-quick-name"), "منتج قيد الإنشاء"));
+
+    await act(async () => buttonByTestId("new-sale-button").click());
+    await waitFor(() => document.querySelector('[data-testid="new-sale-discard-confirm"]') !== null);
+
+    // the quick-add draft is untouched until the user confirms the discard
+    expect(inputByTestId("sale-quick-name").value).toBe("منتج قيد الإنشاء");
+
+    await act(async () => buttonByTestId("new-sale-discard-confirm").click());
+    await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') === null);
+  });
+
+  it("keeps an in-progress sale when the sidebar Sale link is used", async () => {
+    await mountSaleRoute();
+
+    // the header action starts a fresh sale and leaves `fresh` in the URL
+    await act(async () => buttonByTestId("new-sale-button").click());
+    await waitFor(() => {
+      const link = document.querySelector<HTMLAnchorElement>('a[href^="/sale"]');
+      return link !== null && link.getAttribute("href")?.includes("fresh") === true;
+    });
+
+    await act(async () => typeInto(inputByTestId("sale-customer"), "زبون محفوظ"));
+
+    const saleLink = document.querySelector<HTMLAnchorElement>('a[href^="/sale"]');
+    if (saleLink === null) throw new Error("missing sidebar sale link");
+    await act(async () => saleLink.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    expect(inputByTestId("sale-customer").value).toBe("زبون محفوظ");
+  });
 });

@@ -169,6 +169,7 @@ function NavLink({ item, activeKey, collapsed }: { item: NavItem; activeKey: str
   return (
     <Link
       to={item.to}
+      search={item.preserveSearch ? true : undefined}
       title={collapsed ? t(item.labelKey) : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(

@@ -22,6 +22,12 @@ export type NavItem = {
   labelKey: string;
   to: string;
   icon: ComponentType<{ className?: string; size?: number }>;
+  /**
+   * Keep the current search params on navigation. The sale route keys its form
+   * remount on `fresh`, so dropping it from the sidebar link would silently reset
+   * an in-progress sale.
+   */
+  preserveSearch?: boolean;
 };
 
 export type NavGroup = {
@@ -39,7 +45,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: "shellGroupMain",
     items: [
-      { key: "sale", labelKey: "navSales", to: "/sale", icon: ShoppingBag },
+      { key: "sale", labelKey: "navSales", to: "/sale", icon: ShoppingBag, preserveSearch: true },
       { key: "purchase", labelKey: "navPurchases", to: "/purchase", icon: ShoppingCart },
       { key: "invoices", labelKey: "navInvoices", to: "/invoices", icon: FileText },
       { key: "debts", labelKey: "navDebts", to: "/debts", icon: HandCoins },

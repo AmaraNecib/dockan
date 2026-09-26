@@ -81,6 +81,31 @@ export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "over
   return !Number.isInteger(value) || value < 0 || value > 100;
 }
 
+/** Whether a pre-commit paid draft is usable, and the debt it leaves. */
+export interface SaleDebt {
+  valid: boolean;
+  debt: number;
+}
+
+/**
+ * Debt a pending SALE will carry: `total` minus whatever the raw paid draft
+ * records as the initial payment. Mirrors the commit invariant
+ * `initialPaid: paid === 0 ? undefined : paid` — an empty or zero draft leaves
+ * the whole total unpaid (carried as customer debt), a partial payment leaves
+ * the remainder, and a draft covering the total leaves none. Invalid drafts
+ * report `valid: false` so the pre-commit preview can stay hidden while
+ * `submit` surfaces its own validation error. A draft above the total is also
+ * invalid: invoice creation rejects an overpayment, so it is not a zero-debt
+ * commit.
+ */
+export function saleDebt(total: number, paidDraft: string): SaleDebt {
+  const paid = paidDraft === "" ? undefined : Number(paidDraft);
+  const valid = paid === undefined || (Number.isInteger(paid) && paid >= 0 && paid <= total);
+  if (!valid) return { valid: false, debt: 0 };
+  const effectivePaid = paid !== undefined && paid > 0 ? paid : 0;
+  return { valid: true, debt: Math.max(total - effectivePaid, 0) };
+}
+
 export function SalePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -94,6 +119,11 @@ export function SalePage() {
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [savedNumber, setSavedNumber] = useState<string | null>(null);
+  const [savedDebt, setSavedDebt] = useState<number | null>(null);
+  const [savedCustomer, setSavedCustomer] = useState<string | null>(null);
+  // Pre-save notice frozen at submit time: the pending request already carries
+  // these values, so in-flight edits must not contradict it.
+  const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);
 
   const [quickMode, setQuickMode] = useState<QuickAddMode | null>(null);
   const [quickName, setQuickName] = useState("");
@@ -105,8 +135,17 @@ export function SalePage() {
   // Only the newest lookup may open the unknown-scan choice or add a line;
   // this prevents a slow older response from overwriting a later scan.
   const scanSeqRef = useRef(0);
+  // Live "a commit is in flight" flag. Async callbacks (e.g. a quick-add that
+  // settles after Save) read this ref instead of a render-time isPending value,
+  // whose captured copy would be stale, so they cannot mutate the cart once a
+  // commit has started.
+  const commitRef = useRef(false);
 
   const addLine = (item: Item) => {
+    // The sale is frozen once a commit is in flight: ignore late adds (scanner,
+    // an already-open dialog, or a quick-add that settles after Save) so the
+    // cart cannot drift from the request.
+    if (commitRef.current) return;
     setLines((current) => {
       const existing = current.find((line) => line.item.id === item.id);
       if (existing) {
@@ -142,7 +181,13 @@ export function SalePage() {
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
+        commitRef.current = false;
         setSavedNumber(invoice.invoiceNumber);
+        // Confirmation uses the invoice the server actually wrote: its
+        // remaining amount is authoritative, unlike cart-price math which can
+        // drift from current item prices.
+        setSavedDebt(invoice.remainingAmount);
+        setSavedCustomer(invoice.counterpartyName);
         setLines([]);
         setCustomer("");
         setDiscountType("");
@@ -154,7 +199,10 @@ export function SalePage() {
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
         ]);
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        commitRef.current = false;
+        setError(tError(err.message));
+      },
     }),
   );
 
@@ -162,6 +210,19 @@ export function SalePage() {
   const enteredDiscount = nonNegativeOr(discountValue, 0);
   const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
   const total = subtotal - discountAmount;
+
+  // Live debt preview for the pending sale — see `saleDebt` for the invariant.
+  const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
+  const liveNotice: SaleDebt = { valid: paidInputValid, debt: totalDebt };
+  // While a commit is in flight the request carries the values captured at
+  // click time, so keep showing those instead of recomputing from editable
+  // fields (editing a partial payment to full must not hide the recorded debt).
+  const notice = createInvoice.isPending && submittedNotice !== null ? submittedNotice : liveNotice;
+  // Only claim a customer debt when a party name is present; otherwise the
+  // unpaid remainder is unattributed and the Debts screen (grouped by party)
+  // cannot show it.
+  const hasCustomer = customer.trim() !== "";
+  const hasSavedCustomer = savedCustomer !== null && savedCustomer.trim() !== "";
 
   function submit() {
     setError(null);
@@ -210,6 +271,8 @@ export function SalePage() {
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
+    setSubmittedNotice(liveNotice);
+    commitRef.current = true;
     void createInvoice.mutate(invoiceInput);
   }
 
@@ -264,7 +327,7 @@ export function SalePage() {
       <section data-testid="sale-saved" className="grid gap-4">
         <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
         <div className="rounded border bg-card p-5">
-          <p className="font-semibold text-green-700" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}</p>
+          <p className="font-semibold text-green-700" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}{savedDebt !== null && savedDebt > 0 && <span data-testid="sale-saved-debt">{" "}{hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedDebt} /> {hasSavedCustomer && t("saleDebtCustomer")}</span>}</p>
           <button type="button" className="mt-4 rounded-lg border px-3 py-2" onClick={() => setSavedNumber(null)}>{t("saleNew")}</button>
         </div>
       </section>
@@ -276,13 +339,13 @@ export function SalePage() {
       <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
       <div className="mt-4 grid gap-4 rounded border bg-card p-4">
         <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1">{t("saleCustomer")}<input className="rounded border px-3 py-2" value={customer} onChange={(event) => setCustomer(event.target.value)} data-testid="sale-customer" /></label>
-          <label className="grid gap-1">{t("salePaid")}<input className="rounded border px-3 py-2" inputMode="numeric" value={paidNow} onChange={(event) => setPaidNow(event.target.value)} data-testid="sale-paid" /></label>
+          <label className="grid gap-1">{t("saleCustomer")}<input className="rounded border px-3 py-2" value={customer} onChange={(event) => setCustomer(event.target.value)} disabled={createInvoice.isPending} data-testid="sale-customer" /></label>
+          <label className="grid gap-1">{t("salePaid")}<input className="rounded border px-3 py-2" inputMode="numeric" value={paidNow} onChange={(event) => setPaidNow(event.target.value)} disabled={createInvoice.isPending} data-testid="sale-paid" /></label>
         </div>
         <div className="flex flex-wrap items-end gap-2">
-          <button type="button" className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground" onClick={() => setPickerOpen(true)} data-testid="sale-open-picker">{t("saleAddItem")}</button>
-          <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => openQuick("EMPTY")} data-testid="sale-quick-add">{t("saleQuickAdd")}</button>
-          <button type="button" className="rounded-lg border px-3 py-2 text-sm" onClick={() => openQuick("STOCK")} data-testid="sale-quick-stock-add">{t("saleQuickStockBtn")}</button>
+          <button type="button" className="rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50" onClick={() => setPickerOpen(true)} disabled={createInvoice.isPending} data-testid="sale-open-picker">{t("saleAddItem")}</button>
+          <button type="button" className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" onClick={() => openQuick("EMPTY")} disabled={createInvoice.isPending} data-testid="sale-quick-add">{t("saleQuickAdd")}</button>
+          <button type="button" className="rounded-lg border px-3 py-2 text-sm disabled:opacity-50" onClick={() => openQuick("STOCK")} disabled={createInvoice.isPending} data-testid="sale-quick-stock-add">{t("saleQuickStockBtn")}</button>
           <span className="text-xs text-muted-foreground">{t("saleScanHint")}</span>
         </div>
 
@@ -296,25 +359,30 @@ export function SalePage() {
               <label className="grid gap-1">{t("itemsSell")}<input className="rounded border px-3 py-2" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
               {quickMode === "STOCK" && <label className="grid gap-1">{t("saleQuickStock")}<input className="rounded border px-3 py-2" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} required data-testid="sale-quick-stock" /></label>}
             </div>
-            <div className="flex gap-2"><button type="submit" className="rounded-lg bg-primary px-3 py-2 text-primary-foreground" disabled={createItem.isPending || createWithStock.isPending}>{t("saleQuickSave")}</button><button type="button" className="rounded-lg border px-3 py-2" onClick={() => setQuickMode(null)}>{t("dialogClose")}</button></div>
+            <div className="flex gap-2"><button type="submit" className="rounded-lg bg-primary px-3 py-2 text-primary-foreground disabled:opacity-50" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</button><button type="button" className="rounded-lg border px-3 py-2" onClick={() => setQuickMode(null)}>{t("dialogClose")}</button></div>
           </form>
         )}
 
         {lines.length === 0 ? <p className="text-sm text-muted-foreground">{t("saleLinesEmpty")}</p> : (
           <table className="w-full" data-testid="sale-lines">
             <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-            <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="text-destructive" aria-label={`${t("saleRemove")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>✕</button></td></tr>; })}</tbody>
+            <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><select className="w-28 rounded border px-1 py-1" value={line.overrideType} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: toOverrideType(event.target.value), overrideValue: "" } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><option value="">{t("saleDefault")}</option><option value="AMOUNT">{t("saleOverrideAmount")}</option><option value="PERCENTAGE">{t("saleOverridePercentage")}</option></select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="text-destructive disabled:opacity-50" aria-label={`${t("saleRemove")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))} disabled={createInvoice.isPending}>✕</button></td></tr>; })}</tbody>
           </table>
         )}
       </div>
 
       <div className="mt-4 grid gap-3 rounded border bg-card p-4">
         <h2 className="font-semibold">{t("saleTotalsTitle")}</h2>
-        <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === ""} data-testid="sale-discount-value" /></label></div>
+        <div className="grid grid-cols-2 gap-3"><label className="grid gap-1">{t("saleDiscountType")}<select className="rounded border px-3 py-2" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} disabled={createInvoice.isPending} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label><label className="grid gap-1">{t("saleDiscountValue")}<input className="rounded border px-3 py-2" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label></div>
         <dl className="grid gap-1 text-left"><div className="flex justify-between"><dt>{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex justify-between"><dt>{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex justify-between border-t pt-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
+        {notice.valid && notice.debt > 0 && (
+          <p className="rounded border border-amber-600/30 bg-amber-500/10 p-2 text-sm" data-testid="sale-debt-notice">
+            {hasCustomer ? t("saleDebtWillBeCreated") : t("saleRemainderWillBeCreated")} <Amount value={notice.debt} /> {hasCustomer && t("saleDebtCustomer")} {t("saleDebtEstimate")}
+          </p>
+        )}
+        {error && <p className="mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
+        <button type="button" className="mt-2 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending || createItem.isPending || createWithStock.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</button>
       </div>
-      {error && <p className="mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
-      <button type="button" className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50" onClick={submit} disabled={createInvoice.isPending} data-testid="sale-save">{t("saleSave")}</button>
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />
       {unknownCode !== null && <UnknownScanDialog code={unknownCode} onClose={() => setUnknownCode(null)} onCreate={() => { setUnknownCode(null); openQuick("EMPTY", unknownCode); }} onCreateWithStock={() => { setUnknownCode(null); openQuick("STOCK", unknownCode); }} onManualLine={() => { setUnknownCode(null); setPickerOpen(true); }} />}

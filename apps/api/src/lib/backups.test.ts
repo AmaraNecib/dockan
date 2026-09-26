@@ -16,15 +16,41 @@ import { localDate } from "./logger";
  * Ticket 13 unit seams: naming policy, once-per-day idempotency, and the
  * guarantee that a copied file opens standalone with the committed data.
  */
-let dir: string;
+
+/**
+ * Copying or rebuilding a real database can exceed Bun's 5s default on a cold,
+ * disk-contended run. Only those tests get the longer budget; the instant
+ * naming tests keep the strict default.
+ */
+const DB_COPY_TIMEOUT_MS = 60_000;
+
+let root: string;
 let conn: Connection;
 let store: StorePort;
+const testDirs: string[] = [];
+
+/**
+ * A private data dir for one test; its backups directory lives under it. A test
+ * that times out mid-copy keeps writing into its own dir, so its `.partial`
+ * leftovers can never be seen by a later test (the old shared dir made the two
+ * tests after a timeout fail in ~1ms on foreign files).
+ */
+function freshDataDir(): string {
+  const created = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backups-"));
+  testDirs.push(created);
+  return created;
+}
+
+/** `it` with the longer budget that real database copies need. */
+function itCopyingDb(name: string, fn: () => Promise<void>): void {
+  it(name, fn, DB_COPY_TIMEOUT_MS);
+}
 
 beforeAll(async () => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backups-"));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backups-live-"));
   const config = createAppConfig({
-    DOKAN_DATA_DIR: dir,
-    DOKAN_DB_PATH: path.join(dir, "live.db"),
+    DOKAN_DATA_DIR: root,
+    DOKAN_DB_PATH: path.join(root, "live.db"),
     DOKAN_AUTH_SECRET: "test-auth-secret",
   });
   conn = openConnection(config);
@@ -34,12 +60,15 @@ beforeAll(async () => {
 
 afterAll(() => {
   conn.close();
-  // best-effort cleanup: Windows can hold the copied file briefly after
-  // close, and a leftover tmpdir harms nothing
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-  } catch {
-    /* left for the OS temp cleaner */
+  // best-effort cleanup: Windows can hold a copied file briefly after close,
+  // and a leftover tmpdir harms nothing. Done once here, not per test, so a
+  // timed-out copy is never writing into a directory we just deleted.
+  for (const created of [root, ...testDirs]) {
+    try {
+      fs.rmSync(created, { recursive: true, force: true });
+    } catch {
+      /* left for the OS temp cleaner */
+    }
   }
 });
 
@@ -57,7 +86,8 @@ describe("backup file naming", () => {
 });
 
 describe("manual export copy", () => {
-  it("writes a file that opens standalone with the committed rows", async () => {
+  itCopyingDb("writes a file that opens standalone with the committed rows", async () => {
+    const dir = freshDataDir();
     await store.createCategory({ name: "تصنيف النسخ" });
     const result = await createBackup({ store, dataDir: dir });
 
@@ -74,24 +104,13 @@ describe("manual export copy", () => {
     } finally {
       copy.close();
     }
-
-    // Best-effort cleanup: this test writes a real-today backup into the shared
-    // fixture dir, and the daily-startup tests below assert a FIRST-ever file
-    // for their pinned dates. With real-today equal to a pinned date the stale
-    // copy would make that first call a no-op on every run from that day on.
-    try {
-      fs.rmSync(result.path, { force: true });
-    } catch {
-      /* left for the OS temp cleaner */
-    }
   });
 });
 
 describe("daily startup backup", () => {
-  it("creates today's file once; a second call on the same day is a no-op", async () => {
-    // fixture date far from the real clock: the manual-export test above
-    // creates the REAL today's copy, so a fixture near today would find it
-    // already on disk and flip first.created to false (pre-existing flake)
+  itCopyingDb("creates today's file once; a second call on the same day is a no-op", async () => {
+    const dir = freshDataDir();
+    // far-future fixture keeps the pinned day clear of the real clock
     const today = "2035-06-01";
     const first = await ensureDailyBackup({ store, dataDir: dir, today });
     expect(first.created).toBe(true);
@@ -118,12 +137,13 @@ describe("daily startup backup", () => {
     }
   });
 
-  it("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
-    // far-future fixture: a date near the real clock would collide with the
-    // manual-export test's real-today copy (see the idempotency test)
+  itCopyingDb("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
+    const dir = freshDataDir();
     const day = "2035-06-02";
     const dest = backupFilePath(dir, day);
 
+    // production pre-creates <dataDir>/backups (main.ts) before any copy
+    fs.mkdirSync(backupDirFor(dir), { recursive: true });
     // simulate a half-written backup: a few bytes, no SQLite magic header
     fs.writeFileSync(dest, Buffer.from("truncated garbage"));
 
@@ -141,8 +161,8 @@ describe("daily startup backup", () => {
     }
   });
 
-  it("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
-    // far-future fixture, same collision class as above
+  itCopyingDb("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
+    const dir = freshDataDir();
     const day = "2035-06-03";
 
     // force a multi-page db so a mid-file cut keeps the header but loses pages
@@ -169,7 +189,8 @@ describe("daily startup backup", () => {
     }
   });
 
-  it("survives two concurrent exports for the same day (greptile race)", async () => {
+  itCopyingDb("survives two concurrent exports for the same day (greptile race)", async () => {
+    const dir = freshDataDir();
     const results = await Promise.all([
       createBackup({ store, dataDir: dir }),
       createBackup({ store, dataDir: dir }),
@@ -191,7 +212,10 @@ describe("daily startup backup", () => {
   });
 
   it("never leaves a .partial file behind after a failed copy", async () => {
-    // far-future fixture, same collision class as above
+    const dir = freshDataDir();
+    // production pre-creates <dataDir>/backups (main.ts); the failing store
+    // throws before its own mkdir, so the dir must exist for the assertion
+    fs.mkdirSync(backupDirFor(dir), { recursive: true });
     const day = "2035-06-05";
     const failingStore: StorePort = {
       ...store,
@@ -207,8 +231,8 @@ describe("daily startup backup", () => {
     expect(fs.existsSync(backupFilePath(dir, day))).toBe(false);
   });
 
-  it("keeps one file per distinct day", async () => {
-    // far-future fixtures, same collision class as above
+  itCopyingDb("keeps one file per distinct day", async () => {
+    const dir = freshDataDir();
     await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-06" });
     await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-07" });
     const days = fs.readdirSync(backupDirFor(dir)).filter((f) => /^dokan-2035-06-0[67]\.db$/.test(f));

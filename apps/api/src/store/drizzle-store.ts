@@ -1323,7 +1323,10 @@ export function createDrizzleStore(conn: Connection): StorePort {
       // debt predicates mirror debtSummaries() exactly (kind + unpaid +
       // attributed to a party), so the card agrees with the /debts screen it
       // links to and never claims a debt nobody can follow up.
-      const [salesRows, owedRows, weOweRows, lowStockCountRows, lowStockRows, recentRows] = await Promise.all([
+      // The three money reads are the headline figures. If one of them cannot
+      // be read the whole answer is unavailable, and the caller shows its error
+      // state rather than a page of numbers it cannot vouch for.
+      const [salesRows, owedRows, weOweRows] = await Promise.all([
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`, count: sql<number>`COUNT(*)` })
           .from(invoices)
@@ -1348,6 +1351,12 @@ export function createDrizzleStore(conn: Connection): StorePort {
               sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
             ),
           ),
+      ]);
+
+      // The remaining sections degrade on their own. A single Promise.all over
+      // all six reads meant one failing low-stock read blanked the sales and
+      // debt figures that had already succeeded.
+      const [lowStockCountResult, lowStockRowsResult, recentRowsResult] = await Promise.allSettled([
         db
           .select({ count: sql<number>`COUNT(*)` })
           .from(items)
@@ -1364,9 +1373,13 @@ export function createDrizzleStore(conn: Connection): StorePort {
         salesCount: Number(salesRows[0]?.count ?? 0),
         owedToUs: Number(owedRows[0]?.total ?? 0),
         weOwe: Number(weOweRows[0]?.total ?? 0),
-        lowStockCount: Number(lowStockCountRows[0]?.count ?? 0),
-        lowStockItems: lowStockRows,
-        recentInvoices: recentRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
+        lowStockCount:
+          lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
+        lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,
+        recentInvoices:
+          recentRowsResult.status === "fulfilled"
+            ? recentRowsResult.value.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }))
+            : null,
       };
     },
 

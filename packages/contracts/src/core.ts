@@ -828,12 +828,14 @@ export const dashboardSummaryOutputSchema = z.object({
   owedToUs: dinarsSchema,
   /** party-attributed unpaid PURCHASE debt */
   weOwe: dinarsSchema,
-  /** count of items at or below their low-stock threshold */
-  lowStockCount: z.number().int().min(0),
+  /** count of items at or below their low-stock threshold, or null when that
+   * read failed. Nullable so one failing section cannot blank the money
+   * figures that did load. */
+  lowStockCount: z.number().int().min(0).nullable(),
   /** low-stock rows for the detail list, ordered by on-hand then name */
-  lowStockItems: z.array(itemSchema),
+  lowStockItems: z.array(itemSchema).nullable(),
   /** the five newest invoices by creation time, newest first */
-  recentInvoices: z.array(invoiceSchema),
+  recentInvoices: z.array(invoiceSchema).nullable(),
 });
 
 export const debtsByPartyInputSchema = z

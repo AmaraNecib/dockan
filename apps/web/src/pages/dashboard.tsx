@@ -112,11 +112,26 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
               }
             />
 
-            <KpiCard label={t("dashboardLowStockKpi")} testId="dashboard-low-stock" value={summary.data.lowStockCount} />
+            <KpiCard
+              label={t("dashboardLowStockKpi")}
+              testId="dashboard-low-stock"
+              // null means that read failed; the money cards above are unaffected
+              value={
+                summary.data.lowStockCount === null ? (
+                  <span className="text-muted-foreground">—</span>
+                ) : (
+                  summary.data.lowStockCount
+                )
+              }
+            />
           </div>
 
           <h2 className="mt-6 font-semibold">{t("dashboardRecentInvoices")}</h2>
-          {summary.data.recentInvoices.length === 0 ? (
+          {summary.data.recentInvoices === null ? (
+            <p className="mt-2 text-muted-foreground" data-testid="dashboard-recents-unavailable">
+              {t("dashboardSectionUnavailable")}
+            </p>
+          ) : summary.data.recentInvoices.length === 0 ? (
             <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
           ) : (
             <div className="mt-2 overflow-x-auto rounded border bg-card">
@@ -167,7 +182,11 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
           )}
 
           <h2 className="mt-6 font-semibold">{t("dashboardLowStock")}</h2>
-          {summary.data.lowStockItems.length === 0 ? (
+          {summary.data.lowStockItems === null ? (
+            <p className="mt-2 text-muted-foreground" data-testid="dashboard-low-stock-unavailable">
+              {t("dashboardSectionUnavailable")}
+            </p>
+          ) : summary.data.lowStockItems.length === 0 ? (
             <p className="mt-2 text-muted-foreground">{t("dashboardLowStockEmpty")}</p>
           ) : (
             <ul className="mt-2 divide-y rounded border bg-card" data-testid="dashboard-low-stock-list">

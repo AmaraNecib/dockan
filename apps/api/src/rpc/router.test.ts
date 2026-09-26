@@ -3020,9 +3020,9 @@ describe("dashboard summary (issue 84)", () => {
     // the day comes from the server clock, never the device
     expect(summary.day).toBe(localDate());
     // the just-created invoice is the newest by creation time, so it heads the list
-    expect(summary.recentInvoices[0]?.invoiceNumber).toBe(created.invoiceNumber);
+    expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
     expect(summary.salesCount).toBeGreaterThanOrEqual(1);
     expect(summary.salesTotal).toBeGreaterThanOrEqual(created.totalAmount);
-    expect(summary.lowStockItems.length).toBe(summary.lowStockCount);
+    expect(summary.lowStockItems?.length ?? null).toBe(summary.lowStockCount);
   });
 });

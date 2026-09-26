@@ -69,6 +69,7 @@ const resources = {
       dashboardSalesCount: "عدد فواتير البيع",
       dashboardLowStockKpi: "منتجات منخفضة",
       dashboardRecentInvoices: "أحدث الفواتير",
+      dashboardSectionUnavailable: "تعذّر تحميل هذا القسم، أعد المحاولة",
       dashboardNewSale: "بيع جديد",
       dashboardError: "تعذّر تحميل ملخص اليوم",
       dashboardItemsCount: "عدد المنتجات",

@@ -56,11 +56,11 @@ export interface DashboardAggregates {
   owedToUs: number;
   /** party-attributed remaining debt across unpaid PURCHASE invoices */
   weOwe: number;
-  lowStockCount: number;
+  lowStockCount: number | null;
   /** low-stock rows for the detail list, ordered by on-hand then name */
-  lowStockItems: Item[];
+  lowStockItems: Item[] | null;
   /** five newest invoices by creation time, newest first */
-  recentInvoices: Invoice[];
+  recentInvoices: Invoice[] | null;
 }
 
 /** Additive invoice fields are optional at the write seam so older adapters and

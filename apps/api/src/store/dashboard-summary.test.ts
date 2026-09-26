@@ -32,7 +32,7 @@ function removeTempDirRetry(dir: string): void {
   }
 }
 
-async function freshStore(): Promise<StorePort> {
+async function freshStoreWithConn(): Promise<{ store: StorePort; conn: Connection }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-dash-"));
   tempDirs.push(dir);
   const conn = openConnection(
@@ -41,7 +41,17 @@ async function freshStore(): Promise<StorePort> {
   conns.push(conn);
   const store = createDrizzleStore(conn);
   await store.setup();
-  return store;
+  return { store, conn };
+}
+
+async function freshStore(): Promise<StorePort> {
+  return (await freshStoreWithConn()).store;
+}
+
+/** Narrow a nullable section that this fixture is expected to populate. */
+function present<T>(value: T | null): T {
+  if (value === null) throw new Error("expected a populated dashboard section");
+  return value;
 }
 
 afterAll(() => {
@@ -109,7 +119,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(result.owedToUs).toBe(11_999); // unpaid SALE: 2_000 + 9_999
     expect(result.weOwe).toBe(2_000); // unpaid PURCHASE: 1_200 + 800
     expect(result.lowStockCount).toBe(1);
-    expect(result.lowStockItems.map((item) => item.id)).toEqual([low.id]);
+    expect(present(result.lowStockItems).map((item) => item.id)).toEqual([low.id]);
   });
 
   it("agrees with debtSummaries for both debt directions", async () => {
@@ -146,9 +156,31 @@ describe("dashboardSummary (issue 84)", () => {
 
     const result = await store.dashboardSummary(localDate());
 
-    expect(result.recentInvoices).toHaveLength(5);
-    expect(result.recentInvoices[0]?.invoiceNumber).toBe("DASH-BACKDATED");
-    expect(result.recentInvoices.some((invoice) => invoice.invoiceNumber === "DASH-OLD-1")).toBe(false);
+    expect(present(result.recentInvoices)).toHaveLength(5);
+    expect(present(result.recentInvoices)[0]?.invoiceNumber).toBe("DASH-BACKDATED");
+    expect(present(result.recentInvoices).some((invoice) => invoice.invoiceNumber === "DASH-OLD-1")).toBe(false);
+  });
+
+  it("keeps the money figures when one optional section cannot be read", async () => {
+    const { store, conn } = await freshStoreWithConn();
+    const day = localDate();
+    await seedInvoice(store, { invoiceNumber: "DASH-KEEP", kind: "SALE", invoiceDate: day, totalAmount: 4_000, paidAmount: 1_000, remainingAmount: 3_000 });
+
+    // a real failure in the optional sections only: with the items table gone
+    // both low-stock reads throw, while the invoice aggregates still answer
+    conn.raw.exec("DROP TABLE items");
+
+    const result = await store.dashboardSummary(day);
+
+    // the headline figures survive the unrelated failure
+    expect(result.salesTotal).toBe(4_000);
+    expect(result.salesCount).toBe(1);
+    expect(result.owedToUs).toBe(3_000);
+    expect(present(result.recentInvoices)).toHaveLength(1);
+
+    // and the sections that failed say so instead of reading as zero or empty
+    expect(result.lowStockCount).toBeNull();
+    expect(result.lowStockItems).toBeNull();
   });
 
   it("returns zeros and an empty list on an empty store", async () => {

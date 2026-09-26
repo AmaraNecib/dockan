@@ -2,6 +2,8 @@ import { useTranslation } from "react-i18next";
 
 import type { Receipt } from "../lib/receipt";
 
+import { Amount } from "@/components/ui/amount";
+
 /**
  * Receipt printing — the print-only receipt layout. Presentational: data arrives as
  * a fully assembled `Receipt` (see lib/receipt.ts), so this view is
@@ -64,8 +66,8 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
                 <tr key={`${line.description}-${index}`} className="border-b last:border-0" data-testid="receipt-line">
                   <td className="p-1">{line.description}</td>
                   <td className="p-1">{line.quantity}</td>
-                  <td className="p-1">{line.unitPrice} دج</td>
-                  <td className="p-1">{line.netTotal} دج</td>
+                  <td className="p-1"><Amount value={line.unitPrice} /></td>
+                  <td className="p-1"><Amount value={line.netTotal} /></td>
                 </tr>
               ))}
             </tbody>
@@ -76,23 +78,23 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
       <dl className="receipt-totals mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
         <div className="flex justify-between border-b py-1">
           <dt className="text-muted-foreground">{t("saleSubtotal")}</dt>
-          <dd data-testid="receipt-subtotal">{receipt.subtotalAmount} دج</dd>
+          <dd data-testid="receipt-subtotal"><Amount value={receipt.subtotalAmount} /></dd>
         </div>
         <div className="flex justify-between border-b py-1">
           <dt className="text-muted-foreground">{t("saleDiscount")}</dt>
-          <dd data-testid="receipt-discount">{receipt.discountAmount > 0 ? `-${receipt.discountAmount}` : "0"} دج</dd>
+          <dd data-testid="receipt-discount"><Amount value={receipt.discountAmount > 0 ? `-${receipt.discountAmount}` : "0"} /></dd>
         </div>
         <div className="flex justify-between border-b py-1 font-semibold">
           <dt>{t("invoiceTotal")}</dt>
-          <dd data-testid="receipt-total">{receipt.totalAmount} دج</dd>
+          <dd data-testid="receipt-total"><Amount value={receipt.totalAmount} /></dd>
         </div>
         <div className="flex justify-between border-b py-1 font-semibold">
           <dt>{t("invoicePaid")}</dt>
-          <dd data-testid="receipt-paid">{receipt.paidAmount} دج</dd>
+          <dd data-testid="receipt-paid"><Amount value={receipt.paidAmount} /></dd>
         </div>
         <div className="flex justify-between border-b py-1 text-base font-bold">
           <dt>{t("invoiceRemaining")}</dt>
-          <dd data-testid="receipt-remaining">{receipt.remainingAmount} دج</dd>
+          <dd data-testid="receipt-remaining"><Amount value={receipt.remainingAmount} /></dd>
         </div>
       </dl>
 
@@ -114,7 +116,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
               {receipt.payments.map((payment, index) => (
                 <tr key={`${payment.paidAt}-${index}`} className="border-b last:border-0" data-testid="receipt-payment">
                   <td className="p-1" dir="ltr">{payment.paidAt}</td>
-                  <td className="p-1">{payment.amount} دج</td>
+                  <td className="p-1"><Amount value={payment.amount} /></td>
                   <td className="p-1">{t(`pmtMethod_${payment.method}`)}</td>
                   <td className="p-1 text-muted-foreground">{payment.note ?? "—"}</td>
                 </tr>

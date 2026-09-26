@@ -122,7 +122,7 @@ export function AppSidebar({ collapsed, activeKey, user, onExpand }: AppSidebarP
           <button
             type="button"
             onClick={onExpand}
-            title={displayName(user)}
+            title={displayName(user) || t("shellUser")}
             className="mx-auto grid size-8 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-semibold"
             aria-label={displayName(user) || t("shellUser")}
           >

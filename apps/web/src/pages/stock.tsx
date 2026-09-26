@@ -135,14 +135,21 @@ function kindLabel(t: (key: string) => string, kind: string): string {
 }
 
 /** Translate the locale-neutral reasons the returns feature stores on stock
- * movements (`RETURN_RECORDED`, `RETURN_REJECTED_DAMAGED <RTN>[ — <note>]`).
- * Unknown/legacy reasons (opening, purchase corrections) render raw. The api
- * stores keys; this view owns the copy. */
+ * movements (`RETURN_RECORDED`, `RETURN_REJECTED_DAMAGED <RTN>[ — <note>]`) and
+ * the correction token (`INVOICE_CORRECTION <invoiceNumber> #<lineId>`).
+ * Unknown/legacy reasons (opening, pre-token Arabic corrections) render raw.
+ * The api stores keys; this view owns the copy. */
 function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
     const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();
     return t("historyReasonReturnRejected", { context: rest });
+  }
+  if (reason.startsWith("INVOICE_CORRECTION")) {
+    // the stored reason is "<token> <invoice> #<lineId>"; the line id is what
+    // tells two corrections of the same item on one invoice apart, so it stays
+    const [, number, line] = reason.split(" ");
+    return t("historyReasonInvoiceCorrection", { number: number ?? "", line: line ?? "" });
   }
   return reason;
 }

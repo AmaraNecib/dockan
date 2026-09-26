@@ -61,7 +61,9 @@ export async function resetAdminPassword(deps: {
       .insert(users)
       .values({
         id: randomUUID(),
-        name: "مالك المتجر",
+        // Locale-neutral placeholder: the sidebar falls back to the translated
+        // shell user label (and phone digits for the avatar) when name is blank.
+        name: "",
         image: null,
         username,
         phoneNumber: phone,
@@ -111,7 +113,7 @@ export async function resetAdminPassword(deps: {
       .run();
   }
 
-  await deps.store.insertActivity({ type: "PASSWORD_RESET", summary: `إعادة تعيين كلمة المرور (${phone})` });
+  await deps.store.insertActivity({ type: "PASSWORD_RESET", summary: `PASSWORD_RESET ${phone}` });
   // the guard cross-checks sessions against this identity (single-admin rule)
   await deps.store.setSetting("adminUserId", userId);
   deps.logger.info("PASSWORD_RESET", "admin credentials provisioned or rotated via build secret");

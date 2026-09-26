@@ -6,6 +6,7 @@ import type { ReportRangePreset } from "@dokan/contracts";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { Amount } from "@/components/ui/amount";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
@@ -296,7 +297,7 @@ export function ExpensesPage() {
                       {withdrawal && <span className="mr-2 rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
-                    <td className="p-3 font-semibold">{entry.amount} دج</td>
+                    <td className="p-3 font-semibold"><Amount value={entry.amount} /></td>
                   </tr>
                 );
               })}

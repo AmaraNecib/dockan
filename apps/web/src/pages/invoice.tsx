@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
+import { Amount } from "@/components/ui/amount";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -109,7 +110,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
             {invoice.payments.map((payment) => (
               <tr key={payment.id} className="border-b last:border-0" data-testid="pmt-row">
                 <td className="p-2" dir="ltr">{payment.paidAt}</td>
-                <td className="p-2 font-medium">{payment.amount} دج</td>
+                <td className="p-2 font-medium"><Amount value={payment.amount} /></td>
                 <td className="p-2">{t(`pmtMethod_${payment.method}`)}</td>
                 <td className="p-2 text-muted-foreground">{payment.note ?? "—"}</td>
               </tr>
@@ -543,9 +544,9 @@ export function InvoicePage() {
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDate")}</dt><dd dir="ltr" data-testid="invoice-date">{invoice.invoiceDate}</dd></div>
-          <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total">{invoice.totalAmount} دج</dd></div>
-          <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid">{invoice.paidAmount} دج</dd></div>
-          <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining">{remaining} دج</dd></div>
+          <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total"><Amount value={invoice.totalAmount} /></dd></div>
+          <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>
+          <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining"><Amount value={remaining} /></dd></div>
         </dl>
 
         {invoice.lines.length > 0 && (
@@ -565,8 +566,8 @@ export function InvoicePage() {
                   <tr key={line.id} className="border-b last:border-0">
                     <td className="p-2">{line.description}</td>
                     <td className="p-2">{line.quantity}</td>
-                    <td className="p-2">{line.unitPrice} دج</td>
-                    <td className="p-2">{line.netTotal} دج</td>
+                    <td className="p-2"><Amount value={line.unitPrice} /></td>
+                    <td className="p-2"><Amount value={line.netTotal} /></td>
                   </tr>
                 ))}
               </tbody>

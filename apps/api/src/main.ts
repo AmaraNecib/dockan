@@ -84,7 +84,7 @@ try {
   if (daily.created) {
     await store.insertActivity({
       type: "BACKUP_CREATED",
-      summary: `نسخة احتياطية يومية ${daily.path.split(/[\\/]/).pop()}`,
+      summary: `DAILY_BACKUP ${daily.path.split(/[\\/]/).pop()}`,
       ref: daily.path,
     });
   }

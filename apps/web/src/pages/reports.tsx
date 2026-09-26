@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import type { ReportRangePreset } from "@dokan/contracts";
 
+import { Amount } from "@/components/ui/amount";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
@@ -116,28 +117,28 @@ export function ReportsPage() {
           <dl className="mt-4 grid gap-px overflow-hidden rounded border bg-muted" data-testid="report-figures">
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportRevenue")}</dt>
-              <dd className="font-semibold" data-testid="report-revenue">{report.data.revenue} دج</dd>
+              <dd className="font-semibold" data-testid="report-revenue"><Amount value={report.data.revenue} /></dd>
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportCogs")}</dt>
-              <dd className="font-semibold" data-testid="report-cogs">-{report.data.cogs} دج</dd>
+              <dd className="font-semibold" data-testid="report-cogs"><Amount value={`-${report.data.cogs}`} /></dd>
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportGrossProfit")}</dt>
-              <dd className="font-semibold" data-testid="report-gross-profit">{report.data.grossProfit} دج</dd>
+              <dd className="font-semibold" data-testid="report-gross-profit"><Amount value={report.data.grossProfit} /></dd>
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportOperatingExpenses")}</dt>
-              <dd className="font-semibold" data-testid="report-operating">-{report.data.operatingExpenses} دج</dd>
+              <dd className="font-semibold" data-testid="report-operating"><Amount value={`-${report.data.operatingExpenses}`} /></dd>
             </div>
             <div className="flex justify-between bg-amber-50 p-3">
               <dt>{t("reportOwnerWithdrawals")}</dt>
-              <dd className="font-semibold" data-testid="report-withdrawals">-{report.data.ownerWithdrawals} دج</dd>
+              <dd className="font-semibold" data-testid="report-withdrawals"><Amount value={`-${report.data.ownerWithdrawals}`} /></dd>
             </div>
             <div className={`flex justify-between border-t p-3 text-lg font-bold ${report.data.resultAfterExpenses < 0 ? "bg-destructive/10 text-destructive" : "bg-card"}`}>
               <dt>{t("reportResult")}</dt>
               <dd data-testid="report-result">
-                {report.data.resultAfterExpenses} دج
+                <Amount value={report.data.resultAfterExpenses} />
                 {report.data.resultAfterExpenses < 0 && <span className="mr-2 text-xs">({t("reportNegative")})</span>}
               </dd>
             </div>
@@ -163,7 +164,7 @@ export function ReportsPage() {
                       {row.isOwnerWithdrawal && <span className="mr-2 rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3">{row.count}</td>
-                    <td className="p-3 font-semibold">{row.total} دج</td>
+                    <td className="p-3 font-semibold"><Amount value={row.total} /></td>
                   </tr>
                 ))}
               </tbody>

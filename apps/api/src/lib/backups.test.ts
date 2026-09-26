@@ -9,7 +9,13 @@ import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
-import { backupDirFor, backupFileNameFor, backupFilePath, createBackup, ensureDailyBackup, } from "./backups";
+import {
+  backupDirFor,
+  backupFileNameFor,
+  backupFilePath,
+  createBackup as createBackupRaw,
+  ensureDailyBackup as ensureDailyBackupRaw,
+} from "./backups";
 import { localDate } from "./logger";
 
 /**
@@ -28,6 +34,29 @@ let root: string;
 let conn: Connection;
 let store: StorePort;
 const testDirs: string[] = [];
+
+/**
+ * Copies still running. A test that exceeds its timeout leaves its copy
+ * running, and deleting that test's directory underneath it throws ENOENT, so
+ * teardown checks this before removing anything.
+ */
+let copiesInFlight = 0;
+
+/** Count a backup operation while it runs, so teardown can tell that a copy is
+ * still in flight. Wrapping here rather than at the call sites keeps the tests
+ * reading as the production calls they exercise. */
+function tracked<T>(operation: Promise<T>): Promise<T> {
+  copiesInFlight += 1;
+  const settled = () => {
+    copiesInFlight -= 1;
+  };
+  operation.then(settled, settled);
+  return operation;
+}
+
+const createBackup = (options: Parameters<typeof createBackupRaw>[0]) => tracked(createBackupRaw(options));
+const ensureDailyBackup = (options: Parameters<typeof ensureDailyBackupRaw>[0]) =>
+  tracked(ensureDailyBackupRaw(options));
 
 /**
  * A private data dir for one test; its backups directory lives under it. A test
@@ -60,7 +89,12 @@ beforeAll(async () => {
 
 afterAll(() => {
   conn.close();
-  // best-effort cleanup: Windows can hold a copied file briefly after close,
+  // A timed-out test leaves its copy running, and deleting a directory mid-copy
+  // throws the very ENOENT this file exists to stop producing. When anything is
+  // still in flight, leave the directories to the OS temp cleaner: a leftover
+  // tmpdir harms nothing, a teardown race does.
+  if (copiesInFlight > 0) return;
+  // Best-effort cleanup: Windows can hold a copied file briefly after close,
   // and a leftover tmpdir harms nothing. Done once here, not per test, so a
   // timed-out copy is never writing into a directory we just deleted.
   for (const created of [root, ...testDirs]) {

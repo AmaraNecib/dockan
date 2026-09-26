@@ -185,6 +185,12 @@ describe("DebtsPage (ticket 9)", () => {
     const ui = await mountPage(queryClient);
     const appeared = await ui.waitFor(() => ui.emptyOwed() !== null && ui.emptyWeOwe() !== null);
     expect(appeared).toBe(true);
+
+    // each group names the next step and makes it pressable
+    expect(ui.emptyOwed()?.textContent).toContain("تظهر هنا الفواتير غير المدفوعة عند الزبائن");
+    expect(ui.emptyOwed()?.querySelector("a")?.getAttribute("href")?.split("?")[0]).toBe("/sale");
+    expect(ui.emptyWeOwe()?.textContent).toContain("تظهر هنا الفواتير غير المدفوعة عند الموردين");
+    expect(ui.emptyWeOwe()?.querySelector("a")?.getAttribute("href")?.split("?")[0]).toBe("/purchase");
     await ui.unmount();
   });
 

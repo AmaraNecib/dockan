@@ -55,13 +55,8 @@ async function mountSidebar(collapsed: boolean): Promise<HTMLElement> {
     root.render(<RouterProvider router={router} />);
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  for (let attempt = 0; attempt < 50; attempt++) {
-    if (host.querySelector("a") !== null) return host;
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-  }
-  throw new Error("sidebar did not render any links");
+  await waitFor(() => host.querySelector("a") !== null, "sidebar did not render any links");
+  return host;
 }
 
 function linkFor(host: HTMLElement, path: string): HTMLAnchorElement | undefined {
@@ -69,6 +64,16 @@ function linkFor(host: HTMLElement, path: string): HTMLAnchorElement | undefined
     const href = anchor.getAttribute("href");
     return href !== null && href.split("?")[0] === path;
   });
+}
+
+async function waitFor(check: () => boolean, failure: string): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (check()) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+  throw new Error(failure);
 }
 
 describe("sidebar collapse default (issue #94)", () => {
@@ -102,6 +107,21 @@ describe("sidebar collapse default (issue #94)", () => {
       if (original !== undefined) Object.defineProperty(window, "localStorage", original);
     }
   });
+
+  it("keeps the in-memory choice when storage refuses the write", () => {
+    const original = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("storage disabled");
+      },
+    });
+    try {
+      expect(() => writeSidebarCollapsed(true)).not.toThrow();
+    } finally {
+      if (original !== undefined) Object.defineProperty(window, "localStorage", original);
+    }
+  });
 });
 
 describe("AppSidebar accessible names (issue #94)", () => {
@@ -117,8 +137,10 @@ describe("AppSidebar accessible names (issue #94)", () => {
       expect(link?.textContent).toContain(i18n.t(item.labelKey));
     }
     // The rare System cluster starts folded; open it and check its labels too.
-    const toggle = host.querySelector<HTMLButtonElement>("button[aria-expanded]");
-    expect(toggle).not.toBeNull();
+    const toggle = Array.from(host.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")).find((button) =>
+      button.textContent?.includes(i18n.t("shellGroupSystem")),
+    );
+    expect(toggle).toBeDefined();
     await act(async () => {
       toggle?.click();
     });

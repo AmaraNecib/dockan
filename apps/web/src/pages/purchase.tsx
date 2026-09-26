@@ -253,16 +253,18 @@ export function PurchasePage() {
 
             <div className="p-4">
               {lines.length === 0 ? (
-                <EmptyState
-                  icon={<PackagePlus size={28} />}
-                  title={t("purchasesEmptyTitle")}
-                  hint={t("purchasesEmptyHint")}
-                  action={
-                    <Button size="lg" data-testid="purchase-open-picker" onClick={() => setPickerOpen(true)}>
-                      {t("purchasesAddItem")}
-                    </Button>
-                  }
-                />
+                <div data-testid="purchase-empty">
+                  <EmptyState
+                    icon={<PackagePlus size={28} />}
+                    title={t("purchasesEmptyTitle")}
+                    hint={t("purchasesEmptyHint")}
+                    action={
+                      <Button size="lg" data-testid="purchase-open-picker" onClick={() => setPickerOpen(true)}>
+                        {t("purchasesAddItem")}
+                      </Button>
+                    }
+                  />
+                </div>
               ) : (
                 <table className="w-full" data-testid="purchase-lines">
                   <thead>

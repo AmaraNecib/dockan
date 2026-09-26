@@ -25,8 +25,13 @@ export async function signIn(page: Page, options: SignInOptions = {}): Promise<v
   const setupHeading = page.getByRole("heading", { name: "مرحباً بك في دكان" });
   const loginHeading = page.getByRole("heading", { name: "تسجيل الدخول" });
   await expect(setupHeading.or(loginHeading)).toBeVisible();
+  const onSetup = await setupHeading.isVisible();
+  const onLogin = await loginHeading.isVisible();
+  // exactly one gate: neither screen is a valid state, and guessing wrong here
+  // would fail later at a confusing locator
+  expect(onSetup !== onLogin).toBe(true);
 
-  if (await setupHeading.isVisible()) {
+  if (onSetup) {
     await page.getByLabel("اسم المالك").fill(OWNER_NAME);
     await page.getByLabel("اسم المتجر").fill(STORE_NAME);
     await page.getByLabel("رقم الهاتف").fill(PHONE);
@@ -51,7 +56,11 @@ export async function signIn(page: Page, options: SignInOptions = {}): Promise<v
 export async function openSystemNav(page: Page): Promise<void> {
   const toggle = page.getByRole("button", { name: "النظام" });
   await expect(toggle).toBeVisible();
-  if ((await toggle.getAttribute("aria-expanded")) === "false") {
+  const expanded = await toggle.getAttribute("aria-expanded");
+  // a missing attribute means the toggle is not the control this helper thinks
+  // it is; fail here instead of silently leaving the cluster closed
+  expect(expanded).not.toBeNull();
+  if (expanded === "false") {
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
   }

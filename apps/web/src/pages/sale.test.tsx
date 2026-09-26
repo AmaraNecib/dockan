@@ -37,6 +37,7 @@ interface InvoiceMutationOptions {
 }
 
 let scanPrice = 1000;
+let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
@@ -91,9 +92,10 @@ mock.module("@/lib/rpc", () => ({
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
   },
   rpcClient: {
-    catalogSearch: async ({ query }: { query: string }) => ({
-      exact: { item: { id: `item-${query}`, name: `منتج ${query}`, sellingPrice: scanPrice } },
-    }),
+    catalogSearch: async ({ query }: { query: string }) => {
+      if (scanFails) throw new Error("UNEXPECTED");
+      return { exact: { item: { id: `item-${query}`, name: `منتج ${query}`, sellingPrice: scanPrice } } };
+    },
   },
 }));
 
@@ -215,6 +217,7 @@ let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement; que
 
 beforeEach(() => {
   scanPrice = 1000;
+  scanFails = false;
   lastInvoiceInput = null;
   resolveInvoice = null;
   resolveItemCreate = null;
@@ -528,5 +531,44 @@ describe("SalePage learnability (issue #94)", () => {
     expect(bar).not.toBeNull();
     expect(bar?.querySelector('[data-testid="sale-error"]')).not.toBeNull();
     expect(bar?.textContent).toContain("أدخل مبلغاً صحيحاً غير سالب");
+  });
+
+  it("shows a scan error on an empty invoice where the empty state is", async () => {
+    const host = await mountSale();
+    scanFails = true;
+    await scan("000");
+
+    const error = host.querySelector('[data-testid="sale-error"]');
+    expect(error).not.toBeNull();
+    expect(error?.getAttribute("role")).toBe("alert");
+    // no checkout bar yet, so the error must live with the empty state
+    expect(host.querySelector('[data-testid="sale-checkout-bar"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-empty"]')).not.toBeNull();
+  });
+
+  it("clears the discount with the last line and reopens the teaching empty state", async () => {
+    const host = await mountSale();
+    await scan("999");
+
+    const discountType = host.querySelector<HTMLSelectElement>('[data-testid="sale-discount-type"]');
+    if (discountType === null) throw new Error("missing discount type");
+    await act(async () => setSelect(discountType, "PERCENTAGE"));
+    await act(async () => setInput(host, "sale-discount-value", "10"));
+
+    const remove = host.querySelector<HTMLButtonElement>('button[aria-label^="حذف"]');
+    if (remove === null) throw new Error("missing remove button");
+    // the row control is an icon with a real accessible name
+    expect(remove.getAttribute("aria-label")).toBe("حذف منتج 999");
+    await act(async () => {
+      remove.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.querySelector('[data-testid="sale-checkout-bar"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-empty"]')).not.toBeNull();
+
+    // a fresh line starts with no stale discount
+    await scan("998");
+    expect(host.querySelector<HTMLSelectElement>('[data-testid="sale-discount-type"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("");
   });
 });

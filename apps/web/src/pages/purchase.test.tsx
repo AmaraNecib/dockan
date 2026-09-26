@@ -34,6 +34,33 @@ let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 // mock the rpc module so tests drive fixtures without a network seam.
 mock.module("@/lib/rpc", () => ({
   orpc: {
+    categoriesList: {
+      queryOptions: () => ({
+        queryKey: ["categories"],
+        queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }),
+      }),
+    },
+    catalogSearch: {
+      queryOptions: () => ({
+        queryKey: ["catalogSearch"],
+        queryFn: async () => ({ matches: [], exact: null }),
+        enabled: false,
+      }),
+    },
+    itemsCreate: {
+      // SAFETY: pass caller options through so onSuccess/onError survive
+      mutationOptions: (opts?: PanelMutationOptions) => ({
+        mutationFn: async () => ({ id: "item-1", name: "منتج", costPrice: 100, sellingPrice: 150 }),
+        ...opts,
+      }),
+    },
+    invoicesCreate: {
+      // SAFETY: pass caller options through so onSuccess/onError survive
+      mutationOptions: (opts?: PanelMutationOptions) => ({
+        mutationFn: async () => ({ id: "inv-1", invoiceNumber: "INV-1" }),
+        ...opts,
+      }),
+    },
     purchasesProposal: {
       queryOptions: ({ input }: { input: { invoiceId: string } }) => ({
         queryKey: ["purchasesProposal", input],
@@ -62,7 +89,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { LinkProposalPanel } = await import("./purchase");
+const { LinkProposalPanel, PurchasePage } = await import("./purchase");
 
 const row = (over: Partial<ProposalFixture["items"][number]> = {}): ProposalFixture["items"][number] => ({
   itemId: "item-1",
@@ -162,5 +189,49 @@ describe("LinkProposalPanel cache reset after linking (greptile round-2)", () =>
     const linkedShown = await ui.waitFor(() => ui.text().includes("تم ربط 3"));
     expect(linkedShown).toBe(true);
     await ui.unmount();
+  });
+});
+
+describe("PurchasePage learnability (issue #94)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    document.body.innerHTML = "";
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+  });
+
+  it("teaches the first step on an empty purchase invoice", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const empty = container.querySelector('[data-testid="purchase-empty"]');
+    expect(empty).not.toBeNull();
+    expect(empty?.textContent).toContain("أضف أول منتج إلى الفاتورة");
+    expect(empty?.textContent).toContain("اختر منتجاً من القائمة");
+    const action = empty?.querySelector('[data-testid="purchase-open-picker"]');
+    expect(action).not.toBeNull();
+    expect(action?.textContent).toContain("إضافة منتج من القائمة");
+
+    // checkout-only controls are not on an empty invoice
+    expect(container.querySelector('[data-testid="purchase-checkout-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="purchase-save"]')).toBeNull();
+    // the inline create path stays reachable (E2E testid)
+    expect(container.querySelector('[data-testid="purchase-toggle-quick"]')).not.toBeNull();
+
+    await act(async () => root.unmount());
+    container.remove();
   });
 });

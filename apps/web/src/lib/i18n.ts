@@ -464,7 +464,7 @@ const resources = {
       forgotPasswordDone: "تم إعادة التعيين. سجّل الدخول الآن.",
       
       // app shell — sidebar / header / theme / shortcuts / logout
-      shellGroupMain: "الرئيسية",
+      shellGroupMain: "العمل اليومي",
       shellGroupSystem: "النظام",
       shellMainNav: "التنقل الرئيسي",
       shellUser: "المستخدم",

@@ -1413,8 +1413,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // One EXISTS read for the getting-started checklist (issue 97). Each flag
       // names a real record — an item, a purchase invoice, a sale invoice, a
       // party-attributed unpaid SALE debt — so no client-settable flag can mark
-      // a step done. The debt predicate mirrors dashboardSummary/debtSummaries
-      // exactly, so the step agrees with the /debts screen it links to.
+      // a step done. The debt predicate mirrors the SALE direction of
+      // dashboardSummary/debtSummaries, so the step agrees with the "owed to us"
+      // group on the /debts screen it links to.
       // SAFETY: the SELECT is four EXISTS subqueries, so sqlite always returns
       // exactly one row carrying these aliases as INTEGER 0/1 values.
       const rows = (await db.all(sql`

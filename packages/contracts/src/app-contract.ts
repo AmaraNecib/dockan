@@ -34,6 +34,7 @@ import {
   logsTailInputSchema,
   logsTailOutputSchema,
   lowStockOutputSchema,
+  onboardingProgressOutputSchema,
   partyCreateInputSchema,
   profitReportInputSchema,
   profitReportOutputSchema,
@@ -126,6 +127,11 @@ export const dokanContract = {
   /** one aggregate read for the landing screen: the server's day, the day's
    * exact sales, both debt directions, low stock, and the newest invoices */
   dashboardSummary: oc.output(dashboardSummaryOutputSchema),
+
+  // --- getting started (issue 97) ------------------------------------------
+  /** one EXISTS read: whether the shop has an item, a purchase, a sale, and a
+   * party-attributed debt — the dashboard checklist's completion source */
+  onboardingProgress: oc.output(onboardingProgressOutputSchema),
 
   // --- expenses (ticket 31) -------------------------------------------------
   expenseCategoriesList: oc.output(z.object({ items: z.array(expenseCategorySchema) })),

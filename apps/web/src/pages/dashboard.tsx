@@ -7,6 +7,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { GettingStartedPanel } from "@/components/app/getting-started-panel";
 
 import { orpc } from "../lib/rpc";
 
@@ -35,14 +36,23 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
  * directions, low stock, and the five newest invoices by creation time. The
  * page derives nothing — no device clock, no summing a capped list, no
  * re-sorting a page the api ordered by business date.
+ *
+ * The getting-started checklist (issue 97) reads its own one-EXISTS aggregate;
+ * its absence or a failed read never hides the figures above.
  */
 export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
+  const progress = useQuery(orpc.onboardingProgress.queryOptions());
 
   return (
     <section data-testid="dashboard-page">
       <h1 className="text-xl font-bold">{t("dashboardTitle")}</h1>
+
+      {/* Getting-started checklist: shown only while the server says a step is
+          open and the owner has not dismissed it. It never blocks the cards
+          and lists below. */}
+      {progress.data !== undefined && <GettingStartedPanel progress={progress.data} />}
 
       <div className="mt-4 flex flex-wrap gap-3">
         <Link

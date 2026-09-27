@@ -17,6 +17,7 @@ import type {
   Item,
   ItemCreate,
   ItemUpdate,
+  OnboardingProgress,
   PartyCreate,
   Payment,
   ReturnDetail,
@@ -1405,6 +1406,38 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
         lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,
         recentInvoices: recentRowsResult.status === "fulfilled" ? mapRecentInvoices(recentRowsResult.value) : null,
+      };
+    },
+
+    async onboardingProgress(): Promise<OnboardingProgress> {
+      // One EXISTS read for the getting-started checklist (issue 97). Each flag
+      // names a real record — an item, a purchase invoice, a sale invoice, a
+      // party-attributed unpaid SALE debt — so no client-settable flag can mark
+      // a step done. The debt predicate mirrors dashboardSummary/debtSummaries
+      // exactly, so the step agrees with the /debts screen it links to.
+      // SAFETY: the SELECT is four EXISTS subqueries, so sqlite always returns
+      // exactly one row carrying these aliases as INTEGER 0/1 values.
+      const rows = (await db.all(sql`
+        SELECT
+          EXISTS(SELECT 1 FROM items) AS has_items,
+          EXISTS(SELECT 1 FROM invoices WHERE kind = 'SALE') AS has_sale,
+          EXISTS(SELECT 1 FROM invoices WHERE kind = 'PURCHASE') AS has_purchase,
+          EXISTS(
+            SELECT 1 FROM invoices
+            WHERE kind = 'SALE' AND remaining_amount > 0
+              AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
+          ) AS has_debt`)) as Array<{
+        has_items: number;
+        has_sale: number;
+        has_purchase: number;
+        has_debt: number;
+      }>;
+      const row = rows[0];
+      return {
+        hasItems: Number(row?.has_items ?? 0) > 0,
+        hasPurchase: Number(row?.has_purchase ?? 0) > 0,
+        hasSale: Number(row?.has_sale ?? 0) > 0,
+        hasDebt: Number(row?.has_debt ?? 0) > 0,
       };
     },
 

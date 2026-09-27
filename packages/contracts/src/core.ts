@@ -845,6 +845,20 @@ export const dashboardSummaryOutputSchema = z.object({
   recentInvoices: z.array(invoiceSchema).nullable(),
 });
 
+/**
+ * Getting-started checklist progress (issue 97). Every flag is derived from a
+ * real record on the server — an item, a purchase invoice, a sale invoice, and
+ * a party-attributed unpaid SALE debt — never from a client-settable flag.
+ * `hasDebt` mirrors the dashboard/debts predicate: a party-less walk-in
+ * remainder is not "someone who owes you", so it does not complete the step.
+ */
+export const onboardingProgressOutputSchema = z.object({
+  hasItems: z.boolean(),
+  hasPurchase: z.boolean(),
+  hasSale: z.boolean(),
+  hasDebt: z.boolean(),
+});
+
 export const debtsByPartyInputSchema = z
   .object({
     kind: invoiceKindSchema,
@@ -915,6 +929,7 @@ export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSc
 export type Settings = z.infer<typeof settingsSchema>;
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
 export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
+export type OnboardingProgress = z.infer<typeof onboardingProgressOutputSchema>;
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 export type Expense = z.infer<typeof expenseSchema>;
 export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;

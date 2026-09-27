@@ -14,6 +14,7 @@ import type {
   ItemCreate,
   ItemListItem,
   ItemUpdate,
+  OnboardingProgress,
   PartyCreate,
   Payment,
   ReturnDetail,
@@ -228,6 +229,10 @@ export interface StorePort {
    * summed in SQL, both debt directions, low stock, and the newest invoices
    * by creation time — never a capped list re-summed or re-sorted client-side. */
   dashboardSummary(day: string): Promise<DashboardAggregates>;
+
+  /** one EXISTS read for the getting-started checklist (issue 97): whether the
+   * shop has an item, a purchase, a sale, and a party-attributed SALE debt. */
+  onboardingProgress(): Promise<OnboardingProgress>;
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
   listActivities(limit: number): Promise<Activity[]>;

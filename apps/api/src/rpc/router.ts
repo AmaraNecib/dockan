@@ -1299,6 +1299,9 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
+    // --- getting started (issue 97) ------------------------------------------
+    onboardingProgress: os.onboardingProgress.handler(guarded(async () => deps.store.onboardingProgress())),
+
     // --- expenses (ticket 31) ------------------------------------------------
     expenseCategoriesList: os.expenseCategoriesList.handler(guarded(async () => ({ items: await deps.store.listExpenseCategories() }))),
     expenseCategoriesCreate: os.expenseCategoriesCreate.handler(

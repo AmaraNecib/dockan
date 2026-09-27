@@ -3096,3 +3096,17 @@ describe("dashboard summary (issue 84)", () => {
     expect(summary.day).toBe("2026-08-25");
   });
 });
+
+describe("onboarding progress (issue 97)", () => {
+  it("requires a session", async () => {
+    await expect(unauthed.onboardingProgress()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("returns the four record-derived completion booleans", async () => {
+    const progress = await client.onboardingProgress();
+    expect(Object.keys(progress).sort()).toEqual(["hasDebt", "hasItems", "hasPurchase", "hasSale"]);
+    // every earlier describe in this shared store created items, so at least
+    // the record-derived flag is true — the point here is the wire, not the math
+    expect(progress.hasItems).toBe(true);
+  });
+});

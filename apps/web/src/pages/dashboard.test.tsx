@@ -35,7 +35,15 @@ type DashboardSummary = {
   recentInvoices: Invoice[] | null;
 };
 
+type OnboardingProgress = {
+  hasItems: boolean;
+  hasPurchase: boolean;
+  hasSale: boolean;
+  hasDebt: boolean;
+};
+
 let summary: DashboardSummary;
+let progress: OnboardingProgress;
 let failSummary = false;
 let fetchCount = 0;
 
@@ -86,6 +94,12 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
+    onboardingProgress: {
+      queryOptions: () => ({
+        queryKey: ["onboardingProgress"],
+        queryFn: async () => progress,
+      }),
+    },
   },
   rpcClient: {},
 }));
@@ -120,6 +134,9 @@ async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}
   return {
     card: (testId: string) => container.querySelector<HTMLElement>(`[data-testid='${testId}']`),
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='dashboard-recent-row']")),
+    panel: () => container.querySelector<HTMLElement>("[data-testid='getting-started']"),
+    steps: () => Array.from(container.querySelectorAll<HTMLElement>("[data-testid='getting-started-step']")),
+    dismiss: () => container.querySelector<HTMLButtonElement>("[data-testid='getting-started-dismiss']"),
     error: () => container.querySelector<HTMLElement>("[data-testid='dashboard-error']"),
     stale: () => container.querySelector<HTMLElement>("[data-testid='dashboard-stale']"),
     skeletons: () => container.querySelectorAll("[data-slot='skeleton']"),
@@ -136,6 +153,7 @@ describe("DashboardPage summary (issue 84)", () => {
   beforeEach(() => {
     failSummary = false;
     fetchCount = 0;
+    progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
       salesTotal: 7_500,
@@ -152,6 +170,7 @@ describe("DashboardPage summary (issue 84)", () => {
   afterEach(() => {
     queryClient.clear();
     document.body.innerHTML = "";
+    window.localStorage.clear();
   });
 
   it("renders the server's own day, not a device-derived one", async () => {
@@ -254,6 +273,104 @@ describe("DashboardPage summary (issue 84)", () => {
   it("refetches the summary on the refresh interval", async () => {
     const page = await mount(queryClient, { refreshMs: 20 }); // 20ms refresh keeps the test fast
     expect(await waitFor(() => fetchCount >= 2)).toBe(true);
+    await page.unmount();
+  });
+});
+
+describe("GettingStartedPanel on the dashboard (issue #97)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    failSummary = false;
+    progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
+    summary = {
+      day: "2026-08-31",
+      salesTotal: 0,
+      salesCount: 0,
+      owedToUs: 0,
+      weOwe: 0,
+      lowStockCount: 0,
+      lowStockItems: [],
+      recentInvoices: [],
+    };
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    document.body.innerHTML = "";
+    window.localStorage.clear();
+  });
+
+  it("shows the four steps in shop order, each a real link to its screen", async () => {
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+
+    const steps = page.steps();
+    expect(steps).toHaveLength(4);
+    expect(steps.map((step) => step.getAttribute("data-state"))).toEqual([
+      "pending",
+      "pending",
+      "pending",
+      "pending",
+    ]);
+    expect(steps.map((step) => step.textContent)).toEqual([
+      expect.stringContaining(i18n.t("onboardingStepItems")),
+      expect.stringContaining(i18n.t("onboardingStepPurchase")),
+      expect.stringContaining(i18n.t("onboardingStepSale")),
+      expect.stringContaining(i18n.t("onboardingStepDebts")),
+    ]);
+    expect(steps.map((step) => step.querySelector("a")?.getAttribute("href")?.split("?")[0])).toEqual([
+      "/items",
+      "/purchase",
+      "/sale",
+      "/debts",
+    ]);
+    // a real heading, not an eyebrow above one
+    expect(page.panel()?.querySelector("h2")?.textContent).toBe(i18n.t("onboardingTitle"));
+    // an ordered list, not a card grid
+    expect(page.panel()?.querySelector("ol")).not.toBeNull();
+    await page.unmount();
+  });
+
+  it("marks a step done from the server record and leaves the next pending", async () => {
+    progress = { hasItems: true, hasPurchase: false, hasSale: false, hasDebt: false };
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+
+    expect(page.steps()[0]?.getAttribute("data-state")).toBe("done");
+    expect(page.steps()[1]?.getAttribute("data-state")).toBe("pending");
+    await page.unmount();
+  });
+
+  it("never renders once every step is complete", async () => {
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    expect(page.panel()).toBeNull();
+    await page.unmount();
+  });
+
+  it("dismisses the panel and remembers the choice across a remount", async () => {
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    await act(async () => page.dismiss()?.click());
+    expect(page.panel()).toBeNull();
+    expect(window.localStorage.getItem("dokan.onboarding.dismissed")).toBe("true");
+    await page.unmount();
+
+    const remounted = await mount(queryClient);
+    expect(await waitFor(() => remounted.card("dashboard-day") !== null)).toBe(true);
+    expect(remounted.panel()).toBeNull();
+    await remounted.unmount();
+  });
+
+  it("leaves the existing cards and lists visible alongside the panel", async () => {
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    expect(await waitFor(() => page.card("dashboard-sales-today") !== null)).toBe(true);
+    expect(page.card("dashboard-debt-owed")).not.toBeNull();
+    expect(page.card("dashboard-recents-empty")).not.toBeNull();
     await page.unmount();
   });
 });

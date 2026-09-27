@@ -11,6 +11,7 @@ import * as routerModule from "@tanstack/react-router";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import { ONBOARDING_DISMISSED_KEY } from "../components/app/onboarding-state";
 
 type Invoice = {
   id: string;
@@ -48,6 +49,7 @@ let failSummary = false;
 let failProgress = false;
 let progressPending = false;
 let fetchCount = 0;
+let progressFetchCount = 0;
 
 function invoice(over: Partial<Invoice>): Invoice {
   return {
@@ -100,6 +102,7 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({
         queryKey: ["onboardingProgress"],
         queryFn: async () => {
+          progressFetchCount += 1;
           if (failProgress) throw new Error("ONBOARDING_PROGRESS_FAILED");
           if (progressPending) return new Promise<never>(() => {});
           return progress;
@@ -159,7 +162,10 @@ describe("DashboardPage summary (issue 84)", () => {
 
   beforeEach(() => {
     failSummary = false;
+    failProgress = false;
+    progressPending = false;
     fetchCount = 0;
+    progressFetchCount = 0;
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
@@ -291,6 +297,8 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     failSummary = false;
     failProgress = false;
     progressPending = false;
+    fetchCount = 0;
+    progressFetchCount = 0;
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
@@ -352,6 +360,8 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
 
     expect(page.steps()[0]?.getAttribute("data-state")).toBe("done");
     expect(page.steps()[1]?.getAttribute("data-state")).toBe("pending");
+    expect(page.steps()[0]?.textContent).toContain(i18n.t("onboardingDone"));
+    expect(page.steps()[1]?.textContent).toContain(i18n.t("onboardingPending"));
     await page.unmount();
   });
 
@@ -368,7 +378,7 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(await waitFor(() => page.panel() !== null)).toBe(true);
     await act(async () => page.dismiss()?.click());
     expect(page.panel()).toBeNull();
-    expect(window.localStorage.getItem("dokan.onboarding.dismissed")).toBe("true");
+    expect(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY)).toBe("true");
     await page.unmount();
 
     const remounted = await mount(queryClient);
@@ -409,6 +419,22 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     const page = await mount(queryClient);
     expect(await waitFor(() => page.panel() !== null)).toBe(true);
     expect(await waitFor(() => page.error() !== null)).toBe(true);
+    await page.unmount();
+  });
+
+  it("shows no skeleton when the panel is already dismissed", async () => {
+    window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "true");
+    progressPending = true;
+    const page = await mount(queryClient);
+    await flush();
+    expect(page.panel()).toBeNull();
+    expect(page.panelSkeleton()).toBeNull();
+    await page.unmount();
+  });
+
+  it("refetches progress on the refresh interval", async () => {
+    const page = await mount(queryClient, { refreshMs: 20 });
+    expect(await waitFor(() => progressFetchCount >= 2)).toBe(true);
     await page.unmount();
   });
 });

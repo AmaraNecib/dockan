@@ -1,5 +1,7 @@
 import type { OnboardingProgress } from "@dokan/contracts";
 
+import type { MessageKey } from "@/lib/i18n";
+
 /**
  * The getting-started checklist, in the order a shop actually needs it. This is
  * the single ordered source of truth: the panel renders `onboardingSteps()` and
@@ -11,19 +13,15 @@ export type OnboardingStepId = "items" | "purchase" | "sale" | "debts";
 export interface OnboardingStep {
   id: OnboardingStepId;
   /** i18n key for the step action, in the owner's shop language. */
-  labelKey: string;
+  labelKey: MessageKey;
   /** i18n key for the one-line explanation. */
-  hintKey: string;
+  hintKey: MessageKey;
   /** The screen where the step is actually completed. */
   to: "/items" | "/purchase" | "/sale" | "/debts";
   done: boolean;
 }
 
-interface OnboardingStepDefinition {
-  id: OnboardingStepId;
-  labelKey: string;
-  hintKey: string;
-  to: OnboardingStep["to"];
+interface OnboardingStepDefinition extends Omit<OnboardingStep, "done"> {
   progressKey: keyof OnboardingProgress;
 }
 
@@ -49,5 +47,5 @@ export function onboardingSteps(progress: OnboardingProgress): OnboardingStep[] 
 
 /** True only when every step's real record exists. */
 export function isOnboardingComplete(progress: OnboardingProgress): boolean {
-  return STEP_DEFINITIONS.every((step) => progress[step.progressKey]);
+  return STEP_DEFINITIONS.every((step) => progress[step.progressKey] === true);
 }

@@ -126,6 +126,7 @@ const resources = {
       onboardingDone: "مكتملة",
       onboardingPending: "غير مكتملة",
       onboardingDismiss: "إخفاء",
+      onboardingDismissLabel: "إخفاء خطوات البدء",
       categoriesTitle: "التصنيفات",
       categoriesNewName: "اسم تصنيف جديد",
       categoriesAdd: "إضافة",

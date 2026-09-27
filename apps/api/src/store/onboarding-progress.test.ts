@@ -148,6 +148,15 @@ describe("onboardingProgress (issue 97)", () => {
     expect(progress.hasDebt).toBe(false);
   });
 
+  it("does not count a purchase we owe as the debts step", async () => {
+    const store = await freshStore();
+    await seedInvoice(store, { invoiceNumber: "ONB-P3", kind: "PURCHASE", totalAmount: 900, paidAmount: 100, remainingAmount: 800 });
+    const progress = await store.onboardingProgress();
+    expect(progress.hasPurchase).toBe(true);
+    // "who owes you" is a SALE debt; a supplier balance is not this step
+    expect(progress.hasDebt).toBe(false);
+  });
+
   it("counts a debt attributed by counterparty id, not only by typed name", async () => {
     const store = await freshStore();
     // id present, name absent: the identity branch the name-only tests miss

@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
-import { readOnboardingDismissed, writeOnboardingDismissed } from "./onboarding-state";
-
-const KEY = "dokan.onboarding.dismissed";
+import { ONBOARDING_DISMISSED_KEY, readOnboardingDismissed, writeOnboardingDismissed } from "./onboarding-state";
 
 function withHiddenStorage(fn: () => void): void {
   const original = Object.getOwnPropertyDescriptor(window, "localStorage");
@@ -31,11 +29,16 @@ describe("getting-started dismissal persistence (issue #97)", () => {
   it("remembers an explicit dismissal", () => {
     writeOnboardingDismissed();
     expect(readOnboardingDismissed()).toBe(true);
-    expect(window.localStorage.getItem(KEY)).toBe("true");
+    expect(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY)).toBe("true");
   });
 
   it("falls back to shown for a stale stored value", () => {
-    window.localStorage.setItem(KEY, "legacy");
+    window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "legacy");
+    expect(readOnboardingDismissed()).toBe(false);
+  });
+
+  it("falls back to shown for an explicit non-true value", () => {
+    window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "false");
     expect(readOnboardingDismissed()).toBe(false);
   });
 

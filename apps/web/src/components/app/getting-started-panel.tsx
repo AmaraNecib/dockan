@@ -16,7 +16,7 @@ interface GettingStartedPanelProps {
   isPending: boolean;
 }
 
-/** Same shape as the panel, so the checklist lands without a layout jump. */
+/** Same footprint as the loaded panel, so the checklist does not push content on arrival. */
 function GettingStartedSkeleton() {
   return (
     <section
@@ -66,7 +66,7 @@ export function GettingStartedPanel({ progress, isPending }: GettingStartedPanel
     >
       <div className="flex items-start justify-between gap-4 border-b border-border p-4">
         <div className="min-w-0">
-          <h2 id="getting-started-title" className="text-base font-semibold">
+          <h2 id="getting-started-title" className="font-semibold">
             {t("onboardingTitle")}
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">{t("onboardingHint")}</p>
@@ -75,6 +75,7 @@ export function GettingStartedPanel({ progress, isPending }: GettingStartedPanel
           variant="ghost"
           size="sm"
           data-testid="getting-started-dismiss"
+          aria-label={t("onboardingDismissLabel")}
           onClick={dismiss}
         >
           {t("onboardingDismiss")}

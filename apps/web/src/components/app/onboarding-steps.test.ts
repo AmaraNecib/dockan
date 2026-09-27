@@ -68,4 +68,12 @@ describe("getting-started completion logic (issue #97)", () => {
     expect(steps.map((step) => step.done)).toEqual([true, false, false, false]);
     expect(isOnboardingComplete(partial)).toBe(false);
   });
+
+  it("does not treat a truthy non-boolean as complete", () => {
+    // a legacy/coerced payload: 1 is truthy, but only a real boolean true marks
+    // a step done, so the checklist must never read as finished
+    const sloppy: OnboardingProgress = JSON.parse('{"hasItems":1,"hasPurchase":1,"hasSale":1,"hasDebt":1}');
+    expect(onboardingSteps(sloppy).map((step) => step.done)).toEqual([false, false, false, false]);
+    expect(isOnboardingComplete(sloppy)).toBe(false);
+  });
 });

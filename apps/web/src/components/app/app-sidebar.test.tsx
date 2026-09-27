@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -16,7 +16,29 @@ import {
 import i18n from "../../lib/i18n";
 import { AppSidebar } from "./app-sidebar";
 import { NAV_GROUPS } from "./navigation";
-import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-state";
+
+// Sidebar collapse moved server-side (issue #97 follow-up). Mock the rpc seam
+// before importing the module under test, like the other page tests do.
+let preferenceStore: Record<string, string>;
+let failPreferenceRead = false;
+let failPreferenceWrite = false;
+
+mock.module("@/lib/rpc", () => ({
+  rpcClient: {
+    preferencesGet: async () => {
+      if (failPreferenceRead) throw new Error("PREFERENCES_READ_FAILED");
+      return { values: { ...preferenceStore } };
+    },
+    preferencesSet: async (input: { key: string; value: string }) => {
+      if (failPreferenceWrite) throw new Error("PREFERENCES_WRITE_FAILED");
+      preferenceStore[input.key] = input.value;
+      return { key: input.key, value: input.value };
+    },
+  },
+  orpc: {},
+}));
+
+const { SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, writeSidebarCollapsed } = await import("./sidebar-state");
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
@@ -76,51 +98,37 @@ async function waitFor(check: () => boolean, failure: string): Promise<void> {
   throw new Error(failure);
 }
 
-describe("sidebar collapse default (issue #94)", () => {
-  it("starts expanded when nothing is stored", () => {
-    expect(readSidebarCollapsed()).toBe(false);
+describe("sidebar collapse default (issue #94, server-side since #97)", () => {
+  beforeEach(() => {
+    preferenceStore = {};
+    failPreferenceRead = false;
+    failPreferenceWrite = false;
   });
 
-  it("remembers an explicit collapse and an explicit expand", () => {
-    writeSidebarCollapsed(true);
-    expect(readSidebarCollapsed()).toBe(true);
-    writeSidebarCollapsed(false);
-    expect(readSidebarCollapsed()).toBe(false);
+  it("starts expanded when nothing is stored", async () => {
+    expect(await readSidebarCollapsed()).toBe(false);
   });
 
-  it("falls back to expanded for a stale stored value", () => {
-    window.localStorage.setItem("dokan.sidebar.collapsed", "legacy");
-    expect(readSidebarCollapsed()).toBe(false);
+  it("remembers an explicit collapse and an explicit expand", async () => {
+    await writeSidebarCollapsed(true);
+    expect(await readSidebarCollapsed()).toBe(true);
+    await writeSidebarCollapsed(false);
+    expect(await readSidebarCollapsed()).toBe(false);
   });
 
-  it("falls back to expanded when storage is unavailable", () => {
-    const original = Object.getOwnPropertyDescriptor(window, "localStorage");
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      get() {
-        throw new Error("storage disabled");
-      },
-    });
-    try {
-      expect(readSidebarCollapsed()).toBe(false);
-    } finally {
-      if (original !== undefined) Object.defineProperty(window, "localStorage", original);
-    }
+  it("falls back to expanded for a stale stored value", async () => {
+    preferenceStore[SIDEBAR_COLLAPSED_KEY] = "legacy";
+    expect(await readSidebarCollapsed()).toBe(false);
   });
 
-  it("keeps the in-memory choice when storage refuses the write", () => {
-    const original = Object.getOwnPropertyDescriptor(window, "localStorage");
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      get() {
-        throw new Error("storage disabled");
-      },
-    });
-    try {
-      expect(() => writeSidebarCollapsed(true)).not.toThrow();
-    } finally {
-      if (original !== undefined) Object.defineProperty(window, "localStorage", original);
-    }
+  it("falls back to expanded when the preference read is unavailable", async () => {
+    failPreferenceRead = true;
+    expect(await readSidebarCollapsed()).toBe(false);
+  });
+
+  it("keeps the in-memory choice when the preference write fails", async () => {
+    failPreferenceWrite = true;
+    await expect(writeSidebarCollapsed(true)).resolves.toBeUndefined();
   });
 });
 

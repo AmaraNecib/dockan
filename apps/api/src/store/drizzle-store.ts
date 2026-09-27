@@ -28,7 +28,7 @@ import type {
   Supplier,
 } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
@@ -1476,6 +1476,21 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (patch.storePhone !== undefined) await this.setSetting("storePhone", patch.storePhone ?? "");
       if (patch.storeAddress !== undefined) await this.setSetting("storeAddress", patch.storeAddress ?? "");
       return this.getSettings();
+    },
+
+    // --- UI preferences ------------------------------------------------------
+    async getPreferences(): Promise<Record<string, string>> {
+      // A handful of rows (sidebar + onboarding); a plain scan is cheapest and
+      // needs no index beyond the primary key.
+      const rows = await db.select({ key: preferences.key, value: preferences.value }).from(preferences);
+      return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    },
+    async setPreference(key: string, value: string) {
+      await db
+        .insert(preferences)
+        .values({ key, value })
+        .onConflictDoUpdate({ target: preferences.key, set: { value } })
+        .run();
     },
 
     // --- backup --------------------------------------------------------------

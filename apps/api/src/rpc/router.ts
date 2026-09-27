@@ -1395,10 +1395,21 @@ export function createRpcRouter(deps: RpcDeps) {
         });
       }),
     ),
+
+    // --- UI preferences (issue 97 follow-up) ---------------------------------
+    // shell state, not store identity: cheap read/write, no audit entry (the
+    // sidebar toggle alone would spam the activity log)
+    preferencesGet: os.preferencesGet.handler(guarded(async () => ({ values: await deps.store.getPreferences() }))),
+    preferencesSet: os.preferencesSet.handler(
+      guardedInput(async (input) => {
+        await deps.store.setPreference(input.key, input.value);
+        return { key: input.key, value: input.value };
+      }),
+    ),
+
     activitiesList: os.activitiesList.handler(
       guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
-    ),
-    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
+    ),    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
       // today's JSONL tail; the contract clamps `lines` to 1..500 so the
       // bounded read is the caller's choice, newest-last (chronological)
       guardedInput(async ({ lines }) => deps.logger.tail(lines ?? 100)),

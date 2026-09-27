@@ -239,6 +239,11 @@ export interface StorePort {
   getSetting(key: string): Promise<string | undefined>;
   setSetting(key: string, value: string): Promise<void>;
   getSettings(): Promise<Settings>;
+
+  /** every client UI preference as one key/value map (sidebar, onboarding) */
+  getPreferences(): Promise<Record<string, string>>;
+  /** upsert one preference; deliberately separate from store-identity settings */
+  setPreference(key: string, value: string): Promise<void>;
   updateSettings(patch: SettingsUpdate): Promise<Settings>;
 
   /** driver-specific: checkpoint then copy the database file to destPath */

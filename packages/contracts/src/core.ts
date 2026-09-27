@@ -282,6 +282,31 @@ export const settingsSchema = z.object({
   storeAddress: z.string().trim().nullable(),
 });
 
+/**
+ * One client UI preference (key/value). Preferences are shell state — sidebar
+ * collapse, getting-started dismissal — not store identity, so they live in
+ * their own table and never ride in `settings`. Stored server-side because a
+ * packaged app serves the webview from a new random localhost port each
+ * launch, which wipes localStorage.
+ */
+export const preferenceKeySchema = z.string().trim().min(1).max(64);
+export const preferenceValueSchema = z.string().max(512);
+
+export const preferencesGetOutputSchema = z.object({
+  /** every preference in one cheap read; the shell and dashboard share it */
+  values: z.record(preferenceKeySchema, preferenceValueSchema),
+});
+
+export const preferencesSetInputSchema = z.object({
+  key: preferenceKeySchema,
+  value: preferenceValueSchema,
+});
+
+export const preferencesSetOutputSchema = z.object({
+  key: preferenceKeySchema,
+  value: preferenceValueSchema,
+});
+
 // ---------------------------------------------------------------------------
 // Expenses and profit reports (ticket 31)
 // ---------------------------------------------------------------------------
@@ -927,6 +952,7 @@ export type MovementKind = z.infer<typeof movementKindSchema>;
 export type StockMovement = z.infer<typeof stockMovementSchema>;
 export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
+export type Preferences = z.infer<typeof preferencesGetOutputSchema>["values"];
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
 export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
 export type OnboardingProgress = z.infer<typeof onboardingProgressOutputSchema>;

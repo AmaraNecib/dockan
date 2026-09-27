@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
@@ -16,6 +18,32 @@ const itemName = `بداية-منتج-${stamp}`;
 const customerName = `بداية-زبون-${stamp}`;
 
 test.describe.configure({ mode: "serial" });
+
+/**
+ * Own the fresh-install state instead of borrowing the boot wipe: Playwright
+ * runs `beforeAll` once per --repeat-each group, so resetting the shop records
+ * here makes the assertion honest under repetition. Auth, store settings and
+ * number sequences survive; only shop records and UI preferences are cleared.
+ */
+test.beforeAll(() => {
+  runReset("reset-e2e-records.mjs");
+});
+
+/**
+ * Preferences are server-side now, so one test's dismissal/completion would
+ * leak into the next. Each test starts from a clean preference row.
+ */
+test.beforeEach(() => {
+  runReset("reset-e2e-preferences.mjs");
+});
+
+function runReset(script: string): void {
+  execFileSync("bun", [`scripts/${script}`], {
+    cwd: process.cwd(),
+    env: { ...process.env, E2E_DATA_DIR: path.join(process.cwd(), ".e2e-data") },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+}
 
 test("fresh install: the panel lists the four steps in shop order", async ({ page }) => {
   await signIn(page);

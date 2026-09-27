@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GettingStartedPanel } from "@/components/app/getting-started-panel";
+import { useOnboardingCompleted, useOnboardingDismissed } from "@/components/app/onboarding-state";
+import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 
 import { orpc } from "../lib/rpc";
 
@@ -43,18 +45,46 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
 export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
-  // Same refresh cadence as the summary, so a step completed in another window
-  // self-heals instead of leaving a stale checklist open.
-  const progress = useQuery({ ...orpc.onboardingProgress.queryOptions(), refetchInterval: refreshMs });
+
+  // The checklist's dismissal/completion are server-side preferences (issue 97
+  // follow-up): they survive a packaged restart. While they load, the panel
+  // waits rather than flashing open for an owner who already dismissed it.
+  const { value: dismissed, setValue: setDismissed, isPending: dismissedPending } = useOnboardingDismissed();
+  const { value: completed, setValue: setCompleted, isPending: completedPending } = useOnboardingCompleted();
+  const hidden = dismissed || completed;
+  const preferencesPending = dismissedPending || completedPending;
+
+  const progress = useQuery({
+    ...orpc.onboardingProgress.queryOptions(),
+    // Once the panel can no longer render, stop paying for the read entirely.
+    enabled: !hidden && !preferencesPending,
+    // While it can render, the same cadence as the summary lets a step
+    // completed in another window self-heal.
+    refetchInterval: hidden ? false : refreshMs,
+  });
+
+  // "Finished means gone": record the milestone once, so a later settlement
+  // cannot resurrect the panel.
+  const complete = progress.data !== undefined && isOnboardingComplete(progress.data);
+  useEffect(() => {
+    if (complete) setCompleted(true);
+  }, [complete, setCompleted]);
 
   return (
     <section data-testid="dashboard-page">
       <h1 className="text-xl font-bold">{t("dashboardTitle")}</h1>
 
       {/* Getting-started checklist: shown only while the server says a step is
-          open and the owner has not dismissed it. It never blocks the cards
-          and lists below. */}
-      <GettingStartedPanel progress={progress.data} isPending={progress.isPending} />
+          open and the owner has not dismissed or completed it. It never blocks
+          the cards and lists below. */}
+      <GettingStartedPanel
+        hidden={hidden}
+        progress={progress.data}
+        // no skeleton while the preferences load: an owner who already
+        // dismissed/completed must not see even a placeholder flash
+        isPending={progress.isPending && !preferencesPending}
+        onDismiss={() => setDismissed(true)}
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
         <Link

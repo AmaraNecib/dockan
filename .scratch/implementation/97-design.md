@@ -224,3 +224,70 @@ first spec file and later specs add data on top.
 - No visual redesign (#69); no secondary empty states (#96).
 - No progress counts or percentage (no fake progress); no re-showing after
   dismissal.
+
+---
+
+# PR #104 follow-up (still issue #97)
+
+Four review findings, all fixed on the same branch.
+
+## 1 — Preferences survive a packaged restart (server-side)
+
+`localStorage` was a wipe in production: the packaged shell serves the webview
+from `http://127.0.0.1:<port>` where the kernel assigns a new random port each
+launch, so the origin (and its storage) changes. This also broke the pre-existing
+sidebar preference from #94.
+
+- `apps/api/src/db/schema.ts`: new `preferences (key TEXT PRIMARY KEY, value
+  TEXT NOT NULL)` table + DDL. Deliberately separate from the store-identity
+  `settings` row; no index beyond the primary key.
+- `StorePort`: `getPreferences(): Promise<Record<string, string>>` and
+  `setPreference(key, value)`. Drizzle: one plain scan, one upsert.
+- Contracts: `preferencesGet` (all values in one cheap read) and
+  `preferencesSet`, both session-guarded; key ≤64 chars, value ≤512.
+- `apps/web/src/lib/preferences.ts`: `readPreferences` (a failed read resolves
+  to `{}` — the throwing-storage guard, server-side), `writePreference` (a
+  failed write is swallowed so the in-memory choice stands), and
+  `usePreference(key, default, parse, serialize)` backed by one shared React
+  Query cache entry; writes update the cache optimistically, cancel any
+  in-flight initial fetch, then persist in the background.
+- Migrated `sidebar-state.ts` and `onboarding-state.ts` onto it, keeping their
+  existing read/write function names as the tested imperative seams, plus
+  `useSidebarCollapsed` / `useOnboardingDismissed` / `useOnboardingCompleted`
+  for the shell and dashboard.
+- The dashboard waits for the preferences read before enabling progress and
+  renders no skeleton meanwhile, so an owner who already dismissed/completed
+  never sees even a placeholder flash.
+
+## 2 — Stop polling once the panel cannot render
+
+`dashboard.tsx`: `enabled: !hidden && !preferencesPending` and
+`refetchInterval: hidden ? false : refreshMs`; once dismissed or completed the
+`onboardingProgress` read never fires (asserted with `progressFetchCount === 0`
+in the dashboard test).
+
+## 3 — Loading placeholder matches the loaded footprint
+
+`getting-started-panel.tsx`: header skeleton is `h-6` + `mt-1 h-5` (loaded:
+`h2` line-height 24 + `mt-1` 4 + `text-sm` line 20), rows are `p-4`, a 20px
+round icon, and two `h-5` bars with `mt-0.5` — the same 74px per row and 80px
+header as the loaded panel, so the dashboard does not jump.
+
+## 4 — The fresh-install E2E owns its state
+
+- `scripts/reset-e2e-records.mjs`: deletes shop records (children before
+  parents) and preferences; auth/settings/sequences survive. Run from the
+  onboarding spec's `beforeAll`, which Playwright runs once per
+  `--repeat-each` group.
+- `scripts/reset-e2e-preferences.mjs`: clears preferences per test, because
+  server-side dismissal/completion now leaks across tests.
+- Verified with `playwright test tests/e2e/00-onboarding.spec.ts
+  --repeat-each=2` (8/8) and the full suite (29/29).
+
+## New tests
+
+- API: `store/preferences.test.ts` (empty, upsert, settings independence,
+  re-open persistence) and router wire/session/validation cases.
+- Web: `lib/preferences.test.tsx` (read/write guards, optimistic write), the
+  migrated `onboarding-state.test.ts` and `app-sidebar.test.tsx` seams, and the
+  dashboard's no-progress-when-hidden / preference-failure / loading cases.

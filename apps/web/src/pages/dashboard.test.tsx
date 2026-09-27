@@ -45,8 +45,10 @@ type OnboardingProgress = {
 
 let summary: DashboardSummary;
 let progress: OnboardingProgress;
+let preferenceStore: Record<string, string>;
 let failSummary = false;
 let failProgress = false;
+let failPreferences = false;
 let progressPending = false;
 let fetchCount = 0;
 let progressFetchCount = 0;
@@ -110,7 +112,16 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
   },
-  rpcClient: {},
+  rpcClient: {
+    preferencesGet: async () => {
+      if (failPreferences) throw new Error("PREFERENCES_READ_FAILED");
+      return { values: { ...preferenceStore } };
+    },
+    preferencesSet: async (input: { key: string; value: string }) => {
+      preferenceStore[input.key] = input.value;
+      return { key: input.key, value: input.value };
+    },
+  },
 }));
 
 const { DashboardPage } = await import("./dashboard");
@@ -163,9 +174,11 @@ describe("DashboardPage summary (issue 84)", () => {
   beforeEach(() => {
     failSummary = false;
     failProgress = false;
+    failPreferences = false;
     progressPending = false;
     fetchCount = 0;
     progressFetchCount = 0;
+    preferenceStore = {};
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
@@ -296,9 +309,11 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
   beforeEach(() => {
     failSummary = false;
     failProgress = false;
+    failPreferences = false;
     progressPending = false;
     fetchCount = 0;
     progressFetchCount = 0;
+    preferenceStore = {};
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
@@ -318,6 +333,11 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     document.body.innerHTML = "";
     window.localStorage.clear();
   });
+
+  /** A client with no cached preferences/progress, to prove server persistence. */
+  function freshClient(): QueryClient {
+    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  }
 
   it("shows the four steps in shop order, each a real link to its screen", async () => {
     const page = await mount(queryClient);
@@ -382,16 +402,17 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
     const page = await mount(queryClient);
     // the milestone is written once the whole checklist is observed complete
-    expect(await waitFor(() => window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === "true")).toBe(true);
+    expect(await waitFor(() => preferenceStore[ONBOARDING_COMPLETED_KEY] === "true")).toBe(true);
     expect(page.panel()).toBeNull();
     await page.unmount();
 
     // a later settlement removes the debt record; the graduated panel stays gone
-    queryClient.clear();
     progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: false };
-    const remounted = await mount(queryClient);
+    const remountClient = freshClient();
+    const remounted = await mount(remountClient);
     expect(await waitFor(() => remounted.card("dashboard-day") !== null)).toBe(true);
     expect(remounted.panel()).toBeNull();
+    remountClient.clear();
     await remounted.unmount();
   });
 
@@ -399,13 +420,16 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     const page = await mount(queryClient);
     expect(await waitFor(() => page.panel() !== null)).toBe(true);
     await act(async () => page.dismiss()?.click());
-    expect(page.panel()).toBeNull();
-    expect(window.localStorage.getItem(ONBOARDING_DISMISSED_KEY)).toBe("true");
+    // the preferences cache update is batched by React Query, so wait for it
+    expect(await waitFor(() => page.panel() === null)).toBe(true);
+    expect(preferenceStore[ONBOARDING_DISMISSED_KEY]).toBe("true");
     await page.unmount();
 
-    const remounted = await mount(queryClient);
+    const remountClient = freshClient();
+    const remounted = await mount(remountClient);
     expect(await waitFor(() => remounted.card("dashboard-day") !== null)).toBe(true);
     expect(remounted.panel()).toBeNull();
+    remountClient.clear();
     await remounted.unmount();
   });
 
@@ -446,12 +470,39 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
   });
 
   it("shows no skeleton when the panel is already dismissed", async () => {
-    window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "true");
+    preferenceStore[ONBOARDING_DISMISSED_KEY] = "true";
     progressPending = true;
     const page = await mount(queryClient);
     await flush();
     expect(page.panel()).toBeNull();
     expect(page.panelSkeleton()).toBeNull();
+    await page.unmount();
+  });
+
+  it("keeps the panel shown when the preference read fails (defaults win)", async () => {
+    failPreferences = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    await page.unmount();
+  });
+
+  it("does not read progress at all once the panel is dismissed", async () => {
+    preferenceStore[ONBOARDING_DISMISSED_KEY] = "true";
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    await flush();
+    await flush();
+    expect(progressFetchCount).toBe(0);
+    await page.unmount();
+  });
+
+  it("does not read progress at all once the checklist is complete", async () => {
+    preferenceStore[ONBOARDING_COMPLETED_KEY] = "true";
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    await flush();
+    await flush();
+    expect(progressFetchCount).toBe(0);
     await page.unmount();
   });
 

@@ -1,46 +1,45 @@
-export const ONBOARDING_DISMISSED_KEY = "dokan.onboarding.dismissed";
-export const ONBOARDING_COMPLETED_KEY = "dokan.onboarding.completed";
+import { readPreferences, usePreference, writePreference } from "@/lib/preferences";
 
 /**
- * The getting-started panel is shown until the owner explicitly dismisses it
- * (or every step is complete from real data). Only an explicit dismissal is
- * remembered; an unset or stale value falls back to shown.
+ * Getting-started dismissal and completion live server-side so a packaged-app
+ * restart keeps them: the desktop shell serves the webview from a new random
+ * localhost port each launch, which wipes localStorage.
  */
-export function readOnboardingDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) === "true";
-  } catch {
-    return false;
-  }
+export const ONBOARDING_DISMISSED_KEY = "ui.onboarding.dismissed";
+export const ONBOARDING_COMPLETED_KEY = "ui.onboarding.completed";
+
+/** Only an explicit "true" hides the checklist; anything else shows it. */
+export function parseOnboardingFlag(raw: string | undefined): boolean {
+  return raw === "true";
 }
 
-/** Persist the owner's choice; a storage failure must not break the dismiss. */
-export function writeOnboardingDismissed(): void {
-  try {
-    window.localStorage.setItem(ONBOARDING_DISMISSED_KEY, "true");
-  } catch {
-    // storage unavailable: the in-memory state still applies for this session
-  }
+export function serializeOnboardingFlag(value: boolean): string {
+  return String(value);
 }
 
-/**
- * True once the whole checklist was observed complete. Unlike step completion
- * (always live), this milestone is what makes "finished stays gone" hold even
- * if a later settlement removes the debt step's record.
- */
-export function readOnboardingCompleted(): boolean {
-  try {
-    return window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === "true";
-  } catch {
-    return false;
-  }
+/** Imperative read seams (tests and non-React callers). */
+export async function readOnboardingDismissed(): Promise<boolean> {
+  return parseOnboardingFlag((await readPreferences())[ONBOARDING_DISMISSED_KEY]);
 }
 
-/** Remember that the whole checklist was completed, so it never nags again. */
-export function writeOnboardingCompleted(): void {
-  try {
-    window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
-  } catch {
-    // storage unavailable: the in-memory state still hides it for this session
-  }
+export async function readOnboardingCompleted(): Promise<boolean> {
+  return parseOnboardingFlag((await readPreferences())[ONBOARDING_COMPLETED_KEY]);
+}
+
+/** Imperative write seams; the failure guards live in writePreference. */
+export async function writeOnboardingDismissed(): Promise<void> {
+  await writePreference(ONBOARDING_DISMISSED_KEY, "true");
+}
+
+export async function writeOnboardingCompleted(): Promise<void> {
+  await writePreference(ONBOARDING_COMPLETED_KEY, "true");
+}
+
+/** Reactive preference for the panel; a failed read keeps the panel shown. */
+export function useOnboardingDismissed() {
+  return usePreference(ONBOARDING_DISMISSED_KEY, false, parseOnboardingFlag, serializeOnboardingFlag);
+}
+
+export function useOnboardingCompleted() {
+  return usePreference(ONBOARDING_COMPLETED_KEY, false, parseOnboardingFlag, serializeOnboardingFlag);
 }

@@ -20,7 +20,7 @@ import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
 import { NAV_GROUPS, activeNavKey } from "./navigation";
 import { useSaleDraft } from "./sale-draft";
-import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-state";
+import { useSidebarCollapsed } from "./sidebar-state";
 
 function pageTitleFor(activeKey: string | null): string | null {
   if (!activeKey) return null;
@@ -123,20 +123,18 @@ export function AppShell() {
     ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
     : null;
 
-  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  // Server-side preference: survives a packaged restart (random localhost port
+  // wipes localStorage). A failed read keeps the sidebar expanded.
+  const { value: collapsed, setValue: setCollapsed } = useSidebarCollapsed();
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
   const activeTitleKey = pageTitleFor(activeKey);
 
   function toggleSidebar() {
-    setCollapsed((c) => {
-      const next = !c;
-      writeSidebarCollapsed(next);
-      return next;
-    });
+    setCollapsed(!collapsed);
   }
 
   function closeTopmost() {

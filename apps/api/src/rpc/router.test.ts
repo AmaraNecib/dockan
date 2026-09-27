@@ -3121,3 +3121,23 @@ describe("onboarding progress (issue 97)", () => {
     expect(progress).toEqual({ hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true });
   });
 });
+
+describe("UI preferences (issue 97 follow-up)", () => {
+  it("requires a session to read or write", async () => {
+    await expect(unauthed.preferencesGet()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+  });
+
+  it("round-trips a preference over the wire", async () => {
+    const key = `ui.test.${Date.now()}`;
+    await client.preferencesSet({ key, value: "true" });
+    const { values } = await client.preferencesGet();
+    expect(values[key]).toBe("true");
+  });
+
+  it("rejects an empty preference key at the contract boundary", async () => {
+    await expect(client.preferencesSet({ key: "  ", value: "true" })).rejects.toBeDefined();
+  });
+});

@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Circle } from "lucide-react";
@@ -7,21 +6,22 @@ import type { OnboardingProgress } from "@dokan/contracts";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isOnboardingComplete, onboardingSteps } from "./onboarding-steps";
-import {
-  readOnboardingCompleted,
-  readOnboardingDismissed,
-  writeOnboardingCompleted,
-  writeOnboardingDismissed,
-} from "./onboarding-state";
 
 interface GettingStartedPanelProps {
+  /** true once dismissed or completed; the panel never renders again. */
+  hidden: boolean;
   /** undefined while the progress read is pending or failed. */
   progress: OnboardingProgress | undefined;
   /** true while the progress read has not settled; renders the loading state. */
   isPending: boolean;
+  onDismiss: () => void;
 }
 
-/** Same footprint as the loaded panel, so the checklist does not push content on arrival. */
+/**
+ * Loading placeholder sized to the loaded panel: same header padding and type
+ * line-heights, same 20px icon column and two-line rows, so the checklist lands
+ * without shifting the dashboard (every row is 74px tall, header 80px).
+ */
 function GettingStartedSkeleton() {
   return (
     <section
@@ -30,12 +30,18 @@ function GettingStartedSkeleton() {
       className="mt-4 rounded border border-border bg-card"
     >
       <div className="border-b border-border p-4">
-        <Skeleton className="h-5 w-32" />
-        <Skeleton className="mt-2 h-4 w-56" />
+        <Skeleton className="h-6 w-32" />
+        <Skeleton className="mt-1 h-5 w-56" />
       </div>
-      <div className="grid gap-3 p-4">
+      <div className="divide-y divide-border">
         {[0, 1, 2, 3].map((row) => (
-          <Skeleton key={row} className="h-6 w-full" />
+          <div key={row} className="flex items-center gap-3 p-4">
+            <Skeleton className="size-5 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="mt-0.5 h-5 w-56" />
+            </div>
+          </div>
         ))}
       </div>
     </section>
@@ -48,29 +54,14 @@ function GettingStartedSkeleton() {
  * each marked done only when its record exists on the server. Once every step
  * is done it disappears for good, and an explicit dismissal is remembered too.
  */
-export function GettingStartedPanel({ progress, isPending }: GettingStartedPanelProps) {
+export function GettingStartedPanel({ hidden, progress, isPending, onDismiss }: GettingStartedPanelProps) {
   const { t } = useTranslation();
-  const [hidden, setHidden] = useState(() => readOnboardingDismissed() || readOnboardingCompleted());
 
-  const complete = progress !== undefined && isOnboardingComplete(progress);
-  // "Finished means gone": record the milestone once the whole checklist is
-  // observed complete, so a later settlement cannot resurrect the panel.
-  useEffect(() => {
-    if (complete) {
-      writeOnboardingCompleted();
-      setHidden(true);
-    }
-  }, [complete]);
-
-  if (hidden || complete) return null;
+  if (hidden) return null;
   if (progress === undefined) return isPending ? <GettingStartedSkeleton /> : null;
+  if (isOnboardingComplete(progress)) return null;
 
   const steps = onboardingSteps(progress);
-
-  function dismiss() {
-    writeOnboardingDismissed();
-    setHidden(true);
-  }
 
   return (
     <section
@@ -90,7 +81,7 @@ export function GettingStartedPanel({ progress, isPending }: GettingStartedPanel
           size="sm"
           data-testid="getting-started-dismiss"
           aria-label={t("onboardingDismissLabel")}
-          onClick={dismiss}
+          onClick={onDismiss}
         >
           {t("onboardingDismiss")}
         </Button>

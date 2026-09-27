@@ -36,6 +36,9 @@ import {
   lowStockOutputSchema,
   onboardingProgressOutputSchema,
   partyCreateInputSchema,
+  preferencesGetOutputSchema,
+  preferencesSetInputSchema,
+  preferencesSetOutputSchema,
   profitReportInputSchema,
   profitReportOutputSchema,
   purchasesCorrectLineInputSchema,
@@ -146,6 +149,12 @@ export const dokanContract = {
   // --- settings ------------------------------------------------------------
   settingsGet: oc.output(settingsSchema),
   settingsUpdate: oc.input(settingsUpdateInputSchema).output(settingsSchema),
+
+  // --- UI preferences (issue 97 follow-up) ---------------------------------
+  /** sidebar/onboarding shell state, separate from store-identity settings;
+   * server-side so a packaged restart (new localhost port) is not a wipe */
+  preferencesGet: oc.output(preferencesGetOutputSchema),
+  preferencesSet: oc.input(preferencesSetInputSchema).output(preferencesSetOutputSchema),
 
   // --- activity log --------------------------------------------------------
   activitiesList: oc.input(activityListInputSchema).output(activityListOutputSchema),

@@ -54,12 +54,13 @@ async function seedInvoice(
     paidAmount: number;
     remainingAmount: number;
     unnamed?: boolean;
+    withId?: boolean;
   },
 ): Promise<void> {
   await store.insertInvoice({
     invoiceNumber: over.invoiceNumber,
     kind: over.kind,
-    counterpartyId: null,
+    counterpartyId: over.withId === true ? crypto.randomUUID() : null,
     counterpartyName: over.unnamed === true ? null : "طرف",
     invoiceDate: "2026-08-31",
     subtotalAmount: over.totalAmount,
@@ -145,6 +146,21 @@ describe("onboardingProgress (issue 97)", () => {
     const progress = await store.onboardingProgress();
     expect(progress.hasSale).toBe(true);
     expect(progress.hasDebt).toBe(false);
+  });
+
+  it("counts a debt attributed by counterparty id, not only by typed name", async () => {
+    const store = await freshStore();
+    // id present, name absent: the identity branch the name-only tests miss
+    await seedInvoice(store, {
+      invoiceNumber: "ONB-S6",
+      kind: "SALE",
+      totalAmount: 800,
+      paidAmount: 0,
+      remainingAmount: 800,
+      withId: true,
+      unnamed: true,
+    });
+    expect((await store.onboardingProgress()).hasDebt).toBe(true);
   });
 
   it("reaches every step at once after the whole first-day flow", async () => {

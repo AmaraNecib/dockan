@@ -43,7 +43,9 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
 export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
-  const progress = useQuery(orpc.onboardingProgress.queryOptions());
+  // Same refresh cadence as the summary, so a step completed in another window
+  // self-heals instead of leaving a stale checklist open.
+  const progress = useQuery({ ...orpc.onboardingProgress.queryOptions(), refetchInterval: refreshMs });
 
   return (
     <section data-testid="dashboard-page">
@@ -52,7 +54,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
       {/* Getting-started checklist: shown only while the server says a step is
           open and the owner has not dismissed it. It never blocks the cards
           and lists below. */}
-      {progress.data !== undefined && <GettingStartedPanel progress={progress.data} />}
+      <GettingStartedPanel progress={progress.data} isPending={progress.isPending} />
 
       <div className="mt-4 flex flex-wrap gap-3">
         <Link

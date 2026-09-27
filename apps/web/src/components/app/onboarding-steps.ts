@@ -41,7 +41,9 @@ export function onboardingSteps(progress: OnboardingProgress): OnboardingStep[] 
     labelKey: step.labelKey,
     hintKey: step.hintKey,
     to: step.to,
-    done: progress[step.progressKey],
+    // only a real boolean `true` marks a step done; a malformed payload that
+    // omits a flag reads as pending, never as accidentally complete
+    done: progress[step.progressKey] === true,
   }));
 }
 

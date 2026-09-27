@@ -5,11 +5,36 @@ import { CheckCircle2, Circle } from "lucide-react";
 import type { OnboardingProgress } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { isOnboardingComplete, onboardingSteps } from "./onboarding-steps";
 import { readOnboardingDismissed, writeOnboardingDismissed } from "./onboarding-state";
 
 interface GettingStartedPanelProps {
-  progress: OnboardingProgress;
+  /** undefined while the progress read is pending or failed. */
+  progress: OnboardingProgress | undefined;
+  /** true while the progress read has not settled; renders the loading state. */
+  isPending: boolean;
+}
+
+/** Same shape as the panel, so the checklist lands without a layout jump. */
+function GettingStartedSkeleton() {
+  return (
+    <section
+      data-testid="getting-started-skeleton"
+      aria-hidden="true"
+      className="mt-4 rounded border border-border bg-card"
+    >
+      <div className="border-b border-border p-4">
+        <Skeleton className="h-5 w-32" />
+        <Skeleton className="mt-2 h-4 w-56" />
+      </div>
+      <div className="grid gap-3 p-4">
+        {[0, 1, 2, 3].map((row) => (
+          <Skeleton key={row} className="h-6 w-full" />
+        ))}
+      </div>
+    </section>
+  );
 }
 
 /**
@@ -18,11 +43,13 @@ interface GettingStartedPanelProps {
  * each marked done only when its record exists on the server. It disappears
  * once every step is done and stays gone after an explicit dismissal.
  */
-export function GettingStartedPanel({ progress }: GettingStartedPanelProps) {
+export function GettingStartedPanel({ progress, isPending }: GettingStartedPanelProps) {
   const { t } = useTranslation();
   const [dismissed, setDismissed] = useState(readOnboardingDismissed);
 
-  if (dismissed || isOnboardingComplete(progress)) return null;
+  if (dismissed) return null;
+  if (progress === undefined) return isPending ? <GettingStartedSkeleton /> : null;
+  if (isOnboardingComplete(progress)) return null;
 
   const steps = onboardingSteps(progress);
 

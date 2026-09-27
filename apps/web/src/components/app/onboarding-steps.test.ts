@@ -52,5 +52,20 @@ describe("getting-started completion logic (issue #97)", () => {
       "onboardingStepSale",
       "onboardingStepDebts",
     ]);
+    expect(steps.map((step) => step.hintKey)).toEqual([
+      "onboardingStepItemsHint",
+      "onboardingStepPurchaseHint",
+      "onboardingStepSaleHint",
+      "onboardingStepDebtsHint",
+    ]);
+  });
+
+  it("reads a malformed payload with a missing flag as pending, never done", () => {
+    // SAFETY: the contract guarantees all four flags; this asserts the projection
+    // degrades to pending rather than `undefined`-truthy if that ever breaks
+    const partial = { hasItems: true } as OnboardingProgress;
+    const steps = onboardingSteps(partial);
+    expect(steps.map((step) => step.done)).toEqual([true, false, false, false]);
+    expect(isOnboardingComplete(partial)).toBe(false);
   });
 });

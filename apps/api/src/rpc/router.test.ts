@@ -3103,10 +3103,18 @@ describe("onboarding progress (issue 97)", () => {
   });
 
   it("returns the four record-derived completion booleans", async () => {
+    const category = await client.categoriesCreate({ name: `بداية-راوتر-${Date.now()}` });
+    await client.itemsCreateWithStock({
+      name: `بداية-مادة-${Date.now()}`,
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 150,
+      stockOnHand: 1,
+    });
     const progress = await client.onboardingProgress();
     expect(Object.keys(progress).sort()).toEqual(["hasDebt", "hasItems", "hasPurchase", "hasSale"]);
-    // every earlier describe in this shared store created items, so at least
-    // the record-derived flag is true — the point here is the wire, not the math
+    // a real item exists from this test itself, so the flag is deterministic
+    // even when this describe is run alone
     expect(progress.hasItems).toBe(true);
   });
 });

@@ -45,6 +45,8 @@ type OnboardingProgress = {
 let summary: DashboardSummary;
 let progress: OnboardingProgress;
 let failSummary = false;
+let failProgress = false;
+let progressPending = false;
 let fetchCount = 0;
 
 function invoice(over: Partial<Invoice>): Invoice {
@@ -97,7 +99,11 @@ mock.module("@/lib/rpc", () => ({
     onboardingProgress: {
       queryOptions: () => ({
         queryKey: ["onboardingProgress"],
-        queryFn: async () => progress,
+        queryFn: async () => {
+          if (failProgress) throw new Error("ONBOARDING_PROGRESS_FAILED");
+          if (progressPending) return new Promise<never>(() => {});
+          return progress;
+        },
       }),
     },
   },
@@ -135,6 +141,7 @@ async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}
     card: (testId: string) => container.querySelector<HTMLElement>(`[data-testid='${testId}']`),
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='dashboard-recent-row']")),
     panel: () => container.querySelector<HTMLElement>("[data-testid='getting-started']"),
+    panelSkeleton: () => container.querySelector<HTMLElement>("[data-testid='getting-started-skeleton']"),
     steps: () => Array.from(container.querySelectorAll<HTMLElement>("[data-testid='getting-started-step']")),
     dismiss: () => container.querySelector<HTMLButtonElement>("[data-testid='getting-started-dismiss']"),
     error: () => container.querySelector<HTMLElement>("[data-testid='dashboard-error']"),
@@ -282,6 +289,8 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
 
   beforeEach(() => {
     failSummary = false;
+    failProgress = false;
+    progressPending = false;
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
       day: "2026-08-31",
@@ -330,6 +339,9 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(page.panel()?.querySelector("h2")?.textContent).toBe(i18n.t("onboardingTitle"));
     // an ordered list, not a card grid
     expect(page.panel()?.querySelector("ol")).not.toBeNull();
+    // labelled section + non-colour-only completion text for assistive tech
+    expect(page.panel()?.getAttribute("aria-labelledby")).toBe("getting-started-title");
+    expect(steps[0]?.textContent).toContain(i18n.t("onboardingPending"));
     await page.unmount();
   });
 
@@ -371,6 +383,32 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(await waitFor(() => page.card("dashboard-sales-today") !== null)).toBe(true);
     expect(page.card("dashboard-debt-owed")).not.toBeNull();
     expect(page.card("dashboard-recents-empty")).not.toBeNull();
+    await page.unmount();
+  });
+
+  it("shows a loading skeleton while the progress read is pending", async () => {
+    progressPending = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panelSkeleton() !== null)).toBe(true);
+    expect(page.panel()).toBeNull();
+    await page.unmount();
+  });
+
+  it("hides the panel when the progress read fails without touching the figures", async () => {
+    failProgress = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-sales-today") !== null)).toBe(true);
+    expect(page.panel()).toBeNull();
+    expect(page.panelSkeleton()).toBeNull();
+    expect(page.card("dashboard-debt-owed")).not.toBeNull();
+    await page.unmount();
+  });
+
+  it("still shows the panel when the summary read fails", async () => {
+    failSummary = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    expect(await waitFor(() => page.error() !== null)).toBe(true);
     await page.unmount();
   });
 });

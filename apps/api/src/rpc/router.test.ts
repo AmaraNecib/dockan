@@ -3104,17 +3104,20 @@ describe("onboarding progress (issue 97)", () => {
 
   it("returns the four record-derived completion booleans", async () => {
     const category = await client.categoriesCreate({ name: `بداية-راوتر-${Date.now()}` });
-    await client.itemsCreateWithStock({
+    const item = await client.itemsCreateWithStock({
       name: `بداية-مادة-${Date.now()}`,
       categoryId: category.id,
       costPrice: 100,
       sellingPrice: 150,
-      stockOnHand: 1,
+      stockOnHand: 2,
     });
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] });
+    // no initialPaid + a party name => a real, party-attributed SALE debt
+    await client.invoicesCreate({ kind: "SALE", counterpartyName: "بداية-زبون", lines: [{ itemId: item.id, quantity: 1 }] });
+
     const progress = await client.onboardingProgress();
+
     expect(Object.keys(progress).sort()).toEqual(["hasDebt", "hasItems", "hasPurchase", "hasSale"]);
-    // a real item exists from this test itself, so the flag is deterministic
-    // even when this describe is run alone
-    expect(progress.hasItems).toBe(true);
+    expect(progress).toEqual({ hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true });
   });
 });

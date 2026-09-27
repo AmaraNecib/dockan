@@ -1434,10 +1434,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       }>;
       const row = rows[0];
       return {
-        hasItems: Number(row?.has_items ?? 0) > 0,
-        hasPurchase: Number(row?.has_purchase ?? 0) > 0,
-        hasSale: Number(row?.has_sale ?? 0) > 0,
-        hasDebt: Number(row?.has_debt ?? 0) > 0,
+        hasItems: row?.has_items === 1,
+        hasPurchase: row?.has_purchase === 1,
+        hasSale: row?.has_sale === 1,
+        hasDebt: row?.has_debt === 1,
       };
     },
 

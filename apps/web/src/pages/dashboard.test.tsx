@@ -11,7 +11,7 @@ import * as routerModule from "@tanstack/react-router";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
-import { ONBOARDING_DISMISSED_KEY } from "../components/app/onboarding-state";
+import { ONBOARDING_COMPLETED_KEY, ONBOARDING_DISMISSED_KEY } from "../components/app/onboarding-state";
 
 type Invoice = {
   id: string;
@@ -350,6 +350,11 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     // labelled section + non-colour-only completion text for assistive tech
     expect(page.panel()?.getAttribute("aria-labelledby")).toBe("getting-started-title");
     expect(steps[0]?.textContent).toContain(i18n.t("onboardingPending"));
+    expect(page.dismiss()?.getAttribute("aria-label")).toBe(i18n.t("onboardingDismissLabel"));
+    // sits right under the page heading, above the quick actions
+    const pageRoot = page.card("dashboard-page");
+    expect(pageRoot?.querySelector("h1")?.nextElementSibling).toBe(page.panel());
+    expect(page.panel()?.nextElementSibling?.querySelector("[data-testid='dashboard-new-sale']")).not.toBeNull();
     await page.unmount();
   });
 
@@ -371,6 +376,23 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
     expect(page.panel()).toBeNull();
     await page.unmount();
+  });
+
+  it("does not return after completion, even if records later change", async () => {
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    const page = await mount(queryClient);
+    // the milestone is written once the whole checklist is observed complete
+    expect(await waitFor(() => window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === "true")).toBe(true);
+    expect(page.panel()).toBeNull();
+    await page.unmount();
+
+    // a later settlement removes the debt record; the graduated panel stays gone
+    queryClient.clear();
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: false };
+    const remounted = await mount(queryClient);
+    expect(await waitFor(() => remounted.card("dashboard-day") !== null)).toBe(true);
+    expect(remounted.panel()).toBeNull();
+    await remounted.unmount();
   });
 
   it("dismisses the panel and remembers the choice across a remount", async () => {
@@ -400,6 +422,7 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     progressPending = true;
     const page = await mount(queryClient);
     expect(await waitFor(() => page.panelSkeleton() !== null)).toBe(true);
+    expect(page.panelSkeleton()?.getAttribute("aria-hidden")).toBe("true");
     expect(page.panel()).toBeNull();
     await page.unmount();
   });

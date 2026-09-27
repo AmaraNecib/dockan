@@ -96,25 +96,39 @@ server booleans.
 
 ### `apps/web/src/components/app/onboarding-state.ts` (new)
 
-Mirrors `sidebar-state.ts` exactly (the named precedent): `dokan.onboarding.dismissed`,
-an explicit write of `"true"`, and a `try/catch` read that returns `false` on
-any storage failure so a broken `localStorage` can never hide the panel or
-crash the dashboard.
+Mirrors `sidebar-state.ts` (the named precedent) for the dismissed flag:
+`dokan.onboarding.dismissed`, an explicit write of `"true"`, and a
+`try/catch` read that returns `false` on any storage failure so a broken
+`localStorage` can never hide the panel or crash the dashboard.
+
+A second, data-derived milestone `dokan.onboarding.completed` is written only
+when the panel observes all four records present. It is not a step-completion
+flag (those stay live projections of the server read); it is what makes
+"finished means gone" hold if a later settlement removes the debt record, and
+it can only be set by actually completing the checklist.
 
 ```ts
 export function readOnboardingDismissed(): boolean;
 export function writeOnboardingDismissed(): void;
+export function readOnboardingCompleted(): boolean;
+export function writeOnboardingCompleted(): void;
 ```
 
 ### `apps/web/src/components/app/getting-started-panel.tsx` (new)
 
 ```tsx
-interface GettingStartedPanelProps { progress: OnboardingProgress }
+interface GettingStartedPanelProps {
+  /** undefined while the progress read is pending or failed. */
+  progress: OnboardingProgress | undefined;
+  /** true while the read has not settled; renders the loading skeleton. */
+  isPending: boolean;
+}
 export function GettingStartedPanel(props: GettingStartedPanelProps): ReactElement | null;
 ```
 
-- Returns `null` when `isOnboardingComplete(progress)` or the stored dismissal
-  is set.
+- Returns `null` when dismissed/completed, when the read failed, or when
+  `isOnboardingComplete(progress)`; renders a same-footprint `Skeleton` state
+  while `isPending`. Also records the completion milestone once observed.
 - `<section aria-labelledby>` → real `<h2>` + one-line hint; no eyebrow.
 - `<ol>` of four `<li data-state="done" | "pending">`; each li wraps a
   `<Link>` (the whole row) with a lucide state icon (`Check` vs `Circle`,
@@ -129,12 +143,17 @@ export function GettingStartedPanel(props: GettingStartedPanelProps): ReactEleme
 
 ### `apps/web/src/pages/dashboard.tsx`
 
-- Add `useQuery(orpc.onboardingProgress.queryOptions())`.
-- Render `{progress.data !== undefined && <GettingStartedPanel progress={progress.data} />}`
+- Add `useQuery({ ...orpc.onboardingProgress.queryOptions(), refetchInterval: refreshMs })`
+  (same cadence as the summary, so a step completed in another window
+  self-heals).
+- Always render `<GettingStartedPanel progress={progress.data} isPending={progress.isPending} />`
   immediately after the page `<h1>`, above the quick-action links, independent
   of the summary query (a failing summary must not hide the checklist, and a
   failing progress read simply hides the panel rather than nagging with wrong
   state).
+- `EmptyState` stays the single-action teaching component; the checklist is a
+  four-row ordered list and reuses the same tokens, `Button`, and one-border
+  card vocabulary instead of inventing a second one.
 - Existing KPIs, tables, and lists keep their position and markup; the panel
   adds height only while it is present.
 
@@ -152,13 +171,17 @@ Unit (`apps/web`, `bun test`):
   true; any missing → false. Wrong/extra data cannot set a step.
 - `onboarding-state.test.ts`: unset → not dismissed; write → dismissed;
   stale `"false"`/junk → not dismissed; throwing read → not dismissed (panel
-  stays); throwing write → no throw.
+  stays); throwing write → no throw; completion write → read true; throwing
+  completion write → no throw.
 - `dashboard.test.tsx` (extend the existing rpc mock with
   `onboardingProgress`): fresh summary → panel renders four steps in order with
-  the right hrefs; a done boolean marks that li `data-state="done"`; dismiss
-  hides the panel and writes storage; all-done progress never renders the panel;
-  a stored dismissal survives a remount; the rest of the dashboard still
-  renders alongside the panel.
+  the right hrefs, under the `h1` and above the quick actions; a done boolean
+  marks that li `data-state="done"` and announces `مكتملة`; dismiss hides the
+  panel and writes storage; all-done progress never renders the panel and
+  writes the completion milestone (a later settlement does not bring it back);
+  a stored dismissal survives a remount; a pending read shows the skeleton; a
+  failed progress read hides the panel without touching the figures; the rest
+  of the dashboard still renders alongside the panel.
 
 API (`apps/api`, `bun test`):
 

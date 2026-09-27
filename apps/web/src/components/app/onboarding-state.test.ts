@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
 
-import { ONBOARDING_DISMISSED_KEY, readOnboardingDismissed, writeOnboardingDismissed } from "./onboarding-state";
+import {
+  ONBOARDING_COMPLETED_KEY,
+  ONBOARDING_DISMISSED_KEY,
+  readOnboardingCompleted,
+  readOnboardingDismissed,
+  writeOnboardingCompleted,
+  writeOnboardingDismissed,
+} from "./onboarding-state";
 
 function withHiddenStorage(fn: () => void): void {
   const original = Object.getOwnPropertyDescriptor(window, "localStorage");
@@ -51,6 +58,23 @@ describe("getting-started dismissal persistence (issue #97)", () => {
   it("does not throw when storage refuses the write", () => {
     withHiddenStorage(() => {
       expect(() => writeOnboardingDismissed()).not.toThrow();
+    });
+  });
+
+  it("does not report completion when nothing is stored", () => {
+    expect(readOnboardingCompleted()).toBe(false);
+  });
+
+  it("remembers completion so the panel never returns", () => {
+    writeOnboardingCompleted();
+    expect(readOnboardingCompleted()).toBe(true);
+    expect(window.localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe("true");
+  });
+
+  it("does not throw when storage refuses the completion write", () => {
+    withHiddenStorage(() => {
+      expect(() => writeOnboardingCompleted()).not.toThrow();
+      expect(readOnboardingCompleted()).toBe(false);
     });
   });
 });

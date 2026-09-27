@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Circle } from "lucide-react";
@@ -7,7 +7,12 @@ import type { OnboardingProgress } from "@dokan/contracts";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isOnboardingComplete, onboardingSteps } from "./onboarding-steps";
-import { readOnboardingDismissed, writeOnboardingDismissed } from "./onboarding-state";
+import {
+  readOnboardingCompleted,
+  readOnboardingDismissed,
+  writeOnboardingCompleted,
+  writeOnboardingDismissed,
+} from "./onboarding-state";
 
 interface GettingStartedPanelProps {
   /** undefined while the progress read is pending or failed. */
@@ -40,22 +45,31 @@ function GettingStartedSkeleton() {
 /**
  * Getting-started checklist for a brand-new shop (issue 97). It teaches
  * activation, not features: four real links, in the order a shop needs them,
- * each marked done only when its record exists on the server. It disappears
- * once every step is done and stays gone after an explicit dismissal.
+ * each marked done only when its record exists on the server. Once every step
+ * is done it disappears for good, and an explicit dismissal is remembered too.
  */
 export function GettingStartedPanel({ progress, isPending }: GettingStartedPanelProps) {
   const { t } = useTranslation();
-  const [dismissed, setDismissed] = useState(readOnboardingDismissed);
+  const [hidden, setHidden] = useState(() => readOnboardingDismissed() || readOnboardingCompleted());
 
-  if (dismissed) return null;
+  const complete = progress !== undefined && isOnboardingComplete(progress);
+  // "Finished means gone": record the milestone once the whole checklist is
+  // observed complete, so a later settlement cannot resurrect the panel.
+  useEffect(() => {
+    if (complete) {
+      writeOnboardingCompleted();
+      setHidden(true);
+    }
+  }, [complete]);
+
+  if (hidden || complete) return null;
   if (progress === undefined) return isPending ? <GettingStartedSkeleton /> : null;
-  if (isOnboardingComplete(progress)) return null;
 
   const steps = onboardingSteps(progress);
 
   function dismiss() {
     writeOnboardingDismissed();
-    setDismissed(true);
+    setHidden(true);
   }
 
   return (

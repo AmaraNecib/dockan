@@ -19,7 +19,7 @@
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck",
-    "test": "turbo test",
+    "test": "turbo test --concurrency=2",
     "prepare": "husky",
     "test:e2e": "playwright test"
   },

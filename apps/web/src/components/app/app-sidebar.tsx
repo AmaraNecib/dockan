@@ -171,6 +171,9 @@ function NavLink({ item, activeKey, collapsed }: { item: NavItem; activeKey: str
       to={item.to}
       search={item.preserveSearch ? true : undefined}
       title={collapsed ? t(item.labelKey) : undefined}
+      // `title` is a tooltip, not an accessible name: a collapsed icon-only
+      // link must carry the label itself.
+      aria-label={collapsed ? t(item.labelKey) : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
         "flex items-center gap-3 rounded-md py-2 text-sm transition-colors select-none",

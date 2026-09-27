@@ -3,11 +3,15 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { Item } from "@dokan/contracts";
+import { PackagePlus, X } from "lucide-react";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CheckoutBar } from "../components/app/checkout-bar";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -149,39 +153,43 @@ export function PurchasePage() {
 
       {!savedInvoice && (
         <div className="mt-4 grid gap-4" data-testid="purchase-form">
-          <div className="grid gap-3 rounded border bg-card p-4">
-            <label className="grid gap-1">
+          <div className="grid gap-3 rounded border border-border bg-card p-4">
+            <label className="grid gap-1 text-sm font-medium">
               {t("purchasesSupplier")}
-              <input className="rounded border px-3 py-2" value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="purchase-supplier" />
+              <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="supplier" autoComplete="off" value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="purchase-supplier" />
             </label>
             <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1">
+              <label className="grid gap-1 text-sm font-medium">
                 {t("purchasesNotes")}
-                <input className="rounded border px-3 py-2" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} />
               </label>
-              <label className="grid gap-1">
+              <label className="grid gap-1 text-sm font-medium">
                 {t("purchasesPaidNow")}
-                <input className="rounded border px-3 py-2" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} inputMode="numeric" data-testid="purchase-paid" />
+                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="initialPaid" autoComplete="off" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} inputMode="numeric" data-testid="purchase-paid" />
               </label>
             </div>
           </div>
 
-          <div className="grid gap-3 rounded border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">{t("purchasesLinesTitle")}</h2>
-              <div className="flex gap-2">
-                <button type="button" className="rounded-lg bg-primary px-3 py-1.5 text-sm text-primary-foreground" onClick={() => setPickerOpen(true)} data-testid="purchase-open-picker">
+          <div className="rounded border border-border bg-card">
+            {/* Same hierarchy as the sale screen: the list picker is the single
+                primary path; the inline create form is demoted to outline. */}
+            <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+              <h2 className="me-auto text-sm font-semibold">{t("purchasesLinesTitle")}</h2>
+              {lines.length > 0 && (
+                <Button data-testid="purchase-open-picker" onClick={() => setPickerOpen(true)}>
                   {t("purchasesAddItem")}
-                </button>
-                <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={() => setQuickOpen((open) => !open)} data-testid="purchase-toggle-quick">
-                  {t("purchasesQuickAddBtn")}
-                </button>
-              </div>
+                </Button>
+              )}
+              <Button variant="outline" data-testid="purchase-toggle-quick" aria-expanded={quickOpen} onClick={() => setQuickOpen((open) => !open)}>
+                {t("purchasesQuickAddBtn")}
+              </Button>
             </div>
+
+            {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="purchase-error" role="alert">{error}</p>}
 
             {quickOpen && (
               <form
-                className="grid gap-3 rounded bg-accent p-3"
+                className="m-4 grid gap-3 rounded bg-accent p-3"
                 // SAFETY: preventDefault keeps the SPA from native-posting;
                 // stopPropagation keeps the event away from any wrapper form
                 onSubmit={(e) => {
@@ -190,15 +198,15 @@ export function PurchasePage() {
                   quickSubmit();
                 }} data-testid="purchase-quick-form">
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickName")}
-                    <input className="rounded border px-3 py-2" required value={quickName} onChange={(e) => setQuickName(e.target.value)} data-testid="quick-name" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" required value={quickName} onChange={(e) => setQuickName(e.target.value)} data-testid="quick-name" />
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickBarcode")}
-                    <input className="rounded border px-3 py-2" dir="ltr" value={quickBarcode} onChange={(e) => setQuickBarcode(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" dir="ltr" value={quickBarcode} onChange={(e) => setQuickBarcode(e.target.value)} />
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickCategory")}
                     <Select
                       value={quickCategoryId}
@@ -221,98 +229,117 @@ export function PurchasePage() {
                       </SelectContent>
                     </Select>
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("itemsSell")}
-                    <input className="rounded border px-3 py-2" inputMode="numeric" value={quickSellPrice} onChange={(e) => setQuickSellPrice(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSellPrice} onChange={(e) => setQuickSellPrice(e.target.value)} />
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("itemsThreshold")}
-                    <input className="rounded border px-3 py-2" inputMode="numeric" value={quickThreshold} onChange={(e) => setQuickThreshold(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickThreshold" autoComplete="off" inputMode="numeric" value={quickThreshold} onChange={(e) => setQuickThreshold(e.target.value)} />
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesLineQty")}
-                    <input className="rounded border px-3 py-2" required inputMode="numeric" value={quickQty} onChange={(e) => setQuickQty(e.target.value)} data-testid="quick-qty" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickQty" autoComplete="off" required inputMode="numeric" value={quickQty} onChange={(e) => setQuickQty(e.target.value)} data-testid="quick-qty" />
                   </label>
-                  <label className="grid gap-1">
+                  <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesLineCost")}
-                    <input className="rounded border px-3 py-2" required inputMode="numeric" value={quickUnitCost} onChange={(e) => setQuickUnitCost(e.target.value)} data-testid="quick-cost" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quickUnitCost} onChange={(e) => setQuickUnitCost(e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
-                <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={createItem.isPending}>
+                <Button type="submit" disabled={createItem.isPending}>
                   {t("purchasesQuickAddBtn")}
-                </button>
+                </Button>
               </form>
             )}
 
-            {lines.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t("purchasesLinesEmpty")}</p>
-            ) : (
-              <table className="w-full" data-testid="purchase-lines">
-                <thead>
-                  <tr className="border-b text-right text-sm text-muted-foreground">
-                    <th className="p-2">{t("itemsName")}</th>
-                    <th className="p-2">{t("purchasesLineQty")}</th>
-                    <th className="p-2">{t("purchasesLineCost")}</th>
-                    <th className="p-2">{t("purchasesTotal")}</th>
-                    <th className="p-2"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lines.map((line, index) => (
-                    <tr key={line.item.id} className="border-b last:border-0">
-                      <td className="p-2">{line.item.name}</td>
-                      <td className="p-2">
-                        <input
-                          className="w-16 rounded border px-2 py-1"
-                          inputMode="numeric"
-                          value={String(line.quantity)}
-                          onChange={(e) => {
-                            const parsed = Number(e.target.value);
-                            if (Number.isInteger(parsed) && parsed >= 1) {
-                              setLines((current) => current.map((l, i) => (i === index ? { ...l, quantity: parsed } : l)));
-                            }
-                          }}
-                          aria-label={`${line.item.name}: ${t("purchasesLineQty")}`}
-                        />
-                      </td>
-                      <td className="p-2">
-                        <input
-                          className="w-20 rounded border px-2 py-1"
-                          inputMode="numeric"
-                          value={String(line.unitCost)}
-                          onChange={(e) => {
-                            const parsed = Number(e.target.value);
-                            if (Number.isInteger(parsed) && parsed >= 0) {
-                              setLines((current) => current.map((l, i) => (i === index ? { ...l, unitCost: parsed } : l)));
-                            }
-                          }}
-                          aria-label={`${line.item.name}: ${t("purchasesLineCost")}`}
-                        />
-                      </td>
-                      <td className="p-2">{line.quantity * line.unitCost}</td>
-                      <td className="p-2">
-                        <button type="button" className="text-destructive" onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
-                          ✕
-                        </button>
-                      </td>
+            <div className="p-4">
+              {lines.length === 0 ? (
+                <div data-testid="purchase-empty">
+                  <EmptyState
+                    icon={<PackagePlus size={28} />}
+                    title={t("purchasesEmptyTitle")}
+                    hint={t("purchasesEmptyHint")}
+                    action={
+                      <Button size="lg" data-testid="purchase-open-picker" onClick={() => setPickerOpen(true)}>
+                        {t("purchasesAddItem")}
+                      </Button>
+                    }
+                  />
+                </div>
+              ) : (
+                <table className="w-full" data-testid="purchase-lines">
+                  <thead>
+                    <tr className="border-b text-right text-sm text-muted-foreground">
+                      <th className="p-2">{t("itemsName")}</th>
+                      <th className="p-2">{t("purchasesLineQty")}</th>
+                      <th className="p-2">{t("purchasesLineCost")}</th>
+                      <th className="p-2">{t("purchasesTotal")}</th>
+                      <th className="p-2"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            <p className="text-left font-semibold" data-testid="purchase-total">
-              {t("purchasesTotal")}: <Amount value={total} />
-            </p>
+                  </thead>
+                  <tbody>
+                    {lines.map((line, index) => (
+                      <tr key={line.item.id} className="border-b last:border-0">
+                        <td className="p-2">{line.item.name}</td>
+                        <td className="p-2">
+                          <input
+                            className="w-16 rounded border px-2 py-1"
+                            name={`quantity-${line.item.id}`}
+                            autoComplete="off"
+                            inputMode="numeric"
+                            value={String(line.quantity)}
+                            onChange={(e) => {
+                              const parsed = Number(e.target.value);
+                              if (Number.isInteger(parsed) && parsed >= 1) {
+                                setLines((current) => current.map((l, i) => (i === index ? { ...l, quantity: parsed } : l)));
+                              }
+                            }}
+                            aria-label={`${line.item.name}: ${t("purchasesLineQty")}`}
+                          />
+                        </td>
+                        <td className="p-2">
+                          <input
+                            className="w-20 rounded border px-2 py-1"
+                            name={`unitCost-${line.item.id}`}
+                            autoComplete="off"
+                            inputMode="numeric"
+                            value={String(line.unitCost)}
+                            onChange={(e) => {
+                              const parsed = Number(e.target.value);
+                              if (Number.isInteger(parsed) && parsed >= 0) {
+                                setLines((current) => current.map((l, i) => (i === index ? { ...l, unitCost: parsed } : l)));
+                              }
+                            }}
+                            aria-label={`${line.item.name}: ${t("purchasesLineCost")}`}
+                          />
+                        </td>
+                        <td className="p-2">{line.quantity * line.unitCost}</td>
+                        <td className="p-2">
+                          <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
+                            <X size={16} aria-hidden="true" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
 
-          {error && (
-            <p className="text-sm text-destructive" data-testid="purchase-error">
-              {error}
-            </p>
+          {lines.length > 0 && (
+            <CheckoutBar testId="purchase-checkout-bar">
+                {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="purchase-error" role="alert">{error}</p>}
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-lg font-bold" data-testid="purchase-total">
+                    {t("purchasesTotal")}: <Amount value={total} />
+                  </p>
+                  <Button size="lg" className="min-w-44" type="button" onClick={submit} disabled={createInvoice.isPending} data-testid="purchase-save">
+                    {t("purchasesSave")}
+                  </Button>
+                </div>
+            </CheckoutBar>
           )}
-          <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="button" onClick={submit} disabled={createInvoice.isPending} data-testid="purchase-save">
-            {t("purchasesSave")}
-          </button>
         </div>
       )}
 

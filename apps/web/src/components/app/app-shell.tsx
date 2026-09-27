@@ -20,17 +20,7 @@ import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
 import { NAV_GROUPS, activeNavKey } from "./navigation";
 import { useSaleDraft } from "./sale-draft";
-
-const SIDEBAR_KEY = "dokan.sidebar.collapsed";
-
-function readSidebarDefault(): boolean {
-  try {
-    const value = window.localStorage.getItem(SIDEBAR_KEY);
-    return value !== "false"; // collapsed when unset or stale
-  } catch {
-    return true;
-  }
-}
+import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-state";
 
 function pageTitleFor(activeKey: string | null): string | null {
   if (!activeKey) return null;
@@ -133,7 +123,7 @@ export function AppShell() {
     ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
     : null;
 
-  const [collapsed, setCollapsed] = useState(readSidebarDefault);
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
 
@@ -144,11 +134,7 @@ export function AppShell() {
   function toggleSidebar() {
     setCollapsed((c) => {
       const next = !c;
-      try {
-        window.localStorage.setItem(SIDEBAR_KEY, String(next));
-      } catch {
-        // ignore
-      }
+      writeSidebarCollapsed(next);
       return next;
     });
   }
@@ -175,7 +161,7 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar */}
-        <header className="print-hidden flex h-14 shrink-0 items-center gap-2 border-b border-border px-3">
+        <header className="print-hidden flex h-14 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3">
           <Button
             variant="ghost"
             size="icon"

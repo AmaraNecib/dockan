@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { signIn } from "./auth-helpers";
 
 /**
  * Receipt printing e2e: the print button on the invoice screen produces a
@@ -17,16 +18,8 @@ import { expect, test } from "@playwright/test";
  * shell (WebView2 renders the same window.print() as a system dialog).
  */
 test("invoice print button → receipt document with identity, totals and payments", async ({ page }) => {
-  // 0. first-time setup + sign in (idempotent reset path on the shared db)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // 0. sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
 
   // 1. a known store identity so the receipt's header is asserted, not assumed
   const stamp = Date.now().toString();

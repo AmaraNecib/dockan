@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openSystemNav, signIn } from "./auth-helpers";
 
 /**
  * The diagnostics viewer is admin-session-guarded, reachable
@@ -7,10 +8,14 @@ import { expect, test } from "@playwright/test";
  * so the code badge is proven end to end.
  */
 test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", async ({ page }) => {
-  // 1. logged-out visitors see the login screen, never the log
+  // 1. logged-out visitors see the auth gate, never the log
   await page.goto("/diagnostics");
-  await expect(page.getByTestId("login-submit")).toBeVisible();
   await expect(page.getByTestId("diagnostics-title")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("heading", { name: "تسجيل الدخول" })
+      .or(page.getByRole("heading", { name: "مرحباً بك في دكان" })),
+  ).toBeVisible();
 
   // 2. seed a REAL server error before login: a raw unauthenticated RPC call
   // to the runnable endpoint fails auth/validation server-side and lands as
@@ -25,21 +30,15 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   });
   expect(seeded).toBeGreaterThanOrEqual(400);
 
-  // 3. first-time setup + login (shared e2e flow); the login screen was at
-  // /diagnostics, so the post-login reload lands here — proving auth AND that
-  // the route renders for a session
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
+  // 3. sign in at /diagnostics: the post-login reload lands here, proving auth
+  // AND that the route renders for a session
+  await signIn(page, { startPath: "/diagnostics", landingTestId: "diagnostics-title" });
   await expect(page.getByTestId("diagnostics-title")).toContainText("سجل التشخيص");
 
   // 4. the page is registered in the nav (reachable from the home view)
   await page.goto("/");
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "الرئيسية" })).toBeVisible();
+  await openSystemNav(page);
   await page.getByRole("link", { name: "التشخيص" }).click();
   await expect(page.getByTestId("diagnostics-title")).toContainText("سجل التشخيص");
 

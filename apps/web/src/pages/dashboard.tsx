@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { orpc } from "../lib/rpc";
@@ -148,7 +150,17 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
               {t("dashboardSectionUnavailable")}
             </p>
           ) : summary.data.recentInvoices.length === 0 ? (
-            <p className="mt-2 text-muted-foreground">{t("invoicesEmpty")}</p>
+            <div className="mt-2 rounded border border-border bg-card" data-testid="dashboard-recents-empty">
+              <EmptyState
+                title={t("invoicesEmpty")}
+                hint={t("dashboardRecentsEmptyHint")}
+                action={
+                  <Button asChild size="lg">
+                    <Link to="/sale">{t("dashboardNewSale")}</Link>
+                  </Button>
+                }
+              />
+            </div>
           ) : (
             <div className="mt-2 overflow-x-auto rounded border bg-card">
               <table className="w-full min-w-[44rem] text-sm" data-testid="dashboard-recents">

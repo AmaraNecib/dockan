@@ -1,11 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "@tanstack/react-router";
+import { ChevronDown, ChevronUp } from "lucide-react";
 
 import type { DebtSummary } from "@dokan/contracts";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
@@ -54,7 +58,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
         <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
         <span className="font-semibold" data-testid="debts-person-total"><Amount value={row.remainingTotal} /></span>
-        <span className="text-xs text-muted-foreground/60" aria-hidden="true">{expanded ? "▲" : "▼"}</span>
+        {expanded ? <ChevronUp size={14} className="text-muted-foreground" aria-hidden="true" /> : <ChevronDown size={14} className="text-muted-foreground" aria-hidden="true" />}
       </button>
 
       {expanded && (
@@ -97,11 +101,13 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   );
 }
 
-function DebtGroup({ title, rows, label, emptyLabel, openSignature, onToggle }: {
+function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, openSignature, onToggle }: {
   title: string;
   rows: DebtSummary[];
   label: string;
   emptyLabel: string;
+  emptyHint: string;
+  emptyAction: ReactNode;
   openSignature: string | null;
   onToggle: (party: PartyIdentity) => void;
 }) {
@@ -123,7 +129,9 @@ function DebtGroup({ title, rows, label, emptyLabel, openSignature, onToggle }: 
       </header>
 
       {rows.length === 0 ? (
-        <p className="px-4 py-4 text-sm text-muted-foreground" data-testid={`${label}-empty`}>{emptyLabel}</p>
+        <div data-testid={`${label}-empty`}>
+          <EmptyState title={emptyLabel} hint={emptyHint} action={emptyAction} />
+        </div>
       ) : (
         <ul className="divide-y">
           {rows.map((row) => (
@@ -172,6 +180,12 @@ export function DebtsPage() {
             label="debts-group-owed"
             rows={owedToUs}
             emptyLabel={t("debtsEmpty")}
+            emptyHint={t("debtsEmptyOwedHint")}
+            emptyAction={
+              <Button asChild size="lg">
+                <Link to="/sale" data-testid="debts-empty-sale">{t("saleNew")}</Link>
+              </Button>
+            }
             openSignature={openParty !== null ? partySignature(openParty) : null}
             onToggle={toggleParty}
           />
@@ -180,6 +194,12 @@ export function DebtsPage() {
             label="debts-group-weowe"
             rows={weOwe}
             emptyLabel={t("debtsEmpty")}
+            emptyHint={t("debtsEmptyWeOweHint")}
+            emptyAction={
+              <Button asChild size="lg">
+                <Link to="/purchase" data-testid="debts-empty-purchase">{t("purchasesTitle")}</Link>
+              </Button>
+            }
             openSignature={openParty !== null ? partySignature(openParty) : null}
             onToggle={toggleParty}
           />

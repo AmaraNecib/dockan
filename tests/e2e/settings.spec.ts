@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
 /**
@@ -10,20 +11,13 @@ import { chooseSelectOption } from "./select-helpers";
  * Unique names per the parallel-specs shared-DB rule (wisdom 2026-08-24).
  */
 test("settings edit → save → invoice header reflects the store identity", async ({ page }) => {
-  // 0. first-time setup + sign in (idempotent reset path on the shared db)
-  await page.goto("/");
-  await page.getByText("أنشئ كلمة السر بالرمز السري").click();
-  await page.getByTestId("setup-secret").fill("e2e-secret-0123456789");
-  await page.getByTestId("setup-phone").fill("0550123123");
-  await page.getByTestId("setup-password").fill("pass-1234");
-  await page.getByTestId("setup-submit").click();
-  await expect(page.getByTestId("setup-message")).toContainText("تم الإعداد");
-  await page.getByTestId("login-submit").click();
-  await expect(page.getByText("الرئيسية")).toBeVisible();
+  // 0. sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
 
   // 1. edit the store identity and save
   const stamp = Date.now().toString();
   const storeName = `متجر التجربة-${stamp}`;
+  await openSystemNav(page);
   await page.getByRole("link", { name: "الإعدادات" }).click();
   await expect(page.getByRole("heading", { name: "إعدادات المتجر" })).toBeVisible();
 

@@ -4,6 +4,7 @@ import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import * as routerModule from "@tanstack/react-router";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
@@ -54,11 +55,14 @@ function invoice(over: Partial<Invoice>): Invoice {
 }
 
 // Link normally needs a router tree; mirror the seam the other page tests use
-// (Link as a plain anchor + useParams) so the mock stays compatible with the
-// sibling test files that share this monkey-patched module.
+// (Link as a plain anchor + useParams). Spread the real module so sibling test
+// files that need RouterProvider keep it no matter which file runs first.
 mock.module("@tanstack/react-router", () => ({
-  Link: (props: { children?: ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
-    const { children, params, to, ...rest } = props;
+  ...routerModule,
+  Link: (props: { children?: ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; search?: boolean; to?: string }) => {
+    const { children, params, search, to, ...rest } = props;
+    // the mock renders a plain anchor; a router `search` flag has no DOM form
+    void search;
     return (
       <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>
         {children}
@@ -208,6 +212,17 @@ describe("DashboardPage summary (issue 84)", () => {
 
     const order = page.rows().map((row) => row.querySelector("td")?.textContent?.trim());
     expect(order).toEqual(["INV-0002", "INV-0001"]);
+    await page.unmount();
+  });
+
+  it("teaches the next step when there are no recent invoices", async () => {
+    summary.recentInvoices = [];
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-recents-empty") !== null)).toBe(true);
+
+    const empty = page.card("dashboard-recents-empty");
+    expect(empty?.textContent).toContain(i18n.t("dashboardRecentsEmptyHint"));
+    expect(empty?.querySelector("a")?.getAttribute("href")?.split("?")[0]).toBe("/sale");
     await page.unmount();
   });
 

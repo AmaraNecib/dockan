@@ -183,8 +183,11 @@ body {
     &:focus-visible {
       outline: 0.125rem solid var(--ring);
       outline-offset: 0.125rem;
-      /* sticky chrome (header + checkout bar) must not cover a focused control */
-      scroll-margin-block: 4.5rem 13rem;
+      /* Sticky chrome (header + checkout bar) must not cover a focused control.
+         The bar publishes its measured height; the fallback applies only before
+         it mounts. A fixed value broke as soon as a debt notice or a save error
+         made the bar taller than the guess. */
+      scroll-margin-block: 4.5rem calc(var(--checkout-bar-height, 13rem) + 0.5rem);
     }
   }
 }

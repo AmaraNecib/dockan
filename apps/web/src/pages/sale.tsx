@@ -13,6 +13,7 @@ import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { useSaleDraft } from "@/components/app/sale-draft";
 
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
+import { CheckoutBar } from "../components/app/checkout-bar";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -468,8 +469,7 @@ export function SalePage() {
           check out, so the discount controls cannot appear on an empty
           invoice. */}
       {lines.length > 0 && (
-        <div className="sticky bottom-0 z-10 -mx-6 mt-4 border-t border-border bg-card px-6 py-3" data-testid="sale-checkout-bar">
-          <div className="flex flex-col gap-2">
+        <CheckoutBar testId="sale-checkout-bar" className="mt-4">
             <div className="flex flex-wrap items-end gap-3">
               <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<select className="h-9 w-40 rounded-lg border border-input bg-background px-3 text-sm" name="discountType" value={discountType} onChange={(event) => setDiscountType(toDiscountType(event.target.value))} disabled={createInvoice.isPending} data-testid="sale-discount-type"><option value="">{t("saleNoDiscount")}</option><option value="AMOUNT">{t("saleDiscountAmount")}</option><option value="PERCENTAGE">{t("saleDiscountPercentage")}</option></select></label>
               <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
@@ -482,8 +482,7 @@ export function SalePage() {
             )}
             {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
             <Button size="lg" className="w-full" onClick={submit} disabled={createInvoice.isPending || createItem.isPending || createWithStock.isPending} data-testid="sale-save">{createInvoice.isPending ? t("saleSaving") : t("saleSave")}</Button>
-          </div>
-        </div>
+        </CheckoutBar>
       )}
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />

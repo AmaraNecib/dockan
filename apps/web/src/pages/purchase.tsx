@@ -11,6 +11,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CheckoutBar } from "../components/app/checkout-bar";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -327,8 +328,7 @@ export function PurchasePage() {
           </div>
 
           {lines.length > 0 && (
-            <div className="sticky bottom-0 z-10 -mx-6 border-t border-border bg-card px-6 py-3" data-testid="purchase-checkout-bar">
-              <div className="flex flex-col gap-2">
+            <CheckoutBar testId="purchase-checkout-bar">
                 {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="purchase-error" role="alert">{error}</p>}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-lg font-bold" data-testid="purchase-total">
@@ -338,8 +338,7 @@ export function PurchasePage() {
                     {t("purchasesSave")}
                   </Button>
                 </div>
-              </div>
-            </div>
+            </CheckoutBar>
           )}
         </div>
       )}

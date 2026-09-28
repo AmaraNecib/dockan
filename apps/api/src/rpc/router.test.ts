@@ -3140,4 +3140,13 @@ describe("UI preferences (issue 97 follow-up)", () => {
   it("rejects an empty preference key at the contract boundary", async () => {
     await expect(client.preferencesSet({ key: "  ", value: "true" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
+
+  it("rejects keys and values beyond the contract bounds", async () => {
+    await expect(client.preferencesSet({ key: "k".repeat(65), value: "true" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    await expect(client.preferencesSet({ key: "ui.test.oversize", value: "v".repeat(513) })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+  });
 });

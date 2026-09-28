@@ -261,10 +261,10 @@ sidebar preference from #94.
 
 ## 2 — Stop polling once the panel cannot render
 
-`dashboard.tsx`: `enabled: !hidden && !preferencesPending` and
-`refetchInterval: hidden ? false : refreshMs`; once dismissed or completed the
-`onboardingProgress` read never fires (asserted with `progressFetchCount === 0`
-in the dashboard test).
+`dashboard.tsx`: `enabled: !hidden && !preferencesPending`; once dismissed or
+completed the `onboardingProgress` read never fires (a disabled query ignores
+its `refetchInterval: refreshMs`). Asserted with `progressFetchCount === 0`
+while hidden and while preferences load.
 
 ## 3 — Loading placeholder matches the loaded footprint
 

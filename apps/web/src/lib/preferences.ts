@@ -83,7 +83,8 @@ export function usePreference<T>(
     // refetched on the next mount, so a boot hiccup still self-heals
     retry: false,
   });
-  const value = parse(query.data?.[key]);
+  const raw = query.data?.[key];
+  const value = raw === undefined ? defaultValue : parse(raw);
 
   const setValue = useCallback(
     (next: T) => {

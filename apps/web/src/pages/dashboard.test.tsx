@@ -49,6 +49,7 @@ let preferenceStore: Record<string, string>;
 let failSummary = false;
 let failProgress = false;
 let failPreferences = false;
+let preferencesPending = false;
 let progressPending = false;
 let fetchCount = 0;
 let progressFetchCount = 0;
@@ -115,6 +116,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
       if (failPreferences) throw new Error("PREFERENCES_READ_FAILED");
+      if (preferencesPending) return new Promise<never>(() => {});
       return { values: { ...preferenceStore } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
@@ -175,6 +177,7 @@ describe("DashboardPage summary (issue 84)", () => {
     failSummary = false;
     failProgress = false;
     failPreferences = false;
+    preferencesPending = false;
     progressPending = false;
     fetchCount = 0;
     progressFetchCount = 0;
@@ -196,7 +199,6 @@ describe("DashboardPage summary (issue 84)", () => {
   afterEach(() => {
     queryClient.clear();
     document.body.innerHTML = "";
-    window.localStorage.clear();
   });
 
   it("renders the server's own day, not a device-derived one", async () => {
@@ -310,6 +312,7 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     failSummary = false;
     failProgress = false;
     failPreferences = false;
+    preferencesPending = false;
     progressPending = false;
     fetchCount = 0;
     progressFetchCount = 0;
@@ -455,8 +458,8 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     failProgress = true;
     const page = await mount(queryClient);
     expect(await waitFor(() => page.card("dashboard-sales-today") !== null)).toBe(true);
-    expect(page.panel()).toBeNull();
-    expect(page.panelSkeleton()).toBeNull();
+    // the failure propagates a tick after the summary lands, so wait it out
+    expect(await waitFor(() => page.panel() === null && page.panelSkeleton() === null)).toBe(true);
     expect(page.card("dashboard-debt-owed")).not.toBeNull();
     await page.unmount();
   });
@@ -493,6 +496,19 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await flush();
     await flush();
     expect(progressFetchCount).toBe(0);
+    await page.unmount();
+  });
+
+  it("does not read progress while the preferences are still loading", async () => {
+    preferencesPending = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    await flush();
+    await flush();
+    expect(progressFetchCount).toBe(0);
+    // no skeleton either: an owner who dismissed must not see a flash
+    expect(page.panel()).toBeNull();
+    expect(page.panelSkeleton()).toBeNull();
     await page.unmount();
   });
 

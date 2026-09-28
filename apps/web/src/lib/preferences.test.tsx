@@ -204,4 +204,20 @@ describe("preferences client (issue 97 follow-up)", () => {
 
     await handle.unmount();
   });
+
+  it("applies rapid toggles in order and settles on the last intent", async () => {
+    const handle = await mountProbe();
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
+
+    // two clicks before any render: the second must read the first's write
+    await act(async () => {
+      const toggle = handle.host.querySelector<HTMLButtonElement>("[data-testid='toggle-a']");
+      toggle?.click();
+      toggle?.click();
+    });
+    expect(await waitFor(() => store["ui.test.a"] === "false")).toBe(true);
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='a']")?.textContent === "false")).toBe(true);
+
+    await handle.unmount();
+  });
 });

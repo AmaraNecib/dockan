@@ -6,9 +6,14 @@ import { createRoot } from "react-dom/client";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "./lib/i18n";
+import i18n from "./lib/i18n";
 
 let needsSetup = false;
+/** The better-auth error shape the login page maps (code/message/status). */
+type AuthErrorStub = { code?: string; message?: string; status?: number };
+type SignInResult = { error: AuthErrorStub | null };
+let signInResult: SignInResult = { error: null };
+let signInCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
@@ -21,7 +26,14 @@ mock.module("@/lib/rpc", () => ({
 
 mock.module("@/lib/auth-client", () => ({
   useSession: () => ({ data: null, isPending: false }),
-  authClient: { signIn: { username: async () => ({ error: null }) } },
+  authClient: {
+    signIn: {
+      username: async () => {
+        signInCalls += 1;
+        return signInResult;
+      },
+    },
+  },
 }));
 
 const { RequireSession } = await import("./App");
@@ -32,6 +44,8 @@ afterEach(() => {
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   document.body.innerHTML = "";
+  signInResult = { error: null };
+  signInCalls = 0;
 });
 
 async function mountAuthGate(): Promise<HTMLElement> {
@@ -58,6 +72,25 @@ function inputByName(host: HTMLElement, name: string): HTMLInputElement {
   return input;
 }
 
+/** React listens for the native setter + input event, not a value assignment. */
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter === undefined) throw new Error("HTMLInputElement value setter missing");
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function submitForm(host: HTMLElement): Promise<void> {
+  const form = host.querySelector("form");
+  if (form === null) throw new Error("auth gate rendered no form");
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+
 describe("auth phone inputs (issue #94)", () => {
   it("setup: the phone field is a named tel input with the tel keypad", async () => {
     needsSetup = true;
@@ -82,5 +115,39 @@ describe("auth phone inputs (issue #94)", () => {
     expect(username.type).toBe("tel");
     expect(username.inputMode).toBe("tel");
     expect(username.autocomplete).toBe("username");
+  });
+});
+
+describe("login failures name the problem (issue #100)", () => {
+  it("a rejected password shows the credentials message, not the generic one", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", message: "Invalid username or password", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "wrong-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(signInCalls).toBe(1);
+    // either field could be the typo, so the summary takes focus
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("a malformed phone shows the phone message and never calls sign-in", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(inputByName(host, "username").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(inputByName(host, "username"));
+    expect(signInCalls).toBe(0);
   });
 });

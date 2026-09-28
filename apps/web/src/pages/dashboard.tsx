@@ -103,7 +103,9 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
         // no skeleton while the preferences load: an owner who already
         // dismissed/completed must not see even a placeholder flash
         isPending={progress.isPending && !preferencesPending}
-        dismissPending={dismissedWriting}
+        // disabled while the preferences load or the dismissal write is in
+        // flight: the UI never acts on a value it has not confirmed
+        dismissPending={dismissedPending || dismissedWriting}
         onDismiss={() => setDismissed(true)}
       />
 

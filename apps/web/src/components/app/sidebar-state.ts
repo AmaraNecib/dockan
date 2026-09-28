@@ -26,31 +26,28 @@ export function useSidebarCollapsed() {
  * runs it before the shell renders (see RequireSession), so it cannot race a
  * user's toggle. A failed read or write leaves the legacy value in place for
  * the next launch; storage access is guarded, so a throwing localStorage
- * cannot break the shell.
- *
- * Returns true when it wrote the server preference.
+ * cannot break the shell. Side effects only: the server key is written when
+ * the legacy value exists and the server has none.
  */
-export async function migrateLegacySidebarCollapsed(): Promise<boolean> {
+export async function migrateLegacySidebarCollapsed(): Promise<void> {
   const legacy = readLegacySidebarCollapsed();
-  if (legacy === undefined) return false;
+  if (legacy === undefined) return;
 
   let serverValue: string | undefined;
   try {
     serverValue = (await readPreferences())[SIDEBAR_COLLAPSED_KEY];
   } catch {
     // server unreachable: keep the legacy value and retry next launch
-    return false;
+    return;
   }
   if (serverValue !== undefined) {
     // already migrated (or chosen afresh): drop the stale legacy key
     clearLegacySidebarCollapsed();
-    return false;
+    return;
   }
 
   const stored = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
-  if (stored === null) return false; // write failed: retry next launch
-  clearLegacySidebarCollapsed();
-  return true;
+  if (stored !== null) clearLegacySidebarCollapsed();
 }
 
 function readLegacySidebarCollapsed(): boolean | undefined {

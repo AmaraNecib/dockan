@@ -114,21 +114,21 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
 
   it("imports the legacy collapse once and drops the legacy key", async () => {
     window.localStorage.setItem(LEGACY_KEY, "true");
-    expect(await migrateLegacySidebarCollapsed()).toBe(true);
+    await migrateLegacySidebarCollapsed();
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
 
   it("imports an explicit legacy expand as well", async () => {
     window.localStorage.setItem(LEGACY_KEY, "false");
-    expect(await migrateLegacySidebarCollapsed()).toBe(true);
+    await migrateLegacySidebarCollapsed();
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
   });
 
   it("does not overwrite a server value and clears the stale legacy key", async () => {
     window.localStorage.setItem(LEGACY_KEY, "true");
     preferenceStore[SIDEBAR_COLLAPSED_KEY] = "false";
-    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    await migrateLegacySidebarCollapsed();
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
   });
@@ -136,14 +136,14 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
   it("keeps the legacy key when the write fails so the next launch retries", async () => {
     window.localStorage.setItem(LEGACY_KEY, "true");
     failPreferenceWrite = true;
-    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    await migrateLegacySidebarCollapsed();
     expect(window.localStorage.getItem(LEGACY_KEY)).toBe("true");
   });
 
   it("keeps the legacy key when the server read fails", async () => {
     window.localStorage.setItem(LEGACY_KEY, "true");
     failPreferenceRead = true;
-    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    await migrateLegacySidebarCollapsed();
     expect(window.localStorage.getItem(LEGACY_KEY)).toBe("true");
   });
 
@@ -156,7 +156,7 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
       },
     });
     try {
-      await expect(migrateLegacySidebarCollapsed()).resolves.toBe(false);
+      await expect(migrateLegacySidebarCollapsed()).resolves.toBeUndefined();
     } finally {
       if (original !== undefined) Object.defineProperty(window, "localStorage", original);
     }

@@ -414,3 +414,15 @@ so a write completes in milliseconds and the optimism bought nothing.
   legacy key; throwing storage is safe.
 - The milestone is idempotent server-side (store seam) and retries on later
   observations while unset.
+
+### Round-4b refinements (review of the simplification)
+
+- The write echo is never installed into an empty cache: the `setQueryData`
+  updater returns the previous (undefined) map unchanged, so a partial map can
+  never be created. The preference controls are also disabled while the shared
+  read is pending, so the app never issues a write against an unconfirmed map.
+- `migrateLegacySidebarCollapsed` returns `Promise<void>` (side effects only);
+  nothing consumed its boolean, so the return was removed.
+- New tests: `RequireSession` withholds the preference-driven shell until the
+  legacy import settles; the dismiss control is disabled while the write is in
+  flight; the failed-dismissal test now asserts the write actually ran.

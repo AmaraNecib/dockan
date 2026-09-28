@@ -21,6 +21,13 @@ let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
 let setupError: Error | null = null;
 let resetPasswordCalls = 0;
+import { SIDEBAR_COLLAPSED_KEY } from "./components/app/sidebar-state";
+
+let needsSetup = false;
+let sessionData: { user: { id: string } } | null = null;
+let sessionPending = false;
+let preferenceStore: Record<string, string> = {};
+let preferenceReadGate: Promise<void> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
@@ -33,13 +40,24 @@ mock.module("@/lib/rpc", () => ({
     authResetPassword: async () => {
       resetPasswordCalls += 1;
       return {};
+    preferencesGet: async () => {
+      if (preferenceReadGate !== null) {
+        const gate = preferenceReadGate;
+        preferenceReadGate = null;
+        await gate;
+      }
+      return { values: { ...preferenceStore } };
+    },
+    preferencesSet: async (input: { key: string; value: string }) => {
+      preferenceStore[input.key] = input.value;
+      return { key: input.key, value: input.value };
     },
   },
   orpc: {},
 }));
 
 mock.module("@/lib/auth-client", () => ({
-  useSession: () => ({ data: null, isPending: false }),
+  useSession: () => ({ data: sessionData, isPending: sessionPending }),
   authClient: {
     signIn: {
       username: async (args: { username?: string; password?: string }) => {
@@ -70,6 +88,11 @@ afterEach(() => {
   firstTimeSetupCalls = 0;
   setupError = null;
   resetPasswordCalls = 0;
+  sessionData = null;
+  sessionPending = false;
+  preferenceStore = {};
+  preferenceReadGate = null;
+  window.localStorage.clear();
 });
 
 async function mountAuthGate(): Promise<HTMLElement> {
@@ -441,5 +464,39 @@ describe("auth transport failures stay calm (issue #100)", () => {
     });
 
     expect(signInCalls).toBe(1);
+describe("RequireSession preference migration gate (issue #97 follow-up)", () => {
+  it("withholds the shell until the legacy sidebar import settles", async () => {
+    sessionData = { user: { id: "u1" } };
+    window.localStorage.setItem("dokan.sidebar.collapsed", "true");
+    let releaseRead = () => {};
+    preferenceReadGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      root.render(
+        <RequireSession>
+          <div data-testid="shell" />
+        </RequireSession>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // the preference-driven shell must not render while the import is unsettled
+    expect(host.querySelector("[data-testid='shell']")).toBeNull();
+
+    releaseRead();
+    for (let attempt = 0; attempt < 50 && host.querySelector("[data-testid='shell']") === null; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(host.querySelector("[data-testid='shell']")).not.toBeNull();
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
+    expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBeNull();
   });
 });

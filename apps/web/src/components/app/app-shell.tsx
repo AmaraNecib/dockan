@@ -127,7 +127,8 @@ export function AppShell() {
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
   // wipes localStorage). A failed read keeps the sidebar expanded.
-  const { value: collapsed, updateValue: updateCollapsed, isWriting: collapsedWriting } = useSidebarCollapsed();
+  const { value: collapsed, updateValue: updateCollapsed, isPending: collapsedPending, isWriting: collapsedWriting } =
+    useSidebarCollapsed();
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
@@ -166,7 +167,7 @@ export function AppShell() {
             aria-label={t("sidebarToggle")}
             title={t("sidebarToggle")}
             onClick={toggleSidebar}
-            disabled={collapsedWriting}
+            disabled={collapsedPending || collapsedWriting}
           >
             <PanelLeft size={18} />
           </Button>

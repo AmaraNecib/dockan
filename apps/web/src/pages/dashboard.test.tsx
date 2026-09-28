@@ -50,6 +50,8 @@ let failSummary = false;
 let failProgress = false;
 let failPreferences = false;
 let failPreferenceWrites = false;
+let preferenceWriteCalls = 0;
+let preferenceWriteGate: Promise<void> | null = null;
 let preferencesPending = false;
 let progressPending = false;
 let failAcknowledge = false;
@@ -134,7 +136,13 @@ mock.module("@/lib/rpc", () => ({
       return { values: { ...preferenceStore } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
+      preferenceWriteCalls += 1;
       if (failPreferenceWrites) throw new Error("PREFERENCES_WRITE_FAILED");
+      if (preferenceWriteGate !== null) {
+        const gate = preferenceWriteGate;
+        preferenceWriteGate = null;
+        await gate;
+      }
       preferenceStore[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
@@ -193,6 +201,8 @@ describe("DashboardPage summary (issue 84)", () => {
     failProgress = false;
     failPreferences = false;
     failPreferenceWrites = false;
+    preferenceWriteCalls = 0;
+    preferenceWriteGate = null;
     preferencesPending = false;
     progressPending = false;
     failAcknowledge = false;
@@ -331,6 +341,8 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     failProgress = false;
     failPreferences = false;
     failPreferenceWrites = false;
+    preferenceWriteCalls = 0;
+    preferenceWriteGate = null;
     preferencesPending = false;
     progressPending = false;
     failAcknowledge = false;
@@ -496,9 +508,27 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(await waitFor(() => page.panel() !== null)).toBe(true);
 
     await act(async () => page.dismiss()?.click());
-    // no optimistic hide: the panel stays visible and the server is unchanged
+    // the write ran, no optimistic hide: the panel stays visible
+    expect(await waitFor(() => preferenceWriteCalls >= 1)).toBe(true);
     expect(page.panel()).not.toBeNull();
     expect(preferenceStore[ONBOARDING_DISMISSED_KEY]).toBeUndefined();
+    await page.unmount();
+  });
+
+  it("disables the dismiss control while the write is in flight", async () => {
+    let releaseWrite = () => {};
+    preferenceWriteGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+
+    await act(async () => page.dismiss()?.click());
+    expect(await waitFor(() => page.dismiss()?.disabled === true)).toBe(true);
+
+    releaseWrite();
+    expect(await waitFor(() => page.panel() === null)).toBe(true);
+    expect(preferenceStore[ONBOARDING_DISMISSED_KEY]).toBe("true");
     await page.unmount();
   });
 

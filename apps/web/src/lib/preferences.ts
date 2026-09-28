@@ -97,11 +97,12 @@ export function usePreference<T>(
       void writePreference(key, serialize(next))
         .then((stored) => {
           if (stored === null) return; // the write failed; the server value stands
-          // install only the server's own returned value
-          queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => ({
-            ...previous,
-            [key]: stored,
-          }));
+          // install only the server's own returned value, and never create a
+          // partial map: the cache holds full server reads only
+          queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
+            if (previous === undefined) return previous;
+            return { ...previous, [key]: stored };
+          });
         })
         .finally(() => {
           inFlight.current = false;

@@ -532,6 +532,8 @@ const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
   { pattern: /expected an algerian mobile/i, key: "INVALID_PHONE_NUMBER" },
   { pattern: /too many requests/i, key: "AUTH_TOO_MANY_ATTEMPTS" },
   { pattern: /password too short|too small.*(?:>=|at least) ?4/i, key: "AUTH_PASSWORD_TOO_SHORT" },
+  // belt and braces for an error object whose `code` was stripped in transit
+  { pattern: /invalid username or password/i, key: "AUTH_INVALID_CREDENTIALS" },
 ];
 
 /** True for keys that only ever meant "something broke"; #100 retires them. */

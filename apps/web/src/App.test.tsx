@@ -6,20 +6,27 @@ import { createRoot } from "react-dom/client";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import i18n from "./lib/i18n";
+import i18n, { type AuthErrorInput } from "./lib/i18n";
 
 let needsSetup = false;
 /** The better-auth error shape the login page maps (code/message/status). */
-type AuthErrorStub = { code?: string; message?: string; status?: number };
-type SignInResult = { error: AuthErrorStub | null };
+type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
 let signInCalls = 0;
+let firstTimeSetupCalls = 0;
+let resetPasswordCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     needsSetup: async () => ({ needsSetup }),
-    firstTimeSetup: async () => ({}),
-    authResetPassword: async () => ({}),
+    firstTimeSetup: async () => {
+      firstTimeSetupCalls += 1;
+      return {};
+    },
+    authResetPassword: async () => {
+      resetPasswordCalls += 1;
+      return {};
+    },
   },
   orpc: {},
 }));
@@ -44,8 +51,11 @@ afterEach(() => {
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   document.body.innerHTML = "";
+  needsSetup = false;
   signInResult = { error: null };
   signInCalls = 0;
+  firstTimeSetupCalls = 0;
+  resetPasswordCalls = 0;
 });
 
 async function mountAuthGate(): Promise<HTMLElement> {
@@ -149,5 +159,86 @@ describe("login failures name the problem (issue #100)", () => {
     expect(inputByName(host, "username").getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(inputByName(host, "username"));
     expect(signInCalls).toBe(0);
+  });
+
+  it("an unknown failure says something calm, never the crash message", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "SOME_FUTURE_401", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("errorGeneric"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("a lockout names the wait, not the app", async () => {
+    needsSetup = false;
+    signInResult = { error: { message: "Too many requests. Please try again later.", status: 429 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_TOO_MANY_ATTEMPTS"));
+    expect(document.activeElement).toBe(alert);
+  });
+});
+
+describe("setup and reset name the field (issue #100)", () => {
+  it("setup: a three-character password is rejected in Arabic without a request", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abc");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(inputByName(host, "password"));
+    expect(firstTimeSetupCalls).toBe(0);
+  });
+
+  it("setup: exactly four characters is accepted and reaches the api", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "+213550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("reset: a malformed phone is rejected in Arabic without a request", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    // open the forgot-password view
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('button[type="button"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    setInputValue(inputByName(host, "secret"), "secret");
+    setInputValue(inputByName(host, "phone"), "12345");
+    setInputValue(inputByName(host, "newPassword"), "abcd");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(document.activeElement).toBe(inputByName(host, "phone"));
+    expect(resetPasswordCalls).toBe(0);
   });
 });

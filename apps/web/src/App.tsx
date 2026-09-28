@@ -228,7 +228,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupSecret")}
-          <input type="password" className="rounded border border-input bg-background px-3 py-2" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" data-testid="setup-secret" />
+          <input type="password" className="rounded border border-input bg-background px-3 py-2" name="secret" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" data-testid="setup-secret" />
         </label>
 
         <AuthErrorAlert id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />

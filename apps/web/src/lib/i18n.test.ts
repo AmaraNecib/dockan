@@ -51,6 +51,7 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(serverErrorKey("expected an Algerian mobile, e.g. +213550123123 or 0550123123")).toBe("INVALID_PHONE_NUMBER");
     expect(serverErrorKey("Too many requests. Please try again later.")).toBe("AUTH_TOO_MANY_ATTEMPTS");
     expect(serverErrorKey("Password too short")).toBe("AUTH_PASSWORD_TOO_SHORT");
+    expect(authErrorKey({ message: "Invalid username or password" })).toBe("AUTH_INVALID_CREDENTIALS");
   });
 
   it("says something honest and calm when the failure is unknown, never 'unexpected'", () => {

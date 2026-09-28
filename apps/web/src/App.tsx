@@ -10,8 +10,6 @@ import { rpcClient } from "./lib/rpc";
 /** The field an auth error points the owner back to; null means the summary. */
 type AuthErrorField = "phone" | "password" | null;
 
-type AuthErrorFocus = { field: AuthErrorField; target: HTMLInputElement | null };
-
 /** Mirrors the contract's password rule (packages/contracts/src/core.ts `min(4)`). */
 const MIN_PASSWORD_LENGTH = 4;
 
@@ -46,19 +44,14 @@ function useAuthError() {
   return { state, show, clear, errorRef };
 }
 
-/** Which field a resolved error blames, and where focus should land. */
-function authErrorFocus(
-  key: MessageKey,
-  fields: { phone: HTMLInputElement | null; password: HTMLInputElement | null },
-): AuthErrorFocus {
-  if (key === "INVALID_PHONE_NUMBER") return { field: "phone", target: fields.phone };
+/** Which field a resolved error blames; null means the alert summary. */
+function authErrorField(key: MessageKey): AuthErrorField {
+  if (key === "INVALID_PHONE_NUMBER") return "phone";
   // credentials blame either field and a short password blames the password;
   // the alert (role="alert") names the problem, focus lands where the fix is
   // typed, and nothing steals focus back after the request resolves
-  if (key === "AUTH_INVALID_CREDENTIALS" || key === "AUTH_PASSWORD_TOO_SHORT") {
-    return { field: "password", target: fields.password };
-  }
-  return { field: null, target: null };
+  if (key === "AUTH_INVALID_CREDENTIALS" || key === "AUTH_PASSWORD_TOO_SHORT") return "password";
+  return null;
 }
 
 /**
@@ -83,8 +76,9 @@ function useAuthReporter(
   const { t } = useTranslation();
   const authError = useAuthError();
   function report(key: MessageKey): void {
-    const focus = authErrorFocus(key, { phone: phoneRef.current, password: passwordRef.current });
-    authError.show(t(key), focus.field, focus.target);
+    const field = authErrorField(key);
+    const target = field === "phone" ? phoneRef.current : field === "password" ? passwordRef.current : null;
+    authError.show(t(key), field, target);
   }
   return { authError, report };
 }
@@ -192,12 +186,15 @@ function SetupPage({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // the disabled button does not stop an implicit Enter submit
+    if (busyRef.current) return;
     // same rules the contracts enforce, checked before the request so the owner
     // is told which field is wrong instead of seeing a generic failure
     const fieldKey = authFieldKey(phone, password);
@@ -205,6 +202,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
       report(fieldKey);
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     authError.clear();
     try {
@@ -220,6 +218,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
     } catch (err) {
       report(serverErrorKey(err instanceof Error ? err.message : undefined));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -275,12 +274,14 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
+    if (busyRef.current) return;
     const normalizedPhone = normalizeAlgerianPhone(username);
     // a phone that cannot be a login name is a phone problem, not a password
     // problem; say so here instead of posting an empty username
@@ -288,6 +289,7 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
       report("INVALID_PHONE_NUMBER");
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     authError.clear();
     try {
@@ -302,6 +304,7 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
       // button, or the user cannot retry without reloading the page
       report(serverErrorKey(err instanceof Error ? err.message : undefined));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -327,7 +330,7 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
           {busy ? t("settingsSaving") : t("login")}
         </button>
 
-        <button type="button" className="mt-4 text-xs text-muted-foreground underline" onClick={onForgotPassword}>
+        <button type="button" className="mt-4 text-xs text-muted-foreground underline" onClick={onForgotPassword} data-testid="forgot-password">
           {t("forgotPassword")}
         </button>
       </form>
@@ -346,17 +349,20 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
   const [newPassword, setNewPassword] = useState("");
   const [success, setSuccess] = useState(false);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function reset(e: React.FormEvent) {
     e.preventDefault();
+    if (busyRef.current) return;
     const fieldKey = authFieldKey(phone, newPassword);
     if (fieldKey !== null) {
       report(fieldKey);
       return;
     }
+    busyRef.current = true;
     setBusy(true);
     authError.clear();
     try {
@@ -365,6 +371,7 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
     } catch (err) {
       report(serverErrorKey(err instanceof Error ? err.message : undefined));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }

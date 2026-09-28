@@ -14,7 +14,12 @@ type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
 let signInArgs: { username?: string; password?: string } | null = null;
 let signInCalls = 0;
+/** When true the sign-in call rejects, as a network or proxy failure does. */
+let signInThrows = false;
+/** How long a sign-in call stays in flight, so a double submit can race it. */
+let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
+let setupError: Error | null = null;
 let resetPasswordCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
@@ -22,6 +27,7 @@ mock.module("@/lib/rpc", () => ({
     needsSetup: async () => ({ needsSetup }),
     firstTimeSetup: async () => {
       firstTimeSetupCalls += 1;
+      if (setupError !== null) throw setupError;
       return {};
     },
     authResetPassword: async () => {
@@ -39,6 +45,8 @@ mock.module("@/lib/auth-client", () => ({
       username: async (args: { username?: string; password?: string }) => {
         signInCalls += 1;
         signInArgs = args;
+        if (signInDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, signInDelayMs));
+        if (signInThrows) throw new Error("network down");
         return signInResult;
       },
     },
@@ -57,7 +65,10 @@ afterEach(() => {
   signInResult = { error: null };
   signInArgs = null;
   signInCalls = 0;
+  signInThrows = false;
+  signInDelayMs = 0;
   firstTimeSetupCalls = 0;
+  setupError = null;
   resetPasswordCalls = 0;
 });
 
@@ -102,6 +113,18 @@ async function submitForm(host: HTMLElement): Promise<void> {
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
+}
+
+async function openForgotPassword(): Promise<HTMLElement> {
+  needsSetup = false;
+  const host = await mountAuthGate();
+  const button = host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]');
+  if (button === null) throw new Error("login form has no forgot-password button");
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  return host;
 }
 
 describe("auth phone inputs (issue #94)", () => {
@@ -251,13 +274,7 @@ describe("setup and reset name the field (issue #100)", () => {
   });
 
   it("reset: a malformed phone is rejected in Arabic without a request", async () => {
-    needsSetup = false;
-    const host = await mountAuthGate();
-    // open the forgot-password view
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('button[type="button"]')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    const host = await openForgotPassword();
 
     setInputValue(inputByName(host, "secret"), "secret");
     setInputValue(inputByName(host, "phone"), "12345");
@@ -268,5 +285,73 @@ describe("setup and reset name the field (issue #100)", () => {
     expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
     expect(document.activeElement).toBe(inputByName(host, "phone"));
     expect(resetPasswordCalls).toBe(0);
+  });
+
+  it("reset: a two-character new password is rejected in Arabic without a request", async () => {
+    const host = await openForgotPassword();
+
+    setInputValue(inputByName(host, "secret"), "secret");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "newPassword"), "ab");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(document.activeElement).toBe(inputByName(host, "newPassword"));
+    expect(resetPasswordCalls).toBe(0);
+  });
+});
+
+describe("auth transport failures stay calm (issue #100)", () => {
+  it("a thrown sign-in call names no crash and releases the button", async () => {
+    needsSetup = false;
+    signInThrows = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("errorGeneric"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    const submit = host.querySelector<HTMLButtonElement>('[data-testid="login-submit"]');
+    expect(submit?.disabled).toBe(false);
+  });
+
+  it("a setup conflict the api names is translated, not called unexpected", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_ALREADY_DONE");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(firstTimeSetupCalls).toBe(1);
+  });
+
+  it("a second submit while the first is in flight does not double-fire", async () => {
+    needsSetup = false;
+    signInDelayMs = 50;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    const form = host.querySelector("form");
+    if (form === null) throw new Error("no form");
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    expect(signInCalls).toBe(1);
   });
 });

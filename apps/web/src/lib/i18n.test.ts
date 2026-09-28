@@ -87,6 +87,8 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     // the retired key cannot come back through any shape
     expect(tError("UNEXPECTED")).toBe(generic);
     expect(tError("unexpected")).toBe(generic);
+    // a UI key a stray Error happened to carry is not an error key
+    expect(tError("password")).toBe(generic);
     expect(serverErrorKey("a sentence no i18n key matches")).not.toBe("unexpected");
     expect(serverErrorKey("a sentence no i18n key matches")).not.toBe("UNEXPECTED");
   });

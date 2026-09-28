@@ -188,7 +188,7 @@ const resources = {
       phoneExample: "0550123123",
       AUTH_INVALID_CREDENTIALS: "رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.",
       INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل 0550123123 أو +213550123123.",
-      AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر دقيقة ثم أعد المحاولة.",
+      AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
       AUTH_PASSWORD_TOO_SHORT: "كلمة السر قصيرة جداً. استعمل 4 أحرف على الأقل.",
       SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
@@ -542,13 +542,20 @@ const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
 const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
 
 /**
+ * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, RESET_LOCKED, …).
+ * Anything else — a bare word a stray `Error` happened to carry — is not an
+ * error key and must not render a UI label as if it were one.
+ */
+const SERVER_ERROR_KEY = /^[A-Z][A-Z0-9_]*$/;
+
+/**
  * Resolve an rpc message to the key that names it: a known resource key wins,
  * then a documented validator sentence, then the honest fallback. Nothing here
  * returns `UNEXPECTED` any more (issue #100).
  */
 export function serverErrorKey(message: string | undefined): MessageKey {
   if (message === undefined) return "errorGeneric";
-  if (Object.hasOwn(resources.ar.translation, message)) {
+  if (SERVER_ERROR_KEY.test(message) && Object.hasOwn(resources.ar.translation, message)) {
     if (RETIRED_UNEXPECTED_KEYS.has(message)) return "errorGeneric";
     // SAFETY: Object.hasOwn above established that this string is a resource key
     return message as MessageKey;

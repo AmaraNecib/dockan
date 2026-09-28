@@ -1,4 +1,10 @@
-import { readPreferences, usePreference, writePreference } from "@/lib/preferences";
+import {
+  parseBooleanPreference,
+  readPreference,
+  serializeBooleanPreference,
+  usePreference,
+  writePreference,
+} from "@/lib/preferences";
 
 /**
  * Getting-started dismissal and completion live server-side so a packaged-app
@@ -8,38 +14,29 @@ import { readPreferences, usePreference, writePreference } from "@/lib/preferenc
 export const ONBOARDING_DISMISSED_KEY = "ui.onboarding.dismissed";
 export const ONBOARDING_COMPLETED_KEY = "ui.onboarding.completed";
 
-/** Only an explicit "true" hides the checklist; anything else shows it. */
-export function parseOnboardingFlag(raw: string | undefined): boolean {
-  return raw === "true";
-}
-
-export function serializeOnboardingFlag(value: boolean): string {
-  return String(value);
-}
-
 /** Imperative read seams (tests and non-React callers). */
 export async function readOnboardingDismissed(): Promise<boolean> {
-  return parseOnboardingFlag((await readPreferences())[ONBOARDING_DISMISSED_KEY]);
+  return parseBooleanPreference(await readPreference(ONBOARDING_DISMISSED_KEY));
 }
 
 export async function readOnboardingCompleted(): Promise<boolean> {
-  return parseOnboardingFlag((await readPreferences())[ONBOARDING_COMPLETED_KEY]);
+  return parseBooleanPreference(await readPreference(ONBOARDING_COMPLETED_KEY));
 }
 
-/** Imperative write seams; the failure guards live in writePreference. */
-export async function writeOnboardingDismissed(): Promise<void> {
-  await writePreference(ONBOARDING_DISMISSED_KEY, "true");
+/** Imperative write seams; false means the session-only choice still applies. */
+export async function writeOnboardingDismissed(): Promise<boolean> {
+  return writePreference(ONBOARDING_DISMISSED_KEY, "true");
 }
 
-export async function writeOnboardingCompleted(): Promise<void> {
-  await writePreference(ONBOARDING_COMPLETED_KEY, "true");
+export async function writeOnboardingCompleted(): Promise<boolean> {
+  return writePreference(ONBOARDING_COMPLETED_KEY, "true");
 }
 
 /** Reactive preference for the panel; a failed read keeps the panel shown. */
 export function useOnboardingDismissed() {
-  return usePreference(ONBOARDING_DISMISSED_KEY, false, parseOnboardingFlag, serializeOnboardingFlag);
+  return usePreference(ONBOARDING_DISMISSED_KEY, false, parseBooleanPreference, serializeBooleanPreference);
 }
 
 export function useOnboardingCompleted() {
-  return usePreference(ONBOARDING_COMPLETED_KEY, false, parseOnboardingFlag, serializeOnboardingFlag);
+  return usePreference(ONBOARDING_COMPLETED_KEY, false, parseBooleanPreference, serializeBooleanPreference);
 }

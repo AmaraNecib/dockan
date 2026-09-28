@@ -128,7 +128,7 @@ describe("sidebar collapse default (issue #94, server-side since #97)", () => {
 
   it("keeps the in-memory choice when the preference write fails", async () => {
     failPreferenceWrite = true;
-    await expect(writeSidebarCollapsed(true)).resolves.toBeUndefined();
+    await expect(writeSidebarCollapsed(true)).resolves.toBe(false);
   });
 });
 

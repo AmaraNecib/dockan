@@ -29,10 +29,8 @@ mock.module("@/lib/rpc", () => ({
 const {
   ONBOARDING_COMPLETED_KEY,
   ONBOARDING_DISMISSED_KEY,
-  parseOnboardingFlag,
   readOnboardingCompleted,
   readOnboardingDismissed,
-  serializeOnboardingFlag,
   writeOnboardingCompleted,
   writeOnboardingDismissed,
 } = await import("./onboarding-state");
@@ -71,7 +69,7 @@ describe("getting-started preference persistence (issue #97)", () => {
 
   it("does not throw when the preference write fails", async () => {
     failWrite = true;
-    await expect(writeOnboardingDismissed()).resolves.toBeUndefined();
+    await expect(writeOnboardingDismissed()).resolves.toBe(false);
   });
 
   it("does not report completion when nothing is stored", async () => {
@@ -86,15 +84,6 @@ describe("getting-started preference persistence (issue #97)", () => {
 
   it("does not throw when the completion write fails", async () => {
     failWrite = true;
-    await expect(writeOnboardingCompleted()).resolves.toBeUndefined();
-  });
-
-  it("parses only the explicit true flag", () => {
-    expect(parseOnboardingFlag("true")).toBe(true);
-    expect(parseOnboardingFlag("false")).toBe(false);
-    expect(parseOnboardingFlag("legacy")).toBe(false);
-    expect(parseOnboardingFlag(undefined)).toBe(false);
-    expect(serializeOnboardingFlag(true)).toBe("true");
-    expect(serializeOnboardingFlag(false)).toBe("false");
+    await expect(writeOnboardingCompleted()).resolves.toBe(false);
   });
 });

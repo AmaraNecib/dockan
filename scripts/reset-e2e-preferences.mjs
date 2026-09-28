@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 const dir = process.env.E2E_DATA_DIR;
 if (!dir) throw new Error("E2E_DATA_DIR is required");
 const dbPath = path.join(dir, "dokan.db");
-if (!fs.existsSync(dbPath)) process.exit(0);
+if (!fs.existsSync(dbPath)) throw new Error(`e2e database not found at ${dbPath}`);
 
 const db = new Database(dbPath);
 try {

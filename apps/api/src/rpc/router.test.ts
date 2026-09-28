@@ -3138,6 +3138,6 @@ describe("UI preferences (issue 97 follow-up)", () => {
   });
 
   it("rejects an empty preference key at the contract boundary", async () => {
-    await expect(client.preferencesSet({ key: "  ", value: "true" })).rejects.toBeDefined();
+    await expect(client.preferencesSet({ key: "  ", value: "true" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

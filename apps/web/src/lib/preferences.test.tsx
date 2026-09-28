@@ -10,11 +10,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 let store: Record<string, string>;
 let failRead = false;
 let failWrite = false;
+let firstReadGate: Promise<void> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
       if (failRead) throw new Error("PREFERENCES_READ_FAILED");
+      if (firstReadGate !== null) {
+        const gate = firstReadGate;
+        firstReadGate = null;
+        await gate;
+      }
       return { values: { ...store } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
@@ -26,15 +32,25 @@ mock.module("@/lib/rpc", () => ({
   orpc: {},
 }));
 
-const { readPreferences, writePreference, usePreference } = await import("./preferences");
+const {
+  parseBooleanPreference,
+  readPreference,
+  readPreferences,
+  serializeBooleanPreference,
+  usePreference,
+  writePreference,
+} = await import("./preferences");
 
 function Probe() {
-  const pref = usePreference("ui.test.flag", false, (raw) => raw === "true", (value) => String(value));
+  const a = usePreference("ui.test.a", false, parseBooleanPreference, serializeBooleanPreference);
+  const sibling = usePreference("ui.sibling.flag", false, parseBooleanPreference, serializeBooleanPreference);
   return (
     <div>
-      <span data-testid="value">{String(pref.value)}</span>
-      <span data-testid="pending">{String(pref.isPending)}</span>
-      <button data-testid="set" onClick={() => pref.setValue(true)}>set</button>
+      <span data-testid="a">{String(a.value)}</span>
+      <span data-testid="sibling">{String(sibling.value)}</span>
+      <span data-testid="pending">{String(a.isPending || sibling.isPending)}</span>
+      <button data-testid="set-a" onClick={() => a.setValue(true)}>set-a</button>
+      <button data-testid="toggle-a" onClick={() => a.updateValue((value) => !value)}>toggle-a</button>
     </div>
   );
 }
@@ -53,73 +69,139 @@ async function waitFor(check: () => boolean): Promise<boolean> {
   return false;
 }
 
+interface ProbeHandle {
+  host: HTMLElement;
+  client: QueryClient;
+  unmount: () => Promise<void>;
+}
+
+async function mountProbe(): Promise<ProbeHandle> {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <Probe />
+      </QueryClientProvider>,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  return {
+    host,
+    client,
+    unmount: async () => {
+      await act(async () => root.unmount());
+      client.clear();
+      host.remove();
+    },
+  };
+}
+
 describe("preferences client (issue 97 follow-up)", () => {
   beforeEach(() => {
     store = {};
     failRead = false;
     failWrite = false;
+    firstReadGate = null;
   });
 
-  it("returns an empty map when the read fails (guard, never throws)", async () => {
+  it("surfaces a failed read so the query can retry later", async () => {
     failRead = true;
-    expect(await readPreferences()).toEqual({});
+    await expect(readPreferences()).rejects.toThrow("PREFERENCES_READ_FAILED");
   });
 
-  it("does not throw when the write fails (guard, never throws)", async () => {
+  it("falls back to undefined for the imperative read guard", async () => {
+    failRead = true;
+    expect(await readPreference("ui.test.a")).toBeUndefined();
+  });
+
+  it("reports a failed write without throwing", async () => {
     failWrite = true;
-    await expect(writePreference("ui.test.flag", "true")).resolves.toBeUndefined();
+    expect(await writePreference("ui.test.a", "true")).toBe(false);
+  });
+
+  it("writes a preference and reports success", async () => {
+    expect(await writePreference("ui.test.a", "true")).toBe(true);
+    expect(store["ui.test.a"]).toBe("true");
+  });
+
+  it("parses only the explicit true flag", () => {
+    expect(parseBooleanPreference("true")).toBe(true);
+    expect(parseBooleanPreference("false")).toBe(false);
+    expect(parseBooleanPreference("legacy")).toBe(false);
+    expect(parseBooleanPreference(undefined)).toBe(false);
+    expect(serializeBooleanPreference(true)).toBe("true");
+    expect(serializeBooleanPreference(false)).toBe("false");
   });
 
   it("reads the server value and writes one key optimistically", async () => {
-    store["ui.test.flag"] = "true";
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={client}>
-          <Probe />
-        </QueryClientProvider>,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    store["ui.test.a"] = "true";
+    const handle = await mountProbe();
 
-    expect(await waitFor(() => host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
-    expect(host.querySelector("[data-testid='value']")?.textContent).toBe("true");
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
+    expect(handle.host.querySelector("[data-testid='a']")?.textContent).toBe("true");
 
-    store["ui.test.flag"] = "false";
-    await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
-    expect(await waitFor(() => host.querySelector("[data-testid='value']")?.textContent === "true")).toBe(true);
-    expect(await waitFor(() => store["ui.test.flag"] === "true")).toBe(true);
+    store["ui.test.a"] = "false";
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='a']")?.textContent === "true")).toBe(true);
+    expect(await waitFor(() => store["ui.test.a"] === "true")).toBe(true);
 
-    await act(async () => root.unmount());
-    client.clear();
-    host.remove();
+    await handle.unmount();
   });
 
   it("keeps the in-memory value when the write fails", async () => {
     failWrite = true;
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={client}>
-          <Probe />
-        </QueryClientProvider>,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    const handle = await mountProbe();
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
+
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='a']")?.textContent === "true")).toBe(true);
+    expect(store["ui.test.a"]).toBeUndefined();
+
+    await handle.unmount();
+  });
+
+  it("re-fetches an errored read on the next mount (self-heal)", async () => {
+    failRead = true;
+    const failed = await mountProbe();
+    expect(await waitFor(() => failed.host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
+    expect(failed.host.querySelector("[data-testid='a']")?.textContent).toBe("false");
+    await failed.unmount();
+
+    failRead = false;
+    store["ui.test.a"] = "true";
+    const healed = await mountProbe();
+    expect(await waitFor(() => healed.host.querySelector("[data-testid='a']")?.textContent === "true")).toBe(true);
+    await healed.unmount();
+  });
+
+  it("does not drop sibling preferences when a write races the initial read", async () => {
+    store["ui.sibling.flag"] = "true";
+    let releaseFirstRead = () => {};
+    firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
     });
-    expect(await waitFor(() => host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
 
-    await act(async () => host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
-    expect(await waitFor(() => host.querySelector("[data-testid='value']")?.textContent === "true")).toBe(true);
-    expect(store["ui.test.flag"]).toBeUndefined();
+    const handle = await mountProbe();
+    // the first read is held; write before it settles
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
+    releaseFirstRead();
 
-    await act(async () => root.unmount());
-    client.clear();
-    host.remove();
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='a']")?.textContent === "true")).toBe(true);
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='sibling']")?.textContent === "true")).toBe(true);
+    await handle.unmount();
+  });
+
+  it("toggles from the latest cached value", async () => {
+    const handle = await mountProbe();
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='pending']")?.textContent === "false")).toBe(true);
+
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='toggle-a']")?.click());
+    expect(await waitFor(() => handle.host.querySelector("[data-testid='a']")?.textContent === "true")).toBe(true);
+    expect(await waitFor(() => store["ui.test.a"] === "true")).toBe(true);
+
+    await handle.unmount();
   });
 });

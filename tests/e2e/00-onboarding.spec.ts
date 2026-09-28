@@ -40,7 +40,8 @@ test.beforeEach(() => {
 function runReset(script: string): void {
   execFileSync("bun", [`scripts/${script}`], {
     cwd: process.cwd(),
-    env: { ...process.env, E2E_DATA_DIR: path.join(process.cwd(), ".e2e-data") },
+    // respect a harness-supplied data dir; only default when none is set
+    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
     stdio: ["ignore", "ignore", "inherit"],
   });
 }
@@ -68,6 +69,35 @@ test("fresh install: the panel lists the four steps in shop order", async ({ pag
   await expect(steps.nth(1).getByRole("link")).toHaveAttribute("href", "/purchase");
   await expect(steps.nth(2).getByRole("link")).toHaveAttribute("href", "/sale");
   await expect(steps.nth(3).getByRole("link")).toHaveAttribute("href", "/debts");
+});
+
+test("the loading placeholder matches the checklist footprint", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  // Hold only the checklist read so the skeleton can be measured; auth, the
+  // summary, and the preferences read all proceed normally.
+  let releaseProgress = () => {};
+  const heldProgress = new Promise<void>((resolve) => {
+    releaseProgress = resolve;
+  });
+  await page.route("**/api/rpc/onboardingProgress", async (route) => {
+    await heldProgress;
+    await route.continue();
+  });
+
+  await signIn(page);
+  const skeleton = page.getByTestId("getting-started-skeleton");
+  await expect(skeleton).toBeVisible();
+  const skeletonHeight = await skeleton.evaluate((element) => element.getBoundingClientRect().height);
+
+  releaseProgress();
+  const panel = page.getByTestId("getting-started");
+  await expect(panel).toBeVisible();
+  const panelHeight = await panel.evaluate((element) => element.getBoundingClientRect().height);
+
+  // same footprint: the dashboard must not jump when the real data arrives
+  expect(Math.abs(skeletonHeight - panelHeight)).toBeLessThanOrEqual(1);
+  await page.unroute("**/api/rpc/onboardingProgress");
 });
 
 test("creating an item completes step 1 without a reload", async ({ page }) => {

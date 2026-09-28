@@ -127,14 +127,15 @@ export function AppShell() {
   const [logoutOpen, setLogoutOpen] = useState(false);
   // Server-side preference: survives a packaged restart (random localhost port
   // wipes localStorage). A failed read keeps the sidebar expanded.
-  const { value: collapsed, setValue: setCollapsed } = useSidebarCollapsed();
+  const { value: collapsed, updateValue: updateCollapsed } = useSidebarCollapsed();
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
   const activeTitleKey = pageTitleFor(activeKey);
 
   function toggleSidebar() {
-    setCollapsed(!collapsed);
+    // functional update: two rapid clicks read the latest cached value
+    updateCollapsed((current) => !current);
   }
 
   function closeTopmost() {
@@ -154,7 +155,7 @@ export function AppShell() {
         collapsed={collapsed}
         activeKey={activeKey}
         user={user}
-        onExpand={() => setCollapsed(false)}
+        onExpand={() => updateCollapsed(() => false)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">

@@ -291,3 +291,24 @@ header as the loaded panel, so the dashboard does not jump.
 - Web: `lib/preferences.test.tsx` (read/write guards, optimistic write), the
   migrated `onboarding-state.test.ts` and `app-sidebar.test.tsx` seams, and the
   dashboard's no-progress-when-hidden / preference-failure / loading cases.
+
+## Round-2 hardening (review of the follow-up)
+
+- `readPreferences` now throws; `usePreference` runs `retry: false` so a failed
+  read immediately falls back to defaults, and the errored query is refetched
+  on the next mount (self-heal). The imperative guard moved to
+  `readPreference` (returns undefined) and `writePreference` now reports
+  success/failure instead of silently resolving.
+- After a successful write the hook invalidates the shared query so the full
+  map is reconciled: a write made before the first read cannot drop sibling
+  preferences. `updateValue(updater)` reads the latest cached value so rapid
+  sidebar toggles cannot race.
+- The shared boolean codec moved to `lib/preferences.ts` (one parse/serialize
+  pair for both state modules).
+- `reset-e2e-*` scripts respect a harness-supplied `E2E_DATA_DIR` and fail
+  loudly if the database is missing; the record reset also clears customers,
+  suppliers, and expenses.
+- New E2E: the loading placeholder is measured against the loaded panel at
+  1280×720 and must match within 1px (finding 3's missing evidence).
+- New unit tests: failed-read self-heal, sibling-key race, imperative guards,
+  and the shared codec.

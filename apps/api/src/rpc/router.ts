@@ -1409,7 +1409,9 @@ export function createRpcRouter(deps: RpcDeps) {
 
     activitiesList: os.activitiesList.handler(
       guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
-    ),    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
+    ),
+
+    diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
       // today's JSONL tail; the contract clamps `lines` to 1..500 so the
       // bounded read is the caller's choice, newest-last (chronological)
       guardedInput(async ({ lines }) => deps.logger.tail(lines ?? 100)),

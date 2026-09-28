@@ -59,8 +59,8 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     // Once the panel can no longer render, stop paying for the read entirely.
     enabled: !hidden && !preferencesPending,
     // While it can render, the same cadence as the summary lets a step
-    // completed in another window self-heal.
-    refetchInterval: hidden ? false : refreshMs,
+    // completed in another window self-heal (disabled queries never fetch).
+    refetchInterval: refreshMs,
   });
 
   // "Finished means gone": record the milestone once, so a later settlement

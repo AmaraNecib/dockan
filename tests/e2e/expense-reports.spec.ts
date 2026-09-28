@@ -192,3 +192,33 @@ test("profit report range preset is the themed select and switches the window", 
   await expect(page.getByTestId("report-custom-from")).toHaveCount(0);
   await expect(page.getByTestId("report-custom-to")).toHaveCount(0);
 });
+test("create a new expense category from the expenses screen and record against it", async ({ page }) => {
+  await ensureAuthed(page);
+  const stamp = Date.now().toString();
+  const categoryName = `صيانة-${stamp}`;
+  const amount = "1250";
+
+  await page.goto("/expenses");
+  await expect(page.getByTestId("expenses-page")).toBeVisible();
+
+  // the category is required and named up front, not only at submit
+  await expect(page.getByTestId("expense-category")).toContainText("اختر تصنيفاً…");
+
+  // create the category without leaving the screen
+  await page.getByTestId("expense-category-add").click();
+  await expect(page.getByTestId("expense-category-form")).toBeVisible();
+  await page.getByTestId("expense-category-name").fill(categoryName);
+  await page.getByTestId("expense-category-create").click();
+
+  // the new category is selected immediately and usable
+  await expect(page.getByTestId("expense-category-created")).toContainText(categoryName);
+  await expect(page.getByTestId("expense-category")).toContainText(categoryName);
+  await expect(page.getByTestId("expense-category-form")).toHaveCount(0);
+
+  // record an expense against it
+  await page.getByTestId("expense-amount").fill(amount);
+  await page.getByTestId("expense-save").click();
+  await expect(page.getByTestId("expense-saved")).toContainText("تم تسجيل المصروف");
+  const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: amount });
+  await expect(row).toContainText(categoryName);
+});

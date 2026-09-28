@@ -3,10 +3,13 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ReportRangePreset } from "@dokan/contracts";
+import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 /**
@@ -16,6 +19,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
  * sort order. Owner-withdrawal rows are visually distinct because the profit
  * report keeps them out of operating expenses. Window boundaries are resolved
  * on the api (report-ranges.ts), never re-derived in the browser.
+ *
+ * Issue #99 — a category is required, so the owner can create one from here
+ * (the same inline quick-add the purchase screen uses) and an empty category
+ * list is a teaching state instead of a save-time CATEGORY_NOT_FOUND.
  */
 
 const PRESET_KEYS: ReportRangePreset[] = ["24H", "7D", "28D", "30D", "CURRENT_MONTH", "3M", "6M", "CURRENT_YEAR", "LAST_YEAR", "CUSTOM"];
@@ -53,6 +60,12 @@ export function ExpensesPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  // issue #99 — inline expense-category create, mirroring the purchase quick-add
+  const [categoryFormOpen, setCategoryFormOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [categoryCreated, setCategoryCreated] = useState<string | null>(null);
+
   // history filters — default: current month, newest first, all categories
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
   const [customFrom, setCustomFrom] = useState("");
@@ -74,6 +87,22 @@ export function ExpensesPage() {
         void queryClient.invalidateQueries();
       },
       onError: (err) => setError(tError(err.message)),
+    }),
+  );
+
+  const createCategory = useMutation(
+    orpc.expenseCategoriesCreate.mutationOptions({
+      onSuccess: (category) => {
+        // select it straight away: the owner came here to record an expense
+        setCategoryId(category.id);
+        setCategoryCreated(category.name);
+        setNewCategoryName("");
+        setCategoryError(null);
+        setCategoryFormOpen(false);
+        setError(null);
+        void queryClient.invalidateQueries({ queryKey: orpc.expenseCategoriesList.queryKey() });
+      },
+      onError: (err) => setCategoryError(tError(err.message)),
     }),
   );
 
@@ -99,8 +128,26 @@ export function ExpensesPage() {
     });
   };
 
-  function submit(event: React.FormEvent) {
+  const categoryListEmpty = categories.data !== undefined && categories.data.items.length === 0;
+
+  function openCategoryForm() {
+    setCategoryCreated(null);
+    setCategoryError(null);
+    setCategoryFormOpen(true);
+  }
+
+  function submitCategory(event: React.FormEvent) {
     event.preventDefault();
+    setCategoryError(null);
+    const name = newCategoryName.trim();
+    if (name === "") {
+      setCategoryError(t("expenseCategoryNameRequired"));
+      return;
+    }
+    void createCategory.mutate({ name });
+  }
+
+  function submit() {
     setError(null);
     const parsed = Number(amount);
     if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -108,7 +155,7 @@ export function ExpensesPage() {
       return;
     }
     if (categoryId === "") {
-      setError(t("CATEGORY_NOT_FOUND"));
+      setError(t("expenseChooseCategory"));
       return;
     }
     void createExpense.mutate({
@@ -123,57 +170,133 @@ export function ExpensesPage() {
     <section data-testid="expenses-page">
       <h1 className="text-xl font-bold">{t("expensesTitle")}</h1>
 
-      <form className="mt-4 grid gap-4 rounded border bg-card p-4" onSubmit={submit} data-testid="expense-form">
+      <div className="mt-4 grid gap-4 rounded border bg-card p-4" data-testid="expense-form">
         <h2 className="font-semibold">{t("expensesRecordTitle")}</h2>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="grid gap-1">
-            {t("expenseCategory")}
-            <Select
-              value={categoryId}
-              onValueChange={(value) => setCategoryId(value ?? "")}
-              items={[
-                { value: "", label: "—" },
-                ...(categories.data?.items.map((category) => ({
-                  value: category.id,
-                  label: `${category.name}${category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}`,
-                })) ?? []),
-              ]}
-            >
-              <SelectTrigger className="w-full" data-testid="expense-category">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">—</SelectItem>
-                {categories.data?.items.map((category) => (
-                  <SelectItem key={category.id} value={category.id}>
-                    {category.name}
-                    {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
-          <label className="grid gap-1">
-            {t("expenseAmount")}
-            <input className="rounded border px-3 py-2" inputMode="numeric" value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
-          </label>
-          <label className="grid gap-1">
-            {t("expenseNote")}
-            <input className="rounded border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
-          </label>
-          <label className="grid gap-1">
-            {t("expenseOccurredAt")}
-            <input type="datetime-local" className="rounded border px-3 py-2" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} data-testid="expense-date" />
-          </label>
-        </div>
-        <div className="flex items-center gap-3">
-          <button type="submit" className="rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" disabled={createExpense.isPending} data-testid="expense-save">
-            {t("expenseSave")}
-          </button>
-          {saved && <span className="text-sm text-success" data-testid="expense-saved">{t("expenseSaved")}</span>}
-        </div>
-        {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
-      </form>
+
+        {categoryListEmpty && !categoryFormOpen ? (
+          <div data-testid="expense-category-empty">
+            <EmptyState
+              icon={<Tags size={28} />}
+              title={t("expenseCategoryEmpty")}
+              hint={t("expenseCategoryEmptyHint")}
+              action={
+                <Button size="lg" type="button" onClick={openCategoryForm} data-testid="expense-category-empty-action">
+                  {t("expenseCategoryCreateFirst")}
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-1">
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="expense-category" className="text-sm font-medium">
+                    {t("expenseCategory")}
+                    <span className="text-destructive" aria-hidden="true"> *</span>
+                    <span className="sr-only"> ({t("expenseRequired")})</span>
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-expanded={categoryFormOpen}
+                    onClick={() => {
+                      setCategoryError(null);
+                      setCategoryFormOpen((open) => !open);
+                    }}
+                    data-testid="expense-category-add"
+                  >
+                    {t("expenseCategoryAdd")}
+                  </Button>
+                </div>
+                <Select
+                  value={categoryId}
+                  onValueChange={(value) => setCategoryId(value ?? "")}
+                  items={[
+                    { value: "", label: t("expenseCategoryPlaceholder") },
+                    ...(categories.data?.items.map((category) => ({
+                      value: category.id,
+                      label: `${category.name}${category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}`,
+                    })) ?? []),
+                  ]}
+                >
+                  <SelectTrigger id="expense-category" className="w-full" data-testid="expense-category">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">{t("expenseCategoryPlaceholder")}</SelectItem>
+                    {categories.data?.items.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                        {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <label className="grid gap-1">
+                {t("expenseAmount")}
+                <input className="rounded border px-3 py-2" inputMode="numeric" value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
+              </label>
+              <label className="grid gap-1">
+                {t("expenseNote")}
+                <input className="rounded border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
+              </label>
+              <label className="grid gap-1">
+                {t("expenseOccurredAt")}
+                <input type="datetime-local" className="rounded border px-3 py-2" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} data-testid="expense-date" />
+              </label>
+            </div>
+
+            {categoryFormOpen && (
+              <form className="grid gap-3 rounded bg-accent p-3" onSubmit={submitCategory} data-testid="expense-category-form">
+                <label className="grid gap-1 text-sm font-medium">
+                  {t("expenseCategoryName")}
+                  <input
+                    className="rounded border px-3 py-2"
+                    name="expenseCategoryName"
+                    autoComplete="off"
+                    autoFocus
+                    value={newCategoryName}
+                    onChange={(event) => setNewCategoryName(event.target.value)}
+                    aria-invalid={categoryError !== null}
+                    aria-describedby={categoryError !== null ? "expense-category-error" : undefined}
+                    data-testid="expense-category-name"
+                  />
+                </label>
+                <div className="flex items-center gap-2">
+                  <Button type="submit" disabled={createCategory.isPending} data-testid="expense-category-create">
+                    {t("expenseCategoryCreate")}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setCategoryFormOpen(false)} data-testid="expense-category-cancel">
+                    {t("dialogClose")}
+                  </Button>
+                </div>
+                {categoryError !== null && (
+                  <p id="expense-category-error" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-category-error">
+                    {categoryError}
+                  </p>
+                )}
+              </form>
+            )}
+
+            {categoryCreated !== null && (
+              <p className="text-sm text-green-700" role="status" data-testid="expense-category-created">
+                {t("expenseCategoryCreated", { name: categoryCreated })}
+              </p>
+            )}
+
+            <div className="flex items-center gap-3">
+              <Button type="button" onClick={submit} disabled={createExpense.isPending} data-testid="expense-save">
+                {t("expenseSave")}
+              </Button>
+              {saved && <span className="text-sm text-green-700" data-testid="expense-saved">{t("expenseSaved")}</span>}
+            </div>
+            {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
+          </>
+        )}
+      </div>
 
       <div className="mt-6 grid gap-4">
         <h2 className="font-semibold">{t("expensesHistoryTitle")}</h2>

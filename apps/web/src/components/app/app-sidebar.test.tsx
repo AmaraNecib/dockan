@@ -22,7 +22,6 @@ import { NAV_GROUPS } from "./navigation";
 let preferenceStore: Record<string, string>;
 let failPreferenceRead = false;
 let failPreferenceWrite = false;
-let firstPreferenceWriteGate: Promise<void> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
@@ -32,11 +31,6 @@ mock.module("@/lib/rpc", () => ({
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       if (failPreferenceWrite) throw new Error("PREFERENCES_WRITE_FAILED");
-      if (firstPreferenceWriteGate !== null) {
-        const gate = firstPreferenceWriteGate;
-        firstPreferenceWriteGate = null;
-        await gate;
-      }
       preferenceStore[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
@@ -44,8 +38,7 @@ mock.module("@/lib/rpc", () => ({
   orpc: {},
 }));
 
-const { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed, readSidebarCollapsed, writeSidebarCollapsed } =
-  await import("./sidebar-state");
+const { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } = await import("./sidebar-state");
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
@@ -105,41 +98,6 @@ async function waitFor(check: () => boolean, failure: string): Promise<void> {
   throw new Error(failure);
 }
 
-describe("sidebar collapse default (issue #94, server-side since #97)", () => {
-  beforeEach(() => {
-    preferenceStore = {};
-    failPreferenceRead = false;
-    failPreferenceWrite = false;
-    firstPreferenceWriteGate = null;
-  });
-
-  it("starts expanded when nothing is stored", async () => {
-    expect(await readSidebarCollapsed()).toBe(false);
-  });
-
-  it("remembers an explicit collapse and an explicit expand", async () => {
-    await writeSidebarCollapsed(true);
-    expect(await readSidebarCollapsed()).toBe(true);
-    await writeSidebarCollapsed(false);
-    expect(await readSidebarCollapsed()).toBe(false);
-  });
-
-  it("falls back to expanded for a stale stored value", async () => {
-    preferenceStore[SIDEBAR_COLLAPSED_KEY] = "legacy";
-    expect(await readSidebarCollapsed()).toBe(false);
-  });
-
-  it("falls back to expanded when the preference read is unavailable", async () => {
-    failPreferenceRead = true;
-    expect(await readSidebarCollapsed()).toBe(false);
-  });
-
-  it("keeps the in-memory choice when the preference write fails", async () => {
-    failPreferenceWrite = true;
-    await expect(writeSidebarCollapsed(true)).resolves.toBe(false);
-  });
-});
-
 describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
   const LEGACY_KEY = "dokan.sidebar.collapsed";
 
@@ -147,7 +105,6 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
     preferenceStore = {};
     failPreferenceRead = false;
     failPreferenceWrite = false;
-    firstPreferenceWriteGate = null;
     window.localStorage.clear();
   });
 
@@ -165,24 +122,6 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
   it("imports an explicit legacy expand as well", async () => {
     window.localStorage.setItem(LEGACY_KEY, "false");
     expect(await migrateLegacySidebarCollapsed()).toBe(true);
-    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
-  });
-
-  it("does not overtake a choice made while the migration write was pending", async () => {
-    window.localStorage.setItem(LEGACY_KEY, "true");
-    let releaseWrite = () => {};
-    firstPreferenceWriteGate = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-
-    // the owner toggles first; the write is held, so the server still has no
-    // sidebar preference when the migration reads
-    const pendingWrite = writeSidebarCollapsed(false);
-    expect(await migrateLegacySidebarCollapsed()).toBe(false);
-    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
-
-    releaseWrite();
-    await pendingWrite;
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
   });
 

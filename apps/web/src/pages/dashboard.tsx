@@ -50,7 +50,12 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
   // The checklist's dismissal/completion are server-side preferences (issue 97
   // follow-up): they survive a packaged restart. While they load, the panel
   // waits rather than flashing open for an owner who already dismissed it.
-  const { value: dismissed, setValue: setDismissed, isPending: dismissedPending } = useOnboardingDismissed();
+  const {
+    value: dismissed,
+    setValue: setDismissed,
+    isPending: dismissedPending,
+    isWriting: dismissedWriting,
+  } = useOnboardingDismissed();
   const { value: completed, isPending: completedPending } = useOnboardingCompleted();
   const hidden = dismissed || completed;
   const preferencesPending = dismissedPending || completedPending;
@@ -98,6 +103,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
         // no skeleton while the preferences load: an owner who already
         // dismissed/completed must not see even a placeholder flash
         isPending={progress.isPending && !preferencesPending}
+        dismissPending={dismissedWriting}
         onDismiss={() => setDismissed(true)}
       />
 

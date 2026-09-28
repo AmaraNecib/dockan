@@ -490,15 +490,14 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await remounted.unmount();
   });
 
-  it("reverts a failed dismissal instead of claiming it", async () => {
+  it("leaves the panel visible when the dismissal write fails", async () => {
     failPreferenceWrites = true;
     const page = await mount(queryClient);
     expect(await waitFor(() => page.panel() !== null)).toBe(true);
 
     await act(async () => page.dismiss()?.click());
-    // optimistic hide first, then the retries exhaust and the panel returns
-    expect(await waitFor(() => page.panel() === null)).toBe(true);
-    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    // no optimistic hide: the panel stays visible and the server is unchanged
+    expect(page.panel()).not.toBeNull();
     expect(preferenceStore[ONBOARDING_DISMISSED_KEY]).toBeUndefined();
     await page.unmount();
   });

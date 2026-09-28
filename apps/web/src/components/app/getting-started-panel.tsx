@@ -14,6 +14,8 @@ interface GettingStartedPanelProps {
   progress: OnboardingProgress | undefined;
   /** true while the progress read has not settled; renders the loading state. */
   isPending: boolean;
+  /** true while the dismissal write is in flight; the control is disabled. */
+  dismissPending: boolean;
   onDismiss: () => void;
 }
 
@@ -54,7 +56,7 @@ function GettingStartedSkeleton() {
  * each marked done only when its record exists on the server. Once every step
  * is done it disappears for good, and an explicit dismissal is remembered too.
  */
-export function GettingStartedPanel({ hidden, progress, isPending, onDismiss }: GettingStartedPanelProps) {
+export function GettingStartedPanel({ hidden, progress, isPending, dismissPending, onDismiss }: GettingStartedPanelProps) {
   const { t } = useTranslation();
 
   if (hidden) return null;
@@ -82,6 +84,7 @@ export function GettingStartedPanel({ hidden, progress, isPending, onDismiss }: 
           data-testid="getting-started-dismiss"
           aria-label={t("onboardingDismissLabel")}
           onClick={onDismiss}
+          disabled={dismissPending}
         >
           {t("onboardingDismiss")}
         </Button>

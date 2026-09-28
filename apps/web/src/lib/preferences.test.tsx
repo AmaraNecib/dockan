@@ -10,53 +10,45 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 let store: Record<string, string>;
 let failRead = false;
 let failWrite = false;
-let firstReadGate: Promise<void> | null = null;
-let firstWriteGate: Promise<void> | null = null;
+let writeCalls = 0;
+let writeGate: Promise<void> | null = null;
+/** Mimics a server that normalizes the value: the hook must use the echo. */
+let canonicalize: ((value: string) => string) | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     preferencesGet: async () => {
       if (failRead) throw new Error("PREFERENCES_READ_FAILED");
-      if (firstReadGate !== null) {
-        const gate = firstReadGate;
-        firstReadGate = null;
-        await gate;
-      }
       return { values: { ...store } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
+      writeCalls += 1;
       if (failWrite) throw new Error("PREFERENCES_WRITE_FAILED");
-      if (firstWriteGate !== null) {
-        const gate = firstWriteGate;
-        firstWriteGate = null;
+      if (writeGate !== null) {
+        const gate = writeGate;
+        writeGate = null;
         await gate;
       }
-      store[input.key] = input.value;
-      return { key: input.key, value: input.value };
+      const stored = canonicalize !== null ? canonicalize(input.value) : input.value;
+      store[input.key] = stored;
+      return { key: input.key, value: stored };
     },
   },
   orpc: {},
 }));
 
-const {
-  parseBooleanPreference,
-  readPreference,
-  readPreferences,
-  serializeBooleanPreference,
-  usePreference,
-  writePreference,
-} = await import("./preferences");
+const { parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } = await import(
+  "./preferences"
+);
 
 function Probe() {
-  const a = usePreference("ui.test.a", false, parseBooleanPreference, serializeBooleanPreference);
-  const sibling = usePreference("ui.sibling.flag", false, parseBooleanPreference, serializeBooleanPreference);
+  const pref = usePreference("ui.test.a", false, parseBooleanPreference, serializeBooleanPreference);
   return (
     <div>
-      <span data-testid="a">{String(a.value)}</span>
-      <span data-testid="sibling">{String(sibling.value)}</span>
-      <span data-testid="pending">{String(a.isPending || sibling.isPending)}</span>
-      <button data-testid="set-a" onClick={() => a.setValue(true)}>set-a</button>
-      <button data-testid="toggle-a" onClick={() => a.updateValue((value) => !value)}>toggle-a</button>
+      <span data-testid="value">{String(pref.value)}</span>
+      <span data-testid="loading">{String(pref.isPending)}</span>
+      <span data-testid="writing">{String(pref.isWriting)}</span>
+      <button data-testid="set" onClick={() => pref.setValue(true)}>set</button>
     </div>
   );
 }
@@ -114,29 +106,15 @@ describe("preferences client (issue 97 follow-up)", () => {
     store = {};
     failRead = false;
     failWrite = false;
-    firstReadGate = null;
-    firstWriteGate = null;
+    writeCalls = 0;
+    writeGate = null;
+    canonicalize = null;
     focusManager.setFocused(undefined);
   });
 
   it("surfaces a failed read so the query can retry later", async () => {
     failRead = true;
     await expect(readPreferences()).rejects.toThrow("PREFERENCES_READ_FAILED");
-  });
-
-  it("falls back to undefined for the imperative read guard", async () => {
-    failRead = true;
-    expect(await readPreference("ui.test.a")).toBeUndefined();
-  });
-
-  it("reports a failed write without throwing", async () => {
-    failWrite = true;
-    expect(await writePreference("ui.test.a", "true")).toBe(false);
-  });
-
-  it("writes a preference and reports success", async () => {
-    expect(await writePreference("ui.test.a", "true")).toBe(true);
-    expect(store["ui.test.a"]).toBe("true");
   });
 
   it("parses only the explicit true flag", () => {
@@ -148,124 +126,87 @@ describe("preferences client (issue 97 follow-up)", () => {
     expect(serializeBooleanPreference(false)).toBe("false");
   });
 
-  it("reads the server value and writes one key optimistically", async () => {
-    store["ui.test.a"] = "true";
+  it("shows the server value and writes it through", async () => {
     const handle = await mountProbe();
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    expect(text(handle.host, "value")).toBe("false");
 
-    expect(await waitFor(() => text(handle.host, "pending") === "false")).toBe(true);
-    expect(text(handle.host, "a")).toBe("true");
-
-    store["ui.test.a"] = "false";
-    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
-    expect(await waitFor(() => text(handle.host, "a") === "true")).toBe(true);
-    expect(await waitFor(() => store["ui.test.a"] === "true")).toBe(true);
-
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    expect(await waitFor(() => text(handle.host, "value") === "true")).toBe(true);
+    expect(store["ui.test.a"]).toBe("true");
+    expect(await waitFor(() => text(handle.host, "writing") === "false")).toBe(true);
     await handle.unmount();
   });
 
-  it("reverts the optimistic value when the write ultimately fails", async () => {
+  it("installs the server's returned value, never the sent guess", async () => {
+    canonicalize = () => "false"; // the server refuses to store true
+    const handle = await mountProbe();
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    expect(await waitFor(() => writeCalls === 1)).toBe(true);
+    // the sent value was true; the server returned false and that is what shows
+    expect(text(handle.host, "value")).toBe("false");
+    expect(store["ui.test.a"]).toBe("false");
+    await handle.unmount();
+  });
+
+  it("leaves the server value showing when the write fails", async () => {
     failWrite = true;
     const handle = await mountProbe();
-    expect(await waitFor(() => text(handle.host, "pending") === "false")).toBe(true);
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    expect(text(handle.host, "value")).toBe("false");
 
-    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
-    // optimistic: the click shows immediately, then the retries exhaust
-    expect(await waitFor(() => text(handle.host, "a") === "true")).toBe(true);
-    expect(await waitFor(() => text(handle.host, "a") === "false")).toBe(true);
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    // no optimistic value: the UI never claims the rejected change
+    expect(text(handle.host, "value")).toBe("false");
+    expect(await waitFor(() => text(handle.host, "writing") === "false")).toBe(true);
     expect(store["ui.test.a"]).toBeUndefined();
+    await handle.unmount();
+  });
 
+  it("ignores a second write while the first is in flight", async () => {
+    let releaseWrite = () => {};
+    writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+
+    const handle = await mountProbe();
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+
+    await act(async () => {
+      const set = handle.host.querySelector<HTMLButtonElement>("[data-testid='set']");
+      set?.click();
+      set?.click();
+    });
+    expect(writeCalls).toBe(1);
+    expect(text(handle.host, "writing")).toBe("true");
+
+    releaseWrite();
+    expect(await waitFor(() => store["ui.test.a"] === "true")).toBe(true);
+    expect(await waitFor(() => text(handle.host, "value") === "true")).toBe(true);
+    expect(writeCalls).toBe(1);
     await handle.unmount();
   });
 
   it("re-fetches an errored read on the next mount (self-heal)", async () => {
     failRead = true;
     const failed = await mountProbe();
-    expect(await waitFor(() => text(failed.host, "pending") === "false")).toBe(true);
-    expect(text(failed.host, "a")).toBe("false");
+    expect(await waitFor(() => text(failed.host, "loading") === "false")).toBe(true);
+    expect(text(failed.host, "value")).toBe("false");
     await failed.unmount();
 
     failRead = false;
     store["ui.test.a"] = "true";
     const healed = await mountProbe();
-    expect(await waitFor(() => text(healed.host, "a") === "true")).toBe(true);
+    expect(await waitFor(() => text(healed.host, "value") === "true")).toBe(true);
     await healed.unmount();
-  });
-
-  it("does not drop sibling preferences when a write races the initial read", async () => {
-    store["ui.sibling.flag"] = "true";
-    let releaseFirstRead = () => {};
-    firstReadGate = new Promise<void>((resolve) => {
-      releaseFirstRead = resolve;
-    });
-
-    const handle = await mountProbe();
-    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
-    releaseFirstRead();
-
-    expect(await waitFor(() => text(handle.host, "a") === "true")).toBe(true);
-    expect(await waitFor(() => text(handle.host, "sibling") === "true")).toBe(true);
-    await handle.unmount();
-  });
-
-  it("never leaves the cache partial when a write races the initial read and fails", async () => {
-    store["ui.sibling.flag"] = "true";
-    failWrite = true;
-    let releaseFirstRead = () => {};
-    firstReadGate = new Promise<void>((resolve) => {
-      releaseFirstRead = resolve;
-    });
-
-    const handle = await mountProbe();
-    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set-a']")?.click());
-    releaseFirstRead();
-
-    // the sibling survives the full read, and the rejected write is not claimed
-    expect(await waitFor(() => text(handle.host, "sibling") === "true")).toBe(true);
-    expect(await waitFor(() => text(handle.host, "a") === "false")).toBe(true);
-    expect(store["ui.test.a"]).toBeUndefined();
-    await handle.unmount();
-  });
-
-  it("applies rapid toggles in order and settles on the last intent", async () => {
-    const handle = await mountProbe();
-    expect(await waitFor(() => text(handle.host, "pending") === "false")).toBe(true);
-
-    await act(async () => {
-      const toggle = handle.host.querySelector<HTMLButtonElement>("[data-testid='toggle-a']");
-      toggle?.click();
-      toggle?.click();
-    });
-    expect(await waitFor(() => store["ui.test.a"] === "false")).toBe(true);
-    expect(await waitFor(() => text(handle.host, "a") === "false")).toBe(true);
-
-    await handle.unmount();
-  });
-
-  it("serialises writes so an earlier choice cannot land after a later one", async () => {
-    let releaseFirstWrite = () => {};
-    firstWriteGate = new Promise<void>((resolve) => {
-      releaseFirstWrite = resolve;
-    });
-
-    const handle = await mountProbe();
-    expect(await waitFor(() => text(handle.host, "pending") === "false")).toBe(true);
-
-    await act(async () => {
-      const toggle = handle.host.querySelector<HTMLButtonElement>("[data-testid='toggle-a']");
-      toggle?.click(); // true, held by the gate
-      toggle?.click(); // false, queued behind the held write
-    });
-    releaseFirstWrite();
-
-    expect(await waitFor(() => store["ui.test.a"] === "false")).toBe(true);
-    expect(await waitFor(() => text(handle.host, "a") === "false")).toBe(true);
-    await handle.unmount();
   });
 
   it("picks up a preference changed outside this window on focus", async () => {
     const handle = await mountProbe();
-    expect(await waitFor(() => text(handle.host, "pending") === "false")).toBe(true);
-    expect(text(handle.host, "a")).toBe("false");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+    expect(text(handle.host, "value")).toBe("false");
 
     store["ui.test.a"] = "true"; // another window wrote it
     await act(async () => {
@@ -273,7 +214,7 @@ describe("preferences client (issue 97 follow-up)", () => {
       focusManager.setFocused(true);
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    expect(await waitFor(() => text(handle.host, "a") === "true")).toBe(true);
+    expect(await waitFor(() => text(handle.host, "value") === "true")).toBe(true);
     await handle.unmount();
   });
 });

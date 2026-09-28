@@ -1,7 +1,5 @@
 import {
-  hasPendingPreferenceWrite,
   parseBooleanPreference,
-  readPreference,
   readPreferences,
   serializeBooleanPreference,
   usePreference,
@@ -18,29 +16,19 @@ export const SIDEBAR_COLLAPSED_KEY = "ui.sidebar.collapsed";
 /** The pre-server localStorage key (issue #94); imported once, then dropped. */
 const LEGACY_SIDEBAR_COLLAPSED_KEY = "dokan.sidebar.collapsed";
 
-/** Imperative read seam (tests and non-React callers); default expanded. */
-export async function readSidebarCollapsed(): Promise<boolean> {
-  return parseBooleanPreference(await readPreference(SIDEBAR_COLLAPSED_KEY));
-}
-
-/** Imperative write seam; false means the server did not store the choice. */
-export async function writeSidebarCollapsed(collapsed: boolean): Promise<boolean> {
-  return writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(collapsed));
-}
-
 /** Reactive preference for the app shell; a failed read keeps it expanded. */
 export function useSidebarCollapsed() {
   return usePreference(SIDEBAR_COLLAPSED_KEY, false, parseBooleanPreference, serializeBooleanPreference);
 }
 
 /**
- * One-time import of the pre-server localStorage sidebar choice. Runs only
- * when the server has no sidebar preference yet; a failed read or write leaves
- * the legacy value in place so the next launch retries. Storage access is
- * guarded, so a throwing localStorage cannot break the shell.
+ * One-time import of the pre-server localStorage sidebar choice. The caller
+ * runs it before the shell renders (see RequireSession), so it cannot race a
+ * user's toggle. A failed read or write leaves the legacy value in place for
+ * the next launch; storage access is guarded, so a throwing localStorage
+ * cannot break the shell.
  *
- * Returns true when it wrote the server preference, so the caller can refresh
- * the shared preferences query.
+ * Returns true when it wrote the server preference.
  */
 export async function migrateLegacySidebarCollapsed(): Promise<boolean> {
   const legacy = readLegacySidebarCollapsed();
@@ -58,16 +46,11 @@ export async function migrateLegacySidebarCollapsed(): Promise<boolean> {
     clearLegacySidebarCollapsed();
     return false;
   }
-  // a write still queued or in flight (the owner toggled) is newer than the
-  // legacy value; never overtake it
-  if (hasPendingPreferenceWrite(SIDEBAR_COLLAPSED_KEY)) {
-    clearLegacySidebarCollapsed();
-    return false;
-  }
 
-  const wrote = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
-  if (wrote) clearLegacySidebarCollapsed();
-  return wrote;
+  const stored = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
+  if (stored === null) return false; // write failed: retry next launch
+  clearLegacySidebarCollapsed();
+  return true;
 }
 
 function readLegacySidebarCollapsed(): boolean | undefined {

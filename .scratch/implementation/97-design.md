@@ -357,3 +357,60 @@ header as the loaded panel, so the dashboard does not jump.
 - The preference writer returns the server's echo and folds that canonical value
   into the cache (not the value it sent), so a normalizing server cannot be
   mistaken for a rejected write.
+
+---
+
+# Round-4 simplification: no optimistic preference state
+
+The round-3 review found two more races, both created by the round-2/3 fixes:
+an in-flight read overwriting a confirmed write, and the migration's
+read-then-write clobbering a newer choice. Both existed only because the client
+kept optimistic state that could disagree with the server. This is a local-first
+app: the "server" is a loopback HTTP call to a sqlite file on the same machine,
+so a write completes in milliseconds and the optimism bought nothing.
+
+## Deleted
+
+- The optimistic overlay in `usePreference` (local `optimistic` state and the
+  effect that cleared it when the server confirmed).
+- The per-key write queue: `writeTails`, `writeSequence`,
+  `latestWriteSequence`, `queuePreferenceWrite`, `isLatestPreferenceWrite`,
+  `hasPendingPreferenceWrite`, and the `PreferenceWrite` type.
+- `cancelQueries` around writes and the newest-write-only reconcile.
+- Write retries and the `WRITE_ATTEMPTS`/`WRITE_RETRY_MS` tuning.
+- The imperative seams that only tests called: `readSidebarCollapsed`,
+  `writeSidebarCollapsed`, `readOnboardingDismissed`, `readOnboardingCompleted`,
+  `writeOnboardingDismissed`, `writeOnboardingCompleted`, `readPreference`, and
+  `apps/web/src/components/app/onboarding-state.test.ts`.
+- The AppShell migration effect (it now runs before the shell renders).
+- The optimistic-race tests: write ordering with a held first write, sibling-key
+  drop on a pending read, pending-read + failed-write cache integrity, rapid
+  toggle settle, and revert-on-failed-write. There is nothing left to race.
+
+## Kept / simplified
+
+- `writePreference` awaits `preferencesSet` and returns the server's echoed
+  value or null; `usePreference` installs only that value into the query cache.
+  A failed write means the value did not change, so the server value simply
+  stays on screen. `writePreference` is the real write path used by both the
+  hook and the migration.
+- The only local write state is a synchronous `inFlight` ref (double-click
+  guard) plus `isWriting` for disabling the control. `isPending` remains the
+  shared read's loading state.
+- The legacy migration runs in `RequireSession` before the shell (which is
+  preference-driven) renders, so it cannot race the owner's first toggle. A
+  failed read/write leaves the legacy key for the next launch.
+- Kept unchanged: the server-side preferences table, session-guarded bounded
+  procs, the durable idempotent `onboardingComplete` milestone, focus/reconnect
+  freshness, and `enabled: false` when the checklist is hidden.
+
+## Tests that matter now
+
+- A failed write leaves the server value showing (no optimistic claim).
+- A successful write installs the server's returned value (a normalizing server
+  is used to prove the echo is authoritative).
+- A double-click cannot issue two writes (one delayed write, one call).
+- The migration imports once; a server value wins; failed read/write keeps the
+  legacy key; throwing storage is safe.
+- The milestone is idempotent server-side (store seam) and retries on later
+  observations while unset.

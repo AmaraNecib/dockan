@@ -6,6 +6,7 @@ import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername } from "@dokan/contracts";
 import { rpcClient } from "./lib/rpc";
+import { migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The field an auth error points the owner back to; null means the summary. */
 type AuthErrorField = "phone" | "password" | null;
@@ -112,15 +113,32 @@ function AuthErrorAlert({
   );
 }
 
-/** Blocks children until a session exists. */
+/** Blocks children until a session exists and the legacy preferences are imported. */
 export function RequireSession({ children }: { children: ReactNode }) {
   const sessionResult = useSession();
-  const { t } = useTranslation();
+  const [preferencesReady, setPreferencesReady] = useState(false);
+
+  // The one-time legacy sidebar import must finish before the shell (which is
+  // preference-driven) renders, so it cannot race the owner's first toggle.
+  useEffect(() => {
+    if (sessionResult.isPending || sessionResult.data === null || preferencesReady) return;
+    let active = true;
+    void migrateLegacySidebarCollapsed().finally(() => {
+      if (active) setPreferencesReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [preferencesReady, sessionResult.data, sessionResult.isPending]);
+
   if (sessionResult.isPending) {
-    return <main className="grid min-h-screen place-items-center bg-background text-muted-foreground">{t("appSub")}</main>;
+    return <LoadingScreen />;
   }
   if (sessionResult.data === null) {
     return <AuthGate />;
+  }
+  if (!preferencesReady) {
+    return <LoadingScreen />;
   }
   return <>{children}</>;
 }

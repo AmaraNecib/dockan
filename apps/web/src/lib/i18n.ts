@@ -184,6 +184,8 @@ const resources = {
        */
       errorGeneric: "تعذّر إكمال العملية. أعد المحاولة.",
       // issue #100 — auth failures the login/setup forms can name exactly
+      // the phone example shown as a placeholder; digits only, locale-neutral
+      phoneExample: "0550123123",
       AUTH_INVALID_CREDENTIALS: "رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.",
       INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل 0550123123 أو +213550123123.",
       AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر دقيقة ثم أعد المحاولة.",

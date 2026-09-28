@@ -121,19 +121,22 @@ Precedence, most specific first:
   (`4`, mirroring `packages/contracts/src/core.ts`). The inputs drop the native
   `minLength={4}` so the Arabic copy shows instead of a browser-locale bubble;
   `required` stays for the other fields.
-- **Presentation**: the login and reset phone fields gain the existing
-  `settingsPhoneHint` example (`0550123123` / `+213…`) as placeholder +
-  `aria-describedby`, so the owner reaches the right shape before failing.
-  **No `maxLength`**: `normalizeAlgerianPhone` strips `[\s.()-]`, so a valid
+- **Presentation**: the login, setup and reset phone fields show the example
+  from the `phoneExample` i18n key as a placeholder, so the owner reaches the
+  right shape before failing. **No `maxLength`**: `normalizeAlgerianPhone` strips `[\s.()-]`, so a valid
   grouped form like `00213 550 123 123` is 17 chars. Any bound short enough to
   stop a 12-digit typo also truncates a valid paste, which would change which
   inputs pass — a rule change, not a presentation one. The hint plus the
   specific message is the safe "prevent" here.
 - **Announcement**: every auth error paragraph is `role="alert"` +
-  `tabIndex={-1}`. Focus: malformed phone → phone field; short password →
-  password field; credentials → the alert summary (either field could be the
-  typo, so the summary names both); anything else → the alert summary.
+  `tabIndex={-1}`, remounted per failure (the `useAuthError` nonce keys it) so
+  a repeated identical failure is announced again. Focus: malformed phone →
+  phone field; short password → password field; credentials → the alert
+  summary (either field could be the typo, so the summary names both);
+  anything else → the alert summary.
 - `aria-invalid` is set on the field the error points at.
+- Login derives the better-auth username with the shared `phoneToUsername`
+  rather than re-slicing the normalized phone.
 
 ## Planned tests
 

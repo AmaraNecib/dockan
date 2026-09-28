@@ -4,13 +4,12 @@ import { useTranslation } from "react-i18next";
 import { authClient, useSession } from "./lib/auth-client";
 import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
-import { normalizeAlgerianPhone } from "@dokan/contracts";
+import { normalizeAlgerianPhone, phoneToUsername } from "@dokan/contracts";
 import { rpcClient } from "./lib/rpc";
 
 /** The field an auth error points the owner back to; null means the summary. */
 type AuthErrorField = "phone" | "password" | null;
 
-/** Which field a resolved error blames, and where focus should land. */
 type AuthErrorFocus = { field: AuthErrorField; target: HTMLInputElement | null };
 
 /** Mirrors the contract's password rule (packages/contracts/src/core.ts `min(4)`). */
@@ -52,6 +51,23 @@ function authErrorFocus(
   if (key === "AUTH_PASSWORD_TOO_SHORT") return { field: "password", target: fields.password };
   // wrong credentials blame both fields; the alert says so, so focus it
   return { field: null, target: null };
+}
+
+/**
+ * The shared wiring for an auth form's failures: the alert state plus a
+ * reporter that translates a resolved key and focuses the field it blames.
+ */
+function useAuthReporter(
+  phoneRef: RefObject<HTMLInputElement | null>,
+  passwordRef: RefObject<HTMLInputElement | null>,
+) {
+  const { t } = useTranslation();
+  const authError = useAuthError();
+  function report(key: MessageKey): void {
+    const focus = authErrorFocus(key, { phone: phoneRef.current, password: passwordRef.current });
+    authError.show(t(key), focus.field, focus.target);
+  }
+  return { authError, report };
 }
 
 /** The one error paragraph the auth forms render; focusable and announced. */
@@ -157,15 +173,9 @@ function SetupPage({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState("");
   const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
-  const authError = useAuthError();
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-
-  /** Show the copy for a resolved key, focusing the field it blames. */
-  function report(key: MessageKey): void {
-    const { field, target } = authErrorFocus(key, { phone: phoneRef.current, password: passwordRef.current });
-    authError.show(t(key), field, target);
-  }
+  const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -220,7 +230,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder="0550123123" aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "setup-error" : undefined} />
+          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "setup-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
@@ -231,7 +241,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
           <input type="password" className="rounded border border-input bg-background px-3 py-2" name="secret" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" data-testid="setup-secret" />
         </label>
 
-        <AuthErrorAlert id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
+        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
           {busy ? t("settingsSaving") : t("setupCreate")}
         </button>
@@ -249,15 +259,9 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const authError = useAuthError();
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-
-  /** Show the copy for a resolved key, focusing the field it blames. */
-  function report(key: MessageKey): void {
-    const { field, target } = authErrorFocus(key, { phone: phoneRef.current, password: passwordRef.current });
-    authError.show(t(key), field, target);
-  }
+  const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
@@ -271,7 +275,7 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
     setBusy(true);
     authError.clear();
     try {
-      const result = await authClient.signIn.username({ username: normalizedPhone.slice(1), password });
+      const result = await authClient.signIn.username({ username: phoneToUsername(normalizedPhone), password });
       if (result.error) {
         report(authErrorKey(result.error));
         return;
@@ -295,14 +299,14 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
         <h2 className="mt-6 font-semibold">{t("loginHeading")}</h2>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required dir="ltr" placeholder="0550123123" aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "login-error" : undefined} />
+          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "login-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
           <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} />
         </label>
 
-        <AuthErrorAlert id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
+        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" data-testid="login-submit">
           {busy ? t("settingsSaving") : t("login")}
         </button>
@@ -326,15 +330,9 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
   const [newPassword, setNewPassword] = useState("");
   const [success, setSuccess] = useState(false);
   const [busy, setBusy] = useState(false);
-  const authError = useAuthError();
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-
-  /** Show the copy for a resolved key, focusing the field it blames. */
-  function report(key: MessageKey): void {
-    const { field, target } = authErrorFocus(key, { phone: phoneRef.current, password: passwordRef.current });
-    authError.show(t(key), field, target);
-  }
+  const { authError, report } = useAuthReporter(phoneRef, passwordRef);
 
   async function reset(e: React.FormEvent) {
     e.preventDefault();
@@ -383,14 +381,14 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder="0550123123" aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "forgot-error" : undefined} />
+          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "forgot-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
           <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "forgot-error" : undefined} />
         </label>
 
-        <AuthErrorAlert id="forgot-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
+        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="forgot-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
           {busy ? t("settingsSaving") : t("forgotPasswordReset")}
         </button>

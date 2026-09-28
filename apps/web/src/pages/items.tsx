@@ -27,6 +27,7 @@ function profitPreview(costText: string, sellText: string): number | null {
 
 /** One row at a time is editable; this is its draft shape. */
 type ItemEditDraft = {
+  id: string;
   name: string;
   categoryId: string;
   cost: string;
@@ -101,8 +102,8 @@ export function ItemsPage() {
   // result from either horizontal arrow on a two-tab set.
   function onTabKeyDown(event: React.KeyboardEvent, index: number) {
     let next = index;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % ITEMS_TABS.length;
-    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + ITEMS_TABS.length) % ITEMS_TABS.length;
+    if (event.key === "ArrowRight") next = (index + 1) % ITEMS_TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + ITEMS_TABS.length) % ITEMS_TABS.length;
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = ITEMS_TABS.length - 1;
     else return;
@@ -277,7 +278,6 @@ function ItemForm({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [name, setName] = useState("");
   const [categoryId, setCategoryId] = useState("");
@@ -306,7 +306,6 @@ function ItemForm({
   }, [seed]);
 
   function invalidate() {
-    invalidateItems(queryClient);
     onSaved();
   }
 
@@ -485,15 +484,17 @@ function ItemList() {
   const queryClient = useQueryClient();
   const items = useQuery(orpc.itemsList.queryOptions());
   const categories = useQuery(orpc.categoriesList.queryOptions());
-  const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  /** the row whose edit control regains focus once editing ends */
+  const editedRowRef = useRef<string | null>(null);
 
   const update = useMutation(
     orpc.itemsUpdate.mutationOptions({
-      onSuccess: () => {
-        setEditingId(null);
-        setDraft(null);
+      // clear only the row this mutation actually saved: if the operator opened
+      // another row while it was in flight, that row's draft must survive
+      onSuccess: (_data, variables) => {
+        setDraft((current) => (current?.id === variables.id ? null : current));
         setEditError(null);
         invalidateItems(queryClient);
       },
@@ -501,10 +502,20 @@ function ItemList() {
     }),
   );
 
+  // return focus to the row's edit control after save/cancel (WCAG 2.4.3)
+  useEffect(() => {
+    if (draft === null && editedRowRef.current !== null) {
+      const id = editedRowRef.current;
+      editedRowRef.current = null;
+      document.getElementById(`edit-button-${id}`)?.focus();
+    }
+  }, [draft]);
+
   function beginEdit(item: ItemListItem) {
-    setEditingId(item.id);
+    editedRowRef.current = item.id;
     setEditError(null);
     setDraft({
+      id: item.id,
       name: item.name,
       categoryId: item.categoryId,
       cost: String(item.costPrice),
@@ -518,13 +529,12 @@ function ItemList() {
   }
 
   function cancelEdit() {
-    setEditingId(null);
     setDraft(null);
     setEditError(null);
   }
 
   function saveEdit() {
-    if (editingId === null || draft === null) return;
+    if (draft === null) return;
     setEditError(null);
     const selling = Number(draft.sell);
     if (draft.name.trim() === "") {
@@ -541,7 +551,7 @@ function ItemList() {
     }
     const parsedThreshold = Number(draft.threshold);
     update.mutate({
-      id: editingId,
+      id: draft.id,
       name: draft.name.trim(),
       categoryId: draft.categoryId,
       costPrice: Number.isFinite(Number(draft.cost)) && Number(draft.cost) >= 0 ? Number(draft.cost) : 0,
@@ -588,7 +598,7 @@ function ItemList() {
         </thead>
         <tbody>
           {items.data?.items.map((item: ItemListItem) => {
-            const editing = editingId === item.id && draft !== null;
+            const editing = draft !== null && draft.id === item.id;
             return (
               <tr key={item.id} className="border-b last:border-0">
                 <td className="p-3">
@@ -723,6 +733,7 @@ function ItemList() {
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
+                        id={`edit-button-${item.id}`}
                         className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
                         onClick={() => beginEdit(item)}
                         data-testid={`edit-item-${item.id}`}

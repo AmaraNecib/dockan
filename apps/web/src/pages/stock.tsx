@@ -149,7 +149,7 @@ export function StockForm() {
           {t("stockAdded")}
         </p>
       )}
-      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={adjust.isPending}>
+      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={adjust.isPending} data-testid="stock-save">
         {t("stockAddBtn")}
       </button>
     </form>

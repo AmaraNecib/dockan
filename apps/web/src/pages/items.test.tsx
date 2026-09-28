@@ -88,6 +88,10 @@ const createInputs: CapturedCreateInput[] = [];
 const createWithStockInputs: CapturedCreateInput[] = [];
 const updateInputs: CapturedUpdateInput[] = [];
 const stockInputs: CapturedStockInput[] = [];
+/** knobs the edit tests drive: reject, or hold the mutation open */
+let updateFails = false;
+let updateDeferred = false;
+let resolveUpdate: (() => void) | null = null;
 
 // The page reads/writes everything through orpc.*; the mock keeps the fixture
 // as the single source of truth so an update + invalidate really refetches.
@@ -97,7 +101,9 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: categories }) }),
     },
     itemsList: {
-      queryOptions: () => ({ queryKey: ["items"], queryFn: async () => ({ items }) }),
+      // clone on each fetch so a refetch yields new object identities, exactly
+      // like the JSON boundary — this is what exercises the prefill ref guard
+      queryOptions: () => ({ queryKey: ["items"], queryFn: async () => ({ items: items.map((item) => ({ ...item })) }) }),
       queryKey: () => ["items"],
     },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
@@ -124,19 +130,28 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: MutationOptions) => ({
         mutationFn: async (input: CapturedUpdateInput) => {
           updateInputs.push(input);
-          const existing = items.find((item) => item.id === input.id);
-          if (existing) {
-            // mirror the real write: the refetched list must show the change
-            Object.assign(existing, {
-              name: input.name,
-              categoryId: input.categoryId,
-              costPrice: input.costPrice,
-              sellingPrice: input.sellingPrice,
-              lowStockThreshold: input.lowStockThreshold,
-              categoryName: categories.find((category) => category.id === input.categoryId)?.name ?? null,
+          if (updateFails) throw new Error("ITEM_ERROR");
+          const commit = () => {
+            const existing = items.find((item) => item.id === input.id);
+            if (existing) {
+              // mirror the real write: the refetched list must show the change
+              Object.assign(existing, {
+                name: input.name,
+                categoryId: input.categoryId,
+                costPrice: input.costPrice,
+                sellingPrice: input.sellingPrice,
+                lowStockThreshold: input.lowStockThreshold,
+                categoryName: categories.find((category) => category.id === input.categoryId)?.name ?? null,
+              });
+            }
+            return existing ?? { id: input.id };
+          };
+          if (updateDeferred) {
+            return new Promise<FixtureItem | { id?: string }>((resolve) => {
+              resolveUpdate = () => resolve(commit());
             });
           }
-          return existing ?? { id: input.id };
+          return commit();
         },
         ...opts,
       }),
@@ -175,6 +190,11 @@ mock.module("@tanstack/react-router", () => ({
 
 const { ItemsPage } = await import("./items");
 
+interface MountedPage {
+  container: HTMLElement;
+  queryClient: QueryClient;
+}
+
 let mounted: Array<{ root: ReturnType<typeof createRoot>; container: HTMLElement; queryClient: QueryClient }> = [];
 
 function el<T extends Element>(selector: string): T {
@@ -187,6 +207,15 @@ function inputByTestId(testId: string): HTMLInputElement {
   const found = document.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
   if (found === null) throw new Error(`missing input: ${testId}`);
   return found;
+}
+
+/** The table row whose first/any cell is exactly this text. */
+function rowByCell(name: string): HTMLTableRowElement {
+  const cell = Array.from(document.querySelectorAll("td")).find((candidate) => candidate.textContent === name);
+  if (cell === undefined) throw new Error(`no cell with text ${name}`);
+  const row = cell.closest("tr");
+  if (row === null) throw new Error(`cell ${name} has no row`);
+  return row;
 }
 
 /** React controlled inputs need the native value setter + an input event. */
@@ -220,7 +249,7 @@ async function waitFor(check: () => boolean, attempts = 120): Promise<void> {
   throw new Error("condition not met within timeout");
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(): Promise<MountedPage> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -234,7 +263,7 @@ async function mount(): Promise<HTMLElement> {
     );
   });
   await waitFor(() => document.querySelector('[data-testid="stock-after-cell"]') !== null);
-  return container;
+  return { container, queryClient };
 }
 
 async function openAddTab(): Promise<void> {
@@ -242,11 +271,14 @@ async function openAddTab(): Promise<void> {
   await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
 }
 
-function openSelectPopup(trigger: HTMLElement) {
-  act(() => {
+/** Base UI arms selection on pointerdown, then commits on click; the async act
+ * wraps the floating-positioner updates these dispatch. */
+async function openSelectPopup(trigger: HTMLElement) {
+  await act(async () => {
     trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
     trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -256,9 +288,10 @@ async function chooseOption(label: string) {
     candidate.textContent?.includes(label),
   );
   if (option === undefined) throw new Error(`option not found: ${label}`);
-  act(() => {
+  await act(async () => {
     option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
     option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -268,6 +301,9 @@ beforeEach(() => {
   createWithStockInputs.length = 0;
   updateInputs.length = 0;
   stockInputs.length = 0;
+  updateFails = false;
+  updateDeferred = false;
+  resolveUpdate = null;
   document.body.innerHTML = "";
 });
 
@@ -289,17 +325,51 @@ describe("items page tabs", () => {
     expect(el<HTMLButtonElement>("#items-tab-products").getAttribute("aria-selected")).toBe("true");
   });
 
-  it("ArrowRight moves selection and focus to the add tab", async () => {
+  it("wires tabs to panels and supports Arrow, Home and End", async () => {
     await mount();
     const productsTab = el<HTMLButtonElement>("#items-tab-products");
+    const addTab = el<HTMLButtonElement>("#items-tab-add");
+
+    expect(productsTab.getAttribute("aria-controls")).toBe("items-panel-products");
+    expect(addTab.getAttribute("aria-controls")).toBe("items-panel-add");
+    expect(productsTab.getAttribute("tabindex")).toBe("0");
+    expect(addTab.getAttribute("tabindex")).toBe("-1");
+    expect(el<HTMLElement>("#items-panel-products").getAttribute("aria-labelledby")).toBe("items-tab-products");
+    expect(el<HTMLElement>("#items-panel-add").getAttribute("role")).toBe("tabpanel");
+
+    // End jumps to the last tab (add)
     act(() => {
       productsTab.focus();
-      productsTab.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      productsTab.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
+    await waitFor(() => addTab.getAttribute("aria-selected") === "true");
+    expect(document.activeElement).toBe(addTab);
+    expect(addTab.getAttribute("tabindex")).toBe("0");
+
+    // ArrowLeft moves back to products
+    act(() => {
+      addTab.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    });
+    await waitFor(() => productsTab.getAttribute("aria-selected") === "true");
+    expect(document.activeElement).toBe(productsTab);
+
+    // Home always returns to the first tab
+    act(() => {
+      addTab.focus();
+      addTab.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+    });
+    await waitFor(() => productsTab.getAttribute("aria-selected") === "true");
+  });
+
+  it("keeps an add-form draft when switching tabs and back", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "مسودة-محفوظة");
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
     await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
-    expect(el<HTMLButtonElement>("#items-tab-add").getAttribute("aria-selected")).toBe("true");
-    expect(el<HTMLButtonElement>("#items-tab-products").getAttribute("aria-selected")).toBe("false");
-    expect(document.activeElement).toBe(el<HTMLButtonElement>("#items-tab-add"));
+    expect(inputByTestId("item-name").value).toBe("مسودة-محفوظة");
   });
 });
 
@@ -344,17 +414,18 @@ describe("add item form opening stock", () => {
     expect(createInputs.length).toBe(0);
   });
 
-  it("rejects a negative opening stock without calling the server", async () => {
+  it("rejects negative or fractional opening stock without calling the server", async () => {
     await mount();
     await openAddTab();
 
     setInput("item-name", "بطارية خاطئة");
     setInput("item-cost", "100");
     setInput("item-sell", "180");
-    setInput("initial-stock", "-3");
-
-    click("item-save");
-    await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+    for (const bad of ["-3", "2.5", "abc"]) {
+      setInput("initial-stock", bad);
+      click("item-save");
+      await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+    }
     expect(createInputs.length).toBe(0);
     expect(createWithStockInputs.length).toBe(0);
   });
@@ -368,17 +439,37 @@ describe("stock form prefill", () => {
     await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
     expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("150");
 
-    openSelectPopup(el<HTMLElement>('[data-testid="stock-item"]'));
+    await openSelectPopup(el<HTMLElement>('[data-testid="stock-item"]'));
     await chooseOption("فلتر زيت");
 
     await waitFor(() => inputByTestId("stock-unit-cost").value === "200");
     expect(el<HTMLElement>('[data-testid="stock-selling-price"]').textContent).toContain("300");
   });
+
+  it("submits a hand-edited unit cost and survives a refetch", async () => {
+    const { queryClient } = await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    // the prefilled value stays editable
+    setInput("stock-unit-cost", "999");
+    setInput("stock-delta", "4");
+
+    // a background refetch must not clobber the typed value
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+    });
+    expect(inputByTestId("stock-unit-cost").value).toBe("999");
+
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-1", delta: 4, unitCost: 999 });
+  });
 });
 
 describe("inline item edit", () => {
   it("updates name, category, prices and threshold and reflects them in the row", async () => {
-    const container = await mount();
+    await mount();
 
     click("edit-item-item-1");
     await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
@@ -388,7 +479,7 @@ describe("inline item edit", () => {
     setInput("edit-sell", "180");
     setInput("edit-threshold", "9");
 
-    openSelectPopup(el<HTMLElement>('[data-testid="edit-category"]'));
+    await openSelectPopup(el<HTMLElement>('[data-testid="edit-category"]'));
     await chooseOption("فلاتر");
 
     click("edit-save");
@@ -402,9 +493,10 @@ describe("inline item edit", () => {
       lowStockThreshold: 9,
     });
 
-    await waitFor(() => container.textContent?.includes("بطارية جديدة") ?? false);
-    expect(container.textContent).toContain("180");
-    expect(container.textContent).toContain("فلاتر");
+    await waitFor(() => Array.from(document.querySelectorAll("td")).some((cell) => cell.textContent === "بطارية جديدة"));
+    const row = rowByCell("بطارية جديدة");
+    expect(row.textContent).toContain("180");
+    expect(row.textContent).toContain("فلاتر");
   });
 
   it("blocks an empty name without calling the server", async () => {
@@ -415,5 +507,59 @@ describe("inline item edit", () => {
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
     expect(updateInputs.length).toBe(0);
+  });
+
+  it("blocks a non-positive selling price without calling the server", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-sell"]') !== null);
+    setInput("edit-sell", "0");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("cancel discards the draft and returns focus to the edit control", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "لن-يُحفظ");
+    click("edit-cancel");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(updateInputs.length).toBe(0);
+    await waitFor(() => document.activeElement === document.querySelector('[data-testid="edit-item-item-1"]'));
+  });
+
+  it("shows the server error and stays in edit mode", async () => {
+    await mount();
+    updateFails = true;
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(document.querySelector('[data-testid="edit-name"]')).not.toBeNull();
+    expect(updateInputs.length).toBe(1);
+  });
+
+  it("does not close a row opened while another save is in flight", async () => {
+    await mount();
+    updateDeferred = true;
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "الصف الأول");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+
+    // open the second row while row 1's save is still pending
+    click("edit-item-item-2");
+    await waitFor(() => inputByTestId("edit-name").value === "فلتر زيت");
+
+    // let row 1's save settle; row 2's draft must stay open
+    await act(async () => {
+      resolveUpdate?.();
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    });
+    expect(document.querySelector('[data-testid="edit-name"]')).not.toBeNull();
+    expect(inputByTestId("edit-name").value).toBe("فلتر زيت");
   });
 });

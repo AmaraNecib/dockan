@@ -584,5 +584,52 @@ describe("SalePage learnability (issue #94)", () => {
     // popup closes and the trigger shows the chosen label
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(trigger.textContent).toContain("نسبة مئوية");
+    // the selection propagates to the form value
+    expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("PERCENTAGE");
+  });
+
+  it("clears an invoice discount back to none through the themed select", async () => {
+    const host = await mountSale();
+    await scan("707");
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await chooseOption(trigger, "نسبة مئوية");
+    expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("PERCENTAGE");
+
+    await act(async () => setInput(host, "sale-discount-value", "10"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.disabled).toBe(false);
+
+    await chooseOption(trigger, "بدون خصم");
+    expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.disabled).toBe(true);
+  });
+
+  it("clears a per-line price override back to the default", async () => {
+    const host = await mountSale();
+    await scan("717");
+
+    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
+    if (overrideType === null) throw new Error("missing override select");
+    await chooseOption(overrideType, "مبلغ");
+    expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).not.toBeNull();
+
+    await chooseOption(overrideType, "الافتراضي");
+    expect(host.querySelector('input[aria-label$="قيمة تعديل السعر"]')).toBeNull();
+  });
+
+  it("keeps a typed override value when the same type is re-selected", async () => {
+    const host = await mountSale();
+    await scan("727");
+
+    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
+    if (overrideType === null) throw new Error("missing override select");
+    await chooseOption(overrideType, "مبلغ");
+    const overrideValue = host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+    if (overrideValue === null) throw new Error("missing override value");
+    await act(async () => setElementValue(overrideValue, "900"));
+
+    await chooseOption(overrideType, "مبلغ");
+    expect(host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]')?.value).toBe("900");
   });
 });

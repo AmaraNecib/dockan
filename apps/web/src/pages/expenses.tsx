@@ -294,7 +294,7 @@ export function ExpensesPage() {
                     <td className="p-3 text-sm whitespace-nowrap text-muted-foreground" dir="ltr">{entry.occurredAt}</td>
                     <td className="p-3">
                       {category?.name ?? entry.categoryId.slice(0, 8)}
-                      {withdrawal && <span className="mr-2 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
+                      {withdrawal && <span className="mr-2 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
                     <td className="p-3 font-semibold"><Amount value={entry.amount} /></td>

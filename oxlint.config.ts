@@ -23,8 +23,9 @@ export default defineConfig({
   ],
   jsPlugins: [{ name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" }, "@shadcn/lint"],
   rules: {
-    // shadcn design-system rules. See .scratch/implementation/101-design.md for
-    // why no-restyle, no-arbitrary-values and no-inline-styles stay disabled.
+    // shadcn design-system rules. no-restyle, no-arbitrary-values and
+    // no-inline-styles stay disabled: each has pre-existing findings that are
+    // an app-wide restyle, not the raw-colour cleanup this lane owns.
     "shadcn/no-raw-colors": "error",
     "shadcn/no-unknown-classes": "error",
     "shadcn/require-static-classes": "error",

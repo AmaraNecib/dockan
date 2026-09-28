@@ -171,7 +171,7 @@ export function ReportsPage() {
                   <tr key={row.categoryId} className={`border-b last:border-0 ${row.isOwnerWithdrawal ? "bg-warning/10" : ""}`} data-testid="report-breakdown-row">
                     <td className="p-3">
                       {row.categoryName}
-                      {row.isOwnerWithdrawal && <span className="mr-2 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
+                      {row.isOwnerWithdrawal && <span className="mr-2 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3">{row.count}</td>
                     <td className="p-3 font-semibold"><Amount value={row.total} /></td>

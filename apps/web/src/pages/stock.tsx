@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -30,6 +31,18 @@ export function StockForm() {
   // that same choice in the trigger: the operator must always see the item the
   // movement will be recorded against (greptile PR #80).
   const selectedItemId = itemId || items.data?.items[0]?.id || "";
+  const selectedItem = items.data?.items.find((item) => item.id === selectedItemId) ?? null;
+
+  // Mirror the item's last known unit cost into the cost field when the
+  // selection changes. The ref guard means a background refetch (after a stock
+  // movement) can never overwrite a value the owner is typing.
+  const prefilledItemRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedItem === null || selectedItem === undefined) return;
+    if (prefilledItemRef.current === selectedItemId) return;
+    prefilledItemRef.current = selectedItemId;
+    setUnitCost(String(selectedItem.costPrice));
+  }, [selectedItemId, selectedItem]);
 
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
@@ -78,7 +91,7 @@ export function StockForm() {
           onValueChange={(value) => setItemId(value ?? "")}
           items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" data-testid="stock-item">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -90,11 +103,18 @@ export function StockForm() {
           </SelectContent>
         </Select>
       </label>
+      {selectedItem && (
+        <p className="text-sm text-muted-foreground" data-testid="stock-selling-price">
+          {t("stockSellingPrice")}: <Amount value={selectedItem.sellingPrice} className="text-foreground" />
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("stockQuantity")}
           <input
             className="rounded border px-3 py-2"
+            name="stockDelta"
+            autoComplete="off"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
             inputMode="numeric"
@@ -104,15 +124,23 @@ export function StockForm() {
         </label>
         <label className="grid gap-1">
           {t("stockUnitCost")}
-          <input className="rounded border px-3 py-2" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} inputMode="numeric" />
+          <input
+            className="rounded border px-3 py-2"
+            name="stockUnitCost"
+            autoComplete="off"
+            value={unitCost}
+            onChange={(e) => setUnitCost(e.target.value)}
+            inputMode="numeric"
+            data-testid="stock-unit-cost"
+          />
         </label>
       </div>
       <label className="grid gap-1">
         {t("stockReason")}
-        <input className="rounded border px-3 py-2" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <input className="rounded border px-3 py-2" name="stockReason" autoComplete="off" value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
       {error && (
-        <p className="text-sm text-destructive" data-testid="stock-error">
+        <p className="text-sm text-destructive" role="alert" data-testid="stock-error">
           {error}
         </p>
       )}

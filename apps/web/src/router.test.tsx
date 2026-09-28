@@ -187,17 +187,19 @@ describe("sale route reset (header New Sale action)", () => {
     await act(async () => buttonByTestId("sale-quick-add").click());
     await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') !== null);
     await waitFor(() => {
-      const select = document.querySelector<HTMLSelectElement>('[data-testid="sale-quick-form"] select');
-      return select !== null && select.options.length > 0;
+      const category = document.querySelector('[data-testid="sale-quick-category"]');
+      return category !== null && category.textContent?.trim() !== "";
     });
 
-    const quickInputs = Array.from(
-      document.querySelectorAll<HTMLInputElement>('[data-testid="sale-quick-form"] input'),
-    );
+    const quickInput = (name: string): HTMLInputElement => {
+      const input = document.querySelector<HTMLInputElement>(`[data-testid="sale-quick-form"] [name="${name}"]`);
+      if (input === null) throw new Error(`missing quick-add input: ${name}`);
+      return input;
+    };
     await act(async () => {
-      typeInto(quickInputs[0]!, "منتج سريع");
-      typeInto(quickInputs[2]!, "100");
-      typeInto(quickInputs[3]!, "150");
+      typeInto(quickInput("quickName"), "منتج سريع");
+      typeInto(quickInput("quickCost"), "100");
+      typeInto(quickInput("quickSell"), "150");
     });
 
     const submit = document.querySelector<HTMLButtonElement>(

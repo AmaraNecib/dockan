@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { ReportRangePreset } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
@@ -74,9 +75,18 @@ export function ReportsPage() {
         <div className="grid grid-cols-3 gap-3">
           <label className="grid gap-1">
             {t("expensesRange")}
-            <select className="rounded border px-3 py-2" value={preset} onChange={(event) => setPreset(toPreset(event.target.value))} data-testid="report-range-preset">
-              {PRESET_KEYS.map((key) => <option key={key} value={key}>{t(`rangePreset_${key}`)}</option>)}
-            </select>
+            <Select
+              value={preset}
+              onValueChange={(value) => setPreset(toPreset(value ?? ""))}
+              items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
+            >
+              <SelectTrigger className="w-full" data-testid="report-range-preset">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PRESET_KEYS.map((key) => <SelectItem key={key} value={key}>{t(`rangePreset_${key}`)}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </label>
           {preset === "CUSTOM" && (
             <>
@@ -131,7 +141,7 @@ export function ReportsPage() {
               <dt>{t("reportOperatingExpenses")}</dt>
               <dd className="font-semibold" data-testid="report-operating"><Amount value={`-${report.data.operatingExpenses}`} /></dd>
             </div>
-            <div className="flex justify-between bg-amber-50 p-3">
+            <div className="flex justify-between bg-warning/10 p-3">
               <dt>{t("reportOwnerWithdrawals")}</dt>
               <dd className="font-semibold" data-testid="report-withdrawals"><Amount value={`-${report.data.ownerWithdrawals}`} /></dd>
             </div>
@@ -158,10 +168,10 @@ export function ReportsPage() {
               </thead>
               <tbody>
                 {report.data.byCategory.map((row) => (
-                  <tr key={row.categoryId} className={`border-b last:border-0 ${row.isOwnerWithdrawal ? "bg-amber-50" : ""}`} data-testid="report-breakdown-row">
+                  <tr key={row.categoryId} className={`border-b last:border-0 ${row.isOwnerWithdrawal ? "bg-warning/10" : ""}`} data-testid="report-breakdown-row">
                     <td className="p-3">
                       {row.categoryName}
-                      {row.isOwnerWithdrawal && <span className="mr-2 rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900">{t("expensesWithdrawalBadge")}</span>}
+                      {row.isOwnerWithdrawal && <span className="mr-2 rounded bg-warning/20 px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3">{row.count}</td>
                     <td className="p-3 font-semibold"><Amount value={row.total} /></td>

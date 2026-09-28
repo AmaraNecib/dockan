@@ -23,7 +23,7 @@ async function addStockedLine(
 ): Promise<void> {
   await page.getByTestId("sale-quick-stock-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");

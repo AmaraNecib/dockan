@@ -174,7 +174,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           </label>
         </div>
         {remaining === 0 ? (
-          <p className="text-sm text-green-700" data-testid="pmt-unavailable">{t("pmtUnavailable")}</p>
+          <p className="text-sm text-success" data-testid="pmt-unavailable">{t("pmtUnavailable")}</p>
         ) : (
           <button
             type="submit"
@@ -186,7 +186,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           </button>
         )}
         {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="pmt-error">{error}</p>}
-        {recorded && <p role="status" className="text-sm text-green-700" data-testid="pmt-done">{t("pmtRecorded")}</p>}
+        {recorded && <p role="status" className="text-sm text-success" data-testid="pmt-done">{t("pmtRecorded")}</p>}
       </form>
     </div>
   );
@@ -465,7 +465,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             </p>
           )}
           {cashExceedsCollected && (
-            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-600" data-testid="returns-cash-warning">
+            <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-cash-warning">
               {t("returnsCashWarning", { paid: invoice.paidAmount })}
             </p>
           )}
@@ -491,7 +491,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           {t("returnsSave")}
         </button>
         {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="returns-error">{error}</p>}
-        {recorded && <p role="status" className="text-sm text-green-700" data-testid="returns-done">{t("returnsSaved")}</p>}
+        {recorded && <p role="status" className="text-sm text-success" data-testid="returns-done">{t("returnsSaved")}</p>}
       </form>
     </div>
   );

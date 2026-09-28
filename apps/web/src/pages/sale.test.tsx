@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
+import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
+
 // React 19 act() requires the environment flag to be set explicitly.
 // SAFETY: only this flag is written; globalThis keeps every other property.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -278,12 +280,6 @@ function setInput(host: HTMLElement, testId: string, value: string): void {
   setElementValue(input, value);
 }
 
-function setSelect(select: HTMLSelectElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-  setter?.call(select, value);
-  select.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
 function saveButton(host: HTMLElement): HTMLButtonElement {
   const button = host.querySelector<HTMLButtonElement>('[data-testid="sale-save"]');
   if (button === null) throw new Error("missing sale-save button");
@@ -389,11 +385,9 @@ describe("SalePage commit states (greptile round-2)", () => {
     const host = await mountSale();
     await scan("555");
     // give the line an override so the override-value input renders too
-    await act(async () => {
-      const overrideType = host.querySelector<HTMLSelectElement>('select[aria-label$="نوع تعديل السعر"]');
-      if (overrideType === null) throw new Error("missing override type select");
-      setSelect(overrideType, "AMOUNT");
-    });
+    const overrideType = host.querySelector<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]');
+    if (overrideType === null) throw new Error("missing override type select");
+    await chooseOption(overrideType, "مبلغ");
     await act(async () => {
       const overrideValue = host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
       if (overrideValue === null) throw new Error("missing override value input");
@@ -407,7 +401,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     });
 
     const disabled = (selector: string): boolean =>
-      host.querySelector<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(selector)?.disabled ?? false;
+      host.querySelector<HTMLInputElement | HTMLButtonElement>(selector)?.disabled ?? false;
     expect(disabled('[data-testid="sale-customer"]')).toBe(true);
     expect(disabled('[data-testid="sale-paid"]')).toBe(true);
     expect(disabled('[data-testid="sale-open-picker"]')).toBe(true);
@@ -416,7 +410,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(disabled('[data-testid="sale-discount-type"]')).toBe(true);
     expect(disabled('[data-testid="sale-discount-value"]')).toBe(true);
     expect(disabled('input[aria-label$="الكمية"]')).toBe(true);
-    expect(disabled('select[aria-label$="نوع تعديل السعر"]')).toBe(true);
+    expect(disabled('button[aria-label$="نوع تعديل السعر"]')).toBe(true);
     expect(disabled('input[aria-label$="قيمة تعديل السعر"]')).toBe(true);
     expect(disabled('button[aria-label^="حذف"]')).toBe(true);
 
@@ -550,9 +544,9 @@ describe("SalePage learnability (issue #94)", () => {
     const host = await mountSale();
     await scan("999");
 
-    const discountType = host.querySelector<HTMLSelectElement>('[data-testid="sale-discount-type"]');
+    const discountType = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (discountType === null) throw new Error("missing discount type");
-    await act(async () => setSelect(discountType, "PERCENTAGE"));
+    await chooseOption(discountType, "نسبة مئوية");
     await act(async () => setInput(host, "sale-discount-value", "10"));
 
     const remove = host.querySelector<HTMLButtonElement>('button[aria-label^="حذف"]');
@@ -568,7 +562,27 @@ describe("SalePage learnability (issue #94)", () => {
 
     // a fresh line starts with no stale discount
     await scan("998");
-    expect(host.querySelector<HTMLSelectElement>('[data-testid="sale-discount-type"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-discount-value"]')?.value).toBe("");
+  });
+
+  it("opens the themed discount select, selects a value, and closes", async () => {
+    const host = await mountSale();
+    await scan("606");
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    expect(trigger.getAttribute("data-slot")).toBe("select-trigger");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    await openSelect(trigger);
+    const option = await findOption("نسبة مئوية");
+    expect(option).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    await activateOption(option!);
+    // popup closes and the trigger shows the chosen label
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.textContent).toContain("نسبة مئوية");
   });
 });

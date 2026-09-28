@@ -121,13 +121,13 @@ describe("Button (Base UI primitive)", () => {
     try {
       const { host } = render(
         <Button asChild>
-          <button className="custom">Go</button>
+          <button className="underline">Go</button>
         </Button>,
       );
       const button = host.querySelector("button")!;
       expect(button.getAttribute("type")).toBe("button");
       expect(button.getAttribute("role")).toBeNull();
-      expect(button.className).toContain("custom");
+      expect(button.className).toContain("underline");
       expect(button.className).toContain("bg-primary");
     } finally {
       console.error = originalError;

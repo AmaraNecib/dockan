@@ -141,7 +141,7 @@ export function PurchasePage() {
       {savedInvoice && (
         <div className="mt-4 rounded border bg-card p-4" data-testid="purchase-saved">
           <InvoiceHeader />
-          <p className="mt-2 font-semibold text-green-700" data-testid="purchase-saved-number">
+          <p className="mt-2 font-semibold text-success" data-testid="purchase-saved-number">
             {t("purchasesSaved", { number: savedInvoice.invoiceNumber })}
           </p>
           <LinkProposalPanel invoiceId={savedInvoice.id} />
@@ -397,7 +397,7 @@ export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
         </ul>
       )}
       {linkedMsg && (
-        <p className="mt-2 text-sm text-green-700" data-testid="link-result">
+        <p className="mt-2 text-sm text-success" data-testid="link-result">
           {linkedMsg}
         </p>
       )}

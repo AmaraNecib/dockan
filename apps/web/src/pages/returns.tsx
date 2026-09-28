@@ -65,7 +65,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
             </div>
             <div className="flex items-center gap-2">
               <span
-                className={`rounded-full px-2 py-0.5 text-xs ${record.status === "PENDING_REVIEW" ? "bg-amber-500/10 text-amber-600" : record.status === "ACCEPTED" ? "bg-green-500/10 text-green-700" : "bg-destructive/10 text-destructive"}`}
+                className={`rounded-full px-2 py-0.5 text-xs ${record.status === "PENDING_REVIEW" ? "bg-warning/10 text-warning" : record.status === "ACCEPTED" ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"}`}
                 data-testid={`returns-status-${record.status}`}
               >
                 {t(`returnsStatus_${record.status}`)}
@@ -93,7 +93,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
               <div className="flex gap-2">
                 <button
                   type="button"
-                  className="rounded-lg bg-green-700 px-3 py-1 text-sm text-white disabled:opacity-50"
+                  className="rounded-lg bg-success px-3 py-1 text-sm text-success-foreground disabled:opacity-50"
                   disabled={busy !== null}
                   onClick={() => {
                     setBusy(record.id);
@@ -105,7 +105,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
                 </button>
                 <button
                   type="button"
-                  className="rounded-lg bg-red-700 px-3 py-1 text-sm text-white disabled:opacity-50"
+                  className="rounded-lg bg-destructive px-3 py-1 text-sm text-destructive-foreground disabled:opacity-50"
                   disabled={busy !== null}
                   onClick={() => {
                     setBusy(record.id);

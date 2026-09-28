@@ -92,7 +92,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
         <>
           {summary.isRefetchError && (
             <p
-              className="mt-4 rounded border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-600"
+              className="mt-4 rounded border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
               role="status"
               data-testid="dashboard-stale"
             >

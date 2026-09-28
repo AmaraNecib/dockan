@@ -1,7 +1,9 @@
-# Code review — issue #100 (HEAD `3f311aa`)
+# Code review — issue #100 (HEAD `0646f81`)
 
-Two-axis review of `git diff 0b4d5a1...3f311aa` (commits `dfb4faf`, `d316611`,
-`f2af582`, `1617c70`, `3f311aa`). Base pinned to `0b4d5a1`.
+Two-axis review of `git diff 0b4d5a1...0646f81` (commits `dfb4faf`, `d316611`,
+`f2af582`, `1617c70`, `3f311aa`, `54574f7`, `0646f81`). Base pinned to
+`0b4d5a1`. The reviewed production/test code is identical to `3f311aa`; the two
+later commits add only the review evidence and the wisdom doc.
 
 Spec source: the issue #100 brief (lane handoff) and the design doc
 `.scratch/implementation/100-design.md`.

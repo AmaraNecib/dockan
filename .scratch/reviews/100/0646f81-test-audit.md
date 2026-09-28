@@ -1,6 +1,7 @@
-# Test audit — issue #100 (HEAD `3f311aa`)
+# Test audit — issue #100 (HEAD `0646f81`)
 
-Base: `0b4d5a1`. Reviewed HEAD: `3f311aa`. Tier: **Standard** (pinned by the lane
+Base: `0b4d5a1`. Reviewed HEAD: `0646f81`; the reviewed production/test code is
+identical to `3f311aa` (the commit after it adds only `.agents/wisdom`). Tier: **Standard** (pinned by the lane
 brief; the workflow table lists "auth login" under High-assurance, but the brief
 overrides and mandates no debate).
 

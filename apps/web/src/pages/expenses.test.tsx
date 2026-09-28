@@ -218,6 +218,10 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     expect(await ui.waitFor(() => ui.selectValue().includes("كهرباء"))).toBe(true);
     expect(ui.query("expense-category-created")?.textContent).toContain("تمت إضافة التصنيف كهرباء");
 
+    // reopening the quick-add clears the previous success message
+    await ui.click("expense-category-add");
+    expect(ui.query("expense-category-created")).toBeNull();
+
     await ui.unmount();
   });
 

@@ -202,8 +202,11 @@ export function ExpensesPage() {
                     size="sm"
                     aria-expanded={categoryFormOpen}
                     onClick={() => {
-                      setCategoryError(null);
-                      setCategoryFormOpen((open) => !open);
+                      if (categoryFormOpen) {
+                        setCategoryFormOpen(false);
+                      } else {
+                        openCategoryForm();
+                      }
                     }}
                     data-testid="expense-category-add"
                   >

@@ -312,3 +312,34 @@ header as the loaded panel, so the dashboard does not jump.
   1280×720 and must match within 1px (finding 3's missing evidence).
 - New unit tests: failed-read self-heal, sibling-key race, imperative guards,
   and the shared codec.
+
+## Round-3 hardening (second review of the preferences layer)
+
+- **Ordered writes.** `preferences.ts` keeps a per-key write tail: a write
+  starts only after the previous write for that key settles, so an earlier
+  choice can never land after a later one. Only the newest queued write
+  reconciles (`isLatestPreferenceWrite`), so an intermediate refetch cannot
+  undo the visible choice. Each attempt retries transient failures (3 tries,
+  50/100ms); the server upsert is idempotent. Covered by a test whose first
+  write is held open until after the second is queued.
+- **Never a partial cache.** An unconfirmed choice now lives in a local overlay
+  instead of being written into the shared query cache. The cache only ever
+  holds a full server read. On a failed write the overlay is cleared and the
+  query is invalidated, so the UI stops claiming a state the server rejected.
+  Covered by a test with a pending initial read AND a failed write.
+- **Multi-window freshness.** `staleTime` is a finite 30s and the query
+  refetches on window focus/visibility and reconnect, so a dismissal made in
+  another window is picked up without a reload. Covered by a focusManager test.
+- **Durable milestone.** The client no longer writes `ui.onboarding.completed`
+  best-effort. New session-guarded `onboardingComplete` re-checks the four real
+  records and upserts the milestone idempotently; the dashboard calls it (with
+  retries) when it observes completion, then refreshes the shared preferences
+  query. A failed call leaves no persisted claim, and the next observation
+  retries. A failed dismissal reverts the overlay instead of hiding silently.
+- **Legacy sidebar migration.** `migrateLegacySidebarCollapsed()` imports the
+  old `dokan.sidebar.collapsed` localStorage value once when the server has no
+  sidebar preference, then clears the legacy key; a failed read or write keeps
+  it for the next launch, and a throwing localStorage is caught. AppShell runs
+  it on mount and refreshes the preferences query after a real import.
+- `ONBOARDING_COMPLETED_PREFERENCE_KEY` is shared from contracts so the router
+  that writes the milestone and the web hook that reads it cannot drift.

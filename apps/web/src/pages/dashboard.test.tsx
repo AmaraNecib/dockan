@@ -49,8 +49,11 @@ let preferenceStore: Record<string, string>;
 let failSummary = false;
 let failProgress = false;
 let failPreferences = false;
+let failPreferenceWrites = false;
 let preferencesPending = false;
 let progressPending = false;
+let failAcknowledge = false;
+let acknowledgeCount = 0;
 let fetchCount = 0;
 let progressFetchCount = 0;
 
@@ -112,6 +115,17 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
+    onboardingComplete: {
+      mutationOptions: (opts?: { onSuccess?: () => void }) => ({
+        mutationFn: async () => {
+          acknowledgeCount += 1;
+          if (failAcknowledge) throw new Error("ONBOARDING_COMPLETE_FAILED");
+          preferenceStore[ONBOARDING_COMPLETED_KEY] = "true";
+          return { completed: true };
+        },
+        ...opts,
+      }),
+    },
   },
   rpcClient: {
     preferencesGet: async () => {
@@ -120,6 +134,7 @@ mock.module("@/lib/rpc", () => ({
       return { values: { ...preferenceStore } };
     },
     preferencesSet: async (input: { key: string; value: string }) => {
+      if (failPreferenceWrites) throw new Error("PREFERENCES_WRITE_FAILED");
       preferenceStore[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
@@ -177,8 +192,11 @@ describe("DashboardPage summary (issue 84)", () => {
     failSummary = false;
     failProgress = false;
     failPreferences = false;
+    failPreferenceWrites = false;
     preferencesPending = false;
     progressPending = false;
+    failAcknowledge = false;
+    acknowledgeCount = 0;
     fetchCount = 0;
     progressFetchCount = 0;
     preferenceStore = {};
@@ -312,8 +330,11 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     failSummary = false;
     failProgress = false;
     failPreferences = false;
+    failPreferenceWrites = false;
     preferencesPending = false;
     progressPending = false;
+    failAcknowledge = false;
+    acknowledgeCount = 0;
     fetchCount = 0;
     progressFetchCount = 0;
     preferenceStore = {};
@@ -401,6 +422,27 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await page.unmount();
   });
 
+  it("records the completed milestone server-side when every step is complete", async () => {
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    const page = await mount(queryClient);
+    // the server owns the milestone; the client only asks for it
+    expect(await waitFor(() => preferenceStore[ONBOARDING_COMPLETED_KEY] === "true")).toBe(true);
+    expect(acknowledgeCount).toBeGreaterThan(0);
+    expect(page.panel()).toBeNull();
+    await page.unmount();
+  });
+
+  it("does not claim completion the server rejected", async () => {
+    failAcknowledge = true;
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    const page = await mount(queryClient);
+    expect(await waitFor(() => acknowledgeCount > 0)).toBe(true);
+    // the live records already hide the panel, but no persisted milestone exists
+    expect(preferenceStore[ONBOARDING_COMPLETED_KEY]).toBeUndefined();
+    expect(page.panel()).toBeNull();
+    await page.unmount();
+  });
+
   it("does not return after completion, even if records later change", async () => {
     progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
     const page = await mount(queryClient);
@@ -434,6 +476,19 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     expect(remounted.panel()).toBeNull();
     remountClient.clear();
     await remounted.unmount();
+  });
+
+  it("reverts a failed dismissal instead of claiming it", async () => {
+    failPreferenceWrites = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+
+    await act(async () => page.dismiss()?.click());
+    // optimistic hide first, then the retries exhaust and the panel returns
+    expect(await waitFor(() => page.panel() === null)).toBe(true);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    expect(preferenceStore[ONBOARDING_DISMISSED_KEY]).toBeUndefined();
+    await page.unmount();
   });
 
   it("leaves the existing cards and lists visible alongside the panel", async () => {

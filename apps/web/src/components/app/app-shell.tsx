@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
@@ -20,7 +21,8 @@ import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
 import { NAV_GROUPS, activeNavKey } from "./navigation";
 import { useSaleDraft } from "./sale-draft";
-import { useSidebarCollapsed } from "./sidebar-state";
+import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
+import { migrateLegacySidebarCollapsed, useSidebarCollapsed } from "./sidebar-state";
 
 function pageTitleFor(activeKey: string | null): string | null {
   if (!activeKey) return null;
@@ -128,6 +130,15 @@ export function AppShell() {
   // Server-side preference: survives a packaged restart (random localhost port
   // wipes localStorage). A failed read keeps the sidebar expanded.
   const { value: collapsed, updateValue: updateCollapsed } = useSidebarCollapsed();
+  const queryClient = useQueryClient();
+
+  // One-time import of the pre-server localStorage preference, then refresh
+  // the shared query so the migrated value takes effect without a reload.
+  useEffect(() => {
+    void migrateLegacySidebarCollapsed().then((migrated) => {
+      if (migrated) void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+    });
+  }, [queryClient]);
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);

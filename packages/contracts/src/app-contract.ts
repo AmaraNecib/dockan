@@ -35,6 +35,7 @@ import {
   logsTailOutputSchema,
   lowStockOutputSchema,
   onboardingProgressOutputSchema,
+  onboardingCompleteOutputSchema,
   partyCreateInputSchema,
   preferencesGetOutputSchema,
   preferencesSetInputSchema,
@@ -135,6 +136,8 @@ export const dokanContract = {
   /** one EXISTS read: whether the shop has an item, a purchase, a sale, and a
    * party-attributed debt — the dashboard checklist's completion source */
   onboardingProgress: oc.output(onboardingProgressOutputSchema),
+  /** idempotently record the completed milestone once every record exists */
+  onboardingComplete: oc.output(onboardingCompleteOutputSchema),
 
   // --- expenses (ticket 31) -------------------------------------------------
   expenseCategoriesList: oc.output(z.object({ items: z.array(expenseCategorySchema) })),

@@ -6,13 +6,16 @@ import {
   writePreference,
 } from "@/lib/preferences";
 
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
+
 /**
  * Getting-started dismissal and completion live server-side so a packaged-app
  * restart keeps them: the desktop shell serves the webview from a new random
  * localhost port each launch, which wipes localStorage.
  */
 export const ONBOARDING_DISMISSED_KEY = "ui.onboarding.dismissed";
-export const ONBOARDING_COMPLETED_KEY = "ui.onboarding.completed";
+/** Server-written milestone; the router and this hook share the constant. */
+export const ONBOARDING_COMPLETED_KEY = ONBOARDING_COMPLETED_PREFERENCE_KEY;
 
 /** Imperative read seams (tests and non-React callers). */
 export async function readOnboardingDismissed(): Promise<boolean> {

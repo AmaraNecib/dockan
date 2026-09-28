@@ -884,6 +884,18 @@ export const onboardingProgressOutputSchema = z.object({
   hasDebt: z.boolean(),
 });
 
+/**
+ * Server-written milestone the web reads as a preference: the getting-started
+ * checklist was completed from real records. Shared so the router that writes
+ * it and the web hook that reads it cannot drift.
+ */
+export const ONBOARDING_COMPLETED_PREFERENCE_KEY = "ui.onboarding.completed";
+
+export const onboardingCompleteOutputSchema = z.object({
+  /** true when every record exists and the milestone is recorded */
+  completed: z.boolean(),
+});
+
 export const debtsByPartyInputSchema = z
   .object({
     kind: invoiceKindSchema,

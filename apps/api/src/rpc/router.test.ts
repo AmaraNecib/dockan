@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import type { DokanClient } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -3148,5 +3148,30 @@ describe("UI preferences (issue 97 follow-up)", () => {
     await expect(client.preferencesSet({ key: "ui.test.oversize", value: "v".repeat(513) })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
+  });
+});
+
+describe("onboarding completion milestone (issue 97 follow-up)", () => {
+  it("requires a session", async () => {
+    await expect(unauthed.onboardingComplete()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("records the milestone idempotently once every record exists", async () => {
+    const category = await client.categoriesCreate({ name: `اكتمال-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({
+      name: `اكتمال-مادة-${Date.now()}`,
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 150,
+      stockOnHand: 2,
+    });
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] });
+    await client.invoicesCreate({ kind: "SALE", counterpartyName: "اكتمال-زبون", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    // idempotent: a retry returns the same answer and the milestone stays set
+    expect(await client.onboardingComplete()).toEqual({ completed: true });
+    expect(await client.onboardingComplete()).toEqual({ completed: true });
+    const { values } = await client.preferencesGet();
+    expect(values[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
   });
 });

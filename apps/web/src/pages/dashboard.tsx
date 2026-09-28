@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { GettingStartedPanel } from "@/components/app/getting-started-panel";
 import { useOnboardingCompleted, useOnboardingDismissed } from "@/components/app/onboarding-state";
 import { isOnboardingComplete } from "@/components/app/onboarding-steps";
+import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 
 import { orpc } from "../lib/rpc";
 
@@ -50,9 +51,21 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
   // follow-up): they survive a packaged restart. While they load, the panel
   // waits rather than flashing open for an owner who already dismissed it.
   const { value: dismissed, setValue: setDismissed, isPending: dismissedPending } = useOnboardingDismissed();
-  const { value: completed, setValue: setCompleted, isPending: completedPending } = useOnboardingCompleted();
+  const { value: completed, isPending: completedPending } = useOnboardingCompleted();
   const hidden = dismissed || completed;
   const preferencesPending = dismissedPending || completedPending;
+  const queryClient = useQueryClient();
+
+  const acknowledge = useMutation({
+    ...orpc.onboardingComplete.mutationOptions(),
+    // the server records the milestone idempotently, so retrying is safe
+    retry: 2,
+    retryDelay: 100,
+    onSuccess: () => {
+      // pull the recorded milestone into the shared preferences cache
+      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+    },
+  });
 
   const progress = useQuery({
     ...orpc.onboardingProgress.queryOptions(),
@@ -63,12 +76,14 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     refetchInterval: refreshMs,
   });
 
-  // "Finished means gone": record the milestone once, so a later settlement
-  // cannot resurrect the panel.
+  // "Finished means gone": when the four real records are observed, ask the
+  // server to record the milestone idempotently. The call is retried; if it
+  // still fails, the next observation tries again, and the UI never persists
+  // completion the server does not have.
   const complete = progress.data !== undefined && isOnboardingComplete(progress.data);
   useEffect(() => {
-    if (complete) setCompleted(true);
-  }, [complete, setCompleted]);
+    if (complete) acknowledge.mutate(undefined);
+  }, [acknowledge.mutate, complete]);
 
   return (
     <section data-testid="dashboard-page">

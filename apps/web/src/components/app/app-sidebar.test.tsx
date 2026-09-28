@@ -38,7 +38,8 @@ mock.module("@/lib/rpc", () => ({
   orpc: {},
 }));
 
-const { SIDEBAR_COLLAPSED_KEY, readSidebarCollapsed, writeSidebarCollapsed } = await import("./sidebar-state");
+const { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed, readSidebarCollapsed, writeSidebarCollapsed } =
+  await import("./sidebar-state");
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
@@ -129,6 +130,65 @@ describe("sidebar collapse default (issue #94, server-side since #97)", () => {
   it("keeps the in-memory choice when the preference write fails", async () => {
     failPreferenceWrite = true;
     await expect(writeSidebarCollapsed(true)).resolves.toBe(false);
+  });
+});
+
+describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
+  const LEGACY_KEY = "dokan.sidebar.collapsed";
+
+  beforeEach(() => {
+    preferenceStore = {};
+    failPreferenceRead = false;
+    failPreferenceWrite = false;
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("imports the legacy collapse once and drops the legacy key", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "true");
+    expect(await migrateLegacySidebarCollapsed()).toBe(true);
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
+  });
+
+  it("does not overwrite a server value and clears the stale legacy key", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "true");
+    preferenceStore[SIDEBAR_COLLAPSED_KEY] = "false";
+    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
+  });
+
+  it("keeps the legacy key when the write fails so the next launch retries", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "true");
+    failPreferenceWrite = true;
+    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBe("true");
+  });
+
+  it("keeps the legacy key when the server read fails", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "true");
+    failPreferenceRead = true;
+    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBe("true");
+  });
+
+  it("does not throw when localStorage is unavailable", async () => {
+    const original = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("storage disabled");
+      },
+    });
+    try {
+      await expect(migrateLegacySidebarCollapsed()).resolves.toBe(false);
+    } finally {
+      if (original !== undefined) Object.defineProperty(window, "localStorage", original);
+    }
   });
 });
 

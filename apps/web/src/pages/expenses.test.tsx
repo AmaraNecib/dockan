@@ -286,6 +286,21 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     await ui.unmount();
   });
 
+  it("treats a whitespace-only name as missing without calling the api", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+
+    await ui.click("expense-category-add");
+    await ui.type("expense-category-name", "   ");
+    await ui.submit("expense-category-form");
+
+    expect(lastCreatedName).toBeNull();
+    expect(ui.query("expense-category-error")?.textContent).toContain("أدخل اسم التصنيف");
+
+    await ui.unmount();
+  });
+
   it("cancels the quick-add without creating anything", async () => {
     categoriesFixture = [category("cat-1", "عام")];
     const ui = await mountPage(queryClient);

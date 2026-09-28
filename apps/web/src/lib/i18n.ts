@@ -180,6 +180,8 @@ const resources = {
       settingsSaving: "جاري الحفظ…",
       settingsSaved: "تم حفظ الإعدادات",
       itemsSellAboveCost: "سعر البيع يجب أن يكون عدداً موجباً",
+      itemsCostInvalid: "أدخل تكلفة صحيحة (عدد صحيح 0 أو أكثر)",
+      itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
       itemsProfitPerUnit: "الربح لكل وحدة: {{profit}} دج",
       itemsUncategorized: "بدون تصنيف",

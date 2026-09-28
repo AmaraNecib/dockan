@@ -425,9 +425,11 @@ describe("add item form opening stock", () => {
       setInput("initial-stock", bad);
       click("item-save");
       await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+      // the stock-specific message proves this value was rejected, not a stale error
+      expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain("مخزون");
+      expect(createInputs.length).toBe(0);
+      expect(createWithStockInputs.length).toBe(0);
     }
-    expect(createInputs.length).toBe(0);
-    expect(createWithStockInputs.length).toBe(0);
   });
 });
 
@@ -514,6 +516,27 @@ describe("inline item edit", () => {
     click("edit-item-item-1");
     await waitFor(() => document.querySelector('[data-testid="edit-sell"]') !== null);
     setInput("edit-sell", "0");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("rejects a non-numeric cost instead of silently zeroing it", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "abc");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(el<HTMLElement>('[data-testid="items-edit-error"]').textContent).toContain("تكلفة");
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("rejects a negative threshold instead of silently zeroing it", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-threshold"]') !== null);
+    setInput("edit-threshold", "-2");
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
     expect(updateInputs.length).toBe(0);

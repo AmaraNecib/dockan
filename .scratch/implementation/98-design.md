@@ -120,8 +120,10 @@ switch back to `products` before asserting table rows (the inactive panel is
   with a shared `openItemsTab` helper and explicit switches; run the full suite.
 - **Prefill clobber.** A ref guards the unit-cost prefill so a refetch cannot
   overwrite a typed value.
-- **Inline edit + RTL table.** Inputs are narrow; verify at desktop widths and
-  keep the existing column count.
+- **Inline edit + RTL table.** Inputs are narrow; verify at desktop widths. A
+  dedicated `itemsThreshold` column was added so the threshold is editable
+  inline — the table goes 8 → 9 columns, and the confusing `dashboardItemsCount`
+  header on the stock column was relabelled `itemsStock`.
 - **Stale `itemsUpdate` handling.** Only five fields are sent; the contract is
   untouched, so no schema drift.
 

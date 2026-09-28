@@ -38,7 +38,7 @@ export function StockForm() {
   // movement) can never overwrite a value the owner is typing.
   const prefilledItemRef = useRef<string | null>(null);
   useEffect(() => {
-    if (selectedItem === null || selectedItem === undefined) return;
+    if (selectedItem === null) return;
     if (prefilledItemRef.current === selectedItemId) return;
     prefilledItemRef.current = selectedItemId;
     setUnitCost(String(selectedItem.costPrice));
@@ -54,6 +54,7 @@ export function StockForm() {
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
         ]);
       },
       onError: (err) => setError(tError(err.message)),

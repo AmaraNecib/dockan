@@ -287,6 +287,7 @@ function ItemForm({
   const [barcode, setBarcode] = useState("");
   const [initialStock, setInitialStock] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const initialStockRef = useRef<HTMLInputElement>(null);
 
   // Submit falls back to the first category when none was picked, so surface
@@ -299,9 +300,11 @@ function ItemForm({
   useEffect(() => {
     if (seed !== null) {
       setBarcode(seed.barcode);
-      if (!seed.withStock) setInitialStock("");
+      // a fresh scan must not inherit a quantity typed for a previous item
+      setInitialStock("");
       setError(null);
       if (seed.withStock) initialStockRef.current?.focus();
+      else nameRef.current?.focus();
     }
   }, [seed]);
 
@@ -395,7 +398,7 @@ function ItemForm({
       <h2 className="font-semibold">{t("itemsNewTitle")}</h2>
       <label className="grid gap-1">
         {t("itemsName")}
-        <input className="rounded border px-3 py-2" name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
+        <input ref={nameRef} className="rounded border px-3 py-2" name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
       </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
@@ -549,14 +552,27 @@ function ItemList() {
       setEditError(t("itemsChooseCategory"));
       return;
     }
-    const parsedThreshold = Number(draft.threshold);
+    const costText = draft.cost.trim();
+    const thresholdText = draft.threshold.trim();
+    const parsedCost = Number(costText);
+    const parsedThreshold = Number(thresholdText);
+    // a typo must not silently rewrite a money value or the warn-at quantity
+    if (costText !== "" && (!Number.isInteger(parsedCost) || parsedCost < 0)) {
+      setEditError(t("itemsCostInvalid"));
+      return;
+    }
+    if (thresholdText !== "" && (!Number.isInteger(parsedThreshold) || parsedThreshold < 0)) {
+      setEditError(t("itemsThresholdInvalid"));
+      return;
+    }
     update.mutate({
       id: draft.id,
       name: draft.name.trim(),
       categoryId: draft.categoryId,
-      costPrice: Number.isFinite(Number(draft.cost)) && Number(draft.cost) >= 0 ? Number(draft.cost) : 0,
+      // blank means a deliberate zero (a free item, or warn-at-zero)
+      costPrice: costText === "" ? 0 : parsedCost,
       sellingPrice: selling,
-      lowStockThreshold: Number.isFinite(parsedThreshold) && parsedThreshold >= 0 ? parsedThreshold : 0,
+      lowStockThreshold: thresholdText === "" ? 0 : parsedThreshold,
     });
   }
 
@@ -599,6 +615,7 @@ function ItemList() {
         <tbody>
           {items.data?.items.map((item: ItemListItem) => {
             const editing = draft !== null && draft.id === item.id;
+            const draftProfit = editing ? profitPreview(draft.cost, draft.sell) : null;
             return (
               <tr key={item.id} className="border-b last:border-0">
                 <td className="p-3">
@@ -609,6 +626,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.name}
                       onChange={(e) => patchDraft({ name: e.target.value })}
+                      disabled={update.isPending}
                       aria-label={t("itemsName")}
                       data-testid="edit-name"
                     />
@@ -630,6 +648,7 @@ function ItemList() {
                     <Select
                       value={draft.categoryId}
                       onValueChange={(value) => patchDraft({ categoryId: value ?? "" })}
+                      disabled={update.isPending}
                       items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
                     >
                       <SelectTrigger className="w-full" size="sm" aria-label={t("itemsCategory")} data-testid="edit-category">
@@ -655,6 +674,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.cost}
                       onChange={(e) => patchDraft({ cost: e.target.value })}
+                      disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsCost")}
                       data-testid="edit-cost"
@@ -671,6 +691,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.sell}
                       onChange={(e) => patchDraft({ sell: e.target.value })}
+                      disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsSell")}
                       data-testid="edit-sell"
@@ -681,7 +702,7 @@ function ItemList() {
                 </td>
                 <td className="p-3">
                   {editing ? (
-                    <Amount value={(Number(draft.sell) || 0) - (Number(draft.cost) || 0)} />
+                    draftProfit !== null ? <Amount value={draftProfit} /> : "…"
                   ) : (
                     <Amount value={item.sellingPrice - item.costPrice} />
                   )}
@@ -699,6 +720,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.threshold}
                       onChange={(e) => patchDraft({ threshold: e.target.value })}
+                      disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsThreshold")}
                       data-testid="edit-threshold"

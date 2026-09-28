@@ -1,4 +1,5 @@
 import {
+  hasPendingPreferenceWrite,
   parseBooleanPreference,
   readPreference,
   readPreferences,
@@ -54,6 +55,12 @@ export async function migrateLegacySidebarCollapsed(): Promise<boolean> {
   }
   if (serverValue !== undefined) {
     // already migrated (or chosen afresh): drop the stale legacy key
+    clearLegacySidebarCollapsed();
+    return false;
+  }
+  // a write still queued or in flight (the owner toggled) is newer than the
+  // legacy value; never overtake it
+  if (hasPendingPreferenceWrite(SIDEBAR_COLLAPSED_KEY)) {
     clearLegacySidebarCollapsed();
     return false;
   }

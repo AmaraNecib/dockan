@@ -443,6 +443,18 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await page.unmount();
   });
 
+  it("retries the milestone on a later observation after a failure", async () => {
+    failAcknowledge = true;
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    const page = await mount(queryClient, { refreshMs: 20 });
+    // each progress refetch is a new observation, so the failed record retries
+    expect(await waitFor(() => acknowledgeCount >= 3)).toBe(true);
+
+    failAcknowledge = false;
+    expect(await waitFor(() => preferenceStore[ONBOARDING_COMPLETED_KEY] === "true")).toBe(true);
+    await page.unmount();
+  });
+
   it("does not return after completion, even if records later change", async () => {
     progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
     const page = await mount(queryClient);

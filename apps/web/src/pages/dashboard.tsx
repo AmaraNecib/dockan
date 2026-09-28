@@ -77,13 +77,13 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
   });
 
   // "Finished means gone": when the four real records are observed, ask the
-  // server to record the milestone idempotently. The call is retried; if it
-  // still fails, the next observation tries again, and the UI never persists
-  // completion the server does not have.
+  // server to record the milestone idempotently. Each progress observation
+  // retries after a failure; once `completed` is set the calls stop. The UI
+  // never persists completion the server does not have.
   const complete = progress.data !== undefined && isOnboardingComplete(progress.data);
   useEffect(() => {
-    if (complete) acknowledge.mutate(undefined);
-  }, [acknowledge.mutate, complete]);
+    if (complete && !completed) acknowledge.mutate(undefined);
+  }, [acknowledge.mutate, complete, completed, progress.dataUpdatedAt]);
 
   return (
     <section data-testid="dashboard-page">

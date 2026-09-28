@@ -1,3 +1,5 @@
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
+
 import {
   parseBooleanPreference,
   readPreference,
@@ -5,8 +7,6 @@ import {
   usePreference,
   writePreference,
 } from "@/lib/preferences";
-
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
 
 /**
  * Getting-started dismissal and completion live server-side so a packaged-app

@@ -233,6 +233,9 @@ export interface StorePort {
   /** one EXISTS read for the getting-started checklist (issue 97): whether the
    * shop has an item, a purchase, a sale, and a party-attributed SALE debt. */
   onboardingProgress(): Promise<OnboardingProgress>;
+  /** idempotently record the completed milestone once every record exists;
+   * returns whether the milestone is (now) recorded. */
+  recordOnboardingCompletion(): Promise<boolean>;
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
   listActivities(limit: number): Promise<Activity[]>;

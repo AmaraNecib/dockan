@@ -343,3 +343,17 @@ header as the loaded panel, so the dashboard does not jump.
   it on mount and refreshes the preferences query after a real import.
 - `ONBOARDING_COMPLETED_PREFERENCE_KEY` is shared from contracts so the router
   that writes the milestone and the web hook that reads it cannot drift.
+
+### Round-3 refinements (review of the round-3 fixes)
+
+- The legacy migration guards on `hasPendingPreferenceWrite` (a write queued or
+  in flight), not on any write this session: a toggle that landed earlier is
+  seen through the server read, and a toggle still pending is never overtaken.
+- The completion milestone moved fully into `store.recordOnboardingCompletion`
+  (re-check + idempotent upsert), so the store seam can be tested directly for
+  both the incomplete and complete cases; the dashboard effect now depends on
+  `progress.dataUpdatedAt` and re-fires on later observations while the
+  milestone is still unset, so an in-session failure recovers without a remount.
+- The preference writer returns the server's echo and folds that canonical value
+  into the cache (not the value it sent), so a normalizing server cannot be
+  mistaken for a rejected write.

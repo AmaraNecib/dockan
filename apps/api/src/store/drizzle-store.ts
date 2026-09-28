@@ -27,6 +27,7 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -1440,6 +1441,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         hasSale: row?.has_sale === 1,
         hasDebt: row?.has_debt === 1,
       };
+    },
+
+    async recordOnboardingCompletion(): Promise<boolean> {
+      // Idempotent and re-checked: the milestone is written only while every
+      // real record still exists, so a retry can never mark a half-done
+      // checklist. Runs inside the caller's queue slot (this.* is the raw
+      // object), so the read and the write cannot interleave with a rival.
+      const progress = await this.onboardingProgress();
+      const completed = progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt;
+      if (!completed) return false;
+      await this.setPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
+      return true;
     },
 
     // --- activities + settings ----------------------------------------------

@@ -22,6 +22,7 @@ import { NAV_GROUPS } from "./navigation";
 let preferenceStore: Record<string, string>;
 let failPreferenceRead = false;
 let failPreferenceWrite = false;
+let firstPreferenceWriteGate: Promise<void> | null = null;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
@@ -31,6 +32,11 @@ mock.module("@/lib/rpc", () => ({
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       if (failPreferenceWrite) throw new Error("PREFERENCES_WRITE_FAILED");
+      if (firstPreferenceWriteGate !== null) {
+        const gate = firstPreferenceWriteGate;
+        firstPreferenceWriteGate = null;
+        await gate;
+      }
       preferenceStore[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
@@ -104,6 +110,7 @@ describe("sidebar collapse default (issue #94, server-side since #97)", () => {
     preferenceStore = {};
     failPreferenceRead = false;
     failPreferenceWrite = false;
+    firstPreferenceWriteGate = null;
   });
 
   it("starts expanded when nothing is stored", async () => {
@@ -140,6 +147,7 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
     preferenceStore = {};
     failPreferenceRead = false;
     failPreferenceWrite = false;
+    firstPreferenceWriteGate = null;
     window.localStorage.clear();
   });
 
@@ -152,6 +160,30 @@ describe("legacy sidebar preference migration (issue #97 follow-up)", () => {
     expect(await migrateLegacySidebarCollapsed()).toBe(true);
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
     expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
+  });
+
+  it("imports an explicit legacy expand as well", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "false");
+    expect(await migrateLegacySidebarCollapsed()).toBe(true);
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
+  });
+
+  it("does not overtake a choice made while the migration write was pending", async () => {
+    window.localStorage.setItem(LEGACY_KEY, "true");
+    let releaseWrite = () => {};
+    firstPreferenceWriteGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+
+    // the owner toggles first; the write is held, so the server still has no
+    // sidebar preference when the migration reads
+    const pendingWrite = writeSidebarCollapsed(false);
+    expect(await migrateLegacySidebarCollapsed()).toBe(false);
+    expect(window.localStorage.getItem(LEGACY_KEY)).toBeNull();
+
+    releaseWrite();
+    await pendingWrite;
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
   });
 
   it("does not overwrite a server value and clears the stale legacy key", async () => {

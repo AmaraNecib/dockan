@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
+
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { createDrizzleStore } from "./drizzle-store";
@@ -183,5 +185,26 @@ describe("onboardingProgress (issue 97)", () => {
       hasSale: true,
       hasDebt: true,
     });
+  });
+});
+
+describe("recordOnboardingCompletion (issue 97 follow-up)", () => {
+  it("does not record the milestone while any record is missing", async () => {
+    const store = await freshStore();
+    await createItem(store, "بطارية");
+    expect(await store.recordOnboardingCompletion()).toBe(false);
+    expect(await store.getPreferences()).toEqual({});
+  });
+
+  it("records the milestone idempotently once every record exists", async () => {
+    const store = await freshStore();
+    await createItem(store, "بطارية");
+    await seedInvoice(store, { invoiceNumber: "ONB-C1", kind: "PURCHASE", totalAmount: 500, paidAmount: 500, remainingAmount: 0 });
+    await seedInvoice(store, { invoiceNumber: "ONB-C2", kind: "SALE", totalAmount: 900, paidAmount: 400, remainingAmount: 500 });
+
+    expect(await store.recordOnboardingCompletion()).toBe(true);
+    // a retry is safe and returns the same answer
+    expect(await store.recordOnboardingCompletion()).toBe(true);
+    expect((await store.getPreferences())[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
   });
 });

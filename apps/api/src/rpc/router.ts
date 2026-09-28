@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, ONBOARDING_COMPLETED_PREFERENCE_KEY, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -1302,16 +1302,11 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- getting started (issue 97) ------------------------------------------
     onboardingProgress: os.onboardingProgress.handler(guarded(async () => deps.store.onboardingProgress())),
     onboardingComplete: os.onboardingComplete.handler(
-      guarded(async () => {
-        // Idempotent: the milestone is recorded only while every real record
-        // still exists, so a retry can never mark a half-done checklist. The
-        // web calls this when it observes completion, so a lost client write
-        // can always be re-recorded on the next observation.
-        const progress = await deps.store.onboardingProgress();
-        const completed = progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt;
-        if (completed) await deps.store.setPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
-        return { completed };
-      }),
+      guarded(async () => ({
+        // the store re-checks every record and records the milestone
+        // idempotently, so a client retry can never mark a half-done checklist
+        completed: await deps.store.recordOnboardingCompletion(),
+      })),
     ),
 
     // --- expenses (ticket 31) ------------------------------------------------

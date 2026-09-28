@@ -36,37 +36,42 @@ export async function readPreference(key: string): Promise<string | undefined> {
   }
 }
 
-async function persistPreference(key: string, value: string): Promise<boolean> {
+async function persistPreference(key: string, value: string): Promise<string | null> {
   for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt += 1) {
     try {
       const { value: stored } = await rpcClient.preferencesSet({ key, value });
-      return stored === value;
+      return stored;
     } catch {
       if (attempt < WRITE_ATTEMPTS - 1) {
         await new Promise((resolve) => setTimeout(resolve, WRITE_RETRY_MS * (attempt + 1)));
       }
     }
   }
-  return false;
+  return null;
 }
 
 // Per-key write chains: a write starts only after the previous write for the
 // same key settles, so an earlier choice can never land after a later one.
-const writeTails = new Map<string, Promise<boolean>>();
+const writeTails = new Map<string, Promise<string | null>>();
+const pendingWrites = new Map<string, Promise<string | null>>();
 let writeSequence = 0;
 const latestWriteSequence = new Map<string, number>();
 
 export interface PreferenceWrite {
   sequence: number;
-  done: Promise<boolean>;
+  done: Promise<string | null>;
 }
 
 /** Queue a serialized, retrying write for one key. */
 export function queuePreferenceWrite(key: string, value: string): PreferenceWrite {
   const sequence = ++writeSequence;
   latestWriteSequence.set(key, sequence);
-  const tail = writeTails.get(key) ?? Promise.resolve(true);
+  const tail = writeTails.get(key) ?? Promise.resolve(null);
   const done = tail.then(() => persistPreference(key, value));
+  pendingWrites.set(key, done);
+  void done.then(() => {
+    if (pendingWrites.get(key) === done) pendingWrites.delete(key);
+  });
   writeTails.set(key, done);
   return { sequence, done };
 }
@@ -76,12 +81,17 @@ export function isLatestPreferenceWrite(key: string, sequence: number): boolean 
   return latestWriteSequence.get(key) === sequence;
 }
 
+/** True while a write for `key` is queued or in flight. */
+export function hasPendingPreferenceWrite(key: string): boolean {
+  return pendingWrites.has(key);
+}
+
 /**
  * Imperative write seam. Resolves to whether the server stored the value; it
  * never throws. Ordered per key and retried on transient failures.
  */
 export async function writePreference(key: string, value: string): Promise<boolean> {
-  return queuePreferenceWrite(key, value).done;
+  return (await queuePreferenceWrite(key, value).done) !== null;
 }
 
 /** Shared codec: only the explicit string "true" is true. */
@@ -154,10 +164,12 @@ export function usePreference<T>(
         // only the newest queued write reconciles; an older one must not undo it
         if (!isLatestPreferenceWrite(key, sequence)) return;
         const current = queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY);
-        if (stored) {
+        if (stored !== null) {
+          // keep the server's canonical value in the overlay until it confirms
+          setOptimistic((previous) => (previous === serialized ? stored : previous));
           if (current !== undefined) {
             // fold the confirmed value into the full map (the response echo)
-            queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, { ...current, [key]: serialized });
+            queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, { ...current, [key]: stored });
           } else {
             // the first read has not landed yet: fetch the full map
             void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });

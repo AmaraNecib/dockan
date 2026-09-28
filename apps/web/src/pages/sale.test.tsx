@@ -588,6 +588,26 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector<HTMLInputElement>('[name="discountType"]')?.value).toBe("PERCENTAGE");
   });
 
+  it("opens the themed quick-add category select, selects, and closes", async () => {
+    const host = await mountSale();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
+    if (trigger === null) throw new Error("missing quick category select");
+
+    await openSelect(trigger);
+    const option = await findOption("تصنيف");
+    expect(option).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    await activateOption(option!);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    // the category id reaches the form value
+    expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
+  });
+
   it("clears an invoice discount back to none through the themed select", async () => {
     const host = await mountSale();
     await scan("707");

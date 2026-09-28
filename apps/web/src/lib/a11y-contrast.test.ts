@@ -136,5 +136,28 @@ for (const theme of THEMES) {
     it(`--sidebar-ring stays >= ${NON_TEXT_MIN}:1 against --sidebar`, () => {
       expect(contrast(sidebarRing, surface("sidebar"))).toBeGreaterThanOrEqual(NON_TEXT_MIN);
     });
+
+    // Semantic status tokens (issue #101): status text colours on the surfaces
+    // they render on, plus the solid-fill foreground pairs.
+    const tintOver = (name: string, alpha: number, backdrop: Rgb): Rgb =>
+      composite({ ...value(name), alpha }, backdrop);
+    for (const name of ["success", "warning"] as const) {
+      const status = toRgb(value(name));
+      it(`--${name} text stays >= ${TEXT_MIN}:1 on --card`, () => {
+        expect(contrast(status, surface("card"))).toBeGreaterThanOrEqual(TEXT_MIN);
+      });
+      it(`--${name} text stays >= ${TEXT_MIN}:1 on its /10 tint over --card`, () => {
+        expect(contrast(status, tintOver(name, 0.1, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
+      });
+    }
+    it(`--warning text stays >= ${TEXT_MIN}:1 on its /20 tint over --card`, () => {
+      expect(contrast(toRgb(value("warning")), tintOver("warning", 0.2, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    });
+    it(`--success-foreground on a solid --success fill stays >= ${TEXT_MIN}:1`, () => {
+      expect(contrast(toRgb(value("success-foreground")), toRgb(value("success")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    });
+    it(`--destructive-foreground on a solid --destructive fill stays >= ${TEXT_MIN}:1`, () => {
+      expect(contrast(toRgb(value("destructive-foreground")), toRgb(value("destructive")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    });
   });
 }

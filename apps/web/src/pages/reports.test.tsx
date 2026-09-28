@@ -174,4 +174,24 @@ describe("ReportsPage range label (#73)", () => {
 
     await page.unmount();
   });
+
+  it("closes the themed preset select on Escape without changing the value", async () => {
+    const page = await mountPage(queryClient);
+    expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-range-preset"]') !== null)).toBe(true);
+
+    const trigger = page.container().querySelector<HTMLButtonElement>('[data-testid="report-range-preset"]');
+    if (trigger === null) throw new Error("missing report-range-preset");
+
+    await openSelect(trigger);
+    expect(await findOption("فترة مخصصة")).not.toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(await page.waitFor(() => trigger.getAttribute("aria-expanded") === "false")).toBe(true);
+    // Escape dismisses without committing a new preset
+    expect(trigger.textContent).toContain("الشهر الحالي");
+
+    await page.unmount();
+  });
 });

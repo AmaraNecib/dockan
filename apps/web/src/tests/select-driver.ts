@@ -51,8 +51,3 @@ export async function chooseOption(trigger: HTMLElement, label: string): Promise
   if (option === null) throw new Error(`select option not found: ${label}`);
   await activateOption(option);
 }
-
-/** Currently rendered options (empty once the popup has closed). */
-export function visibleOptions(): HTMLElement[] {
-  return Array.from(document.querySelectorAll<HTMLElement>("[role='option']"));
-}

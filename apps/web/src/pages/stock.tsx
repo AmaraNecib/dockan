@@ -33,16 +33,22 @@ export function StockForm() {
   const selectedItemId = itemId || items.data?.items[0]?.id || "";
   const selectedItem = items.data?.items.find((item) => item.id === selectedItemId) ?? null;
 
-  // Mirror the item's last known unit cost into the cost field when the
-  // selection changes. The ref guard means a background refetch (after a stock
-  // movement) can never overwrite a value the owner is typing.
-  const prefilledItemRef = useRef<string | null>(null);
+  // Mirror the item's last known unit cost into the cost field. The guard
+  // tracks the value we last prefilled: a background refetch (after a movement
+  // or a cost correction elsewhere) refreshes the field only while it still
+  // holds that prefilled value, so a value the operator typed is never
+  // overwritten.
+  const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
   useEffect(() => {
     if (selectedItem === null) return;
-    if (prefilledItemRef.current === selectedItemId) return;
-    prefilledItemRef.current = selectedItemId;
-    setUnitCost(String(selectedItem.costPrice));
-  }, [selectedItemId, selectedItem]);
+    const nextCost = String(selectedItem.costPrice);
+    const previous = prefilledRef.current;
+    const selectionChanged = previous === null || previous.itemId !== selectedItemId;
+    const untouched = previous !== null && unitCost === previous.cost;
+    if (!selectionChanged && !(untouched && previous.cost !== nextCost)) return;
+    prefilledRef.current = { itemId: selectedItemId, cost: nextCost };
+    setUnitCost(nextCost);
+  }, [selectedItemId, selectedItem, unitCost]);
 
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
@@ -52,7 +58,7 @@ export function StockForm() {
         setReason("");
         setDone(true);
         // let the next refetch re-prefill the (possibly changed) average cost
-        prefilledItemRef.current = null;
+        prefilledRef.current = null;
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
@@ -67,7 +73,8 @@ export function StockForm() {
     event.preventDefault();
     setError(null);
     setDone(false);
-    const parsedDelta = Number(delta);
+    // trim before parsing: a whitespace-only numeric field is blank, never 0
+    const parsedDelta = Number(delta.trim());
     if (!selectedItemId) {
       setError(t("itemsEmpty"));
       return;
@@ -76,7 +83,8 @@ export function StockForm() {
       setError(t("stockQuantity"));
       return;
     }
-    const parsedUnitCost = unitCost === "" ? undefined : Number(unitCost);
+    const unitCostText = unitCost.trim();
+    const parsedUnitCost = unitCostText === "" ? undefined : Number(unitCostText);
     if (parsedDelta > 0 && parsedUnitCost !== undefined && (!Number.isInteger(parsedUnitCost) || parsedUnitCost < 0)) {
       setError(t("stockUnitCostInvalid"));
       return;

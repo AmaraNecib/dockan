@@ -218,6 +218,13 @@ function rowByCell(name: string): HTMLTableRowElement {
   return row;
 }
 
+/** The first fixture row, for tests that mutate the shared fixture. */
+function firstFixtureItem(): FixtureItem {
+  const first = items[0];
+  if (first === undefined) throw new Error("no fixture item");
+  return first;
+}
+
 /** React controlled inputs need the native value setter + an input event. */
 function setInput(testId: string, value: string) {
   const input = inputByTestId(testId);
@@ -494,6 +501,41 @@ describe("stock form prefill", () => {
     expect(el<HTMLElement>('[data-testid="stock-error"]').textContent).toContain("تكلفة");
     expect(stockInputs.length).toBe(0);
   });
+
+  it("treats a whitespace-only unit cost as blank, not zero", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+    setInput("stock-unit-cost", "   ");
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+    // undefined lets the api fall back to the item's known cost; 0 would move
+    // the weighted average to zero
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-1", delta: 5 });
+    expect(stockInputs[0]?.unitCost).toBeUndefined();
+  });
+
+  it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {
+    const { queryClient } = await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    // untouched field: a corrected cost elsewhere refreshes the prefill
+    firstFixtureItem().costPrice = 150;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+    });
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "150");
+
+    // typed field: a later refetch must not overwrite the operator's value
+    setInput("stock-unit-cost", "999");
+    firstFixtureItem().costPrice = 175;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+    });
+    expect(inputByTestId("stock-unit-cost").value).toBe("999");
+  });
 });
 
 describe("inline item edit", () => {
@@ -538,14 +580,38 @@ describe("inline item edit", () => {
     expect(updateInputs.length).toBe(0);
   });
 
-  it("blocks a non-positive selling price without calling the server", async () => {
+  it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
+    firstFixtureItem().sellingPrice = 0;
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    // a name-only correction must save without the operator touching the price
+    setInput("edit-name", "بطارية مجانية");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", name: "بطارية مجانية", sellingPrice: 0 });
+  });
+
+  it("rejects a blank selling price without calling the server", async () => {
     await mount();
     click("edit-item-item-1");
     await waitFor(() => document.querySelector('[data-testid="edit-sell"]') !== null);
-    setInput("edit-sell", "0");
+    setInput("edit-sell", "   ");
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
     expect(updateInputs.length).toBe(0);
+  });
+
+  it("submits an edit on Enter", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "بطارية بإدخال");
+    await act(async () => {
+      inputByTestId("edit-name").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toMatchObject({ id: "item-1", name: "بطارية بإدخال" });
   });
 
   it("rejects a non-numeric cost instead of silently zeroing it", async () => {
@@ -592,7 +658,7 @@ describe("inline item edit", () => {
     expect(updateInputs.length).toBe(1);
   });
 
-  it("does not close a row opened while another save is in flight", async () => {
+  it("prevents opening another row while a save is pending", async () => {
     await mount();
     updateDeferred = true;
     click("edit-item-item-1");
@@ -601,16 +667,15 @@ describe("inline item edit", () => {
     click("edit-save");
     await waitFor(() => updateInputs.length === 1);
 
-    // open the second row while row 1's save is still pending
-    click("edit-item-item-2");
-    await waitFor(() => inputByTestId("edit-name").value === "فلتر زيت");
+    // the other row cannot be opened into a draft that row 1's completion or
+    // failure would strand
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(true);
 
-    // let row 1's save settle; row 2's draft must stay open
     await act(async () => {
       resolveUpdate?.();
       await new Promise((resolve) => setTimeout(resolve, 15));
     });
-    expect(document.querySelector('[data-testid="edit-name"]')).not.toBeNull();
-    expect(inputByTestId("edit-name").value).toBe("فلتر زيت");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(false);
   });
 });

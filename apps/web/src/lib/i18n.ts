@@ -180,6 +180,7 @@ const resources = {
       settingsSaving: "جاري الحفظ…",
       settingsSaved: "تم حفظ الإعدادات",
       itemsSellAboveCost: "سعر البيع يجب أن يكون عدداً موجباً",
+      itemsSellInvalid: "أدخل سعر بيع صحيحاً (عدد صحيح 0 أو أكثر)",
       itemsCostInvalid: "أدخل تكلفة صحيحة (عدد صحيح 0 أو أكثر)",
       itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       stockUnitCostInvalid: "أدخل تكلفة وحدة صحيحة (عدد صحيح 0 أو أكثر)",

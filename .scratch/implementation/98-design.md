@@ -51,22 +51,31 @@ const [tab, setTab] = useState<ItemsTab>("products"); // table is the default
   - blank or `0` → `itemsCreate` (plain item, quantity 0 — a deliberate value);
   - positive integer → `itemsCreateWithStock` (`stockOnHand`);
   - negative / fractional / non-numeric → `itemsStockInvalid` error.
-- No floor/round logic; no "approximate" warning. `scanStockInvalid` stays the
-  `sale.tsx` quick-add message (that path still requires ≥ 1).
+- Every numeric field is trimmed first: cost/threshold must be a non-negative
+  integer (`itemsCostInvalid` / `itemsThresholdInvalid`) and selling > 0
+  (`itemsSellAboveCost`). No floor/round logic; no "approximate" warning.
+  `scanStockInvalid` stays the `sale.tsx` quick-add message (that path still
+  requires ≥ 1).
 
 `ItemList`:
 
 - Adds `useQuery(orpc.categoriesList)` and `useMutation(orpc.itemsUpdate)`.
-- One row at a time is editable. `editingId` + a draft
-  `{ name, categoryId, cost, sell, threshold }`; the edit button seeds the draft
-  from the row. Inline inputs replace the name/category/cost/sell cells; the
-  profit cell recomputes live via the existing `profitPreview`.
-- Save validates name non-empty, selling > 0, category chosen, threshold ≥ 0,
-  then `itemsUpdate.mutate({ id, name, categoryId, costPrice, sellingPrice,
-  lowStockThreshold })`. Success invalidates `itemsList`, `itemsLowStock`, and
-  `dashboardSummary` (the name/threshold can move the low-stock list) and exits
-  edit. Failure renders `role="alert"` above the table.
-- Barcode stays read-only (out of the brief's five editable fields).
+- One row at a time is editable. The draft `{ id, name, categoryId, cost, sell,
+  threshold }` carries the row id; the edit button seeds it from the row. Inline
+  inputs replace the name/category/cost/sell/threshold cells; the profit cell
+  recomputes live via the existing `profitPreview`.
+- Save validates name non-empty, selling a **non-negative** integer (a zero
+  price is legal — sale quick-add creates such items, and they must stay
+  editable), category chosen, cost/threshold non-negative integers, then
+  `itemsUpdate.mutate(...)`. Enter in any edit input submits. Success clears
+  only the row this mutation saved and invalidates `itemsList`, `itemsLowStock`,
+  and `dashboardSummary`; failure renders `role="alert"` above the table.
+- While a save is pending the other rows' edit controls are disabled, so a new
+  draft cannot be opened and then stranded by the in-flight save. Focus returns
+  to the row's edit control after save/cancel (WCAG 2.4.3).
+- The table sits in an `overflow-x-auto` wrapper so the fixed-width edit
+  controls stay reachable on a narrow viewport (the shell clips horizontal
+  overflow). Barcode stays read-only (out of the brief's five editable fields).
 
 ### `apps/web/src/pages/stock.tsx`
 
@@ -74,19 +83,23 @@ const [tab, setTab] = useState<ItemsTab>("products"); // table is the default
 
 - `const selectedItem = items.data?.items.find((i) => i.id === selectedItemId) ?? null`.
 - Shows the selling price for the selected item (`stock-selling-price`, DZD via
-  `Amount`) and prefills `unitCost` from `selectedItem.costPrice` on selection
-  change (a ref guard so a background refetch never clobbers an edit in
-  progress). Both values stay editable; `unitCost` must be a non-negative
-  integer when supplied. On success the ref resets so the next refetch
-  re-prefills the new average cost. `stockAddManual` is unchanged, including
-  the signed delta.
+  `Amount`) and prefills `unitCost` from `selectedItem.costPrice`. The guard
+  tracks the value it last prefilled: the field refreshes when the selection
+  changes **or** when the item's known cost changes while the field still holds
+  the prefilled value, and it never overwrites a value the operator typed. Both
+  values stay editable; the unit cost is trimmed and must be a non-negative
+  integer when supplied (a whitespace-only value is blank, so the api falls back
+  to the item's known cost instead of recording 0). On success the tracked value
+  resets so the next refetch re-prefills the new average cost. `stockAddManual`
+  is unchanged, including the signed delta.
 
 ### i18n (`apps/web/src/lib/i18n.ts`)
 
 New keys (all Arabic lives here): `itemsTabsLabel`, `itemsTabProducts`,
 `itemsTabAddStock`, `itemsNewTitle`, `itemsStock`, `itemsEdit`, `itemsCancel`,
 `itemsSaving`, `itemsNameRequired`, `itemsStockInvalid`, `itemsCostInvalid`,
-`itemsThresholdInvalid`, `stockSellingPrice`, `stockUnitCostInvalid`.
+`itemsThresholdInvalid`, `itemsSellInvalid`, `stockSellingPrice`,
+`stockUnitCostInvalid`.
 
 ## Dependencies
 
@@ -100,9 +113,13 @@ Unit / component (`apps/web/src/pages/items.test.tsx`, `bun test`):
 - add form: blank stock → `itemsCreate`; `0` → `itemsCreate`; `7` →
   `itemsCreateWithStock({ stockOnHand: 7 })`; negative → inline error, no call.
 - stock form: on mount/select the selling price renders and the unit-cost input
-  is prefilled from the item; selecting another item re-prefills.
+  is prefilled from the item; selecting another item re-prefills; a corrected
+  known cost refreshes an untouched prefill but never clobbers a typed value; a
+  whitespace-only cost is treated as blank.
 - edit: changing name/price/threshold sends `itemsUpdate` and the refetched row
-  shows the new values; empty name blocks the call.
+  shows the new values; empty name / bad cost / bad threshold / blank selling
+  block the call; a zero-price item stays editable; Enter submits; another row
+  cannot be opened while a save is pending.
 - tabs: table is the default panel; ArrowRight selects the add panel and moves
   focus; `aria-selected` follows.
 
@@ -111,6 +128,8 @@ Playwright (`tests/e2e/items-flow.spec.ts`):
 - create an item with opening stock in one submit and see it in the table;
 - edit a price and see it persist after a reload;
 - add stock to an existing item with the prefilled cost and the shown price;
+- the prefill follows a cost correction and a typed value wins;
+- a zero-price item created by sale quick-add is editable;
 - switch tabs with the mouse and with the arrow keys.
 
 Existing specs that drive the add/stock forms now open the `add` tab first and

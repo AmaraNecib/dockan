@@ -349,8 +349,9 @@ function ItemForm({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    const selling = Number(sell);
-    if (!Number.isInteger(selling) || selling <= 0) {
+    const sellText = sell.trim();
+    const selling = Number(sellText);
+    if (sellText === "" || !Number.isInteger(selling) || selling <= 0) {
       setError(t("itemsSellAboveCost"));
       return;
     }
@@ -547,13 +548,16 @@ function ItemList() {
   function saveEdit() {
     if (draft === null) return;
     setEditError(null);
-    const selling = Number(draft.sell);
+    const sellText = draft.sell.trim();
+    const selling = Number(sellText);
     if (draft.name.trim() === "") {
       setEditError(t("itemsNameRequired"));
       return;
     }
-    if (!Number.isInteger(selling) || selling <= 0) {
-      setEditError(t("itemsSellAboveCost"));
+    // 0 is legal (items created with a zero price must stay editable), but the
+    // field may not be blank or a non-integer
+    if (sellText === "" || !Number.isInteger(selling) || selling < 0) {
+      setEditError(t("itemsSellInvalid"));
       return;
     }
     if (!draft.categoryId) {
@@ -584,6 +588,14 @@ function ItemList() {
     });
   }
 
+  /** Enter anywhere in the row submits, like the create form. */
+  function onEditKeyDown(event: React.KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveEdit();
+    }
+  }
+
   // first load: skeleton rows matching the table shape so layout does not jump
   if (items.isPending || !items.data) {
     return (
@@ -606,7 +618,8 @@ function ItemList() {
           {editError}
         </p>
       )}
-      <table className="mt-6 w-full rounded border bg-card">
+      <div className="mt-6 w-full overflow-x-auto rounded border bg-card">
+      <table className="w-full">
         <thead>
           <tr className="border-b text-right text-sm text-muted-foreground">
             <th className="p-3">{t("itemsName")}</th>
@@ -634,6 +647,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.name}
                       onChange={(e) => patchDraft({ name: e.target.value })}
+                      onKeyDown={onEditKeyDown}
                       disabled={update.isPending}
                       aria-label={t("itemsName")}
                       data-testid="edit-name"
@@ -682,6 +696,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.cost}
                       onChange={(e) => patchDraft({ cost: e.target.value })}
+                      onKeyDown={onEditKeyDown}
                       disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsCost")}
@@ -699,6 +714,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.sell}
                       onChange={(e) => patchDraft({ sell: e.target.value })}
+                      onKeyDown={onEditKeyDown}
                       disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsSell")}
@@ -728,6 +744,7 @@ function ItemList() {
                       autoComplete="off"
                       value={draft.threshold}
                       onChange={(e) => patchDraft({ threshold: e.target.value })}
+                      onKeyDown={onEditKeyDown}
                       disabled={update.isPending}
                       inputMode="numeric"
                       aria-label={t("itemsThreshold")}
@@ -764,8 +781,9 @@ function ItemList() {
                       <button
                         type="button"
                         id={`edit-button-${item.id}`}
-                        className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                        className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
                         onClick={() => beginEdit(item)}
+                        disabled={update.isPending}
                         data-testid={`edit-item-${item.id}`}
                       >
                         {t("itemsEdit")}
@@ -781,6 +799,7 @@ function ItemList() {
           })}
         </tbody>
       </table>
+      </div>
     </>
   );
 }

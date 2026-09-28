@@ -330,6 +330,7 @@ describe("items page tabs", () => {
     const productsTab = el<HTMLButtonElement>("#items-tab-products");
     const addTab = el<HTMLButtonElement>("#items-tab-add");
 
+    expect(document.querySelector('[role="tablist"]')).not.toBeNull();
     expect(productsTab.getAttribute("aria-controls")).toBe("items-panel-products");
     expect(addTab.getAttribute("aria-controls")).toBe("items-panel-add");
     expect(productsTab.getAttribute("tabindex")).toBe("0");
@@ -385,6 +386,7 @@ describe("add item form opening stock", () => {
 
     click("item-save");
     await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "بطارية جديدة", costPrice: 100, sellingPrice: 180 });
     expect(createInputs[0]?.stockOnHand).toBeUndefined();
     expect(createWithStockInputs.length).toBe(0);
 
@@ -412,6 +414,19 @@ describe("add item form opening stock", () => {
     await waitFor(() => createWithStockInputs.length === 1);
     expect(createWithStockInputs[0]).toMatchObject({ name: "بطارية بمخزون", stockOnHand: 7 });
     expect(createInputs.length).toBe(0);
+  });
+
+  it("rejects a non-numeric cost without calling the server", async () => {
+    await mount();
+    await openAddTab();
+    setInput("item-name", "بطارية تكلفة خاطئة");
+    setInput("item-cost", "12,5");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain("تكلفة");
+    expect(createInputs.length).toBe(0);
+    expect(createWithStockInputs.length).toBe(0);
   });
 
   it("rejects negative or fractional opening stock without calling the server", async () => {
@@ -466,6 +481,18 @@ describe("stock form prefill", () => {
     click("stock-save");
     await waitFor(() => stockInputs.length === 1);
     expect(stockInputs[0]).toMatchObject({ itemId: "item-1", delta: 4, unitCost: 999 });
+  });
+
+  it("rejects a non-numeric unit cost without calling the server", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+    setInput("stock-unit-cost", "12,5");
+    setInput("stock-delta", "1");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    expect(el<HTMLElement>('[data-testid="stock-error"]').textContent).toContain("تكلفة");
+    expect(stockInputs.length).toBe(0);
   });
 });
 
@@ -539,6 +566,7 @@ describe("inline item edit", () => {
     setInput("edit-threshold", "-2");
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(el<HTMLElement>('[data-testid="items-edit-error"]').textContent).toContain("تنبيه");
     expect(updateInputs.length).toBe(0);
   });
 

@@ -72,18 +72,21 @@ const [tab, setTab] = useState<ItemsTab>("products"); // table is the default
 
 `StockForm`:
 
-- `const selectedItem = items.data?.items.find((i) => i.id === selectedItemId)`.
+- `const selectedItem = items.data?.items.find((i) => i.id === selectedItemId) ?? null`.
 - Shows the selling price for the selected item (`stock-selling-price`, DZD via
   `Amount`) and prefills `unitCost` from `selectedItem.costPrice` on selection
   change (a ref guard so a background refetch never clobbers an edit in
-  progress). Both values stay editable; `stockAddManual` is unchanged, including
+  progress). Both values stay editable; `unitCost` must be a non-negative
+  integer when supplied. On success the ref resets so the next refetch
+  re-prefills the new average cost. `stockAddManual` is unchanged, including
   the signed delta.
 
 ### i18n (`apps/web/src/lib/i18n.ts`)
 
 New keys (all Arabic lives here): `itemsTabsLabel`, `itemsTabProducts`,
-`itemsTabAddStock`, `itemsNewTitle`, `itemsEdit`, `itemsCancel`,
-`itemsSaving`, `itemsNameRequired`, `itemsStockInvalid`, `stockSellingPrice`.
+`itemsTabAddStock`, `itemsNewTitle`, `itemsStock`, `itemsEdit`, `itemsCancel`,
+`itemsSaving`, `itemsNameRequired`, `itemsStockInvalid`, `itemsCostInvalid`,
+`itemsThresholdInvalid`, `stockSellingPrice`, `stockUnitCostInvalid`.
 
 ## Dependencies
 

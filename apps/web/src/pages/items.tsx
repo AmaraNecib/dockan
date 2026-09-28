@@ -350,12 +350,25 @@ function ItemForm({
     event.preventDefault();
     setError(null);
     const selling = Number(sell);
-    if (!Number.isFinite(selling) || selling <= 0) {
+    if (!Number.isInteger(selling) || selling <= 0) {
       setError(t("itemsSellAboveCost"));
       return;
     }
     if (!selectedCategoryId) {
       setError(t("itemsChooseCategory"));
+      return;
+    }
+    // a typo must not silently save a money value as zero
+    const costText = cost.trim();
+    const parsedCost = Number(costText);
+    if (costText === "" || !Number.isInteger(parsedCost) || parsedCost < 0) {
+      setError(t("itemsCostInvalid"));
+      return;
+    }
+    const thresholdText = threshold.trim();
+    const parsedThreshold = thresholdText === "" ? 5 : Number(thresholdText);
+    if (!Number.isInteger(parsedThreshold) || parsedThreshold < 0) {
+      setError(t("itemsThresholdInvalid"));
       return;
     }
     // blank stays uncoded; typed codes get the same normalization as scans
@@ -379,14 +392,9 @@ function ItemForm({
     const base: ItemCreate = {
       name,
       categoryId: selectedCategoryId,
-      costPrice: Number(cost) || 0,
+      costPrice: parsedCost,
       sellingPrice: selling,
-      // blank means default 5; 0 is a legitimate threshold (warn at zero)
-      lowStockThreshold: (() => {
-        if (threshold === "") return 5;
-        const parsed = Number(threshold);
-        return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5;
-      })(),
+      lowStockThreshold: parsedThreshold,
     };
     if (normalizedBarcode !== undefined) base.barcode = normalizedBarcode;
     if (stockText !== "" && stock > 0) void createWithStock.mutate({ ...base, stockOnHand: stock });
@@ -544,7 +552,7 @@ function ItemList() {
       setEditError(t("itemsNameRequired"));
       return;
     }
-    if (!Number.isFinite(selling) || selling <= 0) {
+    if (!Number.isInteger(selling) || selling <= 0) {
       setEditError(t("itemsSellAboveCost"));
       return;
     }

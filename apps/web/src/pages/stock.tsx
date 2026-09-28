@@ -51,6 +51,8 @@ export function StockForm() {
         setUnitCost("");
         setReason("");
         setDone(true);
+        // let the next refetch re-prefill the (possibly changed) average cost
+        prefilledItemRef.current = null;
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
@@ -74,10 +76,15 @@ export function StockForm() {
       setError(t("stockQuantity"));
       return;
     }
+    const parsedUnitCost = unitCost === "" ? undefined : Number(unitCost);
+    if (parsedDelta > 0 && parsedUnitCost !== undefined && (!Number.isInteger(parsedUnitCost) || parsedUnitCost < 0)) {
+      setError(t("stockUnitCostInvalid"));
+      return;
+    }
     void adjust.mutate({
       itemId: selectedItemId,
       delta: parsedDelta,
-      unitCost: parsedDelta > 0 && unitCost !== "" ? Number(unitCost) : undefined,
+      unitCost: parsedDelta > 0 ? parsedUnitCost : undefined,
       reason: reason === "" ? undefined : reason,
     });
   }

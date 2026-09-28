@@ -52,6 +52,29 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(serverErrorKey("Too many requests. Please try again later.")).toBe("AUTH_TOO_MANY_ATTEMPTS");
     expect(serverErrorKey("Password too short")).toBe("AUTH_PASSWORD_TOO_SHORT");
     expect(authErrorKey({ message: "Invalid username or password" })).toBe("AUTH_INVALID_CREDENTIALS");
+    // an unrecognised code still falls through to a matchable sentence
+    expect(authErrorKey({ code: "NOT_A_REAL_CODE", message: "Too many requests. Please try again later." })).toBe("AUTH_TOO_MANY_ATTEMPTS");
+  });
+
+  it("ships real Arabic copy for every new key", () => {
+    const keys = [
+      "errorGeneric",
+      "AUTH_INVALID_CREDENTIALS",
+      "INVALID_PHONE_NUMBER",
+      "AUTH_TOO_MANY_ATTEMPTS",
+      "AUTH_PASSWORD_TOO_SHORT",
+      "SETUP_ALREADY_DONE",
+      "phoneExample",
+    ] as const;
+    for (const key of keys) {
+      // a missing key would resolve to the key itself
+      expect(i18n.t(key)).not.toBe(key);
+      expect(i18n.t(key).length).toBeGreaterThan(0);
+    }
+    // the failure copy is Arabic, not a raw token
+    for (const key of ["errorGeneric", "AUTH_INVALID_CREDENTIALS", "AUTH_TOO_MANY_ATTEMPTS", "AUTH_PASSWORD_TOO_SHORT", "SETUP_ALREADY_DONE"] as const) {
+      expect(i18n.t(key)).toMatch(/[\u0600-\u06FF]/);
+    }
   });
 
   it("says something honest and calm when the failure is unknown, never 'unexpected'", () => {

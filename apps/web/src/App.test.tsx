@@ -12,6 +12,7 @@ let needsSetup = false;
 /** The better-auth error shape the login page maps (code/message/status). */
 type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
+let signInArgs: { username?: string; password?: string } | null = null;
 let signInCalls = 0;
 let firstTimeSetupCalls = 0;
 let resetPasswordCalls = 0;
@@ -35,8 +36,9 @@ mock.module("@/lib/auth-client", () => ({
   useSession: () => ({ data: null, isPending: false }),
   authClient: {
     signIn: {
-      username: async () => {
+      username: async (args: { username?: string; password?: string }) => {
         signInCalls += 1;
+        signInArgs = args;
         return signInResult;
       },
     },
@@ -53,6 +55,7 @@ afterEach(() => {
   document.body.innerHTML = "";
   needsSetup = false;
   signInResult = { error: null };
+  signInArgs = null;
   signInCalls = 0;
   firstTimeSetupCalls = 0;
   resetPasswordCalls = 0;
@@ -142,8 +145,11 @@ describe("login failures name the problem (issue #100)", () => {
     expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(signInCalls).toBe(1);
-    // either field could be the typo, so the summary takes focus
-    expect(document.activeElement).toBe(alert);
+    // the form posts the canonical username, not the raw local form
+    expect(signInArgs?.username).toBe("213550123123");
+    // the password is where the fix is typed, so focus lands there; the alert
+    // (role="alert") has already named the problem
+    expect(document.activeElement).toBe(inputByName(host, "password"));
   });
 
   it("a malformed phone shows the phone message and never calls sign-in", async () => {
@@ -157,6 +163,7 @@ describe("login failures name the problem (issue #100)", () => {
     const alert = host.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
     expect(inputByName(host, "username").getAttribute("aria-invalid")).toBe("true");
+    expect(inputByName(host, "username").getAttribute("aria-describedby")).toBe("login-error");
     expect(document.activeElement).toBe(inputByName(host, "username"));
     expect(signInCalls).toBe(0);
   });
@@ -189,6 +196,25 @@ describe("login failures name the problem (issue #100)", () => {
     expect(alert?.textContent).toBe(i18n.t("AUTH_TOO_MANY_ATTEMPTS"));
     expect(document.activeElement).toBe(alert);
   });
+
+  it("a repeated failure re-mounts the alert so it is announced again", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "wrong-password");
+    await submitForm(host);
+    const first = host.querySelector('[role="alert"]');
+
+    await submitForm(host);
+    const second = host.querySelector('[role="alert"]');
+
+    expect(second?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    // a new node is what a screen reader notices; React keeps the old one if
+    // the key does not change
+    expect(second).not.toBe(first);
+  });
 });
 
 describe("setup and reset name the field (issue #100)", () => {
@@ -213,7 +239,9 @@ describe("setup and reset name the field (issue #100)", () => {
 
     setInputValue(inputByName(host, "ownerName"), "مالك");
     setInputValue(inputByName(host, "storeName"), "متجر");
-    setInputValue(inputByName(host, "phone"), "+213550123123");
+    // a grouped, prefixed form that the shared normalizer accepts: it must not
+    // be over-rejected by the new pre-submit check
+    setInputValue(inputByName(host, "phone"), "00213 550 123 123");
     setInputValue(inputByName(host, "password"), "abcd");
     setInputValue(inputByName(host, "secret"), "secret");
     await submitForm(host);

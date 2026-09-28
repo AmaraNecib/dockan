@@ -82,19 +82,22 @@ render `حدث خطأ غير متوقع` again.
 
 ## Mapping
 
-New public seam in `i18n.ts`:
+New public seam in `i18n.ts` (two entry points, so a string key never has to be
+run-time discriminated from an error object):
 
 ```ts
-type ErrorInput =
-  | string
-  | { code?: string; message?: string; status?: number }
-  | undefined;
+export type AuthErrorInput = {
+  code?: string; message?: string; status?: number;
+};
 
-/** Resolve an error to the i18n key that names it. */
-export function errorKeyFor(input: ErrorInput): MessageKey;
+/** Resolve an rpc message (key or sentence) to the key that names it. */
+export function serverErrorKey(message: string | undefined): MessageKey;
 
-/** Arabic copy for a failure; never "unexpected". */
-export function tError(input: ErrorInput): string; // i18n.t(errorKeyFor(input))
+/** Resolve a better-auth sign-in error object to the key that names it. */
+export function authErrorKey(error: AuthErrorInput): MessageKey;
+
+/** Arabic copy for an rpc message; never "unexpected". */
+export function tError(message: string | undefined): string;
 ```
 
 Precedence, most specific first:
@@ -117,10 +120,11 @@ Precedence, most specific first:
 - **Phone**: pre-submit `normalizeAlgerianPhone` (the same shared rule the
   contracts use) on login, setup, and forgot-password. Invalid → phone key,
   focus the field. This is "how the failure is reached", not a rule change.
-- **Password (setup / forgot)**: pre-submit `password.length < MIN_PASSWORD_LENGTH`
-  (`4`, mirroring `packages/contracts/src/core.ts`). The inputs drop the native
-  `minLength={4}` so the Arabic copy shows instead of a browser-locale bubble;
-  `required` stays for the other fields.
+- **Password (setup / forgot)**: pre-submit `authFieldKey` applies the phone
+  normalize and then `password.length < MIN_PASSWORD_LENGTH` (`4`, mirroring
+  `packages/contracts/src/core.ts`). The inputs drop the native `minLength={4}`
+  so the Arabic copy shows instead of a browser-locale bubble; `required` stays
+  for the other fields.
 - **Presentation**: the login, setup and reset phone fields show the example
   from the `phoneExample` i18n key as a placeholder, so the owner reaches the
   right shape before failing. **No `maxLength`**: `normalizeAlgerianPhone` strips `[\s.()-]`, so a valid
@@ -131,9 +135,9 @@ Precedence, most specific first:
 - **Announcement**: every auth error paragraph is `role="alert"` +
   `tabIndex={-1}`, remounted per failure (the `useAuthError` nonce keys it) so
   a repeated identical failure is announced again. Focus: malformed phone →
-  phone field; short password → password field; credentials → the alert
-  summary (either field could be the typo, so the summary names both);
-  anything else → the alert summary.
+  phone field; short password or credentials → the password field (the alert
+  has already named the problem, and focus stays where the fix is typed);
+  lockout or an unknown failure → the alert summary.
 - `aria-invalid` is set on the field the error points at.
 - Login derives the better-auth username with the shared `phoneToUsername`
   rather than re-slicing the normalized phone.

@@ -36,8 +36,8 @@ test("a wrong password names the problem instead of the generic failure", async 
   await expect(alert).toBeVisible();
   await expect(alert).toHaveText("رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.");
   await expect(alert).not.toContainText("حدث خطأ غير متوقع");
-  // either field could be the typo, so the summary takes focus
-  await expect(alert).toBeFocused();
+  // the alert names the problem; focus lands on the password so it can be retyped
+  await expect(page.getByLabel("كلمة السر")).toBeFocused();
 });
 
 test("a malformed phone names the phone, not the password", async ({ page }) => {

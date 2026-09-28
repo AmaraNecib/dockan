@@ -24,6 +24,9 @@ function useAuthError() {
   const [state, setState] = useState<{ message: string; field: AuthErrorField; nonce: number } | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const focusErrorRef = useRef(false);
+  // monotonic: the alert is keyed by it so an identical repeated failure is a
+  // fresh live region and gets announced again
+  const nonceRef = useRef(0);
 
   useEffect(() => {
     if (!focusErrorRef.current) return;
@@ -33,7 +36,8 @@ function useAuthError() {
 
   const show = useCallback((message: string, field: AuthErrorField, target: HTMLElement | null): void => {
     focusErrorRef.current = target === null;
-    setState((previous) => ({ message, field, nonce: (previous?.nonce ?? 0) + 1 }));
+    nonceRef.current += 1;
+    setState({ message, field, nonce: nonceRef.current });
     target?.focus();
   }, []);
 
@@ -48,9 +52,24 @@ function authErrorFocus(
   fields: { phone: HTMLInputElement | null; password: HTMLInputElement | null },
 ): AuthErrorFocus {
   if (key === "INVALID_PHONE_NUMBER") return { field: "phone", target: fields.phone };
-  if (key === "AUTH_PASSWORD_TOO_SHORT") return { field: "password", target: fields.password };
-  // wrong credentials blame both fields; the alert says so, so focus it
+  // credentials blame either field and a short password blames the password;
+  // the alert (role="alert") names the problem, focus lands where the fix is
+  // typed, and nothing steals focus back after the request resolves
+  if (key === "AUTH_INVALID_CREDENTIALS" || key === "AUTH_PASSWORD_TOO_SHORT") {
+    return { field: "password", target: fields.password };
+  }
   return { field: null, target: null };
+}
+
+/**
+ * The first field-level failure on a new-owner form, using the exact rules the
+ * contracts enforce (phone normalization, password minimum). `null` means the
+ * form may be submitted.
+ */
+function authFieldKey(phone: string, password: string): MessageKey | null {
+  if (normalizeAlgerianPhone(phone) === null) return "INVALID_PHONE_NUMBER";
+  if (password.length < MIN_PASSWORD_LENGTH) return "AUTH_PASSWORD_TOO_SHORT";
+  return null;
 }
 
 /**
@@ -179,14 +198,11 @@ function SetupPage({ onDone }: { onDone: () => void }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    // same rule the contracts enforce, checked before the request so the owner
+    // same rules the contracts enforce, checked before the request so the owner
     // is told which field is wrong instead of seeing a generic failure
-    if (normalizeAlgerianPhone(phone) === null) {
-      report("INVALID_PHONE_NUMBER");
-      return;
-    }
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      report("AUTH_PASSWORD_TOO_SHORT");
+    const fieldKey = authFieldKey(phone, password);
+    if (fieldKey !== null) {
+      report(fieldKey);
       return;
     }
     setBusy(true);
@@ -336,12 +352,9 @@ function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
 
   async function reset(e: React.FormEvent) {
     e.preventDefault();
-    if (normalizeAlgerianPhone(phone) === null) {
-      report("INVALID_PHONE_NUMBER");
-      return;
-    }
-    if (newPassword.length < MIN_PASSWORD_LENGTH) {
-      report("AUTH_PASSWORD_TOO_SHORT");
+    const fieldKey = authFieldKey(phone, newPassword);
+    if (fieldKey !== null) {
+      report(fieldKey);
       return;
     }
     setBusy(true);

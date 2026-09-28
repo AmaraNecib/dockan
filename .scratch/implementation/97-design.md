@@ -438,14 +438,20 @@ delayed the page mount, which could beat the barcode scanner's keydown listener
 on a focused field (catalog-scan). Removed.
 
 - `RequireSession` renders the shell immediately and runs the one-time import in
-  the background (one-shot per mount via a ref).
+  the background (one-shot per mount via a ref). A successful import returns the
+  server value; the shell folds it into the shared preferences cache and
+  invalidates it, so the imported sidebar state appears without waiting for the
+  next refetch.
 - The import consults `hasPreferenceWrite` (a module-level set written by the
   real `setValue` path) after its read, so a choice the owner makes while the
-  read is in flight is never overtaken; it still skips when the server already
+  read is in flight is never overtaken; when it skips for that reason it keeps
+  the legacy key as a fallback (a later launch clears it if the choice landed,
+  or imports it if the choice failed). It still skips when the server already
   holds a sidebar value.
 - Stabilized the documented editable-regime scanner flake the same way the repo
   already stabilizes the duplicate window: `SCAN_MAX_GAP_MS` is now
   `VITE_SCAN_MAX_GAP_MS ?? 50`, and the Playwright web server sets it to 250 ms
   for e2e (production stays 50 ms).
-- New tests: the shell renders immediately while the import is held; the import
-  does not clobber a write made while its read is in flight.
+- New tests: the shell renders immediately while the import is held and the
+  imported value reaches the sidebar; the import runs once per mount; it does
+  not clobber a write made while its read is in flight.

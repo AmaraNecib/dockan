@@ -26,34 +26,40 @@ export function useSidebarCollapsed() {
  * One-time import of the pre-server localStorage sidebar choice. The caller
  * runs it in the background after the shell mounts, so it never blocks the
  * scanner; it skips itself when the server already holds a sidebar value or
- * the owner made a choice while this read was in flight. A failed read or
- * write leaves the legacy value in place for the next launch; storage access
+ * the owner made a choice while this read was in flight, and a failed read or
+ * write leaves the legacy value in place for the next launch. Storage access
  * is guarded, so a throwing localStorage cannot break the shell.
+ *
+ * Returns the server value it imported (or null), so the caller can refresh
+ * the shared preferences query without waiting for its next refetch.
  */
-export async function migrateLegacySidebarCollapsed(): Promise<void> {
+export async function migrateLegacySidebarCollapsed(): Promise<string | null> {
   const legacy = readLegacySidebarCollapsed();
-  if (legacy === undefined) return;
+  if (legacy === undefined) return null;
 
   let serverValue: string | undefined;
   try {
     serverValue = (await readPreferences())[SIDEBAR_COLLAPSED_KEY];
   } catch {
     // server unreachable: keep the legacy value and retry next launch
-    return;
+    return null;
   }
   if (serverValue !== undefined) {
     // already migrated (or chosen afresh): drop the stale legacy key
     clearLegacySidebarCollapsed();
-    return;
+    return null;
   }
   if (hasPreferenceWrite(SIDEBAR_COLLAPSED_KEY)) {
-    // the owner toggled while this read was in flight; their choice is newer
-    clearLegacySidebarCollapsed();
-    return;
+    // the owner chose while this read was in flight; keep the legacy key as a
+    // fallback until the server value is known (the next launch clears it if
+    // the choice landed, or imports it if the choice failed)
+    return null;
   }
 
   const stored = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
-  if (stored !== null) clearLegacySidebarCollapsed();
+  if (stored === null) return null; // write failed: retry next launch
+  clearLegacySidebarCollapsed();
+  return stored;
 }
 
 function readLegacySidebarCollapsed(): boolean | undefined {

@@ -4,9 +4,11 @@ import { useTranslation } from "react-i18next";
 import { authClient, useSession } from "./lib/auth-client";
 import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
-import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername } from "@dokan/contracts";
+import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
+import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
-import { migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
+import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
+import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The field an auth error points the owner back to; null means the summary. */
 type AuthErrorField = "phone" | "password" | null;
@@ -113,9 +115,10 @@ function AuthErrorAlert({
   );
 }
 
-/** Blocks children until a session exists and the legacy preferences are imported. */
+/** Blocks children until a session exists; preferences import in the background. */
 export function RequireSession({ children }: { children: ReactNode }) {
   const sessionResult = useSession();
+  const queryClient = useQueryClient();
   const migrationStarted = useRef(false);
 
   // One-time background import of the pre-server sidebar preference. The shell
@@ -124,8 +127,15 @@ export function RequireSession({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (migrationStarted.current || sessionResult.isPending || sessionResult.data === null) return;
     migrationStarted.current = true;
-    void migrateLegacySidebarCollapsed();
-  }, [sessionResult.data, sessionResult.isPending]);
+    void migrateLegacySidebarCollapsed().then((imported) => {
+      if (imported === null) return;
+      // surface the imported value without waiting for the query's next refetch
+      queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) =>
+        previous === undefined ? previous : { ...previous, [SIDEBAR_COLLAPSED_KEY]: imported },
+      );
+      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+    });
+  }, [queryClient, sessionResult.data, sessionResult.isPending]);
 
   if (sessionResult.isPending) {
     return <LoadingScreen />;

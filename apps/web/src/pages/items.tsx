@@ -590,6 +590,8 @@ function ItemList() {
 
   /** Enter anywhere in the row submits, like the create form. */
   function onEditKeyDown(event: React.KeyboardEvent) {
+    // never submit mid-IME-composition (Arabic input uses it)
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
       saveEdit();

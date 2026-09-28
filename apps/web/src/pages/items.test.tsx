@@ -248,6 +248,11 @@ async function flush() {
   });
 }
 
+/** Let React Query's notification/render flush inside an awaited act block. */
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 15));
+}
+
 async function waitFor(check: () => boolean, attempts = 120): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (check()) return;
@@ -482,6 +487,7 @@ describe("stock form prefill", () => {
     // a background refetch must not clobber the typed value
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
     });
     expect(inputByTestId("stock-unit-cost").value).toBe("999");
 
@@ -525,6 +531,7 @@ describe("stock form prefill", () => {
     firstFixtureItem().costPrice = 150;
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
     });
     await waitFor(() => inputByTestId("stock-unit-cost").value === "150");
 
@@ -533,6 +540,7 @@ describe("stock form prefill", () => {
     firstFixtureItem().costPrice = 175;
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
     });
     expect(inputByTestId("stock-unit-cost").value).toBe("999");
   });

@@ -1,4 +1,5 @@
 import {
+  hasPreferenceWrite,
   parseBooleanPreference,
   readPreferences,
   serializeBooleanPreference,
@@ -23,11 +24,11 @@ export function useSidebarCollapsed() {
 
 /**
  * One-time import of the pre-server localStorage sidebar choice. The caller
- * runs it before the shell renders (see RequireSession), so it cannot race a
- * user's toggle. A failed read or write leaves the legacy value in place for
- * the next launch; storage access is guarded, so a throwing localStorage
- * cannot break the shell. Side effects only: the server key is written when
- * the legacy value exists and the server has none.
+ * runs it in the background after the shell mounts, so it never blocks the
+ * scanner; it skips itself when the server already holds a sidebar value or
+ * the owner made a choice while this read was in flight. A failed read or
+ * write leaves the legacy value in place for the next launch; storage access
+ * is guarded, so a throwing localStorage cannot break the shell.
  */
 export async function migrateLegacySidebarCollapsed(): Promise<void> {
   const legacy = readLegacySidebarCollapsed();
@@ -42,6 +43,11 @@ export async function migrateLegacySidebarCollapsed(): Promise<void> {
   }
   if (serverValue !== undefined) {
     // already migrated (or chosen afresh): drop the stale legacy key
+    clearLegacySidebarCollapsed();
+    return;
+  }
+  if (hasPreferenceWrite(SIDEBAR_COLLAPSED_KEY)) {
+    // the owner toggled while this read was in flight; their choice is newer
     clearLegacySidebarCollapsed();
     return;
   }

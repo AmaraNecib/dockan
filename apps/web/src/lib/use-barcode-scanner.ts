@@ -18,7 +18,7 @@ import { useEffect, useRef } from "react";
  */
 
 /** max gap between keystrokes of one scan burst while focus is editable (ms) */
-export const SCAN_MAX_GAP_MS = 50;
+export const SCAN_MAX_GAP_MS = parseEnvInt(import.meta.env.VITE_SCAN_MAX_GAP_MS) ?? 50;
 /** identical scans inside this window are ignored (ms); tests shorten via env */
 export const SCAN_DUPLICATE_WINDOW_MS = parseEnvInt(import.meta.env.VITE_SCAN_DUPLICATE_WINDOW_MS) ?? 800;
 /** shortest buffer committed as a scan */

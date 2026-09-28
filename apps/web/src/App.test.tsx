@@ -464,8 +464,8 @@ describe("auth transport failures stay calm (issue #100)", () => {
     });
 
     expect(signInCalls).toBe(1);
-describe("RequireSession preference migration gate (issue #97 follow-up)", () => {
-  it("withholds the shell until the legacy sidebar import settles", async () => {
+describe("RequireSession preference migration (issue #97 follow-up)", () => {
+  it("renders the shell immediately and imports the legacy value in the background", async () => {
     sessionData = { user: { id: "u1" } };
     window.localStorage.setItem("dokan.sidebar.collapsed", "true");
     let releaseRead = () => {};
@@ -486,16 +486,15 @@ describe("RequireSession preference migration gate (issue #97 follow-up)", () =>
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    // the preference-driven shell must not render while the import is unsettled
-    expect(host.querySelector("[data-testid='shell']")).toBeNull();
+    // the shell is never blocked on the migration read (the scanner mounts)
+    expect(host.querySelector("[data-testid='shell']")).not.toBeNull();
 
     releaseRead();
-    for (let attempt = 0; attempt < 50 && host.querySelector("[data-testid='shell']") === null; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && window.localStorage.getItem("dokan.sidebar.collapsed") !== null; attempt += 1) {
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       });
     }
-    expect(host.querySelector("[data-testid='shell']")).not.toBeNull();
     expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
     expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBeNull();
   });

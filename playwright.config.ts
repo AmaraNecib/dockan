@@ -50,6 +50,10 @@ export default defineConfig({
         // "rescan same code" is deterministically suppressed (typing takes
         // ~150 ms) while "new scan after the window" stays provable
         VITE_SCAN_DUPLICATE_WINDOW_MS: "1200",
+        // widen the editable-field burst gap under e2e: the focused-input
+        // regime is timing-based, and CI load made 50 ms drop scans
+        // (wisdom 2026-08-24-deterministic-timing-tests)
+        VITE_SCAN_MAX_GAP_MS: "250",
       },
     },
   ],

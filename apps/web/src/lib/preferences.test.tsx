@@ -37,9 +37,8 @@ mock.module("@/lib/rpc", () => ({
   orpc: {},
 }));
 
-const { parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } = await import(
-  "./preferences"
-);
+const { hasPreferenceWrite, parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } =
+  await import("./preferences");
 
 function Probe() {
   const pref = usePreference("ui.test.a", false, parseBooleanPreference, serializeBooleanPreference);
@@ -130,8 +129,10 @@ describe("preferences client (issue 97 follow-up)", () => {
     const handle = await mountProbe();
     expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
     expect(text(handle.host, "value")).toBe("false");
+    expect(hasPreferenceWrite("ui.test.a")).toBe(false);
 
     await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    expect(hasPreferenceWrite("ui.test.a")).toBe(true);
     expect(await waitFor(() => text(handle.host, "value") === "true")).toBe(true);
     expect(store["ui.test.a"]).toBe("true");
     expect(await waitFor(() => text(handle.host, "writing") === "false")).toBe(true);

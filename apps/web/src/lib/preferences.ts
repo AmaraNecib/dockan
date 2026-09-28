@@ -55,6 +55,15 @@ export interface Preference<T> {
   isWriting: boolean;
 }
 
+// Keys the owner has written this page session. The one-time legacy import
+// consults this so a background migration can never overtake a newer choice.
+const writtenKeys = new Set<string>();
+
+/** True once this page session issued a write for `key`. */
+export function hasPreferenceWrite(key: string): boolean {
+  return writtenKeys.has(key);
+}
+
 /**
  * One preference from the shared preferences query.
  *
@@ -93,6 +102,7 @@ export function usePreference<T>(
       // synchronous guard: two clicks in one tick cannot issue two writes
       if (inFlight.current) return;
       inFlight.current = true;
+      writtenKeys.add(key);
       setPending(true);
       void writePreference(key, serialize(next))
         .then((stored) => {

@@ -397,9 +397,11 @@ so a write completes in milliseconds and the optimism bought nothing.
 - The only local write state is a synchronous `inFlight` ref (double-click
   guard) plus `isWriting` for disabling the control. `isPending` remains the
   shared read's loading state.
-- The legacy migration runs in `RequireSession` before the shell (which is
-  preference-driven) renders, so it cannot race the owner's first toggle. A
-  failed read/write leaves the legacy key for the next launch.
+- The legacy migration runs in the background after the shell mounts (gating
+the shell on it delayed the scanner mount and broke catalog-scan). It skips
+itself when the server already holds a sidebar value or the owner wrote a
+sidebar preference while its read was in flight (`hasPreferenceWrite`); a
+failed read/write leaves the legacy key for the next launch.
 - Kept unchanged: the server-side preferences table, session-guarded bounded
   procs, the durable idempotent `onboardingComplete` milestone, focus/reconnect
   freshness, and `enabled: false` when the checklist is hidden.
@@ -423,6 +425,27 @@ so a write completes in milliseconds and the optimism bought nothing.
   read is pending, so the app never issues a write against an unconfirmed map.
 - `migrateLegacySidebarCollapsed` returns `Promise<void>` (side effects only);
   nothing consumed its boolean, so the return was removed.
-- New tests: `RequireSession` withholds the preference-driven shell until the
-  legacy import settles; the dismiss control is disabled while the write is in
+- New tests: `RequireSession` renders the shell immediately and imports the
+  legacy value in the background; the dismiss control is disabled while the
+  write is in
   flight; the failed-dismissal test now asserts the write actually ran.
+
+## Round-5 regression fix (do not gate the shell)
+
+The round-4b gate that withheld the shell until the legacy sidebar import
+settled was a regression: it added a preferences round-trip to every launch and
+delayed the page mount, which could beat the barcode scanner's keydown listener
+on a focused field (catalog-scan). Removed.
+
+- `RequireSession` renders the shell immediately and runs the one-time import in
+  the background (one-shot per mount via a ref).
+- The import consults `hasPreferenceWrite` (a module-level set written by the
+  real `setValue` path) after its read, so a choice the owner makes while the
+  read is in flight is never overtaken; it still skips when the server already
+  holds a sidebar value.
+- Stabilized the documented editable-regime scanner flake the same way the repo
+  already stabilizes the duplicate window: `SCAN_MAX_GAP_MS` is now
+  `VITE_SCAN_MAX_GAP_MS ?? 50`, and the Playwright web server sets it to 250 ms
+  for e2e (production stays 50 ms).
+- New tests: the shell renders immediately while the import is held; the import
+  does not clobber a write made while its read is in flight.

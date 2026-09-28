@@ -116,29 +116,22 @@ function AuthErrorAlert({
 /** Blocks children until a session exists and the legacy preferences are imported. */
 export function RequireSession({ children }: { children: ReactNode }) {
   const sessionResult = useSession();
-  const [preferencesReady, setPreferencesReady] = useState(false);
+  const migrationStarted = useRef(false);
 
-  // The one-time legacy sidebar import must finish before the shell (which is
-  // preference-driven) renders, so it cannot race the owner's first toggle.
+  // One-time background import of the pre-server sidebar preference. The shell
+  // must render immediately — the scanner listens on mount — so this never
+  // blocks; it skips itself if the owner makes a choice while it runs.
   useEffect(() => {
-    if (sessionResult.isPending || sessionResult.data === null || preferencesReady) return;
-    let active = true;
-    void migrateLegacySidebarCollapsed().finally(() => {
-      if (active) setPreferencesReady(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, [preferencesReady, sessionResult.data, sessionResult.isPending]);
+    if (migrationStarted.current || sessionResult.isPending || sessionResult.data === null) return;
+    migrationStarted.current = true;
+    void migrateLegacySidebarCollapsed();
+  }, [sessionResult.data, sessionResult.isPending]);
 
   if (sessionResult.isPending) {
     return <LoadingScreen />;
   }
   if (sessionResult.data === null) {
     return <AuthGate />;
-  }
-  if (!preferencesReady) {
-    return <LoadingScreen />;
   }
   return <>{children}</>;
 }

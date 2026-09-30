@@ -53,10 +53,11 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(page.getByTestId("expense-history")).toContainText(rentAmount);
   await expect(page.getByTestId("expense-history")).toContainText(note);
 
-  // and an owner withdrawal — the row carries the distinct badge
+  // and an owner withdrawal — the row carries the distinct badge. Enter from a
+  // field must submit the record form natively, exactly like the save button.
   await selectExpenseCategory(page, withdrawalName);
   await page.getByTestId("expense-amount").fill(withdrawalAmount);
-  await page.getByTestId("expense-save").click();
+  await page.getByTestId("expense-amount").press("Enter");
   const withdrawalRow = page.getByTestId("expense-history").locator("tbody tr", { hasText: withdrawalAmount });
   await expect(withdrawalRow).toContainText("سحب المالك");
 

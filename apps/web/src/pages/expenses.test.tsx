@@ -43,6 +43,10 @@ interface ExpenseMutationOptions {
 
 let categoriesFixture: ExpenseCategory[] = [];
 let categoryCreateFails = false;
+let categoryCreateDeferred = false;
+let resolveCategoryCreate: (() => void) | null = null;
+/** makes the category-list refetch fail after a successful create */
+let categoriesListFails = false;
 let lastCreatedName: string | null = null;
 let lastExpense: CapturedExpense | null = null;
 
@@ -61,7 +65,10 @@ mock.module("@/lib/rpc", () => ({
     expenseCategoriesList: {
       queryOptions: () => ({
         queryKey: ["expenseCategories"],
-        queryFn: async () => ({ items: categoriesFixture }),
+        queryFn: async () => {
+          if (categoriesListFails) throw new Error("LIST_FAILED");
+          return { items: categoriesFixture };
+        },
       }),
       queryKey: () => ["expenseCategories"],
     },
@@ -72,8 +79,16 @@ mock.module("@/lib/rpc", () => ({
           lastCreatedName = input.name;
           if (categoryCreateFails) throw new Error("EXPENSE_CATEGORY_EXISTS");
           const created = category(`cat-${categoriesFixture.length + 1}`, input.name);
-          categoriesFixture = [...categoriesFixture, created];
-          return created;
+          const commit = () => {
+            categoriesFixture = [...categoriesFixture, created];
+            return created;
+          };
+          if (categoryCreateDeferred) {
+            return new Promise<ExpenseCategory>((resolve) => {
+              resolveCategoryCreate = () => resolve(commit());
+            });
+          }
+          return commit();
         },
         ...opts,
       }),
@@ -171,6 +186,9 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     categoriesFixture = [];
     categoryCreateFails = false;
+    categoryCreateDeferred = false;
+    resolveCategoryCreate = null;
+    categoriesListFails = false;
     lastCreatedName = null;
     lastExpense = null;
   });
@@ -221,6 +239,86 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     // reopening the quick-add clears the previous success message
     await ui.click("expense-category-add");
     expect(ui.query("expense-category-created")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("keeps recording available when the create succeeds but the list refresh fails", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    // the refetch that follows the create will fail, so the cached list stays
+    // empty even though a category now exists
+    categoriesListFails = true;
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كراء المحل");
+    await ui.submit("expense-category-form");
+    expect(await ui.waitFor(() => lastCreatedName === "كراء المحل")).toBe(true);
+
+    // the owner can still record against what they just created
+    expect(await ui.waitFor(() => ui.query("expense-save") !== null)).toBe(true);
+    expect(ui.query("expense-category-empty")).toBeNull();
+    expect(ui.selectValue()).toContain("كراء المحل");
+
+    await ui.type("expense-amount", "2000");
+    await ui.click("expense-save");
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+    expect(lastExpense).toMatchObject({ amount: 2000, categoryId: "cat-1" });
+
+    await ui.unmount();
+  });
+
+  it("never offers save before any category exists, even with the create form open", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    await ui.click("expense-category-empty-action");
+    expect(ui.query("expense-category-form")).not.toBeNull();
+    // the dead end this state exists to prevent: a save button that can only
+    // answer CATEGORY_NOT_FOUND
+    expect(ui.query("expense-save")).toBeNull();
+    expect(ui.query("expense-amount")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("keeps a reopened draft when a cancelled create settles late", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    categoryCreateDeferred = true;
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كراء");
+    await ui.submit("expense-category-form");
+
+    // the owner gives up on that attempt and starts another
+    await ui.click("expense-category-cancel");
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كهرباء");
+
+    // the abandoned request lands now: it must not close the form or wipe the
+    // name the owner has since typed
+    await act(async () => {
+      resolveCategoryCreate?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(ui.query("expense-category-form")).not.toBeNull();
+    expect(ui.query<HTMLInputElement>("expense-category-name")?.value).toBe("كهرباء");
+
+    await ui.unmount();
+  });
+
+  it("wraps the record controls in a form so Enter submits them", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-save") !== null);
+
+    // native Enter-to-submit needs the fields inside a form with a submit
+    // button; the create-category form must stay outside it (no nesting)
+    expect(ui.query<HTMLInputElement>("expense-amount")?.closest("form")?.dataset.testid).toBe("expense-record-form");
+    expect(ui.query<HTMLButtonElement>("expense-save")?.type).toBe("submit");
+    await ui.click("expense-category-add");
+    expect(ui.query("expense-category-form")?.closest("form")?.dataset.testid).toBe("expense-category-form");
 
     await ui.unmount();
   });

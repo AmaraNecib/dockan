@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { expectSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * E2E smoke: real flows (category + item creation) land entries in
@@ -18,11 +19,13 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   await expect(page.getByText("سجل-تصنيف-12", { exact: true })).toBeVisible();
 
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await expectSelectOption(page, page.getByLabel("التصنيف"), "سجل-تصنيف-12");
   await page.getByLabel("الاسم", { exact: true }).fill("سجل-منتج-12");
   await page.getByLabel("سعر الشراء (دج)").fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByRole("button", { name: "حفظ" }).click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /سجل-منتج-12/ })).toBeVisible();
 
   // the log shows both events, newest (the item) first

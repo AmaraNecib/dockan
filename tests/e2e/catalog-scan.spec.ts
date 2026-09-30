@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { expectSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * Catalog search ranking, USB-wedge scan capture at window
@@ -18,6 +19,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await expect(page.getByText("زيوت", { exact: true })).toBeVisible();
 
   await page.goto("/items");
+  await openItemsTab(page, "add");
   // the form needs the category list loaded before it can submit
   await expectSelectOption(page, page.getByLabel("التصنيف"), "زيوت");
 
@@ -25,13 +27,16 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByLabel("سعر الشراء (دج)").fill("900");
   await page.getByLabel("سعر البيع (دج)").fill("1400");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /زيت محرك/ })).toBeVisible();
 
+  await openItemsTab(page, "add");
   await page.getByTestId("item-name").fill("بطارية");
   await page.getByTestId("item-barcode").fill("6210001000017");
   await page.getByLabel("سعر الشراء (دج)").fill("1200");
   await page.getByLabel("سعر البيع (دج)").fill("1900");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /بطارية/ })).toBeVisible();
 
   // 2. typed search ranks results; exact barcode shows the single hit
@@ -109,6 +114,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByLabel("سعر الشراء (دج)").fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("160");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج ممسوح/ })).toBeVisible();
   // rescanning now finds it instead of opening the dialog — past the e2e
   // duplicate window (1200 ms) plus margin
@@ -127,6 +133,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("300");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");
 });
 
@@ -140,12 +147,14 @@ test("stale scan lookups never overwrite newer results", async ({ page }) => {
   await page.getByRole("button", { name: "إضافة" }).click();
   await expect(page.getByText("زينة", { exact: true })).toBeVisible();
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await expectSelectOption(page, page.getByLabel("التصنيف"), "زينة");
   await page.getByTestId("item-name").fill("نظارة مرايا");
   await page.getByTestId("item-barcode").fill("9990000000011");
   await page.getByLabel("سعر الشراء (دج)").fill("150");
   await page.getByLabel("سعر البيع (دج)").fill("250");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /نظارة مرايا/ })).toBeVisible();
   // scans below happen with no field focused — the deterministic wedge path
   await page.getByTestId("catalog-search").fill("");
@@ -184,12 +193,14 @@ test("scan while focus is inside an input commits through the editable regime", 
   await page.getByRole("button", { name: "إضافة" }).click();
   await expect(page.getByText("عدد", { exact: true })).toBeVisible();
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await expectSelectOption(page, page.getByLabel("التصنيف"), "عدد");
   await page.getByTestId("item-name").fill("مفتاح فلتر");
   await page.getByTestId("item-barcode").fill("8880000000019");
   await page.getByLabel("سعر الشراء (دج)").fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /مفتاح فلتر/ })).toBeVisible();
 
   // focus stays INSIDE an editable field: a tight burst is still a scan, and

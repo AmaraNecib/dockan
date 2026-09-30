@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * E2E flow: create an item, add stock manually through the ledger,
@@ -19,6 +20,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await expect(page.getByText("بطاريات", { exact: true })).toBeVisible();
 
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await page.getByTestId("item-name").fill("مكواة 27");
   await page.getByLabel("سعر الشراء (دج)").fill("2000");
   await page.getByLabel("سعر البيع (دج)").fill("3500");
@@ -26,9 +28,11 @@ test("add stock manually, item history shows movements with derived stock", asyn
   // other spec files' assertions stay deterministic
   await page.getByLabel("حد التنبيه").fill("0");
   await page.getByRole("button", { name: "حفظ" }).click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /مكواة 27/ })).toBeVisible();
 
   // 2. record a manual stock-in of 6 units at 2000 DZD
+  await openItemsTab(page, "add");
   const stockForm = page.getByTestId("stock-form");
   await chooseSelectOption(page, stockForm.getByRole("combobox"), "مكواة 27");
   await page.getByTestId("stock-delta").fill("6");
@@ -37,6 +41,7 @@ test("add stock manually, item history shows movements with derived stock", asyn
   await expect(page.getByTestId("stock-done")).toContainText("تم تسجيل الحركة");
 
   // 3. the items list reflects the new stock (exact cell match, not substring)
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
 
   // 4. history: the manual movement with derived stock-after. A fresh item
@@ -54,10 +59,12 @@ test("add stock manually, item history shows movements with derived stock", asyn
 
   // 5. overselling is rejected by the api with a translated error…
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await chooseSelectOption(page, page.getByTestId("stock-form").getByRole("combobox"), "مكواة 27");
   await page.getByTestId("stock-delta").fill("-99");
   await page.getByTestId("stock-form").getByRole("button", { name: "تسجيل" }).click();
   await expect(page.getByTestId("stock-error")).toContainText("الكمية غير متوفرة في المخزون");
   // …and the rejected delta changed nothing
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /مكواة 27/ }).getByTestId("stock-after-cell")).toHaveText("6");
 });

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * Purchase intake (/purchase). Category + two uniquely-named
@@ -25,6 +26,7 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
 
   await page.goto("/items");
+  await openItemsTab(page, "add");
   const itemCategory = page.getByLabel("التصنيف");
   await chooseSelectOption(page, itemCategory, categoryName);
 
@@ -32,6 +34,7 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await page.getByLabel("سعر الشراء (دج)").fill("1200");
   await page.getByLabel("سعر البيع (دج)").fill("1900");
   await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: new RegExp(batteryName) })).toBeVisible();
 
   // 2. purchase flow via the nav link

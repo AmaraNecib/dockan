@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
 
 /**
  * Ticket 27 — manual add-stock form + item history (append-only ledger,
@@ -30,6 +32,35 @@ export function StockForm() {
   // that same choice in the trigger: the operator must always see the item the
   // movement will be recorded against (greptile PR #80).
   const selectedItemId = itemId || items.data?.items[0]?.id || "";
+  const selectedItem = items.data?.items.find((item) => item.id === selectedItemId) ?? null;
+  // a negative movement takes stock out; the api records a unit cost only for
+  // stock in, so the field must not look editable on a removal
+  const deltaValue = parseSignedWholeNumber(delta);
+  const isRemoval = deltaValue !== null && deltaValue < 0;
+
+  // Mirror the item's last known unit cost into the cost field. The guard
+  // tracks the value we last prefilled: a background refetch (after a movement
+  // or a cost correction elsewhere) refreshes the field only while it still
+  // holds that prefilled value, so a value the operator typed is never
+  // overwritten.
+  const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
+  /** a movement invalidates the list; the cached cost is stale until the
+   * refetch that follows it lands */
+  const freshAfterRef = useRef(0);
+  useEffect(() => {
+    if (selectedItem === null) return;
+    // React Query keeps serving the pre-movement list during the refetch, so
+    // prefilling from it would record the old average cost on a second
+    // movement submitted in that window
+    if (items.dataUpdatedAt < freshAfterRef.current) return;
+    const nextCost = String(selectedItem.costPrice);
+    const previous = prefilledRef.current;
+    const selectionChanged = previous === null || previous.itemId !== selectedItemId;
+    const untouched = previous !== null && unitCost === previous.cost;
+    if (!selectionChanged && !(untouched && previous.cost !== nextCost)) return;
+    prefilledRef.current = { itemId: selectedItemId, cost: nextCost };
+    setUnitCost(nextCost);
+  }, [selectedItemId, selectedItem, unitCost, items.dataUpdatedAt]);
 
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
@@ -38,9 +69,13 @@ export function StockForm() {
         setUnitCost("");
         setReason("");
         setDone(true);
+        // let the next refetch re-prefill the (possibly changed) average cost
+        prefilledRef.current = null;
+        freshAfterRef.current = Date.now();
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
         ]);
       },
       onError: (err) => setError(tError(err.message)),
@@ -51,19 +86,26 @@ export function StockForm() {
     event.preventDefault();
     setError(null);
     setDone(false);
-    const parsedDelta = Number(delta);
+    // trim before parsing: a whitespace-only numeric field is blank, never 0
+    const parsedDelta = parseSignedWholeNumber(delta);
     if (!selectedItemId) {
       setError(t("itemsEmpty"));
       return;
     }
-    if (!Number.isInteger(parsedDelta) || parsedDelta === 0) {
-      setError(t("stockQuantity"));
+    if (parsedDelta === null || parsedDelta === 0) {
+      setError(t("stockQuantityInvalid"));
+      return;
+    }
+    // a removal cannot carry a unit cost: the api takes one only for stock in
+    const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
+    if (parsedDelta > 0 && unitCost.trim() !== "" && parsedUnitCost === null) {
+      setError(t("stockUnitCostInvalid"));
       return;
     }
     void adjust.mutate({
       itemId: selectedItemId,
       delta: parsedDelta,
-      unitCost: parsedDelta > 0 && unitCost !== "" ? Number(unitCost) : undefined,
+      unitCost: parsedUnitCost === null ? undefined : parsedUnitCost,
       reason: reason === "" ? undefined : reason,
     });
   }
@@ -78,7 +120,7 @@ export function StockForm() {
           onValueChange={(value) => setItemId(value ?? "")}
           items={items.data?.items.map((item) => ({ value: item.id, label: item.name })) ?? []}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full" data-testid="stock-item">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -90,11 +132,18 @@ export function StockForm() {
           </SelectContent>
         </Select>
       </label>
+      {selectedItem && (
+        <p className="text-sm text-muted-foreground" data-testid="stock-selling-price">
+          {t("stockSellingPrice")}: <Amount value={selectedItem.sellingPrice} className="text-foreground" />
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
           {t("stockQuantity")}
           <input
             className="rounded border px-3 py-2"
+            name="stockDelta"
+            autoComplete="off"
             value={delta}
             onChange={(e) => setDelta(e.target.value)}
             inputMode="numeric"
@@ -104,15 +153,30 @@ export function StockForm() {
         </label>
         <label className="grid gap-1">
           {t("stockUnitCost")}
-          <input className="rounded border px-3 py-2" value={unitCost} onChange={(e) => setUnitCost(e.target.value)} inputMode="numeric" />
+          <input
+            className="rounded border px-3 py-2"
+            name="stockUnitCost"
+            autoComplete="off"
+            value={unitCost}
+            onChange={(e) => setUnitCost(e.target.value)}
+            inputMode="numeric"
+            disabled={isRemoval}
+            aria-describedby={isRemoval ? "stock-removal-hint" : undefined}
+            data-testid="stock-unit-cost"
+          />
+          {isRemoval && (
+            <span id="stock-removal-hint" className="text-xs text-muted-foreground">
+              {t("stockRemovalNoCost")}
+            </span>
+          )}
         </label>
       </div>
       <label className="grid gap-1">
         {t("stockReason")}
-        <input className="rounded border px-3 py-2" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <input className="rounded border px-3 py-2" name="stockReason" autoComplete="off" value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
       {error && (
-        <p className="text-sm text-destructive" data-testid="stock-error">
+        <p className="text-sm text-destructive" role="alert" data-testid="stock-error">
           {error}
         </p>
       )}
@@ -121,7 +185,7 @@ export function StockForm() {
           {t("stockAdded")}
         </p>
       )}
-      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={adjust.isPending}>
+      <button className="rounded-lg bg-primary py-2 text-primary-foreground" type="submit" disabled={adjust.isPending} data-testid="stock-save">
         {t("stockAddBtn")}
       </button>
     </form>

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * E2E flow: create a category, create an item with the live profit
@@ -19,6 +20,7 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
 
   // 2. Create an item; the profit preview recomputes while typing
   await page.goto("/items");
+  await openItemsTab(page, "add");
   await page.getByLabel("الاسم", { exact: true }).fill(`بطارية-${stamp}`);
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("350");
@@ -32,6 +34,7 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   await page.getByRole("button", { name: "حفظ" }).click();
 
   // 3. The item appears in the list with a low badge (stock 0 <= threshold 5)
+  await openItemsTab(page, "products");
   const batteryRow = page.getByRole("row", { name: new RegExp(`بطارية-${stamp}`) });
   await expect(batteryRow).toBeVisible();
   await expect(batteryRow).toContainText(`زيوت-${stamp}`); // category NAME, not a UUID

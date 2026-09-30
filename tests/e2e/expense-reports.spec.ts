@@ -75,19 +75,22 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(rows).toHaveCount(2);
 
   // a backdated expense stays hidden under the current-month default window
+  const backdatedNote = `مؤجل-${stamp}`;
   await selectExpenseCategory(page, "كراء المحل");
   await page.getByTestId("expense-amount").fill("777");
+  await page.getByTestId("expense-note").fill(backdatedNote);
   await page.getByTestId("expense-date").fill("2020-01-15T12:00");
   await page.getByTestId("expense-save").click();
-  await expect(page.getByTestId("expense-history")).not.toContainText("777");
+  // assert on this row's own note, never on the amount: the other rows carry
+  // `Date.now()` stamps that can contain any three digits by chance
+  await expect(page.getByTestId("expense-history")).not.toContainText(backdatedNote);
 
   // …and appears only inside its own custom window
   await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
   await page.getByTestId("expense-custom-from").fill("2020-01-01T00:00");
   await page.getByTestId("expense-custom-to").fill("2020-01-31T23:59");
-  await expect(page.getByTestId("expense-history")).toContainText("777");
-  await expect(page.getByTestId("expense-history")).not.toContainText(rentAmount);
-  await expect(page.getByTestId("expense-history")).not.toContainText(withdrawalAmount);
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText(backdatedNote);
 });
 
 test("profit report reconciles revenue, COGS, expenses, withdrawals and the result", async ({ page }) => {

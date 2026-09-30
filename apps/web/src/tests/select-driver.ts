@@ -27,7 +27,7 @@ export async function openSelect(trigger: HTMLElement): Promise<void> {
 export async function findOption(label: string): Promise<HTMLElement | null> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find(
-      (element) => element.textContent?.includes(label) === true,
+      (element) => element.textContent?.trim() === label,
     );
     if (option !== undefined) return option;
     await settle();

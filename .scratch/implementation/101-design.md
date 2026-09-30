@@ -68,9 +68,11 @@ Registered in `@theme inline`:
 | `--warning` | `oklch(0.50 0.14 62)` | `oklch(0.78 0.15 75)` |
 | `--destructive-foreground` | `oklch(0.985 0 0)` | `oklch(0.15 0.02 264)` |
 
-`--warning` has no solid surface in the app, so it needs no foreground
-companion; it is used as text and as a `/10`–`/20` tint, which the light/dark
-values already make readable (light 5.4:1 on its tint, dark 5.0:1).
+`--warning` is used as text, as a `/10` tint, and — since the owner-withdrawal
+badge — as a solid fill, so it has a `--warning-foreground` companion like
+`--success` and `--destructive`. The tinted usages stay readable (light 5.4:1
+on its tint, dark 5.0:1); the solid fill keeps margin above 4.5:1, which a
+second tint (`/20` on a `/10` row) did not.
 
 Measured WCAG contrast (OKLCH → sRGB → relative luminance):
 
@@ -79,6 +81,10 @@ Measured WCAG contrast (OKLCH → sRGB → relative luminance):
 - `text-warning` on light background 5.7:1, on dark card 8.8:1.
 - `text-destructive` on light background unchanged at 4.4:1 (existing token);
   white on solid `bg-destructive` 4.8:1.
+- the light `--destructive` was later darkened from `oklch(0.577 0.245 27.325)`
+  to `oklch(0.505 0.213 27.518)`: the first value put white-on-solid at 4.56:1,
+  0.06 above the threshold, down from the `bg-red-700` it replaced. The
+  contrast test now asserts a 5:1 margin on every solid status pair.
 
 Mapping applied (31 raw utilities in the files this lane owns; the other 4
 raw-colour survivors are the sibling-lane files in §4 and §6):

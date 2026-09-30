@@ -186,9 +186,10 @@ describe("sale route reset (header New Sale action)", () => {
 
     await act(async () => buttonByTestId("sale-quick-add").click());
     await waitFor(() => document.querySelector('[data-testid="sale-quick-form"]') !== null);
+    // the trigger must name the category it will save into, not merely render
     await waitFor(() => {
       const category = document.querySelector('[data-testid="sale-quick-category"]');
-      return category !== null && category.textContent?.trim() !== "";
+      return category !== null && category.textContent?.includes("تصنيف") === true;
     });
 
     const quickInput = (name: string): HTMLInputElement => {

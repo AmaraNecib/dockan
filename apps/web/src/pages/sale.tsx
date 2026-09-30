@@ -315,10 +315,11 @@ export function SalePage() {
     void createInvoice.mutate(invoiceInput);
   }
 
-  // what the quick-add will actually save into: the operator's pick, or the
-  // first category the shop has. Display and submit read this one value, so the
-  // trigger can never show nothing while the first category is what gets used.
+  // what the quick-add will save into: the operator's pick, or the first
+  // category the shop has. Display and submit read this one value.
   const quickCategory = quickCategoryId || categories.data?.items[0]?.id || "";
+  /** the list has not answered yet: nothing to pick, nothing to submit */
+  const quickCategoriesLoading = categories.data === undefined;
 
   function openQuick(mode: QuickAddMode, code = "") {
     setQuickMode(mode);
@@ -443,10 +444,11 @@ export function SalePage() {
                     value={quickCategory}
                     onValueChange={(value) => setQuickCategoryId(value ?? "")}
                     name="quickCategory"
+                    disabled={quickCategoriesLoading}
                     items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
                   >
                     <SelectTrigger className="w-full" data-testid="sale-quick-category">
-                      <SelectValue />
+                      <SelectValue placeholder={quickCategoriesLoading ? t("itemsLoading") : undefined} />
                     </SelectTrigger>
                     <SelectContent>
                       {categories.data?.items.map((category) => <SelectItem key={category.id} value={category.id}>{category.name}</SelectItem>)}

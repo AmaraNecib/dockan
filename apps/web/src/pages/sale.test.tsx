@@ -619,6 +619,30 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
   });
 
+  it("disables the quick-add category until the list arrives", async () => {
+    // the list is still in flight, so there is nothing to pick yet
+    categoriesGate = new Promise<void>((resolve) => {
+      releaseCategoriesGate = resolve;
+    });
+    const host = await mountSale();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // an empty, enabled select would let the operator submit into nothing
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
+    expect(trigger?.disabled).toBe(true);
+
+    await act(async () => {
+      releaseCategoriesGate?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(trigger?.disabled).toBe(false);
+  });
+
   it("shows the category the quick-add will actually save into", async () => {
     // the form can open before the category list arrives; the trigger and the
     // value submit uses must agree on which category is the target

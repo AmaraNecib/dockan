@@ -117,7 +117,7 @@ export function StockForm() {
         </p>
       )}
       {done && adjust.isSuccess && (
-        <p className="text-sm text-green-700" data-testid="stock-done">
+        <p className="text-sm text-success" data-testid="stock-done">
           {t("stockAdded")}
         </p>
       )}
@@ -199,7 +199,7 @@ export function ItemHistoryPage() {
                     <span className="mr-2 text-xs text-muted-foreground">({movementReasonText(t, movement.reason)})</span>
                   )}
                 </td>
-                <td className={`p-3 ${movement.delta > 0 ? "text-green-700" : "text-destructive"}`}>
+                <td className={`p-3 ${movement.delta > 0 ? "text-success" : "text-destructive"}`}>
                   {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
                 </td>
                 <td className="p-3">{movement.unitCost ?? "—"}</td>

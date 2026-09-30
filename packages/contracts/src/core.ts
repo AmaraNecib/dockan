@@ -465,10 +465,17 @@ export const returnDetailSchema = returnSchema.extend({
 // Inputs
 // ---------------------------------------------------------------------------
 
+/**
+ * The shortest password the contracts accept. Exported so the web layer's
+ * pre-submit check and its Arabic copy cannot drift from the rule the api
+ * enforces (packages/contracts/src/core.ts).
+ */
+export const MIN_PASSWORD_LENGTH = 4;
+
 export const resetPasswordInputSchema = z.object({
   /** the build secret baked into the app; entering it lets the owner set a new password */
   secret: z.string().min(1),
-  newPassword: z.string().min(4),
+  newPassword: z.string().min(MIN_PASSWORD_LENGTH),
   /** the owner's Algerian mobile; becomes the login name after +213 normalization */
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
 });
@@ -480,7 +487,7 @@ export const needsSetupOutputSchema = z.object({
 export const firstTimeSetupInputSchema = z.object({
   ownerName: z.string().trim().min(1),
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
-  password: z.string().min(4),
+  password: z.string().min(MIN_PASSWORD_LENGTH),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
   // provisioning creates the first owner and closes setup, so it is gated by

@@ -35,9 +35,9 @@ test("a wrong password names the problem instead of the generic failure", async 
   const alert = page.getByRole("alert");
   await expect(alert).toBeVisible();
   await expect(alert).toHaveText("رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.");
-  await expect(alert).not.toContainText("حدث خطأ غير متوقع");
-  // the alert names the problem; focus lands on the password so it can be retyped
-  await expect(page.getByLabel("كلمة السر")).toBeFocused();
+  // the copy names both fields, so the summary takes focus rather than blaming
+  // one of them; the exact match above already rules out the retired generic
+  await expect(alert).toBeFocused();
 });
 
 test("a malformed phone names the phone, not the password", async ({ page }) => {
@@ -48,8 +48,8 @@ test("a malformed phone names the phone, not the password", async ({ page }) => 
   await page.getByTestId("login-submit").click();
 
   const alert = page.getByRole("alert");
-  await expect(alert).toHaveText("رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل 0550123123 أو +213550123123.");
-  await expect(alert).not.toContainText("حدث خطأ غير متوقع");
+  // the phone runs are wrapped in LTR isolates so the sign cannot be displaced
+  await expect(alert).toHaveText("رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل \u20660550123123\u2069 أو \u2066+213550123123\u2069.");
   // the phone is the field to fix, so focus lands there
   await expect(page.getByLabel("رقم الهاتف")).toBeFocused();
 });

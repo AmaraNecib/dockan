@@ -170,9 +170,64 @@ describe("login failures name the problem (issue #100)", () => {
     expect(signInCalls).toBe(1);
     // the form posts the canonical username, not the raw local form
     expect(signInArgs?.username).toBe("213550123123");
-    // the password is where the fix is typed, so focus lands there; the alert
-    // (role="alert") has already named the problem
-    expect(document.activeElement).toBe(inputByName(host, "password"));
+    // the copy names both fields, so the summary carries the message and no
+    // single field is blamed (the field's own aria-invalid would lie)
+    expect(document.activeElement).toBe(host.querySelector('[role="alert"]'));
+    expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("false");
+  });
+
+  it("announces through the field when a field is blamed, not twice", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    // focus lands on the phone and its aria-describedby carries the message
+    const phone = inputByName(host, "username");
+    expect(document.activeElement).toBe(phone);
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    expect(phone.getAttribute("aria-describedby")).toBe("login-error");
+  });
+
+  it("stops the phone field at the longest accepted form", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    // "+213550123123" is 13 characters; anything longer cannot be a login name
+    expect(inputByName(host, "username").getAttribute("maxlength")).toBe("13");
+  });
+
+  it("keeps the native length hint on the password field", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    expect(inputByName(host, "password").getAttribute("minlength")).toBe("4");
+  });
+
+  it("does not re-announce the setup notice after a trip to forgot-password", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_ALREADY_DONE");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    // back to login: the notice was a one-shot handoff and is spent
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="forgot-back"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("a malformed phone shows the phone message and never calls sign-in", async () => {
@@ -344,27 +399,29 @@ describe("auth transport failures stay calm (issue #100)", () => {
     needsSetup = false;
     const host = await mountAuthGate();
 
-    // a malformed phone blames the phone field
-    setInputValue(inputByName(host, "username"), "12345");
-    setInputValue(inputByName(host, "password"), "abcd");
-    await submitForm(host);
-    const phone = inputByName(host, "username");
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
-    expect(phone.getAttribute("aria-invalid")).toBe("true");
-
-    // typing the correction drops the alert and the invalid marking with it
-    setInputValue(phone, "0550123123");
-    expect(host.querySelector('[role="alert"]')).toBeNull();
-    expect(phone.getAttribute("aria-invalid")).toBe("false");
-
-    // a password error survives an edit to the phone, and clears on its own
-    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", message: "bad", status: 401 } };
+    // a too-short password is the password field's problem (the validator's own
+    // sentence, which is what the api actually emits)
+    signInResult = { error: { message: "Too small: expected string to have >=4 characters" } };
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "ab");
     await submitForm(host);
     const password = inputByName(host, "password");
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
     expect(password.getAttribute("aria-invalid")).toBe("true");
-    setInputValue(phone, "0550999999");
-    expect(password.getAttribute("aria-invalid")).toBe("true");
+
+    // typing the correction drops the alert and the invalid marking with it
+    setInputValue(password, "abcd");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(password.getAttribute("aria-invalid")).toBe("false");
+
+    // a phone error survives an edit to the password, and clears on its own
+    setInputValue(inputByName(host, "username"), "12345");
+    await submitForm(host);
+    const phone = inputByName(host, "username");
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
     setInputValue(password, "another-password");
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    setInputValue(phone, "0550123123");
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 

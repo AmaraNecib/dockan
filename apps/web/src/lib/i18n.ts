@@ -1,10 +1,24 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
+import { MIN_PASSWORD_LENGTH } from "@dokan/contracts";
+
 /**
  * Single i18n instance, Arabic only. UI strings and server error keys live
  * here; the api never ships display text.
  */
+/**
+ * The two shapes an Algerian mobile can take, shown as the phone placeholder
+ * and inside the invalid-phone message. Defined once so the digits cannot drift
+ * between the field and the copy.
+ */
+export const PHONE_EXAMPLE_LOCAL = "0550123123";
+export const PHONE_EXAMPLE_INTL = "+213550123123";
+
+/** U+2066/U+2069: isolate an ASCII run inside an RTL sentence, or its leading
+ * `+` is a neutral run and the sign can render displaced. */
+const ltrIsolate = (value: string): string => `\u2066${value}\u2069`;
+
 const resources = {
   ar: {
     translation: {
@@ -185,11 +199,12 @@ const resources = {
       errorGeneric: "تعذّر إكمال العملية. أعد المحاولة.",
       // issue #100 — auth failures the login/setup forms can name exactly
       // the phone example shown as a placeholder; digits only, locale-neutral
-      phoneExample: "0550123123",
+      phoneExample: PHONE_EXAMPLE_LOCAL,
+      phoneExampleIntl: PHONE_EXAMPLE_INTL,
       AUTH_INVALID_CREDENTIALS: "رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.",
-      INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل 0550123123 أو +213550123123.",
+      INVALID_PHONE_NUMBER: `رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل ${ltrIsolate(PHONE_EXAMPLE_LOCAL)} أو ${ltrIsolate(PHONE_EXAMPLE_INTL)}.`,
       AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
-      AUTH_PASSWORD_TOO_SHORT: "كلمة السر قصيرة جداً. استعمل 4 أحرف على الأقل.",
+      AUTH_PASSWORD_TOO_SHORT: `كلمة السر قصيرة جداً. استعمل ${MIN_PASSWORD_LENGTH} أحرف على الأقل.`,
       SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
       WRONG_BUILD_SECRET: "الرمز السري غير صحيح",
@@ -520,7 +535,6 @@ const AUTH_ERROR_KEYS = new Map<string, MessageKey>([
   ["INVALID_USERNAME", "INVALID_PHONE_NUMBER"],
   ["USERNAME_TOO_SHORT", "INVALID_PHONE_NUMBER"],
   ["USERNAME_TOO_LONG", "INVALID_PHONE_NUMBER"],
-  ["PASSWORD_TOO_SHORT", "AUTH_PASSWORD_TOO_SHORT"],
 ]);
 
 /**
@@ -533,7 +547,10 @@ const AUTH_ERROR_KEYS = new Map<string, MessageKey>([
 const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
   { pattern: /expected an algerian mobile/i, key: "INVALID_PHONE_NUMBER" },
   { pattern: /too many requests/i, key: "AUTH_TOO_MANY_ATTEMPTS" },
-  { pattern: /password too short|too small.*(?:>=|at least) ?4/i, key: "AUTH_PASSWORD_TOO_SHORT" },
+  // the sentence our own contracts emit for the 4-character minimum. Not
+  // `password too short`: no producer emits that, and better-auth's own
+  // minPasswordLength (8) would make it give the wrong number.
+  { pattern: /too small.*(?:>=|at least) ?4/i, key: "AUTH_PASSWORD_TOO_SHORT" },
   // belt and braces for an error object whose `code` was stripped in transit
   { pattern: /invalid username or password/i, key: "AUTH_INVALID_CREDENTIALS" },
 ];

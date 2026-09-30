@@ -184,6 +184,7 @@ async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}
     steps: () => Array.from(container.querySelectorAll<HTMLElement>("[data-testid='getting-started-step']")),
     dismiss: () => container.querySelector<HTMLButtonElement>("[data-testid='getting-started-dismiss']"),
     error: () => container.querySelector<HTMLElement>("[data-testid='dashboard-error']"),
+    dismissFailed: () => container.querySelector<HTMLElement>("[data-testid='getting-started-dismiss-error']"),
     stale: () => container.querySelector<HTMLElement>("[data-testid='dashboard-stale']"),
     skeletons: () => container.querySelectorAll("[data-slot='skeleton']"),
     unmount: async () => {
@@ -227,6 +228,59 @@ describe("DashboardPage summary (issue 84)", () => {
   afterEach(() => {
     queryClient.clear();
     document.body.innerHTML = "";
+  });
+
+  it("tells the owner when a dismissal did not save", async () => {
+    failPreferenceWrites = true;
+    progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+
+    await act(async () => page.dismiss()?.click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // the control snapping back with no explanation is the bug
+    expect(page.dismissFailed()).not.toBeNull();
+    // let the failed write settle before the next test shares the harness
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await page.unmount();
+  });
+
+  it("stops re-issuing the completion milestone after repeated failures", async () => {
+    // every progress observation would otherwise re-issue the write for as long
+    // as the tab stays open
+    progress = { hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true };
+    failAcknowledge = true;
+    const page = await mount(queryClient);
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["onboardingProgress"] });
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      });
+    }
+    expect(acknowledgeCount).toBeGreaterThan(0);
+
+    // let the last attempt's retries land, then the cap is reached for good
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const settled = acknowledgeCount;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["onboardingProgress"] });
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      });
+    }
+    expect(acknowledgeCount).toBe(settled);
+    // let the last attempt's retries land before the next test shares the harness
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    await page.unmount();
   });
 
   it("renders the server's own day, not a device-derived one", async () => {
@@ -578,10 +632,15 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     await page.unmount();
   });
 
-  it("keeps the panel shown when the preference read fails (defaults win)", async () => {
+  it("does not show the panel when the preference read fails", async () => {
+    // "we could not ask" is not "not dismissed": defaulting to visible re-nags
+    // an owner who already dismissed it
     failPreferences = true;
     const page = await mount(queryClient);
-    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    await flush();
+    await flush();
+    expect(page.panel()).toBeNull();
     await page.unmount();
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { Preferences } from "@dokan/contracts";
@@ -47,12 +47,19 @@ export interface Preference<T> {
   value: T;
   /** Await the server, then install its value; never shows an unconfirmed guess. */
   setValue: (next: T) => void;
-  /** Update from the current server value; a no-op while a write is in flight. */
+  /** Update from the current server value; a change made while a write is in
+   * flight is remembered and sent once that write settles. */
   updateValue: (updater: (previous: T) => T) => void;
   /** true until the shared preferences read settles (success or failure). */
   isPending: boolean;
   /** true while this key's write is in flight; disable the control meanwhile. */
   isWriting: boolean;
+  /** true when the read failed: "not set" and "we could not ask" are not the
+   * same answer, and treating them as one is how a dismissal gets lost. */
+  isError: boolean;
+  /** true when the last write did not land; the server value still stands, and
+   * the owner deserves to be told rather than watch the control snap back. */
+  writeFailed: boolean;
 }
 
 // Keys the owner has written this page session. The one-time legacy import
@@ -92,44 +99,65 @@ export function usePreference<T>(
     refetchOnReconnect: true,
   });
   const [pending, setPending] = useState(false);
+  const [writeFailed, setWriteFailed] = useState(false);
   const inFlight = useRef(false);
+  /** the newest change made while a write was in flight, sent once it settles */
+  const queued = useRef<{ next: T } | null>(null);
 
   const raw = query.data?.[key];
   const value = raw === undefined ? defaultValue : parse(raw);
 
-  const setValue = useCallback(
-    (next: T) => {
-      // synchronous guard: two clicks in one tick cannot issue two writes
-      if (inFlight.current) return;
-      inFlight.current = true;
-      writtenKeys.add(key);
-      setPending(true);
-      void writePreference(key, serialize(next))
-        .then((stored) => {
-          if (stored === null) return; // the write failed; the server value stands
-          // install only the server's own returned value, and never create a
-          // partial map: the cache holds full server reads only
-          queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
-            if (previous === undefined) return previous;
-            return { ...previous, [key]: stored };
-          });
-        })
-        .finally(() => {
-          inFlight.current = false;
-          setPending(false);
+  function send(next: T): void {
+    inFlight.current = true;
+    setPending(true);
+    setWriteFailed(false);
+    writtenKeys.add(key);
+    void writePreference(key, serialize(next))
+      .then((stored) => {
+        if (stored === null) {
+          // the write failed; the server value stands and the caller is told
+          setWriteFailed(true);
+          return;
+        }
+        // install only the server's own returned value, and never create a
+        // partial map: the cache holds full server reads only
+        queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) => {
+          if (previous === undefined) return previous;
+          return { ...previous, [key]: stored };
         });
-    },
-    [key, queryClient, serialize],
-  );
+      })
+      .finally(() => {
+        inFlight.current = false;
+        setPending(false);
+        const queuedNext = queued.current;
+        queued.current = null;
+        // two fast toggles must leave the server on the last one, not the first
+        if (queuedNext !== null) send(queuedNext.next);
+      });
+  }
 
-  const updateValue = useCallback(
-    (updater: (previous: T) => T) => {
-      const currentRaw = queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY)?.[key];
-      const current = currentRaw === undefined ? defaultValue : parse(currentRaw);
-      setValue(updater(current));
-    },
-    [defaultValue, key, parse, queryClient, setValue],
-  );
+  function setValue(next: T): void {
+    // synchronous guard: two clicks in one tick cannot issue two writes
+    if (inFlight.current) {
+      queued.current = { next };
+      return;
+    }
+    send(next);
+  }
 
-  return { value, setValue, updateValue, isPending: query.isPending, isWriting: pending };
+  function updateValue(updater: (previous: T) => T): void {
+    const currentRaw = queryClient.getQueryData<Preferences>(PREFERENCES_QUERY_KEY)?.[key];
+    const current = currentRaw === undefined ? defaultValue : parse(currentRaw);
+    setValue(updater(current));
+  }
+
+  return {
+    value,
+    setValue,
+    updateValue,
+    isPending: query.isPending,
+    isWriting: pending,
+    isError: query.isError,
+    writeFailed,
+  };
 }

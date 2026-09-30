@@ -10,8 +10,10 @@ const WEB_PORT = Number(process.env.DOKAN_WEB_PORT ?? 5173);
 // The API resolves DOKAN_DATA_DIR itself and may run from any workspace cwd,
 // so the e2e database path must be absolute. This is also the path the
 // clean-room wipe deletes, so reruns never accumulate items (a strict-mode
-// duplicate caught in development).
-const e2eData = path.join(process.cwd(), ".e2e-data");
+// duplicate caught in development). One source of truth: a harness that
+// overrides E2E_DATA_DIR must move the server and the reset scripts together,
+// or the reset would clear a different database than the tests run against.
+const e2eData = process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data");
 
 export default defineConfig({
   testDir: "./tests/e2e",

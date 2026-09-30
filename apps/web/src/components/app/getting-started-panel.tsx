@@ -16,6 +16,8 @@ interface GettingStartedPanelProps {
   isPending: boolean;
   /** true while the dismissal write is in flight; the control is disabled. */
   dismissPending: boolean;
+  /** true when the dismissal write did not land: the owner is told, not left guessing. */
+  dismissFailed: boolean;
   onDismiss: () => void;
 }
 
@@ -41,7 +43,7 @@ function GettingStartedSkeleton() {
             <Skeleton className="size-5 shrink-0 rounded-full" />
             <div className="min-w-0 flex-1">
               <Skeleton className="h-5 w-28" />
-              <Skeleton className="mt-0.5 h-5 w-56" />
+              <Skeleton className="mt-1 h-5 w-56" />
             </div>
           </div>
         ))}
@@ -56,7 +58,7 @@ function GettingStartedSkeleton() {
  * each marked done only when its record exists on the server. Once every step
  * is done it disappears for good, and an explicit dismissal is remembered too.
  */
-export function GettingStartedPanel({ hidden, progress, isPending, dismissPending, onDismiss }: GettingStartedPanelProps) {
+export function GettingStartedPanel({ hidden, progress, isPending, dismissPending, dismissFailed, onDismiss }: GettingStartedPanelProps) {
   const { t } = useTranslation();
 
   if (hidden) return null;
@@ -90,6 +92,12 @@ export function GettingStartedPanel({ hidden, progress, isPending, dismissPendin
         </Button>
       </div>
 
+      {dismissFailed && (
+        <p className="border-b border-border px-4 py-2 text-sm text-destructive" role="alert" data-testid="getting-started-dismiss-error">
+          {t("onboardingDismissFailed")}
+        </p>
+      )}
+
       <ol className="divide-y divide-border">
         {steps.map((step) => (
           <li key={step.id} data-testid="getting-started-step" data-state={step.done ? "done" : "pending"}>
@@ -104,7 +112,7 @@ export function GettingStartedPanel({ hidden, progress, isPending, dismissPendin
               )}
               <span className="min-w-0 flex-1">
                 <span className="block text-sm font-medium group-hover:underline">{t(step.labelKey)}</span>
-                <span className="mt-0.5 block text-sm text-muted-foreground">{t(step.hintKey)}</span>
+                <span className="mt-1 block text-sm text-muted-foreground">{t(step.hintKey)}</span>
               </span>
               <span className="sr-only">{step.done ? t("onboardingDone") : t("onboardingPending")}</span>
             </Link>

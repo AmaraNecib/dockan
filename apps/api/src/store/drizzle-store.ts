@@ -1454,7 +1454,6 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       await this.setPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
       return true;
     },
-
     // --- activities + settings ----------------------------------------------
     async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null }) {
       const value: (typeof activities.$inferInsert) & { ref: string | null } = {

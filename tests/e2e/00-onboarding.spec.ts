@@ -179,8 +179,7 @@ test("completing every step removes the panel", async ({ page }) => {
   await expect(page.getByTestId("getting-started")).toHaveCount(0);
 
   // Settle the debt this spec created: later specs' debts-screen totals assume
-  // they own the only outstanding balance. The onboarding state is already
-  // proven above; paying it off leaves the shared database clean.
+  // they own the only outstanding balance.
   await page.goto("/invoices");
   await page.getByTestId(`invoice-open-${invoiceNumber}`).click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
@@ -188,4 +187,12 @@ test("completing every step removes the panel", async ({ page }) => {
   await page.getByTestId("pmt-submit").click();
   await expect(page.getByTestId("pmt-done")).toBeVisible();
   await expect(page.getByTestId("invoice-remaining")).toContainText("0");
+
+  // "finished means gone" must be durable, not just a projection: the debt step
+  // is no longer satisfied, so only the recorded milestone can keep it hidden.
+  // Without this the assertion above passes against a milestone that never
+  // reached the server.
+  await page.goto("/");
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("getting-started")).toHaveCount(0);
 });

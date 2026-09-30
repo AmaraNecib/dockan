@@ -40,14 +40,17 @@ mock.module("@/lib/rpc", () => ({
 const { hasPreferenceWrite, parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } =
   await import("./preferences");
 
-function Probe() {
-  const pref = usePreference("ui.test.a", false, parseBooleanPreference, serializeBooleanPreference);
+function Probe({ prefKey = "ui.test.a" }: { prefKey?: string } = {}) {
+  const pref = usePreference(prefKey, false, parseBooleanPreference, serializeBooleanPreference);
   return (
     <div>
       <span data-testid="value">{String(pref.value)}</span>
       <span data-testid="loading">{String(pref.isPending)}</span>
       <span data-testid="writing">{String(pref.isWriting)}</span>
+      <span data-testid="read-error">{String(pref.isError)}</span>
+      <span data-testid="write-failed">{String(pref.writeFailed)}</span>
       <button data-testid="set" onClick={() => pref.setValue(true)}>set</button>
+      <button data-testid="unset" onClick={() => pref.setValue(false)}>unset</button>
     </div>
   );
 }
@@ -76,7 +79,7 @@ interface ProbeHandle {
   unmount: () => Promise<void>;
 }
 
-async function mountProbe(): Promise<ProbeHandle> {
+async function mountProbe(prefKey = "ui.test.a"): Promise<ProbeHandle> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -84,7 +87,7 @@ async function mountProbe(): Promise<ProbeHandle> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <Probe />
+        <Probe prefKey={prefKey} />
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -114,6 +117,51 @@ describe("preferences client (issue 97 follow-up)", () => {
   it("surfaces a failed read so the query can retry later", async () => {
     failRead = true;
     await expect(readPreferences()).rejects.toThrow("PREFERENCES_READ_FAILED");
+  });
+
+  it("reports a failed read to the caller instead of failing open", async () => {
+    failRead = true;
+    const handle = await mountProbe("ui.test.b");
+    expect(await waitFor(() => text(handle.host, "read-error") === "true")).toBe(true);
+    // the caller must be able to tell "not set" from "we could not ask"
+    await handle.unmount();
+  });
+
+  it("reports a failed write instead of pretending it landed", async () => {
+    failWrite = true;
+    const handle = await mountProbe("ui.test.c");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    expect(await waitFor(() => text(handle.host, "write-failed") === "true")).toBe(true);
+    // the value stays the server's, and the control knows why
+    expect(text(handle.host, "value")).toBe("false");
+    expect(store["ui.test.c"]).toBeUndefined();
+    await handle.unmount();
+  });
+
+  it("does not drop a second change made while a write is in flight", async () => {
+    let release: (() => void) | null = null;
+    writeGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handle = await mountProbe("ui.test.d");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+
+    // two fast toggles: the second must not be discarded
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='unset']")?.click());
+    await act(async () => {
+      release?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(await waitFor(() => writeCalls === 2)).toBe(true);
+    expect(await waitFor(() => store["ui.test.d"] === "false")).toBe(true);
+    expect(text(handle.host, "value")).toBe("false");
+    // let the queued write settle before the next test shares the mock
+    expect(await waitFor(() => text(handle.host, "writing") === "false")).toBe(true);
+    await handle.unmount();
   });
 
   it("parses only the explicit true flag", () => {
@@ -166,7 +214,7 @@ describe("preferences client (issue 97 follow-up)", () => {
     await handle.unmount();
   });
 
-  it("ignores a second write while the first is in flight", async () => {
+  it("remembers a second write made while the first is in flight", async () => {
     let releaseWrite = () => {};
     writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
@@ -175,6 +223,8 @@ describe("preferences client (issue 97 follow-up)", () => {
     const handle = await mountProbe();
     expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
 
+    // two clicks in one tick: the second is queued, not discarded, so the
+    // server ends on the last intent
     await act(async () => {
       const set = handle.host.querySelector<HTMLButtonElement>("[data-testid='set']");
       set?.click();
@@ -186,7 +236,7 @@ describe("preferences client (issue 97 follow-up)", () => {
     releaseWrite();
     expect(await waitFor(() => store["ui.test.a"] === "true")).toBe(true);
     expect(await waitFor(() => text(handle.host, "value") === "true")).toBe(true);
-    expect(writeCalls).toBe(1);
+    expect(writeCalls).toBe(2);
     await handle.unmount();
   });
 

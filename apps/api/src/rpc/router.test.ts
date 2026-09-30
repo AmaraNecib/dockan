@@ -3130,11 +3130,12 @@ describe("UI preferences (issue 97 follow-up)", () => {
     });
   });
 
-  it("round-trips a preference over the wire", async () => {
-    const key = `ui.test.${Date.now()}`;
-    await client.preferencesSet({ key, value: "true" });
+  it("round-trips a client-owned preference over the wire", async () => {
+    // the endpoint is for shell state the owner owns, not for arbitrary keys:
+    // see "refuses a key the server owns" below
+    await client.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" });
     const { values } = await client.preferencesGet();
-    expect(values[key]).toBe("true");
+    expect(values["ui.sidebar.collapsed"]).toBe("true");
   });
 
   it("rejects an empty preference key at the contract boundary", async () => {
@@ -3148,6 +3149,23 @@ describe("UI preferences (issue 97 follow-up)", () => {
     await expect(client.preferencesSet({ key: "ui.test.oversize", value: "v".repeat(513) })).rejects.toMatchObject({
       code: "BAD_REQUEST",
     });
+  });
+
+  it("refuses a key the server owns", async () => {
+    // the completion milestone is derived from shop records; a client that could
+    // write it would hide the checklist forever with nothing behind it. The
+    // server records it itself, so this test only pins the refusal.
+    await expect(client.preferencesSet({ key: "ui.onboarding.completed", value: "true" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+  });
+
+  it("still accepts the shell keys the owner owns", async () => {
+    await client.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" });
+    await client.preferencesSet({ key: "ui.onboarding.dismissed", value: "true" });
+    const { values } = await client.preferencesGet();
+    expect(values["ui.sidebar.collapsed"]).toBe("true");
+    expect(values["ui.onboarding.dismissed"]).toBe("true");
   });
 });
 

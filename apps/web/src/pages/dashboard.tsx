@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
@@ -22,6 +22,9 @@ import { orpc } from "../lib/rpc";
  * rejected — the lag self-heals on the next tick.
  */
 const REFRESH_MS = 60_000;
+
+/** After this many failed milestone writes, stop re-issuing them. */
+const MAX_COMPLETION_ATTEMPTS = 5;
 
 function KpiCard({ label, value, detail, testId }: { label: string; value: ReactNode; detail?: ReactNode; testId?: string }) {
   return (
@@ -55,18 +58,27 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     setValue: setDismissed,
     isPending: dismissedPending,
     isWriting: dismissedWriting,
+    isError: dismissedError,
+    writeFailed: dismissFailed,
   } = useOnboardingDismissed();
-  const { value: completed, isPending: completedPending } = useOnboardingCompleted();
-  const hidden = dismissed || completed;
+  const { value: completed, isPending: completedPending, isError: completedError } = useOnboardingCompleted();
+  // "we could not ask" is not "not dismissed": defaulting to visible would
+  // re-nag an owner who dismissed the panel, so wait for an answer we trust
+  const preferencesError = dismissedError || completedError;
+  const hidden = dismissed || completed || preferencesError;
   const preferencesPending = dismissedPending || completedPending;
   const queryClient = useQueryClient();
 
-  const acknowledge = useMutation({
+  /** how many times the milestone write has been observed to fail */
+  const completionAttempts = useRef(0);
+
+  const recordCompletion = useMutation({
     ...orpc.onboardingComplete.mutationOptions(),
     // the server records the milestone idempotently, so retrying is safe
     retry: 2,
     retryDelay: 100,
     onSuccess: () => {
+      completionAttempts.current = 0;
       // pull the recorded milestone into the shared preferences cache
       void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
     },
@@ -82,13 +94,17 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
   });
 
   // "Finished means gone": when the four real records are observed, ask the
-  // server to record the milestone idempotently. Each progress observation
-  // retries after a failure; once `completed` is set the calls stop. The UI
-  // never persists completion the server does not have.
+  // server to record the milestone idempotently. The count is incremented when
+  // an attempt is *started*, because a mutate that is still retrying would
+  // otherwise let the next poll start another one. The panel is already hidden
+  // by then, so a permanent failure must not keep writing forever.
   const complete = progress.data !== undefined && isOnboardingComplete(progress.data);
   useEffect(() => {
-    if (complete && !completed) acknowledge.mutate(undefined);
-  }, [acknowledge.mutate, complete, completed, progress.dataUpdatedAt]);
+    if (!complete || completed) return;
+    if (completionAttempts.current >= MAX_COMPLETION_ATTEMPTS) return;
+    completionAttempts.current += 1;
+    recordCompletion.mutate(undefined);
+  }, [recordCompletion.mutate, complete, completed, progress.dataUpdatedAt]);
 
   return (
     <section data-testid="dashboard-page">
@@ -103,9 +119,8 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
         // no skeleton while the preferences load: an owner who already
         // dismissed/completed must not see even a placeholder flash
         isPending={progress.isPending && !preferencesPending}
-        // disabled while the preferences load or the dismissal write is in
-        // flight: the UI never acts on a value it has not confirmed
-        dismissPending={dismissedPending || dismissedWriting}
+        dismissPending={dismissedWriting}
+        dismissFailed={dismissFailed}
         onDismiss={() => setDismissed(true)}
       />
 

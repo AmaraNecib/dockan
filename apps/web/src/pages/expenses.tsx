@@ -360,7 +360,7 @@ export function ExpensesPage() {
                 <Button type="submit" disabled={createExpense.isPending} data-testid="expense-save">
                   {t("expenseSave")}
                 </Button>
-                {saved && <span className="text-sm text-green-700" data-testid="expense-saved">{t("expenseSaved")}</span>}
+                {saved && <span className="text-sm text-success" data-testid="expense-saved">{t("expenseSaved")}</span>}
               </div>
               {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
             </form>
@@ -368,7 +368,7 @@ export function ExpensesPage() {
             {categoryFormOpen && categoryForm}
 
             {categoryNotice !== null && (
-              <p className="text-sm text-green-700" role="status" data-testid="expense-category-created">
+              <p className="text-sm text-success" role="status" data-testid="expense-category-created">
                 {t("expenseCategoryCreated", { name: categoryNotice })}
               </p>
             )}

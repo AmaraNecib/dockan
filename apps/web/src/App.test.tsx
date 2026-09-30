@@ -7,8 +7,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-<<<<<<< HEAD
 import i18n, { type AuthErrorInput } from "./lib/i18n";
+import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
 /** The better-auth error shape the login page maps (code/message/status). */
@@ -23,13 +23,8 @@ let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
 let setupError: Error | null = null;
 let resetPasswordCalls = 0;
-import { SIDEBAR_COLLAPSED_KEY } from "./components/app/sidebar-state";
-=======
-import "./lib/i18n";
-import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
->>>>>>> 27453f5 (fix(preferences): surface the background import and keep the legacy fallback (#97))
 
-let needsSetup = false;
+// issue #97 follow-up: the shell's preference migration
 let sessionData: { user: { id: string } } | null = null;
 let sessionPending = false;
 let preferenceStore: Record<string, string> = {};
@@ -47,6 +42,7 @@ mock.module("@/lib/rpc", () => ({
     authResetPassword: async () => {
       resetPasswordCalls += 1;
       return {};
+    },
     preferencesGet: async () => {
       preferenceReadCalls += 1;
       // hold every read while gated, so the shell's query and the background
@@ -112,7 +108,11 @@ async function mountAuthGate(): Promise<HTMLElement> {
   const root = createRoot(host);
   mounted.push({ root, host });
   await act(async () => {
-    renderWithClient(root, <RequireSession>{null}</RequireSession>, new QueryClient());
+    root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <RequireSession>{null}</RequireSession>
+      </QueryClientProvider>,
+    );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -475,6 +475,9 @@ describe("auth transport failures stay calm (issue #100)", () => {
     });
 
     expect(signInCalls).toBe(1);
+  });
+});
+
 describe("RequireSession preference migration (issue #97 follow-up)", () => {
   function SidebarProbe() {
     const { value } = useSidebarCollapsed();

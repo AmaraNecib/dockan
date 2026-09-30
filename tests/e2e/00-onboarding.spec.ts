@@ -3,6 +3,7 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { openItemsTab } from "./items-helpers";
 
 /**
  * Issue #97 — getting-started checklist. The suite shares one database that is
@@ -111,11 +112,16 @@ test("creating an item completes step 1 without a reload", async ({ page }) => {
   await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
 
   await page.goto("/items");
+  // the items page defaults to the products table (#98); the create form lives
+  // in the add tab
+  await openItemsTab(page, "add");
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByTestId("item-name").fill(itemName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("item-save").click();
+  // the table lives in the products tab, so go back to see the new row
+  await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: new RegExp(itemName) })).toBeVisible();
 
   // Back to the dashboard through the app. The DOM marker on <html> survives

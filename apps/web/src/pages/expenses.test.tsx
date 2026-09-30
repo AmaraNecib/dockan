@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 interface ExpenseCategory {
   id: string;
@@ -44,7 +44,8 @@ interface ExpenseMutationOptions {
 let categoriesFixture: ExpenseCategory[] = [];
 let categoryCreateFails = false;
 let categoryCreateDeferred = false;
-let resolveCategoryCreate: (() => void) | null = null;
+/** settle functions for deferred creates, in submit order */
+let deferredCategoryCreates: Array<() => void> = [];
 /** makes the category-list refetch fail after a successful create */
 let categoriesListFails = false;
 let lastCreatedName: string | null = null;
@@ -77,17 +78,20 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: CategoryMutationOptions) => ({
         mutationFn: async (input: { name: string }) => {
           lastCreatedName = input.name;
-          if (categoryCreateFails) throw new Error("EXPENSE_CATEGORY_EXISTS");
           const created = category(`cat-${categoriesFixture.length + 1}`, input.name);
           const commit = () => {
             categoriesFixture = [...categoriesFixture, created];
             return created;
           };
           if (categoryCreateDeferred) {
-            return new Promise<ExpenseCategory>((resolve) => {
-              resolveCategoryCreate = () => resolve(commit());
+            return new Promise<ExpenseCategory>((resolve, reject) => {
+              deferredCategoryCreates.push(() => {
+                if (categoryCreateFails) reject(new Error("EXPENSE_CATEGORY_EXISTS"));
+                else resolve(commit());
+              });
             });
           }
+          if (categoryCreateFails) throw new Error("EXPENSE_CATEGORY_EXISTS");
           return commit();
         },
         ...opts,
@@ -187,7 +191,7 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     categoriesFixture = [];
     categoryCreateFails = false;
     categoryCreateDeferred = false;
-    resolveCategoryCreate = null;
+    deferredCategoryCreates = [];
     categoriesListFails = false;
     lastCreatedName = null;
     lastExpense = null;
@@ -275,9 +279,9 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     await ui.click("expense-category-empty-action");
     expect(ui.query("expense-category-form")).not.toBeNull();
     // the dead end this state exists to prevent: a save button that can only
-    // answer CATEGORY_NOT_FOUND
+    // answer CATEGORY_NOT_FOUND. The fields stay, disabled, as the next step.
     expect(ui.query("expense-save")).toBeNull();
-    expect(ui.query("expense-amount")).toBeNull();
+    expect(ui.query<HTMLInputElement>("expense-amount")?.disabled).toBe(true);
 
     await ui.unmount();
   });
@@ -299,11 +303,173 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     // the abandoned request lands now: it must not close the form or wipe the
     // name the owner has since typed
     await act(async () => {
-      resolveCategoryCreate?.();
+      deferredCategoryCreates[0]?.();
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
     expect(ui.query("expense-category-form")).not.toBeNull();
     expect(ui.query<HTMLInputElement>("expense-category-name")?.value).toBe("كهرباء");
+    // and it must not quietly move the selection to the abandoned category
+    expect(ui.selectValue()).not.toContain("كراء");
+
+    await ui.unmount();
+  });
+
+  it("does not let one attempt's response close another attempt's draft", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    categoryCreateDeferred = true;
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كراء");
+    await ui.submit("expense-category-form");
+
+    await ui.click("expense-category-cancel");
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كهرباء");
+    await ui.submit("expense-category-form");
+
+    // the first response arrives while the second attempt is still on screen
+    await act(async () => {
+      deferredCategoryCreates[0]?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(ui.query<HTMLInputElement>("expense-category-name")?.value).toBe("كهرباء");
+
+    // the second one belongs to this attempt, so it closes the form
+    await act(async () => {
+      deferredCategoryCreates[1]?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(ui.query("expense-category-form")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("does not paint a stale failure inside a newer draft", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    categoryCreateDeferred = true;
+    categoryCreateFails = true;
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كراء");
+    await ui.submit("expense-category-form");
+
+    await ui.click("expense-category-cancel");
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كهرباء");
+
+    await act(async () => {
+      deferredCategoryCreates[0]?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // the abandoned attempt's error belongs to the abandoned draft
+    expect(ui.query("expense-category-error")).toBeNull();
+    expect(ui.query<HTMLInputElement>("expense-category-name")?.value).toBe("كهرباء");
+
+    await ui.unmount();
+  });
+
+  it("offers a retry when the category list fails instead of a dead-end save", async () => {
+    categoriesListFails = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-categories-error") !== null)).toBe(true);
+    // a save here could only answer CATEGORY_NOT_FOUND
+    expect(ui.query("expense-save")).toBeNull();
+
+    categoriesListFails = false;
+    await ui.click("expense-categories-retry");
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps the created category filterable when the refetch fails", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    categoriesListFails = true;
+    await ui.click("expense-category-empty-action");
+    await ui.type("expense-category-name", "كراء المحل");
+    await ui.submit("expense-category-form");
+
+    // recordable and filterable from the same grace entry
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-1") !== null)).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps the record fields visible but disabled while no category exists", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    // the fields are the next step, so they stay on screen; only save is gone
+    expect(ui.query<HTMLInputElement>("expense-amount")?.disabled).toBe(true);
+    expect(ui.query("expense-save")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("points the add control at the form it reveals", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+
+    expect(ui.query("expense-category-add")?.getAttribute("aria-controls")).toBe("expense-category-form");
+    await ui.click("expense-category-add");
+    expect(ui.query("expense-category-form")?.id).toBe("expense-category-form");
+    // a label must not point at a button; the trigger names itself instead
+    expect(ui.query("expense-category")?.getAttribute("aria-labelledby")).not.toBeNull();
+    expect(document.querySelector('label[for="expense-category"]')).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("does not steal the caret when the form opens mid-entry", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+
+    const amount = ui.query<HTMLInputElement>("expense-amount");
+    if (amount === null) throw new Error("no amount field");
+    await act(async () => {
+      amount.focus();
+    });
+    await ui.click("expense-category-add");
+    expect(document.activeElement).toBe(amount);
+
+    await ui.unmount();
+  });
+
+  it("marks the amount required like the category", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-amount") !== null);
+
+    expect(ui.query("expense-amount")?.closest("label")?.textContent).toContain("*");
+
+    await ui.unmount();
+  });
+
+  it("labels cancel as a cancel and disables it while the create is pending", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+
+    await ui.click("expense-category-add");
+    expect(ui.query("expense-category-cancel")?.textContent).toBe(i18n.t("expenseCategoryCancel"));
+
+    categoryCreateDeferred = true;
+    await ui.type("expense-category-name", "نقل");
+    await ui.submit("expense-category-form");
+    // a cancel that fires while the request is in flight would orphan it
+    expect(ui.query<HTMLButtonElement>("expense-category-cancel")?.disabled).toBe(true);
+
+    await act(async () => {
+      deferredCategoryCreates[0]?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
 
     await ui.unmount();
   });

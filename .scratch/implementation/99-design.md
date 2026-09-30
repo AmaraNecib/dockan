@@ -32,12 +32,13 @@ its own submit, and `onSuccess` placing the new entity straight into the draft.
 `sale.tsx` does the same. This change copies that pattern rather than inventing
 a dialog.
 
-The one structural difference: `expenses.tsx` currently wraps the record fields
-in a native `<form>`. HTML forbids nesting forms, so the record container is
-converted from `<form onSubmit>` to a `<div>` with an explicit button
-(`type="button" onClick`), exactly like `sale.tsx` and `purchase.tsx`. This is
-what lets the category quick-add be a real `<form>` (native Enter submit) with
-no nesting.
+The one structural difference: `expenses.tsx` wraps the record fields in a
+native `<form>`. HTML forbids nesting forms, so the record form and the
+category quick-add form are **siblings**, never nested: the quick-add renders
+below the record form (and alone, in the empty state) as its own `<form>` with
+native Enter submit. An earlier draft replaced the record `<form>` with a
+`<div>` and a `type="button"` save; that was reverted because it silently cost
+the record form its Enter-to-submit, which the e2e now pins.
 
 ## Component interface — `apps/web/src/pages/expenses.tsx`
 

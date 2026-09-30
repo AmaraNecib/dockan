@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ExpenseCategory, ReportRangePreset } from "@dokan/contracts";
@@ -64,13 +64,14 @@ export function ExpensesPage() {
   const [categoryFormOpen, setCategoryFormOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [categoryError, setCategoryError] = useState<string | null>(null);
-  /** the category created here: kept even when the list refetch that follows it
-   * fails, so the owner can still record against what they just created */
+  /** the category created here: kept until the list confirms it, so the owner
+   * can still record against it when the refetch that follows it fails */
   const [createdCategory, setCreatedCategory] = useState<ExpenseCategory | null>(null);
+  /** the confirmation line for that create; cleared when the form reopens */
+  const [categoryNotice, setCategoryNotice] = useState<string | null>(null);
   /** which quick-add attempt a pending create belongs to. A response that lands
-   * after the form was cancelled and reopened must not clear the newer draft. */
+   * after the form was cancelled and reopened must not take the screen over. */
   const categoryAttemptRef = useRef(0);
-  const submittedAttemptRef = useRef(0);
 
   // history filters — default: current month, newest first, all categories
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
@@ -96,26 +97,7 @@ export function ExpensesPage() {
     }),
   );
 
-  const createCategory = useMutation(
-    orpc.expenseCategoriesCreate.mutationOptions({
-      onSuccess: (category) => {
-        // select it straight away: the owner came here to record an expense
-        setCategoryId(category.id);
-        setCreatedCategory(category);
-        setError(null);
-        // only the attempt still on screen may close the form or clear its
-        // draft: a cancelled attempt that settles late must not steal the name
-        // the owner has since started typing
-        if (submittedAttemptRef.current === categoryAttemptRef.current) {
-          setNewCategoryName("");
-          setCategoryError(null);
-          setCategoryFormOpen(false);
-        }
-        void queryClient.invalidateQueries({ queryKey: orpc.expenseCategoriesList.queryKey() });
-      },
-      onError: (err) => setCategoryError(tError(err.message)),
-    }),
-  );
+  const createCategory = useMutation(orpc.expenseCategoriesCreate.mutationOptions());
 
   const history = useQuery(
     orpc.expensesList.queryOptions({
@@ -145,11 +127,21 @@ export function ExpensesPage() {
   if (createdCategory !== null && !categoryOptions.some((option) => option.id === createdCategory.id)) {
     categoryOptions.push(createdCategory);
   }
-  const categoryListEmpty = categories.data !== undefined && categoryOptions.length === 0;
+  /** no category to record against yet */
+  const categoryListEmpty = categoryOptions.length === 0;
+  /** the list has never produced data: nothing to record against, and nothing
+   * to show as an option list either */
+  const categoriesUnavailable = categories.data === undefined;
+
+  // the list now carries it, so the grace entry has done its job
+  useEffect(() => {
+    if (createdCategory === null) return;
+    if (categories.data?.items.some((row) => row.id === createdCategory.id) === true) setCreatedCategory(null);
+  }, [categories.data, createdCategory]);
 
   function openCategoryForm() {
     categoryAttemptRef.current += 1;
-    setCreatedCategory(null);
+    setCategoryNotice(null);
     setCategoryError(null);
     setCategoryFormOpen(true);
   }
@@ -162,8 +154,31 @@ export function ExpensesPage() {
       setCategoryError(t("expenseCategoryNameRequired"));
       return;
     }
-    submittedAttemptRef.current = categoryAttemptRef.current;
-    void createCategory.mutate({ name });
+    const attempt = categoryAttemptRef.current;
+    createCategory.mutate(
+      { name },
+      {
+        onSuccess: (category) => {
+          // the category exists either way, so the option and the confirmation
+          // are unconditional…
+          setCreatedCategory(category);
+          setCategoryNotice(category.name);
+          setError(null);
+          // …but only the attempt still on screen may select it and close
+          if (attempt === categoryAttemptRef.current) {
+            setCategoryId(category.id);
+            setNewCategoryName("");
+            setCategoryError(null);
+            setCategoryFormOpen(false);
+          }
+          void queryClient.invalidateQueries({ queryKey: orpc.expenseCategoriesList.queryKey() });
+        },
+        onError: (err) => {
+          // an abandoned attempt's failure belongs to the abandoned draft
+          if (attempt === categoryAttemptRef.current) setCategoryError(tError(err.message));
+        },
+      },
+    );
   }
 
   function submit(event: React.FormEvent) {
@@ -188,15 +203,22 @@ export function ExpensesPage() {
 
   // the quick-add form renders in two places: alone when there is no category to
   // record against, and inline under the record form once one exists
+  // the empty-state path is the only one that takes focus: opening the form
+  // mid-entry must not move the caret out of the field being typed in
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (categoryFormOpen && categoryListEmpty) nameRef.current?.focus();
+  }, [categoryFormOpen, categoryListEmpty]);
+
   const categoryForm = (
-    <form className="grid gap-3 rounded bg-accent p-3" onSubmit={submitCategory} data-testid="expense-category-form">
+    <form id="expense-category-form" className="grid gap-3 rounded bg-accent p-3" onSubmit={submitCategory} data-testid="expense-category-form">
       <label className="grid gap-1 text-sm font-medium">
         {t("expenseCategoryName")}
         <input
+          ref={nameRef}
           className="rounded border px-3 py-2"
           name="expenseCategoryName"
           autoComplete="off"
-          autoFocus
           value={newCategoryName}
           onChange={(event) => setNewCategoryName(event.target.value)}
           aria-invalid={categoryError !== null}
@@ -208,8 +230,8 @@ export function ExpensesPage() {
         <Button type="submit" disabled={createCategory.isPending} data-testid="expense-category-create">
           {t("expenseCategoryCreate")}
         </Button>
-        <Button type="button" variant="outline" onClick={() => setCategoryFormOpen(false)} data-testid="expense-category-cancel">
-          {t("dialogClose")}
+        <Button type="button" variant="outline" disabled={createCategory.isPending} onClick={() => setCategoryFormOpen(false)} data-testid="expense-category-cancel">
+          {t("expenseCategoryCancel")}
         </Button>
       </div>
       {categoryError !== null && (
@@ -220,96 +242,119 @@ export function ExpensesPage() {
     </form>
   );
 
+  /** the fields the expense is recorded with; disabled while no category exists,
+   * so the flow stays legible without offering a save that can only fail */
+  const recordFields = (disabled: boolean) => (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="grid gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <span id="expense-category-label" className="text-sm font-medium">
+            {t("expenseCategory")}
+            <span className="text-destructive" aria-hidden="true"> *</span>
+            <span className="sr-only"> ({t("expenseRequired")})</span>
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-expanded={categoryFormOpen}
+            aria-controls="expense-category-form"
+            onClick={() => {
+              if (categoryFormOpen) {
+                setCategoryFormOpen(false);
+              } else {
+                openCategoryForm();
+              }
+            }}
+            data-testid="expense-category-add"
+          >
+            {t("expenseCategoryAdd")}
+          </Button>
+        </div>
+        <Select
+          value={categoryId}
+          onValueChange={(value) => setCategoryId(value ?? "")}
+          disabled={disabled}
+          items={[
+            { value: "", label: t("expenseCategoryPlaceholder") },
+            ...categoryOptions.map((category) => ({
+              value: category.id,
+              label: `${category.name}${category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}`,
+            })),
+          ]}
+        >
+          <SelectTrigger id="expense-category" aria-labelledby="expense-category-label" className="w-full" data-testid="expense-category">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="">{t("expenseCategoryPlaceholder")}</SelectItem>
+            {categoryOptions.map((category) => (
+              <SelectItem key={category.id} value={category.id}>
+                {category.name}
+                {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <label className="grid gap-1">
+        <span>
+          {t("expenseAmount")}
+          <span className="text-destructive" aria-hidden="true"> *</span>
+          <span className="sr-only"> ({t("expenseRequired")})</span>
+        </span>
+        <input className="rounded border px-3 py-2" inputMode="numeric" disabled={disabled} value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
+      </label>
+      <label className="grid gap-1">
+        {t("expenseNote")}
+        <input className="rounded border px-3 py-2" disabled={disabled} value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
+      </label>
+      <label className="grid gap-1">
+        {t("expenseOccurredAt")}
+        <input type="datetime-local" className="rounded border px-3 py-2" disabled={disabled} value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} data-testid="expense-date" />
+      </label>
+    </div>
+  );
+
   return (
     <section data-testid="expenses-page">
       <h1 className="text-xl font-bold">{t("expensesTitle")}</h1>
 
-      <div className="mt-4 grid gap-4 rounded border bg-card p-4" data-testid="expense-form">
+      <div className="mt-4 grid gap-4 rounded border bg-card p-4" data-testid="expense-record">
         <h2 className="font-semibold">{t("expensesRecordTitle")}</h2>
 
-        {categoryListEmpty ? (
-          <div data-testid="expense-category-empty">
-            {categoryFormOpen ? (
-              categoryForm
-            ) : (
-              <EmptyState
-                icon={<Tags size={28} />}
-                title={t("expenseCategoryEmpty")}
-                hint={t("expenseCategoryEmptyHint")}
-                action={
-                  <Button size="lg" type="button" onClick={openCategoryForm} data-testid="expense-category-empty-action">
-                    {t("expenseCategoryCreateFirst")}
-                  </Button>
-                }
-              />
-            )}
+        {categoriesUnavailable && categories.isError ? (
+          <div className="grid gap-2 rounded border border-destructive/20 bg-destructive/10 p-3" data-testid="expense-categories-error">
+            <p className="text-sm text-destructive" role="alert">
+              {t("expenseCategoriesLoadFailed")}
+            </p>
+            <Button type="button" variant="outline" size="sm" onClick={() => void categories.refetch()} data-testid="expense-categories-retry">
+              {t("itemsSearchRetry")}
+            </Button>
+          </div>
+        ) : categoriesUnavailable ? (
+          <p className="text-sm text-muted-foreground" data-testid="expense-categories-loading">
+            {t("appSub")}
+          </p>
+        ) : categoryListEmpty ? (
+          <div className="grid gap-3" data-testid="expense-category-empty">
+            <EmptyState
+              icon={<Tags size={28} />}
+              title={t("expenseCategoryEmpty")}
+              hint={t("expenseCategoryEmptyHint")}
+              action={
+                <Button size="lg" type="button" onClick={openCategoryForm} data-testid="expense-category-empty-action">
+                  {t("expenseCategoryCreateFirst")}
+                </Button>
+              }
+            />
+            {recordFields(true)}
+            {categoryFormOpen && categoryForm}
           </div>
         ) : (
           <>
             <form className="grid gap-3" onSubmit={submit} data-testid="expense-record-form">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="grid gap-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <label htmlFor="expense-category" className="text-sm font-medium">
-                      {t("expenseCategory")}
-                      <span className="text-destructive" aria-hidden="true"> *</span>
-                      <span className="sr-only"> ({t("expenseRequired")})</span>
-                    </label>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      aria-expanded={categoryFormOpen}
-                      onClick={() => {
-                        if (categoryFormOpen) {
-                          setCategoryFormOpen(false);
-                        } else {
-                          openCategoryForm();
-                        }
-                      }}
-                      data-testid="expense-category-add"
-                    >
-                      {t("expenseCategoryAdd")}
-                    </Button>
-                  </div>
-                  <Select
-                    value={categoryId}
-                    onValueChange={(value) => setCategoryId(value ?? "")}
-                    items={[
-                      { value: "", label: t("expenseCategoryPlaceholder") },
-                      ...categoryOptions.map((category) => ({
-                        value: category.id,
-                        label: `${category.name}${category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}`,
-                      })),
-                    ]}
-                  >
-                    <SelectTrigger id="expense-category" className="w-full" data-testid="expense-category">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">{t("expenseCategoryPlaceholder")}</SelectItem>
-                      {categoryOptions.map((category) => (
-                        <SelectItem key={category.id} value={category.id}>
-                          {category.name}
-                          {category.isOwnerWithdrawal ? ` (${t("expensesWithdrawalBadge")})` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <label className="grid gap-1">
-                  {t("expenseAmount")}
-                  <input className="rounded border px-3 py-2" inputMode="numeric" value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
-                </label>
-                <label className="grid gap-1">
-                  {t("expenseNote")}
-                  <input className="rounded border px-3 py-2" value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
-                </label>
-                <label className="grid gap-1">
-                  {t("expenseOccurredAt")}
-                  <input type="datetime-local" className="rounded border px-3 py-2" value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} data-testid="expense-date" />
-                </label>
-              </div>
+              {recordFields(false)}
 
               <div className="flex items-center gap-3">
                 <Button type="submit" disabled={createExpense.isPending} data-testid="expense-save">
@@ -322,9 +367,9 @@ export function ExpensesPage() {
 
             {categoryFormOpen && categoryForm}
 
-            {createdCategory !== null && (
+            {categoryNotice !== null && (
               <p className="text-sm text-green-700" role="status" data-testid="expense-category-created">
-                {t("expenseCategoryCreated", { name: createdCategory.name })}
+                {t("expenseCategoryCreated", { name: categoryNotice })}
               </p>
             )}
           </>
@@ -410,7 +455,7 @@ export function ExpensesPage() {
             >
               {t("expensesAllCategories")}
             </button>
-            {categories.data?.items.map((category) => {
+            {categoryOptions.map((category) => {
               const active = selectedCategoryIds.has(category.id);
               return (
                 <button

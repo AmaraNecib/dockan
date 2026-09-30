@@ -468,6 +468,8 @@ const resources = {
       expenseCategoryEmpty: "لا توجد تصنيفات بعد",
       expenseCategoryEmptyHint: "أنشئ أول تصنيف لتسجيل مصروف",
       expenseCategoryCreateFirst: "إنشاء تصنيف",
+      expenseCategoryCancel: "إلغاء",
+      expenseCategoriesLoadFailed: "تعذّر تحميل التصنيفات. أعد المحاولة.",
       expenseCategoryNameRequired: "أدخل اسم التصنيف",
       expenseChooseCategory: "اختر تصنيفاً من القائمة أو أنشئ تصنيفاً جديداً",
       expensesHistoryTitle: "سجل المصاريف",

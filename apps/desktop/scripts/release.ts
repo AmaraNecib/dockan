@@ -33,7 +33,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { assemblePortable } from "./portable.mjs";
-import { compileSidecar, validateAuthSecret, validateBuildSecret } from "./sidecar";
+import { compileSidecar } from "./sidecar";
+import { ensureReleaseSecrets, RELEASE_ENV_PATH, type ResolvedReleaseSecrets } from "./secrets";
 
 const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
 /** Matches ONLY the pristine tauri NSIS artifact `Dokan_<version>_<arch>-setup.exe`
@@ -143,27 +144,37 @@ async function buildPortable(): Promise<void> {
   console.log(`[dokan] portable zip ready at ${zipPath}`);
 }
 
-async function main(): Promise<void> {
-  const secret = validateBuildSecret();
-  if (!secret.ok) {
-    console.error(`[dokan] build secret rejected: ${secret.reason}`);
-    console.error("[dokan] set a unique per-customer secret, e.g.:");
-    console.error("  DOKAN_BUILD_SECRET='<unique-per-shop-secret>' bun run --filter @dokan/desktop portable");
+/**
+ * Resolve both secrets, or exit loudly. A missing value is now generated into
+ * the gitignored env file; only a weak one is fatal.
+ */
+function resolveSecretsOrExit(): ResolvedReleaseSecrets {
+  try {
+    return ensureReleaseSecrets();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`[dokan] release secret rejected: ${reason}`);
+    console.error(`[dokan] fix the value in ${RELEASE_ENV_PATH}, or pass a strong one for this build:`);
+    console.error("  DOKAN_AUTH_SECRET='<32+ chars>' bun run --filter @dokan/desktop portable");
     process.exit(1);
   }
-  const authSecret = validateAuthSecret();
-  if (!authSecret.ok) {
-    console.error(`[dokan] auth secret rejected: ${authSecret.reason}`);
-    console.error("[dokan] set a unique per-customer session-signing secret, e.g.:");
-    console.error("  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' bun run --filter @dokan/desktop portable");
-    process.exit(1);
+}
+
+async function main(): Promise<void> {
+  const resolved = resolveSecretsOrExit();
+  if (resolved.generated.length > 0) {
+    console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${RELEASE_ENV_PATH} (gitignored)`);
+    console.log("[dokan] keep that file: a rebuild for the same shop needs the same values");
+  }
+  for (const key of ["DOKAN_BUILD_SECRET", "DOKAN_AUTH_SECRET"] as const) {
+    console.log(`[dokan] ${key}: ${resolved.sources[key]}`);
   }
 
   const slug = customerSlug(process.env.DOKAN_CUSTOMER_SLUG);
 
-  await compileSidecar(secret.secret, authSecret.secret);
+  await compileSidecar(resolved.secrets.DOKAN_BUILD_SECRET, resolved.secrets.DOKAN_AUTH_SECRET);
   console.log(
-    `[dokan] sidecar compiled with a ${secret.secret.length}-char build secret and ${authSecret.secret.length}-char auth secret inlined`,
+    `[dokan] sidecar compiled with a ${resolved.secrets.DOKAN_BUILD_SECRET.length}-char build secret and ${resolved.secrets.DOKAN_AUTH_SECRET.length}-char auth secret inlined`,
   );
 
   if (requestedTarget(Bun.argv) === "installer") {

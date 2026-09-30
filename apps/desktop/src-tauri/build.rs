@@ -14,7 +14,7 @@
 //! 2. Delegate to tauri-build for the app manifest, icons and capabilities.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the `.exe`
@@ -23,10 +23,22 @@ const SIDECAR_NAME: &str = "dokan-api-x86_64-pc-windows-msvc";
 const MIN_BUILD_SECRET_LEN: usize = 16;
 const MIN_AUTH_SECRET_LEN: usize = 32;
 
+/// The staged sidecar as it actually lands on disk. Bun appends the platform
+/// executable suffix, so on Windows the file is `<SIDECAR_NAME>.exe` — the
+/// bare name never exists, which used to defeat the "already compiled by the
+/// pipeline" fast path below and silently rebuild it here instead.
+fn staged_sidecar(manifest_dir: &Path) -> PathBuf {
+    manifest_dir
+        .join("binaries")
+        .join(format!("{SIDECAR_NAME}{}", env::consts::EXE_SUFFIX))
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let sidecar = manifest_dir.join("binaries").join(SIDECAR_NAME);
+    let sidecar = staged_sidecar(&manifest_dir);
     if sidecar.is_file() {
+        // `bun run sidecar` / `release.ts` already compiled it WITH the secrets
+        // validated and inlined; rebuilding it here would throw that away.
         tauri_build::build();
         return;
     }
@@ -39,30 +51,47 @@ fn main() {
     cmd.arg(&sidecar);
     cmd.current_dir(manifest_dir.join(".."));
 
-    let mut reason = "no DOKAN_BUILD_SECRET / DOKAN_AUTH_SECRET in the build environment (test artifact, not for distribution)";
-    if let Ok(secret) = env::var("DOKAN_BUILD_SECRET") {
-        if secret.len() >= MIN_BUILD_SECRET_LEN {
-            cmd.arg(format!("--define=process.env.DOKAN_BUILD_SECRET={}", js_string(&secret)));
-            reason = "per-customer DOKAN_BUILD_SECRET inlined";
-        }
+    // Track both secrets so the status line can tell a shippable sidecar from a
+    // test one. The previous wording always claimed "without a release secret"
+    // even when both were inlined, which read as a failure on a good build.
+    let build_secret = env::var("DOKAN_BUILD_SECRET")
+        .ok()
+        .filter(|secret| secret.len() >= MIN_BUILD_SECRET_LEN);
+    if let Some(secret) = &build_secret {
+        cmd.arg(format!(
+            "--define=process.env.DOKAN_BUILD_SECRET={}",
+            js_string(secret)
+        ));
     }
     // PR #51 finding 5: session signing is per-customer too — inline the
     // auth secret exactly like the build secret when a strong value is
     // supplied; the packaged-boot guard in main.ts refuses a binary whose
     // signing secret stayed at the shared dev sentinel.
-    if let Ok(secret) = env::var("DOKAN_AUTH_SECRET") {
-        if secret.len() >= MIN_AUTH_SECRET_LEN {
-            cmd.arg(format!("--define=process.env.DOKAN_AUTH_SECRET={}", js_string(&secret)));
-            if reason == "per-customer DOKAN_BUILD_SECRET inlined" {
-                reason = "per-customer DOKAN_BUILD_SECRET and DOKAN_AUTH_SECRET inlined";
-            } else {
-                reason = "per-customer DOKAN_AUTH_SECRET inlined (no build secret)";
-            }
+    let auth_secret = env::var("DOKAN_AUTH_SECRET")
+        .ok()
+        .filter(|secret| secret.len() >= MIN_AUTH_SECRET_LEN);
+    if let Some(secret) = &auth_secret {
+        cmd.arg(format!(
+            "--define=process.env.DOKAN_AUTH_SECRET={}",
+            js_string(secret)
+        ));
+    }
+
+    // PRINT is the build-script status channel. Both secrets inlined is the
+    // shippable case; anything else is a test artifact and says so loudly.
+    match (build_secret.is_some(), auth_secret.is_some()) {
+        (true, true) => println!(
+            "cargo:warning=dokan: sidecar compiled with both per-customer secrets inlined (shippable)"
+        ),
+        (build_inlined, auth_inlined) => {
+            let missing = match (build_inlined, auth_inlined) {
+                (true, false) => "DOKAN_AUTH_SECRET",
+                (false, true) => "DOKAN_BUILD_SECRET",
+                _ => "DOKAN_BUILD_SECRET / DOKAN_AUTH_SECRET",
+            };
+            println!("cargo:warning=dokan: sidecar compiled without {missing} — cargo-built artifacts are for tests only; ship via `bun run portable`");
         }
     }
-    // PRINT is the build-script status channel: a loud warning so a sidecar
-    // built for the gates is never mistaken for a shippable artifact.
-    println!("cargo:warning=dokan: sidecar compiled without a release secret ({reason}) — cargo-built artifacts are for tests only; ship via `bun run portable`");
 
     let status = cmd.status().unwrap_or_else(|err| {
         panic!("could not run `bun build --compile` for the api sidecar ({err}); install bun or run `bun run sidecar` manually first")

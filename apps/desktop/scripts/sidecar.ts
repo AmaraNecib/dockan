@@ -20,46 +20,15 @@
 
 import path from "node:path";
 
-/** Minimum acceptable length for a per-customer build secret. */
-export const MIN_BUILD_SECRET_LEN = 16;
-/** Minimum acceptable length for the better-auth session-signing secret. */
-export const MIN_AUTH_SECRET_LEN = 32;
-
-export type SecretValidation = { ok: true; secret: string } | { ok: false; reason: string };
-
-export function validateBuildSecret(env: NodeJS.ProcessEnv = process.env): SecretValidation {
-  const secret = env.DOKAN_BUILD_SECRET;
-  if (secret === undefined || secret === "") {
-    return { ok: false, reason: "DOKAN_BUILD_SECRET is not set — refusing to ship a default secret" };
-  }
-  if (secret.length < MIN_BUILD_SECRET_LEN) {
-    return {
-      ok: false,
-      reason: `DOKAN_BUILD_SECRET is only ${secret.length} chars — must be at least ${MIN_BUILD_SECRET_LEN}`,
-    };
-  }
-  return { ok: true, secret };
-}
-
-/**
- * Validate the per-customer session-signing secret (PR #51 finding 5).
- * Better-Auth signs session cookies with this key; a shared or short default
- * would let any reader of the binary/source forge admin sessions, so a
- * release build without a strong DOKAN_AUTH_SECRET must fail loudly.
- */
-export function validateAuthSecret(env: NodeJS.ProcessEnv = process.env): SecretValidation {
-  const secret = env.DOKAN_AUTH_SECRET;
-  if (secret === undefined || secret === "") {
-    return { ok: false, reason: "DOKAN_AUTH_SECRET is not set — refusing to ship a default session-signing secret" };
-  }
-  if (secret.length < MIN_AUTH_SECRET_LEN) {
-    return {
-      ok: false,
-      reason: `DOKAN_AUTH_SECRET is only ${secret.length} chars — must be at least ${MIN_AUTH_SECRET_LEN}`,
-    };
-  }
-  return { ok: true, secret };
-}
+import { ensureReleaseSecrets, RELEASE_ENV_PATH } from "./secrets";
+// re-exported so callers and tests can keep importing the rules from here
+export {
+  MIN_AUTH_SECRET_LEN,
+  MIN_BUILD_SECRET_LEN,
+  validateAuthSecret,
+  validateBuildSecret,
+} from "./secret-rules";
+export type { SecretValidation } from "./secret-rules";
 
 /**
  * Compile the sidecar with both secrets inlined via `bun build --define`.
@@ -87,23 +56,13 @@ export async function compileSidecar(buildSecret: string, authSecret: string): P
 }
 
 async function main(): Promise<void> {
-  const buildSecret = validateBuildSecret();
-  if (!buildSecret.ok) {
-    console.error(`[dokan] build secret rejected: ${buildSecret.reason}`);
-    console.error("[dokan] set a unique per-customer secret, e.g.:");
-    console.error("  DOKAN_BUILD_SECRET='<unique-per-shop-secret>' bun run --filter @dokan/desktop portable");
-    process.exit(1);
+  const resolved = ensureReleaseSecrets();
+  if (resolved.generated.length > 0) {
+    console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${RELEASE_ENV_PATH} (gitignored)`);
   }
-  const authSecret = validateAuthSecret();
-  if (!authSecret.ok) {
-    console.error(`[dokan] auth secret rejected: ${authSecret.reason}`);
-    console.error("[dokan] set a unique per-customer session-signing secret, e.g.:");
-    console.error("  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' bun run --filter @dokan/desktop portable");
-    process.exit(1);
-  }
-  await compileSidecar(buildSecret.secret, authSecret.secret);
+  await compileSidecar(resolved.secrets.DOKAN_BUILD_SECRET, resolved.secrets.DOKAN_AUTH_SECRET);
   console.log(
-    `[dokan] sidecar compiled with a ${buildSecret.secret.length}-char build secret and ${authSecret.secret.length}-char auth secret inlined`,
+    `[dokan] sidecar compiled with a ${resolved.secrets.DOKAN_BUILD_SECRET.length}-char build secret and ${resolved.secrets.DOKAN_AUTH_SECRET.length}-char auth secret inlined`,
   );
 }
 

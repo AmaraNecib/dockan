@@ -60,15 +60,10 @@ describe("validateAuthSecret (PR #51 finding 5 — session-forgery)", () => {
     expect(long.ok).toBe(true);
   });
 
-  it("release mains exit 1 when DOKAN_AUTH_SECRET is missing or weak", async () => {
-    const envWithout = { ...process.env, DOKAN_BUILD_SECRET: "valid-build-secret-123" };
-    delete envWithout.DOKAN_AUTH_SECRET;
-    const missing = Bun.spawn(["bun", "scripts/release.ts"], { env: envWithout, stdio: ["ignore", "pipe", "pipe"] });
-    const missingCode = await missing.exited;
-    const missingErr = await new Response(missing.stderr).text();
-    expect(missingCode).toBe(1);
-    expect(missingErr).toContain("DOKAN_AUTH_SECRET is not set");
-
+  it("release mains exit 1 on a weak explicit secret instead of shipping it", async () => {
+    // A MISSING secret is no longer fatal: it is generated into the gitignored
+    // env file, which secrets.test.ts covers. Only a weak one is refused — and
+    // that refusal happens before the sidecar compile, so this stays cheap.
     const weak = Bun.spawn(["bun", "scripts/release.ts"], {
       env: { ...process.env, DOKAN_BUILD_SECRET: "valid-build-secret-123", DOKAN_AUTH_SECRET: "short" },
       stdio: ["ignore", "pipe", "pipe"],

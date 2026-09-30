@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "sidecar": "bun scripts/sidecar.ts",
+    "secrets": "bun scripts/secrets-cli.ts",
     "build": "bun run sidecar && tauri build",
     "portable": "bun scripts/release.ts",
     "installer": "bun scripts/release.ts --installer",

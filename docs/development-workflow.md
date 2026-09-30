@@ -116,46 +116,74 @@ Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 ### Commands
 
 ```bash
-# per-customer release (required): validates + inlines both secrets, builds NSIS
-DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
-DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
-DOKAN_CUSTOMER_SLUG='shop-slug' \
-bun run --filter @dokan/desktop portable
-# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
-# fails loudly when either secret is missing or too short — never ships a default
+# portable (folder + zip) — the default deliverable. No secrets needed on the
+# command line: they are generated once into apps/desktop/.env (gitignored) and
+# reused from then on.
+bun run desktop:portable
+# → apps/desktop/src-tauri/target/release/bundle/portable/Dokan-portable/  (folder)
+# → apps/desktop/src-tauri/target/release/bundle/portable/Dokan-portable.zip
+
+# per-customer installer: the slug names the artifact
+DOKAN_CUSTOMER_SLUG='shop-slug' bun run desktop:installer
+# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>_<slug>_x64-setup.exe
+
+# see (or print) the release secrets and where they came from
+bun run desktop:secrets          # paths + sources
+bun run desktop:secrets --show   # also prints the values
 
 # pieces separately
 bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
-bun run --filter @dokan/desktop build     # sidecar + tauri build (release)
 ```
+
+The portable target is **Windows-only** and produces no installer. Only the
+installer target uses `DOKAN_CUSTOMER_SLUG`; the portable folder is
+customer-neutral by design.
 
 The sidecar binary and `target/` are generated artifacts (gitignored); the
 source of the icon master is `tools/generate-icon.py` (PIL) — regenerate the
 icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
+
+### Release secrets
+
+Both per-customer secrets are **inlined into the compiled sidecar** at build
+time (`bun build --compile --define`), so they never appear in the runtime
+environment, logs, or app-data.
+
+| Variable | Min | What it is |
+|---|---|---|
+| `DOKAN_BUILD_SECRET` | 16 | The provisioning secret for first-run setup and the password-reset path. |
+| `DOKAN_AUTH_SECRET` | 32 | better-auth's session-signing key. Anyone holding it can mint an admin session. |
+
+They resolve in this order:
+
+1. an explicit environment variable — for one build that needs a specific
+   shop's secret without rewriting the file;
+2. `apps/desktop/.env` (gitignored) — where they are generated once and then
+   reused;
+3. a freshly generated value, written to that file.
+
+**Keep the file.** A rebuild for a shop that already has data needs the SAME
+values: a new `DOKAN_AUTH_SECRET` invalidates every session, and a new
+`DOKAN_BUILD_SECRET` breaks that owner's password-reset path. One `.env` per
+customer; a weak value in either place still fails the build loudly.
+
+```bash
+# a specific customer's secrets, for one build, without touching the file
+DOKAN_BUILD_SECRET='<unique-per-shop, >=16 chars>' \
+DOKAN_AUTH_SECRET='<unique-per-shop, >=32 chars>' \
+bun run desktop:portable
+```
 
 ### Installer facts
 
 - NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
   `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
   automatically by the installer).
-- **Per-customer secrets** (PR #51 findings 2 & 5): the vendor picks a
-  unique BUILD_SECRET **and** a unique AUTH_SECRET per shop and passes them
-  at BUILD time — both are inlined into the compiled sidecar exe, never
-  committed, never in runtime env/logs/app-data. The documented release
-  command is:
-
-  ```bash
-  DOKAN_BUILD_SECRET='<unique-per-shop-secret (>=16 chars)>' \
-  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
-  DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
-  bun run --filter @dokan/desktop portable
-  ```
-
-  Missing or weak secrets fail the build loudly; installers built without
-  them are test artifacts only (`cargo build`/`gates` fall back to a
-  secret-less sidecar with a loud warning and are never shipped). A packaged
-  binary that somehow boots without a strong signing secret is refused at
-  startup (the api's packaged-boot guard).
+- The portable folder cannot install WebView2, so the target machine needs the
+  runtime present (Windows 11 has it; most Windows 10 machines do).
+- A packaged binary that somehow boots without a strong signing secret is
+  refused at startup (the api's packaged-boot guard); `cargo build` on its own
+  produces a secret-less sidecar and says so loudly.
 - **Verified sidecar discovery** (PR #51 finding 1): the shell binds a
   listener on `127.0.0.1:0` — the kernel assigns a free port and the socket
   reserves it while the child is spawned, so no local process can race a

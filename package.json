@@ -14,6 +14,7 @@
     "dev:up": "bun run --filter @dokan/api dev && bun run --filter @dokan/web dev",
     "dev:desktop": "bun run --filter @dokan/desktop dev",
     "desktop:sidecar": "bun run --filter @dokan/desktop sidecar",
+    "desktop:secrets": "bun run --filter @dokan/desktop secrets",
     "desktop:portable": "bun run --filter @dokan/desktop portable",
     "desktop:installer": "bun run --filter @dokan/desktop installer",
     "build": "turbo build",

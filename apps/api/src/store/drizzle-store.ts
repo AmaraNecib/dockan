@@ -17,6 +17,7 @@ import type {
   Item,
   ItemCreate,
   ItemUpdate,
+  OnboardingProgress,
   PartyCreate,
   Payment,
   ReturnDetail,
@@ -26,8 +27,9 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
@@ -1408,6 +1410,50 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       };
     },
 
+    async onboardingProgress(): Promise<OnboardingProgress> {
+      // One EXISTS read for the getting-started checklist (issue 97). Each flag
+      // names a real record — an item, a purchase invoice, a sale invoice, a
+      // party-attributed unpaid SALE debt — so no client-settable flag can mark
+      // a step done. The debt predicate mirrors the SALE direction of
+      // dashboardSummary/debtSummaries, so the step agrees with the "owed to us"
+      // group on the /debts screen it links to.
+      // SAFETY: the SELECT is four EXISTS subqueries, so sqlite always returns
+      // exactly one row carrying these aliases as INTEGER 0/1 values.
+      const rows = (await db.all(sql`
+        SELECT
+          EXISTS(SELECT 1 FROM items) AS has_items,
+          EXISTS(SELECT 1 FROM invoices WHERE kind = 'SALE') AS has_sale,
+          EXISTS(SELECT 1 FROM invoices WHERE kind = 'PURCHASE') AS has_purchase,
+          EXISTS(
+            SELECT 1 FROM invoices
+            WHERE kind = 'SALE' AND remaining_amount > 0
+              AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
+          ) AS has_debt`)) as Array<{
+        has_items: number;
+        has_sale: number;
+        has_purchase: number;
+        has_debt: number;
+      }>;
+      const row = rows[0];
+      return {
+        hasItems: row?.has_items === 1,
+        hasPurchase: row?.has_purchase === 1,
+        hasSale: row?.has_sale === 1,
+        hasDebt: row?.has_debt === 1,
+      };
+    },
+
+    async recordOnboardingCompletion(): Promise<boolean> {
+      // Idempotent and re-checked: the milestone is written only while every
+      // real record still exists, so a retry can never mark a half-done
+      // checklist. Runs inside the caller's queue slot (this.* is the raw
+      // object), so the read and the write cannot interleave with a rival.
+      const progress = await this.onboardingProgress();
+      const completed = progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt;
+      if (!completed) return false;
+      await this.setPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
+      return true;
+    },
     // --- activities + settings ----------------------------------------------
     async insertActivity(activity: { type: Activity["type"]; summary: string; ref?: string | null }) {
       const value: (typeof activities.$inferInsert) & { ref: string | null } = {
@@ -1442,6 +1488,21 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (patch.storePhone !== undefined) await this.setSetting("storePhone", patch.storePhone ?? "");
       if (patch.storeAddress !== undefined) await this.setSetting("storeAddress", patch.storeAddress ?? "");
       return this.getSettings();
+    },
+
+    // --- UI preferences ------------------------------------------------------
+    async getPreferences(): Promise<Record<string, string>> {
+      // A handful of rows (sidebar + onboarding); a plain scan is cheapest and
+      // needs no index beyond the primary key.
+      const rows = await db.select({ key: preferences.key, value: preferences.value }).from(preferences);
+      return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    },
+    async setPreference(key: string, value: string) {
+      await db
+        .insert(preferences)
+        .values({ key, value })
+        .onConflictDoUpdate({ target: preferences.key, set: { value } })
+        .run();
     },
 
     // --- backup --------------------------------------------------------------

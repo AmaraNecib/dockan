@@ -20,7 +20,7 @@ import { ShortcutsHelp } from "./shortcuts-help";
 import { LogoutDialog } from "./logout-dialog";
 import { NAV_GROUPS, activeNavKey } from "./navigation";
 import { useSaleDraft } from "./sale-draft";
-import { readSidebarCollapsed, writeSidebarCollapsed } from "./sidebar-state";
+import { useSidebarCollapsed } from "./sidebar-state";
 
 function pageTitleFor(activeKey: string | null): string | null {
   if (!activeKey) return null;
@@ -123,20 +123,19 @@ export function AppShell() {
     ? { name: session.data.user.name ?? null, phone: session.data.user.phoneNumber ?? null }
     : null;
 
-  const [collapsed, setCollapsed] = useState(readSidebarCollapsed);
   const [helpOpen, setHelpOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  // Server-side preference: survives a packaged restart (random localhost port
+  // wipes localStorage). A failed read keeps the sidebar expanded.
+  const { value: collapsed, updateValue: updateCollapsed, isPending: collapsedPending, isWriting: collapsedWriting } =
+    useSidebarCollapsed();
 
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
   const activeTitleKey = pageTitleFor(activeKey);
 
   function toggleSidebar() {
-    setCollapsed((c) => {
-      const next = !c;
-      writeSidebarCollapsed(next);
-      return next;
-    });
+    updateCollapsed((current) => !current);
   }
 
   function closeTopmost() {
@@ -156,7 +155,7 @@ export function AppShell() {
         collapsed={collapsed}
         activeKey={activeKey}
         user={user}
-        onExpand={() => setCollapsed(false)}
+        onExpand={() => updateCollapsed(() => false)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -168,6 +167,7 @@ export function AppShell() {
             aria-label={t("sidebarToggle")}
             title={t("sidebarToggle")}
             onClick={toggleSidebar}
+            disabled={collapsedPending || collapsedWriting}
           >
             <PanelLeft size={18} />
           </Button>

@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 // React 19 act() requires the environment flag to be set explicitly
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
+import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
 /** The better-auth error shape the login page maps (code/message/status). */
@@ -22,6 +24,13 @@ let firstTimeSetupCalls = 0;
 let setupError: Error | null = null;
 let resetPasswordCalls = 0;
 
+// issue #97 follow-up: the shell's preference migration
+let sessionData: { user: { id: string } } | null = null;
+let sessionPending = false;
+let preferenceStore: Record<string, string> = {};
+let preferenceReadGate: Promise<void> | null = null;
+let preferenceReadCalls = 0;
+
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     needsSetup: async () => ({ needsSetup }),
@@ -34,12 +43,23 @@ mock.module("@/lib/rpc", () => ({
       resetPasswordCalls += 1;
       return {};
     },
+    preferencesGet: async () => {
+      preferenceReadCalls += 1;
+      // hold every read while gated, so the shell's query and the background
+      // migration race in a controlled way
+      if (preferenceReadGate !== null) await preferenceReadGate;
+      return { values: { ...preferenceStore } };
+    },
+    preferencesSet: async (input: { key: string; value: string }) => {
+      preferenceStore[input.key] = input.value;
+      return { key: input.key, value: input.value };
+    },
   },
   orpc: {},
 }));
 
 mock.module("@/lib/auth-client", () => ({
-  useSession: () => ({ data: null, isPending: false }),
+  useSession: () => ({ data: sessionData, isPending: sessionPending }),
   authClient: {
     signIn: {
       username: async (args: { username?: string; password?: string }) => {
@@ -70,7 +90,17 @@ afterEach(() => {
   firstTimeSetupCalls = 0;
   setupError = null;
   resetPasswordCalls = 0;
+  sessionData = null;
+  sessionPending = false;
+  preferenceStore = {};
+  preferenceReadGate = null;
+  preferenceReadCalls = 0;
+  window.localStorage.clear();
 });
+
+function renderWithClient(root: ReturnType<typeof createRoot>, ui: React.ReactElement, client: QueryClient): void {
+  root.render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 async function mountAuthGate(): Promise<HTMLElement> {
   const host = document.createElement("div");
@@ -78,7 +108,11 @@ async function mountAuthGate(): Promise<HTMLElement> {
   const root = createRoot(host);
   mounted.push({ root, host });
   await act(async () => {
-    root.render(<RequireSession>{null}</RequireSession>);
+    root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <RequireSession>{null}</RequireSession>
+      </QueryClientProvider>,
+    );
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -441,5 +475,95 @@ describe("auth transport failures stay calm (issue #100)", () => {
     });
 
     expect(signInCalls).toBe(1);
+  });
+});
+
+describe("RequireSession preference migration (issue #97 follow-up)", () => {
+  function SidebarProbe() {
+    const { value } = useSidebarCollapsed();
+    return <span data-testid="sidebar-value">{String(value)}</span>;
+  }
+
+  it("renders the shell immediately and surfaces the imported value in the background", async () => {
+    sessionData = { user: { id: "u1" } };
+    window.localStorage.setItem("dokan.sidebar.collapsed", "true");
+    let releaseRead = () => {};
+    preferenceReadGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      renderWithClient(
+        root,
+        <RequireSession>
+          <SidebarProbe />
+        </RequireSession>,
+        client,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // the shell is never blocked on the migration read (the scanner mounts)
+    expect(host.querySelector("[data-testid='sidebar-value']")).not.toBeNull();
+
+    releaseRead();
+    for (
+      let attempt = 0;
+      attempt < 50 && host.querySelector("[data-testid='sidebar-value']")?.textContent !== "true";
+      attempt += 1
+    ) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("true");
+    expect(host.querySelector("[data-testid='sidebar-value']")?.textContent).toBe("true");
+    expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBeNull();
+  });
+
+  it("runs the background import only once per mount", async () => {
+    sessionData = { user: { id: "u1" } };
+    window.localStorage.setItem("dokan.sidebar.collapsed", "true");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      renderWithClient(
+        root,
+        <RequireSession>
+          <div data-testid="shell" />
+        </RequireSession>,
+        client,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    for (let attempt = 0; attempt < 50 && preferenceStore[SIDEBAR_COLLAPSED_KEY] !== "true"; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    const callsAfterImport = preferenceReadCalls;
+    expect(callsAfterImport).toBe(1);
+
+    // a session identity change re-runs the effect; the one-shot ref skips it
+    sessionData = { user: { id: "u1" } };
+    await act(async () => {
+      renderWithClient(
+        root,
+        <RequireSession>
+          <div data-testid="shell" />
+        </RequireSession>,
+        client,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(preferenceReadCalls).toBe(callsAfterImport);
   });
 });

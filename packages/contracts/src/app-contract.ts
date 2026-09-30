@@ -34,7 +34,12 @@ import {
   logsTailInputSchema,
   logsTailOutputSchema,
   lowStockOutputSchema,
+  onboardingProgressOutputSchema,
+  onboardingCompleteOutputSchema,
   partyCreateInputSchema,
+  preferencesGetOutputSchema,
+  preferencesSetInputSchema,
+  preferencesSetOutputSchema,
   profitReportInputSchema,
   profitReportOutputSchema,
   purchasesCorrectLineInputSchema,
@@ -127,6 +132,13 @@ export const dokanContract = {
    * exact sales, both debt directions, low stock, and the newest invoices */
   dashboardSummary: oc.output(dashboardSummaryOutputSchema),
 
+  // --- getting started (issue 97) ------------------------------------------
+  /** one EXISTS read: whether the shop has an item, a purchase, a sale, and a
+   * party-attributed debt — the dashboard checklist's completion source */
+  onboardingProgress: oc.output(onboardingProgressOutputSchema),
+  /** idempotently record the completed milestone once every record exists */
+  onboardingComplete: oc.output(onboardingCompleteOutputSchema),
+
   // --- expenses (ticket 31) -------------------------------------------------
   expenseCategoriesList: oc.output(z.object({ items: z.array(expenseCategorySchema) })),
   expenseCategoriesCreate: oc.input(expenseCategoryCreateInputSchema).output(expenseCategorySchema),
@@ -140,6 +152,12 @@ export const dokanContract = {
   // --- settings ------------------------------------------------------------
   settingsGet: oc.output(settingsSchema),
   settingsUpdate: oc.input(settingsUpdateInputSchema).output(settingsSchema),
+
+  // --- UI preferences (issue 97 follow-up) ---------------------------------
+  /** sidebar/onboarding shell state, separate from store-identity settings;
+   * server-side so a packaged restart (new localhost port) is not a wipe */
+  preferencesGet: oc.output(preferencesGetOutputSchema),
+  preferencesSet: oc.input(preferencesSetInputSchema).output(preferencesSetOutputSchema),
 
   // --- activity log --------------------------------------------------------
   activitiesList: oc.input(activityListInputSchema).output(activityListOutputSchema),

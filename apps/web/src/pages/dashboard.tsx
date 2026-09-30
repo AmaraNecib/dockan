@@ -1,12 +1,16 @@
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { GettingStartedPanel } from "@/components/app/getting-started-panel";
+import { useOnboardingCompleted, useOnboardingDismissed } from "@/components/app/onboarding-state";
+import { isOnboardingComplete } from "@/components/app/onboarding-steps";
+import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 
 import { orpc } from "../lib/rpc";
 
@@ -18,6 +22,9 @@ import { orpc } from "../lib/rpc";
  * rejected — the lag self-heals on the next tick.
  */
 const REFRESH_MS = 60_000;
+
+/** After this many failed milestone writes, stop re-issuing them. */
+const MAX_COMPLETION_ATTEMPTS = 5;
 
 function KpiCard({ label, value, detail, testId }: { label: string; value: ReactNode; detail?: ReactNode; testId?: string }) {
   return (
@@ -35,14 +42,87 @@ function KpiCard({ label, value, detail, testId }: { label: string; value: React
  * directions, low stock, and the five newest invoices by creation time. The
  * page derives nothing — no device clock, no summing a capped list, no
  * re-sorting a page the api ordered by business date.
+ *
+ * The getting-started checklist (issue 97) reads its own one-EXISTS aggregate;
+ * its absence or a failed read never hides the figures above.
  */
 export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number } = {}) {
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
 
+  // The checklist's dismissal/completion are server-side preferences (issue 97
+  // follow-up): they survive a packaged restart. While they load, the panel
+  // waits rather than flashing open for an owner who already dismissed it.
+  const {
+    value: dismissed,
+    setValue: setDismissed,
+    isPending: dismissedPending,
+    isWriting: dismissedWriting,
+    isError: dismissedError,
+    writeFailed: dismissFailed,
+  } = useOnboardingDismissed();
+  const { value: completed, isPending: completedPending, isError: completedError } = useOnboardingCompleted();
+  // "we could not ask" is not "not dismissed": defaulting to visible would
+  // re-nag an owner who dismissed the panel, so wait for an answer we trust
+  const preferencesError = dismissedError || completedError;
+  const hidden = dismissed || completed || preferencesError;
+  const preferencesPending = dismissedPending || completedPending;
+  const queryClient = useQueryClient();
+
+  /** how many times the milestone write has been observed to fail */
+  const completionAttempts = useRef(0);
+
+  const recordCompletion = useMutation({
+    ...orpc.onboardingComplete.mutationOptions(),
+    // the server records the milestone idempotently, so retrying is safe
+    retry: 2,
+    retryDelay: 100,
+    onSuccess: () => {
+      completionAttempts.current = 0;
+      // pull the recorded milestone into the shared preferences cache
+      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+    },
+  });
+
+  const progress = useQuery({
+    ...orpc.onboardingProgress.queryOptions(),
+    // Once the panel can no longer render, stop paying for the read entirely.
+    enabled: !hidden && !preferencesPending,
+    // While it can render, the same cadence as the summary lets a step
+    // completed in another window self-heal (disabled queries never fetch).
+    refetchInterval: refreshMs,
+  });
+
+  // "Finished means gone": when the four real records are observed, ask the
+  // server to record the milestone idempotently. The count is incremented when
+  // an attempt is *started*, because a mutate that is still retrying would
+  // otherwise let the next poll start another one. The panel is already hidden
+  // by then, so a permanent failure must not keep writing forever.
+  const complete = progress.data !== undefined && isOnboardingComplete(progress.data);
+  useEffect(() => {
+    if (!complete || completed) return;
+    if (completionAttempts.current >= MAX_COMPLETION_ATTEMPTS) return;
+    completionAttempts.current += 1;
+    recordCompletion.mutate(undefined);
+  }, [recordCompletion.mutate, complete, completed, progress.dataUpdatedAt]);
+
   return (
     <section data-testid="dashboard-page">
       <h1 className="text-xl font-bold">{t("dashboardTitle")}</h1>
+
+      {/* Getting-started checklist: shown only while the server says a step is
+          open and the owner has not dismissed or completed it. It never blocks
+          the cards and lists below. */}
+      <GettingStartedPanel
+        hidden={hidden}
+        progress={progress.data}
+        // no skeleton while the preferences load: an owner who already
+        // dismissed/completed must not see even a placeholder flash
+        isPending={progress.isPending && !preferencesPending}
+        dismissPending={dismissedWriting}
+        dismissFailed={dismissFailed}
+        onDismiss={() => setDismissed(true)}
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
         <Link

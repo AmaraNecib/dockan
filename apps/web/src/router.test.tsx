@@ -64,7 +64,11 @@ mock.module("@/lib/rpc", () => ({
     itemsList: { queryKey: () => ["items"] },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
   },
-  rpcClient: { catalogSearch: async () => ({ exact: null }) },
+  rpcClient: {
+    catalogSearch: async () => ({ exact: null }),
+    preferencesGet: async () => ({ values: {} }),
+    preferencesSet: async (input: { key: string; value: string }) => ({ key: input.key, value: input.value }),
+  },
 }));
 
 mock.module("@/lib/auth-client", () => ({

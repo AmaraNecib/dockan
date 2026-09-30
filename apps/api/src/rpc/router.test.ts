@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import type { DokanClient } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -3094,5 +3094,102 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await pinnedClient.dashboardSummary();
     expect(summary.day).toBe("2026-08-25");
+  });
+});
+
+describe("onboarding progress (issue 97)", () => {
+  it("requires a session", async () => {
+    await expect(unauthed.onboardingProgress()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("returns the four record-derived completion booleans", async () => {
+    const category = await client.categoriesCreate({ name: `بداية-راوتر-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({
+      name: `بداية-مادة-${Date.now()}`,
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 150,
+      stockOnHand: 2,
+    });
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] });
+    // no initialPaid + a party name => a real, party-attributed SALE debt
+    await client.invoicesCreate({ kind: "SALE", counterpartyName: "بداية-زبون", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    const progress = await client.onboardingProgress();
+
+    expect(Object.keys(progress).sort()).toEqual(["hasDebt", "hasItems", "hasPurchase", "hasSale"]);
+    expect(progress).toEqual({ hasItems: true, hasPurchase: true, hasSale: true, hasDebt: true });
+  });
+});
+
+describe("UI preferences (issue 97 follow-up)", () => {
+  it("requires a session to read or write", async () => {
+    await expect(unauthed.preferencesGet()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+  });
+
+  it("round-trips a client-owned preference over the wire", async () => {
+    // the endpoint is for shell state the owner owns, not for arbitrary keys:
+    // see "refuses a key the server owns" below
+    await client.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" });
+    const { values } = await client.preferencesGet();
+    expect(values["ui.sidebar.collapsed"]).toBe("true");
+  });
+
+  it("rejects an empty preference key at the contract boundary", async () => {
+    await expect(client.preferencesSet({ key: "  ", value: "true" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("rejects keys and values beyond the contract bounds", async () => {
+    await expect(client.preferencesSet({ key: "k".repeat(65), value: "true" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+    await expect(client.preferencesSet({ key: "ui.test.oversize", value: "v".repeat(513) })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+  });
+
+  it("refuses a key the server owns", async () => {
+    // the completion milestone is derived from shop records; a client that could
+    // write it would hide the checklist forever with nothing behind it. The
+    // server records it itself, so this test only pins the refusal.
+    await expect(client.preferencesSet({ key: "ui.onboarding.completed", value: "true" })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+    });
+  });
+
+  it("still accepts the shell keys the owner owns", async () => {
+    await client.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" });
+    await client.preferencesSet({ key: "ui.onboarding.dismissed", value: "true" });
+    const { values } = await client.preferencesGet();
+    expect(values["ui.sidebar.collapsed"]).toBe("true");
+    expect(values["ui.onboarding.dismissed"]).toBe("true");
+  });
+});
+
+describe("onboarding completion milestone (issue 97 follow-up)", () => {
+  it("requires a session", async () => {
+    await expect(unauthed.onboardingComplete()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("records the milestone idempotently once every record exists", async () => {
+    const category = await client.categoriesCreate({ name: `اكتمال-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({
+      name: `اكتمال-مادة-${Date.now()}`,
+      categoryId: category.id,
+      costPrice: 100,
+      sellingPrice: 150,
+      stockOnHand: 2,
+    });
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1 }] });
+    await client.invoicesCreate({ kind: "SALE", counterpartyName: "اكتمال-زبون", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    // idempotent: a retry returns the same answer and the milestone stays set
+    expect(await client.onboardingComplete()).toEqual({ completed: true });
+    expect(await client.onboardingComplete()).toEqual({ completed: true });
+    const { values } = await client.preferencesGet();
+    expect(values[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
   });
 });

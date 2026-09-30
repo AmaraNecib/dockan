@@ -282,6 +282,31 @@ export const settingsSchema = z.object({
   storeAddress: z.string().trim().nullable(),
 });
 
+/**
+ * One client UI preference (key/value). Preferences are shell state — sidebar
+ * collapse, getting-started dismissal — not store identity, so they live in
+ * their own table and never ride in `settings`. Stored server-side because a
+ * packaged app serves the webview from a new random localhost port each
+ * launch, which wipes localStorage.
+ */
+export const preferenceKeySchema = z.string().trim().min(1).max(64);
+export const preferenceValueSchema = z.string().max(512);
+
+export const preferencesGetOutputSchema = z.object({
+  /** every preference in one cheap read; the shell and dashboard share it */
+  values: z.record(preferenceKeySchema, preferenceValueSchema),
+});
+
+export const preferencesSetInputSchema = z.object({
+  key: preferenceKeySchema,
+  value: preferenceValueSchema,
+});
+
+export const preferencesSetOutputSchema = z.object({
+  key: preferenceKeySchema,
+  value: preferenceValueSchema,
+});
+
 // ---------------------------------------------------------------------------
 // Expenses and profit reports (ticket 31)
 // ---------------------------------------------------------------------------
@@ -845,6 +870,32 @@ export const dashboardSummaryOutputSchema = z.object({
   recentInvoices: z.array(invoiceSchema).nullable(),
 });
 
+/**
+ * Getting-started checklist progress (issue 97). Every flag is derived from a
+ * real record on the server — an item, a purchase invoice, a sale invoice, and
+ * a party-attributed unpaid SALE debt — never from a client-settable flag.
+ * `hasDebt` mirrors the dashboard/debts predicate: a party-less walk-in
+ * remainder is not "someone who owes you", so it does not complete the step.
+ */
+export const onboardingProgressOutputSchema = z.object({
+  hasItems: z.boolean(),
+  hasPurchase: z.boolean(),
+  hasSale: z.boolean(),
+  hasDebt: z.boolean(),
+});
+
+/**
+ * Server-written milestone the web reads as a preference: the getting-started
+ * checklist was completed from real records. Shared so the router that writes
+ * it and the web hook that reads it cannot drift.
+ */
+export const ONBOARDING_COMPLETED_PREFERENCE_KEY = "ui.onboarding.completed";
+
+export const onboardingCompleteOutputSchema = z.object({
+  /** true when every record exists and the milestone is recorded */
+  completed: z.boolean(),
+});
+
 export const debtsByPartyInputSchema = z
   .object({
     kind: invoiceKindSchema,
@@ -913,8 +964,10 @@ export type MovementKind = z.infer<typeof movementKindSchema>;
 export type StockMovement = z.infer<typeof stockMovementSchema>;
 export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
+export type Preferences = z.infer<typeof preferencesGetOutputSchema>["values"];
 export type DebtSummary = z.infer<typeof debtSummarySchema>;
 export type DashboardSummary = z.infer<typeof dashboardSummaryOutputSchema>;
+export type OnboardingProgress = z.infer<typeof onboardingProgressOutputSchema>;
 export type ExpenseCategory = z.infer<typeof expenseCategorySchema>;
 export type Expense = z.infer<typeof expenseSchema>;
 export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;

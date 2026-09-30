@@ -14,6 +14,7 @@ import type {
   ItemCreate,
   ItemListItem,
   ItemUpdate,
+  OnboardingProgress,
   PartyCreate,
   Payment,
   ReturnDetail,
@@ -229,11 +230,23 @@ export interface StorePort {
    * by creation time — never a capped list re-summed or re-sorted client-side. */
   dashboardSummary(day: string): Promise<DashboardAggregates>;
 
+  /** one EXISTS read for the getting-started checklist (issue 97): whether the
+   * shop has an item, a purchase, a sale, and a party-attributed SALE debt. */
+  onboardingProgress(): Promise<OnboardingProgress>;
+  /** idempotently record the completed milestone once every record exists;
+   * returns whether the milestone is (now) recorded. */
+  recordOnboardingCompletion(): Promise<boolean>;
+
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
   listActivities(limit: number): Promise<Activity[]>;
   getSetting(key: string): Promise<string | undefined>;
   setSetting(key: string, value: string): Promise<void>;
   getSettings(): Promise<Settings>;
+
+  /** every client UI preference as one key/value map (sidebar, onboarding) */
+  getPreferences(): Promise<Record<string, string>>;
+  /** upsert one preference; deliberately separate from store-identity settings */
+  setPreference(key: string, value: string): Promise<void>;
   updateSettings(patch: SettingsUpdate): Promise<Settings>;
 
   /** driver-specific: checkpoint then copy the database file to destPath */

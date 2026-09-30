@@ -1,23 +1,80 @@
-const SIDEBAR_KEY = "dokan.sidebar.collapsed";
+import {
+  hasPreferenceWrite,
+  parseBooleanPreference,
+  readPreferences,
+  serializeBooleanPreference,
+  usePreference,
+  writePreference,
+} from "@/lib/preferences";
 
 /**
- * The sidebar starts expanded so a first-time owner reads labels, not bare
- * icons. Only an explicit collapse is remembered; an unset or stale value
- * falls back to expanded.
+ * Sidebar collapse lives server-side so a packaged-app restart keeps it: the
+ * desktop shell serves the webview from a new random localhost port each
+ * launch, which wipes localStorage (see apps/desktop/src-tauri/src/desktop.rs).
  */
-export function readSidebarCollapsed(): boolean {
+export const SIDEBAR_COLLAPSED_KEY = "ui.sidebar.collapsed";
+
+/** The pre-server localStorage key (issue #94); imported once, then dropped. */
+const LEGACY_SIDEBAR_COLLAPSED_KEY = "dokan.sidebar.collapsed";
+
+/** Reactive preference for the app shell; a failed read keeps it expanded. */
+export function useSidebarCollapsed() {
+  return usePreference(SIDEBAR_COLLAPSED_KEY, false, parseBooleanPreference, serializeBooleanPreference);
+}
+
+/**
+ * One-time import of the pre-server localStorage sidebar choice. The caller
+ * runs it in the background after the shell mounts, so it never blocks the
+ * scanner; it skips itself when the server already holds a sidebar value or
+ * the owner made a choice while this read was in flight, and a failed read or
+ * write leaves the legacy value in place for the next launch. Storage access
+ * is guarded, so a throwing localStorage cannot break the shell.
+ *
+ * Returns the server value it imported (or null), so the caller can refresh
+ * the shared preferences query without waiting for its next refetch.
+ */
+export async function migrateLegacySidebarCollapsed(): Promise<string | null> {
+  const legacy = readLegacySidebarCollapsed();
+  if (legacy === undefined) return null;
+
+  let serverValue: string | undefined;
   try {
-    return window.localStorage.getItem(SIDEBAR_KEY) === "true";
+    serverValue = (await readPreferences())[SIDEBAR_COLLAPSED_KEY];
   } catch {
-    return false;
+    // server unreachable: keep the legacy value and retry next launch
+    return null;
+  }
+  if (serverValue !== undefined) {
+    // already migrated (or chosen afresh): drop the stale legacy key
+    clearLegacySidebarCollapsed();
+    return null;
+  }
+  if (hasPreferenceWrite(SIDEBAR_COLLAPSED_KEY)) {
+    // the owner chose while this read was in flight; keep the legacy key as a
+    // fallback until the server value is known (the next launch clears it if
+    // the choice landed, or imports it if the choice failed)
+    return null;
+  }
+
+  const stored = await writePreference(SIDEBAR_COLLAPSED_KEY, serializeBooleanPreference(legacy));
+  if (stored === null) return null; // write failed: retry next launch
+  clearLegacySidebarCollapsed();
+  return stored;
+}
+
+function readLegacySidebarCollapsed(): boolean | undefined {
+  try {
+    const raw = window.localStorage.getItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
+    return raw === "true" ? true : raw === "false" ? false : undefined;
+  } catch {
+    return undefined;
   }
 }
 
-/** Persist the owner's choice; a storage failure must not break the toggle. */
-export function writeSidebarCollapsed(collapsed: boolean): void {
+function clearLegacySidebarCollapsed(): void {
   try {
-    window.localStorage.setItem(SIDEBAR_KEY, String(collapsed));
+    window.localStorage.removeItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
   } catch {
-    // storage unavailable: the in-memory state still applies for this session
+    // storage unavailable: nothing to clean up
   }
 }

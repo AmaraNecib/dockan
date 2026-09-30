@@ -19,6 +19,13 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
 import { localDate, localDateTime } from "../lib/logger";
+
+/**
+ * The only preference keys a client may write. Everything else — notably
+ * `ui.onboarding.completed`, which `onboardingComplete` derives from real shop
+ * records — is server-owned, so a client cannot fake it.
+ */
+const CLIENT_WRITABLE_PREFERENCE_KEYS = new Set(["ui.sidebar.collapsed", "ui.onboarding.dismissed"]);
 import type { ReportRangePreset } from "@dokan/contracts";
 import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
 import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
@@ -1299,6 +1306,30 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
+    // --- getting started (issue 97) ------------------------------------------
+    onboardingProgress: os.onboardingProgress.handler(
+      guarded(async () => {
+        const progress = await deps.store.onboardingProgress();
+        // Reading the progress is when the server learns the shop has all four
+        // records, so the milestone is recorded right here. The dashboard used
+        // to be the only writer, which lost the milestone whenever the owner
+        // navigated away before the client's write landed — or completed the
+        // flow from /invoices and settled the debt without ever coming back.
+        // The store re-checks the four records, so this stays idempotent.
+        if (progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt) {
+          await deps.store.recordOnboardingCompletion();
+        }
+        return progress;
+      }),
+    ),
+    onboardingComplete: os.onboardingComplete.handler(
+      guarded(async () => ({
+        // the store re-checks every record and records the milestone
+        // idempotently, so a client retry can never mark a half-done checklist
+        completed: await deps.store.recordOnboardingCompletion(),
+      })),
+    ),
+
     // --- expenses (ticket 31) ------------------------------------------------
     expenseCategoriesList: os.expenseCategoriesList.handler(guarded(async () => ({ items: await deps.store.listExpenseCategories() }))),
     expenseCategoriesCreate: os.expenseCategoriesCreate.handler(
@@ -1392,9 +1423,28 @@ export function createRpcRouter(deps: RpcDeps) {
         });
       }),
     ),
+
+    // --- UI preferences (issue 97 follow-up) ---------------------------------
+    // shell state, not store identity: cheap read/write, no audit entry (the
+    // sidebar toggle alone would spam the activity log)
+    preferencesGet: os.preferencesGet.handler(guarded(async () => ({ values: await deps.store.getPreferences() }))),
+    preferencesSet: os.preferencesSet.handler(
+      guardedInput(async (input) => {
+        // the completion milestone is derived from shop records, so a client
+        // must not be able to write it: setting it would hide the checklist
+        // forever with nothing behind it. Only the keys the owner owns pass.
+        if (!CLIENT_WRITABLE_PREFERENCE_KEYS.has(input.key)) {
+          throw new ORPCError("BAD_REQUEST", { message: "PREFERENCE_NOT_WRITABLE" });
+        }
+        await deps.store.setPreference(input.key, input.value);
+        return { key: input.key, value: input.value };
+      }),
+    ),
+
     activitiesList: os.activitiesList.handler(
       guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
     ),
+
     diagnosticsLogsTail: os.diagnosticsLogsTail.handler(
       // today's JSONL tail; the contract clamps `lines` to 1..500 so the
       // bounded read is the caller's choice, newest-last (chronological)

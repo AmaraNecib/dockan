@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, useCallback, useRef } from "react";
 import { createRoot } from "react-dom/client";
 
-import { useBarcodeScanner } from "./use-barcode-scanner";
+import { SCAN_MAX_GAP_MS, useBarcodeScanner } from "./use-barcode-scanner";
 
 /**
  * Unit tests for the wedge-scanner hook (ticket 34). happy-dom provides the
@@ -106,9 +106,9 @@ describe("use-barcode-scanner", () => {
   it("resets the buffer when typing slowly inside an editable field", () => {
     const input = focusInput();
     keydown("a", input);
-    advance(80); // > SCAN_MAX_GAP_MS — human pace
+    advance(SCAN_MAX_GAP_MS + 30); // > the gap — human pace
     keydown("b", input);
-    advance(80);
+    advance(SCAN_MAX_GAP_MS + 30);
     keydown("c", input);
     advance(10);
     keydown("Enter", input);

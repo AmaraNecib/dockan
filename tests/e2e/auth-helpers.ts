@@ -19,8 +19,13 @@ interface SignInOptions {
   landingTestId?: string;
 }
 
-export async function signIn(page: Page, options: SignInOptions = {}): Promise<void> {
-  await page.goto(options.startPath ?? "/");
+/**
+ * Ensure the shared database has an owner and stop on the login form. Specs
+ * that assert a login *failure* call this so they do not depend on which spec
+ * provisioned the room first.
+ */
+export async function provisionOwner(page: Page, startPath?: string): Promise<void> {
+  await page.goto(startPath ?? "/");
 
   const setupHeading = page.getByRole("heading", { name: "مرحباً بك في دكان" });
   const loginHeading = page.getByRole("heading", { name: "تسجيل الدخول" });
@@ -41,12 +46,20 @@ export async function signIn(page: Page, options: SignInOptions = {}): Promise<v
     // setup succeeds into the login form
     await expect(loginHeading).toBeVisible();
   }
+}
+
+export async function signIn(page: Page, options: SignInOptions = {}): Promise<void> {
+  await provisionOwner(page, options.startPath);
 
   await page.getByLabel("رقم الهاتف").fill(PHONE);
   await page.getByLabel("كلمة السر").fill(PASSWORD);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId(options.landingTestId ?? "dashboard-page")).toBeVisible();
 }
+
+/** The provisioned owner's credentials, for specs that try and fail to log in. */
+export const OWNER_PHONE = PHONE;
+export const OWNER_PASSWORD = PASSWORD;
 
 /**
  * The rare back-office cluster starts folded. Specs that navigate by link name

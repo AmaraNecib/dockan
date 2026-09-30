@@ -1,10 +1,24 @@
 import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
+import { MIN_PASSWORD_LENGTH } from "@dokan/contracts";
+
 /**
  * Single i18n instance, Arabic only. UI strings and server error keys live
  * here; the api never ships display text.
  */
+/**
+ * The two shapes an Algerian mobile can take, shown as the phone placeholder
+ * and inside the invalid-phone message. Defined once so the digits cannot drift
+ * between the field and the copy.
+ */
+export const PHONE_EXAMPLE_LOCAL = "0550123123";
+export const PHONE_EXAMPLE_INTL = "+213550123123";
+
+/** U+2066/U+2069: isolate an ASCII run inside an RTL sentence, or its leading
+ * `+` is a neutral run and the sign can render displaced. */
+const ltrIsolate = (value: string): string => `\u2066${value}\u2069`;
+
 const resources = {
   ar: {
     translation: {
@@ -177,7 +191,22 @@ const resources = {
       AUTH_REQUIRED: "تسجيل الدخول مطلوب",
       FORBIDDEN: "هذا الحساب غير مخوّل",
       SIGNUP_FORBIDDEN: "إنشاء الحسابات غير مسموح؛ استخدم الرمز السري للتهيئة",
-      INVALID_PHONE_NUMBER: "رقم الهاتف غير صالح",
+      /**
+       * issue #100 — fallback for a failure with no known translation. It has
+       * to be honest and calm: an unknown failure is not a crash, and saying
+       * "unexpected error" over a mistyped phone teaches the owner that the
+       * app is broken. "Couldn't complete the action. Try again."
+       */
+      errorGeneric: "تعذّر إكمال العملية. أعد المحاولة.",
+      // issue #100 — auth failures the login/setup forms can name exactly
+      // the phone example shown as a placeholder; digits only, locale-neutral
+      phoneExample: PHONE_EXAMPLE_LOCAL,
+      phoneExampleIntl: PHONE_EXAMPLE_INTL,
+      AUTH_INVALID_CREDENTIALS: "رقم الهاتف أو كلمة السر غير صحيحة. تحقّق منهما ثم أعد المحاولة.",
+      INVALID_PHONE_NUMBER: `رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل ${ltrIsolate(PHONE_EXAMPLE_LOCAL)} أو ${ltrIsolate(PHONE_EXAMPLE_INTL)}.`,
+      AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
+      AUTH_PASSWORD_TOO_SHORT: `كلمة السر قصيرة جداً. استعمل ${MIN_PASSWORD_LENGTH} أحرف على الأقل.`,
+      SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
       WRONG_BUILD_SECRET: "الرمز السري غير صحيح",
       // issue #52 — reset lockout after repeated wrong-secret attempts
@@ -488,10 +517,92 @@ const resources = {
 
 export type MessageKey = keyof (typeof resources)["ar"]["translation"];
 
-/** Translate a server error key; unknown keys fall back to UNEXPECTED. */
+/** A better-auth error object, as the client surfaces it. */
+export type AuthErrorInput = {
+  code?: string | undefined;
+  message?: string | undefined;
+  status?: number | undefined;
+};
+
+/**
+ * better-auth error codes -> our copy. The plugin sets a stable `code` on the
+ * response, so it is the discriminator to match on; the English `message`
+ * beside it is display text for another audience.
+ */
+const AUTH_ERROR_KEYS = new Map<string, MessageKey>([
+  ["INVALID_USERNAME_OR_PASSWORD", "AUTH_INVALID_CREDENTIALS"],
+  // the username plugin's validator rejects a phone that cannot be a login
+  // name; all three mean the phone field, not "wrong password"
+  ["INVALID_USERNAME", "INVALID_PHONE_NUMBER"],
+  ["USERNAME_TOO_SHORT", "INVALID_PHONE_NUMBER"],
+  ["USERNAME_TOO_LONG", "INVALID_PHONE_NUMBER"],
+]);
+
+/**
+ * Last resort: match the raw English text. This exists because the web bundle
+ * cannot ask better-auth or the contracts for a code — apps/api and
+ * packages/contracts are out of this lane's scope — so a phone refinement
+ * message or a rate-limit body is sometimes the only signal that arrives.
+ * Keep each pattern anchored to text a producer actually emits.
+ */
+const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
+  { pattern: /expected an algerian mobile/i, key: "INVALID_PHONE_NUMBER" },
+  { pattern: /too many requests/i, key: "AUTH_TOO_MANY_ATTEMPTS" },
+  // the sentence our own contracts emit for the 4-character minimum. Not
+  // `password too short`: no producer emits that, and better-auth's own
+  // minPasswordLength (8) would make it give the wrong number.
+  { pattern: /too small.*(?:>=|at least) ?4/i, key: "AUTH_PASSWORD_TOO_SHORT" },
+  // belt and braces for an error object whose `code` was stripped in transit
+  { pattern: /invalid username or password/i, key: "AUTH_INVALID_CREDENTIALS" },
+];
+
+/** True for keys that only ever meant "something broke"; #100 retires them. */
+const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
+
+/**
+ * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, RESET_LOCKED, …).
+ * Anything else — a bare word a stray `Error` happened to carry — is not an
+ * error key and must not render a UI label as if it were one.
+ */
+const SERVER_ERROR_KEY = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Resolve an rpc message to the key that names it: a known resource key wins,
+ * then a documented validator sentence, then the honest fallback. Nothing here
+ * returns `UNEXPECTED` any more (issue #100).
+ */
+export function serverErrorKey(message: string | undefined): MessageKey {
+  if (message === undefined) return "errorGeneric";
+  if (SERVER_ERROR_KEY.test(message) && Object.hasOwn(resources.ar.translation, message)) {
+    if (RETIRED_UNEXPECTED_KEYS.has(message)) return "errorGeneric";
+    // SAFETY: Object.hasOwn above established that this string is a resource key
+    return message as MessageKey;
+  }
+  for (const { pattern, key } of SENTENCE_KEYS) {
+    if (pattern.test(message)) return key;
+  }
+  return "errorGeneric";
+}
+
+/**
+ * Resolve a better-auth sign-in error. Most specific signal first: the stable
+ * code, then the rate-limit status (the limiter sends 429 without a code),
+ * then the message text, then the honest fallback.
+ */
+export function authErrorKey(error: AuthErrorInput): MessageKey {
+  if (error.code !== undefined) {
+    const mapped = AUTH_ERROR_KEYS.get(error.code);
+    if (mapped !== undefined) return mapped;
+  }
+  // the rate limiter returns 429 without a code; the status is the only stable
+  // discriminator for "too many attempts"
+  if (error.status === 429) return "AUTH_TOO_MANY_ATTEMPTS";
+  return serverErrorKey(error.message);
+}
+
+/** Translate a server key or raw validator sentence to Arabic. */
 export function tError(message: string | undefined): string {
-  // SAFETY: unknown keys fall back to UNEXPECTED; the cast only narrows the lookup type
-  return i18n.t(message as MessageKey, { defaultValue: "UNEXPECTED" });
+  return i18n.t(serverErrorKey(message));
 }
 
 void i18n.use(initReactI18next).init({

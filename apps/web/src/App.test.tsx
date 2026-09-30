@@ -6,22 +6,51 @@ import { createRoot } from "react-dom/client";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "./lib/i18n";
+import i18n, { type AuthErrorInput } from "./lib/i18n";
 
 let needsSetup = false;
+/** The better-auth error shape the login page maps (code/message/status). */
+type SignInResult = { error: AuthErrorInput | null };
+let signInResult: SignInResult = { error: null };
+let signInArgs: { username?: string; password?: string } | null = null;
+let signInCalls = 0;
+/** When true the sign-in call rejects, as a network or proxy failure does. */
+let signInThrows = false;
+/** How long a sign-in call stays in flight, so a double submit can race it. */
+let signInDelayMs = 0;
+let firstTimeSetupCalls = 0;
+let setupError: Error | null = null;
+let resetPasswordCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     needsSetup: async () => ({ needsSetup }),
-    firstTimeSetup: async () => ({}),
-    authResetPassword: async () => ({}),
+    firstTimeSetup: async () => {
+      firstTimeSetupCalls += 1;
+      if (setupError !== null) throw setupError;
+      return {};
+    },
+    authResetPassword: async () => {
+      resetPasswordCalls += 1;
+      return {};
+    },
   },
   orpc: {},
 }));
 
 mock.module("@/lib/auth-client", () => ({
   useSession: () => ({ data: null, isPending: false }),
-  authClient: { signIn: { username: async () => ({ error: null }) } },
+  authClient: {
+    signIn: {
+      username: async (args: { username?: string; password?: string }) => {
+        signInCalls += 1;
+        signInArgs = args;
+        if (signInDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, signInDelayMs));
+        if (signInThrows) throw new Error("network down");
+        return signInResult;
+      },
+    },
+  },
 }));
 
 const { RequireSession } = await import("./App");
@@ -32,6 +61,15 @@ afterEach(() => {
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   document.body.innerHTML = "";
+  needsSetup = false;
+  signInResult = { error: null };
+  signInArgs = null;
+  signInCalls = 0;
+  signInThrows = false;
+  signInDelayMs = 0;
+  firstTimeSetupCalls = 0;
+  setupError = null;
+  resetPasswordCalls = 0;
 });
 
 async function mountAuthGate(): Promise<HTMLElement> {
@@ -58,6 +96,37 @@ function inputByName(host: HTMLElement, name: string): HTMLInputElement {
   return input;
 }
 
+/** React listens for the native setter + input event, not a value assignment. */
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter === undefined) throw new Error("HTMLInputElement value setter missing");
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function submitForm(host: HTMLElement): Promise<void> {
+  const form = host.querySelector("form");
+  if (form === null) throw new Error("auth gate rendered no form");
+  await act(async () => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+}
+
+async function openForgotPassword(): Promise<HTMLElement> {
+  needsSetup = false;
+  const host = await mountAuthGate();
+  const button = host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]');
+  if (button === null) throw new Error("login form has no forgot-password button");
+  await act(async () => {
+    button.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  return host;
+}
+
 describe("auth phone inputs (issue #94)", () => {
   it("setup: the phone field is a named tel input with the tel keypad", async () => {
     needsSetup = true;
@@ -82,5 +151,295 @@ describe("auth phone inputs (issue #94)", () => {
     expect(username.type).toBe("tel");
     expect(username.inputMode).toBe("tel");
     expect(username.autocomplete).toBe("username");
+  });
+});
+
+describe("login failures name the problem (issue #100)", () => {
+  it("a rejected password shows the credentials message, not the generic one", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", message: "Invalid username or password", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "wrong-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(signInCalls).toBe(1);
+    // the form posts the canonical username, not the raw local form
+    expect(signInArgs?.username).toBe("213550123123");
+    // the copy names both fields, so the summary carries the message and no
+    // single field is blamed (the field's own aria-invalid would lie)
+    expect(document.activeElement).toBe(host.querySelector('[role="alert"]'));
+    expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("false");
+  });
+
+  it("announces through the field when a field is blamed, not twice", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    // focus lands on the phone and its aria-describedby carries the message
+    const phone = inputByName(host, "username");
+    expect(document.activeElement).toBe(phone);
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    expect(phone.getAttribute("aria-describedby")).toBe("login-error");
+  });
+
+  it("stops the phone field at the longest accepted form", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    // "+213550123123" is 13 characters; anything longer cannot be a login name
+    expect(inputByName(host, "username").getAttribute("maxlength")).toBe("13");
+  });
+
+  it("keeps the native length hint on the password field", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    expect(inputByName(host, "password").getAttribute("minlength")).toBe("4");
+  });
+
+  it("does not re-announce the setup notice after a trip to forgot-password", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_ALREADY_DONE");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    // back to login: the notice was a one-shot handoff and is spent
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="forgot-back"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("a malformed phone shows the phone message and never calls sign-in", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(inputByName(host, "username").getAttribute("aria-invalid")).toBe("true");
+    expect(inputByName(host, "username").getAttribute("aria-describedby")).toBe("login-error");
+    expect(document.activeElement).toBe(inputByName(host, "username"));
+    expect(signInCalls).toBe(0);
+  });
+
+  it("an unknown failure says something calm, never the crash message", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "SOME_FUTURE_401", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("errorGeneric"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("a lockout names the wait, not the app", async () => {
+    needsSetup = false;
+    signInResult = { error: { message: "Too many requests. Please try again later.", status: 429 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_TOO_MANY_ATTEMPTS"));
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it("a repeated failure re-mounts the alert so it is announced again", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", status: 401 } };
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "wrong-password");
+    await submitForm(host);
+    const first = host.querySelector('[role="alert"]');
+
+    await submitForm(host);
+    const second = host.querySelector('[role="alert"]');
+
+    expect(second?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    // a new node is what a screen reader notices; React keeps the old one if
+    // the key does not change
+    expect(second).not.toBe(first);
+  });
+});
+
+describe("setup and reset name the field (issue #100)", () => {
+  it("setup: a three-character password is rejected in Arabic without a request", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abc");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(inputByName(host, "password"));
+    expect(firstTimeSetupCalls).toBe(0);
+  });
+
+  it("setup: exactly four characters is accepted and reaches the api", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    // a grouped, prefixed form that the shared normalizer accepts: it must not
+    // be over-rejected by the new pre-submit check
+    setInputValue(inputByName(host, "phone"), "00213 550 123 123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("reset: a malformed phone is rejected in Arabic without a request", async () => {
+    const host = await openForgotPassword();
+
+    setInputValue(inputByName(host, "secret"), "secret");
+    setInputValue(inputByName(host, "phone"), "12345");
+    setInputValue(inputByName(host, "newPassword"), "abcd");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(document.activeElement).toBe(inputByName(host, "phone"));
+    expect(resetPasswordCalls).toBe(0);
+  });
+
+  it("reset: a two-character new password is rejected in Arabic without a request", async () => {
+    const host = await openForgotPassword();
+
+    setInputValue(inputByName(host, "secret"), "secret");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "newPassword"), "ab");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(document.activeElement).toBe(inputByName(host, "newPassword"));
+    expect(resetPasswordCalls).toBe(0);
+  });
+});
+
+describe("auth transport failures stay calm (issue #100)", () => {
+  it("a thrown sign-in call names no crash and releases the button", async () => {
+    needsSetup = false;
+    signInThrows = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("errorGeneric"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    const submit = host.querySelector<HTMLButtonElement>('[data-testid="login-submit"]');
+    expect(submit?.disabled).toBe(false);
+  });
+
+  it("a setup conflict the api names is translated, not called unexpected", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_ALREADY_DONE");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    setInputValue(inputByName(host, "secret"), "secret");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(firstTimeSetupCalls).toBe(1);
+    // the message says "sign in", so the form that can do it must be on screen
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="setup-secret"]')).toBeNull();
+  });
+
+  it("clears a stale field error as soon as the owner corrects that field", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    // a too-short password is the password field's problem (the validator's own
+    // sentence, which is what the api actually emits)
+    signInResult = { error: { message: "Too small: expected string to have >=4 characters" } };
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "ab");
+    await submitForm(host);
+    const password = inputByName(host, "password");
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(password.getAttribute("aria-invalid")).toBe("true");
+
+    // typing the correction drops the alert and the invalid marking with it
+    setInputValue(password, "abcd");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(password.getAttribute("aria-invalid")).toBe("false");
+
+    // a phone error survives an edit to the password, and clears on its own
+    setInputValue(inputByName(host, "username"), "12345");
+    await submitForm(host);
+    const phone = inputByName(host, "username");
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    setInputValue(password, "another-password");
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    setInputValue(phone, "0550123123");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("a second submit while the first is in flight does not double-fire", async () => {
+    needsSetup = false;
+    signInDelayMs = 50;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    setInputValue(inputByName(host, "password"), "any-password");
+    const form = host.querySelector("form");
+    if (form === null) throw new Error("no form");
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    });
+
+    expect(signInCalls).toBe(1);
   });
 });

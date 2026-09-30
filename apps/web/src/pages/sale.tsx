@@ -177,7 +177,7 @@ export function SalePage() {
       setUnknownCode(code);
     } catch (err) {
       if (seq !== scanSeqRef.current) return;
-      setError(tError(err instanceof Error ? err.message : "UNEXPECTED"));
+      setError(tError(err instanceof Error ? err.message : undefined));
     }
   }
   useBarcodeScanner((code) => void handleScan(code));

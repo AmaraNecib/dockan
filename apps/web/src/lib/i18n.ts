@@ -111,6 +111,7 @@ const resources = {
       itemsSave: "حفظ",
       itemsLowBadge: "منخفض",
       itemsEmpty: "لا توجد منتجات بعد",
+      itemsLoading: "جارٍ التحميل…",
       itemsBarcode: "الباركود (اختياري)",
       itemsSearchPlaceholder: "ابحث بالاسم أو الباركود…",
       itemsSearchEmpty: "لا توجد نتائج مطابقة",

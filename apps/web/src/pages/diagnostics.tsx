@@ -35,7 +35,7 @@ function parseRow(line: string): LogRow | null {
 
 const levelStyle = {
   info: "bg-muted text-muted-foreground",
-  warn: "bg-amber-500/10 text-amber-600",
+  warn: "bg-warning/10 text-warning",
   error: "bg-destructive/10 text-destructive",
 } as const;
 

@@ -33,7 +33,7 @@ export function BackupsPage() {
           </p>
         )}
         {backup.isSuccess && (
-          <div className="rounded bg-green-500/10 p-3 text-sm text-green-700" data-testid="backup-done">
+          <div className="rounded bg-success/10 p-3 text-sm text-success" data-testid="backup-done">
             <p>{t("backupsDone")}</p>
             <p dir="ltr" className="mt-1 break-all font-mono text-xs">
               {backup.data.path}

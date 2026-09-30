@@ -6,6 +6,8 @@ export async function chooseSelectOption(page: Page, trigger: Locator, name: str
   const option = page.getByRole("option", { name });
   await expect(option).toBeVisible();
   await option.click();
+  // the popup closes once the selection is committed
+  await expect(option).toBeHidden();
 }
 
 /** Open a themed Select and wait for a lazily loaded option to appear. */

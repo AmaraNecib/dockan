@@ -22,6 +22,9 @@ const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
 // the focus ring.
 const TEXT_MIN = 4.5;
 const NON_TEXT_MIN = 3;
+// solid status fills carry real text at small sizes, so they keep margin above
+// the threshold instead of sitting on it (a /20-on-/10 tint measured 4.0:1)
+const SOLID_MIN = 5;
 
 type Oklch = { l: number; c: number; h: number; alpha: number };
 type Rgb = readonly [number, number, number];
@@ -135,6 +138,38 @@ for (const theme of THEMES) {
     }
     it(`--sidebar-ring stays >= ${NON_TEXT_MIN}:1 against --sidebar`, () => {
       expect(contrast(sidebarRing, surface("sidebar"))).toBeGreaterThanOrEqual(NON_TEXT_MIN);
+    });
+
+    // Semantic status tokens (issue #101): status text colours on the surfaces
+    // they render on, plus the solid-fill foreground pairs.
+    const tintOver = (name: string, alpha: number, backdrop: Rgb): Rgb =>
+      composite({ ...value(name), alpha }, backdrop);
+    for (const name of ["success", "warning"] as const) {
+      const status = toRgb(value(name));
+      it(`--${name} text stays >= ${TEXT_MIN}:1 on --card`, () => {
+        expect(contrast(status, surface("card"))).toBeGreaterThanOrEqual(TEXT_MIN);
+      });
+      it(`--${name} text stays >= ${TEXT_MIN}:1 on its /10 tint over --card`, () => {
+        expect(contrast(status, tintOver(name, 0.1, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
+      });
+    }
+    // a tinted row must not carry a warning-coloured badge on top of it: the
+    // badge is a solid fill so the layered background never decides contrast
+    // the pairing that actually ships: body text on a warning-tinted row (the
+    // dashboard, diagnostics and returns banners), and the badge's solid fill.
+    // The old /20-on-/10 assertion was a tautology — it hand-composed tokens and
+    // asserted the failure of a design no longer in the code.
+    it(`--foreground stays >= ${TEXT_MIN}:1 on a warning-tinted row`, () => {
+      expect(contrast(toRgb(value("foreground")), tintOver("warning", 0.1, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    });
+    it(`--warning-foreground on a solid --warning fill keeps margin (>= ${SOLID_MIN}:1)`, () => {
+      expect(contrast(toRgb(value("warning-foreground")), toRgb(value("warning")))).toBeGreaterThanOrEqual(SOLID_MIN);
+    });
+    it(`--success-foreground on a solid --success fill keeps margin (>= ${SOLID_MIN}:1)`, () => {
+      expect(contrast(toRgb(value("success-foreground")), toRgb(value("success")))).toBeGreaterThanOrEqual(SOLID_MIN);
+    });
+    it(`--destructive-foreground on a solid --destructive fill keeps margin (>= ${SOLID_MIN}:1)`, () => {
+      expect(contrast(toRgb(value("destructive-foreground")), toRgb(value("destructive")))).toBeGreaterThanOrEqual(SOLID_MIN);
     });
   });
 }

@@ -82,7 +82,7 @@ export function ItemsPage() {
           className={
             notice.tone === "error"
               ? "mt-2 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive"
-              : "mt-2 rounded border bg-green-500/10 p-2 text-sm text-green-700"
+              : "mt-2 rounded border bg-success/10 p-2 text-sm text-success"
           }
           data-testid={notice.tone === "error" ? "scan-error" : "scan-found"}
           role="status"

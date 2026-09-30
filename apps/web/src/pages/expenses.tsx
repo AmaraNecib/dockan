@@ -170,7 +170,7 @@ export function ExpensesPage() {
           <button type="submit" className="rounded-lg bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50" disabled={createExpense.isPending} data-testid="expense-save">
             {t("expenseSave")}
           </button>
-          {saved && <span className="text-sm text-green-700" data-testid="expense-saved">{t("expenseSaved")}</span>}
+          {saved && <span className="text-sm text-success" data-testid="expense-saved">{t("expenseSaved")}</span>}
         </div>
         {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
       </form>
@@ -290,11 +290,11 @@ export function ExpensesPage() {
                 const category = categories.data?.items.find((row) => row.id === entry.categoryId);
                 const withdrawal = category?.isOwnerWithdrawal === true;
                 return (
-                  <tr key={entry.id} className={`border-b last:border-0 ${withdrawal ? "bg-amber-50" : ""}`} data-testid="expense-row">
+                  <tr key={entry.id} className={`border-b last:border-0 ${withdrawal ? "bg-warning/10" : ""}`} data-testid="expense-row">
                     <td className="p-3 text-sm whitespace-nowrap text-muted-foreground" dir="ltr">{entry.occurredAt}</td>
                     <td className="p-3">
                       {category?.name ?? entry.categoryId.slice(0, 8)}
-                      {withdrawal && <span className="mr-2 rounded bg-amber-200 px-2 py-0.5 text-xs text-amber-900">{t("expensesWithdrawalBadge")}</span>}
+                      {withdrawal && <span className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}
                     </td>
                     <td className="p-3 text-sm text-muted-foreground" data-testid="expense-row-note">{entry.note ?? "—"}</td>
                     <td className="p-3 font-semibold"><Amount value={entry.amount} /></td>

@@ -149,7 +149,7 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   await page.goto("/sale");
   await page.getByTestId("sale-quick-stock-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("2");
@@ -171,4 +171,21 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   // the per-category breakdown traces both expense lines
   await expect(page.getByTestId("report-breakdown")).toContainText("كراء المحل");
   await expect(page.getByTestId("report-breakdown")).toContainText("سحوبات المالك");
+});
+
+test("profit report range preset is the themed select and switches the window", async ({ page }) => {
+  await ensureAuthed(page);
+  await page.goto("/reports");
+  await expect(page.getByTestId("reports-page")).toBeVisible();
+
+  // The native <select> that fell back to OS rendering is gone: the control is
+  // the themed trigger and choosing a preset opens, selects and closes it.
+  const trigger = page.getByTestId("report-range-preset");
+  await expect(trigger).toHaveAttribute("data-slot", "select-trigger");
+  await chooseSelectOption(page, trigger, "آخر 7 أيام");
+  await expect(trigger).toContainText("آخر 7 أيام");
+
+  // a non-CUSTOM preset never reveals the custom date bounds
+  await expect(page.getByTestId("report-custom-from")).toHaveCount(0);
+  await expect(page.getByTestId("report-custom-to")).toHaveCount(0);
 });

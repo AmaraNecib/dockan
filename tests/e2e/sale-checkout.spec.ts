@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Sale checkout through the existing catalog seams. The flow uses
@@ -33,7 +34,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
   await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(barcode);
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
@@ -59,12 +60,12 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   // Amount negotiated price + amount invoice discount: 3 × 900 − 100.
   // Choosing an override type with an EMPTY value must not submit a free
   // (0 DZD) line: save is rejected, the error is shown, the cart stays intact.
-  await page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`).selectOption("AMOUNT");
+  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
   await expect(page.getByTestId("sale-subtotal")).toContainText("3000");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
-  await page.getByTestId("sale-discount-type").selectOption("AMOUNT");
+  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("100");
   await expect(page.getByTestId("sale-subtotal")).toContainText("2700");
   await expect(page.getByTestId("sale-total")).toContainText("2600");
@@ -75,16 +76,16 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
   await page.getByTestId("sale-quick-stock-add").click();
   await page.getByTestId("sale-quick-name").fill(secondName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("300");
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByTestId("sale-quick-barcode").fill(`SALE2-${stamp}`);
   await page.getByTestId("sale-quick-stock").fill("2");
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   await expect(page.getByTestId("sale-lines")).toContainText(secondName);
-  await page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`).selectOption("PERCENTAGE");
+  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`), "نسبة %");
   await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
-  await page.getByTestId("sale-discount-type").selectOption("PERCENTAGE");
+  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "نسبة مئوية");
   await page.getByTestId("sale-discount-value").fill("10");
   await expect(page.getByTestId("sale-subtotal")).toContainText("400");
   await expect(page.getByTestId("sale-total")).toContainText("360");
@@ -96,7 +97,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
   await page.getByTestId("sale-quick-stock-add").click();
   await page.getByTestId("sale-quick-name").fill(`بيع-تجاوز-${stamp}`);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("200");
   await page.getByTestId("sale-quick-stock").fill("1");

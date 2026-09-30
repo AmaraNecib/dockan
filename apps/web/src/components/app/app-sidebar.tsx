@@ -65,11 +65,11 @@ export function AppSidebar({ collapsed, activeKey, user, onExpand }: AppSidebarP
     >
       {/* Brand */}
       <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-3">
-        <div className="grid size-8 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground font-display text-sm font-semibold italic">
+        <div className="grid size-8 shrink-0 place-items-center rounded-md bg-primary text-primary-foreground font-heading text-sm font-semibold italic">
           {t("appTitle").slice(0, 1)}
         </div>
         {!collapsed && (
-          <span className="truncate font-display text-base font-semibold">{t("appTitle")}</span>
+          <span className="truncate font-heading text-base font-semibold">{t("appTitle")}</span>
         )}
       </div>
 

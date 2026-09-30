@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
+import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Later payments on an invoice, in instalments.
@@ -27,7 +28,7 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await expect(page.getByTestId("sale-form")).toBeVisible();
   await page.getByTestId("sale-quick-stock-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
-  await page.getByLabel("التصنيف").selectOption({ label: categoryName });
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("2");

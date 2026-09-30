@@ -9,6 +9,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
+import { activateOption, findOption, openSelect } from "../tests/select-driver";
+
 /**
  * The range label is the only thing under test, so the profit figures stay at
  * their zero baseline; only `range.from`/`range.to` are meaningful fixtures.
@@ -60,6 +62,7 @@ async function mountPage(queryClient: QueryClient) {
     );
   });
   return {
+    container: () => container,
     text: () => container.textContent ?? "",
     rangeLabel: () => container.querySelector<HTMLElement>("[data-testid='report-range-label']"),
     /** the LTR-isolated date spans inside the RTL range sentence */
@@ -143,6 +146,69 @@ describe("ReportsPage range label (#73)", () => {
     }
     expect(dates[0]?.textContent).toBe("1 أغسطس 2026");
     expect(dates[1]?.textContent).toBe("31 أغسطس 2026");
+
+    await page.unmount();
+  });
+
+  it("opens the themed preset select, selects CUSTOM, and closes", async () => {
+    const page = await mountPage(queryClient);
+    expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-range-preset"]') !== null)).toBe(true);
+
+    const trigger = page.container().querySelector<HTMLButtonElement>('[data-testid="report-range-preset"]');
+    if (trigger === null) throw new Error("missing report-range-preset");
+    expect(trigger.getAttribute("data-slot")).toBe("select-trigger");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    await openSelect(trigger);
+    const option = await findOption("فترة مخصصة");
+    expect(option).not.toBeNull();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    await activateOption(option!);
+    // popup closes and the trigger shows the chosen label
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.textContent).toContain("فترة مخصصة");
+    // CUSTOM reveals the date bounds
+    expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-custom-from"]') !== null)).toBe(true);
+    expect(page.container().querySelector('[data-testid="report-custom-to"]')).not.toBeNull();
+
+    await page.unmount();
+  });
+
+  it("fills the owner-withdrawal badge solid so a tinted row cannot sink it", async () => {
+    report = fixture({
+      byCategory: [{ categoryId: "cat-1", categoryName: "سحوبات المالك", isOwnerWithdrawal: true, total: 3000, count: 1 }],
+    });
+    const page = await mountPage(queryClient);
+    const row = '[data-testid="report-breakdown-row"]';
+    expect(await page.waitFor(() => page.container().querySelector(row) !== null)).toBe(true);
+
+    const badge = page.container().querySelector<HTMLElement>(`${row} span.rounded`);
+    // a /20 tint over the row's own /10 tint measured below 4.5:1 in light mode,
+    // so the badge is a solid fill whose foreground pair the contrast test guards
+    expect(badge?.className).toContain("bg-warning");
+    expect(badge?.className).not.toContain("bg-warning/20");
+    expect(badge?.className).toContain("text-warning-foreground");
+
+    await page.unmount();
+  });
+
+  it("closes the themed preset select on Escape without changing the value", async () => {
+    const page = await mountPage(queryClient);
+    expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-range-preset"]') !== null)).toBe(true);
+
+    const trigger = page.container().querySelector<HTMLButtonElement>('[data-testid="report-range-preset"]');
+    if (trigger === null) throw new Error("missing report-range-preset");
+
+    await openSelect(trigger);
+    expect(await findOption("فترة مخصصة")).not.toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(await page.waitFor(() => trigger.getAttribute("aria-expanded") === "false")).toBe(true);
+    // Escape dismisses without committing a new preset
+    expect(trigger.textContent).toContain("الشهر الحالي");
 
     await page.unmount();
   });

@@ -335,6 +335,37 @@ describe("auth transport failures stay calm (issue #100)", () => {
     expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
+    // the message says "sign in", so the form that can do it must be on screen
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="setup-secret"]')).toBeNull();
+  });
+
+  it("clears a stale field error as soon as the owner corrects that field", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    // a malformed phone blames the phone field
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+    const phone = inputByName(host, "username");
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+
+    // typing the correction drops the alert and the invalid marking with it
+    setInputValue(phone, "0550123123");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(phone.getAttribute("aria-invalid")).toBe("false");
+
+    // a password error survives an edit to the phone, and clears on its own
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", message: "bad", status: 401 } };
+    await submitForm(host);
+    const password = inputByName(host, "password");
+    expect(password.getAttribute("aria-invalid")).toBe("true");
+    setInputValue(phone, "0550999999");
+    expect(password.getAttribute("aria-invalid")).toBe("true");
+    setInputValue(password, "another-password");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("a second submit while the first is in flight does not double-fire", async () => {

@@ -41,7 +41,13 @@ function useAuthError() {
 
   const clear = useCallback((): void => setState(null), []);
 
-  return { state, show, clear, errorRef };
+  // drop the alert as soon as the field it blames is edited: leaving it up
+  // keeps the corrected field marked invalid and tied to a stale message
+  const clearField = useCallback((field: Exclude<AuthErrorField, null>): void => {
+    setState((current) => (current !== null && current.field === field ? null : current));
+  }, []);
+
+  return { state, show, clear, clearField, errorRef };
 }
 
 /** Which field a resolved error blames; null means the alert summary. */
@@ -120,6 +126,8 @@ function AuthGate() {
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [checkFailed, setCheckFailed] = useState(false);
   const [view, setView] = useState<"login" | "forgot">("login");
+  /** the reason the setup form handed the owner to the login form */
+  const [loginNotice, setLoginNotice] = useState<MessageKey | null>(null);
   // only the newest check may write state: Strict Mode starts two of them, and
   // without this a slow failure can overwrite a success and strand the owner on
   // the retry screen after a check that actually worked
@@ -163,9 +171,18 @@ function AuthGate() {
 
   if (needsSetup === null) return <LoadingScreen />;
 
-  if (needsSetup) return <SetupPage onDone={() => setNeedsSetup(false)} />;
+  if (needsSetup) {
+    return (
+      <SetupPage
+        onDone={(notice) => {
+          setLoginNotice(notice ?? null);
+          setNeedsSetup(false);
+        }}
+      />
+    );
+  }
   if (view === "forgot") return <ForgotPasswordPage onDone={() => setView("login")} />;
-  return <LoginPage onForgotPassword={() => setView("forgot")} />;
+  return <LoginPage onForgotPassword={() => setView("forgot")} notice={loginNotice} />;
 }
 
 function LoadingScreen() {
@@ -177,7 +194,7 @@ function LoadingScreen() {
 /*  Setup page — first time only                                       */
 /* ------------------------------------------------------------------ */
 
-function SetupPage({ onDone }: { onDone: () => void }) {
+function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
   const { t } = useTranslation();
   const [ownerName, setOwnerName] = useState("");
   const [storeName, setStoreName] = useState("");
@@ -216,7 +233,14 @@ function SetupPage({ onDone }: { onDone: () => void }) {
       });
       onDone();
     } catch (err) {
-      report(serverErrorKey(err instanceof Error ? err.message : undefined));
+      const key = serverErrorKey(err instanceof Error ? err.message : undefined);
+      // another client finished setup first: the instruction is "sign in", so
+      // hand the owner to the form that can carry it out, message included
+      if (key === "SETUP_ALREADY_DONE") {
+        onDone(key);
+        return;
+      }
+      report(key);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -245,11 +269,11 @@ function SetupPage({ onDone }: { onDone: () => void }) {
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "setup-error" : undefined} />
+          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => { setPhone(e.target.value); authError.clearField("phone"); }} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "setup-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
-          <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
+          <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupSecret")}
@@ -269,7 +293,7 @@ function SetupPage({ onDone }: { onDone: () => void }) {
 /*  Login page                                                         */
 /* ------------------------------------------------------------------ */
 
-function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
+function LoginPage({ onForgotPassword, notice }: { onForgotPassword: () => void; notice: MessageKey | null }) {
   const { t } = useTranslation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -278,6 +302,14 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const { authError, report } = useAuthReporter(phoneRef, passwordRef);
+
+  // setup hands over the reason it sent the owner here; announce it once
+  const noticeShownRef = useRef(false);
+  useEffect(() => {
+    if (notice === null || noticeShownRef.current) return;
+    noticeShownRef.current = true;
+    report(notice);
+  }, [notice, report]);
 
   async function signIn(e: React.FormEvent) {
     e.preventDefault();
@@ -318,11 +350,11 @@ function LoginPage({ onForgotPassword }: { onForgotPassword: () => void }) {
         <h2 className="mt-6 font-semibold">{t("loginHeading")}</h2>
         <label className="mt-3 grid gap-1 text-sm">
           {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "login-error" : undefined} />
+          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="username" value={username} onChange={(e) => { setUsername(e.target.value); authError.clearField("phone"); }} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "login-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
-          <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} />
+          <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} />
         </label>
 
         <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />

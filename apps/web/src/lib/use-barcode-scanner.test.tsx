@@ -122,6 +122,27 @@ describe("use-barcode-scanner", () => {
     expect(scanner.codes).toEqual(["123"]);
   });
 
+  it("claims a scan's Enter before it reaches the focused field", () => {
+    const input = focusInput();
+    let enterReachedField = 0;
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") enterReachedField += 1;
+    });
+
+    for (const key of ["1", "2", "3"]) {
+      keydown(key, input);
+      advance(10);
+    }
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    input.dispatchEvent(enter);
+
+    expect(scanner.codes).toEqual(["123"]);
+    // the wedge's Enter belongs to the scan: it must not reach the field, an
+    // inline editor's Enter handler, or the form around them
+    expect(enterReachedField).toBe(0);
+    expect(enter.defaultPrevented).toBe(true);
+  });
+
   it("ignores IME-composing keystrokes entirely", () => {
     const input = focusInput();
     keydown("ا", input, true);

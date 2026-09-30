@@ -92,6 +92,9 @@ const stockInputs: CapturedStockInput[] = [];
 let updateFails = false;
 let updateDeferred = false;
 let resolveUpdate: (() => void) | null = null;
+/** holds the itemsList refetch open so the stale-cache window is observable */
+let itemsGate: Promise<void> | null = null;
+let releaseItemsGate: (() => void) | null = null;
 
 // The page reads/writes everything through orpc.*; the mock keeps the fixture
 // as the single source of truth so an update + invalidate really refetches.
@@ -103,7 +106,14 @@ mock.module("@/lib/rpc", () => ({
     itemsList: {
       // clone on each fetch so a refetch yields new object identities, exactly
       // like the JSON boundary — this is what exercises the prefill ref guard
-      queryOptions: () => ({ queryKey: ["items"], queryFn: async () => ({ items: items.map((item) => ({ ...item })) }) }),
+      queryOptions: () => ({
+        queryKey: ["items"],
+        queryFn: async () => {
+          // the stale-cache test holds this open to make the window observable
+          if (itemsGate !== null) await itemsGate;
+          return { items: items.map((item) => ({ ...item })) };
+        },
+      }),
       queryKey: () => ["items"],
     },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
@@ -134,15 +144,16 @@ mock.module("@/lib/rpc", () => ({
           const commit = () => {
             const existing = items.find((item) => item.id === input.id);
             if (existing) {
-              // mirror the real write: the refetched list must show the change
-              Object.assign(existing, {
-                name: input.name,
-                categoryId: input.categoryId,
-                costPrice: input.costPrice,
-                sellingPrice: input.sellingPrice,
-                lowStockThreshold: input.lowStockThreshold,
-                categoryName: categories.find((category) => category.id === input.categoryId)?.name ?? null,
-              });
+              // mirror the real write: only the fields the client sent land, so
+              // a partial patch cannot blank the ones it left out
+              if (input.name !== undefined) existing.name = input.name;
+              if (input.categoryId !== undefined) {
+                existing.categoryId = input.categoryId;
+                existing.categoryName = categories.find((category) => category.id === input.categoryId)?.name ?? null;
+              }
+              if (input.costPrice !== undefined) existing.costPrice = input.costPrice;
+              if (input.sellingPrice !== undefined) existing.sellingPrice = input.sellingPrice;
+              if (input.lowStockThreshold !== undefined) existing.lowStockThreshold = input.lowStockThreshold;
             }
             return existing ?? { id: input.id };
           };
@@ -316,6 +327,8 @@ beforeEach(() => {
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
+  itemsGate = null;
+  releaseItemsGate = null;
   document.body.innerHTML = "";
 });
 
@@ -441,6 +454,22 @@ describe("add item form opening stock", () => {
     expect(createWithStockInputs.length).toBe(0);
   });
 
+  it("rejects an opening stock too large to represent exactly", async () => {
+    await mount();
+    await openAddTab();
+
+    setInput("item-name", "بطارية ضخمة");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    // 2^53 + 1 parses to 2^53, so the contract would persist a quantity the
+    // operator never typed
+    setInput("initial-stock", "9007199254740993");
+    click("item-save");
+    await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain("مخزون");
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
   it("rejects negative or fractional opening stock without calling the server", async () => {
     await mount();
     await openAddTab();
@@ -522,6 +551,32 @@ describe("stock form prefill", () => {
     expect(stockInputs[0]?.unitCost).toBeUndefined();
   });
 
+  it("does not prefill the pre-movement cost while the refetch is in flight", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    // hold the refetch open: the invalidation cannot deliver fresh data yet
+    itemsGate = new Promise<void>((resolve) => {
+      releaseItemsGate = resolve;
+    });
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+
+    // the cached average predates this movement, so the field must stay blank
+    // instead of offering a cost that would corrupt the running average
+    await flush();
+    expect(inputByTestId("stock-unit-cost").value).toBe("");
+
+    firstFixtureItem().costPrice = 250;
+    await act(async () => {
+      releaseItemsGate?.();
+      await settle();
+    });
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "250");
+  });
+
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {
     const { queryClient } = await mount();
     await openAddTab();
@@ -578,6 +633,66 @@ describe("inline item edit", () => {
     expect(row.textContent).toContain("فلاتر");
   });
 
+  it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
+    firstFixtureItem().sellingPrice = 0;
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    // a name-only correction must save without the operator touching the price,
+    // and without writing the price back
+    setInput("edit-name", "بطارية مجانية");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية مجانية" });
+  });
+
+  it("sends only the changed field, so a value corrected elsewhere survives", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+
+    // the cost was corrected after this draft was built: a whole-row write
+    // would put the stale value back
+    firstFixtureItem().costPrice = 175;
+    setInput("edit-sell", "180");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    expect(updateInputs[0]).toEqual({ id: "item-1", sellingPrice: 180 });
+    expect(firstFixtureItem().costPrice).toBe(175);
+  });
+
+  it("closes the row without a round trip when nothing changed", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("moves focus into the name field when the editor opens", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.activeElement === document.querySelector('[data-testid="edit-name"]'));
+  });
+
+  it("drops an open draft when a scan types into an edit field", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.activeElement === document.querySelector('[data-testid="edit-name"]'));
+
+    // the wedge types its digits into the focused field; the row must not stay
+    // open holding them as the item's new name
+    const field = inputByTestId("edit-name");
+    for (const key of ["6", "2", "1"]) {
+      field.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    }
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(updateInputs.length).toBe(0);
+  });
+
   it("blocks an empty name without calling the server", async () => {
     await mount();
     click("edit-item-item-1");
@@ -586,18 +701,6 @@ describe("inline item edit", () => {
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
     expect(updateInputs.length).toBe(0);
-  });
-
-  it("keeps a zero-price item editable (sale quick-add creates selling 0)", async () => {
-    firstFixtureItem().sellingPrice = 0;
-    await mount();
-    click("edit-item-item-1");
-    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
-    // a name-only correction must save without the operator touching the price
-    setInput("edit-name", "بطارية مجانية");
-    click("edit-save");
-    await waitFor(() => updateInputs.length === 1);
-    expect(updateInputs[0]).toMatchObject({ id: "item-1", name: "بطارية مجانية", sellingPrice: 0 });
   });
 
   it("rejects a blank selling price without calling the server", async () => {
@@ -660,6 +763,7 @@ describe("inline item edit", () => {
     updateFails = true;
     click("edit-item-item-1");
     await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "بطارية مرفوضة");
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
     expect(document.querySelector('[data-testid="edit-name"]')).not.toBeNull();

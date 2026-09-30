@@ -39,8 +39,15 @@ export function StockForm() {
   // holds that prefilled value, so a value the operator typed is never
   // overwritten.
   const prefilledRef = useRef<{ itemId: string; cost: string } | null>(null);
+  /** a movement invalidates the list; the cached cost is stale until the
+   * refetch that follows it lands */
+  const freshAfterRef = useRef(0);
   useEffect(() => {
     if (selectedItem === null) return;
+    // React Query keeps serving the pre-movement list during the refetch, so
+    // prefilling from it would record the old average cost on a second
+    // movement submitted in that window
+    if (items.dataUpdatedAt < freshAfterRef.current) return;
     const nextCost = String(selectedItem.costPrice);
     const previous = prefilledRef.current;
     const selectionChanged = previous === null || previous.itemId !== selectedItemId;
@@ -48,7 +55,7 @@ export function StockForm() {
     if (!selectionChanged && !(untouched && previous.cost !== nextCost)) return;
     prefilledRef.current = { itemId: selectedItemId, cost: nextCost };
     setUnitCost(nextCost);
-  }, [selectedItemId, selectedItem, unitCost]);
+  }, [selectedItemId, selectedItem, unitCost, items.dataUpdatedAt]);
 
   const adjust = useMutation(
     orpc.stockAddManual.mutationOptions({
@@ -59,6 +66,7 @@ export function StockForm() {
         setDone(true);
         // let the next refetch re-prefill the (possibly changed) average cost
         prefilledRef.current = null;
+        freshAfterRef.current = Date.now();
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
@@ -79,13 +87,13 @@ export function StockForm() {
       setError(t("itemsEmpty"));
       return;
     }
-    if (!Number.isInteger(parsedDelta) || parsedDelta === 0) {
+    if (!Number.isSafeInteger(parsedDelta) || parsedDelta === 0) {
       setError(t("stockQuantity"));
       return;
     }
     const unitCostText = unitCost.trim();
     const parsedUnitCost = unitCostText === "" ? undefined : Number(unitCostText);
-    if (parsedDelta > 0 && parsedUnitCost !== undefined && (!Number.isInteger(parsedUnitCost) || parsedUnitCost < 0)) {
+    if (parsedDelta > 0 && parsedUnitCost !== undefined && (!Number.isSafeInteger(parsedUnitCost) || parsedUnitCost < 0)) {
       setError(t("stockUnitCostInvalid"));
       return;
     }

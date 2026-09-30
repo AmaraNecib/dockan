@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Link } from "@tanstack/react-router";
-import type { ItemListItem, ItemCreate } from "@dokan/contracts";
+import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,6 +33,8 @@ type ItemEditDraft = {
   cost: string;
   sell: string;
   threshold: string;
+  /** the row as loaded, so save can send only the fields that changed */
+  baseline: { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number };
 };
 
 /** The two jobs on the items page: browse the table, or add item/stock. */
@@ -62,6 +64,8 @@ export function ItemsPage() {
   /** what the item form gets prefilled with after an unknown-scan choice */
   const [formSeed, setFormSeed] = useState<{ barcode: string; withStock: boolean } | null>(null);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
+  /** bumps on every committed scan: an edit draft open at scan time is stale */
+  const [scanNonce, setScanNonce] = useState(0);
   /** scan feedback carries a tone: found/deferred are ok, lookup errors render red */
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "error" } | null>(null);
 
@@ -73,6 +77,9 @@ export function ItemsPage() {
   // window-level wedge capture: works without any input focus
   async function handleScan(code: string) {
     const seq = ++scanSeqRef.current;
+    // the wedge's keystrokes land in whatever field has focus, so an open edit
+    // row is polluted the moment a scan commits
+    setScanNonce((current) => current + 1);
     // a new scan supersedes ALL previous feedback immediately: a confirmed
     // miss must not display under an older found-item/lookup-error notice,
     // and a found item must not leave a stale dialog open (review P2)
@@ -163,7 +170,7 @@ export function ItemsPage() {
 
       <div role="tabpanel" id="items-panel-products" aria-labelledby="items-tab-products" hidden={tab !== "products"}>
         <CatalogSearch />
-        <ItemList />
+        <ItemList scanNonce={scanNonce} />
       </div>
       <div role="tabpanel" id="items-panel-add" aria-labelledby="items-tab-add" hidden={tab !== "add"}>
         <ItemForm seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
@@ -351,7 +358,7 @@ function ItemForm({
     setError(null);
     const sellText = sell.trim();
     const selling = Number(sellText);
-    if (sellText === "" || !Number.isInteger(selling) || selling <= 0) {
+    if (sellText === "" || !Number.isSafeInteger(selling) || selling <= 0) {
       setError(t("itemsSellAboveCost"));
       return;
     }
@@ -362,13 +369,13 @@ function ItemForm({
     // a typo must not silently save a money value as zero
     const costText = cost.trim();
     const parsedCost = Number(costText);
-    if (costText === "" || !Number.isInteger(parsedCost) || parsedCost < 0) {
+    if (costText === "" || !Number.isSafeInteger(parsedCost) || parsedCost < 0) {
       setError(t("itemsCostInvalid"));
       return;
     }
     const thresholdText = threshold.trim();
     const parsedThreshold = thresholdText === "" ? 5 : Number(thresholdText);
-    if (!Number.isInteger(parsedThreshold) || parsedThreshold < 0) {
+    if (!Number.isSafeInteger(parsedThreshold) || parsedThreshold < 0) {
       setError(t("itemsThresholdInvalid"));
       return;
     }
@@ -386,7 +393,7 @@ function ItemForm({
     // whole number takes the one-step create-with-stock path
     const stockText = initialStock.trim();
     const stock = Number(stockText);
-    if (stockText !== "" && (!Number.isInteger(stock) || stock < 0)) {
+    if (stockText !== "" && (!Number.isSafeInteger(stock) || stock < 0)) {
       setError(t("itemsStockInvalid"));
       return;
     }
@@ -491,7 +498,7 @@ function ItemForm({
   );
 }
 
-function ItemList() {
+function ItemList({ scanNonce }: { scanNonce: number }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const items = useQuery(orpc.itemsList.queryOptions());
@@ -523,6 +530,24 @@ function ItemList() {
     }
   }, [draft]);
 
+  // keyboard entry: opening the editor moves focus into its first field, so
+  // the operator can type straight away instead of hunting for the inputs
+  const editingId = draft?.id ?? null;
+  useEffect(() => {
+    if (editingId === null) return;
+    document.querySelector<HTMLInputElement>('[data-testid="edit-name"]')?.focus();
+  }, [editingId]);
+
+  // a scan types its digits into whatever field has focus, so a draft that was
+  // open in an edit field holds barcode characters — close it rather than let
+  // it be saved as a name, price, or threshold
+  useEffect(() => {
+    if (scanNonce === 0) return;
+    const active = document.activeElement;
+    const polluted = active instanceof HTMLInputElement && (active.dataset.testid ?? "").startsWith("edit-");
+    if (polluted) setDraft(null);
+  }, [scanNonce]);
+
   function beginEdit(item: ItemListItem) {
     editedRowRef.current = item.id;
     setEditError(null);
@@ -533,6 +558,13 @@ function ItemList() {
       cost: String(item.costPrice),
       sell: String(item.sellingPrice),
       threshold: String(item.lowStockThreshold),
+      baseline: {
+        name: item.name,
+        categoryId: item.categoryId,
+        costPrice: item.costPrice,
+        sellingPrice: item.sellingPrice,
+        lowStockThreshold: item.lowStockThreshold,
+      },
     });
   }
 
@@ -556,7 +588,7 @@ function ItemList() {
     }
     // 0 is legal (items created with a zero price must stay editable), but the
     // field may not be blank or a non-integer
-    if (sellText === "" || !Number.isInteger(selling) || selling < 0) {
+    if (sellText === "" || !Number.isSafeInteger(selling) || selling < 0) {
       setEditError(t("itemsSellInvalid"));
       return;
     }
@@ -569,23 +601,31 @@ function ItemList() {
     const parsedCost = Number(costText);
     const parsedThreshold = Number(thresholdText);
     // a typo must not silently rewrite a money value or the warn-at quantity
-    if (costText !== "" && (!Number.isInteger(parsedCost) || parsedCost < 0)) {
+    if (costText !== "" && (!Number.isSafeInteger(parsedCost) || parsedCost < 0)) {
       setEditError(t("itemsCostInvalid"));
       return;
     }
-    if (thresholdText !== "" && (!Number.isInteger(parsedThreshold) || parsedThreshold < 0)) {
+    if (thresholdText !== "" && (!Number.isSafeInteger(parsedThreshold) || parsedThreshold < 0)) {
       setEditError(t("itemsThresholdInvalid"));
       return;
     }
-    update.mutate({
-      id: draft.id,
-      name: draft.name.trim(),
-      categoryId: draft.categoryId,
-      // blank means a deliberate zero (a free item, or warn-at-zero)
-      costPrice: costText === "" ? 0 : parsedCost,
-      sellingPrice: selling,
-      lowStockThreshold: thresholdText === "" ? 0 : parsedThreshold,
-    });
+    // blank means a deliberate zero (a free item, or warn-at-zero)
+    const costPrice = costText === "" ? 0 : parsedCost;
+    const lowStockThreshold = thresholdText === "" ? 0 : parsedThreshold;
+    // send only what changed: a whole-row write would clobber a value corrected
+    // elsewhere while this draft sat open
+    const patch: ItemUpdate = { id: draft.id };
+    if (draft.name.trim() !== draft.baseline.name) patch.name = draft.name.trim();
+    if (draft.categoryId !== draft.baseline.categoryId) patch.categoryId = draft.categoryId;
+    if (costPrice !== draft.baseline.costPrice) patch.costPrice = costPrice;
+    if (selling !== draft.baseline.sellingPrice) patch.sellingPrice = selling;
+    if (lowStockThreshold !== draft.baseline.lowStockThreshold) patch.lowStockThreshold = lowStockThreshold;
+    // nothing to write: closing the row is the whole job
+    if (Object.keys(patch).length === 1) {
+      setDraft(null);
+      return;
+    }
+    update.mutate(patch);
   }
 
   /** Enter anywhere in the row submits, like the create form. */

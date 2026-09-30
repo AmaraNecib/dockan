@@ -68,8 +68,11 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
         const code = buffer;
         buffer = "";
         if (code.length < SCAN_MIN_LENGTH) return;
-        // the scan's Enter must never submit whatever form has focus
+        // the scan's Enter belongs to the scan alone: claim it in the capture
+        // phase so it never reaches a focused form, an inline editor, or any
+        // other Enter handler — a wedge Enter is not the operator's Enter
         event.preventDefault();
+        event.stopPropagation();
         if (code === lastCommitCode && now - lastCommitAt < SCAN_DUPLICATE_WINDOW_MS) return;
         lastCommitCode = code;
         lastCommitAt = now;
@@ -83,7 +86,7 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
     const reset = () => {
       buffer = "";
     };
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("blur", reset);
     return () => {
       window.removeEventListener("keydown", onKeyDown);

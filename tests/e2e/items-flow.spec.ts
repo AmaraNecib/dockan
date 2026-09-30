@@ -152,8 +152,11 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   await page.getByTestId("sale-quick-add").click();
   const quick = page.getByTestId("sale-quick-form");
   await page.getByTestId("sale-quick-name").fill(itemName);
-  // the sale quick form uses a native <select>, not the themed Base UI Select
-  await quick.getByLabel("التصنيف").selectOption({ label: categoryName });
+  // the sale quick form's category is the themed Select now (issue #101), and
+  // it stays disabled until the category list has answered
+  const quickCategory = page.getByTestId("sale-quick-category");
+  await expect(quickCategory).toBeEnabled();
+  await chooseSelectOption(page, quickCategory, categoryName);
   await quick.getByLabel("سعر الشراء (دج)").fill("50");
   await quick.getByLabel("سعر البيع (دج)").fill("0");
   await quick.getByRole("button", { name: "حفظ المنتج وإضافته" }).click();

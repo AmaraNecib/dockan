@@ -150,8 +150,19 @@ for (const theme of THEMES) {
         expect(contrast(status, tintOver(name, 0.1, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
       });
     }
-    it(`--warning text stays >= ${TEXT_MIN}:1 on its /20 tint over --card`, () => {
-      expect(contrast(toRgb(value("warning")), tintOver("warning", 0.2, surface("card")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    // a tinted row must not carry a warning-coloured badge on top of it: the
+    // badge is a solid fill so the layered background never decides contrast
+    it(`--warning-foreground on a solid --warning fill stays >= ${TEXT_MIN}:1`, () => {
+      expect(contrast(toRgb(value("warning-foreground")), toRgb(value("warning")))).toBeGreaterThanOrEqual(TEXT_MIN);
+    });
+    // the badge that prompted this sits on a row that is already warning-tinted,
+    // so its real backdrop is two layers deep. Layering always costs contrast;
+    // in light mode it lands under the threshold, which is why the badge is a
+    // solid fill instead of a second tint.
+    it(`--warning text on a tinted tint loses contrast against the plain --card`, () => {
+      const layered = tintOver("warning", 0.2, tintOver("warning", 0.1, surface("card")));
+      expect(contrast(toRgb(value("warning")), layered)).toBeLessThan(contrast(toRgb(value("warning")), surface("card")));
+      if (theme.name === "light") expect(contrast(toRgb(value("warning")), layered)).toBeLessThan(TEXT_MIN);
     });
     it(`--success-foreground on a solid --success fill stays >= ${TEXT_MIN}:1`, () => {
       expect(contrast(toRgb(value("success-foreground")), toRgb(value("success")))).toBeGreaterThanOrEqual(TEXT_MIN);

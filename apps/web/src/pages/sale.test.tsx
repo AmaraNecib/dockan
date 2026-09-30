@@ -43,13 +43,22 @@ let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
+/** holds the category list open so the quick-add can open before it arrives */
+let categoriesGate: Promise<void> | null = null;
+let releaseCategoriesGate: (() => void) | null = null;
 
 // The page pulls its data/mutations through orpc.*; mock the rpc module so the
 // pure helpers and the rendered commit states are driven by fixtures.
 mock.module("@/lib/rpc", () => ({
   orpc: {
     categoriesList: {
-      queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }) }),
+      queryOptions: () => ({
+        queryKey: ["categories"],
+        queryFn: async () => {
+          if (categoriesGate !== null) await categoriesGate;
+          return { items: [{ id: "cat-1", name: "تصنيف" }] };
+        },
+      }),
     },
     // ItemPickerDialog evaluates this useQuery even while closed (before its
     // `if (!open) return null` guard), so the stub must exist on mount.
@@ -223,6 +232,8 @@ beforeEach(() => {
   lastInvoiceInput = null;
   resolveInvoice = null;
   resolveItemCreate = null;
+  categoriesGate = null;
+  releaseCategoriesGate = null;
 });
 
 afterEach(async () => {
@@ -605,6 +616,28 @@ describe("SalePage learnability (issue #94)", () => {
     await activateOption(option!);
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     // the category id reaches the form value
+    expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
+  });
+
+  it("shows the category the quick-add will actually save into", async () => {
+    // the form can open before the category list arrives; the trigger and the
+    // value submit uses must agree on which category is the target
+    categoriesGate = new Promise<void>((resolve) => {
+      releaseCategoriesGate = resolve;
+    });
+    const host = await mountSale();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // the list lands after the form is already open
+    await act(async () => {
+      releaseCategoriesGate?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-category"]');
+    expect(trigger?.textContent).toContain("تصنيف");
     expect(host.querySelector<HTMLInputElement>('[name="quickCategory"]')?.value).toBe("cat-1");
   });
 

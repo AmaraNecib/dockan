@@ -175,6 +175,24 @@ describe("ReportsPage range label (#73)", () => {
     await page.unmount();
   });
 
+  it("fills the owner-withdrawal badge solid so a tinted row cannot sink it", async () => {
+    report = fixture({
+      byCategory: [{ categoryId: "cat-1", categoryName: "سحوبات المالك", isOwnerWithdrawal: true, total: 3000, count: 1 }],
+    });
+    const page = await mountPage(queryClient);
+    const row = '[data-testid="report-breakdown-row"]';
+    expect(await page.waitFor(() => page.container().querySelector(row) !== null)).toBe(true);
+
+    const badge = page.container().querySelector<HTMLElement>(`${row} span.rounded`);
+    // a /20 tint over the row's own /10 tint measured below 4.5:1 in light mode,
+    // so the badge is a solid fill whose foreground pair the contrast test guards
+    expect(badge?.className).toContain("bg-warning");
+    expect(badge?.className).not.toContain("bg-warning/20");
+    expect(badge?.className).toContain("text-warning-foreground");
+
+    await page.unmount();
+  });
+
   it("closes the themed preset select on Escape without changing the value", async () => {
     const page = await mountPage(queryClient);
     expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-range-preset"]') !== null)).toBe(true);

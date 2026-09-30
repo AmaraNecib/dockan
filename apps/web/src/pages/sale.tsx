@@ -315,6 +315,11 @@ export function SalePage() {
     void createInvoice.mutate(invoiceInput);
   }
 
+  // what the quick-add will actually save into: the operator's pick, or the
+  // first category the shop has. Display and submit read this one value, so the
+  // trigger can never show nothing while the first category is what gets used.
+  const quickCategory = quickCategoryId || categories.data?.items[0]?.id || "";
+
   function openQuick(mode: QuickAddMode, code = "") {
     setQuickMode(mode);
     setQuickBarcode(code);
@@ -328,7 +333,7 @@ export function SalePage() {
   function quickSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    const categoryId = quickCategoryId || categories.data?.items[0]?.id;
+    const categoryId = quickCategory;
     const cost = Number(quickCost);
     const sell = Number(quickSell);
     const stock = Number(quickStock);
@@ -435,7 +440,7 @@ export function SalePage() {
                 <label className="grid gap-1 text-sm font-medium">
                   {t("itemsCategory")}
                   <Select
-                    value={quickCategoryId}
+                    value={quickCategory}
                     onValueChange={(value) => setQuickCategoryId(value ?? "")}
                     name="quickCategory"
                     items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}

@@ -9,6 +9,7 @@ import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
 
 /**
  * Ticket 27 — manual add-stock form + item history (append-only ledger,
@@ -32,6 +33,10 @@ export function StockForm() {
   // movement will be recorded against (greptile PR #80).
   const selectedItemId = itemId || items.data?.items[0]?.id || "";
   const selectedItem = items.data?.items.find((item) => item.id === selectedItemId) ?? null;
+  // a negative movement takes stock out; the api records a unit cost only for
+  // stock in, so the field must not look editable on a removal
+  const deltaValue = parseSignedWholeNumber(delta);
+  const isRemoval = deltaValue !== null && deltaValue < 0;
 
   // Mirror the item's last known unit cost into the cost field. The guard
   // tracks the value we last prefilled: a background refetch (after a movement
@@ -82,25 +87,25 @@ export function StockForm() {
     setError(null);
     setDone(false);
     // trim before parsing: a whitespace-only numeric field is blank, never 0
-    const parsedDelta = Number(delta.trim());
+    const parsedDelta = parseSignedWholeNumber(delta);
     if (!selectedItemId) {
       setError(t("itemsEmpty"));
       return;
     }
-    if (!Number.isSafeInteger(parsedDelta) || parsedDelta === 0) {
-      setError(t("stockQuantity"));
+    if (parsedDelta === null || parsedDelta === 0) {
+      setError(t("stockQuantityInvalid"));
       return;
     }
-    const unitCostText = unitCost.trim();
-    const parsedUnitCost = unitCostText === "" ? undefined : Number(unitCostText);
-    if (parsedDelta > 0 && parsedUnitCost !== undefined && (!Number.isSafeInteger(parsedUnitCost) || parsedUnitCost < 0)) {
+    // a removal cannot carry a unit cost: the api takes one only for stock in
+    const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
+    if (parsedDelta > 0 && unitCost.trim() !== "" && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
       return;
     }
     void adjust.mutate({
       itemId: selectedItemId,
       delta: parsedDelta,
-      unitCost: parsedDelta > 0 ? parsedUnitCost : undefined,
+      unitCost: parsedUnitCost === null ? undefined : parsedUnitCost,
       reason: reason === "" ? undefined : reason,
     });
   }
@@ -155,8 +160,15 @@ export function StockForm() {
             value={unitCost}
             onChange={(e) => setUnitCost(e.target.value)}
             inputMode="numeric"
+            disabled={isRemoval}
+            aria-describedby={isRemoval ? "stock-removal-hint" : undefined}
             data-testid="stock-unit-cost"
           />
+          {isRemoval && (
+            <span id="stock-removal-hint" className="text-xs text-muted-foreground">
+              {t("stockRemovalNoCost")}
+            </span>
+          )}
         </label>
       </div>
       <label className="grid gap-1">

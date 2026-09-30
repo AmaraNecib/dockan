@@ -89,7 +89,9 @@ export function useBarcodeScanner(onScan: (code: string) => void): void {
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("blur", reset);
     return () => {
-      window.removeEventListener("keydown", onKeyDown);
+      // the capture flag must match the registration or the listener is never
+      // detached: it would keep claiming every later tight burst, on every screen
+      window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("blur", reset);
     };
   }, []);

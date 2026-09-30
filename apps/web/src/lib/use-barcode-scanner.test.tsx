@@ -59,9 +59,12 @@ function mountScanner() {
     root = createRoot(host);
     root.render(<Harness />);
   }); // act flushes passive effects so the keydown listener is attached
+  let unmounted = false;
   return {
     codes,
     unmount: () => {
+      if (unmounted) return;
+      unmounted = true;
       root?.unmount();
       host.remove();
     },
@@ -141,6 +144,23 @@ describe("use-barcode-scanner", () => {
     // inline editor's Enter handler, or the form around them
     expect(enterReachedField).toBe(0);
     expect(enter.defaultPrevented).toBe(true);
+  });
+
+  it("detaches its capture listener on unmount", () => {
+    const input = focusInput();
+    scanner.unmount();
+
+    for (const key of ["9", "0", "1"]) {
+      keydown(key, input);
+      advance(5);
+    }
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    input.dispatchEvent(enter);
+
+    // a leaked capture listener would keep committing scans (and swallowing
+    // Enter) on every screen after the items page unmounted
+    expect(scanner.codes).toEqual([]);
+    expect(enter.defaultPrevented).toBe(false);
   });
 
   it("ignores IME-composing keystrokes entirely", () => {

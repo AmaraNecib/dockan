@@ -179,6 +179,7 @@ mock.module("@/lib/rpc", () => ({
     // ItemPickerDialog evaluates this query even while closed.
     catalogSearch: {
       queryOptions: () => ({ queryKey: ["catalogSearch"], queryFn: async () => ({ matches: [], exact: null }), enabled: false }),
+      queryKey: () => ["catalogSearch"],
     },
   },
   rpcClient: { catalogSearch: async () => ({ exact: null }) },
@@ -577,6 +578,33 @@ describe("stock form prefill", () => {
     await waitFor(() => inputByTestId("stock-unit-cost").value === "250");
   });
 
+  it("disables the unit cost for a removal instead of discarding it", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+
+    setInput("stock-delta", "-5");
+    // a removal cannot carry a cost; leaving the field editable promises a
+    // recording the api never receives
+    await waitFor(() => inputByTestId("stock-unit-cost").disabled === true);
+
+    setInput("stock-delta", "5");
+    await waitFor(() => inputByTestId("stock-unit-cost").disabled === false);
+  });
+
+  it("names the quantity problem instead of repeating the field label", async () => {
+    await mount();
+    await openAddTab();
+    setInput("stock-delta", "0");
+    click("stock-save");
+    await waitFor(() => document.querySelector('[data-testid="stock-error"]') !== null);
+    const message = el<HTMLElement>('[data-testid="stock-error"]').textContent ?? "";
+    expect(message).not.toBe("");
+    // the label already says this; an error has to say what is wrong
+    expect(message).not.toContain("موجب إدخال");
+    expect(stockInputs.length).toBe(0);
+  });
+
   it("refreshes a prefilled cost when the item's known cost changes, without clobbering a typed value", async () => {
     const { queryClient } = await mount();
     await openAddTab();
@@ -668,6 +696,86 @@ describe("inline item edit", () => {
     click("edit-save");
     await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
     expect(updateInputs.length).toBe(0);
+    // closing with no feedback reads as a failed save to a first-week operator
+    await waitFor(() => document.querySelector('[data-testid="items-edit-unchanged"]') !== null);
+  });
+
+  it("rejects a blank cost instead of silently zeroing it", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("keeps the server threshold when the field is blanked", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-threshold"]') !== null);
+    setInput("edit-name", "بطارية بلا تنبيه");
+    setInput("edit-threshold", "");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    // blank means "leave it alone", not "warn at zero"
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية بلا تنبيه" });
+  });
+
+  it("rejects money written in exponent or hex notation", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+    setInput("edit-cost", "1e3");
+    click("edit-save");
+    await waitFor(() => document.querySelector('[data-testid="items-edit-error"]') !== null);
+    expect(updateInputs.length).toBe(0);
+
+    setInput("edit-cost", "0x10");
+    click("edit-save");
+    await flush();
+    expect(updateInputs.length).toBe(0);
+  });
+
+  it("does not replace a draft the operator is still typing in", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "قيد الكتابة");
+
+    // the other row's edit control is unavailable while this draft is dirty, so
+    // typed work cannot be discarded by a stray click
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(true);
+
+    click("edit-cancel");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
+    expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(false);
+  });
+
+  it("follows a row whose price moved under an open draft", async () => {
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-cost"]') !== null);
+
+    // the cost was corrected elsewhere while this draft sat open: the field and
+    // the diff baseline must follow, or the operator edits against a value the
+    // row no longer shows
+    firstFixtureItem().costPrice = 175;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await settle();
+    });
+    await waitFor(() => inputByTestId("edit-cost").value === "175");
+  });
+
+  it("invalidates the catalog search so a stale price cannot be picked", async () => {
+    const { queryClient } = await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-name"]') !== null);
+    setInput("edit-name", "بطارية محدثة");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    await waitFor(() => queryClient.getQueryState(["catalogSearch"])?.isInvalidated === true);
   });
 
   it("moves focus into the name field when the editor opens", async () => {

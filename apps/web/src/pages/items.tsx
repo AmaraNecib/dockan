@@ -12,6 +12,7 @@ import { Amount } from "@/components/ui/amount";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { normalizeBarcode } from "@dokan/contracts";
+import { parseWholeNumber } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -45,14 +46,12 @@ const ITEMS_TABS: ReadonlyArray<{ id: ItemsTab; labelKey: "itemsTabProducts" | "
   { id: "add", labelKey: "itemsTabAddStock" },
 ];
 
-/** Every list the items page can change: the table, the low-stock badge
- * source, and the dashboard's low-stock panel. */
+/** Every list the items page can change: the table, the low-stock badge source,
+ * the catalog search the picker reads, and the dashboard panel. Invalidation is
+ * app-wide on purpose — this is a local-first app with a handful of active
+ * queries, and a missed key shows a stale price on some other screen. */
 function invalidateItems(queryClient: QueryClient) {
-  void Promise.all([
-    queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
-    queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
-    queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
-  ]);
+  void queryClient.invalidateQueries();
 }
 
 export function ItemsPage() {
@@ -357,8 +356,8 @@ function ItemForm({
     event.preventDefault();
     setError(null);
     const sellText = sell.trim();
-    const selling = Number(sellText);
-    if (sellText === "" || !Number.isSafeInteger(selling) || selling <= 0) {
+    const selling = parseWholeNumber(sellText);
+    if (selling === null || selling <= 0) {
       setError(t("itemsSellAboveCost"));
       return;
     }
@@ -368,14 +367,14 @@ function ItemForm({
     }
     // a typo must not silently save a money value as zero
     const costText = cost.trim();
-    const parsedCost = Number(costText);
-    if (costText === "" || !Number.isSafeInteger(parsedCost) || parsedCost < 0) {
+    const parsedCost = parseWholeNumber(costText);
+    if (parsedCost === null) {
       setError(t("itemsCostInvalid"));
       return;
     }
     const thresholdText = threshold.trim();
-    const parsedThreshold = thresholdText === "" ? 5 : Number(thresholdText);
-    if (!Number.isSafeInteger(parsedThreshold) || parsedThreshold < 0) {
+    const parsedThreshold = thresholdText === "" ? 5 : parseWholeNumber(thresholdText);
+    if (parsedThreshold === null) {
       setError(t("itemsThresholdInvalid"));
       return;
     }
@@ -392,8 +391,8 @@ function ItemForm({
     // empty means zero (a deliberate "not counted yet"), so only a positive
     // whole number takes the one-step create-with-stock path
     const stockText = initialStock.trim();
-    const stock = Number(stockText);
-    if (stockText !== "" && (!Number.isSafeInteger(stock) || stock < 0)) {
+    const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
+    if (stock === null) {
       setError(t("itemsStockInvalid"));
       return;
     }
@@ -405,8 +404,7 @@ function ItemForm({
       lowStockThreshold: parsedThreshold,
     };
     if (normalizedBarcode !== undefined) base.barcode = normalizedBarcode;
-    if (stockText !== "" && stock > 0) void createWithStock.mutate({ ...base, stockOnHand: stock });
-    else void create.mutate(base);
+    if (stockText !== "" && stock > 0) void createWithStock.mutate({ ...base, stockOnHand: stock });    else void create.mutate(base);
   }
 
   return (
@@ -505,8 +503,11 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
+  /** a save that had nothing to write: distinct from a save that failed */
+  const [unchanged, setUnchanged] = useState(false);
   /** the row whose edit control regains focus once editing ends */
   const editedRowRef = useRef<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const update = useMutation(
     orpc.itemsUpdate.mutationOptions({
@@ -515,6 +516,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
       onSuccess: (_data, variables) => {
         setDraft((current) => (current?.id === variables.id ? null : current));
         setEditError(null);
+        setUnchanged(false);
         invalidateItems(queryClient);
       },
       onError: (err) => setEditError(tError(err.message)),
@@ -535,8 +537,34 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
   const editingId = draft?.id ?? null;
   useEffect(() => {
     if (editingId === null) return;
-    document.querySelector<HTMLInputElement>('[data-testid="edit-name"]')?.focus();
+    nameInputRef.current?.focus();
   }, [editingId]);
+
+  // a background refetch can move a row's prices under an open draft; keep the
+  // untouched fields (and the diff baseline) in step with what the row shows
+  useEffect(() => {
+    if (editingId === null) return;
+    const row = items.data?.items.find((item) => item.id === editingId);
+    if (row === undefined) return;
+    setDraft((current) => {
+      if (current === null || current.id !== row.id) return current;
+      return {
+        ...current,
+        baseline: {
+          name: row.name,
+          categoryId: row.categoryId,
+          costPrice: row.costPrice,
+          sellingPrice: row.sellingPrice,
+          lowStockThreshold: row.lowStockThreshold,
+        },
+        name: current.name.trim() === current.baseline.name ? row.name : current.name,
+        categoryId: current.categoryId === current.baseline.categoryId ? row.categoryId : current.categoryId,
+        cost: current.cost.trim() === String(current.baseline.costPrice) ? String(row.costPrice) : current.cost,
+        sell: current.sell.trim() === String(current.baseline.sellingPrice) ? String(row.sellingPrice) : current.sell,
+        threshold: current.threshold.trim() === String(current.baseline.lowStockThreshold) ? String(row.lowStockThreshold) : current.threshold,
+      };
+    });
+  }, [items.data, editingId]);
 
   // a scan types its digits into whatever field has focus, so a draft that was
   // open in an edit field holds barcode characters — close it rather than let
@@ -544,13 +572,25 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
   useEffect(() => {
     if (scanNonce === 0) return;
     const active = document.activeElement;
-    const polluted = active instanceof HTMLInputElement && (active.dataset.testid ?? "").startsWith("edit-");
+    const polluted = active instanceof HTMLElement && active.closest('[data-editing="true"]') !== null;
     if (polluted) setDraft(null);
   }, [scanNonce]);
 
+  // a dirty draft must not be replaced by clicking another row's control: the
+  // operator would lose typed work with no warning
+  const draftDirty =
+    draft !== null &&
+    (draft.name.trim() !== draft.baseline.name ||
+      draft.categoryId !== draft.baseline.categoryId ||
+      draft.cost.trim() !== String(draft.baseline.costPrice) ||
+      draft.sell.trim() !== String(draft.baseline.sellingPrice) ||
+      draft.threshold.trim() !== String(draft.baseline.lowStockThreshold));
+
   function beginEdit(item: ItemListItem) {
+    if (draftDirty) return;
     editedRowRef.current = item.id;
     setEditError(null);
+    setUnchanged(false);
     setDraft({
       id: item.id,
       name: item.name,
@@ -575,20 +615,22 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
   function cancelEdit() {
     setDraft(null);
     setEditError(null);
+    setUnchanged(false);
   }
 
   function saveEdit() {
     if (draft === null) return;
     setEditError(null);
-    const sellText = draft.sell.trim();
-    const selling = Number(sellText);
-    if (draft.name.trim() === "") {
+    setUnchanged(false);
+    const name = draft.name.trim();
+    if (name === "") {
       setEditError(t("itemsNameRequired"));
       return;
     }
     // 0 is legal (items created with a zero price must stay editable), but the
     // field may not be blank or a non-integer
-    if (sellText === "" || !Number.isSafeInteger(selling) || selling < 0) {
+    const selling = parseWholeNumber(draft.sell);
+    if (selling === null) {
       setEditError(t("itemsSellInvalid"));
       return;
     }
@@ -596,33 +638,48 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
       setEditError(t("itemsChooseCategory"));
       return;
     }
-    const costText = draft.cost.trim();
-    const thresholdText = draft.threshold.trim();
-    const parsedCost = Number(costText);
-    const parsedThreshold = Number(thresholdText);
-    // a typo must not silently rewrite a money value or the warn-at quantity
-    if (costText !== "" && (!Number.isSafeInteger(parsedCost) || parsedCost < 0)) {
+    // create rejects a blank cost outright, so edit must too: silently writing
+    // 0 moves purchase cost, average cost and profit on a select-all + Enter
+    const costPrice = parseWholeNumber(draft.cost);
+    if (costPrice === null) {
       setEditError(t("itemsCostInvalid"));
       return;
     }
-    if (thresholdText !== "" && (!Number.isSafeInteger(parsedThreshold) || parsedThreshold < 0)) {
+    const thresholdText = draft.threshold.trim();
+    const parsedThreshold = parseWholeNumber(thresholdText);
+    if (thresholdText !== "" && parsedThreshold === null) {
       setEditError(t("itemsThresholdInvalid"));
       return;
     }
-    // blank means a deliberate zero (a free item, or warn-at-zero)
-    const costPrice = costText === "" ? 0 : parsedCost;
-    const lowStockThreshold = thresholdText === "" ? 0 : parsedThreshold;
     // send only what changed: a whole-row write would clobber a value corrected
-    // elsewhere while this draft sat open
+    // elsewhere while this draft sat open. A blanked threshold means "leave it
+    // alone", not "warn at zero" — create's blank default is 5, not 0.
     const patch: ItemUpdate = { id: draft.id };
-    if (draft.name.trim() !== draft.baseline.name) patch.name = draft.name.trim();
-    if (draft.categoryId !== draft.baseline.categoryId) patch.categoryId = draft.categoryId;
-    if (costPrice !== draft.baseline.costPrice) patch.costPrice = costPrice;
-    if (selling !== draft.baseline.sellingPrice) patch.sellingPrice = selling;
-    if (lowStockThreshold !== draft.baseline.lowStockThreshold) patch.lowStockThreshold = lowStockThreshold;
-    // nothing to write: closing the row is the whole job
-    if (Object.keys(patch).length === 1) {
+    let changed = false;
+    if (name !== draft.baseline.name) {
+      patch.name = name;
+      changed = true;
+    }
+    if (draft.categoryId !== draft.baseline.categoryId) {
+      patch.categoryId = draft.categoryId;
+      changed = true;
+    }
+    if (costPrice !== draft.baseline.costPrice) {
+      patch.costPrice = costPrice;
+      changed = true;
+    }
+    if (selling !== draft.baseline.sellingPrice) {
+      patch.sellingPrice = selling;
+      changed = true;
+    }
+    if (parsedThreshold !== null && parsedThreshold !== draft.baseline.lowStockThreshold) {
+      patch.lowStockThreshold = parsedThreshold;
+      changed = true;
+    }
+    // nothing to write: close the row, but say so rather than look like a save
+    if (!changed) {
       setDraft(null);
+      setUnchanged(true);
       return;
     }
     update.mutate(patch);
@@ -660,6 +717,11 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
           {editError}
         </p>
       )}
+      {unchanged && (
+        <p className="mt-4 rounded border bg-muted p-2 text-sm text-muted-foreground" role="status" data-testid="items-edit-unchanged">
+          {t("itemsNoChanges")}
+        </p>
+      )}
       <div className="mt-6 w-full overflow-x-auto rounded border bg-card">
       <table className="w-full">
         <thead>
@@ -680,10 +742,11 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
             const editing = draft !== null && draft.id === item.id;
             const draftProfit = editing ? profitPreview(draft.cost, draft.sell) : null;
             return (
-              <tr key={item.id} className="border-b last:border-0">
+              <tr key={item.id} className="border-b last:border-0" data-editing={editing ? "true" : undefined}>
                 <td className="p-3">
                   {editing ? (
                     <input
+                      ref={nameInputRef}
                       className="w-full rounded border px-2 py-1"
                       name="editName"
                       autoComplete="off"
@@ -825,7 +888,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
                         id={`edit-button-${item.id}`}
                         className="rounded text-muted-foreground underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50"
                         onClick={() => beginEdit(item)}
-                        disabled={update.isPending}
+                        disabled={update.isPending || draftDirty}
                         data-testid={`edit-item-${item.id}`}
                       >
                         {t("itemsEdit")}

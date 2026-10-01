@@ -329,6 +329,9 @@ describe("PartyDetailPage (issue 120)", () => {
     expect(host.querySelectorAll('[data-testid="party-tab-invoices"], [data-testid="party-tab-payments"], [data-testid="party-tab-info"]').length).toBe(3);
     expect(host.querySelectorAll('[data-testid="party-invoice-row"]').length).toBe(1);
     expect(host.querySelector('[data-testid="party-invoice-row"]')?.textContent).toContain("مدفوعة جزئياً");
+    // #119's day-first formatter is wired into the detail cells
+    expect(host.querySelector('[data-testid="party-invoice-row"]')?.textContent).toContain("01/10/2026");
+    expect(host.querySelector('[data-testid="party-created-at"]')?.textContent).toBe("01/10/2026 10:00");
 
     // the delete button is disabled while the party owns invoices
     const deleteButton = host.querySelector<HTMLButtonElement>('[data-testid="party-detail-delete"]');
@@ -338,6 +341,7 @@ describe("PartyDetailPage (issue 120)", () => {
     await click(host, '[data-testid="party-tab-payments"]');
     expect(host.querySelectorAll('[data-testid="party-payment-row"]').length).toBe(1);
     expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("INV-0004");
+    expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("01/10/2026 10:05");
   });
 
   it("edits the party from the المعلومات tab", async () => {

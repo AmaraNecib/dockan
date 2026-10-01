@@ -266,6 +266,14 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                     event.preventDefault();
                     submitCreate();
                   }}
+                  onKeyDown={(event) => {
+                    // Escape closes the panel from its own fields too, not only
+                    // from the combobox input
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setCreateOpen(false);
+                    }
+                  }}
                 >
                   <label className="grid gap-1 text-sm font-medium">
                     {t("partyName")}
@@ -290,6 +298,7 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                       name="partyPhone"
                       autoComplete="off"
                       dir="ltr"
+                      maxLength={32}
                       value={createPhone}
                       disabled={create.isPending}
                       onChange={(event) => {

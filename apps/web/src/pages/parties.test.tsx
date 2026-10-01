@@ -225,6 +225,22 @@ describe("PartiesPage (issue 120)", () => {
     expect(host.querySelector('[data-testid="parties-notice"]')).not.toBeNull();
   });
 
+  it("edits a party from the row dialog", async () => {
+    customers = [row()];
+    const host = await mount(<PartiesPage role="customer" />);
+    await waitFor(() => host.querySelectorAll('[data-testid="party-row"]').length === 1);
+
+    await click(host, '[data-testid="party-row-edit"]');
+    expect(host.querySelector('[data-testid="party-edit-dialog"]')).not.toBeNull();
+    const name = host.querySelector<HTMLInputElement>('[data-testid="party-form-name"]');
+    await act(async () => {
+      if (name !== null) setElementValue(name, "علي المعدّل");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await click(host, '[data-testid="party-form-save"]');
+    expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل", phone: "+213555123456" }]);
+  });
+
   it("renders the supplier role through the supplier procedures", async () => {
     suppliers = [
       row({ id: "s-1", name: "مورد الاختبار", phone: null, stats: { ...EMPTY_STATS, invoiceCount: 1, remainingAmount: 1_200 } }),
@@ -342,6 +358,18 @@ describe("PartyDetailPage (issue 120)", () => {
 
     expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل", phone: "+213555123456" }]);
     expect(host.querySelector('[data-testid="party-detail-notice"]')).not.toBeNull();
+  });
+
+  it("deletes a zero-invoice party from the detail header", async () => {
+    routeParams = { partyId: "c-1" };
+    details.set("c-1", detail());
+    const host = await mount(<PartyDetailPage role="customer" />);
+    await waitFor(() => host.querySelector('[data-testid="party-detail-delete"]') !== null);
+
+    await click(host, '[data-testid="party-detail-delete"]');
+    await click(host, '[data-testid="party-delete-confirm"]');
+    expect(deleted).toEqual(["c-1"]);
+    expect(navigations).toEqual(["/customers"]);
   });
 
   it("shows the not-found state for an unknown party", async () => {

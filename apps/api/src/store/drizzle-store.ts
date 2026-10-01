@@ -142,7 +142,7 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
  */
 const safeWhole = (value: SqlScalar): number => {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+  return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(parsed))) : 0;
 };
 
 type SqlPartyStats = { invoiceCount: SqlScalar; totalAmount: SqlScalar; paidAmount: SqlScalar; remainingAmount: SqlScalar };
@@ -401,10 +401,9 @@ export const backfillCounterparties = (conn: Connection): void => {
       conn.raw.exec("COMMIT");
       return;
     }
-    const kinds: ReadonlyArray<{ kind: "SALE" | "PURCHASE"; table: "customers" | "suppliers" }> = [
-      { kind: "SALE", table: "customers" },
-      { kind: "PURCHASE", table: "suppliers" },
-    ];
+    // SAFETY: Object.keys over a closed const map yields exactly its keys,
+    // which are the PartyRole literals; the index then reads that same map.
+    const kinds = (Object.keys(partyInvoiceKind) as PartyRole[]).map((role) => ({ kind: partyInvoiceKind[role], table: PARTY_TABLES[role] }));
     for (const { kind, table } of kinds) {
       // SAFETY: fixed SQL identifiers and bound parameters; the distinct names
       // are the only data read and every write binds them.
@@ -765,7 +764,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
-    // issue 120: point legacy typed-name invoices at real party records (once)
+    // issue 120: point legacy typed-name invoices at real party records (once).
+    // Deliberately fail-loud like every other migration in this file: a failed
+    // identity backfill must not boot into name-grouped debts silently.
     backfillCounterparties(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
@@ -1129,16 +1130,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const party = await fetchParty(role, partyId);
       if (party === undefined) return undefined;
       const kind = partyInvoiceKind[role];
-      const [statsRows, invoiceRows, paymentRows] = await Promise.all([
-        db
-          .select({
-            invoiceCount: sql<number>`COUNT(*)`,
-            totalAmount: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`,
-            paidAmount: sql<number>`COALESCE(SUM(${invoices.paidAmount}), 0)`,
-            remainingAmount: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)`,
-          })
-          .from(invoices)
-          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind))),
+      const [invoiceRows, paymentRows] = await Promise.all([
         db
           .select(invoiceCols)
           .from(invoices)
@@ -1151,13 +1143,22 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
           .orderBy(desc(payments.paidAt), desc(payments.createdAt)),
       ]);
-      const stats = statsRows[0];
+      // the strip derives from the SAME mapped rows the invoices tab renders:
+      // one malformed legacy row cannot make the numbers and the table disagree
+      const detailInvoices = mapRecentInvoices(invoiceRows) ?? [];
+      const stats = detailInvoices.reduce(
+        (acc, invoice) => ({
+          invoiceCount: acc.invoiceCount + 1,
+          totalAmount: acc.totalAmount + invoice.totalAmount,
+          paidAmount: acc.paidAmount + invoice.paidAmount,
+          remainingAmount: acc.remainingAmount + invoice.remainingAmount,
+        }),
+        { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      );
       return {
         party,
-        stats: safePartyStats(stats ?? {}),
-        // reuse the dashboard's guarded mapper: one malformed legacy row must
-        // degrade this section, not 500 the whole detail page
-        invoices: mapRecentInvoices(invoiceRows) ?? [],
+        stats: safePartyStats(stats),
+        invoices: detailInvoices,
         payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
       } satisfies PartyDetail;
     },

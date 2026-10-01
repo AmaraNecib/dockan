@@ -92,6 +92,9 @@ export function normalizeTextKey(raw: string): string {
   return raw
     .normalize("NFC")
     .toLowerCase()
+    // bidi/zero-width controls pasted from Arabic-first UIs; `\s` does not
+    // match them, so they must be stripped or the same name becomes two keys
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
     .replace(/[\u0640\u064B-\u0652\u0670]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -130,7 +133,8 @@ export const itemSchema = z.object({
  */
 export const partyRoleSchema = z.enum(["customer", "supplier"]);
 /** The invoice kind a party role owns: a customer's invoices are SALE, a
- * supplier's are PURCHASE. One map, so the role↔kind direction cannot drift. */
+ * supplier's are PURCHASE. One map for the store's role→kind lookups; the
+ * router's kind→role inverse stays a single local branch. */
 export const partyInvoiceKind = { customer: "SALE", supplier: "PURCHASE" } as const;
 export const partySchema = z.object({
   id: idSchema,
@@ -433,9 +437,10 @@ export const invoiceDetailSchema = invoiceSchema.extend({
 // ---------------------------------------------------------------------------
 
 /**
- * Per-party invoice aggregates. One SQL read serves both the list row and the
- * detail stats strip, so the two surfaces can never disagree about a party's
- * money. `remainingAmount` includes fully paid invoices as 0.
+ * Per-party invoice aggregates. The list row and the detail strip share this
+ * contract shape; the detail derives it from the same mapped invoices it
+ * renders, so the strip can never disagree with the tab below it.
+ * `remainingAmount` includes fully paid invoices as 0.
  */
 export const partyStatsSchema = z.object({
   invoiceCount: z.number().int().min(0),

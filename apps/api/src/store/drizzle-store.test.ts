@@ -720,8 +720,11 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     // a second NULL phone is always fine
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-١", localDateTime());
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-٢", localDateTime());
-    // the store check compares canonical forms, so a raw non-canonical row
-    // written by an import/adapter cannot escape the identity rule
+  });
+
+  it("refuses a canonical phone that a raw non-canonical row already owns", async () => {
+    // an import/adapter that writes a raw spelling must not escape the identity
+    // rule: the store check re-normalizes every stored row before comparing
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "خام-١", "0550 12 34 56", localDateTime());
     await expect(store.createParty("customer", { name: "خام-٢", phone: "0550123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
   });
@@ -814,6 +817,25 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect((await store.listParties("customer")).find((row) => row.id === party.id)?.stats.remainingAmount).toBe(0);
     expect((await store.partyDetail("customer", party.id))?.stats.remainingAmount).toBe(0);
     expect((await store.partyDetail("customer", party.id))?.invoices).toHaveLength(1);
+    // the high end is clamped too: an aggregate above MAX_SAFE_INTEGER would
+    // otherwise fail dinarsSchema's max and blank the same surfaces
+    const huge = await store.createParty("customer", { name: `حد-أقصى-${stamp()}` });
+    await store.insertInvoice({
+      invoiceNumber: `INV-HUGE-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: huge.id,
+      counterpartyName: huge.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: Number.MAX_SAFE_INTEGER + 10,
+      paidAmount: 0,
+      remainingAmount: Number.MAX_SAFE_INTEGER + 10,
+      notes: null,
+    });
+    expect((await store.partyDetail("customer", huge.id))?.stats.remainingAmount).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
@@ -914,6 +936,34 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     } finally {
       conn.close();
       removeTempDirRetry(variantsDir);
+    }
+  });
+
+  it("groups a legacy name carrying a bidi mark with its clean spelling", async () => {
+    const bidiDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-bidi-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: bidiDir, DOKAN_DB_PATH: path.join(bidiDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (name: string, total: number) =>
+        legacy.insertInvoice({ ...base, invoiceNumber: `INV-BIDI-${++n}`, kind: "SALE", counterpartyId: null, counterpartyName: name, totalAmount: total, paidAmount: 0, remainingAmount: total });
+      await seed("علي", 10_000);
+      await seed("علي\u200F", 20_000); // trailing RLM, the usual copy/paste artifact
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers).toHaveLength(1);
+      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 2, totalAmount: 30_000 });
+      const ids = (await legacy.listInvoices({})).items.map((i) => i.counterpartyId);
+      expect(new Set(ids).size).toBe(1);
+    } finally {
+      conn.close();
+      removeTempDirRetry(bidiDir);
     }
   });
 

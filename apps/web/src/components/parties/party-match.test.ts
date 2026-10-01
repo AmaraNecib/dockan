@@ -25,6 +25,8 @@ describe("filterParties", () => {
     expect(filterParties(LIST, "  محمد   بنين ").map((p) => p.id)).toEqual(["mohamed"]);
     // tashkeel on the query still finds the undiacritized stored name
     expect(filterParties(LIST, "مُحَمَّد").map((p) => p.id)).toEqual(["mohamed"]);
+    // a bidi mark pasted into the query is stripped before matching
+    expect(filterParties(LIST, "علي\u200F").map((p) => p.id)).toEqual(["ali"]);
     expect(filterParties(LIST, "لا يوجد")).toEqual([]);
   });
 
@@ -60,6 +62,10 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي", "0555123456", LIST)).toBeUndefined();
     // ...nor for walk-ins with no phone on either side
     expect(duplicateNameParty("عماره", null, LIST)).toBeUndefined();
+  });
+
+  it("sees through a bidi mark pasted into the name", () => {
+    expect(duplicateNameParty("علي علي\u200F", "0555123457", LIST)?.id).toBe("ali");
   });
 
   it("does not warn for an unrelated or empty name", () => {

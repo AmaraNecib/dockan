@@ -92,6 +92,7 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
           name="partyPhone"
           autoComplete="off"
           dir="ltr"
+          maxLength={32}
           value={phone}
           disabled={busy}
           onChange={(event) => {

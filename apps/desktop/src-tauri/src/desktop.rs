@@ -468,7 +468,9 @@ mod tests {
 
     #[test]
     fn verified_rejects_a_decoy_without_registry_ownership() {
-        let dir = std::env::temp_dir().join(format!("dokan-wait-test-{}", std::process::id()));
+        // distinct directory name: the accept-path test above runs in parallel
+        // in the same process/pid and would delete a shared dir mid-write
+        let dir = std::env::temp_dir().join(format!("dokan-wait-decoy-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".dokan-port.registry")).unwrap();
         // decoy: answers 200 with the token echo on every path, but there is
         // no registry entry under our pid — a hijacker who took the port

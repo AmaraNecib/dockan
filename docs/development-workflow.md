@@ -117,27 +117,28 @@ Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 
 ```bash
 # portable (folder + zip) — the default deliverable. No secrets needed on the
-# command line: they are generated once into apps/desktop/.env (gitignored) and
-# reused from then on.
+# command line: they are resolved from apps/desktop/.env (gitignored), and
+# generated there once if missing.
 bun run desktop:portable
 # → apps/desktop/src-tauri/target/release/bundle/portable/Dokan-portable/  (folder)
 # → apps/desktop/src-tauri/target/release/bundle/portable/Dokan-portable.zip
 
-# per-customer installer: the slug names the artifact
+# per-customer installer: the slug names the artifact AND selects .env.<slug>
 DOKAN_CUSTOMER_SLUG='shop-slug' bun run desktop:installer
 # → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>_<slug>_x64-setup.exe
 
 # see (or print) the release secrets and where they came from
-bun run desktop:secrets          # paths + sources
-bun run desktop:secrets --show   # also prints the values
+bun run desktop:secrets                  # the customer-less .env
+bun run desktop:secrets --customer acme  # that customer's .env.acme
+bun run desktop:secrets --show           # also prints the values
 
 # pieces separately
 bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
 ```
 
-The portable target is **Windows-only** and produces no installer. Only the
-installer target uses `DOKAN_CUSTOMER_SLUG`; the portable folder is
-customer-neutral by design.
+The portable target is **Windows-only** and produces no installer.
+`DOKAN_CUSTOMER_SLUG` selects the per-customer secret file and names the
+installer; the portable folder name stays customer-neutral.
 
 The sidecar binary and `target/` are generated artifacts (gitignored); the
 source of the icon master is `tools/generate-icon.py` (PIL) — regenerate the
@@ -158,20 +159,34 @@ They resolve in this order:
 
 1. an explicit environment variable — for one build that needs a specific
    shop's secret without rewriting the file;
-2. `apps/desktop/.env` (gitignored) — where they are generated once and then
-   reused;
+2. this customer's gitignored env file — `apps/desktop/.env` for a build with
+   no slug, `apps/desktop/.env.<slug>` when `DOKAN_CUSTOMER_SLUG` is set —
+   where they are generated once and then reused;
 3. a freshly generated value, written to that file.
 
-**Keep the file.** A rebuild for a shop that already has data needs the SAME
+**Keep the files.** A rebuild for a shop that already has data needs the SAME
 values: a new `DOKAN_AUTH_SECRET` invalidates every session, and a new
-`DOKAN_BUILD_SECRET` breaks that owner's password-reset path. One `.env` per
-customer; a weak value in either place still fails the build loudly.
+`DOKAN_BUILD_SECRET` breaks that owner's password-reset path. A slugged build
+never reads the customer-less `.env`: `bun run` pre-loads that file into the
+evironment, but a value that came from it is ignored for another customer, so
+two shops built from one checkout can never share a signing key. To migrate a
+shop that was built before per-customer files existed, copy its old `.env`
+values into `.env.<slug>` before the first slugged build — otherwise that shop
+gets a fresh set and every existing session is invalidated. A weak value in
+either place still fails the build loudly.
+
+First-time generation is serialized across processes with a lock file
+(`.env.<slug>.lock`) and the file is replaced atomically, so two builds racing
+a missing file resolve to one secret set and a reader can never see a
+half-written file. Generated files are written 0600, and a pre-existing loose
+file is restricted before the secret lands in it.
 
 ```bash
 # a specific customer's secrets, for one build, without touching the file
 DOKAN_BUILD_SECRET='<unique-per-shop, >=16 chars>' \
 DOKAN_AUTH_SECRET='<unique-per-shop, >=32 chars>' \
-bun run desktop:portable
+DOKAN_CUSTOMER_SLUG='shop-slug' \
+bun run desktop:installer
 ```
 
 ### Installer facts

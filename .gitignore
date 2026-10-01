@@ -16,9 +16,9 @@ data/
 logs/
 backups/
 
-# env / secrets
+# env / secrets (one per customer: .env and .env.<slug>)
 .env
-.env.local
+.env.*
 
 # os / editor
 .DS_Store
@@ -37,3 +37,6 @@ coverage/
 .scratch/sessions/
 
 .e2e-data/
+
+# path-dependency crate lockfiles are not committed
+apps/desktop/src-tauri/sidecar-freshness/Cargo.lock

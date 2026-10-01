@@ -1,12 +1,16 @@
 /**
  * Per-customer release pipeline (ticket 15 / PR #51 findings 2 & 5, issue
- * 64). Run via `bun run portable` (default target) or `bun run installer`
- * (see package.json).
+ * 64; PR #117). Run via `bun run portable` (default target) or
+ * `bun run installer` (see package.json).
  *
  * Flow:
- *   1. validate DOKAN_BUILD_SECRET (>= 16 chars) AND DOKAN_AUTH_SECRET
- *      (>= 32 chars) — fail loudly, never ship a default or weak secret
- *   2. compile the api sidecar with both secrets inlined (--define)
+ *   1. resolve BOTH per-customer secrets: an explicit environment value wins,
+ *      otherwise this customer's gitignored env file (`apps/desktop/.env`, or
+ *      `.env.<slug>` when DOKAN_CUSTOMER_SLUG is set), otherwise generate and
+ *      persist them there. A present but weak value is fatal; a missing one is
+ *      created once (see secrets.ts) — a shared default is never used.
+ *   2. compile the api sidecar with both secrets inlined (--define) and write
+ *      the freshness stamp build.rs checks before reusing it.
  *   3. build the requested target:
  *      - portable (default, `--portable`): `tauri build --no-bundle` (the
  *        nsis installer is NEVER produced on this path), then assemble
@@ -18,15 +22,13 @@
  *        is set (lower-case letters, digits and dashes only).
  *
  * Documented per-customer commands (issue 64):
- *   portable zip + folder:
- *     DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
- *     DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
+ *   portable zip + folder (uses the customer-less `.env`):
  *     bun run --filter @dokan/desktop portable
- *   per-customer installer:
- *     DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
+ *   per-customer installer (uses `.env.<slug>`):
+ *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run --filter @dokan/desktop installer
+ *   one-off override, without rewriting the file:
  *     DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
- *     DOKAN_CUSTOMER_SLUG='shop-slug' \
- *     bun run --filter @dokan/desktop installer
+ *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run --filter @dokan/desktop installer
  */
 
 import fs from "node:fs";
@@ -34,7 +36,7 @@ import path from "node:path";
 
 import { assemblePortable } from "./portable.mjs";
 import { compileSidecar } from "./sidecar";
-import { ensureReleaseSecrets, RELEASE_ENV_PATH, type ResolvedReleaseSecrets } from "./secrets";
+import { ensureReleaseSecrets, type ResolvedReleaseSecrets } from "./secrets";
 
 const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
 /** Matches ONLY the pristine tauri NSIS artifact `Dokan_<version>_<arch>-setup.exe`
@@ -145,32 +147,59 @@ async function buildPortable(): Promise<void> {
 }
 
 /**
- * Resolve both secrets, or exit loudly. A missing value is now generated into
- * the gitignored env file; only a weak one is fatal.
+ * Resolve both secrets, or exit loudly. A missing value is generated into the
+ * customer's gitignored env file; only a weak one is fatal.
  */
-function resolveSecretsOrExit(): ResolvedReleaseSecrets {
+function resolveSecretsOrExit(slug: string | undefined): ResolvedReleaseSecrets {
   try {
-    return ensureReleaseSecrets();
+    return ensureReleaseSecrets({ customerSlug: slug });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`[dokan] release secret rejected: ${reason}`);
-    console.error(`[dokan] fix the value in ${RELEASE_ENV_PATH}, or pass a strong one for this build:`);
+    console.error("[dokan] fix the value in the customer env file, or pass a strong one for this build:");
     console.error("  DOKAN_AUTH_SECRET='<32+ chars>' bun run --filter @dokan/desktop portable");
     process.exit(1);
   }
 }
 
+/**
+ * Make the resolved secrets the build environment for the tauri/cargo child.
+ *
+ * `bun run` pre-loads the customer-less `.env` into `process.env`. On a slugged
+ * build those are a DIFFERENT customer's secrets, and build.rs would compare
+ * them against the stamp, decide the sidecar is stale, and rebuild it with the
+ * wrong values. Adopting the resolved pair keeps the environment, the compiled
+ * sidecar and the stamp in agreement (PR #117 findings 1 & 5).
+ */
+export function adoptReleaseSecrets(
+  resolved: ResolvedReleaseSecrets,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  env.DOKAN_BUILD_SECRET = resolved.secrets.DOKAN_BUILD_SECRET;
+  env.DOKAN_AUTH_SECRET = resolved.secrets.DOKAN_AUTH_SECRET;
+}
+
 async function main(): Promise<void> {
-  const resolved = resolveSecretsOrExit();
+  const rawSlug = process.env.DOKAN_CUSTOMER_SLUG;
+  const slug = customerSlug(rawSlug);
+  // A typo'd slug must not silently fall back to the customer-less `.env`,
+  // sharing secrets across shops (PR #117 finding 1).
+  if (slug === undefined && rawSlug !== undefined && rawSlug.trim() !== "") {
+    console.error(
+      `[dokan] DOKAN_CUSTOMER_SLUG ${JSON.stringify(rawSlug)} is invalid — use lower-case letters, digits and dashes`,
+    );
+    process.exit(1);
+  }
+
+  const resolved = resolveSecretsOrExit(slug);
   if (resolved.generated.length > 0) {
-    console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${RELEASE_ENV_PATH} (gitignored)`);
+    console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${resolved.envFilePath} (gitignored)`);
     console.log("[dokan] keep that file: a rebuild for the same shop needs the same values");
   }
   for (const key of ["DOKAN_BUILD_SECRET", "DOKAN_AUTH_SECRET"] as const) {
     console.log(`[dokan] ${key}: ${resolved.sources[key]}`);
   }
-
-  const slug = customerSlug(process.env.DOKAN_CUSTOMER_SLUG);
+  adoptReleaseSecrets(resolved);
 
   await compileSidecar(resolved.secrets.DOKAN_BUILD_SECRET, resolved.secrets.DOKAN_AUTH_SECRET);
   console.log(
@@ -181,7 +210,9 @@ async function main(): Promise<void> {
     await buildInstaller(slug);
   } else {
     if (slug !== undefined) {
-      console.log("[dokan] note: DOKAN_CUSTOMER_SLUG only applies to the installer target — the portable folder is customer-neutral");
+      console.log(
+        `[dokan] note: DOKAN_CUSTOMER_SLUG selects the per-customer secrets (.env.${slug}); the portable folder name stays customer-neutral`,
+      );
     }
     await buildPortable();
   }

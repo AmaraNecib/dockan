@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { customerSlug, findInstallerName, renamedInstaller } from "./release";
+import { adoptReleaseSecrets, customerSlug, findInstallerName, renamedInstaller } from "./release";
 import { MIN_AUTH_SECRET_LEN, MIN_BUILD_SECRET_LEN, validateAuthSecret, validateBuildSecret } from "./sidecar";
 
 /**
@@ -60,6 +60,17 @@ describe("validateAuthSecret (PR #51 finding 5 — session-forgery)", () => {
     expect(long.ok).toBe(true);
   });
 
+  it("release mains exit 1 on an invalid customer slug instead of sharing the default secrets", async () => {
+    const proc = Bun.spawn(["bun", "scripts/release.ts"], {
+      env: { ...process.env, DOKAN_CUSTOMER_SLUG: "Not A Slug" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const code = await proc.exited;
+    const err = await new Response(proc.stderr).text();
+    expect(code).toBe(1);
+    expect(err).toContain("DOKAN_CUSTOMER_SLUG");
+  });
+
   it("release mains exit 1 on a weak explicit secret instead of shipping it", async () => {
     // A MISSING secret is no longer fatal: it is generated into the gitignored
     // env file, which secrets.test.ts covers. Only a weak one is refused — and
@@ -72,6 +83,33 @@ describe("validateAuthSecret (PR #51 finding 5 — session-forgery)", () => {
     const weakErr = await new Response(weak.stderr).text();
     expect(weakCode).toBe(1);
     expect(weakErr).toContain("must be at least 32");
+  });
+});
+
+describe("adoptReleaseSecrets (PR #117 findings 1 & 5)", () => {
+  it("replaces base .env values pre-loaded by bun with the resolved customer's secrets", () => {
+    // with DOKAN_CUSTOMER_SLUG set, process.env carries the customer-less .env
+    // values; leaving them would make build.rs rebuild the sidecar for the
+    // wrong shop
+    const env: NodeJS.ProcessEnv = {
+      DOKAN_BUILD_SECRET: "base-shop-build-secret-01",
+      DOKAN_AUTH_SECRET: "base-shop-auth-secret-0123456789abcdef",
+    };
+    adoptReleaseSecrets(
+      {
+        secrets: {
+          DOKAN_BUILD_SECRET: "acme-build-secret-012345",
+          DOKAN_AUTH_SECRET: "acme-auth-secret-0123456789abcdefghij",
+        },
+        sources: { DOKAN_BUILD_SECRET: "file", DOKAN_AUTH_SECRET: "file" },
+        generated: [],
+        envFilePath: "/tmp/.env.acme",
+      },
+      env,
+    );
+
+    expect(env.DOKAN_BUILD_SECRET).toBe("acme-build-secret-012345");
+    expect(env.DOKAN_AUTH_SECRET).toBe("acme-auth-secret-0123456789abcdefghij");
   });
 });
 

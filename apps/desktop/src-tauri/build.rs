@@ -4,18 +4,28 @@
 //!    hard-fails when `bundle.externalBin` is missing, so a clean checkout
 //!    must be able to run `cargo build` / `cargo test` / `cargo clippy` /
 //!    `tauri build` without a manual sidecar step. When the configured binary
-//!    is absent, compile it first via the same command the pipeline uses.
+//!    is absent — or stale — compile it first via the same command the
+//!    pipeline uses.
 //!
-//!    The per-customer secrets (PR #51 findings 2 & 5) are ONLY inlined when
+//!    A staged sidecar is reused ONLY when its freshness stamp proves it was
+//!    compiled from the current API sources and from the secrets present in
+//!    this build environment (PR #117 finding 5). A `.exe` lying around is not
+//!    evidence of anything.
+//!
+//!    The per-customer secrets (PR #51 findings 2 & 5) are only inlined when
 //!    strong `DOKAN_BUILD_SECRET` / `DOKAN_AUTH_SECRET` values are present in
 //!    the build environment — this path is for the dev/test gates; the
 //!    shippable artifacts come from `bun run portable` / `bun run build`,
-//!    which validate both secrets and refuse to build without them.
+//!    which resolve both secrets and stamp the sidecar.
 //! 2. Delegate to tauri-build for the app manifest, icons and capabilities.
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use dokan_sidecar_freshness::{
+    is_fresh, read_stamp, source_fingerprint, stamp_path_for, write_stamp, Stamp,
+};
 
 /// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the `.exe`
 /// suffix on Windows; tauri-build's `externalBin` resolves the same name.
@@ -35,8 +45,56 @@ fn staged_sidecar(manifest_dir: &Path) -> PathBuf {
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+
+    // These inputs live outside the tauri package, so cargo would not otherwise
+    // re-run this script when the API changes (and the freshness check below
+    // would never get the chance to see it). Paths are relative to the package
+    // root (src-tauri); the API workspace sits at apps/api.
+    println!("cargo:rerun-if-changed=../../api/src");
+    println!("cargo:rerun-if-changed=../../api/package.json");
+    // A different shop's secrets must invalidate the staged sidecar too:
+    // without these, cargo would keep a sidecar stamped for the previous
+    // customer when only the environment changed.
+    println!("cargo:rerun-if-env-changed=DOKAN_BUILD_SECRET");
+    println!("cargo:rerun-if-env-changed=DOKAN_AUTH_SECRET");
+
     let sidecar = staged_sidecar(&manifest_dir);
-    if sidecar.is_file() {
+    let api_dir = manifest_dir.join("../..").join("api");
+    let sources_fingerprint = match source_fingerprint(&api_dir) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            println!(
+                "cargo:warning=dokan: could not fingerprint {} ({error}); the sidecar will be rebuilt",
+                api_dir.display()
+            );
+            String::new()
+        }
+    };
+
+    let build_secret = env::var("DOKAN_BUILD_SECRET")
+        .ok()
+        .filter(|secret| secret.len() >= MIN_BUILD_SECRET_LEN);
+    let auth_secret = env::var("DOKAN_AUTH_SECRET")
+        .ok()
+        .filter(|secret| secret.len() >= MIN_AUTH_SECRET_LEN);
+
+    // Reuse the staged sidecar only when its stamp proves it belongs to THIS
+    // build: the API sources must match, and any secret supplied in the
+    // environment must be the one already inlined.
+    let stamp_path = stamp_path_for(&sidecar);
+    let sidecar_is_current = !sources_fingerprint.is_empty()
+        && sidecar.is_file()
+        && read_stamp(&stamp_path)
+            .map(|stamp| {
+                is_fresh(
+                    &stamp,
+                    &sources_fingerprint,
+                    build_secret.as_deref(),
+                    auth_secret.as_deref(),
+                )
+            })
+            .unwrap_or(false);
+    if sidecar_is_current {
         // `bun run sidecar` / `release.ts` already compiled it WITH the secrets
         // validated and inlined; rebuilding it here would throw that away.
         tauri_build::build();
@@ -54,9 +112,6 @@ fn main() {
     // Track both secrets so the status line can tell a shippable sidecar from a
     // test one. The previous wording always claimed "without a release secret"
     // even when both were inlined, which read as a failure on a good build.
-    let build_secret = env::var("DOKAN_BUILD_SECRET")
-        .ok()
-        .filter(|secret| secret.len() >= MIN_BUILD_SECRET_LEN);
     if let Some(secret) = &build_secret {
         cmd.arg(format!(
             "--define=process.env.DOKAN_BUILD_SECRET={}",
@@ -67,9 +122,6 @@ fn main() {
     // auth secret exactly like the build secret when a strong value is
     // supplied; the packaged-boot guard in main.ts refuses a binary whose
     // signing secret stayed at the shared dev sentinel.
-    let auth_secret = env::var("DOKAN_AUTH_SECRET")
-        .ok()
-        .filter(|secret| secret.len() >= MIN_AUTH_SECRET_LEN);
     if let Some(secret) = &auth_secret {
         cmd.arg(format!(
             "--define=process.env.DOKAN_AUTH_SECRET={}",
@@ -97,6 +149,15 @@ fn main() {
         panic!("could not run `bun build --compile` for the api sidecar ({err}); install bun or run `bun run sidecar` manually first")
     });
     assert!(status.success(), "sidecar compile failed with status {status}");
+
+    // Record what this sidecar was built from so the next run can trust it.
+    let stamp = Stamp::new(sources_fingerprint, build_secret.as_deref(), auth_secret.as_deref());
+    if let Err(error) = write_stamp(&stamp_path, &stamp) {
+        println!(
+            "cargo:warning=dokan: could not write the sidecar freshness stamp ({error}); the next build will recompile the sidecar"
+        );
+    }
+
     tauri_build::build();
 }
 

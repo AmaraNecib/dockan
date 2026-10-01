@@ -1,0 +1,10 @@
+[package]
+name = "dokan-sidecar-freshness"
+version = "0.1.0"
+edition = "2021"
+description = "Freshness fingerprints for the Dokan API sidecar (build.rs support)"
+publish = false
+
+[lib]
+name = "dokan_sidecar_freshness"
+path = "src/lib.rs"

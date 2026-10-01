@@ -572,7 +572,7 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     expect(createWithStockInputs.length).toBe(0);
   });
 
-  it("clears the requirement after leaving and re-entering the add tab", async () => {
+  it("clears the filled scan draft with its session, so it cannot bypass the required stock", async () => {
     await openStockSeedForm("UNKNOWN-STOCK-5");
 
     setInput("item-name", "عودة للتبويب");
@@ -583,18 +583,44 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
     expect(createInputs.length).toBe(0);
 
-    // …but leaving the add tab ends the scan's mode: a return through the tab
-    // button is a fresh, plain add where blank stock creates without a movement
+    // …and leaving the add tab ends the whole scan session: the seed AND the
+    // filled draft go together, so the scanned item cannot be saved later
+    // without the opening stock the choice required
     click("items-tab-products");
     await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    expect(inputByTestId("item-name").value).toBe("");
+    expect(inputByTestId("item-barcode").value).toBe("");
+    expect(inputByTestId("initial-stock").value).toBe("");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBeNull();
+
+    // a return through the tab is a fresh, plain add where blank stock is an
+    // explicit no-movement create
     click("items-tab-add");
     await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
-
+    setInput("item-name", "عودة للتبويب");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
     click("item-save");
     await waitFor(() => createInputs.length === 1);
     expect(createInputs[0]).toMatchObject({ name: "عودة للتبويب" });
     expect(createInputs[0]?.stockOnHand).toBeUndefined();
     expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("marks the seeded stock field required and the plain one optional", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-A11Y");
+    const seeded = inputByTestId("initial-stock");
+    expect(seeded.getAttribute("aria-required")).toBe("true");
+    // the visible hint and its screen-reader text live on the label
+    expect(seeded.closest("label")?.textContent).toContain("مطلوب");
+  });
+
+  it("leaves the plain add form's stock field optional", async () => {
+    await mount();
+    await openAddTab();
+    const plain = inputByTestId("initial-stock");
+    expect(plain.getAttribute("aria-required")).toBeNull();
+    expect(plain.closest("label")?.textContent).not.toContain("مطلوب");
   });
 });
 

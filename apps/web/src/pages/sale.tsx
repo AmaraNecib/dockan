@@ -474,7 +474,10 @@ export function SalePage() {
                 </label>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quickCost} onChange={(event) => setQuickCost(event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("saleQuickStock")}<input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} data-testid="sale-quick-stock" /></label>
+                <label className="grid gap-1 text-sm font-medium">
+                  {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}
+                  <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
+                </label>
               </div>
               <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => setQuickOpen(false)}>{t("dialogClose")}</Button></div>
             </form>

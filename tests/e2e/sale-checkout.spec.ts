@@ -34,6 +34,8 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
   await page.getByTestId("scan-create").click();
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
   await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(firstUnknown);
+  // the plain path's quantity stays optional
+  await expect(page.getByTestId("sale-quick-stock")).not.toHaveAttribute("aria-required", "true");
 
   await page.keyboard.type(secondUnknown, { delay: 8 });
   await page.keyboard.press("Enter");
@@ -42,6 +44,7 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
   // same form, new code, and focus on the field the choice was made for
   await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(secondUnknown);
   await expect(page.getByTestId("sale-quick-stock")).toBeFocused();
+  await expect(page.getByTestId("sale-quick-stock")).toHaveAttribute("aria-required", "true");
 
   await page.getByTestId("sale-quick-name").fill(itemName);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);

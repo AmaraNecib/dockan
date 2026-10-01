@@ -760,6 +760,26 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     await ui.unmount();
   });
 
+  it("keeps a non-date refusal when «الآن» fixes the timestamp (issue #125)", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "0");
+    await ui.click("expense-save");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(lastExpense).toBeNull();
+    expect(ui.query("expense-error")?.textContent).toContain("أدخل مبلغاً صحيحاً أكبر من صفر");
+
+    await ui.click("expense-date-now");
+
+    // the now button clears the date field's refusal, never the amount's
+    expect(ui.query("expense-error")?.textContent).toContain("أدخل مبلغاً صحيحاً أكبر من صفر");
+
+    await ui.unmount();
+  });
+
   it("keeps the date field and the now button disabled with no category", async () => {
     categoriesFixture = [];
     const ui = await mountPage(queryClient);

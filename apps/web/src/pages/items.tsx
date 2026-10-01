@@ -62,6 +62,9 @@ export function ItemsPage() {
   const [tab, setTab] = useState<ItemsTab>("products");
   /** what the item form gets prefilled with after an unknown-scan choice */
   const [formSeed, setFormSeed] = useState<{ barcode: string; withStock: boolean } | null>(null);
+  /** bump to remount the add form: used when a scan session ends, so its
+   * filled draft cannot outlive the required-stock intent it carried */
+  const [formResetKey, setFormResetKey] = useState(0);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   /** bumps on every committed scan: an edit draft open at scan time is stale */
   const [scanNonce, setScanNonce] = useState(0);
@@ -103,11 +106,16 @@ export function ItemsPage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
-  /** A scan seed (and the required-stock mode it carries) belongs to the add
-   * session that opened it: leaving the tab ends it, so a return through the
-   * tab button is a fresh, plain add. */
+  /** A scan session lives and dies with the add tab that opened it: leaving
+   * ends it. The seed, its required-stock mode, AND the filled draft go
+   * together — keeping the draft would let a later save drop the opening stock
+   * the scan choice required, and keeping the requirement would refuse a form
+   * the operator reasonably reads as plain. */
   function selectTab(next: ItemsTab) {
-    if (next !== "add") setFormSeed(null);
+    if (next !== "add" && formSeed !== null) {
+      setFormSeed(null);
+      setFormResetKey((key) => key + 1);
+    }
     setTab(next);
   }
 
@@ -180,7 +188,7 @@ export function ItemsPage() {
         <ItemList scanNonce={scanNonce} />
       </div>
       <div role="tabpanel" id="items-panel-add" aria-labelledby="items-tab-add" hidden={tab !== "add"}>
-        <ItemForm seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
+        <ItemForm key={formResetKey} seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
         <StockForm />
       </div>
 
@@ -477,7 +485,15 @@ function ItemForm({
         </label>
       </div>
       <label className="grid gap-1">
-        {t("scanStockInitial")}
+        <span>
+          {t("scanStockInitial")}
+          {stockRequired && (
+            <>
+              <span className="text-destructive" aria-hidden="true"> *</span>
+              <span className="sr-only"> ({t("fieldRequired")})</span>
+            </>
+          )}
+        </span>
         <input
           ref={initialStockRef}
           className="rounded border px-3 py-2"
@@ -486,6 +502,7 @@ function ItemForm({
           value={initialStock}
           onChange={(e) => setInitialStock(e.target.value)}
           inputMode="numeric"
+          aria-required={stockRequired || undefined}
           data-testid="initial-stock"
         />
       </label>

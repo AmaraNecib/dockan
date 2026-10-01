@@ -922,4 +922,21 @@ describe("SalePage quick-add stock (issue #119)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-SECOND");
     expect(document.activeElement).toBe(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]'));
   });
+
+  it("marks the stock field required only on the scan's create-with-stock path (issue #125)", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    const plain = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]');
+    expect(plain?.getAttribute("aria-required")).toBeNull();
+    expect(host.querySelector('[data-testid="sale-quick-form"]')?.textContent).toContain(i18n.t("saleQuickStock"));
+
+    unknownScanCode = "UNKNOWN-REQ-A11Y";
+    await scanAndChoose(host, "UNKNOWN-REQ-A11Y", "scan-create-stock");
+
+    // the required path tells assistive tech and shows a required label, so the
+    // refusal can never look like an optional field misbehaving
+    const required = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]');
+    expect(required?.getAttribute("aria-required")).toBe("true");
+    expect(host.querySelector('[data-testid="sale-quick-form"]')?.textContent).toContain(i18n.t("saleQuickStockRequired"));
+  });
 });

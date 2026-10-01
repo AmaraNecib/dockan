@@ -129,6 +129,7 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("initial-stock")).toHaveAttribute("aria-required", "true");
   await page.getByTestId("item-name").fill("منتج بمخزون");
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("300");
@@ -150,18 +151,28 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");
 
-  // 7. leaving the add tab ends the scan's required-stock mode: returning via
-  //    the tab button is a fresh, plain add, so blank stock creates without a
-  //    movement (the seed used to survive the round trip)
+  // 7. leaving the add tab ends the whole scan session: the seed AND the filled
+  //    draft go together, so the scanned draft cannot be saved without the
+  //    opening stock its choice required; a return is a fresh plain add
   await page.keyboard.type("UNKNOWN-556", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("initial-stock")).toHaveAttribute("aria-required", "true");
   await page.getByTestId("item-name").fill("منتج بلا حركة");
   await page.getByLabel("سعر الشراء (دج)").fill("50");
   await page.getByLabel("سعر البيع (دج)").fill("80");
+
   await openItemsTab(page, "products");
   await openItemsTab(page, "add");
+  // the scan draft is gone with its session…
+  await expect(page.getByTestId("item-name")).toHaveValue("");
+  await expect(page.getByTestId("item-barcode")).toHaveValue("");
+  await expect(page.getByTestId("initial-stock")).not.toHaveAttribute("aria-required", "true");
+  // …so this is a fresh plain draft: blank stock creates without a movement
+  await page.getByTestId("item-name").fill("منتج بلا حركة");
+  await page.getByLabel("سعر الشراء (دج)").fill("50");
+  await page.getByLabel("سعر البيع (دج)").fill("80");
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بلا حركة/ })).toBeVisible();

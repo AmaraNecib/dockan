@@ -732,6 +732,34 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     await ui.unmount();
   });
 
+  it("clears the invalid marker and the error when «الآن» fills the date after a refusal (issue #125)", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "1200");
+    await ui.type("expense-date", "2020-01-15T12:00");
+    await ui.click("expense-save");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    const field = ui.query<HTMLInputElement>("expense-date")!;
+    expect(lastExpense).toBeNull();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-error")?.textContent).toContain("01/10/2026 00:34");
+
+    // «الآن» restores a valid moment, so the stale invalid state must go with it
+    await ui.click("expense-date-now");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(ui.query("expense-error")).toBeNull();
+
+    // and the restored value records like a typed one
+    await ui.click("expense-save");
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+
+    await ui.unmount();
+  });
+
   it("keeps the date field and the now button disabled with no category", async () => {
     categoriesFixture = [];
     const ui = await mountPage(queryClient);

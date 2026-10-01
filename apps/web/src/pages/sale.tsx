@@ -137,10 +137,15 @@ export function SalePage() {
   const [quickCost, setQuickCost] = useState("");
   const [quickSell, setQuickSell] = useState("");
   const [quickStock, setQuickStock] = useState("");
-  // the stock field is always visible; the unknown-scan "create with stock"
-  // choice only moves focus to it, it never gates or forces a quantity
+  // The stock field is always visible. The unknown-scan "create with stock"
+  // choice promises an opening movement, so its path refuses a blank/zero
+  // quantity; the plain create keeps blank = no opening stock (stock 0).
+  const [quickStockRequired, setQuickStockRequired] = useState(false);
   const quickStockRef = useRef<HTMLInputElement>(null);
-  const quickStockFocusRef = useRef(false);
+  // Monotonic focus request. A later unknown scan can choose "create with
+  // stock" while this same form is already open, when `quickOpen` never
+  // changes, so the focus effect keys off this request instead of the boolean.
+  const [quickStockFocusRequest, setQuickStockFocusRequest] = useState(0);
   // Only the newest lookup may open the unknown-scan choice or add a line;
   // this prevents a slow older response from overwriting a later scan.
   const scanSeqRef = useRef(0);
@@ -324,8 +329,9 @@ export function SalePage() {
   /** the list has not answered yet: nothing to pick, nothing to submit */
   const quickCategoriesLoading = categories.data === undefined;
 
-  function openQuick(code = "", focusStock = false) {
-    quickStockFocusRef.current = focusStock;
+  function openQuick(code = "", withStock = false) {
+    setQuickStockRequired(withStock);
+    if (withStock) setQuickStockFocusRequest((request) => request + 1);
     setQuickOpen(true);
     setQuickBarcode(code);
     setQuickCategoryId(categories.data?.items[0]?.id ?? "");
@@ -335,12 +341,12 @@ export function SalePage() {
     setQuickName("");
   }
 
-  // "create with stock" is a focus hint: the field exists in both paths
+  // "create with stock" always moves focus to the quantity, whether the form is
+  // opening now or was already open for an earlier scan.
   useEffect(() => {
-    if (!quickOpen || !quickStockFocusRef.current) return;
-    quickStockFocusRef.current = false;
+    if (quickStockFocusRequest === 0) return;
     quickStockRef.current?.focus();
-  }, [quickOpen]);
+  }, [quickStockFocusRequest]);
 
   function quickSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -361,6 +367,13 @@ export function SalePage() {
       return;
     }
     if (stock === null) {
+      setError(t("scanStockInvalid"));
+      return;
+    }
+    // The scan's create-with-stock path must record an opening movement: a
+    // blank field or an explicit 0 there would create an item that cannot be
+    // sold. The plain create path still treats both as "no opening stock".
+    if (quickStockRequired && stock < 1) {
       setError(t("scanStockInvalid"));
       return;
     }

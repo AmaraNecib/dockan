@@ -335,7 +335,19 @@ export function ExpensesPage() {
             }}
             data-testid="expense-date"
           />
-          <Button type="button" variant="outline" disabled={disabled} onClick={() => setOccurredAt(nowDateTimeText())} data-testid="expense-date-now">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => {
+              setOccurredAt(nowDateTimeText());
+              // a fresh now is valid: the old refusal must not keep the field
+              // marked invalid or leave its error under the form
+              setDateInvalid(false);
+              setError(null);
+            }}
+            data-testid="expense-date-now"
+          >
             {t("dateNow")}
           </Button>
         </div>

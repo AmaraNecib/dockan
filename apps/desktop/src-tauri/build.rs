@@ -8,9 +8,12 @@
 //!    pipeline uses.
 //!
 //!    A staged sidecar is reused ONLY when its freshness stamp proves it was
-//!    compiled from the current API sources and from the secrets present in
-//!    this build environment (PR #117 finding 5). A `.exe` lying around is not
-//!    evidence of anything.
+//!    compiled from the current API sources, for the same customer, and from
+//!    the secrets present in this build environment (PR #117 findings 1/5). A
+//!    `.exe` lying around is not evidence of anything. A build with
+//!    `DOKAN_CUSTOMER_SLUG` set never falls through to the compile path —
+//!    `build.rs` cannot read `.env.<slug>`, so it refuses and points at the
+//!    release pipeline instead of inlining the wrong customer's secrets.
 //!
 //!    The per-customer secrets (PR #51 findings 2 & 5) are only inlined when
 //!    strong `DOKAN_BUILD_SECRET` / `DOKAN_AUTH_SECRET` values are present in
@@ -24,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dokan_sidecar_freshness::{
-    is_fresh, read_stamp, source_fingerprint, stamp_path_for, write_stamp, Stamp,
+    decide, read_stamp, source_fingerprint, stamp_path_for, write_stamp, Decision, Stamp,
 };
 
 /// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the `.exe`
@@ -57,6 +60,9 @@ fn main() {
     // customer when only the environment changed.
     println!("cargo:rerun-if-env-changed=DOKAN_BUILD_SECRET");
     println!("cargo:rerun-if-env-changed=DOKAN_AUTH_SECRET");
+    // A changed customer must invalidate (or refuse) a previously staged
+    // sidecar for another shop.
+    println!("cargo:rerun-if-env-changed=DOKAN_CUSTOMER_SLUG");
 
     let sidecar = staged_sidecar(&manifest_dir);
     let api_dir = manifest_dir.join("../..").join("api");
@@ -71,6 +77,11 @@ fn main() {
         }
     };
 
+    let customer_slug = env::var("DOKAN_CUSTOMER_SLUG")
+        .ok()
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty());
+
     let build_secret = env::var("DOKAN_BUILD_SECRET")
         .ok()
         .filter(|secret| secret.len() >= MIN_BUILD_SECRET_LEN);
@@ -78,27 +89,34 @@ fn main() {
         .ok()
         .filter(|secret| secret.len() >= MIN_AUTH_SECRET_LEN);
 
-    // Reuse the staged sidecar only when its stamp proves it belongs to THIS
-    // build: the API sources must match, and any secret supplied in the
-    // environment must be the one already inlined.
+    // Reuse the staged sidecar only when the stamp proves it belongs to THIS
+    // build. A slugged build must never fall through to the compile path: the
+    // customer's secrets live in `.env.<slug>`, which this script cannot read,
+    // so compiling would inline the customer-less values `bun run` preloaded.
     let stamp_path = stamp_path_for(&sidecar);
-    let sidecar_is_current = !sources_fingerprint.is_empty()
-        && sidecar.is_file()
-        && read_stamp(&stamp_path)
-            .map(|stamp| {
-                is_fresh(
-                    &stamp,
-                    &sources_fingerprint,
-                    build_secret.as_deref(),
-                    auth_secret.as_deref(),
-                )
-            })
-            .unwrap_or(false);
-    if sidecar_is_current {
-        // `bun run sidecar` / `release.ts` already compiled it WITH the secrets
-        // validated and inlined; rebuilding it here would throw that away.
-        tauri_build::build();
-        return;
+    let stamp = read_stamp(&stamp_path);
+    match decide(
+        stamp.as_ref(),
+        sidecar.is_file(),
+        &sources_fingerprint,
+        customer_slug.as_deref(),
+        build_secret.as_deref(),
+        auth_secret.as_deref(),
+    ) {
+        Decision::Reuse => {
+            if customer_slug.is_none() {
+                if let Some(customer) = stamp.as_ref().and_then(|stamp| stamp.customer.as_deref()) {
+                    println!("cargo:warning=dokan: reusing a sidecar stamped for customer {customer}; set DOKAN_CUSTOMER_SLUG={customer} if you meant to ship it");
+                }
+            }
+            // `bun run sidecar` / `release.ts` already compiled it WITH the
+            // secrets validated and inlined; rebuilding it here would throw
+            // that away.
+            tauri_build::build();
+            return;
+        }
+        Decision::Refuse(reason) => panic!("dokan: {reason}"),
+        Decision::Rebuild => {}
     }
 
     // The outfile is passed without extension: bun appends the platform
@@ -151,7 +169,14 @@ fn main() {
     assert!(status.success(), "sidecar compile failed with status {status}");
 
     // Record what this sidecar was built from so the next run can trust it.
-    let stamp = Stamp::new(sources_fingerprint, build_secret.as_deref(), auth_secret.as_deref());
+    // `build.rs` cannot know about a customer's `.env.<slug>`, so it never
+    // claims a customer: only the TS pipeline stamps one.
+    let stamp = Stamp::new(
+        sources_fingerprint,
+        None,
+        build_secret.as_deref(),
+        auth_secret.as_deref(),
+    );
     if let Err(error) = write_stamp(&stamp_path, &stamp) {
         println!(
             "cargo:warning=dokan: could not write the sidecar freshness stamp ({error}); the next build will recompile the sidecar"

@@ -87,12 +87,14 @@ export function stagedSidecarPath(outfile: string): string {
 /** Render the stamp `build.rs` reads; secret values never appear, only hashes. */
 export function renderSidecarStamp(
   sourcesFingerprint: string,
+  customerSlug: string | undefined,
   buildSecret: string,
   authSecret: string,
 ): string {
   return (
     [
       SIDECAR_STAMP_VERSION,
+      `customer ${customerSlug ?? "-"}`,
       `sources ${sourcesFingerprint}`,
       `build-secret ${fnv1a64Hex(buildSecret)}`,
       `auth-secret ${fnv1a64Hex(authSecret)}`,
@@ -102,15 +104,17 @@ export function renderSidecarStamp(
 
 /**
  * Record what the freshly compiled sidecar was built from. `build.rs` refuses
- * to reuse the sidecar unless the stamp matches its own fingerprint check.
+ * to reuse the sidecar unless the stamp matches its own fingerprint check, and
+ * a slugged build refuses any sidecar not stamped for that customer.
  */
 export function writeSidecarStamp(
   apiDir: string,
   sidecarPath: string,
+  customerSlug: string | undefined,
   buildSecret: string,
   authSecret: string,
 ): void {
-  const content = renderSidecarStamp(sidecarSourceFingerprint(apiDir), buildSecret, authSecret);
+  const content = renderSidecarStamp(sidecarSourceFingerprint(apiDir), customerSlug, buildSecret, authSecret);
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
   fs.writeFileSync(sidecarStampPath(sidecarPath), content, { mode: 0o600 });
 }

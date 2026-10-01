@@ -103,6 +103,7 @@ describe("adoptReleaseSecrets (PR #117 findings 1 & 5)", () => {
         },
         sources: { DOKAN_BUILD_SECRET: "file", DOKAN_AUTH_SECRET: "file" },
         generated: [],
+        customerSlug: "acme",
         envFilePath: "/tmp/.env.acme",
       },
       env,

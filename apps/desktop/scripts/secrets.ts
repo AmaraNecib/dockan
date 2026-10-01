@@ -51,6 +51,38 @@ const LOCK_STALE_MS = 60_000;
 
 const CUSTOMER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+/**
+ * `KEY=value` with an optional `export ` prefix, matching what Bun's dotenv
+ * loader accepts. Quoted values are handled by {@link parseEnvValue}.
+ */
+const ENV_LINE_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
+
+/**
+ * Bun's dotenv value rules, as observed on Bun 1.4: a matching pair of single
+ * or double quotes wins (the inside is taken verbatim, no escape processing),
+ * otherwise the first `#` starts a comment; surrounding whitespace is trimmed.
+ * Keeping this in lockstep matters: the base-file preload check compares the
+ * value Bun loaded against a re-parse of the same line, and a divergence would
+ * let a customer-less secret pass as an explicit override (PR #117 finding 1).
+ */
+function parseEnvValue(raw: string): string {
+  const value = raw.trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.length >= 2 && value[value.length - 1] === quote) {
+    return value.slice(1, -1);
+  }
+  const comment = value.indexOf("#");
+  return (comment === -1 ? value : value.slice(0, comment)).trim();
+}
+
+/** The `KEY` and `export ` prefix of a `KEY=value` line, or undefined. */
+function envLineParts(line: string): { key: string; exportPrefix: string } | undefined {
+  const match = ENV_LINE_PATTERN.exec(line.trim());
+  const key = match?.[1];
+  if (key === undefined) return undefined;
+  return { key, exportPrefix: /^\s*export\s+/.test(line) ? "export " : "" };
+}
+
 /** Validate a customer slug before it becomes part of a file name. */
 export function assertCustomerSlug(slug: string): string {
   if (!CUSTOMER_SLUG_PATTERN.test(slug)) {
@@ -98,18 +130,16 @@ export interface EnvFileValues {
   [key: string]: string;
 }
 
-/** Read `KEY=value` lines, ignoring blanks and comments. Quotes are stripped. */
+/** Read `KEY=value` lines, ignoring blanks and comments, like Bun's loader. */
 export function parseEnvFile(text: string): EnvFileValues {
   const values: EnvFileValues = {};
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    const raw = trimmed.slice(eq + 1).trim();
-    const value = raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
-    if (key !== "") values[key] = value;
+    const match = ENV_LINE_PATTERN.exec(trimmed);
+    const key = match?.[1];
+    if (match === null || key === undefined) continue;
+    values[key] = parseEnvValue(match[2] ?? "");
   }
   return values;
 }
@@ -121,16 +151,6 @@ export function renderEnvFile(values: EnvFileValues, header?: string): string {
     .map((key) => `${key}=${values[key]}`);
   const prefix = header === undefined || header === "" ? "" : `${header.trimEnd()}\n`;
   return `${prefix}${lines.join("\n")}\n`;
-}
-
-/** The `KEY` of a `KEY=value` line, or undefined for comments/blanks. */
-function envLineKey(line: string): string | undefined {
-  const trimmed = line.trim();
-  if (trimmed === "" || trimmed.startsWith("#")) return undefined;
-  const eq = trimmed.indexOf("=");
-  if (eq <= 0) return undefined;
-  const key = trimmed.slice(0, eq).trim();
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : undefined;
 }
 
 /**
@@ -148,10 +168,14 @@ export function mergeEnvFile(text: string, values: EnvFileValues): string {
   const body = trailingNewline ? lines.slice(0, -1) : lines;
   const written = new Set<string>();
   for (let i = 0; i < body.length; i += 1) {
-    const key = envLineKey(body[i]);
-    if (key === undefined || !Object.hasOwn(values, key)) continue;
-    body[i] = `${key}=${values[key]}`;
-    written.add(key);
+    const line = body[i];
+    if (line === undefined) continue;
+    const parts = envLineParts(line);
+    if (parts === undefined || !Object.hasOwn(values, parts.key)) continue;
+    // preserve the line's own `export ` prefix and CRLF ending
+    const eol = line.endsWith("\r") ? "\r" : "";
+    body[i] = `${parts.exportPrefix}${parts.key}=${values[parts.key]}${eol}`;
+    written.add(parts.key);
   }
   for (const [key, value] of Object.entries(values)) {
     if (!written.has(key)) body.push(`${key}=${value}`);
@@ -170,6 +194,8 @@ export interface ResolvedReleaseSecrets {
   generated: ReleaseSecretKey[];
   /** The env file these values were read from or written to. */
   envFilePath: string;
+  /** The customer slug that selected the file, if any. */
+  customerSlug: string | undefined;
 }
 
 /** One secret's rules, so both keys go through the same path. */
@@ -275,7 +301,6 @@ export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): Resolve
   const rawSlug = options.customerSlug ?? env.DOKAN_CUSTOMER_SLUG;
   const trimmedSlug = rawSlug?.trim();
   const slug = trimmedSlug === undefined || trimmedSlug === "" ? undefined : assertCustomerSlug(trimmedSlug);
-
   const envDir = options.envDir ?? RELEASE_ENV_DIR;
   const envFilePath = options.envFilePath ?? releaseEnvPathFor(slug, envDir);
   // The base `.env` is the customer-less build's set. Reading it lets a slugged
@@ -313,6 +338,7 @@ export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): Resolve
     secrets: { DOKAN_BUILD_SECRET: build.value, DOKAN_AUTH_SECRET: auth.value },
     sources: { DOKAN_BUILD_SECRET: build.source, DOKAN_AUTH_SECRET: auth.source },
     generated: [build, auth].filter((one) => one.created).map((one) => one.key),
+    customerSlug: slug,
     envFilePath,
   };
 }
@@ -342,14 +368,7 @@ function withGenerationLock<T>(envFilePath: string, options: EnsureSecretOptions
       // SAFETY: openSync either succeeds or throws a Node-style error whose
       // `code` distinguishes "another process holds the lock" (EEXIST).
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (isStaleLock(lockPath, staleMs)) {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // another waiter removed it first — retry the create
-        }
-        continue;
-      }
+      if (tryStealStaleLock(lockPath, staleMs)) continue;
       if (Date.now() >= deadline) {
         throw new Error(
           `timed out waiting for ${lockPath} — another release-secret generation is still running; ` +
@@ -376,13 +395,42 @@ function withGenerationLock<T>(envFilePath: string, options: EnsureSecretOptions
   }
 }
 
-function isStaleLock(lockPath: string, staleMs: number): boolean {
+/**
+ * Remove a lock whose owner died, without deleting a lock someone just made.
+ *
+ * Two waiters can both observe the same stale lock. The identity re-check
+ * between the two stats means the second waiter sees the fresh lock the first
+ * waiter created and backs off instead of unlinking it; only the tiny gap
+ * between the last stat and the unlink remains, and an owner cannot create a
+ * fresh lock in that gap without a scheduler preemption at that exact point.
+ *
+ * Returns true when the caller should retry the exclusive create.
+ */
+function tryStealStaleLock(lockPath: string, staleMs: number): boolean {
+  let observed: fs.Stats;
   try {
-    return Date.now() - fs.statSync(lockPath).mtimeMs > staleMs;
+    observed = fs.statSync(lockPath);
   } catch {
-    // vanished between EEXIST and stat: the holder released it
+    return true; // vanished: the holder released it, retry the create
+  }
+  if (Date.now() - observed.mtimeMs <= staleMs) return false;
+
+  let current: fs.Stats;
+  try {
+    current = fs.statSync(lockPath);
+  } catch {
     return true;
   }
+  if (current.ino !== observed.ino || current.mtimeMs !== observed.mtimeMs || current.size !== observed.size) {
+    // someone else already stole it and created a fresh lock — leave it alone
+    return false;
+  }
+  try {
+    fs.unlinkSync(lockPath);
+  } catch {
+    // another waiter won the unlink race
+  }
+  return true;
 }
 
 function sleepSync(ms: number): void {

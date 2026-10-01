@@ -201,7 +201,11 @@ async function main(): Promise<void> {
   }
   adoptReleaseSecrets(resolved);
 
-  await compileSidecar(resolved.secrets.DOKAN_BUILD_SECRET, resolved.secrets.DOKAN_AUTH_SECRET);
+  await compileSidecar(
+    resolved.secrets.DOKAN_BUILD_SECRET,
+    resolved.secrets.DOKAN_AUTH_SECRET,
+    resolved.customerSlug,
+  );
   console.log(
     `[dokan] sidecar compiled with a ${resolved.secrets.DOKAN_BUILD_SECRET.length}-char build secret and ${resolved.secrets.DOKAN_AUTH_SECRET.length}-char auth secret inlined`,
   );

@@ -88,6 +88,21 @@ ensureReleaseSecrets({
 - `pipeline.test.ts`: release main still exits 1 on a weak explicit secret and
   now on an invalid slug.
 
+## Round 2 (debate fixes)
+
+- The sidecar stamp now records the **customer slug**, and `build.rs` applies a
+  fail-closed policy through `dokan_sidecar_freshness::decide`: a build with
+  `DOKAN_CUSTOMER_SLUG` set reuses only a sidecar stamped for that customer and
+  otherwise refuses (it cannot read `.env.<slug>`, so compiling would inline
+  the pre-loaded customer-less values). `cargo:rerun-if-env-changed` covers
+  both secrets and the slug.
+- `parseEnvFile`/`mergeEnvFile` now mirror Bun's dotenv rules (single quotes,
+  inline `#` comments, `export `, CRLF) so the base-file preload guard cannot
+  mistake those forms for an explicit override.
+- Stale-lock stealing re-checks the lock's identity immediately before the
+  unlink, so two waiters cannot both steal and overwrite each other's fresh
+  lock.
+
 ## Risks / notes
 
 - **Pipeline env adoption:** `release.ts` exports the resolved secrets into the

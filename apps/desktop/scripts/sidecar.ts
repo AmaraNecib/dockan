@@ -43,8 +43,14 @@ const API_DIR = path.resolve("../api");
 /**
  * Compile the sidecar with both secrets inlined via `bun build --define`.
  * cwd is the package root (apps/desktop) when invoked through `bun run`.
+ * `customerSlug` is recorded in the freshness stamp so a later build can
+ * prove the sidecar belongs to the customer it is being shipped for.
  */
-export async function compileSidecar(buildSecret: string, authSecret: string): Promise<void> {
+export async function compileSidecar(
+  buildSecret: string,
+  authSecret: string,
+  customerSlug: string | undefined,
+): Promise<void> {
   const outfile = path.resolve("src-tauri/binaries/dokan-api-x86_64-pc-windows-msvc");
   const proc = Bun.spawn(
     [
@@ -66,7 +72,7 @@ export async function compileSidecar(buildSecret: string, authSecret: string): P
   // The sidecar is only trustworthy while it is newer than its inputs; record
   // what went into it so build.rs can prove that instead of assuming any
   // staged .exe is current (PR #117 finding 5).
-  writeSidecarStamp(API_DIR, stagedSidecarPath(outfile), buildSecret, authSecret);
+  writeSidecarStamp(API_DIR, stagedSidecarPath(outfile), customerSlug, buildSecret, authSecret);
 }
 
 async function main(): Promise<void> {
@@ -81,7 +87,11 @@ async function main(): Promise<void> {
   if (resolved.generated.length > 0) {
     console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${resolved.envFilePath} (gitignored)`);
   }
-  await compileSidecar(resolved.secrets.DOKAN_BUILD_SECRET, resolved.secrets.DOKAN_AUTH_SECRET);
+  await compileSidecar(
+    resolved.secrets.DOKAN_BUILD_SECRET,
+    resolved.secrets.DOKAN_AUTH_SECRET,
+    resolved.customerSlug,
+  );
   console.log(
     `[dokan] sidecar compiled with a ${resolved.secrets.DOKAN_BUILD_SECRET.length}-char build secret and ${resolved.secrets.DOKAN_AUTH_SECRET.length}-char auth secret inlined`,
   );

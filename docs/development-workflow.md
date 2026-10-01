@@ -181,6 +181,12 @@ a missing file resolve to one secret set and a reader can never see a
 half-written file. Generated files are written 0600, and a pre-existing loose
 file is restricted before the secret lands in it.
 
+A slugged build must go through this pipeline (or run `bun run --filter
+@dokan/desktop sidecar` first). `build.rs` cannot read `.env.<slug>` itself, so
+when `DOKAN_CUSTOMER_SLUG` is set it refuses to compile against a staged sidecar
+that is not stamped for that same customer — it never silences the mismatch by
+inlining a different shop's secrets.
+
 ```bash
 # a specific customer's secrets, for one build, without touching the file
 DOKAN_BUILD_SECRET='<unique-per-shop, >=16 chars>' \

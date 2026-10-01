@@ -78,18 +78,32 @@ describe("sidecarSourceFingerprint", () => {
 });
 
 describe("writeSidecarStamp", () => {
-  it("records fingerprints of the sources and both secrets (never the secrets)", () => {
+  it("records the customer, sources and both secrets (never the secrets)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
     const stampPath = path.join(dir, "sidecar.exe.stamp");
-    writeSidecarStamp(FIXTURE_API_DIR, path.join(dir, "sidecar.exe"), "build-secret-0123456789", "a".repeat(40));
+    writeSidecarStamp(
+      FIXTURE_API_DIR,
+      path.join(dir, "sidecar.exe"),
+      "acme",
+      "build-secret-0123456789",
+      "a".repeat(40),
+    );
 
     const text = readFileSync(stampPath, "utf8");
     expect(text).toContain("dokan-sidecar-stamp v1");
+    expect(text).toContain("customer acme");
     expect(text).toContain(`sources ${FIXTURE_GOLDEN}`);
     expect(text).toContain(`build-secret ${fnv1a64Hex("build-secret-0123456789")}`);
     expect(text).toContain(`auth-secret ${fnv1a64Hex("a".repeat(40))}`);
     // the raw secret must never be written
     expect(text).not.toContain("build-secret-0123456789");
     expect(text).not.toContain("a".repeat(40));
+  });
+
+  it("marks a customer-less build with '-'", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
+    const sidecar = path.join(dir, "sidecar.exe");
+    writeSidecarStamp(FIXTURE_API_DIR, sidecar, undefined, "build-secret-0123456789", "a".repeat(40));
+    expect(readFileSync(`${sidecar}.stamp`, "utf8")).toContain("customer -\n");
   });
 });

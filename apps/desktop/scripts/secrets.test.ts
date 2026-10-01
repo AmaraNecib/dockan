@@ -63,6 +63,22 @@ describe("parseEnvFile / renderEnvFile", () => {
   });
 });
 
+describe("parseEnvFile matches Bun's dotenv rules (PR #117 findings 1/5)", () => {
+  it("strips single quotes, inline comments and `export`, like Bun's loader", () => {
+    // verified against `bun -e` on Bun 1.4: the base-file preload guard
+    // compares Bun's loaded value with this parser, so they must agree
+    expect(parseEnvFile(`A='single'\nB=inline # comment\nC=no-space#comment\nD="a#b"\nexport E=exported\nF=  spaced  \nG=\n`)).toEqual({
+      A: "single",
+      B: "inline",
+      C: "no-space",
+      D: "a#b",
+      E: "exported",
+      F: "spaced",
+      G: "",
+    });
+  });
+});
+
 describe("mergeEnvFile (PR #117 finding 3 — never re-serialise existing values)", () => {
   it("preserves quoted values with trailing spaces byte-for-byte", () => {
     const original = `# golden copy\nDOKAN_AUTH_SECRET="keep me "\nOTHER=untouched\n`;
@@ -81,6 +97,12 @@ describe("mergeEnvFile (PR #117 finding 3 — never re-serialise existing values
   it("appends a missing key and keeps the file newline-terminated", () => {
     expect(mergeEnvFile("A=1", { B: "2" })).toBe("A=1\nB=2\n");
     expect(mergeEnvFile("A=1\n", { B: "2" })).toBe("A=1\nB=2\n");
+  });
+
+  it("keeps an `export ` prefix and a CRLF ending on a replaced line", () => {
+    expect(mergeEnvFile("export DOKAN_BUILD_SECRET=old\r\nOTHER=1\r\n", { DOKAN_BUILD_SECRET: "new" })).toBe(
+      "export DOKAN_BUILD_SECRET=new\r\nOTHER=1\r\n",
+    );
   });
 });
 
@@ -260,6 +282,20 @@ describe("ensureReleaseSecrets per customer (PR #117 finding 1)", () => {
     const slugged = parseEnvFile(readFileSync(path.join(dir, ".env.acme"), "utf8"));
     expect(slugged.DOKAN_BUILD_SECRET).toBeUndefined();
     expect(slugged.DOKAN_AUTH_SECRET).toBe(result.secrets.DOKAN_AUTH_SECRET);
+  });
+
+  it("does not leak a single-quoted or exported base .env value either", () => {
+    const dir = scratchDir();
+    // both forms load identically through Bun, but a naive parser would keep
+    // the quotes / `export` and treat the preload as an explicit override
+    writeFileSync(path.join(dir, ".env"), `export DOKAN_BUILD_SECRET='base-build-secret-01'\nDOKAN_AUTH_SECRET='${"b".repeat(40)}'\n`);
+    const preloaded = { DOKAN_BUILD_SECRET: "base-build-secret-01", DOKAN_AUTH_SECRET: "b".repeat(40) };
+
+    const result = ensureReleaseSecrets({ env: preloaded, envDir: dir, customerSlug: "acme" });
+
+    expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe("base-build-secret-01");
+    expect(result.secrets.DOKAN_AUTH_SECRET).not.toBe("b".repeat(40));
+    expect(result.generated.sort()).toEqual(["DOKAN_AUTH_SECRET", "DOKAN_BUILD_SECRET"]);
   });
 
   it("rejects a slug that could escape the secrets directory", () => {

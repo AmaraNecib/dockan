@@ -26,6 +26,7 @@ const receipt: Receipt = {
   invoiceNumber: "INV-0007",
   kind: "SALE",
   invoiceDate: "2026-08-25",
+  invoiceCreatedAt: "2026-08-25T10:00:00",
   counterpartyName: "زبون النقد",
   lines: [
     { description: "بطارية", quantity: 2, unitPrice: 550, netTotal: 1000 },
@@ -108,7 +109,8 @@ describe("ReceiptView — the settled A4 sheet", () => {
     expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
     expect(text(host.querySelector('[data-testid="receipt-address"]'))).toBe("شارع الاستقلال 12");
     // the date is the app-wide shape, never the raw ISO value
-    expect(text(host.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026");
+    // «التاريخ والوقت» promises both: the recording timestamp, day-first 24h
+    expect(text(host.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
     expect(text(host.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0007");
     expect(text(host.querySelector('[data-testid="receipt-party"]'))).toBe("زبون النقد");
     expect(text(host.querySelector('[data-testid="receipt-kind"]'))).toBe("فاتورة بيع");
@@ -198,7 +200,7 @@ describe("ReceiptView — a long invoice paginates", () => {
       expect(text(sheet.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
       expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
       expect(text(sheet.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0100");
-      expect(text(sheet.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026");
+      expect(text(sheet.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
     }
     const firstLines = pages[0]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];
     const lastLines = pages[1]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];

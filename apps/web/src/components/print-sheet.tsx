@@ -170,7 +170,7 @@ export interface PrintTotalRow {
   /** test id on the row (label + amount), for rows asserted as a unit */
   rowTestId?: string;
   /** test id on the amount span alone */
-  testId?: string;
+  valueTestId?: string;
 }
 
 export function PrintTotals({ rows, testId }: { rows: readonly PrintTotalRow[]; testId?: string }) {
@@ -178,12 +178,12 @@ export function PrintTotals({ rows, testId }: { rows: readonly PrintTotalRow[]; 
     <div className="print-sheet-totals" data-testid={testId}>
       {rows.map((row, index) => (
         <div
-          key={row.rowTestId ?? row.testId ?? index}
+          key={row.rowTestId ?? row.valueTestId ?? index}
           className={row.grand === true ? "print-sheet-grand" : undefined}
           data-testid={row.rowTestId}
         >
           <span className={row.grand === true ? undefined : "print-sheet-label"}>{row.label}</span>
-          <span data-testid={row.testId}>
+          <span data-testid={row.valueTestId}>
             <PrintAmount value={row.amount} />
           </span>
         </div>

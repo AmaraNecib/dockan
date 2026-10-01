@@ -59,11 +59,13 @@ describe("buildReceipt — store identity + invoice header", () => {
     expect(receipt.storeAddress).toBeNull();
   });
 
-  it("copies invoice number, kind, date and party for the header", () => {
+  it("copies invoice number, kind, dates and party for the header", () => {
     const receipt = buildReceipt(invoice, settings);
     expect(receipt.invoiceNumber).toBe("INV-0007");
     expect(receipt.kind).toBe("SALE");
     expect(receipt.invoiceDate).toBe("2026-08-25");
+    // «التاريخ والوقت» prints the recording timestamp, not the date-only field
+    expect(receipt.invoiceCreatedAt).toBe("2026-08-25T10:00:00");
     expect(receipt.counterpartyName).toBe("زبون النقد");
   });
 
@@ -159,6 +161,7 @@ function receiptWith(lines: ReceiptLine[], paymentCount = 0): Receipt {
     invoiceNumber: "INV-0042",
     kind: "SALE",
     invoiceDate: "2026-10-01",
+    invoiceCreatedAt: "2026-10-01T09:30:00",
     counterpartyName: "علي",
     lines,
     subtotalAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),

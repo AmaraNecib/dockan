@@ -81,9 +81,9 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
 
         <PrintTotals
           rows={[
-            { label: t("returnsRefundTotal"), amount: voucher.refundAmount, grand: true, testId: "return-voucher-total" },
-            { label: t("returnsCashNow"), amount: voucher.cashPaidOut, testId: "return-voucher-cash" },
-            { label: t(debt.labelKey), amount: debt.value, testId: "return-voucher-debt" },
+            { label: t("returnsRefundTotal"), amount: voucher.refundAmount, grand: true, valueTestId: "return-voucher-total" },
+            { label: t("returnsCashNow"), amount: voucher.cashPaidOut, valueTestId: "return-voucher-cash" },
+            { label: t(debt.labelKey), amount: debt.value, valueTestId: "return-voucher-debt" },
           ]}
         />
       </PrintSheet>

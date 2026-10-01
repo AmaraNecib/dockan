@@ -400,7 +400,7 @@ const resources = {
       // receipt printing — settled A4 sheet (issue #121)
       invoicePrintPhone: "رقم الهاتف",
       invoicePrintAddress: "العنوان",
-      invoicePrintDateTime: "التاريخ والوقت",
+      invoiceDateTime: "التاريخ والوقت",
       invoicePrintCustomer: "الزبون",
       invoicePrintSupplier: "المورّد",
       invoicePrintKindSale: "فاتورة بيع",

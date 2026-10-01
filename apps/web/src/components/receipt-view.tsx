@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { formatDate, formatDateTime } from "../lib/dates";
+import { formatDateTime } from "../lib/dates";
 import { paginateReceipt, type Receipt, type ReceiptPayment } from "../lib/receipt";
 import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
@@ -17,6 +17,10 @@ import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sh
 export function ReceiptView({ receipt }: { receipt: Receipt }) {
   const { t } = useTranslation();
   const pages = paginateReceipt(receipt);
+  // the party label and the kind value swap together on a purchase
+  const sale = receipt.kind === "SALE";
+  const partyLabel = sale ? t("invoicePrintCustomer") : t("invoicePrintSupplier");
+  const kindLabel = sale ? t("invoicePrintKindSale") : t("invoicePrintKindPurchase");
 
   return (
     <div dir="rtl" className="print-doc" data-testid="receipt-view">
@@ -39,20 +43,18 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
               </dd>
             </div>
             <div>
-              <dt>{t("invoicePrintDateTime")}</dt>
+              <dt>{t("invoiceDateTime")}</dt>
               <dd className="print-sheet-digits" data-testid="receipt-date">
-                {formatDate(receipt.invoiceDate)}
+                {formatDateTime(receipt.invoiceCreatedAt)}
               </dd>
             </div>
             <div>
-              <dt>{receipt.kind === "SALE" ? t("invoicePrintCustomer") : t("invoicePrintSupplier")}</dt>
+              <dt>{partyLabel}</dt>
               <dd data-testid="receipt-party">{receipt.counterpartyName ?? "—"}</dd>
             </div>
             <div>
               <dt>{t("invoiceKind")}</dt>
-              <dd data-testid="receipt-kind">
-                {receipt.kind === "SALE" ? t("invoicePrintKindSale") : t("invoicePrintKindPurchase")}
-              </dd>
+              <dd data-testid="receipt-kind">{kindLabel}</dd>
             </div>
           </dl>
 
@@ -83,11 +85,11 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
             <PrintTotals
               testId="receipt-totals"
               rows={[
-                { label: t("invoicePrintSubtotal"), amount: receipt.subtotalAmount, testId: "receipt-subtotal" },
-                { label: t("saleDiscount"), amount: receipt.discountAmount > 0 ? -receipt.discountAmount : 0, testId: "receipt-discount" },
-                { label: t("invoiceTotal"), amount: receipt.totalAmount, grand: true, testId: "receipt-total" },
-                { label: t("invoicePaid"), amount: receipt.paidAmount, testId: "receipt-paid" },
-                { label: t("invoiceRemaining"), amount: receipt.remainingAmount, testId: "receipt-remaining" },
+                { label: t("invoicePrintSubtotal"), amount: receipt.subtotalAmount, valueTestId: "receipt-subtotal" },
+                { label: t("saleDiscount"), amount: receipt.discountAmount > 0 ? -receipt.discountAmount : 0, valueTestId: "receipt-discount" },
+                { label: t("invoiceTotal"), amount: receipt.totalAmount, grand: true, valueTestId: "receipt-total" },
+                { label: t("invoicePaid"), amount: receipt.paidAmount, valueTestId: "receipt-paid" },
+                { label: t("invoiceRemaining"), amount: receipt.remainingAmount, valueTestId: "receipt-remaining" },
               ]}
             />
           ) : (
@@ -117,7 +119,7 @@ function ReceiptPayments({ payments }: { payments: ReceiptPayment[] }) {
   const { t } = useTranslation();
 
   return (
-    <section className="print-sheet-payments" data-testid="receipt-payments">
+    <section className="print-sheet-payments-block" data-testid="receipt-payments">
       <h2>{t("pmtTitle")}</h2>
       <table className="print-sheet-payments">
         <thead>

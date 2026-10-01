@@ -136,7 +136,8 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
     await expect(sheet.getByTestId("receipt-phone")).toHaveText("+213555123456");
     await expect(sheet.getByTestId("receipt-address")).toHaveText("حي 5 جويلية، البليدة");
     await expect(sheet.getByTestId("receipt-number")).toHaveText(seeded.invoiceNumber);
-    await expect(sheet.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4}$/);
+    // «التاريخ والوقت» prints the recording timestamp: day-first date AND 24h time
+    await expect(sheet.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     await expect(sheet.locator(".print-sheet-contacts")).toContainText("رقم الهاتف");
     await expect(sheet.locator(".print-sheet-contacts")).toContainText("العنوان");
     await expect(sheet.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");

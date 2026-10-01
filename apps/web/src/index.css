@@ -484,11 +484,11 @@ table.print-sheet-items tbody tr:last-child td {
   padding-top: 0.625rem;
 }
 
-.print-sheet-payments {
+.print-sheet-payments-block {
   margin-top: 1.125rem;
 }
 
-.print-sheet-payments h2 {
+.print-sheet-payments-block h2 {
   font-size: 0.9375rem;
   font-weight: 700;
   margin: 0 0 0.375rem;
@@ -528,12 +528,6 @@ table.print-sheet-payments td {
 
 table.print-sheet-payments tbody tr:last-child td {
   border-bottom: 0;
-}
-
-.print-sheet-payments-empty {
-  font-size: 0.84375rem;
-  color: var(--paper-muted);
-  margin: 0.375rem 0 0;
 }
 
 /* the footer is page furniture: at the foot of every sheet, however short the
@@ -602,7 +596,7 @@ table.print-sheet-payments tbody tr:last-child td {
   .print-sheet tr,
   .print-sheet-carry,
   .print-sheet-totals,
-  .print-sheet-payments,
+  .print-sheet-payments-block,
   .print-sheet-foot {
     break-inside: avoid;
   }

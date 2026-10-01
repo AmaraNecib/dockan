@@ -81,7 +81,7 @@ test("invoice print button → receipt document with identity, totals and paymen
   // the settled sheet (#121): one A4 page, store header, colon-labelled meta row
   await expect(receipt.getByTestId("receipt-sheet")).toHaveCount(1);
   await expect(receipt.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
-  await expect(receipt.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4}$/);
+  await expect(receipt.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
   await expect(receipt.getByTestId("receipt-kind")).toHaveText("فاتورة بيع");
   await expect(receipt.getByTestId("receipt-items-title")).toHaveText("المشتريات");
   await expect(receipt.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");

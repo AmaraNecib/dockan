@@ -19,7 +19,8 @@ interface Receipt {
   storeAddress: string | null;   // NEW — the sheet's left header block
   invoiceNumber: string;
   kind: "SALE" | "PURCHASE";
-  invoiceDate: string;           // raw YYYY-MM-DD, formatted by the view
+  invoiceDate: string;           // raw YYYY-MM-DD business date (kept)
+  invoiceCreatedAt: string;      // raw local datetime — the «التاريخ والوقت» meta
   counterpartyName: string | null;
   lines: ReceiptLine[];
   subtotalAmount: number;
@@ -48,8 +49,11 @@ function paginateReceipt(receipt: Receipt): ReceiptPage[]
 formatPrintAmount(1234567) === "1,234,567"
 ```
 
-Dates come from the shared `lib/dates.ts` formatter (#119): `formatDate` for
-date-only fields, `formatDateTime` for moments (payment timestamps). The print
+Dates come from the shared `lib/dates.ts` formatter (#119): `formatDateTime`
+for the «التاريخ والوقت» meta (`invoiceCreatedAt`, owner decision: the label
+promises date AND time) and for payment timestamps; the return voucher uses
+`formatDate` for its date-only invoice field. The app invoice detail screen
+shows the same `formatDateTime(createdAt)` so print and app agree. The print
 layer adds no date logic of its own.
 
 `apps/web/src/components/print-sheet.tsx` (new) — the shared A4 frame:

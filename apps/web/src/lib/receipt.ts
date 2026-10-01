@@ -37,7 +37,10 @@ export interface Receipt {
   storeAddress: string | null;
   invoiceNumber: string;
   kind: InvoiceKind;
+  /** the business date (date-only); kept for the record */
   invoiceDate: string;
+  /** when the invoice row was written — the «التاريخ والوقت» meta value */
+  invoiceCreatedAt: string;
   counterpartyName: string | null;
   lines: ReceiptLine[];
   subtotalAmount: number;
@@ -84,6 +87,7 @@ export function buildReceipt(invoice: InvoiceDetail, settings: Settings): Receip
     invoiceNumber: invoice.invoiceNumber,
     kind: invoice.kind,
     invoiceDate: invoice.invoiceDate,
+    invoiceCreatedAt: invoice.createdAt,
     counterpartyName: invoice.counterpartyName,
     lines: invoice.lines.map((line) => ({
       description: line.description,

@@ -105,10 +105,13 @@ The split itself is `paginateLineSlices`: it finds the smallest sheet count the
 weights actually fit into (a sum of capacities is not enough — with uneven
 weights a prefix can be too big to leave the closing sheet inside its budget)
 and then fills each sheet with the feasible prefix closest to its even share.
-The search allows one sheet MORE than the line count: the closing sheet may
+The search allows TWO sheets more than the line count: the closing sheet may
 legitimately carry only the totals/payment block with zero lines (e.g. a
-payment-heavy invoice whose one line fits on an earlier sheet). A line heavier
-than every cap falls back to one line per sheet so it still prints. The
+payment-heavy invoice whose one line fits on an earlier sheet), and a line
+heavier than the first sheet's cap but not a later one's leaves the first
+sheet empty rather than force-fitting the line and overrunning it (the
+voucher's first-continuation cap 11 vs later 12). A line heavier than every
+cap falls back to one line per sheet so it still prints. The
 voucher uses the same paginator with its own caps: the real meta row cost
 (two base rows, plus the reason row, plus however many rows a wrapping party
 name needs, clamped so the caps stay positive) and a three-row totals block,
@@ -118,7 +121,10 @@ with no carried total.
 
 - `lib/print-pagination.test.ts` (new) — weighted slicing: empty, one sheet,
   uneven weights never overrun, a zero-line closing sheet, a line heavier than
-  every cap.
+  the first cap moved to a later sheet, a line heavier than every cap, and a
+  300-vector deterministic sweep asserting the minimal sheet count and that no
+  emitted sheet exceeds its cap (vectors with no placement at all are skipped
+  as the documented fallback).
 - `lib/receipt.test.ts` — projection (incl. address, no notes, backdated
   business date + recording time), pagination: one-sheet boundary (7 fit, 8
   split), 5-line single sheet, 12-line 10/2 with a payment, three sheets at 20

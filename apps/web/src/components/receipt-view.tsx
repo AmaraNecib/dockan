@@ -94,7 +94,8 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
               ]}
             />
           ) : (
-            page.carryOut !== null && (
+            page.carryOut !== null &&
+            page.lines.length > 0 && (
               <PrintTotals
                 rows={[
                   {

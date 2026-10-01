@@ -144,6 +144,22 @@ describe("paginateReturnVoucher (up to 200 lines, one A4 sheet per page)", () =>
     expect(pages[0]?.closes).toBe(true);
   });
 
+  it("moves a line too heavy for the first sheet onto a continuation sheet", () => {
+    // ~360 chars -> 12 units: the first continuation cap is 11, later ones 12
+    const heavy = buildReturnVoucher(makeReturn({ ...makeReturnWithLines(1, () => "x".repeat(360)), reason: null }), settings);
+    const pages = paginateReturnVoucher(heavy);
+    expect(pages).toHaveLength(3);
+    expect(pages[0]?.lines).toHaveLength(0); // empty first sheet, never overrun
+    expect(pages[1]?.lines).toHaveLength(1);
+    expect(pages[2]?.lines).toHaveLength(0);
+    expect(pages[2]?.closes).toBe(true);
+    const caps = [11, 12, 8]; // first continuation, continuation, closing
+    pages.forEach((page, index) => {
+      const units = page.lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.description.length / 32)), 0);
+      expect(units).toBeLessThanOrEqual(caps[index] ?? 0);
+    });
+  });
+
   it("charges the reason row and a wrapping party to the sheet budget", () => {
     const reason = "سبب طويل ".repeat(10);
     const party = "مورّد الاختبار لقطع غيار السيارات والاكسسوارات بشارع الاستقلال";

@@ -217,6 +217,38 @@ describe("PartyPicker (issue 120)", () => {
     expect(selection(host)).toBe("new-1|يوسف");
   });
 
+  it("moves the active option with the keyboard and closes on Escape", async () => {
+    const host = await mount();
+    const input = host.querySelector<HTMLInputElement>('[data-testid="picker"]');
+    if (input === null) throw new Error("missing picker input");
+    await act(async () => {
+      setElementValue(input, "ع");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(host.querySelector('[data-testid="picker-menu"]')).not.toBeNull();
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(selection(host)).toBe("ali|علي علي");
+
+    // Escape closes the menu without changing the selection
+    await act(async () => {
+      setElementValue(input, "ع");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(host.querySelector('[data-testid="picker-menu"]')).toBeNull();
+  });
+
   it("surfaces a server refusal in the create panel", async () => {
     createFails = true;
     const host = await mount();

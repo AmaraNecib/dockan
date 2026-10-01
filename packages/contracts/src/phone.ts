@@ -19,17 +19,31 @@ export function isValidAlgerianPhone(raw: string): boolean {
 }
 
 /**
- * Identity key for a customer/supplier phone (issue 120). Absent or empty
- * clears the value (null, so SQLite keeps treating unset phones as distinct);
- * an Algerian mobile normalizes to the canonical +213 form; anything else is
- * cleaned of separators and kept verbatim, so a shop landline stays storable.
+ * Bidi/zero-width controls Arabic-first UIs inject on copy/paste (WhatsApp,
+ * word processors). `\s` does not match them, so they must be stripped before
+ * matching or the same number becomes two identities.
+ */
+const PHONE_INVISIBLE_RE = /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/**
+ * Identity key for a customer/supplier phone (issue 120). Absent, empty or
+ * separator-only clears the value (null, so SQLite keeps treating unset
+ * phones as distinct); invisible bidi marks are stripped; an Algerian mobile
+ * normalizes to the canonical +213 form; anything else is cleaned of
+ * separators and kept verbatim, so a shop landline stays storable.
  * Shared by the api store, the uniqueness rule and the web picker's matching.
  */
 export function normalizePartyPhone(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  return normalizeAlgerianPhone(trimmed) ?? trimmed.replace(/[\s.()-]/g, "");
+  const cleaned = trimmed.replace(PHONE_INVISIBLE_RE, "");
+  const mobile = normalizeAlgerianPhone(cleaned);
+  if (mobile !== null) return mobile;
+  const fallback = cleaned.replace(/[\s.()-]/g, "");
+  // "..." / " - " / a lone bidi mark clean away to nothing: an unset phone,
+  // never an empty-string identity that the second walk-in would collide on
+  return fallback === "" ? null : fallback;
 }
 
 /** The better-auth username: the normalized phone without the leading +. */

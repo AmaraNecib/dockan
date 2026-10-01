@@ -665,7 +665,7 @@ describe("parties", () => {
     const customers = await store.listParties("customer");
     const suppliers = await store.listParties("supplier");
     expect(customers.some((x) => x.id === c.id && x.phone === "+213550123123")).toBe(true);
-    expect(suppliers.some((x) => x.id === s.id && s.name === "مخزن الحاج")).toBe(true);
+    expect(suppliers.some((x) => x.id === s.id && x.name === "مخزن الحاج")).toBe(true);
   });
 });
 
@@ -693,6 +693,33 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect(supplier.phone).toBe("+213560123456");
     // updating a missing party reports absence, not a phone refusal
     expect(await store.updateParty("customer", "00000000-0000-4000-8000-000000000000", { name: "لا أحد" })).toBeUndefined();
+  });
+
+  it("clears separator-only and invisible-only phones to null and strips bidi marks", async () => {
+    const dotted = await store.createParty("customer", { name: "نقاط-١", phone: "..." });
+    const dashed = await store.createParty("customer", { name: "نقاط-٢", phone: " - " });
+    // both clean away to nothing: an unset phone, never an "" identity that
+    // the second walk-in would collide on
+    expect(dotted.phone).toBeNull();
+    expect(dashed.phone).toBeNull();
+    // a bidi mark pasted from WhatsApp must not create a phantom identity
+    const marked = await store.createParty("customer", { name: "علامة-خفيّة", phone: "\u200F0550999888" });
+    expect(marked.phone).toBe("+213550999888");
+    // a landline keeps its digits with separators stripped
+    const landline = await store.createParty("customer", { name: "هاتف-ثابت", phone: "023 55 12 34" });
+    expect(landline.phone).toBe("023551234");
+  });
+
+  it("keeps the partial unique phone index as the cross-process backstop", () => {
+    // bypasses the store rule on purpose: proves the DDL index exists and
+    // constrains present phones (NULLs stay distinct by the partial predicate)
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "سباق-١", "+213555000111", localDateTime());
+    expect(() =>
+      conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "سباق-٢", "+213555000111", localDateTime()),
+    ).toThrow(/UNIQUE/);
+    // a second NULL phone is always fine
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-١", localDateTime());
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-٢", localDateTime());
   });
 
   it("hard-deletes only a party with zero invoices (the delete rule)", async () => {
@@ -753,7 +780,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect(detail?.stats).toEqual({ invoiceCount: 2, totalAmount: 1_500, paidAmount: 900, remainingAmount: 600 });
     expect(detail?.invoices.map((i) => i.id).sort()).toEqual([first.id, second.id].sort());
     expect(detail?.payments).toHaveLength(2);
-    expect(detail?.payments.every((p) => p.invoiceNumber.startsWith("INV-DET-"))).toBe(true);
+    expect(detail?.payments.map((p) => p.invoiceNumber).sort()).toEqual([first.invoiceNumber, second.invoiceNumber].sort());
     // table scoping: a supplier id is not a customer, and vice versa
     expect(await store.partyDetail("customer", other.id)).toBeUndefined();
     expect((await store.partyDetail("supplier", other.id))?.stats.invoiceCount).toBe(1);
@@ -786,9 +813,9 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
   });
 
   it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
+    const backfillDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: backfillDir, DOKAN_DB_PATH: path.join(backfillDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -812,6 +839,8 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
       await seed("SALE", "  علي علي ", 40_000); // padded same name → one record
       await seed("PURCHASE", "صالح بن علي", 34_000);
       await seed("PURCHASE", "ماني", 9_000);
+      // a whitespace-only typed name must never become an invisible party
+      await seed("SALE", "\u00A0", 7_000);
       // simulate the pre-upgrade database: invoices exist, the marker does not
       conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
       await legacy.setup();
@@ -827,6 +856,9 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
       const invoices = (await legacy.listInvoices({})).items;
       const linked = invoices.filter((i) => i.counterpartyId !== null);
       expect(linked).toHaveLength(6);
+      // the whitespace-only name stayed unlinked (no invisible debtor)
+      const blank = invoices.find((i) => i.invoiceNumber === "INV-LEGACY-7");
+      expect(blank?.counterpartyId).toBeNull();
       // the typed name is preserved verbatim (display/history unchanged)
       const padded = invoices.find((i) => i.invoiceNumber === "INV-LEGACY-4");
       expect(padded?.counterpartyName).toBe("  علي علي ");
@@ -836,16 +868,55 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
       await legacy.setup();
       expect(await legacy.listParties("customer")).toHaveLength(3);
       expect(await legacy.listParties("supplier")).toHaveLength(2);
+
+      // the marker is one-shot: an invoice typed after the backfill keeps its
+      // null id (typed-only invoices are a supported contract path), and no
+      // later boot reopens the migration
+      await seed("SALE", "بعد-الترحيل", 3_000);
+      await legacy.setup();
+      const post = (await legacy.listInvoices({})).items.find((i) => i.invoiceNumber === "INV-LEGACY-8");
+      expect(post?.counterpartyId).toBeNull();
+      expect(await legacy.listParties("customer")).toHaveLength(3);
     } finally {
       conn.close();
-      removeTempDirRetry(dir);
+      removeTempDirRetry(backfillDir);
+    }
+  });
+
+  it("collapses whitespace and diacritic name variants into one backfilled party", async () => {
+    const variantsDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-variants-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: variantsDir, DOKAN_DB_PATH: path.join(variantsDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (name: string, total: number) =>
+        legacy.insertInvoice({ ...base, invoiceNumber: `INV-VAR-${++n}`, kind: "SALE", counterpartyId: null, counterpartyName: name, totalAmount: total, paidAmount: 0, remainingAmount: total });
+      await seed("علي علي", 10_000);
+      await seed("علي  علي", 20_000); // double inner space
+      await seed("عَلِي عَلِي", 30_000); // diacritics
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers).toHaveLength(1);
+      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 3, totalAmount: 60_000, remainingAmount: 60_000 });
+      const ids = (await legacy.listInvoices({})).items.map((i) => i.counterpartyId);
+      expect(new Set(ids).size).toBe(1);
+      expect(ids.every((id) => id === customers[0]?.id)).toBe(true);
+    } finally {
+      conn.close();
+      removeTempDirRetry(variantsDir);
     }
   });
 
   it("backfill reuses an existing same-named party instead of duplicating a debtor", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-reuse-"));
+    const reuseDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-reuse-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: reuseDir, DOKAN_DB_PATH: path.join(reuseDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -876,7 +947,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
       expect((await legacy.listInvoices({})).items.find((i) => i.invoiceNumber === "INV-REUSE-1")?.counterpartyId).toBe(existing.id);
     } finally {
       conn.close();
-      removeTempDirRetry(dir);
+      removeTempDirRetry(reuseDir);
     }
   });
 });

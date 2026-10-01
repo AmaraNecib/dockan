@@ -33,7 +33,7 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -406,23 +406,36 @@ export const backfillCounterparties = (conn: Connection): void => {
     for (const { kind, table } of kinds) {
       // SAFETY: fixed SQL identifiers and bound parameters; the distinct names
       // are the only data read and every write binds them.
-      const names = conn.raw
+      const rawNames = conn.raw
         .query(
           `SELECT DISTINCT TRIM(counterparty_name) AS name FROM invoices
-           WHERE kind = ? AND counterparty_id IS NULL AND counterparty_name IS NOT NULL AND TRIM(counterparty_name) <> ''`,
+           WHERE kind = ? AND counterparty_id IS NULL AND counterparty_name IS NOT NULL AND TRIM(counterparty_name) <> ''
+           ORDER BY name`,
         )
         .all(kind) as Array<{ name: string }>;
-      for (const { name } of names) {
-        // SAFETY: the party table's id column is TEXT (db/schema.ts); the
-        // SELECT returns at most one row, so the cast matches the driver shape.
-        // ORDER BY makes the reuse target deterministic when prior duplicates
-        // exist: oldest record first, id breaking same-second ties.
-        const existing = conn.raw.query(`SELECT id FROM ${table} WHERE TRIM(name) = ? ORDER BY created_at, id LIMIT 1`).all(name) as Array<{ id: string }>;
-        const partyId = existing[0]?.id ?? id();
-        if (existing.length === 0) {
-          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, name, now());
+      // Collapse spellings that are the same identity (case, double spaces,
+      // diacritics, tatweel) with the SAME key the picker matches on, so the
+      // backfill cannot leave «علي  علي» as a second debtor. JS trim also
+      // drops NBSP/tab-only names that SQLite's TRIM passes through.
+      const groups = new Map<string, string>();
+      for (const { name } of rawNames) {
+        const key = normalizeTextKey(name);
+        if (key === "") continue;
+        if (!groups.has(key)) groups.set(key, name);
+      }
+      // SAFETY: the party table's id/name columns are TEXT (db/schema.ts);
+      // the SELECT is ordered so a duplicate-name reuse target is deterministic.
+      const existingParties = conn.raw.query(`SELECT id, name FROM ${table} ORDER BY created_at, id`).all() as Array<{ id: string; name: string }>;
+      for (const [key, representative] of groups) {
+        const existing = existingParties.find((party) => normalizeTextKey(party.name) === key);
+        const partyId = existing?.id ?? id();
+        if (existing === undefined) {
+          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, representative, now());
         }
-        conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, name);
+        for (const { name } of rawNames) {
+          if (normalizeTextKey(name) !== key) continue;
+          conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, name);
+        }
       }
     }
     conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(COUNTERPARTY_BACKFILL_MARKER);

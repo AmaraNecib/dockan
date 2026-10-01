@@ -39,6 +39,7 @@ let suppliers: PartyListItem[] = [];
 let details = new Map<string, PartyDetail>();
 const deleted: string[] = [];
 const updates: Array<{ id: string; name?: string; phone?: string | null }> = [];
+const createdParties: Array<{ name: string; phone?: string }> = [];
 
 const CUSTOMER_LIST_OPTIONS = () => ({ queryKey: ["customersList"], queryFn: async () => ({ items: customers }) });
 const SUPPLIER_LIST_OPTIONS = () => ({ queryKey: ["suppliersList"], queryFn: async () => ({ items: suppliers }) });
@@ -57,8 +58,22 @@ mock.module("@/lib/rpc", () => ({
     suppliersList: { queryOptions: SUPPLIER_LIST_OPTIONS, queryKey: () => ["suppliersList"] },
     customersGet: { queryOptions: DETAIL_OPTIONS },
     suppliersGet: { queryOptions: DETAIL_OPTIONS },
-    customersCreate: { mutationOptions: () => ({ mutationFn: async (input: { name: string }) => ({ id: "new", name: input.name, phone: null, createdAt: "" }) }) },
-    suppliersCreate: { mutationOptions: () => ({ mutationFn: async (input: { name: string }) => ({ id: "new", name: input.name, phone: null, createdAt: "" }) }) },
+    customersCreate: {
+      mutationOptions: () => ({
+        mutationFn: async (input: { name: string; phone?: string }) => {
+          createdParties.push(input);
+          return { id: "new", name: input.name, phone: input.phone ?? null, createdAt: "" };
+        },
+      }),
+    },
+    suppliersCreate: {
+      mutationOptions: () => ({
+        mutationFn: async (input: { name: string; phone?: string }) => {
+          createdParties.push(input);
+          return { id: "new", name: input.name, phone: input.phone ?? null, createdAt: "" };
+        },
+      }),
+    },
     customersUpdate: {
       mutationOptions: () => ({
         mutationFn: async (input: { id: string; name?: string; phone?: string | null }) => {
@@ -76,7 +91,14 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
-    suppliersDelete: { mutationOptions: () => ({ mutationFn: async () => ({ deleted: true }) }) },
+    suppliersDelete: {
+      mutationOptions: () => ({
+        mutationFn: async (input: { id: string }) => {
+          deleted.push(input.id);
+          return { deleted: true };
+        },
+      }),
+    },
   },
   rpcClient: {},
 }));
@@ -145,6 +167,7 @@ beforeEach(() => {
   details = new Map();
   deleted.length = 0;
   updates.length = 0;
+  createdParties.length = 0;
   navigations.length = 0;
   routeParams = {};
   document.body.innerHTML = "";
@@ -181,6 +204,45 @@ describe("PartiesPage (issue 120)", () => {
     expect(host.querySelectorAll('[data-testid="party-row"]').length).toBe(1);
     expect(host.textContent).toContain("علي علي");
     expect(host.textContent).not.toContain("عماره");
+  });
+
+  it("creates a party from the dialog and reports it", async () => {
+    const host = await mount(<PartiesPage role="customer" />);
+    await click(host, '[data-testid="party-new"]');
+    expect(host.querySelector('[data-testid="party-create-dialog"]')).not.toBeNull();
+
+    const name = host.querySelector<HTMLInputElement>('[data-testid="party-form-name"]');
+    const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+    await act(async () => {
+      if (name !== null) setElementValue(name, "زبون جديد");
+      if (phone !== null) setElementValue(phone, "0555111222");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await click(host, '[data-testid="party-form-save"]');
+
+    expect(createdParties).toEqual([{ name: "زبون جديد", phone: "0555111222" }]);
+    expect(host.querySelector('[data-testid="party-create-dialog"]')).toBeNull();
+    expect(host.querySelector('[data-testid="parties-notice"]')).not.toBeNull();
+  });
+
+  it("renders the supplier role through the supplier procedures", async () => {
+    suppliers = [
+      row({ id: "s-1", name: "مورد الاختبار", phone: null, stats: { ...EMPTY_STATS, invoiceCount: 1, remainingAmount: 1_200 } }),
+      row({ id: "s-2", name: "مورد فارغ", phone: null }),
+    ];
+    const host = await mount(<PartiesPage role="supplier" />);
+    await waitFor(() => host.querySelectorAll('[data-testid="party-row"]').length === 2);
+
+    expect(host.querySelector('[data-testid="parties-page-supplier"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="party-role-supplier"]')?.getAttribute("aria-current")).toBe("page");
+    expect(host.textContent).toContain("مورد الاختبار");
+    expect(host.querySelector('[data-testid="party-row-remaining"]')?.textContent).toContain("1200");
+    // the invoiced supplier keeps its delete disabled; the empty one deletes
+    expect(host.querySelectorAll<HTMLButtonElement>('[data-testid="party-row-delete"]')[0]?.disabled).toBe(true);
+
+    await click(host, '[data-testid="party-row-delete"]:not([disabled])');
+    await click(host, '[data-testid="party-delete-confirm"]');
+    expect(deleted).toEqual(["s-2"]);
   });
 
   it("disables delete for a party with invoices and deletes a zero-invoice one", async () => {

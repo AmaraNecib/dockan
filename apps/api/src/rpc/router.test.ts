@@ -1541,6 +1541,13 @@ describe("parties (issue 120)", () => {
     await client.customersCreate({ name: "بدون رقم ١" });
     await client.customersCreate({ name: "بدون رقم ٢" });
     expect(customer.phone).toBe("+213770111222");
+    // an over-long blob is refused at the contract boundary
+    await expect(client.customersCreate({ name: "طويل", phone: "0".repeat(33) })).rejects.toThrow();
+    // whitespace-only clears to null instead of becoming an empty identity
+    expect((await client.customersCreate({ name: "فراغ", phone: "   " })).phone).toBeNull();
+    // deleting through the wrong role is NOT_FOUND, never a cross-table delete
+    const crossRole = await client.suppliersCreate({ name: "مورد-حذف" });
+    await expect(client.customersDelete({ id: crossRole.id })).rejects.toThrow(/PARTY_NOT_FOUND/);
   });
 
   it("refuses an invoice whose picked party is unknown or the wrong role", async () => {
@@ -1563,15 +1570,28 @@ describe("parties (issue 120)", () => {
         lines: [{ itemId: item.id, quantity: 1 }],
       }),
     ).rejects.toThrow(/PARTY_NOT_FOUND/);
-    // the matching role still lands and carries the id
+    // the matching role still lands and carries the id; the resolved record's
+    // name is authoritative over a mismatched typed label
     const customer = await client.customersCreate({ name: "زبون-دور" });
     const invoice = await client.invoicesCreate({
       kind: "SALE",
       counterpartyId: customer.id,
-      counterpartyName: customer.name,
+      counterpartyName: "اسم مغاير",
       lines: [{ itemId: item.id, quantity: 1 }],
     });
     expect(invoice.counterpartyId).toBe(customer.id);
+    expect(invoice.counterpartyName).toBe(customer.name);
+  });
+
+  it("records PARTY_CREATED/UPDATED/DELETED audit rows", async () => {
+    const created = await client.customersCreate({ name: "تدقيق-جهة" });
+    await client.customersUpdate({ id: created.id, name: "تدقيق-معدّل" });
+    await client.customersDelete({ id: created.id });
+    const activities = await client.activitiesList({ limit: 100 });
+    const summaries = activities.items.map((entry) => entry.summary);
+    expect(summaries).toContain("PARTY_CREATED CUSTOMER تدقيق-جهة");
+    expect(summaries).toContain("PARTY_UPDATED CUSTOMER تدقيق-معدّل");
+    expect(summaries).toContain("PARTY_DELETED CUSTOMER تدقيق-معدّل");
   });
 
   it("returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices", async () => {

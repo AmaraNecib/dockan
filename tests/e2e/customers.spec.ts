@@ -160,6 +160,14 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(supplierRow.getByTestId("party-row-count")).toHaveText("1");
   await expect(supplierRow.getByTestId("party-row-remaining")).toContainText("1200");
 
+  // the supplier detail page is the same component on the purchase side
+  await supplierRow.getByTestId("party-row-link").click();
+  await expect(page.getByTestId("party-detail-supplier")).toBeVisible();
+  await expect(page.getByTestId("party-detail-name")).toHaveText(supplierName);
+  await expect(page.getByTestId("party-stat-partyStatsTotalPurchases")).toContainText("2000");
+  await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1200");
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
+
   // 11. settle both remainders: the specs share one database, and the debts
   // screen's group totals are global — leaving 1200 + 1500 owed here would
   // double the next spec's expected totals. (The assertions above already

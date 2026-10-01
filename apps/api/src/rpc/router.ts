@@ -622,10 +622,14 @@ export function createRpcRouter(deps: RpcDeps) {
         // to the invoice's role. Without this a stale picker id (party deleted
         // in another tab) or a wrong-role id would silently land as an orphan
         // the party pages can never show, while its debt stays name-grouped.
+        // The resolved record's name is authoritative for the label too, so a
+        // client cannot group a debt under one party and print another name.
+        let partyName = input.counterpartyName ?? null;
         if (input.counterpartyId !== undefined && input.counterpartyId !== null) {
           const partyRole = input.kind === "SALE" ? "customer" : "supplier";
           const party = await tx.getParty(partyRole, input.counterpartyId);
           if (party === undefined) throw new ORPCError("BAD_REQUEST", { message: "PARTY_NOT_FOUND" });
+          partyName = party.name;
         }
 
         if (input.kind === "SALE") {
@@ -665,7 +669,7 @@ export function createRpcRouter(deps: RpcDeps) {
               invoiceNumber,
               kind: "SALE",
               counterpartyId: input.counterpartyId ?? null,
-              counterpartyName: input.counterpartyName ?? null,
+              counterpartyName: partyName,
               invoiceDate,
               subtotalAmount: totals.subtotalAmount,
               discountType: totals.discountType,
@@ -762,7 +766,7 @@ export function createRpcRouter(deps: RpcDeps) {
             invoiceNumber,
             kind: "PURCHASE",
             counterpartyId: input.counterpartyId ?? null,
-            counterpartyName: input.counterpartyName ?? null,
+            counterpartyName: partyName,
             invoiceDate,
             subtotalAmount: totalAmount,
             discountType: null,
@@ -819,7 +823,7 @@ export function createRpcRouter(deps: RpcDeps) {
               }),
             );
           }
-          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${input.counterpartyName ? ` ${input.counterpartyName}` : ""}`, ref: invoice.id });
+          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
           return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         });
       }),

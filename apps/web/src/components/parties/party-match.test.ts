@@ -11,7 +11,8 @@ const party = (over: Partial<PartyLike> & { id: string; name: string }): PartyLi
 const ALI = party({ id: "ali", name: "علي علي", phone: "+213555123456" });
 const OMAR = party({ id: "omar", name: "عماره", phone: null });
 const MOHAMED = party({ id: "mohamed", name: "محمد بنين", phone: "+213661234567" });
-const LIST = [ALI, OMAR, MOHAMED];
+const LANDLINE = party({ id: "land", name: "الهاتف الثابت", phone: "023551234" });
+const LIST = [ALI, OMAR, MOHAMED, LANDLINE];
 
 describe("filterParties", () => {
   it("returns the whole list for an empty query", () => {
@@ -22,6 +23,8 @@ describe("filterParties", () => {
   it("filters by name substring, ignoring diacritics and extra whitespace", () => {
     expect(filterParties(LIST, "علي").map((p) => p.id)).toEqual(["ali"]);
     expect(filterParties(LIST, "  محمد   بنين ").map((p) => p.id)).toEqual(["mohamed"]);
+    // tashkeel on the query still finds the undiacritized stored name
+    expect(filterParties(LIST, "مُحَمَّد").map((p) => p.id)).toEqual(["mohamed"]);
     expect(filterParties(LIST, "لا يوجد")).toEqual([]);
   });
 
@@ -29,6 +32,8 @@ describe("filterParties", () => {
     expect(filterParties(LIST, "0555").map((p) => p.id)).toEqual(["ali"]);
     expect(filterParties(LIST, "555123").map((p) => p.id)).toEqual(["ali"]);
     expect(filterParties(LIST, "+213 661").map((p) => p.id)).toEqual(["mohamed"]);
+    // a landline matches on its national digits, separators ignored
+    expect(filterParties(LIST, "0235").map((p) => p.id)).toEqual(["land"]);
     // a phone query never matches a party without a phone
     expect(filterParties(LIST, "0000")).toEqual([]);
   });
@@ -68,6 +73,7 @@ describe("phoneMatchParty", () => {
     expect(phoneMatchParty("0555123456", LIST)?.id).toBe("ali");
     expect(phoneMatchParty("+213555123456", LIST)?.id).toBe("ali");
     expect(phoneMatchParty("0661234567", LIST)?.id).toBe("mohamed");
+    expect(phoneMatchParty("023 55 12 34", LIST)?.id).toBe("land");
   });
 
   it("returns undefined for an unset or unowned phone", () => {

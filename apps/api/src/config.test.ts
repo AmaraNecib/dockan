@@ -8,12 +8,17 @@ import { DEV_AUTH_SECRET, MIN_AUTH_SECRET_LEN, createAppConfig } from "./config"
  * dev behavior when unset.
  */
 describe("createAppConfig packaged-build overrides", () => {
-  it("reads DOKAN_WEB_DIST as an absolute path", () => {
+  // Windows path semantics (drive letters, backslashes) only hold on Windows:
+  // on Linux `path.resolve("C:\\...")` is relative and lands under cwd, so this
+  // assertion is Windows-only. The deferred Windows/desktop CI (#128)
+  // exercises it on a real Windows host.
+  it.skipIf(process.platform !== "win32")("reads DOKAN_WEB_DIST as an absolute path", () => {
     const config = createAppConfig({ DOKAN_WEB_DIST: "C:\\Program Files\\Dokan\\ui" });
     expect(config.webDataDir).toBe("C:\\Program Files\\Dokan\\ui");
   });
 
-  it("reads DOKAN_PORT_ROOT as an absolute path", () => {
+  // Windows-only, same reason as the guard above (#128 runs it on Windows).
+  it.skipIf(process.platform !== "win32")("reads DOKAN_PORT_ROOT as an absolute path", () => {
     const config = createAppConfig({ DOKAN_PORT_ROOT: "C:\\Dokan\\run" });
     expect(config.portRecordDir).toBe("C:\\Dokan\\run");
   });

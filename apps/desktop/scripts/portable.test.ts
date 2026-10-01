@@ -210,7 +210,11 @@ describe("portable assembly (issue 64)", () => {
     });
   });
 
-  it("produces the documented portable layout paths", () => {
+  // Windows path semantics (drive letters, backslash separators) only hold on
+  // Windows: on Linux `path.join` emits "/" separators, so these assertions
+  // run on a Windows host only. The deferred Windows/desktop CI (#128)
+  // exercises them there.
+  it.skipIf(process.platform !== "win32")("produces the documented portable layout paths", () => {
     const layout = portableLayout("C:\\build\\release");
     expect(layout.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable");
     expect(layout.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
@@ -219,18 +223,22 @@ describe("portable assembly (issue 64)", () => {
     expect(layout.uiSourcePath).toBe("C:\\build\\release\\ui");
   });
 
-  it("falls back to a -new folder (and -new zip name) when the canonical folder cannot be replaced", () => {
-    const portableRoot = portableLayout("C:\\build\\release").portableRoot;
-    const canonical = outputNames(portableRoot);
-    expect(canonical.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable");
-    expect(canonical.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
-    // a locked canonical folder (a running app holds it open on Windows)
-    // must fall back to a -new sibling AND name its zip after that folder
-    const fallback = outputNames(portableRoot, { canReplaceCanonical: false });
-    expect(fallback.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new");
-    expect(fallback.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip");
-    expect(zipPathFor(fallback.portableDir)).toBe(fallback.zipPath);
-  });
+  // Windows-only, same reason as the guard above (#128 runs it on Windows).
+  it.skipIf(process.platform !== "win32")(
+    "falls back to a -new folder (and -new zip name) when the canonical folder cannot be replaced",
+    () => {
+      const portableRoot = portableLayout("C:\\build\\release").portableRoot;
+      const canonical = outputNames(portableRoot);
+      expect(canonical.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable");
+      expect(canonical.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable.zip");
+      // a locked canonical folder (a running app holds it open on Windows)
+      // must fall back to a -new sibling AND name its zip after that folder
+      const fallback = outputNames(portableRoot, { canReplaceCanonical: false });
+      expect(fallback.portableDir).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new");
+      expect(fallback.zipPath).toBe("C:\\build\\release\\bundle\\portable\\Dokan-portable-new.zip");
+      expect(zipPathFor(fallback.portableDir)).toBe(fallback.zipPath);
+    },
+  );
 });
 
 /**

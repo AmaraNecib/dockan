@@ -15,10 +15,11 @@ and the desktop/Tauri build.
 typecheck/lint failure and an e2e flake must be tellable apart at a glance,
 and parallelism halves the wall clock. Both share the same setup:
 
-`actions/checkout@v7` → `oven-sh/setup-bun@v2` (reads
+`actions/checkout` (v7.0.1), `oven-sh/setup-bun` (v2.2.0), and
+`actions/cache` (v6.1.0), each pinned to its release commit SHA — a mutable
+tag can be moved to untrusted code. `setup-bun` reads
 `packageManager: bun@1.3.14` from `package.json`, so CI follows the repo pin
-without a second source of truth) → `actions/cache@v6` on
-`~/.bun/install/cache` keyed by `bun.lock` → `bun install --frozen-lockfile`.
+without a second source of truth. The cache key is `bun.lock`.
 
 | Job | Steps |
 | --- | --- |
@@ -56,6 +57,19 @@ documented in `docs/ci.md` and repeated in the PR body.
   `docs/development-workflow.md` §5).
 - Playwright browser caching and HTML-report artifacts: not worth the config
   until e2e runtime bites.
+
+## Review follow-ups
+
+- Greptile P2 (supply chain): all action refs are pinned to full commit
+  SHAs (`actions/checkout@3d3c42e5…` v7.0.1,
+  `oven-sh/setup-bun@0c5077e5…` v2.2.0,
+  `actions/cache@55cc8345…` v6.1.0).
+- CI failed on Linux: four tests asserted hardcoded Windows paths
+  (`path.resolve("C:\\...")` is relative on Linux). The assertions in
+  `apps/api/src/config.test.ts` and `apps/desktop/scripts/portable.test.ts`
+  are now `it.skipIf(process.platform !== "win32")`; the deferred
+  Windows/desktop CI (#128) runs them on a Windows host. `config.ts` behavior
+  is unchanged.
 
 ## Risks
 

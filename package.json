@@ -31,5 +31,11 @@
     "oxlint": "^1.85.0",
     "turbo": "^2.8.16",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.12",
+    "fast-uri": "^3.1.8",
+    "ip-address": "^10.7.2",
+    "undici": "^7.29.1"
   }
 }

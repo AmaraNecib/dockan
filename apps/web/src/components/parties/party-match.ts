@@ -1,4 +1,4 @@
-import { normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
+import { foldArabicDigits, normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
 
 /**
  * The picker only reads identity and phone; a full Party (or a list row)
@@ -39,9 +39,10 @@ export function filterParties<T extends PartyLike>(parties: readonly T[], query:
   });
 }
 
-/** True when a query is a phone-looking run: digits with optional `+`/separators. */
+/** True when a query is a phone-looking run: digits with optional `+`/separators.
+ * Arabic-Indic digits fold first, so an Arabic keyboard's `٠٥٥٠` counts. */
 export function partyQueryLooksLikePhone(query: string): boolean {
-  const cleaned = query.replace(/[\s.()-]/g, "");
+  const cleaned = foldArabicDigits(query).replace(/[\s.()-]/g, "");
   return /^\+?\d{3,}$/.test(cleaned);
 }
 

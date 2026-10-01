@@ -1583,6 +1583,22 @@ describe("parties (issue 120)", () => {
     expect(invoice.counterpartyName).toBe(customer.name);
   });
 
+  it("labels a renamed party's debt group with its current name", async () => {
+    const customer = await client.customersCreate({ name: "قبل-إعادة-التسمية" });
+    const item = await makeItem("إعادة-تسمية-منتج", 100, 200);
+    await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    await client.customersUpdate({ id: customer.id, name: "بعد-إعادة-التسمية" });
+
+    const debts = await client.reportsDebts();
+    const group = debts.owedToUs.find((row) => row.counterpartyId === customer.id);
+    expect(group?.counterpartyName).toBe("بعد-إعادة-التسمية");
+  });
+
   it("records PARTY_CREATED/UPDATED/DELETED audit rows", async () => {
     const created = await client.customersCreate({ name: "تدقيق-جهة" });
     await client.customersUpdate({ id: created.id, name: "تدقيق-معدّل" });

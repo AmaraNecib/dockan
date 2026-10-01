@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import type { Party, PartyRole } from "@dokan/contracts";
+import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -38,6 +38,20 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
   const [phone, setPhone] = useState(party?.phone ?? "");
   const [error, setError] = useState<string | null>(null);
 
+  // A concurrent edit in another tab refetches the party. Refresh only the
+  // fields the operator has not touched, so the form shows the current record
+  // without clobbering work in progress (Greptile P1.2).
+  const propName = party?.name ?? "";
+  const propPhone = party?.phone ?? "";
+  const lastProp = useRef({ name: propName, phone: propPhone });
+  useEffect(() => {
+    const previous = lastProp.current;
+    lastProp.current = { name: propName, phone: propPhone };
+    if (previous.name === propName && previous.phone === propPhone) return;
+    setName((current) => (current === previous.name ? propName : current));
+    setPhone((current) => (current === previous.phone ? propPhone : current));
+  }, [propName, propPhone]);
+
   // one mutation per role/procedure; the role picks the pair actually used
   const customerCreate = useMutation(orpc.customersCreate.mutationOptions());
   const supplierCreate = useMutation(orpc.suppliersCreate.mutationOptions());
@@ -61,7 +75,18 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
     };
     const onError = (err: { message?: string }) => setError(tError(err.message));
     if (party !== undefined && party !== null) {
-      void update.mutate({ id: party.id, name: trimmed, phone: cleanPhone }, { onSuccess, onError });
+      // submit only what the operator changed: an untouched field keeps
+      // whatever the record holds now, so a concurrent edit is never silently
+      // overwritten by a stale form value (Greptile P1.2)
+      const patch: PartyUpdateInput = { id: party.id };
+      if (trimmed !== party.name) patch.name = trimmed;
+      const currentPhone = party.phone ?? null;
+      if (cleanPhone !== currentPhone) patch.phone = cleanPhone;
+      if (patch.name === undefined && patch.phone === undefined) {
+        onSaved(party, "updated");
+        return;
+      }
+      void update.mutate(patch, { onSuccess, onError });
       return;
     }
     void create.mutate(cleanPhone === null ? { name: trimmed } : { name: trimmed, phone: cleanPhone }, { onSuccess, onError });

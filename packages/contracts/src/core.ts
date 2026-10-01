@@ -92,9 +92,10 @@ export function normalizeTextKey(raw: string): string {
   return raw
     .normalize("NFC")
     .toLowerCase()
-    // bidi/zero-width controls pasted from Arabic-first UIs; `\s` does not
-    // match them, so they must be stripped or the same name becomes two keys
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
+    // bidi/zero-width controls pasted from Arabic-first UIs (including U+061C
+    // ARABIC LETTER MARK); `\s` does not match them, so they must be stripped
+    // or the same name becomes two keys
+    .replace(/[\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
     .replace(/[\u0640\u064B-\u0652\u0670]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -1061,6 +1062,8 @@ export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;
 export type ItemListItem = z.infer<typeof itemListItemSchema>;
 export type PartyCreate = z.infer<typeof partyCreateInputSchema>;
 export type PartyUpdate = z.infer<typeof partyPatchSchema>;
+/** The RPC edit input: the patch plus the record id. */
+export type PartyUpdateInput = z.infer<typeof partyUpdateInputSchema>;
 export type InvoiceCreate = z.infer<typeof invoiceCreateInputSchema>;
 export type InvoicePay = z.infer<typeof invoicePayInputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;

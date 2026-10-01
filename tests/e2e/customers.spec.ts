@@ -10,6 +10,20 @@ import { openItemsTab } from "./items-helpers";
  * the debts screen groups the party, the detail page shows the stats + tabs,
  * and the delete rule blocks an invoiced record while deleting an empty one.
  */
+
+/** The unique party names this spec creates; afterEach settles their debts. */
+let cleanupPartyNames: string[] = [];
+
+// Runs even when the test failed: the e2e DB is shared and later specs assert
+// GLOBAL debt totals, so this spec must return its parties to zero debt
+// regardless of where it stopped (Greptile P2.7).
+test.afterEach(async ({ page }) => {
+  const names = cleanupPartyNames;
+  cleanupPartyNames = [];
+  if (names.length === 0) return;
+  await settlePartyDebts(page, names);
+});
+
 test("customers & suppliers: picker, invoice identity, detail page, delete rule", async ({ page }) => {
   // 0. sign in (first-run setup on a clean room, login afterwards)
   await signIn(page);
@@ -23,6 +37,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   // a valid Algerian mobile, unique per run: 0567 + six stamp digits
   const customerPhone = `0567${stamp.slice(-6)}`;
   const emptyPhone = `0577${stamp.slice(-6)}`;
+  cleanupPartyNames = [supplierName, customerName];
 
   // 1. seed: a category + one item (cost 400, sell 1000)
   await page.goto("/categories");
@@ -55,8 +70,6 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("purchase-paid").fill("800");
   await page.getByTestId("purchase-save").click();
   await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
-  const purchaseNumber = /INV-\d+/.exec((await page.getByTestId("purchase-saved-number").textContent()) ?? "")?.[0] ?? "";
-  expect(purchaseNumber).not.toBe("");
 
   // 3. first sale: the customer is created inline with her phone
   await page.getByRole("link", { name: "المبيعات" }).click();
@@ -74,8 +87,6 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("sale-paid").fill("500");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
-  const firstSaleNumber = /INV-\d+/.exec((await page.getByTestId("sale-saved-number").textContent()) ?? "")?.[0] ?? "";
-  expect(firstSaleNumber).not.toBe("");
 
   // 4. second sale picks the SAME record by name from the filtered list
   await page.getByTestId("sale-new").click();
@@ -167,20 +178,34 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("party-stat-partyStatsTotalPurchases")).toContainText("2000");
   await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1200");
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
-
-  // 11. settle both remainders: the specs share one database, and the debts
-  // screen's group totals are global — leaving 1200 + 1500 owed here would
-  // double the next spec's expected totals. (The assertions above already
-  // proved the party-attributed debts existed.)
-  await settleInvoice(page, purchaseNumber, "1200");
-  await settleInvoice(page, firstSaleNumber, "1500");
 });
 
-/** Record a payment covering the invoice's remainder from the invoice page. */
-async function settleInvoice(page: Page, invoiceNumber: string, amount: string): Promise<void> {
+/**
+ * Pay every remaining balance on invoices belonging to this spec's parties.
+ * The shared DB must return to zero party-attributed debt or later specs'
+ * global debt totals break; matching by the unique names (rather than by
+ * captured invoice numbers) means it still works after a mid-test failure.
+ */
+async function settlePartyDebts(page: Page, names: string[]): Promise<void> {
   await page.goto("/invoices");
-  await page.getByTestId(`invoice-open-${invoiceNumber}`).click();
-  await page.getByTestId("pmt-amount").fill(amount);
-  await page.getByTestId("pmt-submit").click();
-  await expect(page.getByTestId("pmt-done")).toBeVisible();
+  await expect(page.getByTestId("invoices-page")).toBeVisible();
+  const rows = page.getByTestId("invoice-row");
+  const targets: string[] = [];
+  for (let index = 0; index < (await rows.count()); index++) {
+    const text = (await rows.nth(index).textContent()) ?? "";
+    if (!names.some((name) => text.includes(name))) continue;
+    const number = /INV-\d+/.exec(text)?.[0];
+    if (number !== undefined) targets.push(number);
+  }
+  for (const number of targets) {
+    const remainingText = (await page.getByTestId(`invoice-remaining-${number}`).textContent()) ?? "";
+    const amount = Number(remainingText.replace(/[^\d]/g, ""));
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    await page.getByTestId(`invoice-open-${number}`).click();
+    await page.getByTestId("pmt-amount").fill(String(amount));
+    await page.getByTestId("pmt-submit").click();
+    await expect(page.getByTestId("pmt-done")).toBeVisible();
+    await page.goto("/invoices");
+    await expect(page.getByTestId("invoices-page")).toBeVisible();
+  }
 }

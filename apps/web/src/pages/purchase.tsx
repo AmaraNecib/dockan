@@ -32,7 +32,7 @@ export function PurchasePage() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [lines, setLines] = useState<DraftLine[]>([]);
-  const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "" });
+  const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +66,7 @@ export function PurchasePage() {
       onSuccess: (invoice) => {
         setSavedInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber });
         setLines([]);
-        setSupplier({ id: null, name: "" });
+        setSupplier({ id: null, name: "", needsChoice: false });
         setNotes("");
         setPaidNow("");
         void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
@@ -81,6 +81,12 @@ export function PurchasePage() {
     setError(null);
     if (lines.length === 0) {
       setError(t("purchasesLinesEmpty"));
+      return;
+    }
+    // an exact typed name that belongs to a record must be picked first: saving
+    // it as typed-only would hide the invoice from that record (P1.1)
+    if (supplier.needsChoice === true) {
+      setError(t("partyChooseExisting"));
       return;
     }
     void createInvoice.mutate({

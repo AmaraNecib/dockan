@@ -58,6 +58,7 @@ function Harness() {
     <div>
       <PartyPicker role="customer" label="الزبون" value={value} onChange={setValue} testId="picker" />
       <output data-testid="selection">{`${value.id ?? "none"}|${value.name}`}</output>
+      <output data-testid="needs-choice">{value.needsChoice === true ? "needs" : "ok"}</output>
     </div>
   );
 }
@@ -104,6 +105,7 @@ async function click(host: HTMLElement, testId: string): Promise<void> {
 }
 
 const selection = (host: HTMLElement): string => host.querySelector('[data-testid="selection"]')?.textContent ?? "";
+const choiceState = (host: HTMLElement): string => host.querySelector('[data-testid="needs-choice"]')?.textContent ?? "";
 const optionNames = (host: HTMLElement): string[] =>
   Array.from(host.querySelectorAll<HTMLButtonElement>('[data-testid="picker-option"]')).map((button) => button.textContent ?? "");
 
@@ -247,6 +249,32 @@ describe("PartyPicker (issue 120)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(host.querySelector('[data-testid="picker-menu"]')).toBeNull();
+  });
+
+  it("requires an explicit choice when the typed name exactly matches a record", async () => {
+    const host = await mount();
+    await type(host, "picker", "علي علي");
+
+    // the exact name is a real record: typed-only would split the balance
+    expect(choiceState(host)).toBe("needs");
+    expect(host.querySelector('[data-testid="picker-needs-choice"]')).not.toBeNull();
+
+    await click(host, "picker-option");
+    expect(choiceState(host)).toBe("ok");
+    expect(selection(host)).toBe("ali|علي علي");
+  });
+
+  it("keeps typed-only valid when no record matches the name", async () => {
+    const host = await mount();
+    await type(host, "picker", "اسم غير مسجّل");
+    expect(choiceState(host)).toBe("ok");
+    expect(selection(host)).toBe("none|اسم غير مسجّل");
+  });
+
+  it("sees through a bidi mark when deciding an exact name match", async () => {
+    const host = await mount();
+    await type(host, "picker", "علي علي\u061C");
+    expect(choiceState(host)).toBe("needs");
   });
 
   it("surfaces a server refusal in the create panel", async () => {

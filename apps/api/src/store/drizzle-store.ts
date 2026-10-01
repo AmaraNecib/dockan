@@ -415,27 +415,30 @@ export const backfillCounterparties = (conn: Connection): void => {
         )
         .all(kind) as Array<{ name: string }>;
       // Collapse spellings that are the same identity (case, double spaces,
-      // diacritics, tatweel) with the SAME key the picker matches on, so the
-      // backfill cannot leave «علي  علي» as a second debtor. JS trim also
-      // drops NBSP/tab-only names that SQLite's TRIM passes through.
-      const groups = new Map<string, string>();
+      // diacritics, tatweel, bidi marks) with the SAME key the picker matches
+      // on, so the backfill cannot leave «علي  علي» as a second debtor. JS trim
+      // also drops NBSP/tab-only names that SQLite's TRIM passes through.
+      // One pass builds every group and its spellings; the write loop below
+      // never rescans the full name set.
+      const groups = new Map<string, { representative: string; spellings: string[] }>();
       for (const { name } of rawNames) {
         const key = normalizeTextKey(name);
         if (key === "") continue;
-        if (!groups.has(key)) groups.set(key, name);
+        const group = groups.get(key);
+        if (group === undefined) groups.set(key, { representative: name, spellings: [name] });
+        else group.spellings.push(name);
       }
       // SAFETY: the party table's id/name columns are TEXT (db/schema.ts);
       // the SELECT is ordered so a duplicate-name reuse target is deterministic.
       const existingParties = conn.raw.query(`SELECT id, name FROM ${table} ORDER BY created_at, id`).all() as Array<{ id: string; name: string }>;
-      for (const [key, representative] of groups) {
+      for (const [key, group] of groups) {
         const existing = existingParties.find((party) => normalizeTextKey(party.name) === key);
         const partyId = existing?.id ?? id();
         if (existing === undefined) {
-          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, representative, now());
+          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, group.representative, now());
         }
-        for (const { name } of rawNames) {
-          if (normalizeTextKey(name) !== key) continue;
-          conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, name);
+        for (const spelling of group.spellings) {
+          conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, spelling);
         }
       }
     }
@@ -1538,17 +1541,28 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }));
     },
     async debtSummaries(): Promise<DebtSummary[]> {
+      // The label for an id-backed group is the party's CURRENT name (joined
+      // from the role's table), never the historical counterparty_name an
+      // invoice snapshotted — a renamed party must not keep its old label on
+      // the debts screen. Typed-only groups still use their invoice name.
       // SAFETY: GROUP BY yields one row per (kind, party); the keys below
       // match the alias names, columns are TEXT/INTEGER per db/schema.ts.
       const aggregated = (await db.all(sql`
-        SELECT kind, counterparty_id, counterparty_name,
-               SUM(remaining_amount) AS remaining_total,
+        SELECT invoices.kind AS kind,
+               invoices.counterparty_id AS counterparty_id,
+               CASE
+                 WHEN invoices.counterparty_id IS NOT NULL THEN COALESCE(customers.name, suppliers.name, invoices.counterparty_name)
+                 ELSE invoices.counterparty_name
+               END AS counterparty_name,
+               SUM(invoices.remaining_amount) AS remaining_total,
                COUNT(*) AS invoice_count,
-               MIN(invoice_date) AS oldest_date,
-               MAX(invoice_date) AS latest_date
+               MIN(invoices.invoice_date) AS oldest_date,
+               MAX(invoices.invoice_date) AS latest_date
         FROM invoices
-        WHERE remaining_amount > 0 AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
-        GROUP BY kind, COALESCE(counterparty_id, counterparty_name)
+        LEFT JOIN customers ON invoices.counterparty_id = customers.id
+        LEFT JOIN suppliers ON invoices.counterparty_id = suppliers.id
+        WHERE invoices.remaining_amount > 0 AND (invoices.counterparty_id IS NOT NULL OR invoices.counterparty_name IS NOT NULL)
+        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, invoices.counterparty_name)
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       return aggregated.map((r) => {
         const kind =

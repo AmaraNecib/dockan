@@ -889,4 +889,28 @@ describe("SalePage party picker (issue 120)", () => {
     expect(lastInvoiceInput?.counterpartyId).toBe("c-9");
     expect(lastInvoiceInput?.counterpartyName).toBe("زبون مسجّل");
   });
+
+  it("refuses to save a typed name that exactly matches an existing record", async () => {
+    partyFixtures = [
+      {
+        id: "c-9",
+        name: "زبون مسجّل",
+        phone: "+213555123456",
+        createdAt: "2026-10-01T10:00:00",
+        stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      },
+    ];
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-customer", "زبون مسجّل"));
+    for (let attempt = 0; attempt < 20 && host.querySelector('[data-testid="sale-customer-needs-choice"]') === null; attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
+    await act(async () => saveButton(host).click());
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain("هذا الاسم مسجّل");
+    expect(lastInvoiceInput).toBeNull();
+  });
 });

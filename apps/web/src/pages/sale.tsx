@@ -119,7 +119,7 @@ export function SalePage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [lines, setLines] = useState<SaleLine[]>([]);
-  const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "" });
+  const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<DiscountType>("");
   const [discountValue, setDiscountValue] = useState("");
   const [paidNow, setPaidNow] = useState("");
@@ -199,7 +199,7 @@ export function SalePage() {
         setSavedDebt(invoice.remainingAmount);
         setSavedCustomer(invoice.counterpartyName);
         setLines([]);
-        setCustomer({ id: null, name: "" });
+        setCustomer({ id: null, name: "", needsChoice: false });
         setDiscountType("");
         setDiscountValue("");
         setPaidNow("");
@@ -271,6 +271,12 @@ export function SalePage() {
     setError(null);
     if (lines.length === 0) {
       setError(t("saleLinesEmpty"));
+      return;
+    }
+    // an exact typed name that belongs to a record must be picked first: saving
+    // it as typed-only would hide the invoice from that record (P1.1)
+    if (customer.needsChoice === true) {
+      setError(t("partyChooseExisting"));
       return;
     }
     const paid = paidNow === "" ? undefined : Number(paidNow);

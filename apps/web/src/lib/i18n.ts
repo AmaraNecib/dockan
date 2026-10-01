@@ -583,6 +583,7 @@ const resources = {
       partyPhoneTaken: "رقم الهاتف مسجّل لـ «{{name}}»",
       partyDuplicateName: "يوجد سجل بالاسم نفسه «{{name}}» برقم مختلف ({{phone}}). إن لم يكن الشخص نفسه فأنشئ سجلاً ثانياً.",
       partyPickRecord: "اختيار «{{name}}»",
+      partyChooseExisting: "هذا الاسم مسجّل — اختر السجل من القائمة أو غيّر الاسم",
       partiesSearchPlaceholder: "ابحث بالاسم أو الهاتف…",
       partyNewCustomer: `${ltrIsolate("+")} زبون جديد`,
       partyNewSupplier: `${ltrIsolate("+")} مورّد جديد`,

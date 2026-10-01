@@ -36,6 +36,8 @@ describe("filterParties", () => {
     expect(filterParties(LIST, "+213 661").map((p) => p.id)).toEqual(["mohamed"]);
     // a landline matches on its national digits, separators ignored
     expect(filterParties(LIST, "0235").map((p) => p.id)).toEqual(["land"]);
+    // Arabic-Indic digits from an Arabic keyboard find the ASCII-stored phone
+    expect(filterParties(LIST, "٠٥٥٥١٢٣٤").map((p) => p.id)).toEqual(["ali"]);
     // a phone query never matches a party without a phone
     expect(filterParties(LIST, "0000")).toEqual([]);
   });
@@ -46,6 +48,8 @@ describe("partyQueryLooksLikePhone", () => {
     expect(partyQueryLooksLikePhone("0550123123")).toBe(true);
     expect(partyQueryLooksLikePhone("+213 550 123")).toBe(true);
     expect(partyQueryLooksLikePhone("055-01")).toBe(true);
+    // Arabic-Indic digits are a phone too
+    expect(partyQueryLooksLikePhone("٠٥٥٠١٢٣١٢٣")).toBe(true);
     expect(partyQueryLooksLikePhone("علي")).toBe(false);
     expect(partyQueryLooksLikePhone("12")).toBe(false);
   });
@@ -66,6 +70,8 @@ describe("duplicateNameParty", () => {
 
   it("sees through a bidi mark pasted into the name", () => {
     expect(duplicateNameParty("علي علي\u200F", "0555123457", LIST)?.id).toBe("ali");
+    // ...and through the Arabic letter mark (Greptile P1.5)
+    expect(duplicateNameParty("علي علي\u061C", "0555123457", LIST)?.id).toBe("ali");
   });
 
   it("does not warn for an unrelated or empty name", () => {
@@ -80,6 +86,8 @@ describe("phoneMatchParty", () => {
     expect(phoneMatchParty("+213555123456", LIST)?.id).toBe("ali");
     expect(phoneMatchParty("0661234567", LIST)?.id).toBe("mohamed");
     expect(phoneMatchParty("023 55 12 34", LIST)?.id).toBe("land");
+    // Arabic-Indic digits resolve to the same identity
+    expect(phoneMatchParty("٠٥٥٥١٢٣٤٥٦", LIST)?.id).toBe("ali");
   });
 
   it("returns undefined for an unset or unowned phone", () => {

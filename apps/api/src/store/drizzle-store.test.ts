@@ -710,6 +710,16 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect(landline.phone).toBe("023551234");
   });
 
+  it("folds Arabic-Indic digits so the same number is one identity", async () => {
+    const arabic = await store.createParty("customer", { name: "أرقام-عربية", phone: "٠٥٦٧٦٥٤٣٢١" });
+    expect(arabic.phone).toBe("+213567654321");
+    // the ASCII spelling of the same number collides
+    await expect(store.createParty("customer", { name: "أرقام-لاتينية", phone: "0567654321" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // Extended Arabic-Indic (Persian) digits fold too
+    const persian = await store.createParty("customer", { name: "أرقام-فارسية", phone: "۰۵۶۸۷۶۵۴۳۲" });
+    expect(persian.phone).toBe("+213568765432");
+  });
+
   it("keeps the partial unique phone index as the cross-process backstop", async () => {
     // bypasses the store rule on purpose: proves the DDL index exists and
     // constrains present phones (NULLs stay distinct by the partial predicate)
@@ -838,6 +848,34 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect((await store.partyDetail("customer", huge.id))?.stats.remainingAmount).toBe(Number.MAX_SAFE_INTEGER);
   });
 
+  it("labels an id-backed debt group with the party's current name", async () => {
+    const originalName = `قبل-التعديل-${stamp()}`;
+    const renamed = `بعد-التعديل-${stamp()}`;
+    const party = await store.createParty("customer", { name: originalName });
+    const invoiceNumber = `INV-RENAME-${Date.now()}`;
+    await store.insertInvoice({
+      invoiceNumber,
+      kind: "SALE",
+      counterpartyId: party.id,
+      counterpartyName: originalName,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 5_000,
+      paidAmount: 0,
+      remainingAmount: 5_000,
+      notes: null,
+    });
+    await store.updateParty("customer", party.id, { name: renamed });
+
+    // the debts screen shows the CURRENT name for the id-backed group...
+    expect((await store.debtSummaries()).find((row) => row.counterpartyId === party.id)?.counterpartyName).toBe(renamed);
+    // ...while the invoice keeps its historical snapshot (history not rewritten)
+    expect((await store.listInvoices({})).items.find((row) => row.invoiceNumber === invoiceNumber)?.counterpartyName).toBe(originalName);
+  });
+
   it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
     const backfillDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
     const conn = openConnection(
@@ -953,12 +991,13 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
         legacy.insertInvoice({ ...base, invoiceNumber: `INV-BIDI-${++n}`, kind: "SALE", counterpartyId: null, counterpartyName: name, totalAmount: total, paidAmount: 0, remainingAmount: total });
       await seed("علي", 10_000);
       await seed("علي\u200F", 20_000); // trailing RLM, the usual copy/paste artifact
+      await seed("علي\u061C", 30_000); // Arabic letter mark (Greptile P1.5)
       conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
       await legacy.setup();
 
       const customers = await legacy.listParties("customer");
       expect(customers).toHaveLength(1);
-      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 2, totalAmount: 30_000 });
+      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 3, totalAmount: 60_000 });
       const ids = (await legacy.listInvoices({})).items.map((i) => i.counterpartyId);
       expect(new Set(ids).size).toBe(1);
     } finally {

@@ -238,7 +238,8 @@ describe("PartiesPage (issue 120)", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     await click(host, '[data-testid="party-form-save"]');
-    expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل", phone: "+213555123456" }]);
+    // only the changed field is sent; the untouched phone is left alone (P1.2)
+    expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل" }]);
   });
 
   it("renders the supplier role through the supplier procedures", async () => {
@@ -360,7 +361,7 @@ describe("PartyDetailPage (issue 120)", () => {
     });
     await click(host, '[data-testid="party-form-save"]');
 
-    expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل", phone: "+213555123456" }]);
+    expect(updates).toEqual([{ id: "c-1", name: "علي المعدّل" }]);
     expect(host.querySelector('[data-testid="party-detail-notice"]')).not.toBeNull();
   });
 

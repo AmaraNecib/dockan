@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 
 import type { PartyCreate, PartyRole } from "@dokan/contracts";
+import { normalizeTextKey } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -11,10 +12,17 @@ import { tError } from "@/lib/i18n";
 import { invalidateParties } from "./party-forms";
 import { duplicateNameParty, filterParties, partyQueryLooksLikePhone, phoneMatchParty } from "./party-match";
 
-/** What the invoice form needs: a known record id, or a typed-only name. */
+/**
+ * What the invoice form needs: a known record id, or a typed-only name.
+ * `needsChoice` is set by the picker when the typed name exactly matches an
+ * existing record but no record is selected yet — the parent must refuse to
+ * submit in that state, or the invoice would be missing from the record and
+ * split the debtor's balance (Greptile P1.1).
+ */
 export interface PartySelection {
   id: string | null;
   name: string;
+  needsChoice?: boolean;
 }
 interface PartyPickerProps {
   role: PartyRole;
@@ -85,13 +93,27 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
   const matches = useMemo(() => filterParties(parties, query), [parties, query]);
   const trimmedQuery = query.trim();
   const showMenu = open && trimmedQuery !== "";
+  // an exact typed name that already belongs to a record must be picked, not
+  // silently saved as typed-only (the balance would split across two debtors)
+  const typedNameKey = normalizeTextKey(trimmedQuery);
+  const exactNameMatch =
+    value.id === null && typedNameKey !== "" ? parties.find((party) => normalizeTextKey(party.name) === typedNameKey) : undefined;
+  const needsChoice = exactNameMatch !== undefined;
+
+  // the list may resolve after typing; keep the parent's flag in step with the
+  // current text and loaded records (guarded so it cannot loop)
+  useEffect(() => {
+    if (needsChoice !== (value.needsChoice ?? false)) {
+      onChange({ id: null, name: query, needsChoice });
+    }
+  }, [needsChoice, value.needsChoice, value.name, query, onChange]);
   const candidatePhone = createPhone.trim() === "" ? null : createPhone.trim();
   const phoneOwner = phoneMatchParty(candidatePhone, parties);
   const duplicate = duplicateNameParty(createName, candidatePhone, parties);
   const createDisabled = create.isPending || createName.trim() === "" || phoneOwner !== undefined;
 
   function pick(party: { id: string; name: string }) {
-    onChange({ id: party.id, name: party.name });
+    onChange({ id: party.id, name: party.name, needsChoice: false });
     setQuery(party.name);
     setOpen(false);
     setCreateOpen(false);
@@ -105,7 +127,11 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
     setActiveIndex(null);
     setCreateError(null);
     // typing invalidates a previous pick: the text is a typed name again
-    if (value.id !== null || next !== value.name) onChange({ id: null, name: next });
+    if (value.id !== null || next !== value.name) {
+      const key = normalizeTextKey(next);
+      const shouldChoose = key !== "" && parties.some((party) => normalizeTextKey(party.name) === key);
+      onChange({ id: null, name: next, needsChoice: shouldChoose });
+    }
   }
 
   function openCreate() {
@@ -345,6 +371,11 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
           </div>
         )}
       </div>
+      {value.needsChoice === true && (
+        <p className="text-sm text-destructive" role="alert" data-testid={`${testId}-needs-choice`}>
+          {t("partyChooseExisting")}
+        </p>
+      )}
     </div>
   );
 }

@@ -129,6 +129,9 @@ export const itemSchema = z.object({
  * "the same code path").
  */
 export const partyRoleSchema = z.enum(["customer", "supplier"]);
+/** The invoice kind a party role owns: a customer's invoices are SALE, a
+ * supplier's are PURCHASE. One map, so the role↔kind direction cannot drift. */
+export const partyInvoiceKind = { customer: "SALE", supplier: "PURCHASE" } as const;
 export const partySchema = z.object({
   id: idSchema,
   name: z.string().trim().min(1),
@@ -1005,6 +1008,7 @@ export type Item = z.infer<typeof itemSchema>;
 export type Customer = z.infer<typeof customerSchema>;
 export type Supplier = z.infer<typeof supplierSchema>;
 export type PartyRole = z.infer<typeof partyRoleSchema>;
+export type PartyInvoiceKind = (typeof partyInvoiceKind)[PartyRole];
 /** A customer or a supplier: one record shape (see partySchema). */
 export type Party = z.infer<typeof partySchema>;
 export type PartyStats = z.infer<typeof partyStatsSchema>;

@@ -710,7 +710,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect(landline.phone).toBe("023551234");
   });
 
-  it("keeps the partial unique phone index as the cross-process backstop", () => {
+  it("keeps the partial unique phone index as the cross-process backstop", async () => {
     // bypasses the store rule on purpose: proves the DDL index exists and
     // constrains present phones (NULLs stay distinct by the partial predicate)
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "سباق-١", "+213555000111", localDateTime());
@@ -720,6 +720,10 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     // a second NULL phone is always fine
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-١", localDateTime());
     conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-٢", localDateTime());
+    // the store check compares canonical forms, so a raw non-canonical row
+    // written by an import/adapter cannot escape the identity rule
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "خام-١", "0550 12 34 56", localDateTime());
+    await expect(store.createParty("customer", { name: "خام-٢", phone: "0550123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
   });
 
   it("hard-deletes only a party with zero invoices (the delete rule)", async () => {

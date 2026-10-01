@@ -372,7 +372,7 @@ const resources = {
       invoiceKind_SALE: "بيع",
       invoiceKind_PURCHASE: "مشتريات",
       invoiceDate: "التاريخ",
-      invoiceParty: "الطرف",
+      invoiceParty: "الزبون / المورّد",
       invoiceLinesTitle: "أسطر الفاتورة",
       invoiceTotal: "الإجمالي",
       invoicePaid: "المدفوع",

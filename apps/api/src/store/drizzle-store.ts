@@ -33,7 +33,7 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -130,7 +130,7 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
   name: String(r.name),
   phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
   createdAt: String(r.createdAt),
-  stats: safePartyStats(r.invoiceCount, r.totalAmount, r.paidAmount, r.remainingAmount),
+  stats: safePartyStats(r),
 });
 
 /**
@@ -145,11 +145,13 @@ const safeWhole = (value: SqlScalar): number => {
   return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
 };
 
-const safePartyStats = (invoiceCount: SqlScalar, totalAmount: SqlScalar, paidAmount: SqlScalar, remainingAmount: SqlScalar): PartyStats => ({
-  invoiceCount: safeWhole(invoiceCount),
-  totalAmount: safeWhole(totalAmount),
-  paidAmount: safeWhole(paidAmount),
-  remainingAmount: safeWhole(remainingAmount),
+type SqlPartyStats = { invoiceCount: SqlScalar; totalAmount: SqlScalar; paidAmount: SqlScalar; remainingAmount: SqlScalar };
+
+const safePartyStats = (stats: Partial<SqlPartyStats>): PartyStats => ({
+  invoiceCount: safeWhole(stats.invoiceCount),
+  totalAmount: safeWhole(stats.totalAmount),
+  paidAmount: safeWhole(stats.paidAmount),
+  remainingAmount: safeWhole(stats.remainingAmount),
 });
 const lineCols = {
   id: invoiceLines.id,
@@ -826,10 +828,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    */
   const assertPhoneFree = (role: PartyRole, phone: string | null, excludeId: string | null): void => {
     if (phone === null) return;
-    // SAFETY: the table name comes from a closed literal map (never input);
-    // the WHERE binds the candidate phone, compared on canonical values.
-    const rows = conn.raw.query(`SELECT id FROM ${PARTY_TABLES[role]} WHERE phone = ?`).all(phone) as Array<{ id: string }>;
-    if (rows.some((row) => row.id !== excludeId)) throw new PartyError("PHONE_EXISTS");
+    // Canonical-form comparison over the rows, not `WHERE phone = ?`: a row
+    // written by a future import/adapter with a raw `0550 12 34 56` must not
+    // escape the rule, and the partial unique index only compares raw strings.
+    // SAFETY: the table name comes from a closed literal map (never input).
+    const rows = conn.raw.query(`SELECT id, phone FROM ${PARTY_TABLES[role]} WHERE phone IS NOT NULL`).all() as Array<{ id: string; phone: string }>;
+    if (rows.some((row) => row.id !== excludeId && normalizePartyPhone(row.phone) === phone)) throw new PartyError("PHONE_EXISTS");
   };
 
   const fetchParty = async (role: PartyRole, partyId: string): Promise<Party | undefined> => {
@@ -1063,7 +1067,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
 
     // --- parties (issue 120): customers & suppliers share one code path -------
     async listParties(role: PartyRole) {
-      const kind = role === "customer" ? "SALE" : "PURCHASE";
+      const kind = partyInvoiceKind[role];
       // One LEFT JOIN keeps a zero-invoice party on the list with zero stats.
       // SAFETY: the table name comes from a closed literal map (never input);
       // each alias lands in PartyAggregateRow before typing.
@@ -1124,7 +1128,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
       const party = await fetchParty(role, partyId);
       if (party === undefined) return undefined;
-      const kind = role === "customer" ? "SALE" : "PURCHASE";
+      const kind = partyInvoiceKind[role];
       const [statsRows, invoiceRows, paymentRows] = await Promise.all([
         db
           .select({
@@ -1150,7 +1154,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const stats = statsRows[0];
       return {
         party,
-        stats: safePartyStats(stats?.invoiceCount, stats?.totalAmount, stats?.paidAmount, stats?.remainingAmount),
+        stats: safePartyStats(stats ?? {}),
         // reuse the dashboard's guarded mapper: one malformed legacy row must
         // degrade this section, not 500 the whole detail page
         invoices: mapRecentInvoices(invoiceRows) ?? [],

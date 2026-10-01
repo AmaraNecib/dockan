@@ -134,4 +134,29 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(date?.getAttribute("dir")).toBeNull();
     expect(date?.className).toContain("print-sheet-digits");
   });
+
+  it("paginates a long return: full header on every sheet, totals last, page X of Y", () => {
+    const detail = makeReturn();
+    const many: ReturnDetail = {
+      ...detail,
+      lines: Array.from({ length: 12 }, (_, index) => ({
+        ...detail.lines[0]!,
+        id: `line-${index}`,
+        invoiceLineId: `invoice-line-${index}`,
+        description: `بطارية ${index}`,
+      })),
+    };
+    renderVoucher(buildReturnVoucher(many, { storeName: "متجر الكرامة", storePhone: "+213661234567", storeAddress: null }));
+    const pages = Array.from(host.querySelectorAll('[data-testid="return-voucher-sheet"]'));
+    expect(pages).toHaveLength(2);
+    for (const page of pages) {
+      expect(page.querySelector('[data-testid="return-voucher-store"]')?.textContent).toBe("متجر الكرامة");
+    }
+    expect(host.querySelectorAll('[data-testid="return-voucher-line"]')).toHaveLength(12);
+    // the totals close the last sheet only
+    expect(pages[0]?.querySelector('[data-testid="return-voucher-total"]')).toBeNull();
+    expect(pages[1]?.querySelector('[data-testid="return-voucher-total"]')).not.toBeNull();
+    expect(pages[0]?.querySelector('[data-testid="return-voucher-page-num"]')?.textContent).toBe("صفحة 1 من 2");
+    expect(pages[1]?.querySelector('[data-testid="return-voucher-page-num"]')?.textContent).toBe("صفحة 2 من 2");
+  });
 });

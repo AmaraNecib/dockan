@@ -38,6 +38,8 @@ interface InvoiceSeed {
   kind: "SALE" | "PURCHASE";
   lineCount: number;
   counterpartyName: string;
+  /** business date (YYYY-MM-DD); omitted means today */
+  invoiceDate?: string;
   /** cash paid at invoice time; omitted means no payment history at all */
   initialPaid?: number;
 }
@@ -69,6 +71,7 @@ async function seedInvoice(page: Page, seed: InvoiceSeed): Promise<SeededInvoice
           input: {
             kind: "SALE" | "PURCHASE";
             counterpartyName: string;
+            invoiceDate?: string;
             initialPaid?: number;
             lines: Array<{ itemId: string; quantity: number }>;
           };
@@ -103,6 +106,7 @@ async function seedInvoice(page: Page, seed: InvoiceSeed): Promise<SeededInvoice
         input: {
           kind: spec.kind,
           counterpartyName: spec.counterpartyName,
+          invoiceDate: spec.invoiceDate,
           initialPaid: spec.initialPaid,
           lines: Array.from({ length: spec.lineCount }, () => ({ itemId: item.json.id, quantity: 1 })),
         },
@@ -119,8 +123,16 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
   // 1. a known store identity, address included: the sheet's left header block
   await setStoreIdentity(page);
 
-  // 2. a 12-line sale, 500 paid up front → subtotal 1,200, remaining 700
-  const seeded = await seedInvoice(page, { kind: "SALE", lineCount: 12, counterpartyName: "علي علي", initialPaid: 500 });
+  // 2. a 12-line sale, 500 paid up front → subtotal 1,200, remaining 700.
+  //    BACKDATED on purpose: the paper must keep the business date and only
+  //    take the clock time from the recording moment.
+  const seeded = await seedInvoice(page, {
+    kind: "SALE",
+    lineCount: 12,
+    counterpartyName: "علي علي",
+    invoiceDate: "2026-09-15",
+    initialPaid: 500,
+  });
 
   // 3. the print-only route renders the document the dialog would capture
   await page.goto(`/invoices/${seeded.id}/print`);
@@ -136,8 +148,8 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
     await expect(sheet.getByTestId("receipt-phone")).toHaveText("+213555123456");
     await expect(sheet.getByTestId("receipt-address")).toHaveText("حي 5 جويلية، البليدة");
     await expect(sheet.getByTestId("receipt-number")).toHaveText(seeded.invoiceNumber);
-    // «التاريخ والوقت» prints the recording timestamp: day-first date AND 24h time
-    await expect(sheet.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    // the business date (2026-09-15) with the recording time, 24-hour
+    await expect(sheet.getByTestId("receipt-date")).toHaveText(/^15\/09\/2026 \d{2}:\d{2}$/);
     await expect(sheet.locator(".print-sheet-contacts")).toContainText("رقم الهاتف");
     await expect(sheet.locator(".print-sheet-contacts")).toContainText("العنوان");
     await expect(sheet.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");
@@ -250,14 +262,23 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
       '<div style="font-size:10px; width:100%; margin:0 10mm; text-align:center;"><span class="pageNumber"></span>/<span class="totalPages"></span></div>',
   });
   expect(extractPdfText(headerControl)).toContain("127.0.0.1");
+
+  // 13. the app's invoice detail screen shows the same business date + time,
+  //     so the paper and the screen cannot disagree
+  await page.goto(`/invoices/${seeded.id}`);
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+  await expect(page.getByTestId("invoice-date")).toHaveText(/^15\/09\/2026 \d{2}:\d{2}$/);
 });
 
 test("invoice print: a 5-line purchase fits one sheet and labels the supplier", async ({ page }) => {
   await signIn(page);
   await setStoreIdentity(page);
 
-  // no initial payment: the closing sheet must not reserve a payment section
-  const seeded = await seedInvoice(page, { kind: "PURCHASE", lineCount: 5, counterpartyName: "مورّد الاختبار" });
+  // no initial payment: the closing sheet must not reserve a payment section.
+  // The supplier name is LONG on purpose: the meta row must let it wrap
+  // instead of running off the A4 width.
+  const longSupplier = "مورّد الاختبار لقطع غيار السيارات والاكسسوارات بشارع الاستقلال";
+  const seeded = await seedInvoice(page, { kind: "PURCHASE", lineCount: 5, counterpartyName: longSupplier });
 
   await page.goto(`/invoices/${seeded.id}/print`);
   await expect(page.getByTestId("receipt-page")).toBeVisible();
@@ -266,10 +287,20 @@ test("invoice print: a 5-line purchase fits one sheet and labels the supplier", 
   await expect(sheet.getByTestId("receipt-store")).toHaveText("ماني للاكسسوارات اوتو");
   await expect(sheet.getByTestId("receipt-kind")).toHaveText("فاتورة شراء");
   await expect(sheet.locator(".print-sheet-meta")).toContainText("المورّد");
+  await expect(sheet.locator(".print-sheet-meta")).toContainText(longSupplier);
   await expect(sheet.locator(".print-sheet-meta")).not.toContainText("الزبون");
   await expect(page.getByTestId("receipt-line")).toHaveCount(5);
   await expect(page.getByTestId("receipt-payments")).toHaveCount(0);
   await expect(sheet.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
+  // a long value wraps inside the meta row: no horizontal overflow
+  const metaOverflow = await sheet.locator(".print-sheet-meta").evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  }));
+  expect(metaOverflow.scrollWidth).toBeLessThanOrEqual(metaOverflow.clientWidth + 1);
+  // the long name must not squeeze the short fields onto second lines
+  const numberBox = await sheet.getByTestId("receipt-number").boundingBox();
+  expect(numberBox?.height ?? 999).toBeLessThan(30);
 
   // one sheet = one A4 page
   const pdf = await page.pdf({ preferCSSPageSize: true });

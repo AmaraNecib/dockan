@@ -8,7 +8,7 @@ import { formatPrintAmount } from "../lib/print-format";
  * one page: its store header is repeated on every page (model 1), and the
  * footer is pinned to the foot of the sheet with the page number and the
  * document number. The page split itself is decided by the caller (see
- * lib/receipt.ts#paginateReceipt) because CSS cannot write «صفحة X من Y».
+ * lib/receipt.ts#paginateReceipt) because CSS cannot write the page counter.
  *
  * Paper colours and sizes live in index.css (.print-sheet …): sizing in rem,
  * the sheet in mm, borders in px.
@@ -75,8 +75,9 @@ export function PrintSheet({
 }
 
 /**
- * A DZD amount as printed: Western grouped digits isolated LTR, then «دج» as
- * RTL text — which puts the currency to the LEFT of the amount on the sheet.
+ * A DZD amount as printed: Western grouped digits isolated LTR, then the DZD
+ * currency from i18n as RTL text — which puts the currency to the LEFT of the
+ * amount on the sheet.
  * (The screen's `Amount` component keeps both inside one LTR span, which reads
  * the other way around.)
  */
@@ -99,9 +100,9 @@ export interface PrintItemRow {
 }
 
 /**
- * The items table, shared by the invoice (المشتريات) and the return voucher
- * (الأسطر المرجوعة). Column widths live in index.css; the money columns are
- * named by the caller because a refund and a sale price read differently.
+ * The items table, shared by the invoice and the return voucher. Column widths
+ * live in index.css; the money columns are named by the caller because a
+ * refund and a sale price read differently.
  */
 export function PrintItemTable<T extends PrintItemRow>({
   title,

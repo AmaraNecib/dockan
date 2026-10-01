@@ -25,8 +25,7 @@ const receipt: Receipt = {
   storeAddress: "شارع الاستقلال 12",
   invoiceNumber: "INV-0007",
   kind: "SALE",
-  invoiceDate: "2026-08-25",
-  invoiceCreatedAt: "2026-08-25T10:00:00",
+  invoiceDateTime: "2026-08-25T10:00:00",
   counterpartyName: "زبون النقد",
   lines: [
     { description: "بطارية", quantity: 2, unitPrice: 550, netTotal: 1000 },

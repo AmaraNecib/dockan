@@ -11,7 +11,8 @@ import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sh
  *
  * The settled design (grilling session 2026-10-01) is one A4 sheet per page:
  * the store header repeats on every page, the footer is pinned to the foot of
- * each sheet with «صفحة X من Y», and the totals close the last sheet. The page
+ * each sheet with the "page X of Y" footer, and the totals close the last
+ * sheet. The page
  * split is decided by `paginateReceipt`; this view only draws it.
  */
 export function ReceiptView({ receipt }: { receipt: Receipt }) {
@@ -45,10 +46,10 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
             <div>
               <dt>{t("invoiceDateTime")}</dt>
               <dd className="print-sheet-digits" data-testid="receipt-date">
-                {formatDateTime(receipt.invoiceCreatedAt)}
+                {formatDateTime(receipt.invoiceDateTime)}
               </dd>
             </div>
-            <div>
+            <div className="print-sheet-meta-wrap">
               <dt>{partyLabel}</dt>
               <dd data-testid="receipt-party">{receipt.counterpartyName ?? "—"}</dd>
             </div>

@@ -1,6 +1,6 @@
 # #121 — invoice print: settled A4 layout
 
-Tier: **Standard**. Base: `origin/develop` @ `8579fcf`.
+Tier: **Standard**. Base: `origin/develop` @ `a0b9671` (#119 merged).
 
 ## Goal
 
@@ -19,8 +19,9 @@ interface Receipt {
   storeAddress: string | null;   // NEW — the sheet's left header block
   invoiceNumber: string;
   kind: "SALE" | "PURCHASE";
-  invoiceDate: string;           // raw YYYY-MM-DD business date (kept)
-  invoiceCreatedAt: string;      // raw local datetime — the «التاريخ والوقت» meta
+  // business date + recording time, composed by buildReceipt: the date is the
+  // invoice's own day, the clock time comes from createdAt
+  invoiceDateTime: string;
   counterpartyName: string | null;
   lines: ReceiptLine[];
   subtotalAmount: number;
@@ -50,22 +51,30 @@ formatPrintAmount(1234567) === "1,234,567"
 ```
 
 Dates come from the shared `lib/dates.ts` formatter (#119): `formatDateTime`
-for the «التاريخ والوقت» meta (`invoiceCreatedAt`, owner decision: the label
-promises date AND time) and for payment timestamps; the return voucher uses
-`formatDate` for its date-only invoice field. The app invoice detail screen
-shows the same `formatDateTime(createdAt)` so print and app agree. The print
-layer adds no date logic of its own.
+for the date-and-time meta and for payment timestamps; the return voucher uses
+`formatDate` for its date-only invoice field. The meta value is
+`combineBusinessDateTime(invoiceDate, createdAt)` (new helper in dates.ts): the
+business date stays authoritative for the day — a backdated invoice keeps its
+own date — and the recording moment only supplies the clock time. The app
+invoice detail screen shows the same composition, so print and app agree. The
+print layer adds no date logic of its own.
+
+`apps/web/src/lib/print-pagination.ts` (new, pure) — the shared weighted
+paginator: `paginateLineSlices(costs, caps)` returns one slice per sheet, with
+the smallest sheet count the weights actually fit into and no sheet over its
+budget; `textRowUnits` weights a wrapping cell.
 
 `apps/web/src/components/print-sheet.tsx` (new) — the shared A4 frame:
-store name + contacts + rule + `children` + foot (store / «صفحة X من Y» / ref),
+store name + contacts + rule + `children` + foot (store / page counter / ref),
 plus the shared `PrintItemTable` (name/qty + two money columns) and
 `PrintTotals` rows; both print documents compose them.
 
 `apps/web/src/components/receipt-view.tsx` — rewritten to render `paginateReceipt`
 output as N `.print-sheet`s.
 
-`apps/web/src/components/return-voucher-view.tsx` — same sheet frame, its own
-meta/lines/totals; no pagination (returns are short).
+`apps/web/src/components/return-voucher-view.tsx` — same sheet frame and its own
+meta/lines/totals, paginated by `paginateReturnVoucher` (a return can carry up
+to 200 lines, so "page 1 of 1" must not cover a clipped table).
 
 `apps/web/src/index.css` — `.print-doc` / `.print-sheet` … classes from the
 template (sizing in `rem`, sheet in `mm`, borders in `px` with `--hairline` /
@@ -75,7 +84,7 @@ template (sizing in `rem`, sheet in `mm`, borders in `px` with `--hairline` /
 
 ## Pagination model
 
-CSS cannot compute «صفحة X من Y», so the split is decided in JS from a
+CSS cannot compute the page counter, so the split is decided in JS from a
 conservative height budget (one unit ≈ one table row; the sheet's variable
 content budget is ~20 units, so 13 is safe):
 
@@ -87,17 +96,32 @@ content budget is ~20 units, so 13 is safe):
 
 So a no-payment invoice fits 7 lines on its closing sheet (13−5−1) and 10 on a
 first continuation sheet; with a payment row the settled 12-line split is
-10/2. Pages are packed to the minimal count and distributed evenly. Payment
-rows claim the closing sheet's spare room first; any overflow continues on
-sheets with the full header and a repeated payment table. With no payments at
-all, the closing sheet renders no payment section.
+10/2. Payment rows claim the closing sheet's spare room first (their real
+UNITS, not their count — a wrapped note costs more than one row); any overflow
+continues on sheets with the full header and a repeated payment table. With no
+payments at all, the closing sheet renders no payment section.
+
+The split itself is `paginateLineSlices`: it finds the smallest sheet count the
+weights actually fit into (a sum of capacities is not enough — with uneven
+weights a prefix can be too big to leave the closing sheet inside its budget)
+and then fills each sheet with the feasible prefix closest to its even share.
+A line heavier than every cap falls back to one line per sheet so it still
+prints. The voucher uses the same paginator with its own caps (a two-row meta,
+a three-row totals block) and no carried total.
 
 ## Tests
 
-- `lib/receipt.test.ts` — projection (incl. address, no notes), pagination:
-  one-sheet boundary (7 fit, 8 split), 5-line single sheet, 12-line 10/2 with a
-  payment, three sheets at 20 lines, carried totals, long descriptions,
-  payment overflow.
+- `lib/print-pagination.test.ts` (new) — weighted slicing: empty, one sheet,
+  uneven weights never overrun, a line heavier than every cap.
+- `lib/receipt.test.ts` — projection (incl. address, no notes, backdated
+  business date + recording time), pagination: one-sheet boundary (7 fit, 8
+  split), 5-line single sheet, 12-line 10/2 with a payment, three sheets at 20
+  lines, uneven weights, wrapped payment notes, carried totals, payment
+  overflow.
+- `lib/return-voucher.test.ts` — 200-line pagination with per-sheet capacity
+  assertions and a wrapped description.
+- `lib/dates.test.ts` — `combineBusinessDateTime` keeps the business day and
+  takes the recorded clock time.
 - `lib/print-format.test.ts` — grouped-amount format; the date shape is
   pinned by `lib/dates.test.ts` (#119).
 - `components/receipt-view.test.tsx` — rendered document: labels, dir tokens,
@@ -105,10 +129,13 @@ all, the closing sheet renders no payment section.
   section when empty, all-header-per-sheet.
 - `tests/e2e/receipts.spec.ts` — 1-page invoice: sheet count, footer 1/1,
   formatted payment timestamp (no `T`).
-- `tests/e2e/invoice-print-a4.spec.ts` (new) — a 12-line sale and a 5-line
-  purchase seeded through the real RPC wire: 2 sheets at 10/2 and 1 sheet
-  respectively, all lines present, carry total + carry banner, payment row,
-  both sheet headers, the RTL currency/amount bounding boxes,
+- `tests/e2e/invoice-print-a4.spec.ts` (new) — a 12-line BACKDATED sale and a
+  5-line purchase seeded through the real RPC wire: 2 sheets at 10/2 and 1
+  sheet respectively, all lines present, the meta date is the business day
+  with the recording time, the app invoice screen shows the same value, carry
+  total + carry banner, payment row, both sheet headers, the RTL
+  currency/amount bounding boxes, a long supplier name that wraps without
+  overflowing the meta row or squeezing the short fields,
   `page.pdf({ preferCSSPageSize: true, displayHeaderFooter: true })` → 2 A4
   pages with no page URL in the decoded text, and a print-media geometry check
   that the sheet starts at the page origin.
@@ -125,6 +152,12 @@ all, the closing sheet renders no payment section.
 - `@page` is global: the return voucher also loses the browser header/footer
   (intended) and adopts the shared sheet.
 - Invoice `notes` are no longer printed — the settled sheet has no notes field.
+- The meta row lets only the counterparty (and the voucher reason) wrap; every
+  other field stays on one line, so a long name cannot squeeze the invoice
+  number or the date onto second lines.
+- Production source stays locale-neutral (no Arabic literals): the CI guard
+  scans the receipt/voucher views and `invoice.tsx`, so Arabic lives only in
+  `i18n.ts` and test fixtures.
 
 ## Out of scope
 

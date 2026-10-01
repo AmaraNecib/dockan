@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { InvoiceDetail, Settings } from "@dokan/contracts";
 
-import { buildReceipt, paginateReceipt, type Receipt, type ReceiptLine } from "./receipt";
+import { buildReceipt, paginateReceipt, type Receipt, type ReceiptLine, type ReceiptPayment } from "./receipt";
 
 /**
  * Receipt printing — receipt projection from an invoice detail + settings.
@@ -59,14 +59,20 @@ describe("buildReceipt — store identity + invoice header", () => {
     expect(receipt.storeAddress).toBeNull();
   });
 
-  it("copies invoice number, kind, dates and party for the header", () => {
+  it("copies invoice number, kind, date-and-time and party for the header", () => {
     const receipt = buildReceipt(invoice, settings);
     expect(receipt.invoiceNumber).toBe("INV-0007");
     expect(receipt.kind).toBe("SALE");
-    expect(receipt.invoiceDate).toBe("2026-08-25");
-    // «التاريخ والوقت» prints the recording timestamp, not the date-only field
-    expect(receipt.invoiceCreatedAt).toBe("2026-08-25T10:00:00");
+    // the business date (2026-08-25) with the recording time (10:00)
+    expect(receipt.invoiceDateTime).toBe("2026-08-25T10:00:00");
     expect(receipt.counterpartyName).toBe("زبون النقد");
+  });
+
+  it("keeps a backdated invoice's business day and shows when it was recorded", () => {
+    // recorded the next day: the paper must keep the business date for the day
+    // part, and take only the clock time from the recording moment
+    const backdated = buildReceipt({ ...invoice, invoiceDate: "2026-08-20", createdAt: "2026-08-25T10:00:00" }, settings);
+    expect(backdated.invoiceDateTime).toBe("2026-08-20T10:00:00");
   });
 
   it("keeps an anonymous invoice's null party", () => {
@@ -153,15 +159,18 @@ function line(index: number, over: Partial<ReceiptLine> = {}): ReceiptLine {
   return { description: `منتج ${index}`, quantity: 1, unitPrice: 100, netTotal: 100 + index, ...over };
 }
 
-function receiptWith(lines: ReceiptLine[], paymentCount = 0): Receipt {
+function payment(note: string | null = null): ReceiptPayment {
+  return { paidAt: "2026-10-01T09:30:00", method: "CASH", amount: 100, note };
+}
+
+function receiptWith(lines: ReceiptLine[], payments: ReceiptPayment[] = []): Receipt {
   return {
     storeName: "دكان التجربة",
     storePhone: "+213550123123",
     storeAddress: null,
     invoiceNumber: "INV-0042",
     kind: "SALE",
-    invoiceDate: "2026-10-01",
-    invoiceCreatedAt: "2026-10-01T09:30:00",
+    invoiceDateTime: "2026-10-01T09:30:00",
     counterpartyName: "علي",
     lines,
     subtotalAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
@@ -169,13 +178,15 @@ function receiptWith(lines: ReceiptLine[], paymentCount = 0): Receipt {
     totalAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
     paidAmount: 0,
     remainingAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
-    payments: Array.from({ length: paymentCount }, (_, i) => ({
-      paidAt: `2026-10-0${(i % 9) + 1}T09:0${i}:00`,
-      method: "CASH" as const,
-      amount: 100,
-      note: null,
-    })),
+    payments,
   };
+}
+
+/** The same row weights the paginator uses, for capacity assertions. */
+function pageUnits(page: { lines: ReceiptLine[]; payments: ReceiptPayment[] }): number {
+  const lineUnits = page.lines.reduce((sum, l) => sum + Math.max(1, Math.ceil(l.description.length / 32)), 0);
+  const paymentUnits = page.payments.reduce((sum, p) => sum + Math.max(1, Math.ceil((p.note ?? "").length / 20)), 0);
+  return lineUnits + paymentUnits;
 }
 
 const linesOf = (pages: ReturnType<typeof paginateReceipt>) => pages.flatMap((page) => page.lines);
@@ -236,7 +247,7 @@ describe("paginateReceipt — one A4 sheet per page", () => {
 
   it("keeps the settled 12-line split at 10/2 when a payment shares the closing sheet", () => {
     const lines = Array.from({ length: 12 }, (_, i) => line(i + 1));
-    const pages = paginateReceipt(receiptWith(lines, 1));
+    const pages = paginateReceipt(receiptWith(lines, [payment()]));
     expect(pages).toHaveLength(2);
     expect(pages[0]?.lines).toHaveLength(10);
     expect(pages[1]?.lines).toHaveLength(2);
@@ -253,7 +264,7 @@ describe("paginateReceipt — one A4 sheet per page", () => {
   });
 
   it("moves a long payment history onto continuation sheets with no lines", () => {
-    const pages = paginateReceipt(receiptWith([line(1)], 26));
+    const pages = paginateReceipt(receiptWith([line(1)], Array.from({ length: 26 }, () => payment())));
     const closingIndex = pages.findIndex((page) => page.closes);
     const continuation = pages.slice(closingIndex + 1);
     expect(continuation.length).toBeGreaterThan(0);
@@ -268,13 +279,46 @@ describe("paginateReceipt — one A4 sheet per page", () => {
     const short = Array.from({ length: 13 }, (_, i) => line(i + 1));
     // a description long enough to wrap doubles each line's weight, so the
     // same 13 lines need more sheets than the one-row-per-line case
-    const long = short.map((l) => ({ ...l, description: "ا".repeat(40) }));
+    const long = short.map((l) => ({ ...l, description: "x".repeat(40) }));
     expect(paginateReceipt(receiptWith(short))).toHaveLength(2);
     expect(paginateReceipt(receiptWith(long))).toHaveLength(4);
   });
 
+  it("never overruns the closing sheet when line weights are uneven", () => {
+    // weights [6, 5, 1, 1, 1, 1, 1]: summing capacities says two sheets fit
+    // (10 + 6 = 16), but the only prefix that fits sheet 1 is [6], leaving 10
+    // units for a 6-unit closing sheet. The weighted split needs three sheets.
+    const uneven = [
+      line(1, { description: "x".repeat(170) }), // 6 units
+      line(2, { description: "x".repeat(140) }), // 5 units
+      ...Array.from({ length: 5 }, (_, i) => line(i + 3)),
+    ];
+    const pages = paginateReceipt(receiptWith(uneven));
+    expect(pages).toHaveLength(3);
+    expect(linesOf(pages)).toEqual(uneven);
+    // first non-closing 10, later non-closing 9, closing 6 (no payments)
+    const caps = [10, 9, 6];
+    pages.forEach((page, index) => {
+      expect(pageUnits(page)).toBeLessThanOrEqual(caps[index] ?? 0);
+    });
+  });
+
+  it("charges wrapped payment notes their real units, not one per payment", () => {
+    // two 2-unit payments: subtracting their COUNT (2) instead of their UNITS
+    // (4) would let both lines and both payments share one 13-unit sheet
+    const wrapped = [payment("x".repeat(30)), payment("x".repeat(30))];
+    const pages = paginateReceipt(receiptWith([line(1), line(2)], wrapped));
+    expect(pages).toHaveLength(3);
+    expect(pages[0]?.lines).toHaveLength(1);
+    expect(pages[0]?.payments).toHaveLength(0);
+    const closing = pages.find((page) => page.closes);
+    expect(closing?.lines).toHaveLength(1);
+    expect(closing?.payments).toHaveLength(1);
+    expect(pages.flatMap((page) => page.payments)).toHaveLength(2);
+  });
+
   it("still returns one closing sheet for an invoice with no lines", () => {
-    const pages = paginateReceipt(receiptWith([], 1));
+    const pages = paginateReceipt(receiptWith([], [payment()]));
     expect(pages).toHaveLength(1);
     expect(pages[0]?.lines).toEqual([]);
     expect(pages[0]?.closes).toBe(true);

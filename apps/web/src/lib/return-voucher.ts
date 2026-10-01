@@ -1,5 +1,7 @@
 import type { ReturnDetail, Settings } from "@dokan/contracts";
 
+import { paginateLineSlices, textRowUnits } from "./print-pagination";
+
 /**
  * Return voucher printing — printable voucher projection. The print flow
  * needs one flat, render-ready document: store identity + return header
@@ -71,6 +73,54 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
       refundAmount: line.refundAmount,
     })),
   };
+}
+
+/** One A4 sheet of the printed voucher; `closes` carries the totals block. */
+export interface ReturnVoucherPage {
+  /** 1-based sheet number */
+  number: number;
+  lines: ReturnVoucherLine[];
+  closes: boolean;
+}
+
+/** Same conservative sheet budget as the invoice (see lib/receipt.ts). */
+const VOUCHER_PAGE_UNITS = 13;
+/** the heavy rule + the three totals rows */
+const VOUCHER_TOTALS_UNITS = 4;
+/** the items heading, first sheet only */
+const VOUCHER_TITLE_UNITS = 1;
+/** the voucher meta wraps to two rows; the invoice meta is one */
+const VOUCHER_META_EXTRA_UNITS = 1;
+/** conservative characters that fit on one row before a line description wraps */
+const VOUCHER_DESCRIPTION_CHARS = 32;
+
+const VOUCHER_CLOSING_FIRST =
+  VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - VOUCHER_META_EXTRA_UNITS - VOUCHER_TITLE_UNITS;
+const VOUCHER_CLOSING_REST = VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - VOUCHER_META_EXTRA_UNITS;
+const VOUCHER_FIRST_CONTINUATION =
+  VOUCHER_PAGE_UNITS - VOUCHER_META_EXTRA_UNITS - VOUCHER_TITLE_UNITS;
+const VOUCHER_CONTINUATION = VOUCHER_PAGE_UNITS - VOUCHER_META_EXTRA_UNITS;
+
+/**
+ * Split the voucher lines into A4 sheets: a return can carry up to 200 lines,
+ * and the footer must not claim "page 1 of 1" over a clipped table. The full
+ * store/meta header repeats on every sheet and the totals close the last one;
+ * there is no carried total because the voucher prints no running sum.
+ */
+export function paginateReturnVoucher(voucher: ReturnVoucher): ReturnVoucherPage[] {
+  const costs = voucher.lines.map((line) => textRowUnits(line.description, VOUCHER_DESCRIPTION_CHARS));
+  const slices = paginateLineSlices(costs, {
+    firstClosing: VOUCHER_CLOSING_FIRST,
+    restClosing: VOUCHER_CLOSING_REST,
+    firstContinuation: VOUCHER_FIRST_CONTINUATION,
+    continuation: VOUCHER_CONTINUATION,
+  });
+  let cursor = 0;
+  return slices.map((end, index) => {
+    const lines = voucher.lines.slice(cursor, end);
+    cursor = end;
+    return { number: index + 1, lines, closes: index === slices.length - 1 };
+  });
 }
 
 /**

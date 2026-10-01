@@ -314,35 +314,52 @@ body {
 }
 
 .print-sheet-meta {
-  display: grid;
-  grid-template-columns: auto auto auto auto;
+  display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 0 1.125rem;
   margin: 0.875rem 0 1.125rem;
   padding-bottom: 0.8125rem;
   border-bottom: var(--hairline) solid var(--paper-soft);
 }
 
+/* Ordinary metadata stays on one row; only a designated long value (the
+   counterparty) may wrap instead of running off the A4 width. */
 .print-sheet-meta > div {
   display: flex;
   align-items: baseline;
   gap: 0.25rem;
-  white-space: nowrap;
 }
 
 .print-sheet-meta dt {
   font-size: 0.75rem;
   color: var(--paper-muted);
+  white-space: nowrap;
 }
 
 .print-sheet-meta dd {
   margin: 0;
   font-weight: 700;
   font-size: 0.90625rem;
+  white-space: nowrap;
+}
+
+/* the counterparty name (and the voucher's reason) may be long: shrink that
+   item and let its value wrap, while every other field keeps its one line */
+.print-sheet-meta-wrap,
+.print-sheet-meta-wide {
+  min-width: 0;
+}
+
+.print-sheet-meta-wrap dd,
+.print-sheet-meta-wide dd {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* the voucher's longer field list wraps into rows instead of one line */
 .print-sheet-meta-list {
+  display: grid;
   grid-template-columns: auto auto auto;
   justify-content: start;
   gap: 0.25rem 1.125rem;

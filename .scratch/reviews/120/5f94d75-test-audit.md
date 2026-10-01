@@ -28,5 +28,14 @@
 - `bun run test` — 466 web tests + API suites pass
 - `bun run test:e2e` — 38/38 pass (full suite)
 
+## Flake note
+
+One full-suite run after the #122 base refresh failed
+`learnability.spec.ts:162` (`addStockedLine` scanner loop: the second generated
+barcode had not landed when the line was asserted). The spec passed in
+isolation (7/7) and the next full-suite run passed 38/38, so it is the known
+scan-burst timing flake under load (wisdom 2026-08-24-deterministic-timing-tests),
+not a regression from this rebase.
+
 The earlier test-audit rounds remain valid for the pre-rebase code:
 `.scratch/reviews/120/a4647f5-test-audit.md` and `4cda79c-test-audit.md`.

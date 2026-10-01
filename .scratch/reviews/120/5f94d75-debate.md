@@ -3,7 +3,7 @@
 - **Reviewed integration HEAD:** `5c26a8a473cfab2a38a6b09d7dfbfb25580e539f`
 - **Final code HEAD / this file:** `a8f02b9232616d31b3a7bf47286d1e4baef8b1cf`
 - **Pre-rebase reviewed code:** `60573aff2bb896aac06ac84683924ec4b8d2e52b`
-- **Rebased onto:** `origin/develop` @ `a0b96718f747d94181fc2b257d7d0ff2963a50b3` (#119 dates + deps)
+- **Rebased onto:** `origin/develop` @ `1d02f93` (#119 dates + deps + #122 CI); the first rebase was onto `a0b96718f747d94181fc2b257d7d0ff2963a50b3`
 - **Earlier rounds:** `.scratch/reviews/120/5dbb678-debate.md`,
   `a4647f5-test-audit.md`, `4cda79c-debate.md`.
 

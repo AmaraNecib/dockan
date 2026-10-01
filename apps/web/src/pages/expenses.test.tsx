@@ -614,6 +614,15 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     expect(await ui.waitFor(() => ui.query("expense-save") !== null)).toBe(true);
   }
 
+  /** The device-local instant a `DD/MM/YYYY HH:mm` field value names. Throws
+   *  when the value is not the taught shape, so a malformed value fails loudly
+   *  instead of comparing NaN. */
+  function fieldInstant(value: string): number {
+    const match = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2})$/.exec(value);
+    if (match === null) throw new Error(`field value is not day-first: ${value}`);
+    return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4]), Number(match[5])).getTime();
+  }
+
   it("starts in the app's day-first shape, never a datetime-local value", async () => {
     const ui = await mountPage(queryClient);
     expect(await ui.waitFor(() => ui.query("expense-date") !== null)).toBe(true);
@@ -622,6 +631,10 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     expect(field.type).toBe("text");
     expect(field.value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(field.value).not.toContain("T");
+    // the example is copy, not a literal in the component
+    expect(field.getAttribute("placeholder")).toBe(i18n.t("expenseDateHint"));
+    // shape alone would pass for 01/01/1970; the value must be the real now
+    expect(Math.abs(fieldInstant(field.value) - Date.now())).toBeLessThan(90_000);
 
     await ui.unmount();
   });
@@ -679,6 +692,30 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     await ui.unmount();
   });
 
+  it("refuses an impossible calendar day instead of submitting it", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "1200");
+    // 2026 is not a leap year: the api must never receive 2026-02-29
+    await ui.type("expense-date", "29/02/2026");
+    await ui.click("expense-save");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(lastExpense).toBeNull();
+    expect(ui.query("expense-error")?.textContent).toContain("01/10/2026 00:34");
+
+    // the real leap day is accepted and sent with its parsed ISO
+    await ui.type("expense-date", "29/02/2024 08:00");
+    await ui.click("expense-save");
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+    expect(lastExpense).toMatchObject({ occurredAt: "2024-02-29T08:00:00" });
+
+    await ui.unmount();
+  });
+
   it("fills the field with now from the «الآن» button", async () => {
     const ui = await mountPage(queryClient);
     await recordReady(ui);
@@ -689,6 +726,8 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
     const value = ui.query<HTMLInputElement>("expense-date")!.value;
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
+    // not just a shape: the stamp is the device's own moment
+    expect(Math.abs(fieldInstant(value) - Date.now())).toBeLessThan(90_000);
 
     await ui.unmount();
   });

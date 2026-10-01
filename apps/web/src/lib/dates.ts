@@ -14,7 +14,9 @@
  *
  * Invalid input is returned unchanged. A display formatter must never blank a
  * row or print "Invalid Date" over a legacy value — a wrong-but-visible string
- * is something the owner can report, a crash or a blank cell is not.
+ * is something the owner can report, a crash or a blank cell is not. Invalid
+ * includes impossible calendar dates (`2026-02-31`) and out-of-range clock
+ * fields (`24:00`, `00:99`): the stored shape is fixed-width, not a date.
  */
 
 /** Stored shape: `YYYY-MM-DD`, optionally `T`/space + `HH:mm` with optional `:ss`. */
@@ -22,6 +24,8 @@ const STORED_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{
 
 /** Typed shape: `D/M/YYYY`, optionally whitespace + `H:mm` with optional `:ss`. */
 const TYPED_DATE_TIME = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 interface StoredMoment {
   year: string;
@@ -39,6 +43,17 @@ function inRange(value: string | undefined | null, min: number, max: number): bo
   return Number.isInteger(parsed) && parsed >= min && parsed <= max;
 }
 
+/** Whether `Y-M-D` is a real calendar day (leap years included). */
+function isRealDate(year: number, month: number, day: number): boolean {
+  if (!Number.isInteger(month) || month < 1 || month > 12) return false;
+  if (!Number.isInteger(day) || day < 1) return false;
+  if (month === 2) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return day <= (leap ? 29 : 28);
+  }
+  return day <= (DAYS_IN_MONTH[month - 1] ?? 0);
+}
+
 /** Strict parse of the stored shape; `null` for anything else. */
 function parseStored(iso: string): StoredMoment | null {
   const match = STORED_DATE_TIME.exec(iso);
@@ -49,15 +64,22 @@ function parseStored(iso: string): StoredMoment | null {
   if (year === undefined || month === undefined || day === undefined) return null;
   const hour = match[4] ?? null;
   const minute = match[5] ?? null;
+  const second = match[6] ?? null;
   // a date with a time is a moment; a date alone is not given a fabricated 00:00
   if ((hour === null) !== (minute === null)) return null;
-  if (!inRange(month, 1, 12) || !inRange(day, 1, 31) || !inRange(hour, 0, 23) || !inRange(minute, 0, 59)) return null;
+  if (!isRealDate(Number(year), Number(month), Number(day))) return null;
+  if (!inRange(hour, 0, 23) || !inRange(minute, 0, 59) || !inRange(second, 0, 59)) return null;
   return { year, month, day, hour, minute };
 }
 
 /** Zero-pad a date/time field for the api's fixed-width shape. */
-function two(value: string): string {
+function pad2(value: string): string {
   return value.padStart(2, "0");
+}
+
+/** The day-first calendar day of an already-parsed stored value. */
+function formatStoredDay(parsed: StoredMoment): string {
+  return `${parsed.day}/${parsed.month}/${parsed.year}`;
 }
 
 /**
@@ -67,7 +89,7 @@ function two(value: string): string {
 export function formatDate(iso: string): string {
   const parsed = parseStored(iso);
   if (parsed === null) return iso;
-  return `${parsed.day}/${parsed.month}/${parsed.year}`;
+  return formatStoredDay(parsed);
 }
 
 /**
@@ -83,17 +105,19 @@ export function formatDate(iso: string): string {
 export function formatDateTime(iso: string): string {
   const parsed = parseStored(iso);
   if (parsed === null) return iso;
-  const date = `${parsed.day}/${parsed.month}/${parsed.year}`;
+  const date = formatStoredDay(parsed);
   if (parsed.hour === null || parsed.minute === null) return date;
   return `${date} ${parsed.hour}:${parsed.minute}`;
 }
 
 /**
  * Parse the text the editable date/time field teaches: `D/M/YYYY` with an
- * optional `H:mm` (and optional `:ss`). Whitespace is trimmed; a bare date
- * means midnight. Returns the api's naive ISO moment (`YYYY-MM-DDTHH:mm:ss`),
- * or `null` when the text is not a real day-first date/time — including the
- * raw stored shape, so a pasted ISO value is corrected instead of accepted.
+ * optional `H:mm` (and optional `:ss`). Whitespace is trimmed and runs of
+ * whitespace between the date and the time are accepted; a bare date means
+ * midnight. Returns the api's naive ISO moment (`YYYY-MM-DDTHH:mm:ss`), or
+ * `null` when the text is not a real day-first date/time — including an
+ * impossible calendar day (`31/02/2026`) and the raw stored shape, so a pasted
+ * ISO value is corrected instead of accepted.
  */
 export function parseDateTimeText(text: string): string | null {
   const match = TYPED_DATE_TIME.exec(text.trim());
@@ -105,10 +129,9 @@ export function parseDateTimeText(text: string): string | null {
   const hour = match[4] ?? "0";
   const minute = match[5] ?? "0";
   const second = match[6] ?? "0";
-  if (!inRange(month, 1, 12) || !inRange(day, 1, 31) || !inRange(hour, 0, 23) || !inRange(minute, 0, 59) || !inRange(second, 0, 59)) {
-    return null;
-  }
-  return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}:${two(second)}`;
+  if (!isRealDate(Number(year), Number(month), Number(day))) return null;
+  if (!inRange(hour, 0, 23) || !inRange(minute, 0, 59) || !inRange(second, 0, 59)) return null;
+  return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
 }
 
 /**

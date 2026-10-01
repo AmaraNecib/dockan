@@ -31,16 +31,17 @@ export function nowDateTimeText(now?: Date): string;    // the «الآن» butt
 Rules:
 
 - One strict matcher for both formatters: `YYYY-MM-DD` optionally followed by `T` (or a space)
-  and `HH:mm` with optional `:ss`. Field ranges are validated (month 1–12, day 1–31,
-  hour 0–23, minute 0–59).
+  and `HH:mm` with optional `:ss`. Field ranges and the calendar day are validated (month
+  1–12, day within the month — leap years included — hour 0–23, minute/second 0–59).
 - **Invalid input is returned unchanged.** A display formatter must never crash a page or
   print "Invalid Date"; legacy/garbage rows stay visible exactly as stored.
 - `formatDateTime` on a date-only value returns the day alone (no fabricated `00:00`).
 - Seconds are dropped from display — they are never useful to the owner.
 - `parseDateTimeText` is the inverse for the one editable date/time field: it accepts the
-  display shape, optional leading zeros (`1/10/2026`, `0:34`), an optional time (midnight),
-  and optional seconds. Anything else (including raw ISO) → `null` so the form can teach the
-  shape instead of sending a value the API will reject.
+  display shape, optional leading zeros (`1/10/2026`, `0:34`), whitespace around and between
+  the two parts, an optional time (midnight), and optional seconds. Anything else (including
+  raw ISO, Arabic-Indic digits, or an impossible day such as `31/02/2026` or `29/02/2026`)
+  → `null`, so the form teaches the shape instead of sending a value the API will reject.
 - No `Date` parsing anywhere: `new Date("2026-10-01T00:34:15")` is device-local, which happens
   to match the app convention today but is a time bomb on a foreign machine.
 
@@ -82,7 +83,9 @@ replaced by a text field in the app's shape plus an **«الآن»** button:
 
 - value `formatDateTime`-shaped; placeholder `01/10/2026 00:34`; testid stays `expense-date`.
 - submit parses with `parseDateTimeText`; empty = "not provided" (the API records now, as
-  today); unparseable = `expenseDateInvalid` form error, nothing is sent.
+  today); unparseable = `expenseDateInvalid` form error with `aria-invalid`/`aria-describedby`
+  wired to it, nothing is sent. The placeholder example is the `expenseDateHint` key; «الآن»
+  writes `nowDateTimeText()`.
 - the button carries testid `expense-date-now` and writes `nowDateTimeText()`.
 
 The two custom-range fields (`expense-custom-from/to`) and the reports page's custom bounds
@@ -128,5 +131,5 @@ Replace with one nowrap line beside the select:
   cannot see bidi; the e2e reads `textContent` (logical order).
 - The sale quick-add merge touches 7 shared e2e specs; lane 120's customers work may touch
   `sale.tsx` too (landing order is the parent's call).
-- `823` granular tests assert old raw strings (`debts`, `invoice`, `receipt-view`,
-  `dashboard`) — updated in the same commit.
+- The granular tests that asserted old raw strings (`debts`, `invoice`, `receipt-view`,
+  `dashboard`) are updated in the same change.

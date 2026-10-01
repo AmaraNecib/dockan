@@ -324,7 +324,7 @@ export function ExpensesPage() {
             className="w-full rounded border px-3 py-2"
             name="expenseOccurredAt"
             autoComplete="off"
-            placeholder="01/10/2026 00:34"
+            placeholder={t("expenseDateHint")}
             disabled={disabled}
             value={occurredAt}
             aria-invalid={dateInvalid || undefined}

@@ -182,7 +182,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
           )}
           <p className="mt-2 text-xs text-muted-foreground">
             {t("dashboardDay")}:{" "}
-            <span dir="ltr" data-testid="dashboard-day">
+            <span data-testid="dashboard-day">
               {formatDate(summary.data.day)}
             </span>
           </p>

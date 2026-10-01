@@ -11,7 +11,7 @@ import { activateOption, chooseOption, findOption, openSelect } from "../tests/s
 // SAFETY: only this flag is written; globalThis keeps every other property.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 /** Invoice subset the mocked invoicesCreate resolves with (see InvoiceDetail). */
 interface InvoiceResponse {
@@ -38,11 +38,26 @@ interface InvoiceMutationOptions {
   onError?: (error: { message?: string }) => void;
 }
 
+/** Item payload the quick-add actually sends (create vs create-with-stock). */
+interface CapturedItemInput {
+  name: string;
+  categoryId: string;
+  costPrice: number;
+  sellingPrice: number;
+  barcode?: string;
+  stockOnHand?: number;
+}
+
 let scanPrice = 1000;
 let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
+/** the last payload each create path received, so a test can assert what was sent */
+let lastCreateInput: CapturedItemInput | null = null;
+let lastCreateWithStockInput: CapturedItemInput | null = null;
+/** a scan code this test wants treated as unknown (catalogSearch exact: null) */
+let unknownScanCode: string | null = null;
 /** holds the category list open so the quick-add can open before it arrives */
 let categoriesGate: Promise<void> | null = null;
 let releaseCategoriesGate: (() => void) | null = null;
@@ -71,17 +86,22 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsCreate: {
       mutationOptions: (opts?: ItemMutationOptions) => ({
-        mutationFn: () =>
-          new Promise<{ id: string; name: string; sellingPrice: number }>((resolve) => {
+        mutationFn: (input: CapturedItemInput) => {
+          lastCreateInput = input;
+          return new Promise<{ id: string; name: string; sellingPrice: number }>((resolve) => {
             resolveItemCreate = resolve;
-          }),
+          });
+        },
         ...opts,
       }),
     },
     itemsCreateWithStock: {
       mutationOptions: (opts?: ItemMutationOptions) => ({
-        mutationFn: async () => {
-          throw new Error("itemsCreateWithStock unused in this test");
+        // settles immediately so the tests can observe the line being added and
+        // the quick form closing, exactly like the create path above does not
+        mutationFn: async (input: CapturedItemInput) => {
+          lastCreateWithStockInput = input;
+          return { id: `item-stock-${input.name}`, name: input.name, sellingPrice: input.sellingPrice };
         },
         ...opts,
       }),
@@ -105,6 +125,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {
     catalogSearch: async ({ query }: { query: string }) => {
       if (scanFails) throw new Error("UNEXPECTED");
+      if (unknownScanCode !== null && query === unknownScanCode) return { exact: null };
       return { exact: { item: { id: `item-${query}`, name: `منتج ${query}`, sellingPrice: scanPrice } } };
     },
   },
@@ -232,6 +253,9 @@ beforeEach(() => {
   lastInvoiceInput = null;
   resolveInvoice = null;
   resolveItemCreate = null;
+  lastCreateInput = null;
+  lastCreateWithStockInput = null;
+  unknownScanCode = null;
   categoriesGate = null;
   releaseCategoriesGate = null;
 });
@@ -706,5 +730,103 @@ describe("SalePage learnability (issue #94)", () => {
 
     await chooseOption(overrideType, "مبلغ");
     expect(host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]')?.value).toBe("900");
+  });
+});
+
+describe("SalePage quick-add stock (issue #119)", () => {
+  /** open the one create action and fill the fields the submit requires */
+  async function openQuick(host: HTMLElement) {
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="sale-quick-add"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** set a quick-add field addressed by its `name` (cost/sell have no testid) */
+  async function setNamed(host: HTMLElement, name: string, value: string) {
+    const input = host.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+    if (input === null) throw new Error(`missing input ${name}`);
+    await act(async () => setElementValue(input, value));
+  }
+
+  async function fillQuick(host: HTMLElement, stock?: string) {
+    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    await setNamed(host, "quickCost", "100");
+    await setNamed(host, "quickSell", "200");
+    if (stock !== undefined) await act(async () => setInput(host, "sale-quick-stock", stock));
+  }
+
+  async function submitQuick(host: HTMLElement) {
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="sale-quick-form"]')?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it("creates with zero stock when the field is blank", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host);
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(lastCreateInput).toMatchObject({ name: "منتج سريع", categoryId: "cat-1", costPrice: 100, sellingPrice: 200 });
+    // no opening movement is claimed for a blank field
+    expect(lastCreateInput).not.toHaveProperty("stockOnHand");
+  });
+
+  it("treats an explicit 0 as zero stock, not as a missing value or an error", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host, "0");
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(lastCreateInput).toMatchObject({ name: "منتج سريع" });
+    expect(lastCreateInput).not.toHaveProperty("stockOnHand");
+  });
+
+  it("creates with opening stock when a positive quantity is typed", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host, "5");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toMatchObject({ name: "منتج سريع", stockOnHand: 5 });
+    // the settled create added the line and closed the one form
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج سريع");
+  });
+
+  it("refuses a stock quantity it cannot read and sends nothing", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    await fillQuick(host, "-1");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockInvalid"));
+    // the form stays open so the quantity can be corrected
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+  });
+
+  it("focuses the stock field from the scan dialog's create-with-stock path", async () => {
+    unknownScanCode = "UNKNOWN-9001";
+    const host = await mountSale();
+    await scan("UNKNOWN-9001");
+    expect(host.querySelector('[data-testid="unknown-scan-dialog"]')).not.toBeNull();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="scan-create-stock"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const stock = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]');
+    expect(stock).not.toBeNull();
+    // the same one form as the plain create, with the scan's code already in it
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-9001");
+    expect(document.activeElement).toBe(stock);
   });
 });

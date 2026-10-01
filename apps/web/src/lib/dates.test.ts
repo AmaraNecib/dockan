@@ -42,6 +42,26 @@ describe("formatDate (issue #119)", () => {
     expect(formatDate("2026/10/01")).toBe("2026/10/01");
     expect(formatDate("2026-10-01T25:00:00")).toBe("2026-10-01T25:00:00");
   });
+
+  it("refuses impossible calendar days, leap years included", () => {
+    // February 31 is not a day; the raw stored value stays visible instead
+    expect(formatDate("2026-02-31")).toBe("2026-02-31");
+    // 2026 is not a leap year, so February ends on the 28th
+    expect(formatDate("2026-02-29")).toBe("2026-02-29");
+    // ...but 2024 is, and 29 February exists there
+    expect(formatDate("2024-02-29")).toBe("29/02/2024");
+    // century rule: 1900 is not a leap year, 2000 is
+    expect(formatDate("1900-02-29")).toBe("1900-02-29");
+    expect(formatDate("2000-02-29")).toBe("29/02/2000");
+    // 30-day months reject the 31st
+    expect(formatDate("2026-04-31")).toBe("2026-04-31");
+    expect(formatDate("2026-04-30")).toBe("30/04/2026");
+  });
+
+  it("refuses Arabic-Indic digits rather than half-rendering them", () => {
+    expect(formatDate("٢٠٢٦-١٠-٠١")).toBe("٢٠٢٦-١٠-٠١");
+    expect(formatDateTime("٢٠٢٦-١٠-٠١T٠٠:٣٤:١٥")).toBe("٢٠٢٦-١٠-٠١T٠٠:٣٤:١٥");
+  });
 });
 
 describe("formatDateTime (issue #119)", () => {
@@ -73,6 +93,13 @@ describe("formatDateTime (issue #119)", () => {
     expect(formatDateTime("2026-10-01T00:60:00")).toBe("2026-10-01T00:60:00");
     expect(formatDateTime("اليوم")).toBe("اليوم");
   });
+
+  it("refuses an out-of-range seconds field instead of ignoring it", () => {
+    // seconds are trimmed from display, but an impossible value still means
+    // the stored string is not a valid moment
+    expect(formatDateTime("2026-10-01T00:34:99")).toBe("2026-10-01T00:34:99");
+    expect(formatDate("2026-10-01T00:34:99")).toBe("2026-10-01T00:34:99");
+  });
 });
 
 describe("parseDateTimeText (issue #119)", () => {
@@ -90,6 +117,22 @@ describe("parseDateTimeText (issue #119)", () => {
     expect(parseDateTimeText("01/10/2026 00:34:15")).toBe("2026-10-01T00:34:15");
   });
 
+  it("trims surrounding whitespace and accepts a run of spaces before the time", () => {
+    expect(parseDateTimeText("  01/10/2026   00:34  ")).toBe("2026-10-01T00:34:00");
+    expect(parseDateTimeText("\t1/10/2026\t0:34")).toBe("2026-10-01T00:34:00");
+  });
+
+  it("refuses impossible calendar days instead of rolling them over", () => {
+    // 2026 is not a leap year; the api must never receive 2026-02-29
+    expect(parseDateTimeText("29/02/2026")).toBeNull();
+    // 2024 is a leap year
+    expect(parseDateTimeText("29/02/2024")).toBe("2024-02-29T00:00:00");
+    // 31 April does not exist
+    expect(parseDateTimeText("31/04/2026")).toBeNull();
+    expect(parseDateTimeText("30/04/2026 08:00")).toBe("2026-04-30T08:00:00");
+    expect(parseDateTimeText("31/12/2026")).toBe("2026-12-31T00:00:00");
+  });
+
   it("round-trips what the formatters produce", () => {
     expect(parseDateTimeText(formatDateTime("2026-10-01T00:34:15"))).toBe("2026-10-01T00:34:00");
     expect(parseDateTimeText(formatDate("2026-10-01"))).toBe("2026-10-01T00:00:00");
@@ -104,9 +147,15 @@ describe("parseDateTimeText (issue #119)", () => {
     expect(parseDateTimeText("10/13/2026 00:34")).toBeNull();
     expect(parseDateTimeText("01/10/2026 25:00")).toBeNull();
     expect(parseDateTimeText("01/10/2026 00:60")).toBeNull();
+    expect(parseDateTimeText("01/10/2026 00:34:99")).toBeNull();
     expect(parseDateTimeText("01/10/26 00:34")).toBeNull();
     expect(parseDateTimeText("01/10/2026 00")).toBeNull();
     expect(parseDateTimeText("hello")).toBeNull();
+  });
+
+  it("rejects Arabic-Indic digits: the api's shape is ASCII, so half-parse is worse than none", () => {
+    expect(parseDateTimeText("٠١/١٠/٢٠٢٦ ٠٠:٣٤")).toBeNull();
+    expect(parseDateTimeText("٠١/١٠/٢٠٢٦")).toBeNull();
   });
 });
 

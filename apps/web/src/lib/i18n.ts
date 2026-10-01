@@ -472,6 +472,7 @@ const resources = {
       expenseOccurredAt: "التاريخ والوقت",
       // issue #119 — the field takes `DD/MM/YYYY HH:mm`; the button stamps now
       dateNow: "الآن",
+      expenseDateHint: "01/10/2026 00:34",
       expenseDateInvalid: "أدخل التاريخ والوقت بهذا الشكل: 01/10/2026 00:34",
       expenseSave: "تسجيل المصروف",
       expenseSaved: "تم تسجيل المصروف",

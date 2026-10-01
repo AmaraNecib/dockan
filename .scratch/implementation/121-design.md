@@ -51,7 +51,9 @@ formatPrintAmount(1234567)                 === "1,234,567"
 ```
 
 `apps/web/src/components/print-sheet.tsx` (new) — the shared A4 frame:
-store name + contacts + rule + `children` + foot (store / «صفحة X من Y» / ref).
+store name + contacts + rule + `children` + foot (store / «صفحة X من Y» / ref),
+plus the shared `PrintItemTable` (name/qty + two money columns) and
+`PrintTotals` rows; both print documents compose them.
 
 `apps/web/src/components/receipt-view.tsx` — rewritten to render `paginateReceipt`
 output as N `.print-sheet`s.
@@ -73,29 +75,41 @@ content budget is ~20 units, so 13 is safe):
 
 - page 1 furniture: items title 1 unit, carried-total block 2 units;
 - continuation furniture: carry banner 2 + carried-total 2;
-- closing block: totals 5 units + payment head 3 units + one unit per payment row;
+- closing block: totals 5 units (+ payment head 3 units and one unit per
+  payment row, only when the invoice has payments);
 - a line's weight is 1, or 2+ when its description wraps (`length / 32` chars).
 
-Pages are packed to the minimal count and distributed evenly (so a 14-line
-invoice does not leave a one-line middle sheet). Payment rows claim the closing
-sheet's spare room first; any overflow continues on sheets with the full header
-and a repeated payment table.
+So a no-payment invoice fits 7 lines on its closing sheet (13−5−1) and 10 on a
+first continuation sheet; with a payment row the settled 12-line split is
+10/2. Pages are packed to the minimal count and distributed evenly. Payment
+rows claim the closing sheet's spare room first; any overflow continues on
+sheets with the full header and a repeated payment table. With no payments at
+all, the closing sheet renders no payment section.
 
 ## Tests
 
 - `lib/receipt.test.ts` — projection (incl. address, no notes), pagination:
-  1 sheet / 2 sheets / carried totals / long descriptions / payment overflow.
+  one-sheet boundary (7 fit, 8 split), 5-line single sheet, 12-line 10/2 with a
+  payment, three sheets at 20 lines, carried totals, long descriptions,
+  payment overflow.
 - `lib/print-format.test.ts` — date and grouped-amount formats.
 - `components/receipt-view.test.tsx` — rendered document: labels, dir tokens,
-  carry totals, page footers, payment history, all-header-per-sheet.
+  carry totals (both texts on a middle sheet), page footers, no payment
+  section when empty, all-header-per-sheet.
 - `tests/e2e/receipts.spec.ts` — 1-page invoice: sheet count, footer 1/1,
   formatted payment timestamp (no `T`).
-- `tests/e2e/invoice-print-a4.spec.ts` (new) — a 12-line invoice seeded through
-  the real RPC wire: 2 sheets, all lines present, carry total + carry banner,
-  payment row, both sheet headers, `page.pdf({ preferCSSPageSize: true,
-  displayHeaderFooter: true })` → 2 pages, every MediaBox A4, no page URL,
-  embedded fonts, and a print-media geometry check that the sheet starts at the
-  page origin (`@page { margin: 0 }` removes the header/footer box).
+- `tests/e2e/invoice-print-a4.spec.ts` (new) — a 12-line sale and a 5-line
+  purchase seeded through the real RPC wire: 2 sheets at 10/2 and 1 sheet
+  respectively, all lines present, carry total + carry banner, payment row,
+  both sheet headers, the RTL currency/amount bounding boxes,
+  `page.pdf({ preferCSSPageSize: true, displayHeaderFooter: true })` → 2 A4
+  pages with no page URL in the decoded text, and a print-media geometry check
+  that the sheet starts at the page origin.
+- `tests/e2e/pdf-helpers.ts` (new) — decodes drawn PDF text through each font's
+  ToUnicode CMap (Chrome encodes text as glyph IDs, so a byte scan cannot see
+  a header). The spec proves the scanner with a positive control: a PDF printed
+  with Chrome's own `.url` header template must contain `127.0.0.1`, while the
+  production call (`displayHeaderFooter: true`, default templates) must not.
 
 ## Risks
 

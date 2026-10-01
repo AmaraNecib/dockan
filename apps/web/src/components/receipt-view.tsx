@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import { formatPrintDateTime } from "../lib/print-format";
 import { paginateReceipt, type Receipt, type ReceiptPayment } from "../lib/receipt";
-import { PrintAmount, PrintSheet } from "./print-sheet";
+import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
 /**
  * Receipt printing — the print-only A4 invoice sheet (issue #121). Presentational:
@@ -34,13 +34,13 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
           <dl className="print-sheet-meta">
             <div>
               <dt>{t("invoiceNumber")}</dt>
-              <dd dir="ltr" className="print-sheet-n" data-testid="receipt-number">
+              <dd dir="ltr" className="print-sheet-ltr" data-testid="receipt-number">
                 {receipt.invoiceNumber}
               </dd>
             </div>
             <div>
               <dt>{t("invoicePrintDateTime")}</dt>
-              <dd dir="ltr" className="print-sheet-n" data-testid="receipt-date">
+              <dd className="print-sheet-digits" data-testid="receipt-date">
                 {formatPrintDateTime(receipt.invoiceDate)}
               </dd>
             </div>
@@ -66,96 +66,46 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
           )}
 
           {page.lines.length > 0 && (
-            <table className="print-sheet-items" data-testid="receipt-items">
-              {page.number === 1 && (
-                <caption className="print-sheet-items-title" data-testid="receipt-items-title">
-                  {t("invoicePrintItemsTitle")}
-                </caption>
-              )}
-              <thead>
-                <tr>
-                  <th scope="col" style={{ width: "42%" }}>
-                    {t("itemsName")}
-                  </th>
-                  <th scope="col" style={{ width: "12%" }}>
-                    {t("saleQuantity")}
-                  </th>
-                  <th scope="col" style={{ width: "23%" }}>
-                    {t("invoicePrintUnitPrice")}
-                  </th>
-                  <th scope="col" style={{ width: "23%" }}>
-                    {t("saleLineTotal")}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {page.lines.map((line, index) => (
-                  <tr key={`${line.description}-${index}`} data-testid="receipt-line">
-                    <td>{line.description}</td>
-                    <td dir="ltr" className="print-sheet-n">
-                      {line.quantity}
-                    </td>
-                    <td className="print-sheet-num">
-                      <PrintAmount value={line.unitPrice} />
-                    </td>
-                    <td className="print-sheet-num">
-                      <PrintAmount value={line.netTotal} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <PrintItemTable
+              title={page.number === 1 ? t("invoicePrintItemsTitle") : undefined}
+              titleTestId="receipt-items-title"
+              tableTestId="receipt-items"
+              rowTestId="receipt-line"
+              unitPriceLabel={t("invoicePrintUnitPrice")}
+              lineTotalLabel={t("saleLineTotal")}
+              lines={page.lines}
+              unitPrice={(line) => line.unitPrice}
+              lineTotal={(line) => line.netTotal}
+            />
           )}
 
           {page.closes ? (
-            <div className="print-sheet-totals" data-testid="receipt-totals">
-              <div>
-                <span className="print-sheet-label">{t("invoicePrintSubtotal")}</span>
-                <span data-testid="receipt-subtotal">
-                  <PrintAmount value={receipt.subtotalAmount} />
-                </span>
-              </div>
-              <div>
-                <span className="print-sheet-label">{t("saleDiscount")}</span>
-                <span data-testid="receipt-discount">
-                  <PrintAmount value={receipt.discountAmount > 0 ? -receipt.discountAmount : 0} />
-                </span>
-              </div>
-              <div className="print-sheet-grand">
-                <span>{t("invoiceTotal")}</span>
-                <span data-testid="receipt-total">
-                  <PrintAmount value={receipt.totalAmount} />
-                </span>
-              </div>
-              <div>
-                <span className="print-sheet-label">{t("invoicePaid")}</span>
-                <span data-testid="receipt-paid">
-                  <PrintAmount value={receipt.paidAmount} />
-                </span>
-              </div>
-              <div>
-                <span className="print-sheet-label">{t("invoiceRemaining")}</span>
-                <span data-testid="receipt-remaining">
-                  <PrintAmount value={receipt.remainingAmount} />
-                </span>
-              </div>
-            </div>
+            <PrintTotals
+              testId="receipt-totals"
+              rows={[
+                { label: t("invoicePrintSubtotal"), amount: receipt.subtotalAmount, testId: "receipt-subtotal" },
+                { label: t("saleDiscount"), amount: receipt.discountAmount > 0 ? -receipt.discountAmount : 0, testId: "receipt-discount" },
+                { label: t("invoiceTotal"), amount: receipt.totalAmount, grand: true, testId: "receipt-total" },
+                { label: t("invoicePaid"), amount: receipt.paidAmount, testId: "receipt-paid" },
+                { label: t("invoiceRemaining"), amount: receipt.remainingAmount, testId: "receipt-remaining" },
+              ]}
+            />
           ) : (
             page.carryOut !== null && (
-              <div className="print-sheet-totals">
-                <div className="print-sheet-grand" data-testid="receipt-carried-total">
-                  <span>{t("invoicePrintCarriedTotal")}</span>
-                  <span>
-                    <PrintAmount value={page.carryOut} />
-                  </span>
-                </div>
-              </div>
+              <PrintTotals
+                rows={[
+                  {
+                    label: t("invoicePrintCarriedTotal"),
+                    amount: page.carryOut,
+                    grand: true,
+                    rowTestId: "receipt-carried-total",
+                  },
+                ]}
+              />
             )
           )}
 
-          {(page.closes || page.payments.length > 0) && (
-            <ReceiptPayments payments={page.payments} empty={page.closes && receipt.payments.length === 0} />
-          )}
+          {page.payments.length > 0 && <ReceiptPayments payments={page.payments} />}
         </PrintSheet>
       ))}
     </div>
@@ -163,42 +113,36 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
 }
 
 /** The payment history section (decision A: the printed invoice carries it). */
-function ReceiptPayments({ payments, empty }: { payments: ReceiptPayment[]; empty: boolean }) {
+function ReceiptPayments({ payments }: { payments: ReceiptPayment[] }) {
   const { t } = useTranslation();
 
   return (
     <section className="print-sheet-payments" data-testid="receipt-payments">
       <h2>{t("pmtTitle")}</h2>
-      {empty ? (
-        <p className="print-sheet-payments-empty" data-testid="receipt-payments-empty">
-          {t("pmtEmpty")}
-        </p>
-      ) : (
-        <table className="print-sheet-payments">
-          <thead>
-            <tr>
-              <th style={{ width: "24%" }}>{t("pmtDate")}</th>
-              <th style={{ width: "20%" }}>{t("pmtAmount")}</th>
-              <th style={{ width: "18%" }}>{t("pmtMethod")}</th>
-              <th>{t("pmtNote")}</th>
+      <table className="print-sheet-payments">
+        <thead>
+          <tr>
+            <th scope="col">{t("pmtDate")}</th>
+            <th scope="col">{t("pmtAmount")}</th>
+            <th scope="col">{t("pmtMethod")}</th>
+            <th scope="col">{t("pmtNote")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {payments.map((payment, index) => (
+            <tr key={`${payment.paidAt}-${index}`} data-testid="receipt-payment">
+              <td className="print-sheet-digits">
+                {formatPrintDateTime(payment.paidAt)}
+              </td>
+              <td>
+                <PrintAmount value={payment.amount} />
+              </td>
+              <td>{t(`pmtMethod_${payment.method}`)}</td>
+              <td className="print-sheet-note">{payment.note ?? "—"}</td>
             </tr>
-          </thead>
-          <tbody>
-            {payments.map((payment, index) => (
-              <tr key={`${payment.paidAt}-${index}`} data-testid="receipt-payment">
-                <td dir="ltr" className="print-sheet-n">
-                  {formatPrintDateTime(payment.paidAt)}
-                </td>
-                <td>
-                  <PrintAmount value={payment.amount} />
-                </td>
-                <td>{t(`pmtMethod_${payment.method}`)}</td>
-                <td className="print-sheet-note">{payment.note ?? "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+          ))}
+        </tbody>
+      </table>
     </section>
   );
 }

@@ -348,6 +348,11 @@ body {
   gap: 0.25rem 1.125rem;
 }
 
+/* a field whose value needs the full row (the voucher's reason) */
+.print-sheet-meta-wide {
+  grid-column: 1 / -1;
+}
+
 .print-sheet-items-title {
   caption-side: top;
   text-align: start;
@@ -375,7 +380,21 @@ table.print-sheet-items td {
   border-bottom: var(--hairline) solid var(--paper-soft);
 }
 
-table.print-sheet-items td.print-sheet-num {
+/* column widths from the settled template: name 42%, qty 12%, money 23% each */
+table.print-sheet-items th:nth-child(1) {
+  width: 42%;
+}
+
+table.print-sheet-items th:nth-child(2) {
+  width: 12%;
+}
+
+table.print-sheet-items th:nth-child(3),
+table.print-sheet-items th:nth-child(4) {
+  width: 23%;
+}
+
+table.print-sheet-items td.print-sheet-money {
   text-align: start;
   white-space: nowrap;
 }
@@ -392,15 +411,26 @@ table.print-sheet-items tbody tr:last-child td {
   border-bottom: 0;
 }
 
-.print-sheet-n {
+/* a numeric/digit run isolated LTR inside the RTL sheet: quantities, phones,
+   references and the amount itself (single runs that must not be reordered) */
+.print-sheet-ltr {
   direction: ltr;
   unicode-bidi: isolate;
   font-family: var(--paper-num);
   font-variant-numeric: tabular-nums;
 }
 
+/* a date/time run: Western tabular digits WITHOUT LTR isolation. UAX#9 keeps
+   «01/10/2026 22:45» as date-right / time-left in RTL, which is the owner's
+   reading order; an LTR node flips both runs (see #119's formatter note). */
+.print-sheet-digits {
+  font-family: var(--paper-num);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .print-sheet-cur {
-  font-size: 0.85em;
+  font-size: 0.75rem;
   color: #444;
 }
 
@@ -476,6 +506,18 @@ table.print-sheet-payments th {
   padding: 0.375rem 0.5rem;
   text-align: start;
   border-bottom: var(--hairline) solid var(--paper-soft);
+}
+
+table.print-sheet-payments th:nth-child(1) {
+  width: 24%;
+}
+
+table.print-sheet-payments th:nth-child(2) {
+  width: 20%;
+}
+
+table.print-sheet-payments th:nth-child(3) {
+  width: 18%;
 }
 
 table.print-sheet-payments td {

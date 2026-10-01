@@ -125,4 +125,13 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(debtRow.textContent).toContain("400");
     expect(view.textContent).toContain("خصم من الدين (مطبّق)");
   });
+
+  it("prints the day-first invoice date without an LTR isolation (#119)", () => {
+    renderVoucher(buildReturnVoucher(makeReturn(), { storeName: "متجر الكرامة", storePhone: null, storeAddress: null }));
+    const date = host.querySelector('[data-testid="return-voucher-date"]');
+    expect(date?.textContent).toBe("26/08/2026");
+    // UAX#9 lays the numeric run out correctly in RTL; an LTR node would flip it
+    expect(date?.getAttribute("dir")).toBeNull();
+    expect(date?.className).toContain("print-sheet-digits");
+  });
 });

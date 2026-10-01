@@ -73,6 +73,16 @@ describe("buildReceipt — store identity + invoice header", () => {
   });
 });
 
+describe("buildReceipt — notes never reach the paper", () => {
+  it("drops the invoice notes from the projection (owner decision)", () => {
+    // the source invoice still has them; the print seam must not carry them
+    expect(invoice.notes).toBe("توصيل للنهار");
+    const receipt = buildReceipt(invoice, settings);
+    expect("notes" in receipt).toBe(false);
+    expect(JSON.stringify(receipt)).not.toContain("توصيل للنهار");
+  });
+});
+
 describe("buildReceipt — lines join in invoice order", () => {
   it("projects every line verbatim (description, quantity, unitPrice, netTotal)", () => {
     const receipt = buildReceipt(invoice, settings);
@@ -178,12 +188,38 @@ describe("paginateReceipt — one A4 sheet per page", () => {
     expect(pages[0]?.closes).toBe(true);
   });
 
+  it("keeps a 5-line no-payment invoice on one sheet (no payment head reserved)", () => {
+    const lines = Array.from({ length: 5 }, (_, i) => line(i + 1));
+    const pages = paginateReceipt(receiptWith(lines));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.lines).toHaveLength(5);
+    expect(pages[0]?.closes).toBe(true);
+    expect(pages[0]?.payments).toEqual([]);
+  });
+
+  it("splits exactly at the one-sheet boundary: 7 lines fit, 8 need a second sheet", () => {
+    expect(paginateReceipt(receiptWith(Array.from({ length: 7 }, (_, i) => line(i + 1))))).toHaveLength(1);
+    const eight = paginateReceipt(receiptWith(Array.from({ length: 8 }, (_, i) => line(i + 1))));
+    expect(eight).toHaveLength(2);
+    expect(eight[0]?.lines).toHaveLength(4);
+    expect(eight[1]?.lines).toHaveLength(4);
+  });
+
+  it("balances exactly 10 lines across two sheets (5/5), none dropped", () => {
+    const lines = Array.from({ length: 10 }, (_, i) => line(i + 1));
+    const pages = paginateReceipt(receiptWith(lines));
+    expect(pages).toHaveLength(2);
+    expect(pages[0]?.lines).toHaveLength(5);
+    expect(pages[1]?.lines).toHaveLength(5);
+    expect(linesOf(pages)).toEqual(lines);
+  });
+
   it("paginates a long invoice into sheets that each close or carry a running total", () => {
     const lines = Array.from({ length: 13 }, (_, i) => line(i + 1));
     const pages = paginateReceipt(receiptWith(lines));
     expect(pages).toHaveLength(2);
-    expect(pages[0]?.lines).toHaveLength(10);
-    expect(pages[1]?.lines).toHaveLength(3);
+    expect(pages[0]?.lines).toHaveLength(7);
+    expect(pages[1]?.lines).toHaveLength(6);
     // every line printed exactly once, in order
     expect(linesOf(pages)).toEqual(lines);
     // page 1 carries the running total of its own lines; page 2 closes
@@ -195,13 +231,22 @@ describe("paginateReceipt — one A4 sheet per page", () => {
     expect(pages[1]?.closes).toBe(true);
   });
 
-  it("shares the closing sheet between lines and the payment history", () => {
+  it("keeps the settled 12-line split at 10/2 when a payment shares the closing sheet", () => {
     const lines = Array.from({ length: 12 }, (_, i) => line(i + 1));
     const pages = paginateReceipt(receiptWith(lines, 1));
     expect(pages).toHaveLength(2);
+    expect(pages[0]?.lines).toHaveLength(10);
     expect(pages[1]?.lines).toHaveLength(2);
     expect(pages[1]?.payments).toHaveLength(1);
     expect(pages[0]?.payments).toHaveLength(0);
+  });
+
+  it("spreads a 20-line invoice over three sheets", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => line(i + 1));
+    const pages = paginateReceipt(receiptWith(lines));
+    expect(pages).toHaveLength(3);
+    expect(pages.map((page) => page.lines.length)).toEqual([7, 7, 6]);
+    expect(pages.map((page) => page.closes)).toEqual([false, false, true]);
   });
 
   it("moves a long payment history onto continuation sheets with no lines", () => {

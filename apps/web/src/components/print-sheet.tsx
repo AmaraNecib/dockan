@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { formatPrintAmount } from "../lib/print-format";
 
 /**
- * Printed documents — the shared A4 sheet frame (issue #121). One sheet is one
- * page: its store header is repeated on every page (model 1), and the footer is
- * pinned to the foot of the sheet with the page number and the document
- * number. The page split itself is decided by the caller (see
+ * Printed documents — the shared A4 sheet primitives (issue #121). One sheet is
+ * one page: its store header is repeated on every page (model 1), and the
+ * footer is pinned to the foot of the sheet with the page number and the
+ * document number. The page split itself is decided by the caller (see
  * lib/receipt.ts#paginateReceipt) because CSS cannot write «صفحة X من Y».
  *
  * Paper colours and sizes live in index.css (.print-sheet …): sizing in rem,
@@ -48,7 +48,7 @@ export function PrintSheet({
             {storePhone === null ? (
               <span>—</span>
             ) : (
-              <span dir="ltr" className="print-sheet-n" data-testid={`${testIdPrefix}-phone`}>
+              <span dir="ltr" className="print-sheet-ltr" data-testid={`${testIdPrefix}-phone`}>
                 {storePhone}
               </span>
             )}
@@ -66,7 +66,7 @@ export function PrintSheet({
         <span className="print-sheet-page" data-testid={`${testIdPrefix}-page-num`}>
           {t("invoicePrintPageOf", { page: pageNumber, total: pageCount })}
         </span>
-        <span dir="ltr" className="print-sheet-n" data-testid={`${testIdPrefix}-ref`}>
+        <span dir="ltr" className="print-sheet-ltr" data-testid={`${testIdPrefix}-ref`}>
           {documentRef}
         </span>
       </footer>
@@ -84,9 +84,110 @@ export function PrintAmount({ value }: { value: number }) {
   const { t } = useTranslation();
   return (
     <>
-      <span dir="ltr" className="print-sheet-n">
+      <span dir="ltr" className="print-sheet-ltr">
         {formatPrintAmount(value)}
-      </span> <span className="print-sheet-cur">{t("dzd")}</span>
+      </span>{" "}
+      <span className="print-sheet-cur">{t("dzd")}</span>
     </>
+  );
+}
+
+/** The columns every printed items table shares: a name and a quantity. */
+export interface PrintItemRow {
+  description: string;
+  quantity: number;
+}
+
+/**
+ * The items table, shared by the invoice (المشتريات) and the return voucher
+ * (الأسطر المرجوعة). Column widths live in index.css; the money columns are
+ * named by the caller because a refund and a sale price read differently.
+ */
+export function PrintItemTable<T extends PrintItemRow>({
+  title,
+  titleTestId,
+  tableTestId,
+  rowTestId,
+  unitPriceLabel,
+  lineTotalLabel,
+  lines,
+  unitPrice,
+  lineTotal,
+}: {
+  title?: string;
+  titleTestId?: string;
+  tableTestId: string;
+  rowTestId: string;
+  unitPriceLabel: string;
+  lineTotalLabel: string;
+  lines: readonly T[];
+  unitPrice: (line: T) => number;
+  lineTotal: (line: T) => number;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <table className="print-sheet-items" data-testid={tableTestId}>
+      {title !== undefined && (
+        <caption className="print-sheet-items-title" data-testid={titleTestId}>
+          {title}
+        </caption>
+      )}
+      <thead>
+        <tr>
+          <th scope="col">{t("itemsName")}</th>
+          <th scope="col">{t("saleQuantity")}</th>
+          <th scope="col">{unitPriceLabel}</th>
+          <th scope="col">{lineTotalLabel}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line, index) => (
+          <tr key={`${line.description}-${index}`} data-testid={rowTestId}>
+            <td>{line.description}</td>
+            <td dir="ltr" className="print-sheet-ltr">
+              {line.quantity}
+            </td>
+            <td className="print-sheet-money">
+              <PrintAmount value={unitPrice(line)} />
+            </td>
+            <td className="print-sheet-money">
+              <PrintAmount value={lineTotal(line)} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** One totals-block row: a label and a DZD amount. The `grand` row is the
+ * emphasized one and draws the divider above it only when rows precede it. */
+export interface PrintTotalRow {
+  label: string;
+  amount: number;
+  grand?: boolean;
+  /** test id on the row (label + amount), for rows asserted as a unit */
+  rowTestId?: string;
+  /** test id on the amount span alone */
+  testId?: string;
+}
+
+export function PrintTotals({ rows, testId }: { rows: readonly PrintTotalRow[]; testId?: string }) {
+  return (
+    <div className="print-sheet-totals" data-testid={testId}>
+      {rows.map((row, index) => (
+        <div
+          key={row.rowTestId ?? row.testId ?? index}
+          className={row.grand === true ? "print-sheet-grand" : undefined}
+          data-testid={row.rowTestId}
+        >
+          <span className={row.grand === true ? undefined : "print-sheet-label"}>{row.label}</span>
+          <span data-testid={row.testId}>
+            <PrintAmount value={row.amount} />
+          </span>
+        </div>
+      ))}
+    </div>
   );
 }

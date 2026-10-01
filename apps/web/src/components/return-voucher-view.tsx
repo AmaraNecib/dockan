@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import { formatPrintDateTime } from "../lib/print-format";
 import { debtOffsetDisplay, type ReturnVoucher } from "../lib/return-voucher";
-import { PrintAmount, PrintSheet } from "./print-sheet";
+import { PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
 /**
  * Return voucher printing — the print-only A4 voucher sheet (mirror of
@@ -30,19 +30,19 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
         <dl className="print-sheet-meta print-sheet-meta-list">
           <div>
             <dt>{t("returnNumber")}</dt>
-            <dd dir="ltr" className="print-sheet-n" data-testid="return-voucher-number">
+            <dd dir="ltr" className="print-sheet-ltr" data-testid="return-voucher-number">
               {voucher.returnNumber}
             </dd>
           </div>
           <div>
             <dt>{t("returnVoucherInvoice")}</dt>
-            <dd dir="ltr" className="print-sheet-n" data-testid="return-voucher-invoice">
+            <dd dir="ltr" className="print-sheet-ltr" data-testid="return-voucher-invoice">
               {voucher.invoiceNumber}
             </dd>
           </div>
           <div>
             <dt>{t("invoiceDate")}</dt>
-            <dd dir="ltr" className="print-sheet-n" data-testid="return-voucher-date">
+            <dd className="print-sheet-digits" data-testid="return-voucher-date">
               {formatPrintDateTime(voucher.invoiceDate)}
             </dd>
           </div>
@@ -59,7 +59,7 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
             <dd data-testid="return-voucher-status">{t(`returnsStatus_${voucher.status}`)}</dd>
           </div>
           {voucher.reason && (
-            <div style={{ gridColumn: "1 / -1" }}>
+            <div className="print-sheet-meta-wide">
               <dt>{t("returnsReason")}</dt>
               <dd data-testid="return-voucher-reason">{voucher.reason}</dd>
             </div>
@@ -67,63 +67,25 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
         </dl>
 
         {voucher.lines.length > 0 && (
-          <table className="print-sheet-items" data-testid="return-voucher-lines">
-            <caption className="print-sheet-items-title">{t("returnVoucherLines")}</caption>
-            <thead>
-              <tr>
-                <th scope="col" style={{ width: "42%" }}>
-                  {t("itemsName")}
-                </th>
-                <th scope="col" style={{ width: "12%" }}>
-                  {t("saleQuantity")}
-                </th>
-                <th scope="col" style={{ width: "23%" }}>
-                  {t("returnsRefundUnit")}
-                </th>
-                <th scope="col" style={{ width: "23%" }}>
-                  {t("returnsRefund")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {voucher.lines.map((line, index) => (
-                <tr key={`${line.description}-${index}`} data-testid="return-voucher-line">
-                  <td>{line.description}</td>
-                  <td dir="ltr" className="print-sheet-n">
-                    {line.quantity}
-                  </td>
-                  <td className="print-sheet-num">
-                    <PrintAmount value={line.refundUnitPrice} />
-                  </td>
-                  <td className="print-sheet-num">
-                    <PrintAmount value={line.refundAmount} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <PrintItemTable
+            title={t("returnVoucherLines")}
+            tableTestId="return-voucher-lines"
+            rowTestId="return-voucher-line"
+            unitPriceLabel={t("returnsRefundUnit")}
+            lineTotalLabel={t("returnsRefund")}
+            lines={voucher.lines}
+            unitPrice={(line) => line.refundUnitPrice}
+            lineTotal={(line) => line.refundAmount}
+          />
         )}
 
-        <div className="print-sheet-totals">
-          <div className="print-sheet-grand">
-            <span>{t("returnsRefundTotal")}</span>
-            <span data-testid="return-voucher-total">
-              <PrintAmount value={voucher.refundAmount} />
-            </span>
-          </div>
-          <div>
-            <span className="print-sheet-label">{t("returnsCashNow")}</span>
-            <span data-testid="return-voucher-cash">
-              <PrintAmount value={voucher.cashPaidOut} />
-            </span>
-          </div>
-          <div>
-            <span className="print-sheet-label">{t(debt.labelKey)}</span>
-            <span data-testid="return-voucher-debt">
-              <PrintAmount value={debt.value} />
-            </span>
-          </div>
-        </div>
+        <PrintTotals
+          rows={[
+            { label: t("returnsRefundTotal"), amount: voucher.refundAmount, grand: true, testId: "return-voucher-total" },
+            { label: t("returnsCashNow"), amount: voucher.cashPaidOut, testId: "return-voucher-cash" },
+            { label: t(debt.labelKey), amount: debt.value, testId: "return-voucher-debt" },
+          ]}
+        />
       </PrintSheet>
     </div>
   );

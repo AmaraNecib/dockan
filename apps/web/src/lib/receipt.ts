@@ -71,6 +71,10 @@ export interface ReceiptPage {
 /**
  * Project an invoice detail + store settings into a print-ready receipt.
  * Pure: no DOM, no i18n, no network — unit-testable without a renderer.
+ *
+ * Invoice notes are deliberately NOT carried: the owner decided notes stay in
+ * the database and the app screen only, never on the printed sheet (the settled
+ * sheet has no notes field). Do not add `notes` back to `Receipt`.
  */
 export function buildReceipt(invoice: InvoiceDetail, settings: Settings): Receipt {
   return {
@@ -158,9 +162,15 @@ function takeWithin(costs: readonly number[], budget: number): number {
   return count;
 }
 
-/** Spare room on the sheet that carries the totals block, before lines/payments. */
-function closingSpare(pageIsFirst: boolean): number {
-  return PAGE_UNITS - TOTALS_UNITS - PAYMENT_HEAD_UNITS - (pageIsFirst ? ITEMS_TITLE_UNITS : CARRY_BANNER_UNITS);
+/** Spare room on the sheet that carries the totals block, before lines/payments.
+ * The payment-section head is only reserved when there are payments to print. */
+function closingSpare(pageIsFirst: boolean, withPayments: boolean): number {
+  return (
+    PAGE_UNITS -
+    TOTALS_UNITS -
+    (withPayments ? PAYMENT_HEAD_UNITS : 0) -
+    (pageIsFirst ? ITEMS_TITLE_UNITS : CARRY_BANNER_UNITS)
+  );
 }
 
 /** Spare room on a sheet that carries the carried total instead of the totals block. */
@@ -179,11 +189,12 @@ export function paginateReceipt(receipt: Receipt): ReceiptPage[] {
   const lineCosts = receipt.lines.map(lineUnits);
   const paymentCosts = receipt.payments.map(paymentUnits);
   const lineUnitTotal = totalUnits(lineCosts);
+  const hasPayments = receipt.payments.length > 0;
 
   // How much line room the closing sheet keeps after its five totals rows and
   // the payment rows that fit above the lines.
   const closingLineRoom = (pageIsFirst: boolean): number => {
-    const spare = closingSpare(pageIsFirst);
+    const spare = closingSpare(pageIsFirst, hasPayments);
     return spare - takeWithin(paymentCosts, spare);
   };
   const firstClosingRoom = closingLineRoom(true);
@@ -253,7 +264,7 @@ export function paginateReceipt(receipt: Receipt): ReceiptPage[] {
   // full payment table.
   const closing = pages[pages.length - 1];
   if (closing !== undefined) {
-    const onClosing = takeWithin(paymentCosts, closingSpare(pages.length === 1));
+    const onClosing = takeWithin(paymentCosts, closingSpare(pages.length === 1, hasPayments));
     closing.payments = receipt.payments.slice(0, onClosing);
     let cursor = onClosing;
     while (cursor < receipt.payments.length) {

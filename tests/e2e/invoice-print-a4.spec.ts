@@ -1,66 +1,78 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { extractPdfText, pdfMediaBoxes, pdfPageCount } from "./pdf-helpers";
 
 /**
  * Invoice print — the settled A4 sheet (#121).
  *
- * A 12-line sale is seeded through the real RPC wire (the sale form bumps a
+ * Invoices are seeded through the real RPC wire (the sale form bumps a
  * quantity instead of adding a line, so the UI cannot reach a paginating
- * invoice quickly). The assertion then covers the paper contract:
+ * invoice quickly). The assertions cover the paper contract:
  *
- * - exactly 2 A4 sheets, with the FULL store header on both (model 1);
- * - a long invoice paginates: 10 lines on sheet 1, 2 on sheet 2, page 1
- *   carrying the running total «المجموع المنقول» and page 2 closing;
- * - the payment history is on the invoice (decision A);
+ * - exactly 2 A4 sheets for a 12-line sale, with the FULL store header on
+ *   both (model 1), 10 lines then 2 (payment shares the closing sheet);
+ * - a 5-line no-payment invoice stays on ONE sheet (no payment head reserved);
+ * - a purchase swaps the meta row to «المورّد» / «فاتورة شراء»;
+ * - page 1 carries the running total «المجموع المنقول»; page 2 closes with
+ *   the full totals and the payment history (decision A);
  * - every foot carries «صفحة X من Y» and the invoice number;
+ * - the currency دج is drawn LEFT of the amount in an RTL cell;
  * - `@page { size: A4; margin: 0 }` reaches the print pipeline, so the sheets
  *   start at the page origin and Chrome's URL/date header (drawn in the page
  *   margin box) has nowhere to render;
- * - a real `page.pdf()` with `displayHeaderFooter: true` is 2 pages, every
- *   MediaBox is A4, and the fonts are embedded (Arabic text intact).
+ * - a real `page.pdf()` is 2 pages, every MediaBox is A4, the fonts are
+ *   embedded, and no page URL appears in the decoded PDF text.
  *
- * The default headless PDF has no browser header at all, so the header
- * assertion targets its mechanism: the zero page margin plus the geometry
- * check below. (A local `pdftotext` run of the generated PDF shows no page URL
- * or date outside the sheet.)
+ * The URL scan is proof-positive: CDP prints the default header/footer
+ * templates empty, so the test also prints a control PDF with Chrome's own
+ * `.url` header template and asserts the scanner finds the URL there. The
+ * subject PDF, printed with `displayHeaderFooter: true`, must stay clean.
  */
 
-function pdfPageCount(pdf: Buffer): number {
-  // `/Type /Page` only: the `\b` keeps `/Type /Pages` out
-  return (pdf.toString("latin1").match(/\/Type\s*\/Page\b/g) ?? []).length;
+interface SeededInvoice {
+  id: string;
+  invoiceNumber: string;
 }
 
-function pdfMediaBoxes(pdf: Buffer): Array<{ width: number; height: number }> {
-  const boxes: Array<{ width: number; height: number }> = [];
-  for (const match of pdf.toString("latin1").matchAll(/\/MediaBox\s*\[([^\]]+)\]/g)) {
-    const [x1, y1, x2, y2] = (match[1] ?? "").trim().split(/\s+/).map(Number);
-    if (x1 !== undefined && y1 !== undefined && x2 !== undefined && y2 !== undefined) {
-      boxes.push({ width: x2 - x1, height: y2 - y1 });
-    }
-  }
-  return boxes;
+interface InvoiceSeed {
+  kind: "SALE" | "PURCHASE";
+  lineCount: number;
+  counterpartyName: string;
+  /** cash paid at invoice time; omitted means no payment history at all */
+  initialPaid?: number;
 }
 
-test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser header", async ({ page }) => {
-  // 0. sign in (first-run setup on a clean room, login afterwards)
-  await signIn(page);
-
-  // 1. a known store identity, address included: the sheet's left header block
+async function setStoreIdentity(page: Page): Promise<void> {
   await page.goto("/settings");
   await page.getByTestId("settings-name").fill("ماني للاكسسوارات اوتو");
   await page.getByTestId("settings-phone").fill("0555123456");
   await page.getByTestId("settings-address").fill("حي 5 جويلية، البليدة");
   await page.getByTestId("settings-save").click();
   await expect(page.getByTestId("settings-saved")).toContainText("تم حفظ الإعدادات");
+}
 
-  // 2. a 12-line sale seeded through the real RPC wire. The oRPC fetch link
-  //    posts `{json: input}` to /api/rpc/<procedure> and answers `{json: output}`
-  //    (see @orpc/client's StandardRPCSerializer).
-  const seeded = await page.evaluate(async () => {
+/**
+ * Seed one invoice through the real RPC wire. The oRPC fetch link posts
+ * `{json: input}` to /api/rpc/<procedure> and answers `{json: output}`
+ * (see @orpc/client's StandardRPCSerializer).
+ */
+async function seedInvoice(page: Page, seed: InvoiceSeed): Promise<SeededInvoice> {
+  return page.evaluate(async (spec) => {
     type SeedRequest =
       | { procedure: "categoriesCreate"; input: { name: string } }
-      | { procedure: "itemsCreateWithStock"; input: { name: string; categoryId: string; costPrice: number; sellingPrice: number; stockOnHand: number } }
-      | { procedure: "invoicesCreate"; input: { kind: "SALE"; counterpartyName: string; initialPaid: number; lines: Array<{ itemId: string; quantity: number }> } };
+      | {
+          procedure: "itemsCreateWithStock";
+          input: { name: string; categoryId: string; costPrice: number; sellingPrice: number; stockOnHand: number };
+        }
+      | {
+          procedure: "invoicesCreate";
+          input: {
+            kind: "SALE" | "PURCHASE";
+            counterpartyName: string;
+            initialPaid?: number;
+            lines: Array<{ itemId: string; quantity: number }>;
+          };
+        };
 
     async function call(request: SeedRequest): Promise<string> {
       const response = await fetch(`/api/rpc/${request.procedure}`, {
@@ -74,12 +86,14 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
     }
 
     // SAFETY: categoriesCreate's contract answers the created category, whose id is a string
-    const category = JSON.parse(await call({ procedure: "categoriesCreate", input: { name: `طباعة-${Date.now()}` } })) as { json: { id: string } };
+    const category = JSON.parse(
+      await call({ procedure: "categoriesCreate", input: { name: `طباعة-${spec.kind}-${Date.now()}` } }),
+    ) as { json: { id: string } };
     // SAFETY: itemsCreateWithStock's contract answers the created item, whose id is a string
     const item = JSON.parse(
       await call({
         procedure: "itemsCreateWithStock",
-        input: { name: "بطارية سيارة 70 أمبير", categoryId: category.json.id, costPrice: 50, sellingPrice: 100, stockOnHand: 20 },
+        input: { name: "بطارية سيارة 70 أمبير", categoryId: category.json.id, costPrice: 50, sellingPrice: 100, stockOnHand: 40 },
       }),
     ) as { json: { id: string } };
     // SAFETY: invoicesCreate's contract answers the invoice detail, whose id and number are strings
@@ -87,15 +101,26 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
       await call({
         procedure: "invoicesCreate",
         input: {
-          kind: "SALE",
-          counterpartyName: "علي علي",
-          initialPaid: 500,
-          lines: Array.from({ length: 12 }, () => ({ itemId: item.json.id, quantity: 1 })),
+          kind: spec.kind,
+          counterpartyName: spec.counterpartyName,
+          initialPaid: spec.initialPaid,
+          lines: Array.from({ length: spec.lineCount }, () => ({ itemId: item.json.id, quantity: 1 })),
         },
       }),
     ) as { json: { id: string; invoiceNumber: string } };
-    return invoice.json;
-  });
+    return { id: invoice.json.id, invoiceNumber: invoice.json.invoiceNumber };
+  }, seed);
+}
+
+test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser header", async ({ page }) => {
+  // 0. sign in (first-run setup on a clean room, login afterwards)
+  await signIn(page);
+
+  // 1. a known store identity, address included: the sheet's left header block
+  await setStoreIdentity(page);
+
+  // 2. a 12-line sale, 500 paid up front → subtotal 1,200, remaining 700
+  const seeded = await seedInvoice(page, { kind: "SALE", lineCount: 12, counterpartyName: "علي علي", initialPaid: 500 });
 
   // 3. the print-only route renders the document the dialog would capture
   await page.goto(`/invoices/${seeded.id}/print`);
@@ -119,7 +144,7 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
   await expect(last.getByTestId("receipt-kind")).toHaveText("فاتورة بيع");
   await expect(last.locator(".print-sheet-meta")).toContainText("الزبون");
 
-  // 5. the 12 lines are printed once, split over the two sheets
+  // 5. the 12 lines are printed once, split 10/2 over the two sheets
   await expect(page.getByTestId("receipt-line")).toHaveCount(12);
   await expect(first.getByTestId("receipt-line")).toHaveCount(10);
   await expect(last.getByTestId("receipt-line")).toHaveCount(2);
@@ -149,8 +174,16 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
   await expect(first.getByTestId("receipt-ref")).toHaveText(seeded.invoiceNumber);
   await expect(last.getByTestId("receipt-ref")).toHaveText(seeded.invoiceNumber);
 
-  // 9. the @page rule that removes the browser's header/footer is in the built
-  //    stylesheet: size A4 + zero margin box
+  // 9. RTL money: the currency's right edge sits left of the amount's left edge
+  const moneyCell = last.getByTestId("receipt-line").first().locator("td").nth(3);
+  const amountBox = await moneyCell.locator(".print-sheet-ltr").boundingBox();
+  const currencyBox = await moneyCell.locator(".print-sheet-cur").boundingBox();
+  expect(amountBox).not.toBeNull();
+  expect(currencyBox).not.toBeNull();
+  expect((currencyBox?.x ?? 0) + (currencyBox?.width ?? 0)).toBeLessThanOrEqual((amountBox?.x ?? Number.MAX_SAFE_INTEGER) + 1);
+
+  // 10. the @page rule that removes the browser's header/footer is in the built
+  //     stylesheet: size A4 + zero margin box
   const pageRules = await page.evaluate(() => {
     const rules: Array<{ margin: string; size: string }> = [];
     for (const styleSheet of Array.from(document.styleSheets)) {
@@ -172,7 +205,7 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
   });
   expect(pageRules.some((rule) => rule.margin === "0px" && /a4/i.test(rule.size))).toBe(true);
 
-  // 10. in print media the sheet starts at the top of the page (no margin box
+  // 11. in print media the sheet starts at the top of the page (no margin box
   //     for Chrome's URL/date header) and measures exactly 210×297mm. The
   //     horizontal offset is not asserted: print emulation keeps the window
   //     viewport, while the PDF lays out on the 210mm paper box.
@@ -189,8 +222,11 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
   expect(Math.abs((sheetBox?.width ?? 0) - 793.7)).toBeLessThan(2); // 210mm at 96dpi
   expect(Math.abs((sheetBox?.height ?? 0) - 1122.5)).toBeLessThan(5); // 297mm at 96dpi
 
-  // 11. a real print-to-PDF: exactly 2 A4 pages, no browser header/footer box,
-  //     fonts embedded so the Arabic text survives
+  // 12. a real print-to-PDF: exactly 2 A4 pages, embedded fonts, and no Chrome
+  //     URL/date banner in the decoded text. CDP prints the default header/
+  //     footer templates empty, so the positive control below draws the URL
+  //     with Chrome's own `.url` class and proves the scanner can see a drawn
+  //     banner; the subject PDF (the production call) must stay clean.
   await page.evaluate(() => document.fonts.ready);
   const pdf = await page.pdf({ preferCSSPageSize: true, displayHeaderFooter: true, printBackground: true });
   expect(pdfPageCount(pdf)).toBe(2);
@@ -202,4 +238,42 @@ test("invoice print: a long invoice prints as exactly 2 A4 sheets, no browser he
   }
   expect(pdf.length).toBeGreaterThan(10_000);
   expect(pdf.toString("latin1")).toContain("/FontFile");
+  expect(extractPdfText(pdf)).not.toContain("127.0.0.1");
+  expect(extractPdfText(pdf)).not.toContain("http");
+
+  const headerControl = await page.pdf({
+    preferCSSPageSize: true,
+    displayHeaderFooter: true,
+    headerTemplate: '<div style="font-size:10px; width:100%; margin:0 10mm;"><span class="url"></span> | <span class="date"></span></div>',
+    footerTemplate:
+      '<div style="font-size:10px; width:100%; margin:0 10mm; text-align:center;"><span class="pageNumber"></span>/<span class="totalPages"></span></div>',
+  });
+  expect(extractPdfText(headerControl)).toContain("127.0.0.1");
+});
+
+test("invoice print: a 5-line purchase fits one sheet and labels the supplier", async ({ page }) => {
+  await signIn(page);
+  await setStoreIdentity(page);
+
+  // no initial payment: the closing sheet must not reserve a payment section
+  const seeded = await seedInvoice(page, { kind: "PURCHASE", lineCount: 5, counterpartyName: "مورّد الاختبار" });
+
+  await page.goto(`/invoices/${seeded.id}/print`);
+  await expect(page.getByTestId("receipt-page")).toBeVisible();
+  await expect(page.getByTestId("receipt-sheet")).toHaveCount(1);
+  const sheet = page.getByTestId("receipt-sheet");
+  await expect(sheet.getByTestId("receipt-store")).toHaveText("ماني للاكسسوارات اوتو");
+  await expect(sheet.getByTestId("receipt-kind")).toHaveText("فاتورة شراء");
+  await expect(sheet.locator(".print-sheet-meta")).toContainText("المورّد");
+  await expect(sheet.locator(".print-sheet-meta")).not.toContainText("الزبون");
+  await expect(page.getByTestId("receipt-line")).toHaveCount(5);
+  await expect(page.getByTestId("receipt-payments")).toHaveCount(0);
+  await expect(sheet.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
+
+  // one sheet = one A4 page
+  const pdf = await page.pdf({ preferCSSPageSize: true });
+  expect(pdfPageCount(pdf)).toBe(1);
+  const boxes = pdfMediaBoxes(pdf);
+  expect(boxes).toHaveLength(1);
+  expect(Math.abs((boxes[0]?.width ?? 0) - 594.96)).toBeLessThan(2);
 });

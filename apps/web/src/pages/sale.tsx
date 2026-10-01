@@ -372,9 +372,10 @@ export function SalePage() {
     }
     // The scan's create-with-stock path must record an opening movement: a
     // blank field or an explicit 0 there would create an item that cannot be
-    // sold. The plain create path still treats both as "no opening stock".
+    // sold, so it is refused with the dedicated message. The plain create path
+    // still treats both as "no opening stock".
     if (quickStockRequired && stock < 1) {
-      setError(t("scanStockInvalid"));
+      setError(t("scanStockRequired"));
       return;
     }
     const input = {

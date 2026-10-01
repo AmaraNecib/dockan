@@ -851,7 +851,7 @@ describe("SalePage quick-add stock (issue #119)", () => {
     // not be sold later
     expect(lastCreateInput).toBeNull();
     expect(lastCreateWithStockInput).toBeNull();
-    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockInvalid"));
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockRequired"));
     expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
   });
 
@@ -864,8 +864,15 @@ describe("SalePage quick-add stock (issue #119)", () => {
 
     expect(lastCreateInput).toBeNull();
     expect(lastCreateWithStockInput).toBeNull();
-    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockInvalid"));
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockRequired"));
     expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+
+    // a value that cannot be read is a different refusal, not the required one
+    await act(async () => setInput(host, "sale-quick-stock", "-1"));
+    await submitQuick(host);
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockInvalid"));
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).not.toContain(i18n.t("scanStockRequired"));
   });
 
   it("creates with opening stock from the scan path when a positive quantity is typed (issue #125)", async () => {

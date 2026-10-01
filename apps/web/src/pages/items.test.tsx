@@ -490,6 +490,89 @@ describe("add item form opening stock", () => {
   });
 });
 
+describe("scan create-with-stock requires the opening quantity (issue #125)", () => {
+  /** wedge-scan a code: the mocked catalogSearch never resolves an exact item */
+  async function scanUnknown(code: string) {
+    await act(async () => {
+      for (const character of code) {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: character, bubbles: true }));
+      }
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** take the unknown dialog's stocked path and land on the seeded add form */
+  async function openStockSeedForm(barcode: string): Promise<void> {
+    await mount();
+    await scanUnknown(barcode);
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create-stock");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(inputByTestId("item-barcode").value).toBe(barcode);
+  }
+
+  it("refuses a blank opening quantity and creates nothing", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-1");
+
+    setInput("item-name", "ممسوح بلا كمية");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain("أدخل كمية مخزون أكبر من صفر");
+    expect(createInputs.length).toBe(0);
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("refuses 0 with the required message, keeps the unreadable message distinct, then creates on a positive value", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-2");
+
+    setInput("item-name", "ممسوح بكمية");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    setInput("initial-stock", "0");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createInputs.length).toBe(0);
+    expect(createWithStockInputs.length).toBe(0);
+
+    // a value that cannot be read keeps its own refusal
+    setInput("initial-stock", "-3");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل مخزوناً افتتاحياً صحيحاً") === true);
+    expect(createWithStockInputs.length).toBe(0);
+
+    // a positive quantity is the one path that records the opening movement
+    setInput("initial-stock", "6");
+    click("item-save");
+    await waitFor(() => createWithStockInputs.length === 1);
+    expect(createWithStockInputs[0]).toMatchObject({ name: "ممسوح بكمية", stockOnHand: 6 });
+    expect(createInputs.length).toBe(0);
+  });
+
+  it("drops the requirement when a later scan chooses the plain create path", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-3");
+
+    // the same form is reseeded plain: blank stock is a plain create again
+    await scanUnknown("UNKNOWN-STOCK-4");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-STOCK-4");
+
+    setInput("item-name", "مسح عادي");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "مسح عادي" });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
+});
+
 describe("stock form prefill", () => {
   it("shows the selling price and prefills the cost from the selected item", async () => {
     await mount();

@@ -50,14 +50,21 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
 
   // blank must not create an unsellable item: the submit is refused by name
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
-  await expect(page.getByTestId("sale-error")).toContainText("أدخل مخزوناً أولياً صحيحاً");
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
 
   // an explicit 0 is refused on this path too
   await page.getByTestId("sale-quick-stock").fill("0");
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
-  await expect(page.getByTestId("sale-error")).toContainText("أدخل مخزوناً أولياً صحيحاً");
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
   await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+
+  // an unreadable value keeps the invalid-value message, distinct from the
+  // required-quantity one
+  await page.getByTestId("sale-quick-stock").fill("-1");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل مخزوناً أولياً صحيحاً");
+  await expect(page.getByTestId("sale-error")).not.toContainText("أدخل كمية مخزون أكبر من صفر");
 
   // a positive quantity records the opening movement and lines the item up
   await page.getByTestId("sale-quick-stock").fill("3");

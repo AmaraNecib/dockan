@@ -300,9 +300,13 @@ function ItemForm({
   // that same choice in the trigger: the operator must always see the category
   // the item will be filed under (greptile PR #80).
   const selectedCategoryId = categoryId || categories.data?.items[0]?.id || "";
+  // The unknown-scan "create with stock" choice promises an opening movement,
+  // so while this form carries that seed a blank/zero quantity is refused; the
+  // plain add form (no seed) keeps blank = no opening stock.
+  const stockRequired = seed?.withStock === true;
 
-  // prefill from an unknown-scan choice; "create with stock" only focuses the
-  // (now always-visible) quantity field — it never gates or forces it
+  // prefill from an unknown-scan choice; "create with stock" focuses the
+  // (always-visible) quantity field and makes it required for this seed
   useEffect(() => {
     if (seed !== null) {
       setBarcode(seed.barcode);
@@ -388,12 +392,18 @@ function ItemForm({
       }
       normalizedBarcode = normalized;
     }
-    // empty means zero (a deliberate "not counted yet"), so only a positive
-    // whole number takes the one-step create-with-stock path
+    // empty means zero on the plain form (a deliberate "not counted yet"), so
+    // only a positive whole number takes the one-step create-with-stock path
     const stockText = initialStock.trim();
     const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
     if (stock === null) {
       setError(t("itemsStockInvalid"));
+      return;
+    }
+    // the scan's create-with-stock seed must record an opening movement: a
+    // blank/0 there would create an item that cannot be sold
+    if (stockRequired && stock < 1) {
+      setError(t("scanStockRequired"));
       return;
     }
     const base: ItemCreate = {

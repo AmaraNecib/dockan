@@ -174,6 +174,7 @@ const resources = {
       scanLookupError: "تعذّر التحقق من الكود، أعد المسح",
       itemsOpenPicker: "اختيار من القائمة…",
       scanStockInvalid: "أدخل مخزوناً أولياً صحيحاً (0 إن لم تحسبه بعد)",
+      scanStockRequired: "أدخل كمية مخزون أكبر من صفر",
       stockAddTitle: "إضافة مخزون",
       stockItem: "المنتج",
       stockQuantity: "الكمية (موجب إدخال، سالب إخراج)",

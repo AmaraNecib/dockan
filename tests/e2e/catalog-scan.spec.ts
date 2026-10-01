@@ -123,15 +123,29 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("منتج ممسوح");
 
-  // 6. create-with-stock path lands stock on hand > 0
+  // 6. create-with-stock path lands stock on hand > 0 — and must not create
+  //    without its opening quantity (the scan choice promises a movement)
   await page.keyboard.type("UNKNOWN-555", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
   await page.getByTestId("item-name").fill("منتج بمخزون");
-  await page.getByTestId("initial-stock").fill("7");
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("300");
+
+  // blank and 0 are refused by name; an unreadable value keeps its own message
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await page.getByTestId("initial-stock").fill("0");
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await page.getByTestId("initial-stock").fill("-1");
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل مخزوناً افتتاحياً صحيحاً");
+  await expect(page.getByTestId("form-error")).not.toContainText("أدخل كمية مخزون أكبر من صفر");
+
+  // and the positive quantity still creates in one step
+  await page.getByTestId("initial-stock").fill("7");
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");

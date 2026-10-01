@@ -71,7 +71,7 @@ export function ReceiptPrintPage() {
   const receipt = buildReceipt(detail.data, settings.data);
 
   return (
-    <section className="grid gap-3" data-testid="receipt-page">
+    <section className="print-page grid gap-3" data-testid="receipt-page">
       <div className="flex items-center justify-between print-hidden">
         <Link
           to="/invoices/$invoiceId"

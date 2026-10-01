@@ -238,35 +238,330 @@ body {
   to { grid-template-rows: 0fr; }
 }
 
-/* Receipt printing: only the receipt document reaches the paper.
- * .print-hidden is applied to the app chrome (nav header) and the receipt
- * toolbar so window.print() never captures them. The receipt's rows and
- * totals keep themselves whole across page breaks. */
+/* ------------------------------------------------------------------ */
+/* Printed documents — the settled A4 sheet (issue #121)               */
+/* ------------------------------------------------------------------ */
+/* margin 0 removes the page-margin box, which is where the browser draws
+   its own header/footer (the URL and the date). The sheet therefore fills
+   the page edge to edge. */
+@page {
+  size: A4;
+  margin: 0;
+}
+
+/* All sizing inside the sheet is rem (root = the browser's 16px default);
+   the sheet itself is mm; border widths stay px on purpose so a hairline
+   never grows with the root font size. */
+.print-doc {
+  --hairline: 1px;
+  --heavy: 2px;
+  /* paper colours are fixed, not theme tokens: the document is white in
+     dark mode too, and the same values reach the printer */
+  --paper-ink: #111;
+  --paper-soft: #dfe3ea;
+  --paper-muted: #777;
+  --paper-band: #f1f3f7;
+  --paper-fill: #f7f8fa;
+  --paper-num: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.print-sheet {
+  box-sizing: border-box;
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0.875rem auto 1.875rem;
+  padding: 2.5rem 2.75rem;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: var(--paper-ink);
+  border-radius: 0.25rem;
+  box-shadow: 0 0.75rem 2.125rem rgba(0, 0, 0, 0.5);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.print-sheet-store {
+  font-size: 1.4375rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.print-sheet-contacts {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.84375rem;
+  color: #222;
+  margin-top: 0.4375rem;
+}
+
+/* one colon rule for every label on the sheet */
+.print-sheet-label::after,
+.print-sheet-meta dt::after {
+  content: ":";
+}
+
+.print-sheet-label {
+  color: var(--paper-muted);
+  margin-inline-end: 0.1875rem;
+}
+
+.print-sheet-rule {
+  border: 0;
+  border-top: var(--heavy) solid var(--paper-ink);
+  margin: 0.8125rem 0 0;
+}
+
+.print-sheet-meta {
+  display: grid;
+  grid-template-columns: auto auto auto auto;
+  justify-content: space-between;
+  gap: 0 1.125rem;
+  margin: 0.875rem 0 1.125rem;
+  padding-bottom: 0.8125rem;
+  border-bottom: var(--hairline) solid var(--paper-soft);
+}
+
+.print-sheet-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.print-sheet-meta dt {
+  font-size: 0.75rem;
+  color: var(--paper-muted);
+}
+
+.print-sheet-meta dd {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.90625rem;
+}
+
+/* the voucher's longer field list wraps into rows instead of one line */
+.print-sheet-meta-list {
+  grid-template-columns: auto auto auto;
+  justify-content: start;
+  gap: 0.25rem 1.125rem;
+}
+
+.print-sheet-items-title {
+  caption-side: top;
+  text-align: start;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  margin: 0 0 0.4375rem;
+}
+
+table.print-sheet-items {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.print-sheet-items th {
+  background: var(--paper-band);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.5rem;
+  text-align: start;
+  border-bottom: var(--heavy) solid var(--paper-ink);
+}
+
+table.print-sheet-items td {
+  padding: 0.5rem;
+  border-bottom: var(--hairline) solid var(--paper-soft);
+}
+
+table.print-sheet-items td.print-sheet-num {
+  text-align: start;
+  white-space: nowrap;
+}
+
+/* the count column is centred; money columns stay start-aligned so digits line up */
+table.print-sheet-items th:nth-child(2),
+table.print-sheet-items td:nth-child(2) {
+  text-align: center;
+}
+
+/* the totals block draws its own heavy rule: the last row's hairline would
+   stack on top of it and read as a double line */
+table.print-sheet-items tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.print-sheet-n {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-family: var(--paper-num);
+  font-variant-numeric: tabular-nums;
+}
+
+.print-sheet-cur {
+  font-size: 0.85em;
+  color: #444;
+}
+
+.print-sheet-note {
+  color: #555;
+}
+
+.print-sheet-carry {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  background: var(--paper-fill);
+  border: var(--hairline) solid var(--paper-soft);
+  border-radius: 0.25rem;
+  padding: 0.4375rem 0.6875rem;
+  font-size: 0.84375rem;
+  margin: 0.625rem 0 0.875rem;
+}
+
+/* the totals follow the table immediately — no auto margin here, or they pin
+   to the foot of the sheet and leave a hole in the middle */
+.print-sheet-totals {
+  margin-top: 1.375rem;
+  border-top: var(--heavy) solid var(--paper-ink);
+  padding-top: 0.75rem;
+}
+
+.print-sheet-totals > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.25rem 0;
+  font-size: 0.90625rem;
+}
+
+.print-sheet-totals .print-sheet-label {
+  color: #555;
+  margin-inline-end: 0;
+}
+
+.print-sheet-totals .print-sheet-grand {
+  font-size: 1.125rem;
+  font-weight: 700;
+}
+
+/* the divider above the grand total only earns its place when totals rows sit
+   above it; as the block's first row it would double the heavy rule */
+.print-sheet-totals > div + .print-sheet-grand {
+  border-top: var(--hairline) solid #ccc;
+  margin-top: 0.4375rem;
+  padding-top: 0.625rem;
+}
+
+.print-sheet-payments {
+  margin-top: 1.125rem;
+}
+
+.print-sheet-payments h2 {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  margin: 0 0 0.375rem;
+}
+
+table.print-sheet-payments {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+table.print-sheet-payments th {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--paper-muted);
+  padding: 0.375rem 0.5rem;
+  text-align: start;
+  border-bottom: var(--hairline) solid var(--paper-soft);
+}
+
+table.print-sheet-payments td {
+  padding: 0.375rem 0.5rem;
+  font-size: 0.84375rem;
+  border-bottom: var(--hairline) solid var(--paper-soft);
+}
+
+table.print-sheet-payments tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.print-sheet-payments-empty {
+  font-size: 0.84375rem;
+  color: var(--paper-muted);
+  margin: 0.375rem 0 0;
+}
+
+/* the footer is page furniture: at the foot of every sheet, however short the
+   content above it (the sheet is a flex column, margin-top auto absorbs slack) */
+.print-sheet-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: var(--hairline) solid var(--paper-soft);
+  margin-top: auto;
+  padding-top: 0.5625rem;
+  font-size: 0.71875rem;
+  color: #666;
+}
+
+.print-sheet-page {
+  font-weight: 700;
+  color: var(--paper-ink);
+}
+
 @media print {
+  /* .print-hidden is applied to the app chrome (nav header, sidebar) and the
+     print toolbars so window.print() never captures them. */
   .print-hidden {
     display: none !important;
   }
-  [data-testid="receipt-view"] tr,
-  [data-testid="receipt-view"] .receipt-totals {
-    break-inside: avoid;
+
+  /* the shell's page gutter is screen chrome: a 210mm sheet must start at the
+     page origin, or it overflows into the page-margin box where the browser
+     draws its URL/date header */
+  main > div {
+    max-width: none !important;
+    padding: 0 !important;
   }
-  /* Printing drops background graphics by default. In dark mode the receipt and
-     voucher carry light text on a dark card, so force a paper-safe scheme or the
-     labels, totals, and payment rows print white on white. */
-  [data-testid="receipt-view"],
-  [data-testid="return-voucher-view"] {
+
+  body {
     background: #fff !important;
-    color: #000 !important;
-    border: 0 !important;
   }
-  [data-testid="receipt-view"] *,
-  [data-testid="return-voucher-view"] * {
-    background: transparent !important;
-    color: #000 !important;
-    border-color: #bbb !important;
+
+  .print-page {
+    display: block !important;
   }
-  [data-testid="receipt-view"] .text-muted-foreground,
-  [data-testid="return-voucher-view"] .text-muted-foreground {
-    color: #555 !important;
+
+  .print-doc {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .print-sheet {
+    width: 210mm;
+    height: 297mm;
+    min-height: 0;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+    break-after: page;
+    page-break-after: always;
+  }
+
+  .print-sheet:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+
+  /* a page that runs long must split between rows, never mid-cell */
+  .print-sheet tr,
+  .print-sheet-carry,
+  .print-sheet-totals,
+  .print-sheet-payments,
+  .print-sheet-foot {
+    break-inside: avoid;
   }
 }

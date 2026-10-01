@@ -75,14 +75,14 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(view.querySelector('[data-testid="return-voucher-number"]')?.textContent).toBe("RTN-0042");
     expect(view.querySelector('[data-testid="return-voucher-invoice"]')?.textContent).toBe("INV-0101");
     expect(view.querySelector('[data-testid="return-voucher-party"]')?.textContent).toBe("يوسف");
-    expect(view.querySelector('[data-testid="return-voucher-total"]')?.textContent).toContain("1700");
-    expect(view.querySelector('[data-testid="return-voucher-cash"]')?.textContent).toContain("1700");
+    expect(view.querySelector('[data-testid="return-voucher-total"]')?.textContent).toContain("1,700");
+    expect(view.querySelector('[data-testid="return-voucher-cash"]')?.textContent).toContain("1,700");
     expect(view.querySelector('[data-testid="return-voucher-debt"]')?.textContent).toContain("0");
     // one line with its refund unit price and amount
     const line = view.querySelector('[data-testid="return-voucher-line"]')!;
     expect(line.textContent).toContain("بطارية");
     expect(line.textContent).toContain("850");
-    expect(line.textContent).toContain("1700");
+    expect(line.textContent).toContain("1,700");
     expect(view.querySelector('[data-testid="return-voucher-status"]')?.textContent).toContain("قيد المراجعة");
     expect(view.querySelector('[data-testid="return-voucher-reason"]')?.textContent).toContain("الزبون بدل رأيه");
   });

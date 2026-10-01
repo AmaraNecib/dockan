@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { InvoiceDetail, Settings } from "@dokan/contracts";
 
-import { buildReceipt } from "./receipt";
+import { buildReceipt, paginateReceipt, type Receipt, type ReceiptLine } from "./receipt";
 
 /**
  * Receipt printing — receipt projection from an invoice detail + settings.
@@ -12,7 +12,7 @@ import { buildReceipt } from "./receipt";
  * arithmetic that could disagree with the invoice detail).
  */
 
-const settings: Settings = { storeName: "دكان التجربة", storePhone: "+213550123123", storeAddress: null };
+const settings: Settings = { storeName: "دكان التجربة", storePhone: "+213550123123", storeAddress: "شارع الاستقلال 12" };
 
 const payments: InvoiceDetail["payments"] = [
   { id: "p1", invoiceId: "inv-1", amount: 300, method: "CASH", note: "أول دفعة", paidAt: "2026-08-25T10:01:00", createdAt: "2026-08-25T10:01:00" },
@@ -46,30 +46,30 @@ const invoice: InvoiceDetail = {
 };
 
 describe("buildReceipt — store identity + invoice header", () => {
-  it("carries the store name and canonical phone from settings", () => {
+  it("carries the store name, canonical phone and address from settings", () => {
     const receipt = buildReceipt(invoice, settings);
     expect(receipt.storeName).toBe("دكان التجربة");
     expect(receipt.storePhone).toBe("+213550123123");
+    expect(receipt.storeAddress).toBe("شارع الاستقلال 12");
   });
 
-  it("keeps a null store phone null (no invented placeholder)", () => {
+  it("keeps a null store phone/address null (no invented placeholder)", () => {
     const receipt = buildReceipt(invoice, { storeName: "دكان", storePhone: null, storeAddress: null });
     expect(receipt.storePhone).toBeNull();
+    expect(receipt.storeAddress).toBeNull();
   });
 
-  it("copies invoice number, kind, date, party and notes for the header", () => {
+  it("copies invoice number, kind, date and party for the header", () => {
     const receipt = buildReceipt(invoice, settings);
     expect(receipt.invoiceNumber).toBe("INV-0007");
     expect(receipt.kind).toBe("SALE");
     expect(receipt.invoiceDate).toBe("2026-08-25");
     expect(receipt.counterpartyName).toBe("زبون النقد");
-    expect(receipt.notes).toBe("توصيل للنهار");
   });
 
-  it("keeps an anonymous invoice's null party and null notes", () => {
-    const anonymous = buildReceipt({ ...invoice, counterpartyName: null, notes: null }, settings);
+  it("keeps an anonymous invoice's null party", () => {
+    const anonymous = buildReceipt({ ...invoice, counterpartyName: null }, settings);
     expect(anonymous.counterpartyName).toBeNull();
-    expect(anonymous.notes).toBeNull();
   });
 });
 
@@ -134,3 +134,106 @@ describe("buildReceipt — payment history joins in order", () => {
     expect(receipt.payments).toEqual([]);
   });
 });
+
+// --- pagination -----------------------------------------------------------
+
+function line(index: number, over: Partial<ReceiptLine> = {}): ReceiptLine {
+  return { description: `منتج ${index}`, quantity: 1, unitPrice: 100, netTotal: 100 + index, ...over };
+}
+
+function receiptWith(lines: ReceiptLine[], paymentCount = 0): Receipt {
+  return {
+    storeName: "دكان التجربة",
+    storePhone: "+213550123123",
+    storeAddress: null,
+    invoiceNumber: "INV-0042",
+    kind: "SALE",
+    invoiceDate: "2026-10-01",
+    counterpartyName: "علي",
+    lines,
+    subtotalAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
+    discountAmount: 0,
+    totalAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
+    paidAmount: 0,
+    remainingAmount: lines.reduce((sum, l) => sum + l.netTotal, 0),
+    payments: Array.from({ length: paymentCount }, (_, i) => ({
+      paidAt: `2026-10-0${(i % 9) + 1}T09:0${i}:00`,
+      method: "CASH" as const,
+      amount: 100,
+      note: null,
+    })),
+  };
+}
+
+const linesOf = (pages: ReturnType<typeof paginateReceipt>) => pages.flatMap((page) => page.lines);
+
+describe("paginateReceipt — one A4 sheet per page", () => {
+  it("keeps a short invoice on one sheet that closes", () => {
+    const pages = paginateReceipt(receiptWith([line(1), line(2), line(3)]));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.number).toBe(1);
+    expect(pages[0]?.lines).toHaveLength(3);
+    expect(pages[0]?.carryIn).toBe(0);
+    expect(pages[0]?.carryOut).toBeNull();
+    expect(pages[0]?.closes).toBe(true);
+  });
+
+  it("paginates a long invoice into sheets that each close or carry a running total", () => {
+    const lines = Array.from({ length: 13 }, (_, i) => line(i + 1));
+    const pages = paginateReceipt(receiptWith(lines));
+    expect(pages).toHaveLength(2);
+    expect(pages[0]?.lines).toHaveLength(10);
+    expect(pages[1]?.lines).toHaveLength(3);
+    // every line printed exactly once, in order
+    expect(linesOf(pages)).toEqual(lines);
+    // page 1 carries the running total of its own lines; page 2 closes
+    expect(pages[0]?.closes).toBe(false);
+    expect(pages[0]?.carryIn).toBe(0);
+    expect(pages[0]?.carryOut).toBe(sum(pages[0]?.lines ?? []));
+    expect(pages[1]?.carryIn).toBe(sum(pages[0]?.lines ?? []));
+    expect(pages[1]?.carryOut).toBeNull();
+    expect(pages[1]?.closes).toBe(true);
+  });
+
+  it("shares the closing sheet between lines and the payment history", () => {
+    const lines = Array.from({ length: 12 }, (_, i) => line(i + 1));
+    const pages = paginateReceipt(receiptWith(lines, 1));
+    expect(pages).toHaveLength(2);
+    expect(pages[1]?.lines).toHaveLength(2);
+    expect(pages[1]?.payments).toHaveLength(1);
+    expect(pages[0]?.payments).toHaveLength(0);
+  });
+
+  it("moves a long payment history onto continuation sheets with no lines", () => {
+    const pages = paginateReceipt(receiptWith([line(1)], 26));
+    const closingIndex = pages.findIndex((page) => page.closes);
+    const continuation = pages.slice(closingIndex + 1);
+    expect(continuation.length).toBeGreaterThan(0);
+    for (const page of continuation) {
+      expect(page.lines).toEqual([]);
+      expect(page.closes).toBe(false);
+    }
+    expect(pages.flatMap((page) => page.payments)).toHaveLength(26);
+  });
+
+  it("charges a wrapping description a second row", () => {
+    const short = Array.from({ length: 13 }, (_, i) => line(i + 1));
+    // a description long enough to wrap doubles each line's weight, so the
+    // same 13 lines need more sheets than the one-row-per-line case
+    const long = short.map((l) => ({ ...l, description: "ا".repeat(40) }));
+    expect(paginateReceipt(receiptWith(short))).toHaveLength(2);
+    expect(paginateReceipt(receiptWith(long))).toHaveLength(4);
+  });
+
+  it("still returns one closing sheet for an invoice with no lines", () => {
+    const pages = paginateReceipt(receiptWith([], 1));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.lines).toEqual([]);
+    expect(pages[0]?.closes).toBe(true);
+    expect(pages[0]?.payments).toHaveLength(1);
+  });
+});
+
+function sum(lines: readonly ReceiptLine[]): number {
+  return lines.reduce((total, l) => total + l.netTotal, 0);
+}

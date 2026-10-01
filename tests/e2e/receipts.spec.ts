@@ -78,7 +78,19 @@ test("invoice print button → receipt document with identity, totals and paymen
   await expect(receipt.getByTestId("receipt-store")).toContainText(storeName);
   await expect(receipt.getByTestId("receipt-phone")).toContainText("+213661234567");
   await expect(receipt.getByTestId("receipt-number")).toContainText(number);
-  await expect(receipt.getByTestId("receipt-date")).not.toBeEmpty();
+  // the settled sheet (#121): one A4 page, store header, colon-labelled meta row
+  await expect(receipt.getByTestId("receipt-sheet")).toHaveCount(1);
+  await expect(receipt.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
+  await expect(receipt.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4}$/);
+  await expect(receipt.getByTestId("receipt-kind")).toHaveText("فاتورة بيع");
+  await expect(receipt.getByTestId("receipt-items-title")).toHaveText("المشتريات");
+  await expect(receipt.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");
+  await expect(receipt.locator(".print-sheet-contacts")).toContainText("رقم الهاتف");
+  // the left header block always shows its address label, with the saved value
+  // or an em dash (earlier specs may have saved an address)
+  await expect(receipt.locator(".print-sheet-contacts")).toContainText("العنوان");
+  const colon = await receipt.locator(".print-sheet-meta dt").first().evaluate((el) => getComputedStyle(el, "::after").content);
+  expect(colon).toContain(":");
   // lines: one item, qty 1 @ 900 → line total 900
   await expect(receipt.getByTestId("receipt-line")).toHaveCount(1);
   await expect(receipt.getByTestId("receipt-line").first()).toContainText(itemName);
@@ -89,10 +101,12 @@ test("invoice print button → receipt document with identity, totals and paymen
   await expect(receipt.getByTestId("receipt-total")).toContainText("900");
   await expect(receipt.getByTestId("receipt-paid")).toContainText("900");
   await expect(receipt.getByTestId("receipt-remaining")).toContainText("0");
-  // both payments land in the receipt history, in recording order
+  // both payments land in the receipt history, in recording order, with the
+  // app-wide date/time shape (never the raw ISO `T`)
   await expect(receipt.getByTestId("receipt-payment")).toHaveCount(2);
   await expect(receipt.getByTestId("receipt-payment").nth(0)).toContainText("500");
   await expect(receipt.getByTestId("receipt-payment").nth(1)).toContainText("400");
+  await expect(receipt.getByTestId("receipt-payment").nth(0).locator("td").first()).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
 
   // 6. the toolbar offers the way back (and stays off the paper via print-hidden)
   await expect(page.getByTestId("receipt-back")).toContainText("رجوع للفاتورة");

@@ -25,6 +25,7 @@ export interface ReturnVoucherLine {
 export interface ReturnVoucher {
   storeName: string;
   storePhone: string | null;
+  storeAddress: string | null;
   returnNumber: string;
   invoiceNumber: string;
   invoiceDate: string;
@@ -51,6 +52,7 @@ export function buildReturnVoucher(returnDetail: ReturnDetail, settings: Setting
   return {
     storeName: settings.storeName,
     storePhone: settings.storePhone,
+    storeAddress: settings.storeAddress,
     returnNumber: returnDetail.returnNumber,
     invoiceNumber: returnDetail.invoiceNumber,
     invoiceDate: returnDetail.invoiceDate,

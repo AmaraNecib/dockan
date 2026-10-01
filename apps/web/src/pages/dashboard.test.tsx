@@ -283,11 +283,12 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
-  it("renders the server's own day, not a device-derived one", async () => {
+  it("renders the server's own day in the app's day-first shape, not a device-derived one", async () => {
     summary.day = "2026-08-31";
     const page = await mount(queryClient);
     expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
-    expect(page.card("dashboard-day")?.textContent).toBe("2026-08-31");
+    // issue #119: day-first display, still the server's calendar day
+    expect(page.card("dashboard-day")?.textContent).toBe("31/08/2026");
     await page.unmount();
   });
 

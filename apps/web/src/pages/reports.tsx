@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { formatDate } from "../lib/dates";
 
 /**
  * Ticket 31 — profit report (/reports). Six figures over one Algeria-local
@@ -36,23 +37,11 @@ function withSeconds(value: string): string | undefined {
 
 /**
  * The api resolves the report window to Algeria-local ISO moments
- * ("YYYY-MM-DDTHH:mm:ss"). Render only the calendar day in the Arabic (ar)
- * locale — e.g. "1 أغسطس 2026" — and drop the time-of-day. Latin digits are
- * forced so the day/year stay Western numerals; each date is bidi-isolated at
- * the call site so the RTL sentence keeps the numbers in reading order.
+ * ("YYYY-MM-DDTHH:mm:ss"). The period line shows just the two calendar days in
+ * the app's day-first shape — `01/10/2026 — 31/10/2026` on one line beside the
+ * range select; the shared formatter owns the digits so no page re-derives
+ * them, and no `Intl`/`toLocale*` can follow the machine locale.
  */
-const dayFormatter = new Intl.DateTimeFormat("ar", {
-  day: "numeric",
-  month: "long",
-  year: "numeric",
-  numberingSystem: "latn",
-});
-
-function formatLocalDay(value: string): string {
-  // localDateTime strings carry no timezone, so `new Date` parses them as
-  // device-local — which matches the app's Algeria-local convention.
-  return dayFormatter.format(new Date(value));
-}
 
 export function ReportsPage() {
   const { t } = useTranslation();
@@ -72,8 +61,8 @@ export function ReportsPage() {
       <p className="mt-1 text-xs text-muted-foreground">{t("reportsRangeHint")}</p>
 
       <div className="mt-4 grid gap-3 rounded border bg-card p-4">
-        <div className="grid grid-cols-3 gap-3">
-          <label className="grid gap-1">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid w-full max-w-64 gap-1">
             {t("expensesRange")}
             <Select
               value={preset}
@@ -88,26 +77,23 @@ export function ReportsPage() {
               </SelectContent>
             </Select>
           </label>
-          {preset === "CUSTOM" && (
-            <>
-              <label className="grid gap-1">
-                {t("expensesCustomFrom")}
-                <input type="datetime-local" className="rounded border px-3 py-2" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="report-custom-from" />
-              </label>
-              <label className="grid gap-1">
-                {t("expensesCustomTo")}
-                <input type="datetime-local" className="rounded border px-3 py-2" value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="report-custom-to" />
-              </label>
-            </>
+          {report.data !== undefined && (
+            <p className="pb-2 text-sm whitespace-nowrap text-muted-foreground" data-testid="report-range-label">
+              {formatDate(report.data.range.from)} — {formatDate(report.data.range.to)}
+            </p>
           )}
         </div>
-        {report.data !== undefined && (
-          <p className="text-sm text-muted-foreground" dir="rtl" data-testid="report-range-label">
-            {t("expensesCustomFrom")}{" "}
-            <span dir="ltr">{formatLocalDay(report.data.range.from)}</span>{" "}
-            {t("expensesCustomTo")}{" "}
-            <span dir="ltr">{formatLocalDay(report.data.range.to)}</span>
-          </p>
+        {preset === "CUSTOM" && (
+          <div className="grid grid-cols-2 gap-3">
+            <label className="grid gap-1">
+              {t("expensesCustomFrom")}
+              <input type="datetime-local" className="rounded border px-3 py-2" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="report-custom-from" />
+            </label>
+            <label className="grid gap-1">
+              {t("expensesCustomTo")}
+              <input type="datetime-local" className="rounded border px-3 py-2" value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="report-custom-to" />
+            </label>
+          </div>
         )}
         {report.data !== undefined && (
           <p className="text-xs text-muted-foreground" data-testid="report-day-hint">{t("reportsSellByDayHint")}</p>

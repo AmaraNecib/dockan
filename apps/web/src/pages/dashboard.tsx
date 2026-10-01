@@ -13,6 +13,7 @@ import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 
 import { orpc } from "../lib/rpc";
+import { formatDate } from "../lib/dates";
 
 /**
  * How often the landing summary refetches so an open dashboard stays current.
@@ -181,8 +182,8 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
           )}
           <p className="mt-2 text-xs text-muted-foreground">
             {t("dashboardDay")}:{" "}
-            <span dir="ltr" data-testid="dashboard-day">
-              {summary.data.day}
+            <span data-testid="dashboard-day">
+              {formatDate(summary.data.day)}
             </span>
           </p>
 
@@ -258,13 +259,13 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
                 <tbody>
                   {summary.data.recentInvoices.map((invoice) => (
                     <tr key={invoice.id} className="border-b last:border-0" data-testid="dashboard-recent-row">
-                      <td className="p-2 font-medium" dir="ltr">
+                      <td className="p-2 font-medium">
                         {invoice.invoiceNumber}
                       </td>
                       <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
                       <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
-                      <td className="p-2" dir="ltr">
-                        {invoice.invoiceDate}
+                      <td className="p-2">
+                        {formatDate(invoice.invoiceDate)}
                       </td>
                       <td className="p-2">
                         <Amount value={invoice.totalAmount} />

@@ -17,6 +17,7 @@ import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { CheckoutBar } from "../components/app/checkout-bar";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { parseWholeNumber } from "../lib/numeric-input";
 
 type OverrideType = "" | "AMOUNT" | "PERCENTAGE";
 type DiscountType = "" | "AMOUNT" | "PERCENTAGE";
@@ -27,8 +28,6 @@ type SaleLine = {
   overrideType: OverrideType;
   overrideValue: string;
 };
-
-type QuickAddMode = "EMPTY" | "STOCK";
 
 function nonNegativeOr(value: string, fallback: number): number {
   const parsed = Number(value);
@@ -131,13 +130,17 @@ export function SalePage() {
   // these values, so in-flight edits must not contradict it.
   const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);
 
-  const [quickMode, setQuickMode] = useState<QuickAddMode | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
   const [quickName, setQuickName] = useState("");
   const [quickBarcode, setQuickBarcode] = useState("");
   const [quickCategoryId, setQuickCategoryId] = useState("");
   const [quickCost, setQuickCost] = useState("");
   const [quickSell, setQuickSell] = useState("");
-  const [quickStock, setQuickStock] = useState("1");
+  const [quickStock, setQuickStock] = useState("");
+  // the stock field is always visible; the unknown-scan "create with stock"
+  // choice only moves focus to it, it never gates or forces a quantity
+  const quickStockRef = useRef<HTMLInputElement>(null);
+  const quickStockFocusRef = useRef(false);
   // Only the newest lookup may open the unknown-scan choice or add a line;
   // this prevents a slow older response from overwriting a later scan.
   const scanSeqRef = useRef(0);
@@ -321,15 +324,23 @@ export function SalePage() {
   /** the list has not answered yet: nothing to pick, nothing to submit */
   const quickCategoriesLoading = categories.data === undefined;
 
-  function openQuick(mode: QuickAddMode, code = "") {
-    setQuickMode(mode);
+  function openQuick(code = "", focusStock = false) {
+    quickStockFocusRef.current = focusStock;
+    setQuickOpen(true);
     setQuickBarcode(code);
     setQuickCategoryId(categories.data?.items[0]?.id ?? "");
-    setQuickStock("1");
+    setQuickStock("");
     setQuickCost("");
     setQuickSell("");
     setQuickName("");
   }
+
+  // "create with stock" is a focus hint: the field exists in both paths
+  useEffect(() => {
+    if (!quickOpen || !quickStockFocusRef.current) return;
+    quickStockFocusRef.current = false;
+    quickStockRef.current?.focus();
+  }, [quickOpen]);
 
   function quickSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -337,7 +348,10 @@ export function SalePage() {
     const categoryId = quickCategory;
     const cost = Number(quickCost);
     const sell = Number(quickSell);
-    const stock = Number(quickStock);
+    // blank and 0 both mean "create without stock"; only a positive count
+    // records an opening movement
+    const stockText = quickStock.trim();
+    const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
     if (!categoryId) {
       setError(t("itemsChooseCategory"));
       return;
@@ -346,7 +360,7 @@ export function SalePage() {
       setError(t("saleQuickInvalid"));
       return;
     }
-    if (quickMode === "STOCK" && (!Number.isInteger(stock) || stock < 1)) {
+    if (stock === null) {
       setError(t("scanStockInvalid"));
       return;
     }
@@ -357,13 +371,13 @@ export function SalePage() {
       sellingPrice: sell,
       barcode: quickBarcode.trim() === "" ? undefined : quickBarcode.trim(),
     };
-    if (quickMode === "STOCK") {
+    if (stock > 0) {
       void createWithStock.mutate(
         { ...input, stockOnHand: stock },
-        { onSuccess: (item) => { addLine(item); setQuickMode(null); }, onError: (err) => setError(tError(err.message)) },
+        { onSuccess: (item) => { addLine(item); setQuickOpen(false); }, onError: (err) => setError(tError(err.message)) },
       );
     } else {
-      void createItem.mutate(input, { onSuccess: (item) => { addLine(item); setQuickMode(null); }, onError: (err) => setError(tError(err.message)) });
+      void createItem.mutate(input, { onSuccess: (item) => { addLine(item); setQuickOpen(false); }, onError: (err) => setError(tError(err.message)) });
     }
   }
 
@@ -413,9 +427,9 @@ export function SalePage() {
         </div>
 
         <div className="rounded border border-border bg-card">
-          {/* One primary path (the list picker); the two create paths are
-              demoted to outline so a first-day user is not asked to choose
-              between equal-looking actions. */}
+          {/* One primary path (the list picker); creating a missing item is a
+              single demoted action — the stock quantity lives on its form, so
+              a first-day user is never asked to choose between two creates. */}
           <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
             <h2 className="me-auto text-sm font-semibold">{t("invoiceLinesTitle")}</h2>
             {lines.length > 0 && (
@@ -423,17 +437,14 @@ export function SalePage() {
                 {t("saleAddItem")}
               </Button>
             )}
-            <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick("EMPTY")} disabled={createInvoice.isPending}>
+            <Button variant="outline" data-testid="sale-quick-add" onClick={() => openQuick()} disabled={createInvoice.isPending}>
               {t("saleQuickAdd")}
-            </Button>
-            <Button variant="outline" data-testid="sale-quick-stock-add" onClick={() => openQuick("STOCK")} disabled={createInvoice.isPending}>
-              {t("saleQuickStockBtn")}
             </Button>
           </div>
 
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
 
-          {quickMode !== null && (
+          {quickOpen && (
             <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form">
               <div className="grid grid-cols-2 gap-3">
                 <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" value={quickName} onChange={(event) => setQuickName(event.target.value)} required data-testid="sale-quick-name" /></label>
@@ -457,9 +468,9 @@ export function SalePage() {
                 </label>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quickCost} onChange={(event) => setQuickCost(event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
-                {quickMode === "STOCK" && <label className="grid gap-1 text-sm font-medium">{t("saleQuickStock")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} required data-testid="sale-quick-stock" /></label>}
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickStock")}<input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} data-testid="sale-quick-stock" /></label>
               </div>
-              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => setQuickMode(null)}>{t("dialogClose")}</Button></div>
+              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => setQuickOpen(false)}>{t("dialogClose")}</Button></div>
             </form>
           )}
 
@@ -509,7 +520,7 @@ export function SalePage() {
       )}
 
       <ItemPickerDialog open={pickerOpen} onClose={() => setPickerOpen(false)} onSelect={addLine} />
-      {unknownCode !== null && <UnknownScanDialog code={unknownCode} onClose={() => setUnknownCode(null)} onCreate={() => { setUnknownCode(null); openQuick("EMPTY", unknownCode); }} onCreateWithStock={() => { setUnknownCode(null); openQuick("STOCK", unknownCode); }} onManualLine={() => { setUnknownCode(null); setPickerOpen(true); }} />}
+      {unknownCode !== null && <UnknownScanDialog code={unknownCode} onClose={() => setUnknownCode(null)} onCreate={() => { setUnknownCode(null); openQuick(unknownCode); }} onCreateWithStock={() => { setUnknownCode(null); openQuick(unknownCode, true); }} onManualLine={() => { setUnknownCode(null); setPickerOpen(true); }} />}
     </section>
   );
 }

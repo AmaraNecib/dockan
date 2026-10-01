@@ -181,8 +181,9 @@ describe("PaymentPanel (invoice payment form + history)", () => {
       Array.from(row.querySelectorAll("td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
     );
     expect(cells).toEqual([
-      ["2026-08-25T10:01:00", "300 دج", "نقداً", "أول دفعة"],
-      ["2026-08-25T10:01:00", "200 دج", "تحويل بنكي", "—"],
+      // issue #119: the payment moment renders day-first, 24-hour, no T/seconds
+      ["25/08/2026 10:01", "300 دج", "نقداً", "أول دفعة"],
+      ["25/08/2026 10:01", "200 دج", "تحويل بنكي", "—"],
     ]);
   });
 

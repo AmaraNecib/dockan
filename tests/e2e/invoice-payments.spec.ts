@@ -26,7 +26,7 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   // 1. create a SALE invoice with zero paid: 1 unit @ 900 → total 900
   await page.goto("/sale");
   await expect(page.getByTestId("sale-form")).toBeVisible();
-  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("200");

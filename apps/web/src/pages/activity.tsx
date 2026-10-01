@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { orpc } from "../lib/rpc";
+import { formatDateTime } from "../lib/dates";
 
 /** Keep entity references compact, but retain a useful backup filename.
  * Backup refs are local filesystem paths; showing only the basename avoids
@@ -112,8 +113,8 @@ export function ActivityLogPage() {
           <tbody>
             {activities.data.items.map((entry) => (
               <tr key={entry.id} className="border-b last:border-0">
-                <td className="p-3 whitespace-nowrap text-sm text-muted-foreground" dir="ltr">
-                  {entry.at}
+                <td className="p-3 whitespace-nowrap text-sm text-muted-foreground">
+                  {formatDateTime(entry.at)}
                 </td>
                 <td className="p-3">
                   <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>

@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { formatDate } from "../lib/dates";
 
 /** A party's debt identity: id for a known customer/supplier, typed name otherwise. */
 type PartyIdentity = {
@@ -86,8 +87,8 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
               <tbody>
                 {invoices.data?.items.map((invoice) => (
                   <tr key={invoice.id} data-testid="debts-invoice-row">
-                    <td className="p-2" dir="ltr">{invoice.invoiceNumber}</td>
-                    <td className="p-2">{invoice.invoiceDate}</td>
+                    <td className="p-2">{invoice.invoiceNumber}</td>
+                    <td className="p-2">{formatDate(invoice.invoiceDate)}</td>
                     <td className="p-2"><Amount value={invoice.totalAmount} /></td>
                     <td className="p-2 font-semibold"><Amount value={invoice.remainingAmount} /></td>
                   </tr>

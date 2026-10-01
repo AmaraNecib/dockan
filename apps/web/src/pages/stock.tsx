@@ -1,15 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
+import { ArrowRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
 import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
+import { formatDateTime } from "../lib/dates";
 
 /**
  * Ticket 27 — manual add-stock form + item history (append-only ledger,
@@ -226,9 +229,13 @@ export function ItemHistoryPage() {
 
   return (
     <section>
-      <Link to="/items" className="text-sm text-muted-foreground hover:text-foreground">
-        ← {t("historyBack")}
-      </Link>
+      <Button asChild variant="outline" size="sm">
+        <Link to="/items">
+          {/* RTL: back points right, and the arrow leads the label on its right */}
+          <ArrowRight size={16} aria-hidden="true" />
+          {t("historyBack")}
+        </Link>
+      </Button>
       <h1 className="mt-2 text-xl font-bold">{t("historyTitle")}</h1>
 
       {history.isPending || !history.data ? (
@@ -253,7 +260,7 @@ export function ItemHistoryPage() {
           <tbody>
             {history.data.movements.map((movement) => (
               <tr key={movement.id} className="border-b last:border-0">
-                <td className="p-3">{movement.occurredAt}</td>
+                <td className="p-3">{formatDateTime(movement.occurredAt)}</td>
                 <td className="p-3">
                   {kindLabel(t, movement.kind)}
                   {movement.reason === "opening" && (

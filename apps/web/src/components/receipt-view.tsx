@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import type { Receipt } from "../lib/receipt";
+import { formatDate, formatDateTime } from "../lib/dates";
 
 import { Amount } from "@/components/ui/amount";
 
@@ -8,8 +9,10 @@ import { Amount } from "@/components/ui/amount";
  * Receipt printing — the print-only receipt layout. Presentational: data arrives as
  * a fully assembled `Receipt` (see lib/receipt.ts), so this view is
  * deterministic to render and needs no queries. RTL by default (the app is
- * Arabic); dates, the phone and the invoice number stay left-to-right spans
- * exactly like the invoice detail screen. When printed, only this document
+ * Arabic); the phone and the invoice number stay left-to-right spans exactly
+ * like the invoice detail screen. Dates use the shared day-first formatter:
+ * inside the RTL tables the date reads on the right and its time on the left.
+ * When printed, only this document
  * should reach the paper — the surrounding app chrome carries
  * `print-hidden` (see index.css @media print).
  */
@@ -35,7 +38,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
         </div>
         <div className="flex justify-between border-b py-1">
           <dt className="text-muted-foreground">{t("invoiceDate")}</dt>
-          <dd dir="ltr" data-testid="receipt-date">{receipt.invoiceDate}</dd>
+          <dd data-testid="receipt-date">{formatDate(receipt.invoiceDate)}</dd>
         </div>
         <div className="flex justify-between border-b py-1">
           <dt className="text-muted-foreground">{t("invoiceParty")}</dt>
@@ -115,7 +118,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
             <tbody>
               {receipt.payments.map((payment, index) => (
                 <tr key={`${payment.paidAt}-${index}`} className="border-b last:border-0" data-testid="receipt-payment">
-                  <td className="p-1" dir="ltr">{payment.paidAt}</td>
+                  <td className="p-1">{formatDateTime(payment.paidAt)}</td>
                   <td className="p-1"><Amount value={payment.amount} /></td>
                   <td className="p-1">{t(`pmtMethod_${payment.method}`)}</td>
                   <td className="p-1 text-muted-foreground">{payment.note ?? "—"}</td>

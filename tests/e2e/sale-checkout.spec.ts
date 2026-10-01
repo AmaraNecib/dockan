@@ -74,7 +74,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
 
   // Start a second sale to exercise percentage line and invoice discounts.
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
-  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(secondName);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("300");
@@ -95,7 +95,7 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   // Add only one unit of a fresh item, request two, and verify oversell is
   // rejected while the cart remains rendered for correction.
   await page.getByTestId("sale-saved").getByRole("button", { name: "بيع جديد" }).click();
-  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(`بيع-تجاوز-${stamp}`);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("100");

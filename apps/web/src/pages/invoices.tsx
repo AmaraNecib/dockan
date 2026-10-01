@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import type { InvoiceKind } from "@dokan/contracts";
 
 import { orpc } from "../lib/rpc";
+import { formatDate } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -120,7 +121,7 @@ export function InvoicesPage() {
                 <td className="p-2 font-medium">{invoice.invoiceNumber}</td>
                 <td className="p-2">{t(`invoiceKind_${invoice.kind}`)}</td>
                 <td className="p-2">{invoice.counterpartyName ?? "—"}</td>
-                <td className="p-2" dir="ltr">{invoice.invoiceDate}</td>
+                <td className="p-2">{formatDate(invoice.invoiceDate)}</td>
                 <td className="p-2"><Amount value={invoice.totalAmount} /></td>
                 <td className="p-2" data-testid={`invoice-remaining-${invoice.invoiceNumber}`}><Amount value={invoice.remainingAmount} /></td>
                 <td className="p-2">

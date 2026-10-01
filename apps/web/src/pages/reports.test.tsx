@@ -65,9 +65,6 @@ async function mountPage(queryClient: QueryClient) {
     container: () => container,
     text: () => container.textContent ?? "",
     rangeLabel: () => container.querySelector<HTMLElement>("[data-testid='report-range-label']"),
-    /** the LTR-isolated date spans inside the RTL range sentence */
-    rangeDates: () =>
-      container.querySelectorAll<HTMLElement>("[data-testid='report-range-label'] > span[dir='ltr']"),
     waitFor: async (check: () => boolean) => {
       for (let attempt = 0; attempt < 50; attempt++) {
         if (check()) return true;
@@ -120,32 +117,35 @@ describe("ReportsPage range label (#73)", () => {
     queryClient.clear();
   });
 
-  it("renders the localized Arabic day range and drops the time-of-day", async () => {
+  it("renders the short day-first range and drops the time-of-day", async () => {
     const page = await mountPage(queryClient);
     expect(await page.waitFor(() => page.rangeLabel() !== null)).toBe(true);
 
-    // day + Arabic month name + year for both bounds, no clock time
-    expect(page.rangeLabel()?.textContent).toBe("من 1 أغسطس 2026 إلى 31 أغسطس 2026");
+    // issue #119: `01/08/2026 — 31/08/2026`, no localized month names, no clock
+    expect(page.rangeLabel()?.textContent).toBe("01/08/2026 — 31/08/2026");
     // the raw ISO moments never leak through
     expect(page.text()).not.toContain("2026-08-01T00:00:00");
     expect(page.text()).not.toContain("2026-08-31T23:59:59");
+    // nor any machine-locale month name (the old Intl output)
+    expect(page.text()).not.toContain("أغسطس");
+    expect(page.text()).not.toContain("Aug");
 
     await page.unmount();
   });
 
-  it("keeps the range container RTL with each date LTR-isolated", async () => {
+  it("keeps the range label beside the select, nowrap, without forcing direction", async () => {
     const page = await mountPage(queryClient);
-    expect(await page.waitFor(() => page.rangeDates().length === 2)).toBe(true);
+    expect(await page.waitFor(() => page.rangeLabel() !== null)).toBe(true);
 
-    expect(page.rangeLabel()?.getAttribute("dir")).toBe("rtl");
-
-    const dates = page.rangeDates();
-    expect(dates).toHaveLength(2);
-    for (const date of dates) {
-      expect(date.getAttribute("dir")).toBe("ltr");
-    }
-    expect(dates[0]?.textContent).toBe("1 أغسطس 2026");
-    expect(dates[1]?.textContent).toBe("31 أغسطس 2026");
+    const label = page.rangeLabel()!;
+    // one line: the label itself never wraps
+    expect(label.className).toContain("whitespace-nowrap");
+    // no dir forcing: in the RTL row the first date reads on the right and the
+    // second on its left; no LTR-isolated spans remain
+    expect(label.getAttribute("dir")).toBeNull();
+    expect(label.querySelectorAll("span[dir='ltr']")).toHaveLength(0);
+    // beside the select: same row container holds the range select
+    expect(label.parentElement?.querySelector('[data-testid="report-range-preset"]')).not.toBeNull();
 
     await page.unmount();
   });

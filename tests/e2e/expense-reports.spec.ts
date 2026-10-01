@@ -80,7 +80,21 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await selectExpenseCategory(page, "كراء المحل");
   await page.getByTestId("expense-amount").fill("777");
   await page.getByTestId("expense-note").fill(backdatedNote);
-  await page.getByTestId("expense-date").fill("2020-01-15T12:00");
+
+  // issue #119 — the field wears the app's day-first shape, never the OS
+  // datetime-local shape, and a pasted stored value is refused by name
+  const dateField = page.getByTestId("expense-date");
+  await expect(dateField).toHaveValue(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  await dateField.fill("2020-01-15T12:00");
+  await page.getByTestId("expense-save").click();
+  await expect(page.getByTestId("expense-error")).toContainText("01/10/2026 00:34");
+  await expect(page.getByTestId("expense-history")).not.toContainText(backdatedNote);
+
+  // «الآن» restores a live now-shaped value, then the real backdated moment
+  // records in the field's own shape
+  await page.getByTestId("expense-date-now").click();
+  await expect(dateField).toHaveValue(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  await dateField.fill("15/01/2020 12:00");
   await page.getByTestId("expense-save").click();
   // assert on this row's own note, never on the amount: the other rows carry
   // `Date.now()` stamps that can contain any three digits by chance
@@ -121,18 +135,19 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   const baselineWithdrawalsAbs = await readAbs("report-withdrawals");
   const baselineResult = await read("report-result");
 
-  // the localized range label renders an RTL Arabic sentence with each date
-  // LTR-isolated, and no raw ISO timestamp / clock time leaks through
+  // issue #119 — one short day-first line beside the range select, no raw ISO
+  // and no localized month names; the first date reads on the right in RTL
   const rangeLabel = page.getByTestId("report-range-label");
-  await expect(rangeLabel).toHaveAttribute("dir", "rtl");
-  await expect(rangeLabel).toContainText("من");
-  await expect(rangeLabel).toContainText("إلى");
-  await expect(rangeLabel).not.toContainText(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
-  const rangeDates = page.locator("[data-testid='report-range-label'] > span[dir='ltr']");
-  await expect(rangeDates).toHaveCount(2);
-  // each isolated span carries the day/month/year, including the Arabic month name
-  await expect(rangeDates.nth(0)).toContainText(/[\u0600-\u06FF]/);
-  await expect(rangeDates.nth(1)).toContainText(/[\u0600-\u06FF]/);
+  await expect(rangeLabel).toHaveText(/^\d{2}\/\d{2}\/\d{4} — \d{2}\/\d{2}\/\d{4}$/);
+  await expect(rangeLabel).not.toContainText(/\d{4}-\d{2}-\d{2}/);
+  const selectBox = await page.getByTestId("report-range-preset").boundingBox();
+  const labelBox = await rangeLabel.boundingBox();
+  expect(selectBox).not.toBeNull();
+  expect(labelBox).not.toBeNull();
+  // one line: the label's box sits on the select's row (RTL: to its left)
+  expect(labelBox!.x + labelBox!.width).toBeLessThanOrEqual(selectBox!.x + 1);
+  expect(selectBox!.x - (labelBox!.x + labelBox!.width)).toBeLessThan(32);
+  expect(Math.abs((selectBox!.y + selectBox!.height / 2) - (labelBox!.y + labelBox!.height / 2))).toBeLessThan(20);
 
   // expenses land exactly as deltas in the report (expense lines render with
   // a leading minus, so magnitudes are compared)
@@ -151,7 +166,7 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
 
   // sell one unit of a fresh item: 1000 revenue, 400 COGS -> +600 gross profit
   await page.goto("/sale");
-  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("400");

@@ -72,7 +72,7 @@ describe("ReceiptView — document content", () => {
     expect(text()).toContain("دكان التجربة");
     expect(text()).toContain("+213550123123");
     expect(text()).toContain("INV-0007");
-    expect(text()).toContain("2026-08-25");
+    expect(text()).toContain("25/08/2026");
     expect(text()).toContain("زبون النقد");
     expect(text()).toContain("توصيل للنهار");
   });
@@ -116,8 +116,9 @@ describe("ReceiptView — document content", () => {
       Array.from(row.querySelectorAll("td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
     );
     expect(cells).toEqual([
-      ["2026-08-25T10:01:00", "300 دج", "نقداً", "أول دفعة"],
-      ["2026-08-25T11:30:00", "200 دج", "تحويل بنكي", "—"],
+      // issue #119: payment moments render day-first, 24-hour, no T/seconds
+      ["25/08/2026 10:01", "300 دج", "نقداً", "أول دفعة"],
+      ["25/08/2026 11:30", "200 دج", "تحويل بنكي", "—"],
     ]);
   });
 
@@ -147,16 +148,23 @@ describe("ReceiptView — RTL layout tokens", () => {
     expect(host.querySelector('[data-testid="receipt-view"]')?.getAttribute("dir")).toBe("rtl");
   });
 
-  it("keeps the date, invoice number and phone left-to-right inside RTL", () => {
+  it("keeps the invoice number and phone left-to-right, and the date day-first", () => {
     renderReceipt(receipt);
-    expect(host.querySelector('[data-testid="receipt-date"]')?.getAttribute("dir")).toBe("ltr");
+    // issue #119: a `DD/MM/YYYY` value is a single left-to-right number run, so
+    // the shared formatter needs no LTR wrapper — one would also flip the
+    // cell's `text-align: start` to the left
+    expect(host.querySelector('[data-testid="receipt-date"]')?.getAttribute("dir")).toBeNull();
+    expect(host.querySelector('[data-testid="receipt-date"]')?.textContent).toBe("25/08/2026");
     expect(host.querySelector('[data-testid="receipt-number"]')?.getAttribute("dir")).toBe("ltr");
     expect(host.querySelector('[data-testid="receipt-phone"]')?.getAttribute("dir")).toBe("ltr");
   });
 
-  it("keeps the payment timestamp left-to-right inside RTL", () => {
+  it("leaves the payment timestamp unwrapped so the date reads on the right", () => {
     renderReceipt(receipt);
     const firstDateCell = host.querySelector('[data-testid="receipt-payment"] td');
-    expect(firstDateCell?.getAttribute("dir")).toBe("ltr");
+    expect(firstDateCell?.getAttribute("dir")).toBeNull();
+    // the logical string is day-first; the RTL run order puts the date on the
+    // right and its time on the left
+    expect(firstDateCell?.textContent).toBe("25/08/2026 10:01");
   });
 });

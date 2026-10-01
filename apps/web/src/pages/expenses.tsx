@@ -7,6 +7,7 @@ import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -40,13 +41,6 @@ function withSeconds(value: string): string | undefined {
   return value.length === 16 ? `${value}:00` : value;
 }
 
-/** The shop PC is in Algeria, so device-local now is Algeria-local now. */
-function nowLocalInput(): string {
-  const d = new Date();
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 export function ExpensesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -56,8 +50,10 @@ export function ExpensesPage() {
   const [categoryId, setCategoryId] = useState("");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
-  const [occurredAt, setOccurredAt] = useState(nowLocalInput());
+  const [occurredAt, setOccurredAt] = useState(nowDateTimeText());
   const [error, setError] = useState<string | null>(null);
+  /** the date field's own invalid marker, so the form-level alert is wired to it */
+  const [dateInvalid, setDateInvalid] = useState(false);
   const [saved, setSaved] = useState(false);
 
   // issue #99 — inline expense-category create, mirroring the purchase quick-add
@@ -88,7 +84,8 @@ export function ExpensesPage() {
         setAmount("");
         setNote("");
         setError(null);
-        setOccurredAt(nowLocalInput());
+        setDateInvalid(false);
+        setOccurredAt(nowDateTimeText());
         // the expense list, profit report and activity log all derive from the
         // new raw row; refetching the app's few active queries keeps them honest
         void queryClient.invalidateQueries();
@@ -184,6 +181,7 @@ export function ExpensesPage() {
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+    setDateInvalid(false);
     const parsed = Number(amount);
     if (!Number.isInteger(parsed) || parsed <= 0) {
       setError(t("expenseInvalidAmount"));
@@ -193,11 +191,20 @@ export function ExpensesPage() {
       setError(t("expenseChooseCategory"));
       return;
     }
+    // the field teaches `DD/MM/YYYY HH:mm`; a bare date means midnight, and an
+    // empty field means "record it now" (the api's default), as before
+    const dateText = occurredAt.trim();
+    const occurredAtIso = dateText === "" ? undefined : parseDateTimeText(dateText);
+    if (dateText !== "" && occurredAtIso === null) {
+      setDateInvalid(true);
+      setError(t("expenseDateInvalid"));
+      return;
+    }
     void createExpense.mutate({
       categoryId,
       amount: parsed,
       note: note.trim() === "" ? undefined : note.trim(),
-      occurredAt: withSeconds(occurredAt) ?? undefined,
+      occurredAt: occurredAtIso ?? undefined,
     });
   }
 
@@ -309,10 +316,30 @@ export function ExpensesPage() {
         {t("expenseNote")}
         <input className="rounded border px-3 py-2" disabled={disabled} value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
       </label>
-      <label className="grid gap-1">
-        {t("expenseOccurredAt")}
-        <input type="datetime-local" className="rounded border px-3 py-2" disabled={disabled} value={occurredAt} onChange={(event) => setOccurredAt(event.target.value)} data-testid="expense-date" />
-      </label>
+      <div className="grid gap-1">
+        <label htmlFor="expense-occurred-at">{t("expenseOccurredAt")}</label>
+        <div className="flex gap-2">
+          <input
+            id="expense-occurred-at"
+            className="w-full rounded border px-3 py-2"
+            name="expenseOccurredAt"
+            autoComplete="off"
+            placeholder="01/10/2026 00:34"
+            disabled={disabled}
+            value={occurredAt}
+            aria-invalid={dateInvalid || undefined}
+            aria-describedby={dateInvalid ? "expense-error" : undefined}
+            onChange={(event) => {
+              setOccurredAt(event.target.value);
+              setDateInvalid(false);
+            }}
+            data-testid="expense-date"
+          />
+          <Button type="button" variant="outline" disabled={disabled} onClick={() => setOccurredAt(nowDateTimeText())} data-testid="expense-date-now">
+            {t("dateNow")}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 
@@ -362,7 +389,7 @@ export function ExpensesPage() {
                 </Button>
                 {saved && <span className="text-sm text-success" data-testid="expense-saved">{t("expenseSaved")}</span>}
               </div>
-              {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
+              {error && <p id="expense-error" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
             </form>
 
             {categoryFormOpen && categoryForm}
@@ -492,7 +519,7 @@ export function ExpensesPage() {
                 const withdrawal = category?.isOwnerWithdrawal === true;
                 return (
                   <tr key={entry.id} className={`border-b last:border-0 ${withdrawal ? "bg-warning/10" : ""}`} data-testid="expense-row">
-                    <td className="p-3 text-sm whitespace-nowrap text-muted-foreground" dir="ltr">{entry.occurredAt}</td>
+                    <td className="p-3 text-sm whitespace-nowrap text-muted-foreground">{formatDateTime(entry.occurredAt)}</td>
                     <td className="p-3">
                       {category?.name ?? entry.categoryId.slice(0, 8)}
                       {withdrawal && <span className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground">{t("expensesWithdrawalBadge")}</span>}

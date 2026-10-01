@@ -33,7 +33,7 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
 
   await page.goto("/sale");
   await expect(page.getByTestId("sale-form")).toBeVisible();
-  await page.getByTestId("sale-quick-stock-add").click();
+  await page.getByTestId("sale-quick-add").click();
   await page.getByTestId("sale-quick-name").fill(itemName);
   await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
   await page.getByLabel("سعر الشراء (دج)").fill("200");

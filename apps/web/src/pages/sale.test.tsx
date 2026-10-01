@@ -417,7 +417,6 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(disabled('[data-testid="sale-paid"]')).toBe(true);
     expect(disabled('[data-testid="sale-open-picker"]')).toBe(true);
     expect(disabled('[data-testid="sale-quick-add"]')).toBe(true);
-    expect(disabled('[data-testid="sale-quick-stock-add"]')).toBe(true);
     expect(disabled('[data-testid="sale-discount-type"]')).toBe(true);
     expect(disabled('[data-testid="sale-discount-value"]')).toBe(true);
     expect(disabled('input[aria-label$="الكمية"]')).toBe(true);
@@ -494,9 +493,8 @@ describe("SalePage learnability (issue #94)", () => {
     expect(host.querySelector('[data-testid="sale-discount-value"]')).toBeNull();
     expect(host.querySelector('[data-testid="sale-save"]')).toBeNull();
 
-    // both create paths stay reachable (E2E testids), demoted but present
+    // the one create path stays reachable (E2E testid), demoted but present
     expect(host.querySelector('[data-testid="sale-quick-add"]')).not.toBeNull();
-    expect(host.querySelector('[data-testid="sale-quick-stock-add"]')).not.toBeNull();
   });
 
   it("opens the catalog picker from the empty state's pressable action", async () => {

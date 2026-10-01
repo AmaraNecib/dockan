@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
+import { formatDate, formatDateTime } from "../lib/dates";
 
 /**
  * Ticket 8 — invoice detail (/invoices/$invoiceId). Shows the header, the
@@ -109,7 +110,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           <tbody>
             {invoice.payments.map((payment) => (
               <tr key={payment.id} className="border-b last:border-0" data-testid="pmt-row">
-                <td className="p-2" dir="ltr">{payment.paidAt}</td>
+                <td className="p-2">{formatDateTime(payment.paidAt)}</td>
                 <td className="p-2 font-medium"><Amount value={payment.amount} /></td>
                 <td className="p-2">{t(`pmtMethod_${payment.method}`)}</td>
                 <td className="p-2 text-muted-foreground">{payment.note ?? "—"}</td>
@@ -543,7 +544,7 @@ export function InvoicePage() {
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceNumber")}</dt><dd data-testid="invoice-number">{invoice.invoiceNumber}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceKind")}</dt><dd data-testid="invoice-kind">{t(`invoiceKind_${invoice.kind}`)}</dd></div>
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceParty")}</dt><dd data-testid="invoice-party">{invoice.counterpartyName ?? "—"}</dd></div>
-          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDate")}</dt><dd dir="ltr" data-testid="invoice-date">{invoice.invoiceDate}</dd></div>
+          <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDate")}</dt><dd data-testid="invoice-date">{formatDate(invoice.invoiceDate)}</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total"><Amount value={invoice.totalAmount} /></dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>
           <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining"><Amount value={remaining} /></dd></div>

@@ -584,3 +584,123 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     await ui.unmount();
   });
 });
+
+describe("ExpensesPage — the date/time field (issue #119)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    categoriesFixture = [category("cat-1", "عام")];
+    categoryCreateFails = false;
+    categoryCreateDeferred = false;
+    deferredCategoryCreates = [];
+    categoriesListFails = false;
+    lastCreatedName = null;
+    lastExpense = null;
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  /** The record form only saves with a category; the inline quick-add selects
+   *  what it creates, the same path the owner uses on a fresh shop. */
+  async function recordReady(ui: Awaited<ReturnType<typeof mountPage>>) {
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+    await ui.click("expense-category-add");
+    await ui.type("expense-category-name", "نقل");
+    await ui.submit("expense-category-form");
+    expect(await ui.waitFor(() => ui.query("expense-save") !== null)).toBe(true);
+  }
+
+  it("starts in the app's day-first shape, never a datetime-local value", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-date") !== null)).toBe(true);
+
+    const field = ui.query<HTMLInputElement>("expense-date")!;
+    expect(field.type).toBe("text");
+    expect(field.value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    expect(field.value).not.toContain("T");
+
+    await ui.unmount();
+  });
+
+  it("sends the typed day-first moment as the api's ISO with seconds", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "1200");
+    await ui.type("expense-date", "15/01/2026 08:05");
+    await ui.click("expense-save");
+
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+    expect(lastExpense).toMatchObject({ amount: 1200, occurredAt: "2026-01-15T08:05:00" });
+
+    await ui.unmount();
+  });
+
+  it("treats a bare date as midnight", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "1200");
+    await ui.type("expense-date", "15/01/2026");
+    await ui.click("expense-save");
+
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+    expect(lastExpense).toMatchObject({ occurredAt: "2026-01-15T00:00:00" });
+
+    await ui.unmount();
+  });
+
+  it("refuses a date it cannot read instead of sending it raw", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-amount", "1200");
+    // the stored shape is not what the field teaches; a paste must be corrected
+    await ui.type("expense-date", "2026-01-15T08:05");
+    await ui.click("expense-save");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+
+    expect(lastExpense).toBeNull();
+    expect(ui.query("expense-error")?.textContent).toContain("01/10/2026 00:34");
+    // the form-level alert is programmatically tied to the field it names
+    const field = ui.query<HTMLInputElement>("expense-date")!;
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("aria-describedby")).toBe("expense-error");
+    // and typing a correction clears the marker
+    await ui.type("expense-date", "15/01/2026 08:05");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("fills the field with now from the «الآن» button", async () => {
+    const ui = await mountPage(queryClient);
+    await recordReady(ui);
+
+    await ui.type("expense-date", "15/01/2026 08:05");
+    await ui.click("expense-date-now");
+
+    const value = ui.query<HTMLInputElement>("expense-date")!.value;
+    expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    expect(value).not.toBe("15/01/2026 08:05");
+
+    await ui.unmount();
+  });
+
+  it("keeps the date field and the now button disabled with no category", async () => {
+    categoriesFixture = [];
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-category-empty") !== null)).toBe(true);
+
+    expect(ui.query<HTMLInputElement>("expense-date")?.disabled).toBe(true);
+    expect(ui.query<HTMLButtonElement>("expense-date-now")?.disabled).toBe(true);
+
+    await ui.unmount();
+  });
+});

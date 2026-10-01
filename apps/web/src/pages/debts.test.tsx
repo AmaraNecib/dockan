@@ -211,7 +211,7 @@ describe("DebtsPage (ticket 9)", () => {
     expect(expanded).toBe(true);
     const cells = ui.invoiceRows()[0]!.textContent ?? "";
     expect(cells).toContain("INV-0201");
-    expect(cells).toContain("2026-08-01");
+    expect(cells).toContain("01/08/2026");
     expect(cells).toContain("1000 دج");
     expect(cells).toContain("600 دج");
 

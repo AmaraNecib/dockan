@@ -17,7 +17,7 @@ import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { CheckoutBar } from "../components/app/checkout-bar";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
-import { parseWholeNumber } from "../lib/numeric-input";
+import { resolveOpeningStock } from "../lib/numeric-input";
 
 type OverrideType = "" | "AMOUNT" | "PERCENTAGE";
 type DiscountType = "" | "AMOUNT" | "PERCENTAGE";
@@ -354,10 +354,10 @@ export function SalePage() {
     const categoryId = quickCategory;
     const cost = Number(quickCost);
     const sell = Number(quickSell);
-    // blank and 0 both mean "create without stock"; only a positive count
-    // records an opening movement
-    const stockText = quickStock.trim();
-    const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
+    // the plain path reads blank and 0 as "no opening stock"; the scan's
+    // create-with-stock path requires a positive count — the resolver owns
+    // that rule, the messages stay here
+    const stock = resolveOpeningStock(quickStock, quickStockRequired);
     if (!categoryId) {
       setError(t("itemsChooseCategory"));
       return;
@@ -366,16 +366,8 @@ export function SalePage() {
       setError(t("saleQuickInvalid"));
       return;
     }
-    if (stock === null) {
-      setError(t("scanStockInvalid"));
-      return;
-    }
-    // The scan's create-with-stock path must record an opening movement: a
-    // blank field or an explicit 0 there would create an item that cannot be
-    // sold, so it is refused with the dedicated message. The plain create path
-    // still treats both as "no opening stock".
-    if (quickStockRequired && stock < 1) {
-      setError(t("scanStockRequired"));
+    if (!stock.ok) {
+      setError(t(stock.reason === "required" ? "scanStockRequired" : "scanStockInvalid"));
       return;
     }
     const input = {
@@ -385,9 +377,9 @@ export function SalePage() {
       sellingPrice: sell,
       barcode: quickBarcode.trim() === "" ? undefined : quickBarcode.trim(),
     };
-    if (stock > 0) {
+    if (stock.value > 0) {
       void createWithStock.mutate(
-        { ...input, stockOnHand: stock },
+        { ...input, stockOnHand: stock.value },
         { onSuccess: (item) => { addLine(item); setQuickOpen(false); }, onError: (err) => setError(tError(err.message)) },
       );
     } else {

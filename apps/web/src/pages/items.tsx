@@ -12,7 +12,7 @@ import { Amount } from "@/components/ui/amount";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { normalizeBarcode } from "@dokan/contracts";
-import { parseWholeNumber } from "../lib/numeric-input";
+import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -103,6 +103,14 @@ export function ItemsPage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
+  /** A scan seed (and the required-stock mode it carries) belongs to the add
+   * session that opened it: leaving the tab ends it, so a return through the
+   * tab button is a fresh, plain add. */
+  function selectTab(next: ItemsTab) {
+    if (next !== "add") setFormSeed(null);
+    setTab(next);
+  }
+
   // Keyboard behaviour for the tablist: arrows move focus AND selection
   // (automatic activation), Home/End jump to the ends. RTL users get the same
   // result from either horizontal arrow on a two-tab set.
@@ -116,7 +124,7 @@ export function ItemsPage() {
     event.preventDefault();
     const target = ITEMS_TABS[next];
     if (target === undefined) return;
-    setTab(target.id);
+    selectTab(target.id);
     document.getElementById(`items-tab-${target.id}`)?.focus();
   }
 
@@ -153,7 +161,7 @@ export function ItemsPage() {
             aria-selected={tab === entry.id}
             aria-controls={`items-panel-${entry.id}`}
             tabIndex={tab === entry.id ? 0 : -1}
-            onClick={() => setTab(entry.id)}
+            onClick={() => selectTab(entry.id)}
             onKeyDown={(event) => onTabKeyDown(event, index)}
             data-testid={`items-tab-${entry.id}`}
             className={
@@ -392,18 +400,12 @@ function ItemForm({
       }
       normalizedBarcode = normalized;
     }
-    // empty means zero on the plain form (a deliberate "not counted yet"), so
-    // only a positive whole number takes the one-step create-with-stock path
-    const stockText = initialStock.trim();
-    const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
-    if (stock === null) {
-      setError(t("itemsStockInvalid"));
-      return;
-    }
-    // the scan's create-with-stock seed must record an opening movement: a
-    // blank/0 there would create an item that cannot be sold
-    if (stockRequired && stock < 1) {
-      setError(t("scanStockRequired"));
+    // the plain form reads blank and 0 as a deliberate "not counted yet"; the
+    // scan's create-with-stock seed requires a positive count — the resolver
+    // owns that rule, the messages stay here
+    const stock = resolveOpeningStock(initialStock, stockRequired);
+    if (!stock.ok) {
+      setError(t(stock.reason === "required" ? "scanStockRequired" : "itemsStockInvalid"));
       return;
     }
     const base: ItemCreate = {
@@ -414,7 +416,8 @@ function ItemForm({
       lowStockThreshold: parsedThreshold,
     };
     if (normalizedBarcode !== undefined) base.barcode = normalizedBarcode;
-    if (stockText !== "" && stock > 0) void createWithStock.mutate({ ...base, stockOnHand: stock });    else void create.mutate(base);
+    if (stock.value > 0) void createWithStock.mutate({ ...base, stockOnHand: stock.value });
+    else void create.mutate(base);
   }
 
   return (

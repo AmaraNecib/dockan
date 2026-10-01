@@ -571,6 +571,31 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     expect(createInputs[0]?.stockOnHand).toBeUndefined();
     expect(createWithStockInputs.length).toBe(0);
   });
+
+  it("clears the requirement after leaving and re-entering the add tab", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-5");
+
+    setInput("item-name", "عودة للتبويب");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    // the seeded form refuses blank stock…
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createInputs.length).toBe(0);
+
+    // …but leaving the add tab ends the scan's mode: a return through the tab
+    // button is a fresh, plain add where blank stock creates without a movement
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "عودة للتبويب" });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
 });
 
 describe("stock form prefill", () => {

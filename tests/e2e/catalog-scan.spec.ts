@@ -149,6 +149,22 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");
+
+  // 7. leaving the add tab ends the scan's required-stock mode: returning via
+  //    the tab button is a fresh, plain add, so blank stock creates without a
+  //    movement (the seed used to survive the round trip)
+  await page.keyboard.type("UNKNOWN-556", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  await page.getByTestId("item-name").fill("منتج بلا حركة");
+  await page.getByLabel("سعر الشراء (دج)").fill("50");
+  await page.getByLabel("سعر البيع (دج)").fill("80");
+  await openItemsTab(page, "products");
+  await openItemsTab(page, "add");
+  await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
+  await expect(page.getByRole("row", { name: /منتج بلا حركة/ })).toBeVisible();
 });
 
 test("stale scan lookups never overwrite newer results", async ({ page }) => {

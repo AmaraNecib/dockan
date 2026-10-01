@@ -10,6 +10,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { formatDate, formatDateTime } from "../lib/dates";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -40,8 +41,8 @@ function PartyInvoiceRow({ invoice }: { invoice: Invoice }) {
           {invoice.invoiceNumber}
         </Link>
       </td>
-      {/* TODO(dates): swap to lib/dates.ts once #119 lands */}
-      <td className="p-2" dir="ltr">{invoice.invoiceDate}</td>
+      {/* day-first per issue #119; no LTR wrapper — it would flip the runs */}
+      <td className="p-2">{formatDate(invoice.invoiceDate)}</td>
       <td className="p-2"><Amount value={invoice.totalAmount} /></td>
       <td className="p-2"><Amount value={invoice.paidAmount} /></td>
       <td className="p-2 font-semibold"><Amount value={invoice.remainingAmount} /></td>
@@ -54,8 +55,8 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
   const { t } = useTranslation();
   return (
     <tr data-testid="party-payment-row">
-      {/* TODO(dates): swap to lib/dates.ts once #119 lands */}
-      <td className="p-2" dir="ltr">{payment.paidAt}</td>
+      {/* day-first with 24-hour time per issue #119 */}
+      <td className="p-2">{formatDateTime(payment.paidAt)}</td>
       <td className="p-2" dir="ltr">
         <Link to="/invoices/$invoiceId" params={{ invoiceId: payment.invoiceId }} className="underline-offset-4 hover:underline">
           {payment.invoiceNumber}
@@ -268,8 +269,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               />
               <p className="text-sm text-muted-foreground">
                 {t("partyCreatedAt")}:{" "}
-                {/* TODO(dates): swap to lib/dates.ts once #119 lands */}
-                <span dir="ltr" data-testid="party-created-at">{detail.data.party.createdAt}</span>
+                <span data-testid="party-created-at">{formatDateTime(detail.data.party.createdAt)}</span>
               </p>
             </div>
           </div>

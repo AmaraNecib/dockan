@@ -45,10 +45,12 @@ function paginateReceipt(receipt: Receipt): ReceiptPage[]
 `apps/web/src/lib/print-format.ts` (new, pure)
 
 ```ts
-formatPrintDateTime("2026-10-01T00:34:15") === "01/10/2026 00:34"
-formatPrintDateTime("2026-10-01")          === "01/10/2026"
-formatPrintAmount(1234567)                 === "1,234,567"
+formatPrintAmount(1234567) === "1,234,567"
 ```
+
+Dates come from the shared `lib/dates.ts` formatter (#119): `formatDate` for
+date-only fields, `formatDateTime` for moments (payment timestamps). The print
+layer adds no date logic of its own.
 
 `apps/web/src/components/print-sheet.tsx` (new) — the shared A4 frame:
 store name + contacts + rule + `children` + foot (store / «صفحة X من Y» / ref),
@@ -92,7 +94,8 @@ all, the closing sheet renders no payment section.
   one-sheet boundary (7 fit, 8 split), 5-line single sheet, 12-line 10/2 with a
   payment, three sheets at 20 lines, carried totals, long descriptions,
   payment overflow.
-- `lib/print-format.test.ts` — date and grouped-amount formats.
+- `lib/print-format.test.ts` — grouped-amount format; the date shape is
+  pinned by `lib/dates.test.ts` (#119).
 - `components/receipt-view.test.tsx` — rendered document: labels, dir tokens,
   carry totals (both texts on a middle sheet), page footers, no payment
   section when empty, all-header-per-sheet.
@@ -121,5 +124,5 @@ all, the closing sheet renders no payment section.
 
 ## Out of scope
 
-`lib/dates.ts` (#119), customers/suppliers (#120), deps lane. The print date is
-formatted inline with a `TODO(dates)`.
+`lib/dates.ts` (#119) owns all date formatting and is now used directly;
+customers/suppliers (#120) and the deps lane stay untouched.

@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { formatPrintDateTime } from "../lib/print-format";
+import { formatDate } from "../lib/dates";
 import { debtOffsetDisplay, type ReturnVoucher } from "../lib/return-voucher";
 import { PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
@@ -43,7 +43,7 @@ export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
           <div>
             <dt>{t("invoiceDate")}</dt>
             <dd className="print-sheet-digits" data-testid="return-voucher-date">
-              {formatPrintDateTime(voucher.invoiceDate)}
+              {formatDate(voucher.invoiceDate)}
             </dd>
           </div>
           <div>

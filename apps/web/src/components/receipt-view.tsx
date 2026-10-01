@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { formatPrintDateTime } from "../lib/print-format";
+import { formatDate, formatDateTime } from "../lib/dates";
 import { paginateReceipt, type Receipt, type ReceiptPayment } from "../lib/receipt";
 import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
@@ -41,7 +41,7 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
             <div>
               <dt>{t("invoicePrintDateTime")}</dt>
               <dd className="print-sheet-digits" data-testid="receipt-date">
-                {formatPrintDateTime(receipt.invoiceDate)}
+                {formatDate(receipt.invoiceDate)}
               </dd>
             </div>
             <div>
@@ -132,7 +132,7 @@ function ReceiptPayments({ payments }: { payments: ReceiptPayment[] }) {
           {payments.map((payment, index) => (
             <tr key={`${payment.paidAt}-${index}`} data-testid="receipt-payment">
               <td className="print-sheet-digits">
-                {formatPrintDateTime(payment.paidAt)}
+                {formatDateTime(payment.paidAt)}
               </td>
               <td>
                 <PrintAmount value={payment.amount} />

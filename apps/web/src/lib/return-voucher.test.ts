@@ -119,10 +119,12 @@ describe("paginateReturnVoucher (up to 200 lines, one A4 sheet per page)", () =>
     expect(pages[0]?.closes).toBe(true);
   });
 
-  it("paginates a long return so no sheet is over its budget", () => {
-    const voucher = buildReturnVoucher(makeReturnWithLines(200), settings);
+  it("paginates a long return with the minimal sheet count", () => {
+    // no reason: the base 2-row meta keeps the caps 11 + 12×(P-2) + 8, so 17
+    // sheets hold 199 units and 200 needs exactly 18 (not just at least 18)
+    const voucher = buildReturnVoucher(makeReturn({ ...makeReturnWithLines(200), reason: null }), settings);
     const pages = paginateReturnVoucher(voucher);
-    expect(pages.length).toBeGreaterThanOrEqual(18);
+    expect(pages).toHaveLength(18);
     expect(pages.flatMap((page) => page.lines)).toEqual(voucher.lines);
     expect(pages.map((page) => page.number)).toEqual(pages.map((_, index) => index + 1));
     expect(pages.filter((page) => page.closes)).toHaveLength(1);
@@ -130,6 +132,37 @@ describe("paginateReturnVoucher (up to 200 lines, one A4 sheet per page)", () =>
     // caps: first non-closing 11, later non-closing 12, closing 8
     pages.forEach((page, index) => {
       const cap = index === 0 ? (pages.length === 1 ? 7 : 11) : index === pages.length - 1 ? 8 : 12;
+      const units = page.lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.description.length / 32)), 0);
+      expect(units).toBeLessThanOrEqual(cap);
+    });
+  });
+
+  it("returns one closing sheet for a voucher with no lines", () => {
+    const pages = paginateReturnVoucher(buildReturnVoucher(makeReturnWithLines(0), settings));
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.lines).toEqual([]);
+    expect(pages[0]?.closes).toBe(true);
+  });
+
+  it("charges the reason row and a wrapping party to the sheet budget", () => {
+    const reason = "سبب طويل ".repeat(10);
+    const party = "مورّد الاختبار لقطع غيار السيارات والاكسسوارات بشارع الاستقلال";
+    const heavy = buildReturnVoucher(makeReturn({ ...makeReturnWithLines(20), reason, counterpartyName: party }), settings);
+    const heavyPages = paginateReturnVoucher(heavy);
+    const plainPages = paginateReturnVoucher(buildReturnVoucher(makeReturnWithLines(20), settings));
+    expect(heavyPages.length).toBeGreaterThan(plainPages.length);
+    // the same real row cost the paginator reserves: base 2-row meta (+1),
+    // the reason row, and the party's wrapped rows
+    const extra = 1 + (Math.max(1, Math.ceil(party.length / 20)) - 1) + Math.max(1, Math.ceil(reason.length / 60));
+    heavyPages.forEach((page, index) => {
+      const cap = Math.max(
+        1,
+        index === 0
+          ? (heavyPages.length === 1 ? 13 - 4 - extra - 1 : 13 - extra - 1)
+          : index === heavyPages.length - 1
+            ? 13 - 4 - extra
+            : 13 - extra,
+      );
       const units = page.lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.description.length / 32)), 0);
       expect(units).toBeLessThanOrEqual(cap);
     });

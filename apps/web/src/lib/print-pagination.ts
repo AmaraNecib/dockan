@@ -65,11 +65,17 @@ function fits(costs: readonly number[], cursor: number, capacities: readonly num
 export function paginateLineSlices(costs: readonly number[], caps: PrintLineCaps): number[] {
   if (costs.length === 0) return [0];
 
+  // The sheet count may exceed the line count: the closing sheet can carry the
+  // totals/payment block with ZERO lines (e.g. a payment-heavy invoice whose
+  // line fits on an earlier sheet). At most one such empty sheet is useful, so
+  // one extra is the bound; beyond it, a line is heavier than every cap and
+  // falls back to one line per sheet.
+  const maxPageCount = costs.length + 1;
   let pageCount = 1;
-  while (pageCount <= costs.length && !fits(costs, 0, capacitySequence(caps, pageCount))) {
+  while (pageCount <= maxPageCount && !fits(costs, 0, capacitySequence(caps, pageCount))) {
     pageCount += 1;
   }
-  const forced = pageCount > costs.length;
+  const forced = pageCount > maxPageCount;
   if (forced) pageCount = costs.length;
 
   const slices: number[] = [];
@@ -84,6 +90,11 @@ export function paginateLineSlices(costs: readonly number[], caps: PrintLineCaps
     if (isClosing) {
       slices.push(costs.length);
       break;
+    }
+    if (cursor >= costs.length) {
+      // all lines placed before the closing sheet: this continuation is empty
+      slices.push(costs.length);
+      continue;
     }
     const capacity = page === 0 ? caps.firstContinuation : caps.continuation;
     const laterCaps = capacitySequence(caps, pageCount).slice(page + 1);

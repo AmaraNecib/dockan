@@ -89,17 +89,35 @@ const VOUCHER_PAGE_UNITS = 13;
 const VOUCHER_TOTALS_UNITS = 4;
 /** the items heading, first sheet only */
 const VOUCHER_TITLE_UNITS = 1;
-/** the voucher meta wraps to two rows; the invoice meta is one */
-const VOUCHER_META_EXTRA_UNITS = 1;
+/** the six base meta fields take two grid rows; the invoice meta takes one */
+const VOUCHER_META_BASE_EXTRA_UNITS = 1;
 /** conservative characters that fit on one row before a line description wraps */
 const VOUCHER_DESCRIPTION_CHARS = 32;
+/** conservative characters per row for the party cell (one of three columns) */
+const VOUCHER_PARTY_CHARS = 20;
+/** conservative characters per row for the full-width reason row */
+const VOUCHER_REASON_CHARS = 60;
 
-const VOUCHER_CLOSING_FIRST =
-  VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - VOUCHER_META_EXTRA_UNITS - VOUCHER_TITLE_UNITS;
-const VOUCHER_CLOSING_REST = VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - VOUCHER_META_EXTRA_UNITS;
-const VOUCHER_FIRST_CONTINUATION =
-  VOUCHER_PAGE_UNITS - VOUCHER_META_EXTRA_UNITS - VOUCHER_TITLE_UNITS;
-const VOUCHER_CONTINUATION = VOUCHER_PAGE_UNITS - VOUCHER_META_EXTRA_UNITS;
+/**
+ * The meta's real row cost above the invoice's single row: the base two rows,
+ * plus one row for the reason, plus however many rows a wrapping party name
+ * needs. Charging it keeps a voucher with a reason or a long party inside its
+ * sheet budget instead of overrunning it.
+ */
+function metaExtraUnits(voucher: ReturnVoucher): number {
+  let extra = VOUCHER_META_BASE_EXTRA_UNITS;
+  if (voucher.counterpartyName !== null) {
+    extra += textRowUnits(voucher.counterpartyName, VOUCHER_PARTY_CHARS) - 1;
+  }
+  if (voucher.reason !== null) {
+    extra += textRowUnits(voucher.reason, VOUCHER_REASON_CHARS);
+  }
+  return extra;
+}
+
+/** A meta taller than a sheet cannot fit anywhere; the caps stay positive so
+ * the paginator still terminates and prints every line. */
+const atLeastOne = (units: number): number => Math.max(1, units);
 
 /**
  * Split the voucher lines into A4 sheets: a return can carry up to 200 lines,
@@ -109,11 +127,12 @@ const VOUCHER_CONTINUATION = VOUCHER_PAGE_UNITS - VOUCHER_META_EXTRA_UNITS;
  */
 export function paginateReturnVoucher(voucher: ReturnVoucher): ReturnVoucherPage[] {
   const costs = voucher.lines.map((line) => textRowUnits(line.description, VOUCHER_DESCRIPTION_CHARS));
+  const meta = metaExtraUnits(voucher);
   const slices = paginateLineSlices(costs, {
-    firstClosing: VOUCHER_CLOSING_FIRST,
-    restClosing: VOUCHER_CLOSING_REST,
-    firstContinuation: VOUCHER_FIRST_CONTINUATION,
-    continuation: VOUCHER_CONTINUATION,
+    firstClosing: atLeastOne(VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - meta - VOUCHER_TITLE_UNITS),
+    restClosing: atLeastOne(VOUCHER_PAGE_UNITS - VOUCHER_TOTALS_UNITS - meta),
+    firstContinuation: atLeastOne(VOUCHER_PAGE_UNITS - meta - VOUCHER_TITLE_UNITS),
+    continuation: atLeastOne(VOUCHER_PAGE_UNITS - meta),
   });
   let cursor = 0;
   return slices.map((end, index) => {

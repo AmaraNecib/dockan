@@ -35,6 +35,13 @@ describe("paginateLineSlices", () => {
     });
   });
 
+  it("allows a zero-line closing sheet when the line fits on an earlier sheet", () => {
+    // one 2-unit line whose closing room is 0: the line goes on sheet 1 and
+    // the closing sheet carries only the totals/payment block
+    const zeroClosing = { firstClosing: 0, restClosing: 1, firstContinuation: 10, continuation: 9 };
+    expect(paginateLineSlices([2], zeroClosing)).toEqual([1, 1]);
+  });
+
   it("falls back to one line per sheet when a line is heavier than every cap", () => {
     expect(paginateLineSlices([99, 99], caps)).toEqual([1, 2]);
   });

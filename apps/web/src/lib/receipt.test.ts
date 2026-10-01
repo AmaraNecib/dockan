@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { InvoiceDetail, Settings } from "@dokan/contracts";
 
-import { buildReceipt, paginateReceipt, type Receipt, type ReceiptLine, type ReceiptPayment } from "./receipt";
+import { buildReceipt, paginateReceipt, type Receipt, type ReceiptLine, type ReceiptPage, type ReceiptPayment } from "./receipt";
 
 /**
  * Receipt printing — receipt projection from an invoice detail + settings.
@@ -189,6 +189,25 @@ function pageUnits(page: { lines: ReceiptLine[]; payments: ReceiptPayment[] }): 
   return lineUnits + paymentUnits;
 }
 
+/** The paginator's own budget (PAGE_UNITS 13), re-derived for assertions. */
+function pageBudget(index: number, pageCount: number, hasPayments: boolean, isOverflow: boolean): number {
+  if (isOverflow) return 13 - 3; // PAGE_UNITS - PAYMENT_HEAD_UNITS
+  const isFirst = index === 0;
+  const isClosing = index === pageCount - 1;
+  if (isClosing) return 13 - 5 - (hasPayments ? 3 : 0) - (isFirst ? 1 : 2);
+  return 13 - 2 - (isFirst ? 1 : 2);
+}
+
+/** No sheet's variable content (lines + payments) exceeds its budget. */
+function assertCapacities(pages: ReceiptPage[]): void {
+  const closingIndex = pages.findIndex((page) => page.closes);
+  const hasPayments = pages.some((page) => page.payments.length > 0);
+  pages.forEach((page, index) => {
+    const isOverflow = !page.closes && index > closingIndex;
+    expect(pageUnits(page)).toBeLessThanOrEqual(pageBudget(index, pages.length, hasPayments, isOverflow));
+  });
+}
+
 const linesOf = (pages: ReturnType<typeof paginateReceipt>) => pages.flatMap((page) => page.lines);
 
 describe("paginateReceipt — one A4 sheet per page", () => {
@@ -296,11 +315,51 @@ describe("paginateReceipt — one A4 sheet per page", () => {
     const pages = paginateReceipt(receiptWith(uneven));
     expect(pages).toHaveLength(3);
     expect(linesOf(pages)).toEqual(uneven);
-    // first non-closing 10, later non-closing 9, closing 6 (no payments)
-    const caps = [10, 9, 6];
-    pages.forEach((page, index) => {
-      expect(pageUnits(page)).toBeLessThanOrEqual(caps[index] ?? 0);
-    });
+    assertCapacities(pages);
+  });
+
+  it("lets the closing sheet carry payments only (zero lines) on a payment-heavy invoice", () => {
+    // the reviewer's counterexample: the line needs an earlier sheet because
+    // the closing sheet's spare room is fully claimed by two 2-unit payments
+    const heavyLine = line(1, { description: "x".repeat(40) }); // 2 units
+    const wrapped = [payment("x".repeat(30)), payment("x".repeat(30))]; // 2 units each
+    const pages = paginateReceipt(receiptWith([heavyLine], wrapped));
+    expect(pages).toHaveLength(3);
+    expect(pages[0]?.lines).toHaveLength(1);
+    const closing = pages.find((page) => page.closes);
+    expect(closing?.lines).toHaveLength(0);
+    expect(closing?.payments).toHaveLength(1);
+    expect(pages.flatMap((page) => page.payments)).toHaveLength(2);
+    assertCapacities(pages);
+  });
+
+  it("keeps a 2-unit line off the closing sheet when four one-row payments fill it", () => {
+    const heavyLine = line(1, { description: "x".repeat(40) }); // 2 units
+    const pages = paginateReceipt(receiptWith([heavyLine], Array.from({ length: 4 }, () => payment())));
+    expect(pages[0]?.lines).toHaveLength(1);
+    const closing = pages.find((page) => page.closes);
+    expect(closing?.lines).toHaveLength(0);
+    assertCapacities(pages);
+  });
+
+  it("still prints a payment whose wrapped note exceeds a whole sheet", () => {
+    // count=0 -> 1 fallback: a 13-unit note is heavier than the 10-unit
+    // overflow sheet, but it must still print exactly once
+    const monster = payment("x".repeat(260));
+    const pages = paginateReceipt(receiptWith([line(1)], [monster]));
+    expect(pages.flatMap((page) => page.payments)).toEqual([monster]);
+  });
+
+  it("keeps every payment-overflow sheet inside its cap", () => {
+    const payments = Array.from({ length: 14 }, () => payment());
+    const pages = paginateReceipt(receiptWith([line(1)], payments));
+    const closingIndex = pages.findIndex((page) => page.closes);
+    const overflow = pages.slice(closingIndex + 1);
+    expect(overflow.length).toBeGreaterThan(0);
+    for (const page of overflow) {
+      expect(pageUnits(page)).toBeLessThanOrEqual(10); // PAGE_UNITS - PAYMENT_HEAD_UNITS
+    }
+    expect(pages.flatMap((page) => page.payments)).toHaveLength(14);
   });
 
   it("charges wrapped payment notes their real units, not one per payment", () => {

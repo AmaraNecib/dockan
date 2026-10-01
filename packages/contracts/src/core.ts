@@ -619,7 +619,8 @@ export const catalogSearchOutputSchema = z.object({
 
 export const partyCreateInputSchema = z.object({
   name: z.string().trim().min(1),
-  phone: z.string().trim().optional(),
+  /** bounded so a pasted blob can never become a unique identity key */
+  phone: z.string().trim().max(32).optional(),
 });
 
 /**
@@ -629,7 +630,7 @@ export const partyCreateInputSchema = z.object({
  */
 export const partyPatchSchema = z.object({
   name: z.string().trim().min(1).optional(),
-  phone: z.string().trim().nullable().optional(),
+  phone: z.string().trim().max(32).nullable().optional(),
 });
 
 export const partyUpdateInputSchema = partyPatchSchema

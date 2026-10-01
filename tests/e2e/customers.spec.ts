@@ -114,7 +114,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("party-detail-customer")).toBeVisible();
   await expect(page.getByTestId("party-detail-name")).toHaveText(customerName);
   await expect(page.getByTestId("party-stat-partyStatsCount")).toContainText("2");
-  await expect(page.getByTestId("party-stat-partyStatsTotal")).toContainText("3000");
+  await expect(page.getByTestId("party-stat-partyStatsTotalSales")).toContainText("3000");
   await expect(page.getByTestId("party-stat-partyStatsPaid")).toContainText("1500");
   await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1500");
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);

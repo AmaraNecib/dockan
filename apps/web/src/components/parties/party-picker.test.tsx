@@ -203,6 +203,20 @@ describe("PartyPicker (issue 120)", () => {
     expect(created).toEqual([]);
   });
 
+  it("submits the inline create form with Enter", async () => {
+    const host = await mount();
+    await type(host, "picker", "يوسف");
+    await click(host, "picker-create");
+
+    const form = host.querySelector<HTMLFormElement>('[data-testid="picker-create-panel"]');
+    await act(async () => {
+      form?.requestSubmit();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(created).toEqual([{ name: "يوسف" }]);
+    expect(selection(host)).toBe("new-1|يوسف");
+  });
+
   it("surfaces a server refusal in the create panel", async () => {
     createFails = true;
     const host = await mount();

@@ -1543,6 +1543,37 @@ describe("parties (issue 120)", () => {
     expect(customer.phone).toBe("+213770111222");
   });
 
+  it("refuses an invoice whose picked party is unknown or the wrong role", async () => {
+    const item = await makeItem("تحقق-جهة-منتج", 100, 200);
+    await expect(
+      client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: "00000000-0000-4000-8000-000000000000",
+        counterpartyName: "وهمي",
+        lines: [{ itemId: item.id, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/PARTY_NOT_FOUND/);
+    // a supplier id is not a customer identity
+    const supplier = await client.suppliersCreate({ name: "مورد-دور" });
+    await expect(
+      client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: supplier.id,
+        counterpartyName: supplier.name,
+        lines: [{ itemId: item.id, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/PARTY_NOT_FOUND/);
+    // the matching role still lands and carries the id
+    const customer = await client.customersCreate({ name: "زبون-دور" });
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    expect(invoice.counterpartyId).toBe(customer.id);
+  });
+
   it("returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices", async () => {
     const customer = await client.customersCreate({ name: "زبون-محفوظ" });
     const item = await makeItem("حذف-جهة-منتج", 100, 200);

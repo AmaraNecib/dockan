@@ -68,11 +68,13 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
   );
 }
 
-function StatsStrip({ detail }: { detail: PartyDetail }) {
+function StatsStrip({ detail, role }: { detail: PartyDetail; role: PartyRole }) {
   const { t } = useTranslation();
-  const cells: ReadonlyArray<{ labelKey: "partyStatsCount" | "partyStatsTotal" | "partyStatsPaid" | "partyStatsRemaining"; value: number }> = [
+  const cells: ReadonlyArray<{ labelKey: "partyStatsCount" | "partyStatsTotalSales" | "partyStatsTotalPurchases" | "partyStatsPaid" | "partyStatsRemaining"; value: number }> = [
     { labelKey: "partyStatsCount", value: detail.stats.invoiceCount },
-    { labelKey: "partyStatsTotal", value: detail.stats.totalAmount },
+    // money direction, not just "total": a customer's invoices are sales to
+    // him, a supplier's are our purchases from him
+    { labelKey: role === "customer" ? "partyStatsTotalSales" : "partyStatsTotalPurchases", value: detail.stats.totalAmount },
     { labelKey: "partyStatsPaid", value: detail.stats.paidAmount },
     { labelKey: "partyStatsRemaining", value: detail.stats.remainingAmount },
   ];
@@ -112,9 +114,11 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");
 
   function onTabKeyDown(event: React.KeyboardEvent, index: number) {
+    // RTL (Arabic is the only locale): APG inverts the horizontal mapping, so
+    // ArrowLeft advances and ArrowRight goes back
     let next = index;
-    if (event.key === "ArrowRight") next = (index + 1) % DETAIL_TABS.length;
-    else if (event.key === "ArrowLeft") next = (index - 1 + DETAIL_TABS.length) % DETAIL_TABS.length;
+    if (event.key === "ArrowLeft") next = (index + 1) % DETAIL_TABS.length;
+    else if (event.key === "ArrowRight") next = (index - 1 + DETAIL_TABS.length) % DETAIL_TABS.length;
     else if (event.key === "Home") next = 0;
     else if (event.key === "End") next = DETAIL_TABS.length - 1;
     else return;
@@ -181,7 +185,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
             </p>
           )}
 
-          <StatsStrip detail={detail.data} />
+          <StatsStrip detail={detail.data} role={role} />
 
           <div role="tablist" aria-label={detail.data.party.name} className="mt-6 flex gap-1 border-b border-border">
             {DETAIL_TABS.map((entry, index) => (
@@ -214,12 +218,12 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               <table className="w-full text-sm" data-testid="party-invoices">
                 <thead>
                   <tr className="border-b text-right text-muted-foreground">
-                    <th className="p-2 font-medium">{t("debtsInvNumber")}</th>
-                    <th className="p-2 font-medium">{t("debtsInvDate")}</th>
-                    <th className="p-2 font-medium">{t("debtsInvTotal")}</th>
-                    <th className="p-2 font-medium">{t("invoicePaid")}</th>
-                    <th className="p-2 font-medium">{t("debtsInvRemaining")}</th>
-                    <th className="p-2 font-medium">{t("partyInvoiceStatus")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("debtsInvNumber")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("debtsInvDate")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("debtsInvTotal")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("invoicePaid")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("debtsInvRemaining")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("partyInvoiceStatus")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -238,11 +242,11 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               <table className="w-full text-sm" data-testid="party-payments">
                 <thead>
                   <tr className="border-b text-right text-muted-foreground">
-                    <th className="p-2 font-medium">{t("partyPaymentDate")}</th>
-                    <th className="p-2 font-medium">{t("partyPaymentInvoice")}</th>
-                    <th className="p-2 font-medium">{t("partyPaymentAmount")}</th>
-                    <th className="p-2 font-medium">{t("pmtMethod")}</th>
-                    <th className="p-2 font-medium">{t("partyPaymentNote")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("partyPaymentDate")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("partyPaymentInvoice")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("partyPaymentAmount")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("pmtMethod")}</th>
+                    <th scope="col" className="p-2 font-medium">{t("partyPaymentNote")}</th>
                   </tr>
                 </thead>
                 <tbody>

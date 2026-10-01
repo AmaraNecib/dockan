@@ -760,6 +760,31 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     expect(await store.partyDetail("customer", "00000000-0000-4000-8000-000000000000")).toBeUndefined();
   });
 
+  it("treats an empty update patch as a no-op and clamps legacy aggregate values", async () => {
+    const party = await store.createParty("customer", { name: `تحديث-فارغ-${stamp()}` });
+    expect(await store.updateParty("customer", party.id, {})).toMatchObject({ id: party.id, name: party.name });
+    // a legacy invoice with a malformed stored remaining must not blank the
+    // whole list/detail page through contract output validation
+    await store.insertInvoice({
+      invoiceNumber: `INV-NEG-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: party.id,
+      counterpartyName: party.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 100,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 100,
+      paidAmount: 105,
+      remainingAmount: -5,
+      notes: null,
+    });
+    expect((await store.listParties("customer")).find((row) => row.id === party.id)?.stats.remainingAmount).toBe(0);
+    expect((await store.partyDetail("customer", party.id))?.stats.remainingAmount).toBe(0);
+    expect((await store.partyDetail("customer", party.id))?.invoices).toHaveLength(1);
+  });
+
   it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
     const conn = openConnection(

@@ -618,6 +618,15 @@ export function createRpcRouter(deps: RpcDeps) {
         for (const line of input.lines) {
           if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
         }
+        // identity integrity (issue 120): a picked party must exist AND belong
+        // to the invoice's role. Without this a stale picker id (party deleted
+        // in another tab) or a wrong-role id would silently land as an orphan
+        // the party pages can never show, while its debt stays name-grouped.
+        if (input.counterpartyId !== undefined && input.counterpartyId !== null) {
+          const partyRole = input.kind === "SALE" ? "customer" : "supplier";
+          const party = await tx.getParty(partyRole, input.counterpartyId);
+          if (party === undefined) throw new ORPCError("BAD_REQUEST", { message: "PARTY_NOT_FOUND" });
+        }
 
         if (input.kind === "SALE") {
           const discount = input.discount ??

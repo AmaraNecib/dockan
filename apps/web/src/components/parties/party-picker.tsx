@@ -8,6 +8,7 @@ import type { PartyCreate, PartyRole } from "@dokan/contracts";
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
 import { tError } from "@/lib/i18n";
+import { invalidateParties } from "./party-forms";
 import { duplicateNameParty, filterParties, partyQueryLooksLikePhone, phoneMatchParty } from "./party-match";
 
 /** What the invoice form needs: a known record id, or a typed-only name. */
@@ -60,6 +61,7 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
   const [createPhone, setCreatePhone] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const createNameRef = useRef<HTMLInputElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // the parent owns the selection: a reset (after save) or an external pick
   // flows back into the visible text
@@ -70,6 +72,13 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
   useEffect(() => {
     if (createOpen) createNameRef.current?.focus();
   }, [createOpen]);
+
+  // keep the keyboard-active option inside the scroll window (the list is
+  // max-h-52, so aria-activedescendant can otherwise point off-screen)
+  useEffect(() => {
+    if (activeIndex === null) return;
+    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex]);
 
   const parties = list.data?.items ?? [];
   const listReady = list.data !== undefined;
@@ -124,9 +133,7 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
     if (candidatePhone !== null) input.phone = candidatePhone;
     create.mutate(input, {
       onSuccess: (party) => {
-        void queryClient.invalidateQueries({
-          queryKey: role === "customer" ? orpc.customersList.queryKey() : orpc.suppliersList.queryKey(),
-        });
+        invalidateParties(queryClient);
         pick(party);
       },
       onError: (err) => setCreateError(tError(err.message)),
@@ -177,7 +184,8 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
           className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
           role="combobox"
           aria-expanded={showMenu}
-          aria-controls={listId}
+          aria-haspopup="listbox"
+          aria-controls={showMenu ? listId : undefined}
           aria-autocomplete="list"
           aria-activedescendant={active !== undefined ? `${testId}-option-${active.id}` : undefined}
           autoComplete="off"
@@ -200,6 +208,9 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                     role="option"
                     aria-selected={activeIndex === index}
                     tabIndex={-1}
+                    ref={(element) => {
+                      optionRefs.current[index] = element;
+                    }}
                     // keep focus in the combobox so the menu survives the click
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => pick(party)}
@@ -248,7 +259,14 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                 </button>
               )}
               {createOpen && (
-                <div className="grid gap-2 p-2" data-testid={`${testId}-create-panel`}>
+                <form
+                  className="grid gap-2 p-2"
+                  data-testid={`${testId}-create-panel`}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    submitCreate();
+                  }}
+                >
                   <label className="grid gap-1 text-sm font-medium">
                     {t("partyName")}
                     <input
@@ -305,14 +323,14 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                   )}
 
                   <div className="flex gap-2">
-                    <Button type="button" size="sm" onClick={submitCreate} disabled={createDisabled} data-testid={`${testId}-create-save`}>
+                    <Button type="submit" size="sm" disabled={createDisabled} data-testid={`${testId}-create-save`}>
                       {create.isPending ? t("partyCreating") : t("partyCreateSave")}
                     </Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => setCreateOpen(false)} disabled={create.isPending}>
                       {t("dialogClose")}
                     </Button>
                   </div>
-                </div>
+                </form>
               )}
             </div>
           </div>

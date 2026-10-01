@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyListItem, PartyRole } from "@dokan/contracts";
 
-import { DeletePartyDialog, PartyForm, invalidateParties } from "@/components/parties/party-forms";
+import { DeletePartyDialog, PartyFormDialog } from "@/components/parties/party-forms";
 import { filterParties } from "@/components/parties/party-match";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -59,7 +59,6 @@ function RoleTabs({ role }: { role: PartyRole }) {
  */
 export function PartiesPage({ role }: { role: PartyRole }) {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
   // both queries declared unconditionally; the role enables exactly one
   const customerList = useQuery({ ...orpc.customersList.queryOptions(), enabled: role === "customer" });
   const supplierList = useQuery({ ...orpc.suppliersList.queryOptions(), enabled: role === "supplier" });
@@ -176,6 +175,9 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                         >
                           {t("partyDelete")}
                         </Button>
+                        {/* the rule must be readable without a mouse: a disabled
+                            button is skipped by focus and title is unreliable */}
+                        {deleteBlocked && <span className="sr-only">{t("partyDeleteBlocked")}</span>}
                       </div>
                     </TableCell>
                   </TableRow>
@@ -186,45 +188,37 @@ export function PartiesPage({ role }: { role: PartyRole }) {
         )}
       </div>
 
-      {rows.length > 0 && (
+      {rows.length > 0 && search.trim() === "" && (
         <p className="mt-3 text-sm text-muted-foreground" data-testid="parties-total">
           {t("partiesTotalRemaining")}: <Amount value={totalRemaining} />
         </p>
       )}
 
       {createOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="party-create-dialog" onMouseDown={(event) => event.target === event.currentTarget && setCreateOpen(false)}>
-          <div role="dialog" aria-modal="true" aria-label={t(role === "customer" ? "partyNewCustomer" : "partyNewSupplier")} className="w-full max-w-md rounded-2xl border bg-popover p-5 shadow-lg">
-            <h2 className="mb-3 text-lg font-bold">{t(role === "customer" ? "partyNewCustomer" : "partyNewSupplier")}</h2>
-            <PartyForm
-              key="create"
-              role={role}
-              onSaved={() => {
-                closeDialogs();
-                setNotice(t("partySaved"));
-              }}
-              onCancel={closeDialogs}
-            />
-          </div>
-        </div>
+        <PartyFormDialog
+          role={role}
+          title={t(role === "customer" ? "partyNewCustomer" : "partyNewSupplier")}
+          testId="party-create-dialog"
+          onClose={closeDialogs}
+          onSaved={() => {
+            closeDialogs();
+            setNotice(t("partySaved"));
+          }}
+        />
       )}
 
       {editing !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" data-testid="party-edit-dialog" onMouseDown={(event) => event.target === event.currentTarget && setEditing(null)}>
-          <div role="dialog" aria-modal="true" aria-label={t(role === "customer" ? "partyEditCustomer" : "partyEditSupplier")} className="w-full max-w-md rounded-2xl border bg-popover p-5 shadow-lg">
-            <h2 className="mb-3 text-lg font-bold">{t(role === "customer" ? "partyEditCustomer" : "partyEditSupplier")}</h2>
-            <PartyForm
-              key={editing.id}
-              role={role}
-              party={editing}
-              onSaved={() => {
-                closeDialogs();
-                setNotice(t("partySaved"));
-              }}
-              onCancel={() => setEditing(null)}
-            />
-          </div>
-        </div>
+        <PartyFormDialog
+          role={role}
+          party={editing}
+          title={t(role === "customer" ? "partyEditCustomer" : "partyEditSupplier")}
+          testId="party-edit-dialog"
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            closeDialogs();
+            setNotice(t("partySaved"));
+          }}
+        />
       )}
 
       {deleting !== null && (
@@ -235,7 +229,6 @@ export function PartiesPage({ role }: { role: PartyRole }) {
           onDeleted={() => {
             setDeleting(null);
             setNotice(t("partyDeleted"));
-            invalidateParties(queryClient);
           }}
         />
       )}

@@ -127,6 +127,38 @@ interface DeletePartyDialogProps {
   onDeleted: () => void;
 }
 
+interface PartyFormDialogProps {
+  role: PartyRole;
+  /** null/undefined = create; a party = edit */
+  party?: Party | null;
+  title: string;
+  testId: string;
+  onClose: () => void;
+  onSaved: (party: Party, mode: "created" | "updated") => void;
+}
+
+/**
+ * Create/edit dialog with the shared modal behavior (Escape, focus trap, focus
+ * restore) so the list page does not hand-roll an aria-modal overlay that lies
+ * to assistive tech. The form inside is the same PartyForm the detail page
+ * renders inline.
+ */
+export function PartyFormDialog({ role, party, title, testId, onClose, onSaved }: PartyFormDialogProps) {
+  const { panelRef } = useModalDialog<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      data-testid={testId}
+      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label={title} className="w-full max-w-md rounded-2xl border bg-popover p-5 shadow-lg">
+        <h2 className="mb-3 text-lg font-bold">{title}</h2>
+        <PartyForm key={party?.id ?? "new"} role={role} party={party} onSaved={onSaved} onCancel={onClose} />
+      </div>
+    </div>
+  );
+}
+
 /**
  * Hard-delete confirmation. The caller only opens this for a zero-invoice
  * party (the list/detail button is disabled otherwise), but the store decision
@@ -146,8 +178,10 @@ export function DeletePartyDialog({ role, party, onClose, onDeleted }: DeletePar
       { id: party.id },
       {
         onSuccess: () => {
-          invalidateParties(queryClient);
+          // navigate away first: invalidating the still-mounted detail query
+          // would refetch to NOT_FOUND and flash the error state mid-delete
           onDeleted();
+          invalidateParties(queryClient);
         },
         onError: (err) => setError(tError(err.message)),
       },

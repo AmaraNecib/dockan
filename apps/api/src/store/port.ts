@@ -189,11 +189,12 @@ export interface StorePort {
   getParty(role: PartyRole, partyId: string): Promise<Party | undefined>;
   /** phone uniqueness when present; throws PartyError("PHONE_EXISTS") */
   createParty(role: PartyRole, input: PartyCreate): Promise<Party>;
-  /** undefined when the party does not exist; same phone rule as create */
+  /** undefined when the party does not exist; same phone rule as create.
+   * An empty patch is a no-op and returns the current party. */
   updateParty(role: PartyRole, partyId: string, patch: PartyUpdate): Promise<Party | undefined>;
   /** hard delete, allowed only at zero invoices (the delete rule) */
   deleteParty(role: PartyRole, partyId: string): Promise<PartyDeleteResult>;
-  /** header + stats + every invoice + every payment, one read for the page */
+  /** header + stats + every invoice + every payment, one call for the page */
   partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
   /** Runs an atomic unit; the callback receives the same store with the queue

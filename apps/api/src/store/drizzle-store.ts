@@ -23,6 +23,7 @@ import type {
   PartyDetail,
   PartyListItem,
   PartyRole,
+  PartyStats,
   PartyUpdate,
   Payment,
   ReturnDetail,
@@ -106,19 +107,22 @@ const supplierCols = { id: suppliers.id, name: suppliers.name, phone: suppliers.
 /** Closed literal map: the role picks the table; never caller text. */
 const PARTY_TABLES = { customer: "customers", supplier: "suppliers" } as const;
 
+/** One SQLite scalar as the driver hands it back: text, number, or NULL. */
+type SqlScalar = string | number | null | undefined;
+
 /**
  * One aggregate row for a party row (list and detail share this shape).
  * SQLite returns COUNT/SUM numerically; the mapper coerces once here.
  */
 type PartyAggregateRow = {
-  id: unknown;
-  name: unknown;
-  phone: unknown;
-  createdAt: unknown;
-  invoiceCount: unknown;
-  totalAmount: unknown;
-  paidAmount: unknown;
-  remainingAmount: unknown;
+  id: SqlScalar;
+  name: SqlScalar;
+  phone: SqlScalar;
+  createdAt: SqlScalar;
+  invoiceCount: SqlScalar;
+  totalAmount: SqlScalar;
+  paidAmount: SqlScalar;
+  remainingAmount: SqlScalar;
 };
 
 const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
@@ -126,12 +130,26 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
   name: String(r.name),
   phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
   createdAt: String(r.createdAt),
-  stats: {
-    invoiceCount: Number(r.invoiceCount),
-    totalAmount: Number(r.totalAmount),
-    paidAmount: Number(r.paidAmount),
-    remainingAmount: Number(r.remainingAmount),
-  },
+  stats: safePartyStats(r.invoiceCount, r.totalAmount, r.paidAmount, r.remainingAmount),
+});
+
+/**
+ * Coerce one SQLite aggregate into the contract's dinars shape. A legacy row
+ * with a negative or fractional stored amount would otherwise fail
+ * `dinarsSchema` output validation and blank the whole list/detail page, so
+ * the store clamps at the edge instead of letting one bad row 500 the screen
+ * (the dashboard's degrade-one-section precedent).
+ */
+const safeWhole = (value: SqlScalar): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+};
+
+const safePartyStats = (invoiceCount: SqlScalar, totalAmount: SqlScalar, paidAmount: SqlScalar, remainingAmount: SqlScalar): PartyStats => ({
+  invoiceCount: safeWhole(invoiceCount),
+  totalAmount: safeWhole(totalAmount),
+  paidAmount: safeWhole(paidAmount),
+  remainingAmount: safeWhole(remainingAmount),
 });
 const lineCols = {
   id: invoiceLines.id,
@@ -397,7 +415,9 @@ export const backfillCounterparties = (conn: Connection): void => {
       for (const { name } of names) {
         // SAFETY: the party table's id column is TEXT (db/schema.ts); the
         // SELECT returns at most one row, so the cast matches the driver shape.
-        const existing = conn.raw.query(`SELECT id FROM ${table} WHERE TRIM(name) = ? LIMIT 1`).all(name) as Array<{ id: string }>;
+        // ORDER BY makes the reuse target deterministic when prior duplicates
+        // exist: oldest record first, id breaking same-second ties.
+        const existing = conn.raw.query(`SELECT id FROM ${table} WHERE TRIM(name) = ? ORDER BY created_at, id LIMIT 1`).all(name) as Array<{ id: string }>;
         const partyId = existing[0]?.id ?? id();
         if (existing.length === 0) {
           conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, name, now());
@@ -1060,6 +1080,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return toSupplier(row);
     },
     async updateParty(role: PartyRole, partyId: string, patch: PartyUpdate) {
+      // an empty patch is a no-op, not a raw drizzle UPDATE ... SET {} error
+      if (patch.name === undefined && patch.phone === undefined) return fetchParty(role, partyId);
       const phone = patch.phone === undefined ? undefined : normalizePartyPhone(patch.phone);
       if (phone !== undefined) assertPhoneFree(role, phone, partyId);
       const set: PartyUpdate = {};
@@ -1077,12 +1099,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ? await db.select({ id: customers.id }).from(customers).where(eq(customers.id, partyId)).limit(1)
         : await db.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
       if (exists.length === 0) return "NOT_FOUND";
-      // the delete rule: an invoice-carrying party keeps its id and history
-      const invoiceCount = await db.$count(invoices, eq(invoices.counterpartyId, partyId));
-      if (invoiceCount > 0) return "HAS_INVOICES";
-      if (role === "customer") await db.delete(customers).where(eq(customers.id, partyId)).run();
-      else await db.delete(suppliers).where(eq(suppliers.id, partyId)).run();
-      return "DELETED";
+      // The rule is enforced by ONE conditional DELETE, so it holds at the
+      // statement level even if a future caller forgets the transaction
+      // wrapper; the existence read above only classifies NOT_FOUND.
+      // SAFETY: the table name comes from a closed literal map (never input).
+      const deleted = conn.raw
+        .query(`DELETE FROM ${PARTY_TABLES[role]} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM invoices WHERE counterparty_id = ?)`)
+        .run(partyId, partyId);
+      return Number(deleted.changes) > 0 ? "DELETED" : "HAS_INVOICES";
     },
     async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
       const party = await fetchParty(role, partyId);
@@ -1113,13 +1137,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const stats = statsRows[0];
       return {
         party,
-        stats: {
-          invoiceCount: Number(stats?.invoiceCount ?? 0),
-          totalAmount: Number(stats?.totalAmount ?? 0),
-          paidAmount: Number(stats?.paidAmount ?? 0),
-          remainingAmount: Number(stats?.remainingAmount ?? 0),
-        },
-        invoices: invoiceRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
+        stats: safePartyStats(stats?.invoiceCount, stats?.totalAmount, stats?.paidAmount, stats?.remainingAmount),
+        // reuse the dashboard's guarded mapper: one malformed legacy row must
+        // degrade this section, not 500 the whole detail page
+        invoices: mapRecentInvoices(invoiceRows) ?? [],
         payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
       } satisfies PartyDetail;
     },

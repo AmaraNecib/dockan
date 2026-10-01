@@ -41,6 +41,8 @@ export const activityTypes = [
   "ITEM_CREATED",
   "ITEM_UPDATED",
   "PARTY_CREATED",
+  "PARTY_UPDATED",
+  "PARTY_DELETED",
   "SALE_CREATED",
   "PURCHASE_CREATED",
   "PAYMENT_RECORDED",
@@ -120,19 +122,24 @@ export const itemSchema = z.object({
   updatedAt: localDateTimeSchema,
 });
 
-export const customerSchema = z.object({
+/**
+ * A party (زبون / مورّد). Customers and suppliers are the same record shape;
+ * the role picks the table. The two named aliases stay because the contract
+ * lanes read per role, while every implementation path is shared (ADR-0007:
+ * "the same code path").
+ */
+export const partyRoleSchema = z.enum(["customer", "supplier"]);
+export const partySchema = z.object({
   id: idSchema,
   name: z.string().trim().min(1),
+  /** identity when present: unique across records. Null for a walk-in. */
   phone: z.string().trim().nullable(),
   createdAt: localDateTimeSchema,
 });
 
-export const supplierSchema = z.object({
-  id: idSchema,
-  name: z.string().trim().min(1),
-  phone: z.string().trim().nullable(),
-  createdAt: localDateTimeSchema,
-});
+/** role-typed aliases (structurally identical) */
+export const customerSchema = partySchema;
+export const supplierSchema = partySchema;
 
 /** SALE = the customer owes the shop; PURCHASE = the shop owes the supplier. */
 export const invoiceKindSchema = z.enum(invoiceKinds);
@@ -419,6 +426,43 @@ export const invoiceDetailSchema = invoiceSchema.extend({
 });
 
 // ---------------------------------------------------------------------------
+// Parties (issue 120): list aggregates, detail payload, delete result
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-party invoice aggregates. One SQL read serves both the list row and the
+ * detail stats strip, so the two surfaces can never disagree about a party's
+ * money. `remainingAmount` includes fully paid invoices as 0.
+ */
+export const partyStatsSchema = z.object({
+  invoiceCount: z.number().int().min(0),
+  /** sum of invoice totals (بيع for a customer, شراء for a supplier) */
+  totalAmount: dinarsSchema,
+  paidAmount: dinarsSchema,
+  remainingAmount: dinarsSchema,
+});
+
+/** List seam: the joined aggregates live here, never on the entity schema
+ * (wisdom 2026-08-27: widening itemSchema rippled through every consumer). */
+export const partyListItemSchema = partySchema.extend({ stats: partyStatsSchema });
+export const partyListOutputSchema = z.object({ items: z.array(partyListItemSchema) });
+
+/** Payments tab row: the invoice number is joined at this seam so the page
+ * never renders a raw invoiceId. */
+export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string().min(1) });
+
+export const partyDetailOutputSchema = z.object({
+  party: partySchema,
+  stats: partyStatsSchema,
+  /** every invoice of this party, newest first (no pagination: shop scale) */
+  invoices: z.array(invoiceSchema),
+  /** every payment on those invoices, newest first */
+  payments: z.array(partyPaymentSchema),
+});
+
+export const partyDeleteOutputSchema = z.object({ deleted: z.boolean() });
+
+// ---------------------------------------------------------------------------
 // Returns & refunds (cash today, payoutMethod future-proofs credit)
 // ---------------------------------------------------------------------------
 
@@ -577,6 +621,22 @@ export const partyCreateInputSchema = z.object({
   name: z.string().trim().min(1),
   phone: z.string().trim().optional(),
 });
+
+/**
+ * Editable party fields (the store patch); the RPC input adds the id. Names
+ * may repeat; the store owns the phone uniqueness rule. An explicit
+ * `phone: null` clears it, an omitted phone keeps the stored value.
+ */
+export const partyPatchSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  phone: z.string().trim().nullable().optional(),
+});
+
+export const partyUpdateInputSchema = partyPatchSchema
+  .extend({ id: idSchema })
+  .refine((value) => value.name !== undefined || value.phone !== undefined, {
+    message: "an edit must change the name or the phone",
+  });
 
 export const invoiceLineInputSchema = z.object({
   itemId: idSchema,
@@ -943,6 +1003,13 @@ export type Category = z.infer<typeof categorySchema>;
 export type Item = z.infer<typeof itemSchema>;
 export type Customer = z.infer<typeof customerSchema>;
 export type Supplier = z.infer<typeof supplierSchema>;
+export type PartyRole = z.infer<typeof partyRoleSchema>;
+/** A customer or a supplier: one record shape (see partySchema). */
+export type Party = z.infer<typeof partySchema>;
+export type PartyStats = z.infer<typeof partyStatsSchema>;
+export type PartyListItem = z.infer<typeof partyListItemSchema>;
+export type PartyPayment = z.infer<typeof partyPaymentSchema>;
+export type PartyDetail = z.infer<typeof partyDetailOutputSchema>;
 export type InvoiceKind = z.infer<typeof invoiceKindSchema>;
 export type PriceOverride = z.infer<typeof priceOverrideSchema>;
 export type DiscountType = z.infer<typeof discountTypeSchema>;
@@ -983,6 +1050,7 @@ export type ItemCreate = z.infer<typeof itemCreateInputSchema>;
 export type ItemUpdate = z.infer<typeof itemUpdateInputSchema>;
 export type ItemListItem = z.infer<typeof itemListItemSchema>;
 export type PartyCreate = z.infer<typeof partyCreateInputSchema>;
+export type PartyUpdate = z.infer<typeof partyPatchSchema>;
 export type InvoiceCreate = z.infer<typeof invoiceCreateInputSchema>;
 export type InvoicePay = z.infer<typeof invoicePayInputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;

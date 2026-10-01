@@ -27,6 +27,12 @@ interface PanelMutationOptions {
   onError?: (error: { message?: string }) => void;
 }
 
+/** PartyPicker create options (issue 120); the picker passes callbacks per call. */
+interface PartyCreateMutationOptions {
+  onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
 let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
 let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 
@@ -84,6 +90,22 @@ mock.module("@/lib/rpc", () => ({
         },
         ...opts,
       }),
+    },
+    // PartyPicker (issue 120): mounts its list query and create mutations on
+    // the purchase form.
+    suppliersList: {
+      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["suppliers"],
+    },
+    customersList: {
+      queryOptions: () => ({ queryKey: ["customers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["customers"],
+    },
+    suppliersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "s-1", name: "مورد", phone: null, createdAt: "" }), ...opts }),
+    },
+    customersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
     },
   },
   rpcClient: {},

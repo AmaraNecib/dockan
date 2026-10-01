@@ -10,6 +10,7 @@ import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
+import { PartyError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
@@ -508,6 +509,98 @@ export function createRpcRouter(deps: RpcDeps) {
         const { stockOnHand } = projectLedger(movements, { fallbackUnitCost: item.costPrice });
         return { movements: rows, stockOnHand };
       }),
+    ),
+
+    // --- parties (issue 120): customers & suppliers share one code path -------
+    customersList: os.customersList.handler(guarded(async () => ({ items: await deps.store.listParties("customer") }))),
+    customersGet: os.customersGet.handler(
+      guardedInput(async ({ id }) => {
+        const detail = await deps.store.partyDetail("customer", id);
+        if (detail === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+        return detail;
+      }),
+    ),
+    customersCreate: os.customersCreate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.createParty("customer", input);
+            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED CUSTOMER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    customersUpdate: os.customersUpdate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.updateParty("customer", input.id, input);
+            if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED CUSTOMER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    customersDelete: os.customersDelete.handler(
+      guardedInput(async ({ id }) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          // read the identity first so the audit row can name a row that is
+          // about to stop existing
+          const party = await tx.getParty("customer", id);
+          if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const result = await tx.deleteParty("customer", id);
+          if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
+          if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED CUSTOMER ${party.name}`, ref: id });
+          return { deleted: true as const };
+        }),
+      ),
+    ),
+    suppliersList: os.suppliersList.handler(guarded(async () => ({ items: await deps.store.listParties("supplier") }))),
+    suppliersGet: os.suppliersGet.handler(
+      guardedInput(async ({ id }) => {
+        const detail = await deps.store.partyDetail("supplier", id);
+        if (detail === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+        return detail;
+      }),
+    ),
+    suppliersCreate: os.suppliersCreate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.createParty("supplier", input);
+            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED SUPPLIER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    suppliersUpdate: os.suppliersUpdate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.updateParty("supplier", input.id, input);
+            if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED SUPPLIER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    suppliersDelete: os.suppliersDelete.handler(
+      guardedInput(async ({ id }) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const party = await tx.getParty("supplier", id);
+          if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const result = await tx.deleteParty("supplier", id);
+          if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
+          if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED SUPPLIER ${party.name}`, ref: id });
+          return { deleted: true as const };
+        }),
+      ),
     ),
 
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
@@ -1472,6 +1565,21 @@ export type RpcRouter = ReturnType<typeof createRpcRouter>;
 /** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
 function isUniqueViolation(err: Error): boolean {
   return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");
+}
+
+/**
+ * Translate the store's party identity refusal (and a cross-process race that
+ * lands on the partial phone unique index) into the role-specific CONFLICT key
+ * the ui translates (issue 120).
+ */
+async function withPartyPhoneConflict<T>(phoneKey: "CUSTOMER_PHONE_EXISTS" | "SUPPLIER_PHONE_EXISTS", fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof PartyError && err.code === "PHONE_EXISTS") throw new ORPCError("CONFLICT", { message: phoneKey });
+    if (err instanceof Error && isUniqueViolation(err)) throw new ORPCError("CONFLICT", { message: phoneKey });
+    throw err;
+  }
 }
 
 /** Maps the sqlite UNIQUE race on items.barcode to the stable BARCODE_EXISTS key. */

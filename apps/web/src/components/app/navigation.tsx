@@ -13,6 +13,8 @@ import {
   ShoppingCart,
   Stethoscope,
   Tags,
+  Truck,
+  Users,
   Wallet,
 } from "lucide-react";
 
@@ -48,6 +50,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { key: "sale", labelKey: "navSales", to: "/sale", icon: ShoppingBag, preserveSearch: true },
       { key: "purchase", labelKey: "navPurchases", to: "/purchase", icon: ShoppingCart },
       { key: "invoices", labelKey: "navInvoices", to: "/invoices", icon: FileText },
+      { key: "customers", labelKey: "navCustomers", to: "/customers", icon: Users },
+      { key: "suppliers", labelKey: "navSuppliers", to: "/suppliers", icon: Truck },
       { key: "debts", labelKey: "navDebts", to: "/debts", icon: HandCoins },
       { key: "returns", labelKey: "navReturns", to: "/returns", icon: RotateCcw },
     ],
@@ -77,6 +81,8 @@ const TOP_LEVEL = new Set([
   "activity",
   "purchase",
   "sale",
+  "customers",
+  "suppliers",
   "debts",
   "invoices",
   "returns",

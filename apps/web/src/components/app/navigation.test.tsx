@@ -11,6 +11,8 @@ describe("navigation information architecture", () => {
       "sale",
       "purchase",
       "invoices",
+      "customers",
+      "suppliers",
       "debts",
       "returns",
     ]);
@@ -18,6 +20,8 @@ describe("navigation information architecture", () => {
       "/sale",
       "/purchase",
       "/invoices",
+      "/customers",
+      "/suppliers",
       "/debts",
       "/returns",
     ]);
@@ -44,7 +48,7 @@ describe("navigation information architecture", () => {
     const items = NAV_GROUPS.flatMap((group) => group.items);
     const keys = items.map((item) => item.key);
     expect(new Set(keys).size).toBe(keys.length);
-    expect(items).toHaveLength(14);
+    expect(items).toHaveLength(16);
     for (const item of items) {
       expect(activeNavKey(item.to)).toBe(item.key);
     }

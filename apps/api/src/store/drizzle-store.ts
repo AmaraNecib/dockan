@@ -18,7 +18,12 @@ import type {
   ItemCreate,
   ItemUpdate,
   OnboardingProgress,
+  Party,
   PartyCreate,
+  PartyDetail,
+  PartyListItem,
+  PartyRole,
+  PartyUpdate,
   Payment,
   ReturnDetail,
   ReturnMark,
@@ -27,12 +32,13 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
+import { PartyError } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -96,6 +102,37 @@ const invoiceCols = {
 };
 const customerCols = { id: customers.id, name: customers.name, phone: customers.phone, createdAt: customers.createdAt };
 const supplierCols = { id: suppliers.id, name: suppliers.name, phone: suppliers.phone, createdAt: suppliers.createdAt };
+
+/** Closed literal map: the role picks the table; never caller text. */
+const PARTY_TABLES = { customer: "customers", supplier: "suppliers" } as const;
+
+/**
+ * One aggregate row for a party row (list and detail share this shape).
+ * SQLite returns COUNT/SUM numerically; the mapper coerces once here.
+ */
+type PartyAggregateRow = {
+  id: unknown;
+  name: unknown;
+  phone: unknown;
+  createdAt: unknown;
+  invoiceCount: unknown;
+  totalAmount: unknown;
+  paidAmount: unknown;
+  remainingAmount: unknown;
+};
+
+const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
+  id: String(r.id),
+  name: String(r.name),
+  phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
+  createdAt: String(r.createdAt),
+  stats: {
+    invoiceCount: Number(r.invoiceCount),
+    totalAmount: Number(r.totalAmount),
+    paidAmount: Number(r.paidAmount),
+    remainingAmount: Number(r.remainingAmount),
+  },
+});
 const lineCols = {
   id: invoiceLines.id,
   invoiceId: invoiceLines.invoiceId,
@@ -310,6 +347,65 @@ export const seedExpenseCategories = (conn: Connection): void => {
       }
       conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(EXPENSE_CATEGORIES_MARKER);
     }
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
+
+/** Durable marker: the typed-name backfill ran to completion. */
+const COUNTERPARTY_BACKFILL_MARKER = "migration.counterpartyBackfillV1";
+
+/**
+ * One-time backfill (ADR-0007, issue 120): legacy invoices stored only a typed
+ * `counterparty_name` with a null id. Create one party per distinct trimmed
+ * name and point the matching invoices at it, so the debts page and the new
+ * customers pages group by identity instead of by spelling («علي علي» vs
+ * «على علي» are two debtors today).
+ *
+ * Marker-gated AND self-healing: an existing same-named party is reused, so a
+ * crashed or raced run resumes without duplicating a debtor, and the UPDATE
+ * only touches invoices that still have a null id. BEGIN IMMEDIATE reserves
+ * the write lock before the marker read, so two processes booting the same
+ * legacy database converge (the loser waits on busy_timeout, then sees the
+ * winner's marker). The invoice's `counterparty_name` is never rewritten.
+ */
+export const backfillCounterparties = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: settings.key is the primary key; this literal SELECT yields one
+    // string column per row, so the cast names what the driver already returns.
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(COUNTERPARTY_BACKFILL_MARKER) as Array<{ value: string }>;
+    if (marker.length > 0) {
+      conn.raw.exec("COMMIT");
+      return;
+    }
+    const kinds: ReadonlyArray<{ kind: "SALE" | "PURCHASE"; table: "customers" | "suppliers" }> = [
+      { kind: "SALE", table: "customers" },
+      { kind: "PURCHASE", table: "suppliers" },
+    ];
+    for (const { kind, table } of kinds) {
+      // SAFETY: fixed SQL identifiers and bound parameters; the distinct names
+      // are the only data read and every write binds them.
+      const names = conn.raw
+        .query(
+          `SELECT DISTINCT TRIM(counterparty_name) AS name FROM invoices
+           WHERE kind = ? AND counterparty_id IS NULL AND counterparty_name IS NOT NULL AND TRIM(counterparty_name) <> ''`,
+        )
+        .all(kind) as Array<{ name: string }>;
+      for (const { name } of names) {
+        // SAFETY: the party table's id column is TEXT (db/schema.ts); the
+        // SELECT returns at most one row, so the cast matches the driver shape.
+        const existing = conn.raw.query(`SELECT id FROM ${table} WHERE TRIM(name) = ? LIMIT 1`).all(name) as Array<{ id: string }>;
+        const partyId = existing[0]?.id ?? id();
+        if (existing.length === 0) {
+          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, name, now());
+        }
+        conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, name);
+      }
+    }
+    conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(COUNTERPARTY_BACKFILL_MARKER);
     conn.raw.exec("COMMIT");
   } catch (err) {
     conn.raw.exec("ROLLBACK");
@@ -634,6 +730,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
+    // issue 120: point legacy typed-name invoices at real party records (once)
+    backfillCounterparties(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
     // an existing database cannot both initialize a competing counter. The
@@ -686,6 +784,29 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       `);
     }
   }
+
+  /**
+   * The store-owned identity rule (ADR-0007): a present phone is unique across
+   * records. The partial unique indexes in SCHEMA_DDL are the cross-process
+   * backstop, but SQLite treats NULLs as distinct and an index violation is
+   * not a translated error, so the check runs here for a clear refusal.
+   */
+  const assertPhoneFree = (role: PartyRole, phone: string | null, excludeId: string | null): void => {
+    if (phone === null) return;
+    // SAFETY: the table name comes from a closed literal map (never input);
+    // the WHERE binds the candidate phone, compared on canonical values.
+    const rows = conn.raw.query(`SELECT id FROM ${PARTY_TABLES[role]} WHERE phone = ?`).all(phone) as Array<{ id: string }>;
+    if (rows.some((row) => row.id !== excludeId)) throw new PartyError("PHONE_EXISTS");
+  };
+
+  const fetchParty = async (role: PartyRole, partyId: string): Promise<Party | undefined> => {
+    if (role === "customer") {
+      const rows = await db.select(customerCols).from(customers).where(eq(customers.id, partyId)).limit(1);
+      return rows.length === 0 ? undefined : toCustomer(firstRowOf(rows));
+    }
+    const rows = await db.select(supplierCols).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
+    return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
+  };
 
   const store: StorePort = {
     setup,
@@ -907,20 +1028,100 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return rows;
     },
 
-    // --- parties -------------------------------------------------------------
-    async listCustomers() {
-      return db.select(customerCols).from(customers).orderBy(customers.name);
+    // --- parties (issue 120): customers & suppliers share one code path -------
+    async listParties(role: PartyRole) {
+      const kind = role === "customer" ? "SALE" : "PURCHASE";
+      // One LEFT JOIN keeps a zero-invoice party on the list with zero stats.
+      // SAFETY: the table name comes from a closed literal map (never input);
+      // each alias lands in PartyAggregateRow before typing.
+      const rows = (await db.all(sql`
+        SELECT p.id, p.name, p.phone, p.created_at AS createdAt,
+               COUNT(i.id) AS invoiceCount,
+               COALESCE(SUM(i.total_amount), 0) AS totalAmount,
+               COALESCE(SUM(i.paid_amount), 0) AS paidAmount,
+               COALESCE(SUM(i.remaining_amount), 0) AS remainingAmount
+        FROM ${sql.raw(PARTY_TABLES[role])} p
+        LEFT JOIN invoices i ON i.counterparty_id = p.id AND i.kind = ${kind}
+        GROUP BY p.id
+        ORDER BY p.name`)) as PartyAggregateRow[];
+      return rows.map(toPartyListItem);
     },
-    async createCustomer(input: PartyCreate) {
-      const row = firstRowOf(await db.insert(customers).values({ id: id(), name: input.name, phone: input.phone ?? null, createdAt: now() }).returning());
-      return toCustomer(row);
+    async getParty(role: PartyRole, partyId: string) {
+      return fetchParty(role, partyId);
     },
-    async listSuppliers() {
-      return db.select(supplierCols).from(suppliers).orderBy(suppliers.name);
-    },
-    async createSupplier(input: PartyCreate) {
-      const row = firstRowOf(await db.insert(suppliers).values({ id: id(), name: input.name, phone: input.phone ?? null, createdAt: now() }).returning());
+    async createParty(role: PartyRole, input: PartyCreate) {
+      const phone = normalizePartyPhone(input.phone);
+      assertPhoneFree(role, phone, null);
+      if (role === "customer") {
+        const row = firstRowOf(await db.insert(customers).values({ id: id(), name: input.name, phone, createdAt: now() }).returning());
+        return toCustomer(row);
+      }
+      const row = firstRowOf(await db.insert(suppliers).values({ id: id(), name: input.name, phone, createdAt: now() }).returning());
       return toSupplier(row);
+    },
+    async updateParty(role: PartyRole, partyId: string, patch: PartyUpdate) {
+      const phone = patch.phone === undefined ? undefined : normalizePartyPhone(patch.phone);
+      if (phone !== undefined) assertPhoneFree(role, phone, partyId);
+      const set: PartyUpdate = {};
+      if (patch.name !== undefined) set.name = patch.name;
+      if (phone !== undefined) set.phone = phone;
+      if (role === "customer") {
+        const rows = await db.update(customers).set(set).where(eq(customers.id, partyId)).returning();
+        return rows.length === 0 ? undefined : toCustomer(firstRowOf(rows));
+      }
+      const rows = await db.update(suppliers).set(set).where(eq(suppliers.id, partyId)).returning();
+      return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
+    },
+    async deleteParty(role: PartyRole, partyId: string): Promise<PartyDeleteResult> {
+      const exists = role === "customer"
+        ? await db.select({ id: customers.id }).from(customers).where(eq(customers.id, partyId)).limit(1)
+        : await db.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
+      if (exists.length === 0) return "NOT_FOUND";
+      // the delete rule: an invoice-carrying party keeps its id and history
+      const invoiceCount = await db.$count(invoices, eq(invoices.counterpartyId, partyId));
+      if (invoiceCount > 0) return "HAS_INVOICES";
+      if (role === "customer") await db.delete(customers).where(eq(customers.id, partyId)).run();
+      else await db.delete(suppliers).where(eq(suppliers.id, partyId)).run();
+      return "DELETED";
+    },
+    async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
+      const party = await fetchParty(role, partyId);
+      if (party === undefined) return undefined;
+      const kind = role === "customer" ? "SALE" : "PURCHASE";
+      const [statsRows, invoiceRows, paymentRows] = await Promise.all([
+        db
+          .select({
+            invoiceCount: sql<number>`COUNT(*)`,
+            totalAmount: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`,
+            paidAmount: sql<number>`COALESCE(SUM(${invoices.paidAmount}), 0)`,
+            remainingAmount: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)`,
+          })
+          .from(invoices)
+          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind))),
+        db
+          .select(invoiceCols)
+          .from(invoices)
+          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
+          .orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)),
+        db
+          .select({ ...paymentCols, invoiceNumber: invoices.invoiceNumber })
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
+          .orderBy(desc(payments.paidAt), desc(payments.createdAt)),
+      ]);
+      const stats = statsRows[0];
+      return {
+        party,
+        stats: {
+          invoiceCount: Number(stats?.invoiceCount ?? 0),
+          totalAmount: Number(stats?.totalAmount ?? 0),
+          paidAmount: Number(stats?.paidAmount ?? 0),
+          remainingAmount: Number(stats?.remainingAmount ?? 0),
+        },
+        invoices: invoiceRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
+        payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
+      } satisfies PartyDetail;
     },
 
     // --- invoices / payments -------------------------------------------------

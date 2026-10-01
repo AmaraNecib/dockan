@@ -15,7 +15,12 @@ import type {
   ItemListItem,
   ItemUpdate,
   OnboardingProgress,
+  Party,
   PartyCreate,
+  PartyDetail,
+  PartyListItem,
+  PartyRole,
+  PartyUpdate,
   Payment,
   ReturnDetail,
   ReturnMark,
@@ -116,6 +121,17 @@ export type ReturnLineInsert = {
 /** Summed returned quantity per invoice line (the refund cap key). */
 export type ReturnedQuantityByLine = Map<string, number>;
 
+/** Typed refusal from the store's party identity rule (phone uniqueness). */
+export class PartyError extends Error {
+  constructor(public readonly code: "PHONE_EXISTS") {
+    super(code);
+    this.name = "PartyError";
+  }
+}
+
+/** Hard-delete outcome; the delete rule allows only zero-invoice parties. */
+export type PartyDeleteResult = "DELETED" | "HAS_INVOICES" | "NOT_FOUND";
+
 /**
  * StorePort — the persistence seam. Procedures and use cases depend on this
  * interface and nothing else; no SQL or driver names escape it (ADR-0003).
@@ -164,10 +180,21 @@ export interface StorePort {
   /** raw SALE line facts (netTotal/costAtSale/cogsExact) for invoices dated in [from, to] */
   listSaleLinesForProfit(from: string, to: string): Promise<ProfitSaleLine[]>;
 
-  listCustomers(): Promise<Customer[]>;
-  createCustomer(input: PartyCreate): Promise<Customer>;
-  listSuppliers(): Promise<Supplier[]>;
-  createSupplier(input: PartyCreate): Promise<Supplier>;
+  /**
+   * Party rules (issue 120). Customers and suppliers share one seam because
+   * they share one code path (ADR-0007); `role` picks the table.
+   */
+  /** list + one aggregate per party (invoice count / total / paid / remaining) */
+  listParties(role: PartyRole): Promise<PartyListItem[]>;
+  getParty(role: PartyRole, partyId: string): Promise<Party | undefined>;
+  /** phone uniqueness when present; throws PartyError("PHONE_EXISTS") */
+  createParty(role: PartyRole, input: PartyCreate): Promise<Party>;
+  /** undefined when the party does not exist; same phone rule as create */
+  updateParty(role: PartyRole, partyId: string, patch: PartyUpdate): Promise<Party | undefined>;
+  /** hard delete, allowed only at zero invoices (the delete rule) */
+  deleteParty(role: PartyRole, partyId: string): Promise<PartyDeleteResult>;
+  /** header + stats + every invoice + every payment, one read for the page */
+  partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
   /** Runs an atomic unit; the callback receives the same store with the queue
    * bypassed for its own calls, so nested operations never deadlock and no

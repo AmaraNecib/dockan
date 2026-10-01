@@ -18,6 +18,20 @@ export function isValidAlgerianPhone(raw: string): boolean {
   return normalizeAlgerianPhone(raw) !== null;
 }
 
+/**
+ * Identity key for a customer/supplier phone (issue 120). Absent or empty
+ * clears the value (null, so SQLite keeps treating unset phones as distinct);
+ * an Algerian mobile normalizes to the canonical +213 form; anything else is
+ * cleaned of separators and kept verbatim, so a shop landline stays storable.
+ * Shared by the api store, the uniqueness rule and the web picker's matching.
+ */
+export function normalizePartyPhone(raw: string | null | undefined): string | null {
+  if (raw === null || raw === undefined) return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  return normalizeAlgerianPhone(trimmed) ?? trimmed.replace(/[\s.()-]/g, "");
+}
+
 /** The better-auth username: the normalized phone without the leading +. */
 export function phoneToUsername(normalized: string): string {
   return normalized.slice(1);

@@ -7,6 +7,7 @@ import { PackagePlus, X } from "lucide-react";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
+import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -31,7 +32,7 @@ export function PurchasePage() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [lines, setLines] = useState<DraftLine[]>([]);
-  const [supplier, setSupplier] = useState("");
+  const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "" });
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +66,7 @@ export function PurchasePage() {
       onSuccess: (invoice) => {
         setSavedInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber });
         setLines([]);
-        setSupplier("");
+        setSupplier({ id: null, name: "" });
         setNotes("");
         setPaidNow("");
         void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
@@ -84,7 +85,9 @@ export function PurchasePage() {
     }
     void createInvoice.mutate({
       kind: "PURCHASE",
-      counterpartyName: supplier.trim() === "" ? undefined : supplier.trim(),
+      // the picker keeps the picked record's id; a typed-only name stays null
+      counterpartyId: supplier.id === null ? undefined : supplier.id,
+      counterpartyName: supplier.name.trim() === "" ? undefined : supplier.name.trim(),
       notes: notes.trim() === "" ? undefined : notes.trim(),
       initialPaid: paidNow === "" ? undefined : Number(paidNow),
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: line.quantity, unitPrice: line.unitCost })),
@@ -154,10 +157,14 @@ export function PurchasePage() {
       {!savedInvoice && (
         <div className="mt-4 grid gap-4" data-testid="purchase-form">
           <div className="grid gap-3 rounded border border-border bg-card p-4">
-            <label className="grid gap-1 text-sm font-medium">
-              {t("purchasesSupplier")}
-              <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="supplier" autoComplete="off" value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="purchase-supplier" />
-            </label>
+            <PartyPicker
+              role="supplier"
+              label={t("purchasesSupplier")}
+              value={supplier}
+              onChange={setSupplier}
+              disabled={createInvoice.isPending}
+              testId="purchase-supplier"
+            />
             <div className="grid grid-cols-2 gap-3">
               <label className="grid gap-1 text-sm font-medium">
                 {t("purchasesNotes")}

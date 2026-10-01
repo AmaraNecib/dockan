@@ -660,12 +660,199 @@ describe("barcodes (ticket 28)", () => {
 
 describe("parties", () => {
   it("creates and lists customers and suppliers", async () => {
-    const c = await store.createCustomer({ name: "يوسف", phone: "0550123123" });
-    const s = await store.createSupplier({ name: "مخزن الحاج" });
-    const customers = await store.listCustomers();
-    const suppliers = await store.listSuppliers();
-    expect(customers.some((x) => x.id === c.id && x.phone === "0550123123")).toBe(true);
+    const c = await store.createParty("customer", { name: "يوسف", phone: "0550123123" });
+    const s = await store.createParty("supplier", { name: "مخزن الحاج" });
+    const customers = await store.listParties("customer");
+    const suppliers = await store.listParties("supplier");
+    expect(customers.some((x) => x.id === c.id && x.phone === "+213550123123")).toBe(true);
     expect(suppliers.some((x) => x.id === s.id && s.name === "مخزن الحاج")).toBe(true);
+  });
+});
+
+describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
+  it("treats phone as identity: unique when present, NULLs distinct, update moves it", async () => {
+    const first = await store.createParty("customer", { name: "هوية-١", phone: "0560123456" });
+    expect(first.phone).toBe("+213560123456");
+    // the same number in another spelling is the same identity
+    await expect(store.createParty("customer", { name: "هوية-٢", phone: "+213 560 123 456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // NULL phones never collide (SQLite keeps NULLs distinct)
+    await store.createParty("customer", { name: "بدون-هاتف-١" });
+    await store.createParty("customer", { name: "بدون-هاتف-٢" });
+    // updating onto a taken phone refuses...
+    const third = await store.createParty("customer", { name: "هوية-٣" });
+    await expect(store.updateParty("customer", third.id, { phone: "0560123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // ...updating the owner with a reformatted same number is fine...
+    const same = await store.updateParty("customer", first.id, { phone: "0560 123 456" });
+    expect(same?.phone).toBe("+213560123456");
+    // ...and clearing the holder's phone frees it for a new record
+    await store.updateParty("customer", first.id, { phone: null });
+    const freed = await store.createParty("customer", { name: "هوية-٤", phone: "0560123456" });
+    expect(freed.phone).toBe("+213560123456");
+    // suppliers are a separate identity space
+    const supplier = await store.createParty("supplier", { name: "مورد-هوية", phone: "0560123456" });
+    expect(supplier.phone).toBe("+213560123456");
+    // updating a missing party reports absence, not a phone refusal
+    expect(await store.updateParty("customer", "00000000-0000-4000-8000-000000000000", { name: "لا أحد" })).toBeUndefined();
+  });
+
+  it("hard-deletes only a party with zero invoices (the delete rule)", async () => {
+    const empty = await store.createParty("customer", { name: `حذف-${stamp()}` });
+    expect(await store.deleteParty("customer", empty.id)).toBe("DELETED");
+    expect(await store.getParty("customer", empty.id)).toBeUndefined();
+
+    const kept = await store.createParty("supplier", { name: `مورد-محفوظ-${stamp()}` });
+    await store.insertInvoice({
+      invoiceNumber: `INV-DEL-${Date.now()}`,
+      kind: "PURCHASE",
+      counterpartyId: kept.id,
+      counterpartyName: kept.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 1_000,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 1_000,
+      paidAmount: 0,
+      remainingAmount: 1_000,
+      notes: null,
+    });
+    expect(await store.deleteParty("supplier", kept.id)).toBe("HAS_INVOICES");
+    expect(await store.getParty("supplier", kept.id)).toBeDefined();
+    expect(await store.deleteParty("customer", "00000000-0000-4000-8000-000000000000")).toBe("NOT_FOUND");
+  });
+
+  it("lists kind-scoped aggregates and returns the detail payload", async () => {
+    const customer = await store.createParty("customer", { name: `تفاصيل-${stamp()}` });
+    const other = await store.createParty("supplier", { name: `تفاصيل-مورد-${stamp()}` });
+    const zeroRow = (await store.listParties("customer")).find((row) => row.id === customer.id);
+    expect(zeroRow?.stats).toEqual({ invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 });
+
+    const base = {
+      kind: "SALE" as const,
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      notes: null,
+    };
+    const first = await store.insertInvoice({ ...base, invoiceNumber: `INV-DET-${Date.now()}-1`, totalAmount: 1_000, paidAmount: 400, remainingAmount: 600 });
+    const second = await store.insertInvoice({ ...base, invoiceNumber: `INV-DET-${Date.now()}-2`, totalAmount: 500, paidAmount: 500, remainingAmount: 0 });
+    // a PURCHASE on the same party must not leak into the customer detail
+    await store.insertInvoice({ ...base, kind: "PURCHASE", counterpartyId: other.id, counterpartyName: other.name, invoiceNumber: `INV-DET-${Date.now()}-3`, totalAmount: 700, paidAmount: 0, remainingAmount: 700 });
+    await store.insertPayment({ invoiceId: first.id, amount: 400, method: "CASH", note: null, paidAt: localDateTime() });
+    await store.insertPayment({ invoiceId: second.id, amount: 500, method: "CASH", note: null, paidAt: localDateTime() });
+
+    const row = (await store.listParties("customer")).find((r) => r.id === customer.id);
+    expect(row?.stats).toEqual({ invoiceCount: 2, totalAmount: 1_500, paidAmount: 900, remainingAmount: 600 });
+
+    const detail = await store.partyDetail("customer", customer.id);
+    expect(detail?.party.name).toBe(customer.name);
+    expect(detail?.stats).toEqual({ invoiceCount: 2, totalAmount: 1_500, paidAmount: 900, remainingAmount: 600 });
+    expect(detail?.invoices.map((i) => i.id).sort()).toEqual([first.id, second.id].sort());
+    expect(detail?.payments).toHaveLength(2);
+    expect(detail?.payments.every((p) => p.invoiceNumber.startsWith("INV-DET-"))).toBe(true);
+    // table scoping: a supplier id is not a customer, and vice versa
+    expect(await store.partyDetail("customer", other.id)).toBeUndefined();
+    expect((await store.partyDetail("supplier", other.id))?.stats.invoiceCount).toBe(1);
+    expect(await store.partyDetail("customer", "00000000-0000-4000-8000-000000000000")).toBeUndefined();
+  });
+
+  it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (kind: "SALE" | "PURCHASE", name: string, total: number) =>
+        legacy.insertInvoice({
+          ...base,
+          invoiceNumber: `INV-LEGACY-${++n}`,
+          kind,
+          counterpartyId: null,
+          counterpartyName: name,
+          totalAmount: total,
+          paidAmount: 0,
+          remainingAmount: total,
+        });
+      await seed("SALE", "عماره", 12_000);
+      await seed("SALE", "محمد بنين", 40_000);
+      await seed("SALE", "علي علي", 230_000);
+      await seed("SALE", "  علي علي ", 40_000); // padded same name → one record
+      await seed("PURCHASE", "صالح بن علي", 34_000);
+      await seed("PURCHASE", "ماني", 9_000);
+      // simulate the pre-upgrade database: invoices exist, the marker does not
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      const suppliers = await legacy.listParties("supplier");
+      expect(customers.map((c) => c.name).sort()).toEqual(["علي علي", "عماره", "محمد بنين"].sort());
+      expect(suppliers.map((s) => s.name).sort()).toEqual(["صالح بن علي", "ماني"].sort());
+      // two «علي علي» invoices share one record and aggregate together
+      expect(customers.find((c) => c.name === "علي علي")?.stats).toMatchObject({ invoiceCount: 2, totalAmount: 270_000, remainingAmount: 270_000 });
+      expect(customers.find((c) => c.name === "محمد بنين")?.stats.invoiceCount).toBe(1);
+
+      const invoices = (await legacy.listInvoices({})).items;
+      const linked = invoices.filter((i) => i.counterpartyId !== null);
+      expect(linked).toHaveLength(6);
+      // the typed name is preserved verbatim (display/history unchanged)
+      const padded = invoices.find((i) => i.invoiceNumber === "INV-LEGACY-4");
+      expect(padded?.counterpartyName).toBe("  علي علي ");
+      expect(padded?.counterpartyId).toBe(customers.find((c) => c.name === "علي علي")?.id);
+
+      // a second setup is a no-op (marker + reuse-by-name)
+      await legacy.setup();
+      expect(await legacy.listParties("customer")).toHaveLength(3);
+      expect(await legacy.listParties("supplier")).toHaveLength(2);
+    } finally {
+      conn.close();
+      removeTempDirRetry(dir);
+    }
+  });
+
+  it("backfill reuses an existing same-named party instead of duplicating a debtor", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-reuse-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const existing = await legacy.createParty("customer", { name: "عماره", phone: "0550111222" });
+      await legacy.insertInvoice({
+        invoiceNumber: "INV-REUSE-1",
+        kind: "SALE",
+        counterpartyId: null,
+        counterpartyName: "عماره",
+        invoiceDate: localDate(),
+        subtotalAmount: 0,
+        discountType: null,
+        discountValue: null,
+        discountAmount: 0,
+        totalAmount: 5_000,
+        paidAmount: 0,
+        remainingAmount: 5_000,
+        notes: null,
+      });
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers.filter((c) => c.name === "عماره")).toHaveLength(1);
+      expect(customers.find((c) => c.name === "عماره")?.id).toBe(existing.id);
+      expect(customers.find((c) => c.name === "عماره")?.phone).toBe("+213550111222");
+      expect((await legacy.listInvoices({})).items.find((i) => i.invoiceNumber === "INV-REUSE-1")?.counterpartyId).toBe(existing.id);
+    } finally {
+      conn.close();
+      removeTempDirRetry(dir);
+    }
   });
 });
 

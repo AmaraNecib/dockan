@@ -9,7 +9,6 @@ import {
   catalogSearchOutputSchema,
   categoryCreateInputSchema,
   categorySchema,
-  customerSchema,
   dashboardSummaryOutputSchema,
   debtsByPartyInputSchema,
   debtsOutputSchema,
@@ -37,6 +36,11 @@ import {
   onboardingProgressOutputSchema,
   onboardingCompleteOutputSchema,
   partyCreateInputSchema,
+  partyDeleteOutputSchema,
+  partyDetailOutputSchema,
+  partyListOutputSchema,
+  partySchema,
+  partyUpdateInputSchema,
   preferencesGetOutputSchema,
   preferencesSetInputSchema,
   preferencesSetOutputSchema,
@@ -61,7 +65,6 @@ import {
   settingsUpdateInputSchema,
   stockAddManualInputSchema,
   stockMovementSchema,
-  supplierSchema,
 } from "./core";
 
 /**
@@ -93,11 +96,17 @@ export const dokanContract = {
   stockAddManual: oc.input(stockAddManualInputSchema).output(stockMovementSchema),
   itemsHistory: oc.input(z.object({ itemId: z.string().uuid() })).output(itemHistoryOutputSchema),
 
-  // --- parties -------------------------------------------------------------
-  customersList: oc.output(z.object({ items: z.array(customerSchema) })),
-  customersCreate: oc.input(partyCreateInputSchema).output(customerSchema),
-  suppliersList: oc.output(z.object({ items: z.array(supplierSchema) })),
-  suppliersCreate: oc.input(partyCreateInputSchema).output(supplierSchema),
+  // --- parties (customer / supplier share one code path; issue 120) --------
+  customersList: oc.output(partyListOutputSchema),
+  customersGet: oc.input(z.object({ id: z.string().uuid() })).output(partyDetailOutputSchema),
+  customersCreate: oc.input(partyCreateInputSchema).output(partySchema),
+  customersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),
+  customersDelete: oc.input(z.object({ id: z.string().uuid() })).output(partyDeleteOutputSchema),
+  suppliersList: oc.output(partyListOutputSchema),
+  suppliersGet: oc.input(z.object({ id: z.string().uuid() })).output(partyDetailOutputSchema),
+  suppliersCreate: oc.input(partyCreateInputSchema).output(partySchema),
+  suppliersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),
+  suppliersDelete: oc.input(z.object({ id: z.string().uuid() })).output(partyDeleteOutputSchema),
 
   // --- invoices ------------------------------------------------------------
   invoicesCreate: oc.input(invoiceCreateInputSchema).output(invoiceDetailSchema),

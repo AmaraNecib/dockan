@@ -48,6 +48,12 @@ interface CapturedItemInput {
   stockOnHand?: number;
 }
 
+/** PartyPicker create options (issue 120); the picker passes callbacks per call. */
+interface PartyCreateMutationOptions {
+  onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
 let scanPrice = 1000;
 let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
@@ -121,6 +127,22 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsList: { queryKey: () => ["items"] },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
+    // PartyPicker (issue 120): no records in these fixtures; the picker still
+    // mounts its list query and create mutations.
+    customersList: {
+      queryOptions: () => ({ queryKey: ["customers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["customers"],
+    },
+    suppliersList: {
+      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["suppliers"],
+    },
+    customersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
+    },
+    suppliersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "s-1", name: "مورد", phone: null, createdAt: "" }), ...opts }),
+    },
   },
   rpcClient: {
     catalogSearch: async ({ query }: { query: string }) => {

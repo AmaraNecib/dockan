@@ -122,10 +122,27 @@ function isLoopbackRequest(c: Context): boolean {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
+/**
+ * Pre-boot credential routes the shell owns through the stdin broker (issue
+ * #141). In broker mode they must be unreachable over HTTP: the passphrase and
+ * the setup recovery key travel on the shell's pipe only, never the network.
+ * Post-unlock credential routes (change-passphrase, recovery-keys) stay HTTP:
+ * they are authenticated and the vault is already open.
+ */
+function requiresBroker(path: string): boolean {
+  return (
+    path === "/api/vault/setup" ||
+    path === "/api/vault/unlock" ||
+    path === "/api/vault/unlock-recovery" ||
+    path === "/api/vault/reset-passphrase"
+  );
+}
+
 export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   const app = new Hono();
 
   app.use("/api/vault/*", async (c, next) => {
+    if (deps.config.vaultBroker && requiresBroker(c.req.path)) return errorResponse("VAULT_BROKER_REQUIRED", 403);
     if (requiresLoopback(c.req.path) && !isLoopbackRequest(c)) return errorResponse("VAULT_LOOPBACK_REQUIRED", 403);
     return next();
   });
@@ -162,6 +179,9 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       recoveryKeyCount: status.state === "unlocked" ? status.recoveryKeyCount : 0,
       lockedForMs: status.lockedForMs,
       unlocked: deps.manager.unlocked,
+      // the shell's stdin broker owns the credential prompt; the gate UI then
+      // routes unlock/setup through Tauri IPC instead of these HTTP routes
+      broker: deps.config.vaultBroker,
     });
   });
 

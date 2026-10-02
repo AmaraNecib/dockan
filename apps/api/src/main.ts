@@ -23,7 +23,7 @@ import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypt
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
 import { closeVaultThenReleaseLock, createVaultLockRefusalApp, VaultAlreadyLockedError, acquireVaultLock, type VaultLock } from "./lib/vault/lock";
-import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError } from "./lib/vault/manager";
+import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 import type { StorePort } from "./store/port";
@@ -280,29 +280,77 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 const brokerRequestSchema = z.object({
-  action: z.enum(["unlock", "recovery", "setup"]),
+  action: z.enum(["unlock", "recovery", "setup", "status"]),
   passphrase: z.string().optional(),
   recoveryKey: z.string().optional(),
 });
 
+/** The vault status payload the pipe and the HTTP status route both serve. */
+type VaultStatusPayload = {
+  mode: "vault";
+  state: VaultStatus["state"];
+  legacyDatabase: boolean;
+  recoveryKeyCount: number;
+  lockedForMs: number;
+  unlocked: boolean;
+  broker: boolean;
+};
+
+/** The gate status over the pipe (same fields the HTTP status route serves). */
+function brokerStatusPayload(vault: VaultManager): VaultStatusPayload {
+  const status = vault.status();
+  return {
+    mode: "vault",
+    state: status.state,
+    legacyDatabase: status.legacyDatabase,
+    // never advertise the wrap inventory before unlock
+    recoveryKeyCount: status.state === "unlocked" ? status.recoveryKeyCount : 0,
+    lockedForMs: status.lockedForMs,
+    unlocked: vault.unlocked,
+    broker: true,
+  };
+}
+
 type BrokerReply =
-  | { ok: true; sessionToken: string; recoveryKey?: string; plaintextRemaining?: string[] }
+  | { ok: true; sessionToken: string; sessionGeneration?: number; recoveryKey?: string; plaintextRemaining?: string[] }
+  | { ok: true; status: VaultStatusPayload }
   | { ok: false; code: VaultErrorCode; retryAfterMs?: number };
 
 function writeBrokerReply(reply: BrokerReply): void {
   process.stdout.write(`${JSON.stringify(reply)}\n`);
 }
 
-/** One line from the parent shell's pipe; undefined when the pipe closed. */
-async function readStdinLine(): Promise<string | undefined> {
+/**
+ * One reusable stdin reader: `Bun.stdin.stream()` is single-use, so a second
+ * `readStdinLine` call on a new stream never saw the next line (the status
+ * probe exposed it). The source is created once and buffered across calls;
+ * bytes after the returned newline stay in the buffer.
+ */
+function createStdinLineReader(): () => Promise<string | undefined> {
+  const reader = Bun.stdin.stream().getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  for await (const chunk of Bun.stdin.stream()) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const newline = buffer.indexOf("\n");
-    if (newline >= 0) return buffer.slice(0, newline);
-  }
-  return buffer.length > 0 ? buffer : undefined;
+  return async () => {
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        return line;
+      }
+      const { done, value } = await reader.read();
+      if (done) return buffer.length > 0 ? buffer : undefined;
+      buffer += decoder.decode(value, { stream: true });
+    }
+  };
+}
+
+let stdinLineReader: (() => Promise<string | undefined>) | undefined;
+
+/** One line from the parent shell's pipe; undefined when the pipe closed. */
+async function readStdinLine(): Promise<string | undefined> {
+  stdinLineReader ??= createStdinLineReader();
+  return stdinLineReader();
 }
 
 function brokerFailure(action: "unlock" | "recovery" | "setup", error: Error): BrokerReply {
@@ -338,61 +386,70 @@ function brokerFailure(action: "unlock" | "recovery" | "setup", error: Error): B
  * the next attempt), so no pre-unlock child lingers.
  */
 async function runVaultBroker(vault: VaultManager): Promise<void> {
-  const line = await readStdinLine();
-  let decoded: string | number | boolean | null | Array<string | number | boolean | null> | { [key: string]: string | number | boolean | null };
-  try {
-    if (line === undefined) throw new Error("stdin closed");
-    decoded = JSON.parse(line);
-  } catch {
-    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
-    process.exit(1);
-  }
-  const parsedRequest = brokerRequestSchema.safeParse(decoded);
-  if (!parsedRequest.success) {
-    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
-    process.exit(1);
-  }
-  const request = parsedRequest.data;
-  try {
-    if (request.action === "setup") {
-      const passphrase = request.passphrase ?? "";
-      // the NORMALIZED passphrase decides: eight spaces is empty
-      if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
-        writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT" });
-        process.exit(1);
-      }
-      const prepared = await vault.prepareSetup(passphrase);
-      await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
-      // the app is up; a concurrent resume would now be safe, but the broker is
-      // single-request anyway
-      vault.finishSetupBootstrap();
-      const session = await vault.commitSetup();
-      // the recovery key reaches the shell first: cleanup and the first backup
-      // are retried on later unlocks and must never delay or fail the one-time reply
-      writeBrokerReply({ ok: true, sessionToken: session.token, recoveryKey: prepared.recoveryKey });
-      const cleanup = await vault.cleanupLegacyPlaintext();
-      if (cleanup.plaintextRemaining.length > 0) {
-        logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.plaintextRemaining.join(", ")}`);
-      }
-      // the first daily backup needs the committed header, which now exists
-      await runVaultDailyBackup();
-      // wait for the owner's acknowledgement (the shell shows the key); a
-      // closed pipe means the app quit on the key screen, which is safe: the
-      // vault exists and the key can be regenerated after unlocking
-      await readStdinLine();
-      return;
+  for (;;) {
+    const line = await readStdinLine();
+    // the shell closed the pipe without asking anything: nothing to do
+    if (line === undefined) return;
+    let decoded: string | number | boolean | null | Array<string | number | boolean | null> | { [key: string]: string | number | boolean | null };
+    try {
+      decoded = JSON.parse(line);
+    } catch {
+      writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
+      process.exit(1);
     }
-    const session =
-      request.action === "recovery"
-        ? await vault.unlockRecovery(request.recoveryKey ?? "")
-        : await vault.unlock(request.passphrase ?? "");
-    await bootstrapVault({ masterKey: vault.requireMasterKey(), vaultId: vault.metadata().vaultId, fresh: false });
-    writeBrokerReply({ ok: true, sessionToken: session.token });
-  } catch (error) {
-    const failure = brokerFailure(request.action, error instanceof Error ? error : new Error(String(error)));
-    writeBrokerReply(failure);
-    vault.close();
-    process.exit(1);
+    const parsedRequest = brokerRequestSchema.safeParse(decoded);
+    if (!parsedRequest.success) {
+      writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
+      process.exit(1);
+    }
+    const request = parsedRequest.data;
+    // a status probe is free: answer and keep waiting for the real request
+    if (request.action === "status") {
+      writeBrokerReply({ ok: true, status: brokerStatusPayload(vault) });
+      continue;
+    }
+    try {
+      if (request.action === "setup") {
+        const passphrase = request.passphrase ?? "";
+        // the NORMALIZED passphrase decides: eight spaces is empty
+        if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
+          writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT" });
+          process.exit(1);
+        }
+        const prepared = await vault.prepareSetup(passphrase);
+        await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+        // the app is up; a concurrent resume would now be safe, but the broker is
+        // single-request anyway
+        vault.finishSetupBootstrap();
+        const session = await vault.commitSetup();
+        // the recovery key reaches the shell first: cleanup and the first backup
+        // are retried on later unlocks and must never delay or fail the one-time reply
+        writeBrokerReply({ ok: true, sessionToken: session.token, sessionGeneration: session.generation, recoveryKey: prepared.recoveryKey });
+        const cleanup = await vault.cleanupLegacyPlaintext();
+        if (cleanup.plaintextRemaining.length > 0) {
+          logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.plaintextRemaining.join(", ")}`);
+        }
+        // the first daily backup needs the committed header, which now exists
+        await runVaultDailyBackup();
+        // wait for the owner's acknowledgement (the shell shows the key); a
+        // closed pipe means the app quit on the key screen, which is safe: the
+        // vault exists and the key can be regenerated after unlocking
+        await readStdinLine();
+        return;
+      }
+      const session =
+        request.action === "recovery"
+          ? await vault.unlockRecovery(request.recoveryKey ?? "")
+          : await vault.unlock(request.passphrase ?? "");
+      await bootstrapVault({ masterKey: vault.requireMasterKey(), vaultId: vault.metadata().vaultId, fresh: false });
+      writeBrokerReply({ ok: true, sessionToken: session.token, sessionGeneration: session.generation });
+      return;
+    } catch (error) {
+      const failure = brokerFailure(request.action, error instanceof Error ? error : new Error(String(error)));
+      writeBrokerReply(failure);
+      vault.close();
+      process.exit(1);
+    }
   }
 }
 
@@ -583,7 +640,7 @@ if (config.vault === "on") {
   });
   activeHandler = buildOverlay(undefined);
   startServer();
-  if (process.env.DOKAN_VAULT_STDIN === "1") {
+  if (config.vaultBroker) {
     await runVaultBroker(manager);
   }
 } else {

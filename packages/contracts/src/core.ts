@@ -566,6 +566,7 @@ export const MIN_VAULT_PASSPHRASE_LENGTH = 8;
 export const VAULT_ERROR_CODES = [
   // emitted by the API gate, the broker and the lock refusal app
   "VAULT_ALREADY_CONFIGURED",
+  "VAULT_BROKER_REQUIRED",
   "VAULT_CORRUPT",
   "VAULT_DATABASE_MISSING",
   "VAULT_INVALID",

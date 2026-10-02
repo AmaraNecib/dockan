@@ -263,14 +263,18 @@ dies immediately. The app distinguishes a legacy build (404 on the status
 route) from an unreachable vault API, which shows a retry screen instead of the
 legacy login.
 
-**Gate transport.** In dev, e2e and the packaged shell the gate is same-origin
-HTTP (`/api/vault/*`) served by the locked sidecar: the desktop window opens on
-the vault screen and the app routes and the store start only after unlock. A
-one-request stdin JSON broker (`DOKAN_VAULT_STDIN=1`) is implemented and tested
-as the shell-driven transport for the next shell iteration, so a future prompt
-can hand the passphrase over a pipe (never argv, the environment or disk)
-without changing the vault at all. Keeping all cryptography in one implemented
-module (rather than duplicating Argon2id in Rust) is what makes the transports
+**Gate transport.** Dev and e2e use the same-origin HTTP gate (`/api/vault/*`)
+served by the locked sidecar; the desktop window opens on the vault screen and
+the app routes and the store start only after unlock. In a packaged build the
+shell launches the sidecar with `DOKAN_VAULT_STDIN=1` and carries the
+pre-boot prompt over the child's stdin pipe through Tauri IPC commands
+(`vault_unlock`, `vault_setup`, `vault_unlock_recovery`, `vault_status`, plus a
+key-saved acknowledgement): the API then refuses the HTTP credential routes
+(`VAULT_BROKER_REQUIRED`), so the one secret that decrypts everything never
+crosses the network stack, argv, the environment or disk. The status route
+advertises `broker: true` and the gate UI uses IPC whenever it sees that flag
+(the browser keeps HTTP). Keeping all cryptography in one implemented module
+(rather than duplicating Argon2id in Rust) is what makes the transports
 provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to

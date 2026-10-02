@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   VaultRequestError,
+  acknowledgeVaultSetup,
   fetchVaultStatus,
   isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
@@ -195,7 +196,11 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           type="button"
           className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50"
           disabled={!savedConfirmed}
-          onClick={onUnlocked}
+          onClick={() => {
+            // release the shell's key screen; the app already serves either way
+            void acknowledgeVaultSetup(status.broker);
+            onUnlocked();
+          }}
           data-testid="vault-recovery-continue"
         >
           {t("vaultContinue")}
@@ -214,7 +219,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           onSubmit={(event) => {
             event.preventDefault();
             void run(async () => {
-              const token = await vaultUnlockWithRecovery(recoveryInput);
+              const token = await vaultUnlockWithRecovery(recoveryInput, status.broker);
               storeVaultSessionToken(token);
               onUnlocked();
             });
@@ -265,7 +270,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               return;
             }
             void run(async () => {
-              const result = await vaultSetup(passphrase, readSetupTokenFromHash());
+              const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
               storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
               setPlaintextRemaining(result.plaintextRemaining);
@@ -320,7 +325,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            const token = await vaultUnlock(passphrase);
+            const token = await vaultUnlock(passphrase, status.broker);
             storeVaultSessionToken(token);
             onUnlocked();
           });

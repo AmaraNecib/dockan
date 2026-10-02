@@ -41,6 +41,13 @@ export type AppConfig = {
   vault: "on" | "disabled";
   /** true when a packaged build ignored an inherited DOKAN_VAULT=disabled */
   vaultOptOutIgnored: boolean;
+  /**
+   * Desktop-shell stdin broker (issue #141): DOKAN_VAULT_STDIN=1 puts the
+   * pre-boot gate on the shell's pipe. The HTTP credential routes are then
+   * refused, so the passphrase can only arrive over stdin and never crosses
+   * the network stack. Only meaningful while the vault is on.
+   */
+  vaultBroker: boolean;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
     driver: "sqlite" | "postgres";
@@ -71,6 +78,9 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const requestedVaultDisabled = env.DOKAN_VAULT === "disabled";
   const vaultOptOutIgnored = requestedVaultDisabled && packagedBuild;
   const vault: "on" | "disabled" = requestedVaultDisabled && !packagedBuild ? "disabled" : "on";
+  // the broker exists only for the pre-boot gate; a plaintext dev/e2e run must
+  // keep the HTTP gate even if DOKAN_VAULT_STDIN leaked into its environment
+  const vaultBroker = vault === "on" && env.DOKAN_VAULT_STDIN === "1";
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -110,6 +120,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     bootToken,
     vault,
     vaultOptOutIgnored,
+    vaultBroker,
     version: "0.1.0",
     db: {
       driver: requested,

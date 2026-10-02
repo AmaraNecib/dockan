@@ -50,9 +50,28 @@ function stripComments(source: string): string {
 }
 
 /**
+ * Normalise a parsed scalar so YAML formatting choices compare equal: an
+ * inline `run: cmd`, a `run: |` block with one line, and a `run: |` block with
+ * several indented lines all reduce to the same de-indented, newline-trimmed
+ * text. Without this a harmless formatting edit (a human, or Prettier) would
+ * fail the tests even though the command did not change.
+ */
+function normaliseScalar(value: string): string {
+  const lines = value.replace(/\r\n?/gu, "\n").split("\n");
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  const indents = lines
+    .filter((line) => line.trim() !== "")
+    .map((line) => line.length - line.trimStart().length);
+  const commonIndent = indents.length > 0 ? Math.min(...indents) : 0;
+  return lines.map((line) => line.slice(commonIndent)).join("\n").trimEnd();
+}
+
+/**
  * Parse the `jobs.installer.steps` list into named steps with their `run`,
  * `uses` and `with` values. Only the fields a step actually declares are
- * captured, so a comment can never look like a declared step field.
+ * captured, so a comment can never look like a declared step field, and every
+ * captured value is normalised so block-scalar formatting does not matter.
  */
 function parseSteps(source: string): readonly WorkflowStep[] {
   const lines = stripComments(source).split("\n");
@@ -65,7 +84,16 @@ function parseSteps(source: string): readonly WorkflowStep[] {
   let inWith = false;
 
   const flush = () => {
-    if (current !== null) steps.push(current);
+    if (current === null) return;
+    const step = current;
+    const normalisedWith = new Map<string, string>();
+    for (const [key, value] of step.with) normalisedWith.set(key, normaliseScalar(value));
+    steps.push({
+      name: step.name,
+      run: normaliseScalar(step.run),
+      uses: step.uses,
+      with: normalisedWith,
+    });
   };
 
   for (let index = stepsIndex + 1; index < lines.length; index += 1) {
@@ -212,6 +240,46 @@ describe("desktop installer workflow", () => {
     // ...but the parsed build step does not, so the assertion must not pass
     const build = stepNamed(parseSteps(commentOnly), "Build installer");
     expect(build.run).not.toContain("bun run --filter @dokan/desktop installer");
+  });
+
+  it("accepts the installer command written as an indented run: | block", () => {
+    // a formatter may rewrite `run: cmd` as a block scalar; the command is
+    // unchanged, so the assertion must still pass
+    const blockForm = [
+      "jobs:",
+      "  installer:",
+      "    steps:",
+      "      - name: Build installer",
+      "        run: |",
+      "          bun run --filter @dokan/desktop installer",
+    ].join("\n");
+    const build = stepNamed(parseSteps(blockForm), "Build installer");
+    expect(build.run).toBe("bun run --filter @dokan/desktop installer");
+  });
+
+  it("rejects a run: | block whose installer command is commented out or a no-op", () => {
+    const commented = [
+      "jobs:",
+      "  installer:",
+      "    steps:",
+      "      - name: Build installer",
+      "        run: |",
+      "          # bun run --filter @dokan/desktop installer",
+      "          echo not-the-release-command",
+    ].join("\n");
+    const noop = [
+      "jobs:",
+      "  installer:",
+      "    steps:",
+      "      - name: Build installer",
+      "        run: |",
+      "          echo not-the-release-command",
+    ].join("\n");
+    // normalisation must not weaken the check: neither form is the release command
+    for (const source of [commented, noop]) {
+      const build = stepNamed(parseSteps(source), "Build installer");
+      expect(build.run).not.toBe("bun run --filter @dokan/desktop installer");
+    }
   });
 
   it("parses a CRLF checkout the same as LF", () => {

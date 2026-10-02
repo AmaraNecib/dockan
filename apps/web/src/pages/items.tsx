@@ -62,6 +62,10 @@ export function ItemsPage() {
   const [tab, setTab] = useState<ItemsTab>("products");
   /** what the item form gets prefilled with after an unknown-scan choice */
   const [formSeed, setFormSeed] = useState<{ barcode: string; withStock: boolean } | null>(null);
+  /** Identifies the current add-form session. Bumped when a scan seed starts:
+   * an in-flight save from the previous draft may still settle, but it must
+   * not reset the newer draft or clear its required-stock mode. */
+  const formSessionRef = useRef(0);
   /** bump to remount the add form: used when a scan session ends, so its
    * filled draft cannot outlive the required-stock intent it carried */
   const [formResetKey, setFormResetKey] = useState(0);
@@ -137,6 +141,9 @@ export function ItemsPage() {
   }
 
   function openAddTab(seed: { barcode: string; withStock: boolean }) {
+    // a new scan starts a new session: a save left in flight by the previous
+    // draft no longer owns the form (see ItemForm's mutation callbacks)
+    formSessionRef.current += 1;
     setFormSeed(seed);
     setTab("add");
   }
@@ -188,7 +195,7 @@ export function ItemsPage() {
         <ItemList scanNonce={scanNonce} />
       </div>
       <div role="tabpanel" id="items-panel-add" aria-labelledby="items-tab-add" hidden={tab !== "add"}>
-        <ItemForm key={formResetKey} seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
+        <ItemForm key={formResetKey} seed={formSeed} sessionRef={formSessionRef} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
         <StockForm />
       </div>
 
@@ -292,10 +299,14 @@ function CatalogSearch() {
 
 function ItemForm({
   seed,
+  sessionRef,
   onSeedConsumed,
   onSaved,
 }: {
   seed: { barcode: string; withStock: boolean } | null;
+  /** identifies the current add-form session; a save only applies its result
+   * while this still matches the session that started it */
+  sessionRef: { current: number };
   onSeedConsumed: () => void;
   onSaved: () => void;
 }) {
@@ -309,6 +320,9 @@ function ItemForm({
   const [barcode, setBarcode] = useState("");
   const [initialStock, setInitialStock] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** the session that started the in-flight save, so a late result can tell
+   * whether it still owns this form */
+  const saveSessionRef = useRef<number | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const initialStockRef = useRef<HTMLInputElement>(null);
 
@@ -354,20 +368,31 @@ function ItemForm({
   const create = useMutation(
     orpc.itemsCreate.mutationOptions({
       onSuccess: () => {
-        resetFields();
+        // the write exists either way, so refresh the lists; only the session
+        // that started the save may have its draft reset by the result
         invalidate();
+        if (saveSessionRef.current !== sessionRef.current) return;
+        resetFields();
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        // a stale failure belongs to a draft that is no longer on screen
+        if (saveSessionRef.current !== sessionRef.current) return;
+        setError(tError(err.message));
+      },
     }),
   );
 
   const createWithStock = useMutation(
     orpc.itemsCreateWithStock.mutationOptions({
       onSuccess: () => {
-        resetFields();
         invalidate();
+        if (saveSessionRef.current !== sessionRef.current) return;
+        resetFields();
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        if (saveSessionRef.current !== sessionRef.current) return;
+        setError(tError(err.message));
+      },
     }),
   );
 
@@ -431,6 +456,9 @@ function ItemForm({
       lowStockThreshold: parsedThreshold,
     };
     if (normalizedBarcode !== undefined) base.barcode = normalizedBarcode;
+    // this save belongs to the session submitting it: a later scan seed makes
+    // its settlement stale (see the mutation callbacks)
+    saveSessionRef.current = sessionRef.current;
     if (stock.value > 0) void createWithStock.mutate({ ...base, stockOnHand: stock.value });
     else void create.mutate(base);
   }

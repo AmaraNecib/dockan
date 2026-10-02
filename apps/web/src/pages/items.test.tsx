@@ -92,6 +92,9 @@ const stockInputs: CapturedStockInput[] = [];
 let updateFails = false;
 let updateDeferred = false;
 let resolveUpdate: (() => void) | null = null;
+/** holds a create-with-stock save open so a stale settlement is observable */
+let createWithStockDeferred = false;
+let resolveCreateWithStock: (() => void) | null = null;
 /** holds the itemsList refetch open so the stale-cache window is observable */
 let itemsGate: Promise<void> | null = null;
 let releaseItemsGate: (() => void) | null = null;
@@ -129,8 +132,15 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsCreateWithStock: {
       mutationOptions: (opts?: MutationOptions) => ({
+        // SAFETY: the resolver is stored by the deferred branch and invoked by
+        // the stale-save test; the immediate branch keeps every other test fast
         mutationFn: async (input: CapturedCreateInput) => {
           createWithStockInputs.push(input);
+          if (createWithStockDeferred) {
+            return new Promise<{ id: string }>((resolve) => {
+              resolveCreateWithStock = () => resolve({ id: "created-with-stock" });
+            });
+          }
           return { id: "created-with-stock" };
         },
         ...opts,
@@ -328,6 +338,8 @@ beforeEach(() => {
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
+  createWithStockDeferred = false;
+  resolveCreateWithStock = null;
   itemsGate = null;
   releaseItemsGate = null;
   document.body.innerHTML = "";
@@ -672,6 +684,46 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     await waitFor(() => createInputs.length === 1);
     expect(createInputs[0]).toMatchObject({ name: "منتج ب", costPrice: 200, sellingPrice: 260 });
     expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("ignores a stale save so a new scan keeps its required stock and no old error", async () => {
+    createWithStockDeferred = true;
+    await openStockSeedForm("UNKNOWN-STOCK-6");
+
+    setInput("item-name", "منتج قديم بمخزون");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    setInput("initial-stock", "5");
+    click("item-save");
+    await waitFor(() => createWithStockInputs.length === 1);
+
+    // the save is still in flight while the operator leaves the tab (the form
+    // remounts) and starts a fresh stocked scan in a new session
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    await scanUnknown("UNKNOWN-STOCK-7");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create-stock");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-STOCK-7");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBe("true");
+
+    // the OLD save settles late: it must not clear the new scan's requirement
+    // or leave its result (or error) on the new draft
+    await act(async () => {
+      resolveCreateWithStock?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBe("true");
+    expect(document.querySelector('[data-testid="form-error"]')).toBeNull();
+
+    // and the new item still refuses blank stock instead of saving silently
+    setInput("item-name", "منتج جديد بمخزون");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createWithStockInputs.length).toBe(1); // only the old save was sent
+    expect(createInputs.length).toBe(0);
   });
 
   it("marks the seeded stock field required and the plain one optional", async () => {

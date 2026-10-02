@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   acknowledgeVaultSetup,
   fetchVaultStatus,
+  fetchVaultSetupWarning,
   readVaultSessionToken,
   resetVaultPassphrase,
   VaultRequestError,
@@ -176,6 +177,24 @@ describe("desktop stdin broker transport (issue #141)", () => {
   it("does not acknowledge a setup that went over HTTP", async () => {
     await acknowledgeVaultSetup(false);
     expect(calls).toEqual([]);
+  });
+
+  it("delivers the plaintext warning as the setup follow-up (round-3 finding 1)", async () => {
+    installTauri();
+    responder = (call) =>
+      call.command === "vault_setup_warning"
+        ? { ok: true, warning: "plaintext", plaintextRemaining: ["C:/data/dokan.db"] }
+        : { ok: false, code: "VAULT_UNEXPECTED" };
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual(["C:/data/dokan.db"]);
+    expect(calls[0]?.command).toBe("vault_setup_warning");
+  });
+
+  it("treats a failed warning follow-up as nothing to report, never a failed setup", async () => {
+    installTauri();
+    responder = () => {
+      throw new Error("the sidecar closed the broker pipe");
+    };
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual([]);
   });
 
   it("reads the gate status from the broker first when the shell is present", async () => {

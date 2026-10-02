@@ -20,6 +20,7 @@ pub fn run() {
             desktop::vault_unlock_recovery,
             desktop::vault_reset_passphrase,
             desktop::vault_setup_saved,
+            desktop::vault_setup_warning,
             desktop::vault_logout
         ])
         .setup(desktop::setup)

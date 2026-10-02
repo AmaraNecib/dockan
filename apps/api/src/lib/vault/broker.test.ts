@@ -309,7 +309,7 @@ describe("desktop shell vault broker", () => {
     expect(unlockReply.sessionToken?.length).toBeGreaterThan(20);
   }, BROKER_TIMEOUT_MS);
 
-  it("reports plaintext files that could not be removed in the setup reply (round-2 finding 4)", async () => {
+  it("delivers the recovery key before the plaintext sweep and the warning as a follow-up (round-3 finding 1)", async () => {
     // an unencryptable legacy backup: the sweep reports it instead of hiding it
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir, { recursive: true });
@@ -322,12 +322,29 @@ describe("desktop shell vault broker", () => {
     child = spawnBroker(dir, port);
     const nextLine = lineReader(child);
     send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
-    // SAFETY: the broker setup contract carries the cleanup list
-    const reply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string; plaintextRemaining?: string[] };
-    expect(reply.ok).toBe(true);
-    expect(reply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
-    // the warning data rides the one reply the owner sees
-    expect(reply.plaintextRemaining).toEqual([stubborn]);
+    // MESSAGE 1 is the one-time key: nothing about the sweep may delay it
+    // (a slow sweep would otherwise outlive the shell's reply timeout and the
+    // child would be killed before the owner ever saw the key).
+    // SAFETY: the broker setup contract carries the recovery key
+    const keyReply = JSON.parse(await nextLine()) as {
+      ok: boolean;
+      recoveryKey?: string;
+      sessionToken?: string;
+      plaintextRemaining?: string[];
+      warning?: string;
+    };
+    expect(keyReply.ok).toBe(true);
+    expect(keyReply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    expect(keyReply.sessionToken?.length).toBeGreaterThan(20);
+    expect(keyReply.plaintextRemaining).toBeUndefined();
+    expect(keyReply.warning).toBeUndefined();
+
+    // MESSAGE 2 is the follow-up warning the owner still sees
+    // SAFETY: the broker warning contract is a single JSON reply line
+    const warningReply = JSON.parse(await nextLine()) as { ok: boolean; warning?: string; plaintextRemaining?: string[] };
+    expect(warningReply.ok).toBe(true);
+    expect(warningReply.warning).toBe("plaintext");
+    expect(warningReply.plaintextRemaining).toEqual([stubborn]);
     send(child, "ack");
     await waitForHealth(port);
   }, BROKER_TIMEOUT_MS);

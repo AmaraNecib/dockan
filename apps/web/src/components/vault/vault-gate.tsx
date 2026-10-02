@@ -5,6 +5,7 @@ import {
   VaultRequestError,
   acknowledgeVaultSetup,
   fetchVaultStatus,
+  fetchVaultSetupWarning,
   isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
   readSetupTokenFromHash,
@@ -104,6 +105,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [plaintextRemaining, setPlaintextRemaining] = useState<string[]>([]);
+  const [plaintextPending, setPlaintextPending] = useState(false);
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
@@ -192,10 +194,17 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           />
           <span>{t("vaultRecoveryConfirm")}</span>
         </label>
+        {plaintextPending && (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="vault-plaintext-checking">
+            {t("vaultCheckingPlaintext")}
+          </p>
+        )}
         <button
           type="button"
           className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50"
-          disabled={!savedConfirmed}
+          // the key is already on screen; keep the owner here until the sweep
+          // reports, so a plaintext warning can never be missed (round-3)
+          disabled={!savedConfirmed || plaintextPending}
           onClick={() => {
             // release the shell's key screen; the app already serves either way
             void acknowledgeVaultSetup(status.broker);
@@ -275,6 +284,16 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               setRecoveryKey(result.recoveryKey);
               setPlaintextRemaining(result.plaintextRemaining);
               setScreen("recovery-show");
+              if (status.broker) {
+                // the key is on screen now: the sweep warning follows on the
+                // shell's own longer budget (round-3 finding 1)
+                setPlaintextPending(true);
+                void fetchVaultSetupWarning(true)
+                  .then((remaining) => {
+                    if (remaining.length > 0) setPlaintextRemaining(remaining);
+                  })
+                  .finally(() => setPlaintextPending(false));
+              }
             });
           }}
         >

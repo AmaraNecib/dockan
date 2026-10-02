@@ -315,6 +315,7 @@ function brokerStatusPayload(vault: VaultManager): VaultStatusPayload {
 type BrokerReply =
   | { ok: true; sessionToken: string; sessionGeneration?: number; recoveryKey?: string; plaintextRemaining?: string[] }
   | { ok: true; status: VaultStatusPayload }
+  | { ok: true; warning: "plaintext"; plaintextRemaining: string[] }
   | { ok: false; code: VaultErrorCode; retryAfterMs?: number };
 
 function writeBrokerReply(reply: BrokerReply): void {
@@ -423,9 +424,17 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
         // single-request anyway
         vault.finishSetupBootstrap();
         const session = await vault.commitSetup();
-        // Cleanup runs BEFORE the reply so the paths that could not be removed
-        // ride the one reply the owner sees (round-2 finding 4); a cleanup
-        // failure is logged but must not fail the committed setup.
+        // The ONE-TIME recovery key must never wait on the sweep: a run with
+        // many legacy backups can outlive the shell's reply budget, and a
+        // timed-out shell would kill the child after the vault committed,
+        // losing the only copy of the key (round-3 finding 1). Reply FIRST,
+        // then deliver the plaintext warning as a second framed message.
+        writeBrokerReply({
+          ok: true,
+          sessionToken: session.token,
+          sessionGeneration: session.generation,
+          recoveryKey: prepared.recoveryKey,
+        });
         let plaintextRemaining: string[] = [];
         try {
           const cleanup = await vault.cleanupLegacyPlaintext();
@@ -440,14 +449,8 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
             error instanceof Error ? error : new Error(String(error)),
           );
         }
-        // the recovery key reaches the shell together with any plaintext warning
-        writeBrokerReply({
-          ok: true,
-          sessionToken: session.token,
-          sessionGeneration: session.generation,
-          recoveryKey: prepared.recoveryKey,
-          plaintextRemaining,
-        });
+        // the follow-up the shell waits for on its own (longer) budget
+        writeBrokerReply({ ok: true, warning: "plaintext", plaintextRemaining });
         // the first daily backup needs the committed header, which now exists
         await runVaultDailyBackup();
         // wait for the owner's acknowledgement (the shell shows the key); a

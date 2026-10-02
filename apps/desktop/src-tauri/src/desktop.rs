@@ -75,6 +75,11 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(150);
 /// (round-2 finding 5).
 const BROKER_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The setup follow-up (plaintext sweep) gets its own, longer budget: the
+/// one-time key is already in the owner's hands by then, so a big legacy
+/// backup set may take minutes without risking the key (round-3 finding 1).
+const CLEANUP_REPLY_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Everything needed to spawn (or respawn after a failed attempt) the sidecar
 /// on the shell-reserved port. Pure data: no secret ever lands here; the
 /// passphrase only exists in the IPC call and the broker's stdin pipe.
@@ -115,6 +120,46 @@ pub struct SidecarSlot {
     sidecar: Option<Sidecar>,
 }
 
+/// Set once shutdown begins (window close / app exit). The launch path checks
+/// it before AND after installing a child, so a respawn that raced the kill
+/// can never leave an orphan sidecar holding the vault lock (round-3 finding 2).
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn shutdown_began() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Kill one sidecar handle (child + wait). Best-effort.
+fn reap_sidecar(mut sidecar: Sidecar) {
+    let _ = sidecar.child.kill();
+    let _ = sidecar.child.wait();
+}
+
+/// Install a freshly launched child unless shutdown already began; a shutdown
+/// that starts mid-launch kills the just-started child immediately instead of
+/// leaving it running after the shell exits. Returns true only when the child
+/// is installed and alive.
+fn install_sidecar(slot: &mut SidecarSlot, sidecar: Sidecar) -> bool {
+    install_sidecar_with(slot, sidecar, &shutdown_began)
+}
+
+fn install_sidecar_with(slot: &mut SidecarSlot, sidecar: Sidecar, shutdown: &dyn Fn() -> bool) -> bool {
+    if shutdown() {
+        reap_sidecar(sidecar);
+        return false;
+    }
+    slot.sidecar = Some(sidecar);
+    // the flag is set outside this lock, so re-check: a shutdown that began
+    // between the two checks must not miss the child (round-3 finding 2)
+    if shutdown() {
+        if let Some(installed) = slot.sidecar.take() {
+            reap_sidecar(installed);
+        }
+        return false;
+    }
+    true
+}
+
 /// Hook called from the builder's `setup`. In debug builds this is a no-op
 /// (dev mode works without the sidecar); release builds spawn the api and
 /// steer the window to it.
@@ -136,11 +181,13 @@ pub fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Kill the sidecar (best effort) when the app shuts down. Must be idempotent.
 pub fn kill_sidecar(app: &AppHandle) {
+    // the flag goes up BEFORE taking the lock: a launch in flight (holding no
+    // lock while it verifies) re-checks it and kills whatever it started
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
     let state = app.state::<SidecarState>();
     let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(mut sidecar) = guard.sidecar.take() {
-        let _ = sidecar.child.kill();
-        let _ = sidecar.child.wait();
+    if let Some(sidecar) = guard.sidecar.take() {
+        reap_sidecar(sidecar);
     }
 }
 
@@ -194,10 +241,15 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
     let state = app.state::<SidecarState>();
-    {
+    let installed = {
         let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         guard.config = Some(config);
-        guard.sidecar = Some(sidecar);
+        install_sidecar(&mut guard, sidecar)
+    };
+    if !installed {
+        // shutdown began while the child was starting: it was killed, nothing
+        // may navigate or serve (round-3 finding 2)
+        return Ok(());
     }
 
     if let Some(window) = app.get_webview_window("main") {
@@ -302,6 +354,8 @@ pub struct BrokerReply {
     pub session_generation: Option<u64>,
     pub recovery_key: Option<String>,
     pub plaintext_remaining: Option<Vec<String>>,
+    /// present on the setup follow-up ("plaintext"); absent otherwise
+    pub warning: Option<String>,
     pub status: Option<serde_json::Value>,
 }
 
@@ -397,9 +451,8 @@ fn broker_exchange(app: &AppHandle, action: &str, payload: serde_json::Value) ->
         };
         if needs {
             // reap the old child before the new one binds the same port
-            if let Some(mut old) = guard.sidecar.take() {
-                let _ = old.child.kill();
-                let _ = old.child.wait();
+            if let Some(old) = guard.sidecar.take() {
+                reap_sidecar(old);
             }
         }
         needs
@@ -410,7 +463,9 @@ fn broker_exchange(app: &AppHandle, action: &str, payload: serde_json::Value) ->
         // a squatter is never loaded into the window (round-2 finding 3)
         let sidecar = launch_verified_sidecar(&config)?;
         let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.sidecar = Some(sidecar);
+        // a shutdown that raced this respawn kills the child here instead of
+        // leaving it running after the shell exits (round-3 finding 2)
+        let _ = install_sidecar(&mut guard, sidecar);
     }
     let replies = {
         let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -436,9 +491,8 @@ fn broker_exchange(app: &AppHandle, action: &str, payload: serde_json::Value) ->
             // unusable child (timeout or closed pipe): kill it so shutdown and
             // the next request never wait on it
             let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(mut sidecar) = guard.sidecar.take() {
-                let _ = sidecar.child.kill();
-                let _ = sidecar.child.wait();
+            if let Some(sidecar) = guard.sidecar.take() {
+                reap_sidecar(sidecar);
             }
             Err(error)
         }
@@ -510,6 +564,25 @@ pub async fn vault_setup_saved(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+/// The setup follow-up: wait for the plaintext sweep to report what it could
+/// not remove (round-3 finding 1). The one-time key already went out in the
+/// setup reply, so this wait is allowed a much longer budget and never kills
+/// the serving child on timeout.
+#[tauri::command]
+pub async fn vault_setup_warning(app: AppHandle) -> Result<BrokerReply, String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = app.state::<SidecarState>();
+        let replies = {
+            let guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let sidecar = guard.sidecar.as_ref().ok_or("the sidecar is unavailable")?;
+            Arc::clone(&sidecar.replies)
+        };
+        await_broker_reply_with_timeout(&replies, CLEANUP_REPLY_TIMEOUT)
+    })
+    .await
+}
+
 /// End the session (round-2 finding 1). The web revokes the HTTP session
 /// first; this replaces the served child with a freshly verified one waiting
 /// on the broker pipe, so the reloaded gate can unlock again over the broker
@@ -525,14 +598,14 @@ pub async fn vault_logout(app: AppHandle) -> Result<(), String> {
         };
         {
             let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(mut old) = guard.sidecar.take() {
-                let _ = old.child.kill();
-                let _ = old.child.wait();
+            if let Some(old) = guard.sidecar.take() {
+                reap_sidecar(old);
             }
         }
         let sidecar = launch_verified_sidecar(&config)?;
         let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.sidecar = Some(sidecar);
+        // shutdown may have begun during the relaunch: the child is killed
+        let _ = install_sidecar(&mut guard, sidecar);
         Ok(())
     })
     .await
@@ -819,6 +892,7 @@ mod tests {
             session_generation: None,
             recovery_key: None,
             plaintext_remaining: None,
+            warning: None,
             status: None,
         };
         let text = serde_json::to_string(&reply).unwrap();
@@ -1043,12 +1117,19 @@ mod tests {
         assert_eq!(parsed.fragment(), Some("setup_token=abc123"));
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn kill_sidecar_terminates_the_spawned_child() {
-        let state = SidecarState::default();
+    /// A real child with broker pipes, for tests that only need a sidecar
+    /// handle. Cross-platform: `ping -n 30` on Windows, `sleep 30` elsewhere.
+    fn dummy_sidecar() -> Sidecar {
+        #[cfg(windows)]
         let mut child = std::process::Command::new("cmd")
             .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -1070,26 +1151,63 @@ mod tests {
                 }
             }
         });
+        Sidecar {
+            child,
+            stdin,
+            replies: Arc::new(Mutex::new(receiver)),
+            served: false,
+            consumed: false,
+        }
+    }
+
+    #[test]
+    fn kill_sidecar_terminates_the_spawned_child() {
+        let state = SidecarState::default();
         {
             let mut guard = state.0.lock().unwrap();
-            guard.sidecar = Some(Sidecar {
-                child,
-                stdin,
-                replies: Arc::new(Mutex::new(receiver)),
-                served: false,
-                consumed: false,
-            });
+            guard.sidecar = Some(dummy_sidecar());
         }
         kill_sidecar_from_state(&state);
         assert!(state.0.lock().unwrap().sidecar.is_none());
     }
 
+    #[test]
+    fn shutdown_races_installs_without_leaving_an_orphan_child() {
+        // round-3 finding 2, one test because the flag is process-wide
+        SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut slot = SidecarSlot::default();
+        assert!(
+            !install_sidecar(&mut slot, dummy_sidecar()),
+            "a child must never be installed after shutdown began"
+        );
+        assert!(slot.sidecar.is_none());
+        SHUTTING_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // shutdown begins mid-launch: the post-install check kills it
+        let mut slot = SidecarSlot::default();
+        let calls = std::cell::Cell::new(0u32);
+        let shutdown_mid_install = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 1
+        };
+        assert!(!install_sidecar_with(&mut slot, dummy_sidecar(), &shutdown_mid_install));
+        assert!(slot.sidecar.is_none());
+
+        // no shutdown: the child is installed normally
+        let mut slot = SidecarSlot::default();
+        assert!(install_sidecar_with(&mut slot, dummy_sidecar(), &|| false));
+        if let Some(installed) = slot.sidecar.take() {
+            reap_sidecar(installed);
+        }
+        assert!(slot.sidecar.is_none());
+        SHUTTING_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Test-only sibling of [`kill_sidecar`] (which needs an AppHandle).
     fn kill_sidecar_from_state(state: &SidecarState) {
         let mut guard = state.0.lock().unwrap();
-        if let Some(mut sidecar) = guard.sidecar.take() {
-            let _ = sidecar.child.kill();
-            let _ = sidecar.child.wait();
+        if let Some(sidecar) = guard.sidecar.take() {
+            reap_sidecar(sidecar);
         }
     }
 }

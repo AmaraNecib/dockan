@@ -309,6 +309,7 @@ const resources = {
       vaultResetSave: "تعيين كلمة المرور",
       vaultPlaintextRemaining:
         "تعذّر حذف بعض الملفات غير المشفّرة تلقائياً. احذفها يدوياً أو انقلها خارج جهاز المتجر:",
+      vaultCheckingPlaintext: "جارٍ التحقق من الملفات القديمة…",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
       CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       BARCODE_EXISTS: "هذا الباركود مستعمل مع منتج آخر",

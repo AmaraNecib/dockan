@@ -279,6 +279,22 @@ export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
   }
 }
 
+/**
+ * The setup follow-up (round-3 finding 1): after the key has safely reached
+ * the owner, wait for the plaintext sweep to report what it could not remove.
+ * The shell waits on its own longer budget; a failure or an old shell simply
+ * means "nothing to warn about", never a lost setup.
+ */
+export async function fetchVaultSetupWarning(broker: boolean): Promise<string[]> {
+  if (!broker) return [];
+  try {
+    const reply = await invokeBroker(brokerCommands.setupWarning);
+    return reply.warning === "plaintext" ? (reply.plaintextRemaining ?? []) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Revoke the in-process vault session server-side (logout). */
 export async function revokeVaultSession(): Promise<void> {
   await request("/api/vault/logout", { method: "POST" }, true, z.object({ ok: z.literal(true) }));

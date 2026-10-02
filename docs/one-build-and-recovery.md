@@ -275,13 +275,19 @@ crosses the network stack, argv, the environment or disk. The status route
 advertises `broker: true` and the gate UI uses IPC whenever it sees that flag
 (the browser keeps HTTP). A recovery-authorised reset also has a pipe command
 (`vault_reset_passphrase`) because settings needs it while the HTTP route is
-refused. Logout replaces the one-shot child with a freshly verified sibling
-(`vault_logout`), so the reloaded gate can unlock over the pipe again without
-an app restart, and every respawn repeats the reservation plus token/registry
-identity checks the first launch performs. The reply wait is bounded by a
-timeout and never holds the state lock, so a silent child cannot block
-shutdown. Keeping all cryptography in one implemented module (rather than
-duplicating Argon2id in Rust) is what makes the transports provably identical.
+refused. The setup reply carrying the one-time recovery key is written BEFORE
+the legacy plaintext sweep, and the “what could not be removed” warning follows
+as a second framed message on its own, longer budget (`vault_setup_warning`),
+so a slow sweep can never cost the owner the key. Logout replaces the one-shot
+child with a freshly verified sibling (`vault_logout`), so the reloaded gate
+can unlock over the pipe again without an app restart, and every respawn
+repeats the reservation plus token/registry identity checks the first launch
+performs. The reply wait is bounded by a timeout and never holds the state
+lock, so a silent child cannot block shutdown; a shutdown flag makes launch and
+shutdown mutually exclusive, so a respawn that races window close cannot leave
+an orphan sidecar holding the vault lock. Keeping all cryptography in one
+implemented module (rather than duplicating Argon2id in Rust) is what makes the
+transports provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to
 the client; the router accepts it over the `x-vault-session` header as the

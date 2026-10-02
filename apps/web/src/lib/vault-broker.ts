@@ -20,6 +20,7 @@ type RawBrokerReply = {
   sessionGeneration?: number;
   recoveryKey?: string;
   plaintextRemaining?: string[];
+  warning?: string;
   status?: unknown;
 };
 
@@ -46,6 +47,7 @@ export const brokerCommands = {
   recovery: "vault_unlock_recovery",
   reset: "vault_reset_passphrase",
   setupSaved: "vault_setup_saved",
+  setupWarning: "vault_setup_warning",
   logout: "vault_logout",
 } as const;
 
@@ -58,6 +60,7 @@ const brokerReplySchema = z.object({
   sessionGeneration: z.number().nullish(),
   recoveryKey: z.string().nullish(),
   plaintextRemaining: z.array(z.string()).nullish(),
+  warning: z.string().nullish(),
   status: z.unknown().optional(),
 });
 

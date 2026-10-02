@@ -194,12 +194,12 @@ repo-root `.env`/`.env.local` or, without proof that auto-loading was off, the
 customer-less `apps/desktop/.env`. A value inherited that way can therefore
 never become a customer's signing or password-reset secret.
 
-**One release at a time per checkout.** `release.ts` and `build.ts` hold
+**One release at a time per checkout.** `release.ts`, `build.ts` and a
+standalone `bun run desktop:sidecar` all hold
 `src-tauri/target/.dokan-release.lock` from secret resolution through bundling
 (the cargo target dir and the pristine `bundle/nsis` artifact are shared), so
-concurrent customer releases wait for each other instead of packaging each
-other's sidecar. The lock is refreshed while held. Do not run a standalone
-`bun run desktop:sidecar` while a release is packaging.
+concurrent customer releases and standalone stagings wait for each other
+instead of packaging each other's sidecar. The lock is refreshed while held.
 
 ```bash
 # a specific customer's secrets, for one build, without touching the file

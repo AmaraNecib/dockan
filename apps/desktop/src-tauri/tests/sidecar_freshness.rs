@@ -19,7 +19,7 @@ fn fixture_dir() -> PathBuf {
 fn temp_api_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("dokan-sidecar-freshness-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("apps/api/src")).unwrap();
     dir
 }
 
@@ -35,24 +35,45 @@ fn fnv_vectors_match_published_values() {
 
 #[test]
 fn golden_fixture_fingerprint_matches_the_typescript_implementation() {
-    assert_eq!(source_fingerprint(&fixture_dir()).unwrap(), "cc24a8aae6afe5b0");
+    assert_eq!(source_fingerprint(&fixture_dir()).unwrap(), "755844f99e63478f");
 }
 
 #[test]
 fn fingerprint_changes_with_source_content_and_the_package_manifest() {
     let dir = temp_api_dir("changes");
-    fs::write(dir.join("package.json"), "{\"name\":\"fixture\"}\n").unwrap();
-    fs::write(dir.join("src/main.ts"), "export const x = 1;\n").unwrap();
+    fs::write(dir.join("apps/api/package.json"), "{\"name\":\"fixture\"}\n").unwrap();
+    fs::write(dir.join("apps/api/src/main.ts"), "export const x = 1;\n").unwrap();
     let before = source_fingerprint(&dir).unwrap();
 
-    fs::write(dir.join("src/main.ts"), "export const x = 2;\n").unwrap();
+    fs::write(dir.join("apps/api/src/main.ts"), "export const x = 2;\n").unwrap();
     let after_edit = source_fingerprint(&dir).unwrap();
     assert_ne!(before, after_edit);
 
-    fs::write(dir.join("src/main.ts"), "export const x = 1;\n").unwrap();
+    fs::write(dir.join("apps/api/src/main.ts"), "export const x = 1;\n").unwrap();
     assert_eq!(source_fingerprint(&dir).unwrap(), before);
 
-    fs::write(dir.join("package.json"), "{\"name\":\"fixture\",\"version\":\"2\"}\n").unwrap();
+    fs::write(dir.join("apps/api/package.json"), "{\"name\":\"fixture\",\"version\":\"2\"}\n").unwrap();
+    assert_ne!(source_fingerprint(&dir).unwrap(), before);
+}
+
+#[test]
+fn fingerprint_covers_workspace_contracts_and_the_lockfile() {
+    // issue #134: a contract change or a dependency-graph change must stale
+    // the sidecar just like an API change does
+    let dir = temp_api_dir("contracts");
+    fs::create_dir_all(dir.join("packages/contracts/src")).unwrap();
+    fs::write(dir.join("apps/api/package.json"), "{\"name\":\"fixture\"}\n").unwrap();
+    fs::write(dir.join("apps/api/src/main.ts"), "export const x = 1;\n").unwrap();
+    fs::write(dir.join("packages/contracts/src/index.ts"), "export const c = 1;\n").unwrap();
+    fs::write(dir.join("bun.lock"), "{\"lockfileVersion\":1}\n").unwrap();
+    let before = source_fingerprint(&dir).unwrap();
+
+    fs::write(dir.join("packages/contracts/src/index.ts"), "export const c = 2;\n").unwrap();
+    assert_ne!(source_fingerprint(&dir).unwrap(), before);
+    fs::write(dir.join("packages/contracts/src/index.ts"), "export const c = 1;\n").unwrap();
+    assert_eq!(source_fingerprint(&dir).unwrap(), before);
+
+    fs::write(dir.join("bun.lock"), "{\"lockfileVersion\":2}\n").unwrap();
     assert_ne!(source_fingerprint(&dir).unwrap(), before);
 }
 
@@ -174,16 +195,17 @@ fn decide_refuses_to_leak_a_customer_sidecar_into_an_unscoped_build() {
 }
 
 #[test]
-fn decide_reuses_a_slugged_stamp_only_for_that_same_customer_and_binary() {
+fn decide_reuses_a_slugged_stamp_only_for_that_customer_binary_and_secrets() {
     let acme = Stamp::new("sources-fp", Some("acme"), Some("bin-fp"), Some("build"), Some("auth"));
 
+    // the pipeline adopts the resolved secrets into the cargo environment, so
+    // matching values (and absent ones) are reusable
     assert_eq!(
-        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), None, None),
+        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), Some("build"), Some("auth")),
         Decision::Reuse
     );
-    // the environment may hold the customer-less preload; the stamp wins
     assert_eq!(
-        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), Some("base"), Some("base-auth")),
+        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), None, None),
         Decision::Reuse
     );
 
@@ -207,6 +229,27 @@ fn decide_reuses_a_slugged_stamp_only_for_that_same_customer_and_binary() {
     ));
     assert!(matches!(
         decide(Some(&acme), false, "sources-fp", "bin-fp", Some("acme"), None, None),
+        Decision::Refuse(_)
+    ));
+}
+
+#[test]
+fn decide_refuses_a_slugged_stamp_when_the_environment_secrets_rotated() {
+    // PR #117 re-review finding 5: a scoped tauri build with a rotated
+    // DOKAN_AUTH_SECRET must not reuse the previously stamped binary
+    let acme = Stamp::new("sources-fp", Some("acme"), Some("bin-fp"), Some("build"), Some("auth"));
+
+    assert!(matches!(
+        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), Some("rotated-build"), Some("auth")),
+        Decision::Refuse(_)
+    ));
+    assert!(matches!(
+        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), Some("build"), Some("rotated-auth")),
+        Decision::Refuse(_)
+    ));
+    // the customer-less preload from another shop is also a mismatch
+    assert!(matches!(
+        decide(Some(&acme), true, "sources-fp", "bin-fp", Some("acme"), Some("base"), Some("base-auth")),
         Decision::Refuse(_)
     ));
 }

@@ -82,16 +82,29 @@ fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, Vec<u8>)>) -> i
     Ok(())
 }
 
-/// Fingerprint of everything that goes into the compiled sidecar: every file
-/// under `<api_dir>/src` plus `<api_dir>/package.json`. Paths are relative,
-/// POSIX-separated and sorted by UTF-8 bytes; each entry hashes
-/// `path \0 content \0`.
-pub fn source_fingerprint(api_dir: &Path) -> io::Result<String> {
+/// Fingerprint of everything that goes into the compiled sidecar: the API
+/// sources and manifest, the workspace contracts the API imports at runtime,
+/// and the root lockfile (issue #134 / PR #117 re-review finding 8). Paths are
+/// relative to `repo_root`, POSIX-separated and sorted by UTF-8 bytes; each
+/// entry hashes `path \0 content \0`.
+pub fn source_fingerprint(repo_root: &Path) -> io::Result<String> {
     let mut entries = Vec::new();
-    collect_files(&api_dir.join("src"), api_dir, &mut entries)?;
-    let manifest = api_dir.join("package.json");
-    if manifest.is_file() {
-        entries.push(("package.json".to_string(), fs::read(&manifest)?));
+    for root in [
+        repo_root.join("apps/api/src"),
+        repo_root.join("apps/api/package.json"),
+        repo_root.join("packages/contracts/src"),
+        repo_root.join("bun.lock"),
+    ] {
+        if root.is_dir() {
+            collect_files(&root, repo_root, &mut entries)?;
+        } else if root.is_file() {
+            let relative = root
+                .strip_prefix(repo_root)
+                .unwrap_or(&root)
+                .to_string_lossy()
+                .replace('\\', "/");
+            entries.push((relative, fs::read(&root)?));
+        }
     }
     entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
 
@@ -259,10 +272,11 @@ pub enum Decision {
 /// Without `DOKAN_CUSTOMER_SLUG`, the sidecar must be customer-less, and the
 /// stamp must match the sources, the binary and any secret present in the
 /// environment. With a slug, the sidecar is only reusable when the stamp says
-/// it was built for that exact customer from the same sources and the same
-/// binary — `build.rs` cannot read `.env.<slug>`, so anything else must be
-/// restamped by `bun run sidecar` or the release pipeline rather than silently
-/// compiled with whatever is in the environment (PR #117 findings 1, 2, 5).
+/// it was built for that exact customer from the same sources, the same binary
+/// and the same secrets — `build.rs` cannot read `.env.<slug>`, so anything
+/// else must be restamped by `bun run sidecar` or the release pipeline rather
+/// than silently compiled with whatever is in the environment (PR #117
+/// findings 1, 2, 5 and re-review finding 5).
 pub fn decide(
     stamp: Option<&Stamp>,
     sidecar_present: bool,
@@ -279,7 +293,17 @@ pub fn decide(
             ));
         }
         let current = stamp.filter(|stamp| {
-            is_fresh(stamp, sources_fingerprint, binary_fingerprint, None, None)
+            // A rotated secret must refuse too: the pipeline adopts the resolved
+            // values into the cargo environment, so a mismatch means the staged
+            // binary is not the one this build is about to ship
+            // (PR #117 re-review finding 5).
+            is_fresh(
+                stamp,
+                sources_fingerprint,
+                binary_fingerprint,
+                build_secret,
+                auth_secret,
+            )
         });
         return match current {
             Some(stamp) if stamp.customer.as_deref() == Some(slug) => Decision::Reuse,

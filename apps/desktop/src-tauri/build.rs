@@ -69,6 +69,10 @@ fn main() {
     // root (src-tauri); the API workspace sits at apps/api.
     println!("cargo:rerun-if-changed=../../api/src");
     println!("cargo:rerun-if-changed=../../api/package.json");
+    // The sidecar bundles the workspace contracts and the dependency graph in
+    // bun.lock; both are part of its fingerprint (issue #134).
+    println!("cargo:rerun-if-changed=../../../packages/contracts/src");
+    println!("cargo:rerun-if-changed=../../../bun.lock");
     // A different shop's secrets must invalidate the staged sidecar too:
     // without these, cargo would keep a sidecar stamped for the previous
     // customer when only the environment changed.
@@ -98,13 +102,13 @@ fn main() {
     }
 
     let sidecar = staged_sidecar(&manifest_dir, customer_slug.as_deref());
-    let api_dir = manifest_dir.join("../..").join("api");
-    let sources_fingerprint = match source_fingerprint(&api_dir) {
+    let repo_root = manifest_dir.join("../../..");
+    let sources_fingerprint = match source_fingerprint(&repo_root) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
             println!(
                 "cargo:warning=dokan: could not fingerprint {} ({error}); the sidecar will be rebuilt",
-                api_dir.display()
+                repo_root.display()
             );
             String::new()
         }

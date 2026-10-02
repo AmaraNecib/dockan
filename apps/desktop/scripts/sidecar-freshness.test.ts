@@ -19,8 +19,8 @@ import {
  * must fingerprint the same tree identically or build.rs stops trusting the
  * stamp written by the pipeline (PR #117 finding 5).
  */
-const FIXTURE_API_DIR = path.join(import.meta.dir, "__fixtures__", "api-fingerprint");
-const FIXTURE_GOLDEN = "cc24a8aae6afe5b0";
+const FIXTURE_ROOT = path.join(import.meta.dir, "__fixtures__", "api-fingerprint");
+const FIXTURE_GOLDEN = "755844f99e63478f";
 
 describe("fnv1a64Hex", () => {
   it("matches the published FNV-1a 64 vectors", () => {
@@ -50,36 +50,55 @@ describe("fnv1a32Hex / sidecarBinaryFingerprint (PR #117 finding 2)", () => {
 
 describe("sidecarSourceFingerprint", () => {
   it("is deterministic and includes the fixture's API sources", () => {
-    expect(sidecarSourceFingerprint(FIXTURE_API_DIR)).toBe(FIXTURE_GOLDEN);
-    expect(sidecarSourceFingerprint(FIXTURE_API_DIR)).toBe(sidecarSourceFingerprint(FIXTURE_API_DIR));
+    expect(sidecarSourceFingerprint(FIXTURE_ROOT)).toBe(FIXTURE_GOLDEN);
+    expect(sidecarSourceFingerprint(FIXTURE_ROOT)).toBe(sidecarSourceFingerprint(FIXTURE_ROOT));
   });
 
   it("changes when a source file's content changes", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-fingerprint-"));
-    mkdirSync(path.join(dir, "src", "nested"), { recursive: true });
-    writeFileSync(path.join(dir, "package.json"), '{"name":"fixture"}\n');
-    writeFileSync(path.join(dir, "src", "main.ts"), "export const x = 1;\n");
+    mkdirSync(path.join(dir, "apps", "api", "src", "nested"), { recursive: true });
+    writeFileSync(path.join(dir, "apps", "api", "package.json"), '{"name":"fixture"}\n');
+    writeFileSync(path.join(dir, "apps", "api", "src", "main.ts"), "export const x = 1;\n");
     const before = sidecarSourceFingerprint(dir);
 
-    writeFileSync(path.join(dir, "src", "main.ts"), "export const x = 2;\n");
+    writeFileSync(path.join(dir, "apps", "api", "src", "main.ts"), "export const x = 2;\n");
     expect(sidecarSourceFingerprint(dir)).not.toBe(before);
 
-    writeFileSync(path.join(dir, "src", "main.ts"), "export const x = 1;\n");
+    writeFileSync(path.join(dir, "apps", "api", "src", "main.ts"), "export const x = 1;\n");
     expect(sidecarSourceFingerprint(dir)).toBe(before);
   });
 
   it("changes when a file is added, renamed or the package manifest changes", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-fingerprint-"));
-    mkdirSync(path.join(dir, "src"), { recursive: true });
-    writeFileSync(path.join(dir, "package.json"), '{"name":"fixture"}\n');
-    writeFileSync(path.join(dir, "src", "main.ts"), "export const x = 1;\n");
+    mkdirSync(path.join(dir, "apps", "api", "src"), { recursive: true });
+    writeFileSync(path.join(dir, "apps", "api", "package.json"), '{"name":"fixture"}\n');
+    writeFileSync(path.join(dir, "apps", "api", "src", "main.ts"), "export const x = 1;\n");
     const before = sidecarSourceFingerprint(dir);
 
-    writeFileSync(path.join(dir, "src", "extra.ts"), "export const y = 2;\n");
+    writeFileSync(path.join(dir, "apps", "api", "src", "extra.ts"), "export const y = 2;\n");
     expect(sidecarSourceFingerprint(dir)).not.toBe(before);
-    writeFileSync(path.join(dir, "src", "extra.ts"), "");
+    writeFileSync(path.join(dir, "apps", "api", "src", "extra.ts"), "");
 
-    writeFileSync(path.join(dir, "package.json"), '{"name":"fixture","version":"2"}\n');
+    writeFileSync(path.join(dir, "apps", "api", "package.json"), '{"name":"fixture","version":"2"}\n');
+    expect(sidecarSourceFingerprint(dir)).not.toBe(before);
+  });
+
+  it("covers the workspace contracts and the lockfile (issue #134)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dokan-fingerprint-"));
+    mkdirSync(path.join(dir, "apps", "api", "src"), { recursive: true });
+    mkdirSync(path.join(dir, "packages", "contracts", "src"), { recursive: true });
+    writeFileSync(path.join(dir, "apps", "api", "package.json"), '{"name":"fixture"}\n');
+    writeFileSync(path.join(dir, "apps", "api", "src", "main.ts"), "export const x = 1;\n");
+    writeFileSync(path.join(dir, "packages", "contracts", "src", "index.ts"), "export const c = 1;\n");
+    writeFileSync(path.join(dir, "bun.lock"), '{"lockfileVersion":1}\n');
+    const before = sidecarSourceFingerprint(dir);
+
+    writeFileSync(path.join(dir, "packages", "contracts", "src", "index.ts"), "export const c = 2;\n");
+    expect(sidecarSourceFingerprint(dir)).not.toBe(before);
+    writeFileSync(path.join(dir, "packages", "contracts", "src", "index.ts"), "export const c = 1;\n");
+    expect(sidecarSourceFingerprint(dir)).toBe(before);
+
+    writeFileSync(path.join(dir, "bun.lock"), '{"lockfileVersion":2}\n');
     expect(sidecarSourceFingerprint(dir)).not.toBe(before);
   });
 
@@ -102,7 +121,7 @@ describe("writeSidecarStamp", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
     const sidecar = path.join(dir, "sidecar.exe");
     writeFileSync(sidecar, "stamp-bytes");
-    writeSidecarStamp(FIXTURE_API_DIR, sidecar, "acme", "build-secret-0123456789", "a".repeat(40));
+    writeSidecarStamp(FIXTURE_ROOT, sidecar, "acme", "build-secret-0123456789", "a".repeat(40));
 
     const text = readFileSync(`${sidecar}.stamp`, "utf8");
     expect(text).toContain("dokan-sidecar-stamp v1");
@@ -120,7 +139,7 @@ describe("writeSidecarStamp", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
     const sidecar = path.join(dir, "sidecar.exe");
     writeFileSync(sidecar, "stamp-bytes");
-    writeSidecarStamp(FIXTURE_API_DIR, sidecar, undefined, "build-secret-0123456789", "a".repeat(40));
+    writeSidecarStamp(FIXTURE_ROOT, sidecar, undefined, "build-secret-0123456789", "a".repeat(40));
     expect(readFileSync(`${sidecar}.stamp`, "utf8")).toContain("customer -\n");
   });
 });

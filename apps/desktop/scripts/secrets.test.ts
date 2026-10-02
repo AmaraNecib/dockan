@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { MIN_AUTH_SECRET_LEN, MIN_BUILD_SECRET_LEN } from "./sidecar";
 import {
+  acquireFileLock,
   ensureReleaseSecrets,
   envTempPath,
   generateSecret,
@@ -77,6 +78,14 @@ describe("parseEnvFile matches Bun's dotenv rules (PR #117 findings 1/5)", () =>
       F: "spaced",
       G: "",
     });
+  });
+
+  it("strips quotes before an inline comment, like Bun (re-review finding 1)", () => {
+    expect(
+      parseEnvFile(
+        `A="quoted" # note\nB='single' # note\nC="a#b"\nD="a" tail\nE="a\\"b" # c\nexport F='x' # c\n`,
+      ),
+    ).toEqual({ A: "quoted", B: "single", C: "a#b", D: "a", E: 'a\\"b', F: "x" });
   });
 });
 
@@ -156,6 +165,20 @@ describe("ensureReleaseSecrets", () => {
     expect(parseEnvFile(readFileSync(file, "utf8")).DOKAN_BUILD_SECRET).toBeUndefined();
   });
 
+  it("refuses an explicitly empty secret instead of generating one (re-review finding 2)", () => {
+    const file = scratchEnvFile();
+    expect(() => ensureReleaseSecrets({ env: { DOKAN_BUILD_SECRET: "" }, envFilePath: file })).toThrow(/not set/);
+    // nothing was generated or written
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("refuses an empty value already in the file instead of rotating it", () => {
+    const file = scratchEnvFile("DOKAN_AUTH_SECRET=\n");
+    const before = readFileSync(file, "utf8");
+    expect(() => ensureReleaseSecrets({ env: {}, envFilePath: file })).toThrow(/not set/);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
   it("still refuses an explicit secret below the minimum", () => {
     const file = scratchEnvFile();
     expect(() => ensureReleaseSecrets({ env: { DOKAN_BUILD_SECRET: "too-short" }, envFilePath: file })).toThrow(
@@ -215,6 +238,24 @@ describe("ensureReleaseSecrets file permissions (PR #117 finding 2)", () => {
     ensureReleaseSecrets({ env: {}, envFilePath: file });
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "restricts a complete customer file on read, even when nothing is generated (re-review finding 3)",
+    () => {
+      const dir = scratchDir();
+      const file = path.join(dir, ".env.acme");
+      writeFileSync(
+        file,
+        renderEnvFile({ DOKAN_BUILD_SECRET: "b".repeat(20), DOKAN_AUTH_SECRET: "c".repeat(40) }, releaseEnvHeader("acme")),
+      );
+      chmodSync(file, 0o644);
+
+      const result = ensureReleaseSecrets({ env: {}, envDir: dir, customerSlug: "acme" });
+
+      expect(result.generated).toEqual([]);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    },
+  );
 
   it("replaces a read-only pre-existing file instead of failing on it", () => {
     const file = scratchEnvFile(renderEnvFile({ DOKAN_AUTH_SECRET: "d".repeat(40) }, releaseEnvHeader()));
@@ -366,6 +407,25 @@ describe("ensureReleaseSecrets per customer (PR #117 finding 1)", () => {
     expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
   });
 
+  it("ignores an ambient value written as a commented quote (re-review finding 1)", () => {
+    const dir = scratchDir();
+    const ambient = path.join(dir, "root.env");
+    // Bun loads `inherited-build-secret-01`; a parser that keeps the quotes
+    // would fail the inherited-value check and treat it as an override
+    writeFileSync(ambient, `DOKAN_BUILD_SECRET="inherited-build-secret-01" # note\n`);
+
+    const result = ensureReleaseSecrets({
+      env: { DOKAN_BUILD_SECRET: "inherited-build-secret-01" },
+      envDir: dir,
+      customerSlug: "acme",
+      envIsExplicit: true,
+      ambientEnvFilePath: ambient,
+    });
+
+    expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe("inherited-build-secret-01");
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
+  });
+
   it("ignores a customer-less secret inherited from a repo-root .env (outer bun run preload)", async () => {
     const root = scratchDir();
     const desktop = path.join(root, "apps", "desktop");
@@ -502,6 +562,19 @@ describe("envTempPath (PR #117 finding 4)", () => {
     expect(path.basename(envTempPath("/x/.env.acme"))).toMatch(/^\.env\.acme\.[0-9]+\.[0-9a-f]+\.tmp$/);
     // the old `..env...tmp` shape did not match `.env.*`
     expect(path.basename(envTempPath("/x/.env")).startsWith("..")).toBe(false);
+  });
+
+  it("refreshes a held lock so a long operation is not stolen as stale (re-review finding 4)", async () => {
+    const dir = scratchDir();
+    const lock = path.join(dir, "held.lock");
+    const release = acquireFileLock(lock, { refreshMs: 25, staleMs: 100 });
+    try {
+      await Bun.sleep(250);
+      const age = Date.now() - statSync(lock).mtimeMs;
+      expect(age).toBeLessThan(100);
+    } finally {
+      release();
+    }
   });
 });
 

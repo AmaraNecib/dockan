@@ -68,19 +68,29 @@ function* walkFiles(dir: string): Generator<string> {
 }
 
 /**
- * Fingerprint of everything that goes into the compiled sidecar: every file
- * under `<apiDir>/src` plus `<apiDir>/package.json`. Paths are relative,
- * POSIX-separated and sorted by UTF-8 bytes; each entry hashes
- * `path \0 content \0`.
+ * Fingerprint of everything that goes into the compiled sidecar: the API
+ * sources and manifest, the workspace contracts the API imports at runtime,
+ * and the root lockfile (issue #134 / PR #117 re-review finding 8). Paths are
+ * relative to `repoRoot`, POSIX-separated and sorted by UTF-8 bytes; each
+ * entry hashes `path \0 content \0`.
  */
-export function sidecarSourceFingerprint(apiDir: string): string {
-  const files = [...walkFiles(path.join(apiDir, "src"))];
-  const manifest = path.join(apiDir, "package.json");
-  if (fs.existsSync(manifest)) files.push(manifest);
+export function sidecarSourceFingerprint(repoRoot: string): string {
+  const roots = [
+    path.join(repoRoot, "apps", "api", "src"),
+    path.join(repoRoot, "apps", "api", "package.json"),
+    path.join(repoRoot, "packages", "contracts", "src"),
+    path.join(repoRoot, "bun.lock"),
+  ];
+  const files: string[] = [];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    if (fs.statSync(root).isDirectory()) files.push(...walkFiles(root));
+    else files.push(root);
+  }
 
   const entries = files
     .map((file) => ({
-      relative: path.relative(apiDir, file).split(path.sep).join("/"),
+      relative: path.relative(repoRoot, file).split(path.sep).join("/"),
       content: fs.readFileSync(file),
     }))
     .sort((a, b) =>

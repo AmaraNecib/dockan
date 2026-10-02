@@ -164,3 +164,26 @@ ensureReleaseSecrets({
    refreshed every 30 s while held (a multi-minute build is not stolen as
    stale), waits up to an hour for another release, and is released on
    `process.exit` too. Standalone sidecar compiles keep their per-customer lock.
+
+## Round 5 (PR re-review fixes on 05986bb, 8 findings)
+
+1. `parseEnvValue` now matches Bun for a quoted value followed by an inline
+   comment or trailing junk (`"x" # note` -> `x`), including `\"` escapes inside
+   double quotes and the single-quote rules. The inherited-value guard no longer
+   fails on that shape.
+2. An explicitly empty secret (`DOKAN_X=`) and an empty line in the secrets file
+   now fail loudly instead of silently generating a replacement (which rotated
+   sessions on rebuild).
+3. `ensureReleaseSecrets` chmods the target and customer-less files on every
+   read path, not only when a value is generated.
+4. The per-customer sidecar compile lock uses `refreshMs`, so a long compile is
+   not stolen as stale.
+5. The customer-scoped reuse decision now includes the environment secret
+   hashes: a rotated `DOKAN_AUTH_SECRET` refuses the old binary.
+6. Standalone `bun run desktop:sidecar` takes the checkout-wide release lock, so
+   it cannot restage between build.rs's validation and the bundler copy.
+7. `turbo.json` lists `apps/desktop/.env` and `.env.*` in
+   `globalDependencies`, so editing a customer file busts the cache instead of
+   replaying a stale build.
+8. `source_fingerprint` now covers `packages/contracts/src` and `bun.lock`
+   (issue #134) with the shared TS/Rust golden updated.

@@ -58,18 +58,39 @@ const CUSTOMER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const ENV_LINE_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
 
 /**
- * Bun's dotenv value rules, as observed on Bun 1.4: a matching pair of single
- * or double quotes wins (the inside is taken verbatim, no escape processing),
- * otherwise the first `#` starts a comment; surrounding whitespace is trimmed.
- * Keeping this in lockstep matters: the base-file preload check compares the
- * value Bun loaded against a re-parse of the same line, and a divergence would
- * let a customer-less secret pass as an explicit override (PR #117 finding 1).
+ * Bun's dotenv value rules, as observed on Bun 1.4:
+ *   - a value starting with `"` or `'` is read up to its matching closing
+ *     quote (backslash escapes the next character inside `"` only, and the
+ *     backslash is kept verbatim); anything after the closing quote — an
+ *     inline `# comment` or trailing junk — is ignored;
+ *   - otherwise the first `#` starts a comment and the rest is trimmed.
+ * Keeping this in lockstep matters: the base/ambient preload check compares
+ * the value Bun loaded against a re-parse of the same line, and a divergence
+ * would let a customer-less secret pass as an explicit override
+ * (PR #117 findings 1, and re-review finding 1 for commented quotes).
  */
+function findClosingQuote(value: string, quote: string): number {
+  for (let i = 1; i < value.length; i += 1) {
+    if (quote === '"' && value[i] === "\\") {
+      i += 1; // escaped character: Bun keeps the backslash but skips the quote
+      continue;
+    }
+    if (value[i] === quote) return i;
+  }
+  return -1;
+}
+
 function parseEnvValue(raw: string): string {
   const value = raw.trim();
   const quote = value[0];
-  if ((quote === '"' || quote === "'") && value.length >= 2 && value[value.length - 1] === quote) {
-    return value.slice(1, -1);
+  if (quote === '"' || quote === "'") {
+    const closing = findClosingQuote(value, quote);
+    if (closing !== -1) return value.slice(1, closing);
+    // Bun lets an unterminated quote span lines; this line-based parser does
+    // not model that. Drop the opening quote and any comment so a malformed
+    // line stays inert instead of poisoning the whole file.
+    const comment = value.indexOf("#");
+    return (comment === -1 ? value : value.slice(0, comment)).slice(1).trim();
   }
   const comment = value.indexOf("#");
   return (comment === -1 ? value : value.slice(0, comment)).trim();
@@ -247,7 +268,15 @@ interface ResolveContext {
  */
 function resolveOne(spec: SecretSpec, ctx: ResolveContext): ResolvedOne {
   const explicit = ctx.env[spec.key];
-  if (explicit !== undefined && explicit !== "") {
+  if (explicit !== undefined) {
+    // An explicitly provided EMPTY secret is a broken configuration, not a
+    // missing one: generating a replacement would silently rotate the signing
+    // key / password-reset secret on the next rebuild (PR #117 re-review
+    // finding 2). Fail loudly before any preload reasoning.
+    if (explicit === "") {
+      const check = spec.validate({ [spec.key]: explicit });
+      throw new Error(`${spec.key}: ${check.ok ? "is empty — refusing to ship a default secret" : check.reason}`);
+    }
     const fromTargetFile = ctx.stored[spec.key] === explicit;
     // The root `desktop:*` scripts set BUN_OPTIONS=--no-env-file, but the OUTER
     // `bun run` process was started before that and may already have pre-loaded
@@ -280,7 +309,9 @@ function resolveOne(spec: SecretSpec, ctx: ResolveContext): ResolvedOne {
   }
 
   const fromFile = ctx.stored[spec.key];
-  if (fromFile !== undefined && fromFile !== "") {
+  if (fromFile !== undefined) {
+    // An empty line (`KEY=`) in the file is a broken configuration too: it
+    // must not be silently replaced by a fresh secret.
     const check = spec.validate({ [spec.key]: fromFile });
     if (!check.ok) throw new Error(`${spec.key}: ${check.reason} (in ${ctx.envFilePath})`);
     return { key: spec.key, value: fromFile, source: "file", created: false };
@@ -317,6 +348,19 @@ export interface EnsureSecretOptions {
   lockStaleMs?: number;
 }
 
+/**
+ * Best-effort `chmod 0600` for a release-secrets file. Called on every read
+ * path, not only when a value is generated (PR #117 re-review finding 3).
+ * Missing files and Windows ACLs are ignored.
+ */
+function restrictSecretFilePermissions(filePath: string): void {
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // no such file, or a platform whose ACLs do not map to POSIX modes
+  }
+}
+
 function readEnvFile(envFilePath: string): EnvFileValues {
   try {
     return parseEnvFile(fs.readFileSync(envFilePath, "utf8"));
@@ -347,10 +391,16 @@ export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): Resolve
   const slug = trimmedSlug === undefined || trimmedSlug === "" ? undefined : assertCustomerSlug(trimmedSlug);
   const envDir = options.envDir ?? RELEASE_ENV_DIR;
   const envFilePath = options.envFilePath ?? releaseEnvPathFor(slug, envDir);
+  // A complete file restored from a backup can arrive with a loose mode; the
+  // signing secret must not stay readable by other local users just because
+  // nothing had to be regenerated (PR #117 re-review finding 3). Restrict on
+  // every read path, before the values are read.
+  restrictSecretFilePermissions(envFilePath);
+  const baseEnvFilePath = path.join(path.dirname(envFilePath), RELEASE_ENV_FILENAME);
+  if (slug !== undefined) restrictSecretFilePermissions(baseEnvFilePath);
   // The base `.env` is the customer-less build's set. Reading it lets a slugged
   // build recognise (and refuse) values `bun run` pre-loaded from it.
-  const baseStored =
-    slug === undefined ? {} : readEnvFile(path.join(path.dirname(envFilePath), RELEASE_ENV_FILENAME));
+  const baseStored = slug === undefined ? {} : readEnvFile(baseEnvFilePath);
   // The outer `bun run desktop:*` process pre-loads the `.env` from ITS cwd
   // (the repo root) before the script sets BUN_OPTIONS. Those values are
   // inherited, not overrides, so a slugged build must ignore them too. The

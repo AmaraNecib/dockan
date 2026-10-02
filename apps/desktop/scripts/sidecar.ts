@@ -31,6 +31,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { acquireFileLock, ensureReleaseSecrets, type ResolvedReleaseSecrets } from "./secrets";
+import { withCheckoutReleaseLock } from "./release-lock";
 import { stagedSidecarPath, writeSidecarStamp } from "./sidecar-freshness";
 // re-exported so callers and tests can keep importing the rules from here
 export {
@@ -41,8 +42,8 @@ export {
 } from "./secret-rules";
 export type { SecretValidation } from "./secret-rules";
 
-/** API package root; cwd is apps/desktop under `bun run`. */
-const API_DIR = path.resolve("../api");
+/** Repository root; cwd is apps/desktop under `bun run`. */
+const REPO_ROOT = path.resolve("../..");
 
 /** Tauri appends the target triple to `bundle.externalBin` entries. */
 const SIDECAR_STEM = "dokan-api";
@@ -89,7 +90,10 @@ export async function compileSidecar(
 ): Promise<void> {
   const outfile = sidecarOutfile(customerSlug);
   const staged = stagedSidecarPath(outfile);
-  const release = acquireFileLock(`${staged}.lock`, {});
+  // Refresh the per-customer lock while compiling: a slow compile must not be
+  // stolen as stale by a second same-customer compile (PR #117 re-review
+  // finding 4).
+  const release = acquireFileLock(`${staged}.lock`, { refreshMs: 30_000 });
   try {
     fs.mkdirSync(path.dirname(outfile), { recursive: true });
     const proc = Bun.spawn(
@@ -112,7 +116,7 @@ export async function compileSidecar(
     // The sidecar is only trustworthy while it is newer than its inputs; record
     // what went into it so build.rs can prove that instead of assuming any
     // staged .exe is current (PR #117 finding 5).
-    writeSidecarStamp(API_DIR, staged, customerSlug, buildSecret, authSecret);
+    writeSidecarStamp(REPO_ROOT, staged, customerSlug, buildSecret, authSecret);
   } finally {
     release();
   }
@@ -130,11 +134,16 @@ async function main(): Promise<void> {
   if (resolved.generated.length > 0) {
     console.log(`[dokan] generated ${resolved.generated.join(" and ")} into ${resolved.envFilePath} (gitignored)`);
   }
-  await compileSidecar(
-    resolved.secrets.DOKAN_BUILD_SECRET,
-    resolved.secrets.DOKAN_AUTH_SECRET,
-    resolved.customerSlug,
-  );
+  // Standalone staging takes the checkout-wide release lock too: it must not
+  // restage a customer between build.rs validating the stamp and the bundler
+  // copying the binary (PR #117 re-review finding 6).
+  await withCheckoutReleaseLock(async () => {
+    await compileSidecar(
+      resolved.secrets.DOKAN_BUILD_SECRET,
+      resolved.secrets.DOKAN_AUTH_SECRET,
+      resolved.customerSlug,
+    );
+  });
   console.log(
     `[dokan] sidecar compiled with a ${resolved.secrets.DOKAN_BUILD_SECRET.length}-char build secret and ${resolved.secrets.DOKAN_AUTH_SECRET.length}-char auth secret inlined`,
   );

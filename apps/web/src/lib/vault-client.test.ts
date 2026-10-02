@@ -9,6 +9,7 @@ import {
   revokeVaultSession,
   storeVaultSessionToken,
   VaultRequestError,
+  vaultErrorCopy,
 } from "./vault-client";
 
 let routes = new Map<string, (init: RequestInit | undefined) => Response>();
@@ -72,9 +73,10 @@ describe("vault credential calls return and adopt the rotated session token", ()
     expect(headers?.get("x-vault-session")).toBeNull();
   });
 
-  it("surfaces the server code and Arabic message on a refusal", async () => {
+  it("surfaces the server code and ignores any server-side copy (round-6)", async () => {
     routes.set("/api/vault/reset-passphrase", () =>
-      Response.json({ error: { code: "VAULT_WRONG_RECOVERY", message: "مفتاح الاسترداد غير صحيح." } }, { status: 401 }),
+      // an OLD server may still send a message; the web must not render it
+      Response.json({ error: { code: "VAULT_WRONG_RECOVERY", message: "نص من الخادم" } }, { status: 401 }),
     );
     try {
       await resetVaultPassphrase("bad", "a brand new passphrase");
@@ -83,7 +85,24 @@ describe("vault credential calls return and adopt the rotated session token", ()
       expect(error).toBeInstanceOf(VaultRequestError);
       if (error instanceof VaultRequestError) {
         expect(error.code).toBe("VAULT_WRONG_RECOVERY");
-        expect(error.message).toContain("مفتاح الاسترداد");
+        // the API is locale-neutral; the web owns the copy via i18n
+        expect(error.message).toBe("VAULT_WRONG_RECOVERY");
+        expect(vaultErrorCopy(error)).toContain("مفتاح الاسترداد");
+      }
+    }
+  });
+
+  it("translates a code-only refusal with no server message (round-6)", async () => {
+    routes.set("/api/vault/reset-passphrase", () => Response.json({ error: { code: "VAULT_PASSPHRASE_TOO_SHORT" } }, { status: 400 }));
+    try {
+      await resetVaultPassphrase("bad", "short");
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VaultRequestError);
+      if (error instanceof VaultRequestError) {
+        expect(error.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
+        expect(vaultErrorCopy(error)).not.toBe("VAULT_PASSPHRASE_TOO_SHORT");
+        expect(vaultErrorCopy(error)).toMatch(/[\u0600-\u06FF]/);
       }
     }
   });

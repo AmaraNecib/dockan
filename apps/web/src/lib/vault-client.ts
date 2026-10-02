@@ -1,6 +1,8 @@
 import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
 import { z } from "zod";
 
+import { tError } from "./i18n";
+
 /**
  * The vault gate's browser client (ADR-0008 §4.6). All vault routes are plain
  * JSON under /api/vault/* because the gate must work before the RPC router
@@ -46,19 +48,34 @@ const recoveryKeysSchema = z.object({
 });
 const addedKeySchema = z.object({ id: z.string().min(1), code: z.string().min(1) });
 const errorEnvelopeSchema = z.object({
-  error: z.object({ code: z.string().optional(), message: z.string().optional(), retryAfterMs: z.number().optional() }).optional(),
+  error: z.object({ code: z.string().optional(), retryAfterMs: z.number().optional() }).optional(),
 });
 
-/** A refusal with the API's stable code and Arabic message. */
+/**
+ * A refusal with the API's stable code. The API is locale-neutral (round-6):
+ * the web owns the copy, so callers translate `code` through tError() and
+ * never render a message that came over the wire.
+ */
 export class VaultRequestError extends Error {
   constructor(
     readonly code: string,
-    message: string,
     readonly retryAfterMs?: number,
   ) {
-    super(message);
+    // the raw code only: UI code must translate via tError(err.code)
+    super(code);
     this.name = "VaultRequestError";
   }
+}
+
+/**
+ * Copy for a failed vault call. The API returns stable codes and no display
+ * copy (locale-neutral guard), so the web translates the code here — no raw
+ * code can ever reach the owner.
+ */
+export function vaultErrorCopy(error: Error | undefined): string {
+  if (error instanceof VaultRequestError) return tError(error.code);
+  if (error !== undefined) return tError(error.message);
+  return tError(undefined);
 }
 
 const SESSION_STORAGE_KEY = "dokan.vault.session";
@@ -113,7 +130,7 @@ export function stripVaultFragment(): void {
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
 
-type VaultErrorBody = { error?: { code?: string; message?: string; retryAfterMs?: number } };
+type VaultErrorBody = { error?: { code?: string; retryAfterMs?: number } };
 
 async function request<T>(path: string, init: RequestInit, authenticated: boolean, schema: z.ZodType<T>): Promise<T> {
   const headers = new Headers(init.headers);
@@ -132,10 +149,10 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
       /* non-JSON failure: fall through to the generic refusal */
     }
     const code = parsed.error?.code ?? "VAULT_UNEXPECTED";
-    throw new VaultRequestError(code, parsed.error?.message ?? "تعذّر تنفيذ العملية. أعد المحاولة.", parsed.error?.retryAfterMs);
+    throw new VaultRequestError(code, parsed.error?.retryAfterMs);
   }
   const decoded = schema.safeParse(JSON.parse(text));
-  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE", "تعذّر تنفيذ العملية. أعد المحاولة.");
+  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
   return decoded.data;
 }
 
@@ -146,15 +163,15 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
   } catch {
     // the server is unreachable (booting, proxy blip): the caller shows RETRY,
     // never the legacy login screen
-    throw new VaultRequestError("VAULT_UNREACHABLE", "تعذّر الاتصال بالخادم.");
+    throw new VaultRequestError("VAULT_UNREACHABLE");
   }
   if (response.status === 404) {
     // no vault route at all: this is the legacy plaintext build
-    throw new VaultRequestError("VAULT_UNSUPPORTED", "هذه النسخة لا تستعمل الخزنة.");
+    throw new VaultRequestError("VAULT_UNSUPPORTED");
   }
-  if (!response.ok) throw new VaultRequestError("VAULT_UNREACHABLE", "تعذّر الاتصال بالخادم.");
+  if (!response.ok) throw new VaultRequestError("VAULT_UNREACHABLE");
   const decoded = statusSchema.safeParse(JSON.parse(await response.text()));
-  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE", "تعذّر تنفيذ العملية. أعد المحاولة.");
+  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE");
   return decoded.data;
 }
 

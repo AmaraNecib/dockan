@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
+import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
 import { z } from "zod";
 
 import { readFileIfExists, writeFileAtomic, writeFileAtomicSync } from "../atomic-file";
@@ -11,7 +12,6 @@ import { createVaultBackupBundle } from "./backup";
 import { VaultAuthenticationError, normalizePassphrase, tokensMatch, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore, type VaultMetadata } from "./core";
 import { VaultFormatError } from "./format";
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "./messages";
 
 /**
  * VaultManager — the install-side vault: files, the in-memory unlock state,

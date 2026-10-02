@@ -1,3 +1,4 @@
+import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -14,7 +15,6 @@ import {
   VaultSetupInProgressError,
 } from "./manager";
 import { VaultFormatError } from "./format";
-import { MIN_VAULT_PASSPHRASE_LENGTH, vaultErrorMessage } from "./messages";
 import type { AppConfig } from "../../config";
 
 /**
@@ -22,9 +22,11 @@ import type { AppConfig } from "../../config";
  * desktop shell uses the stdin broker instead, but both drive the same
  * VaultManager, so the passphrase/recovery rules cannot drift between them.
  *
- * All responses are JSON with a stable `error.code` and an Arabic
- * `error.message` the owner reads. Secrets never appear in URLs, logs or
- * error text; the session token is the only credential and it rides a header.
+ * All responses are JSON with a stable `error.code` (plus structured extras
+ * such as `retryAfterMs`). The API never ships display copy: the web owns
+ * every sentence through its i18n layer (locale-neutral guard). Secrets never
+ * appear in URLs, logs or error text; the session token is the only credential
+ * and it rides a header.
  */
 
 export type VaultBootstrapInput = {
@@ -64,8 +66,8 @@ const resetPassphraseSchema = z.object({
   newPassphrase: z.string().min(MIN_VAULT_PASSPHRASE_LENGTH),
 });
 
-function errorResponse(code: string, status: number, extra: Record<string, string | number> = {}): Response {
-  return Response.json({ error: { code, message: vaultErrorMessage(code), ...extra } }, { status });
+function errorResponse(code: VaultErrorCode, status: number, extra: Record<string, string | number> = {}): Response {
+  return Response.json({ error: { code, ...extra } }, { status });
 }
 
 /**
@@ -283,7 +285,7 @@ async function unlockResponse(
   c: { json: (body: { ok: true; sessionToken: string }, status: 200) => Response },
   deps: VaultHttpDeps,
   unlock: () => Promise<string>,
-  wrongCode: string,
+  wrongCode: VaultErrorCode,
 ): Promise<Response> {
   try {
     const sessionToken = await unlock();

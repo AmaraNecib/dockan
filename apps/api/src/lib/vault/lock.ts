@@ -43,7 +43,9 @@ export type VaultLockOwner = {
 
 const ownerSchema = z.object({
   pid: z.number().int().positive(),
-  host: z.string().min(1),
+  // length-bounded on read; the display path additionally strips anything
+  // outside the hostname charset and HTML-escapes the result (see the page)
+  host: z.string().min(1).max(64),
   startedAt: z.string(),
   heartbeatAt: z.string(),
   token: z.string().min(1),
@@ -175,8 +177,12 @@ export class VaultLock {
   private heartbeat(): void {
     if (this.released || this.fd === undefined) return;
     try {
-      if (!fs.existsSync(this.path)) {
-        this.lost("the lock file disappeared");
+      // verify IDENTITY, not mere existence: a reclaim/rename may have
+      // replaced the path with another owner's record, and continuing to
+      // write would make us a second writer (round-5 finding)
+      const current = readOwnerOnce(this.path);
+      if (current === undefined || current.token !== this.owner.token) {
+        this.lost(current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner");
         return;
       }
       const next: VaultLockOwner = { ...this.owner, heartbeatAt: new Date().toISOString() };
@@ -225,6 +231,69 @@ export class VaultLock {
 }
 
 /**
+ * Remove a stale lock safely. The win is decided by ONE atomic rename: only
+ * the process whose rename moved the file may reclaim it, and only after the
+ * moved record is verified to be the SAME stale owner. If the lock changed
+ * hands in between, the fresh owner's record is put back (best effort) and the
+ * attempt reports "raced" so the caller refuses instead of acquiring over a
+ * live replacement (round-5 finding).
+ */
+function reclaimStaleLock(
+  lockPath: string,
+  expected: VaultLockOwner | undefined,
+  options: VaultLockOptions,
+): "reclaimed" | "raced" | "retry" {
+  const temp = `${lockPath}.reclaim-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    fs.renameSync(lockPath, temp);
+  } catch {
+    // another process moved or removed it first, so we touched nothing:
+    // retry and let the exclusive create decide the winner
+    return "retry";
+  }
+  const moved = readOwner(temp, options);
+  const isSameStaleOwner =
+    (expected === undefined && moved === undefined) ||
+    (expected !== undefined && moved !== undefined && moved.token === expected.token);
+  if (isSameStaleOwner) {
+    try {
+      fs.unlinkSync(temp);
+    } catch {
+      /* already gone */
+    }
+    options.logger?.warn(
+      "VAULT_LOCK_RECLAIMED",
+      expected === undefined
+        ? `reclaimed an unreadable lock at ${lockPath}`
+        : `reclaimed a stale lock left by ${expected.host} pid ${expected.pid}`,
+    );
+    return "reclaimed";
+  }
+  // we moved a lock that had already changed hands: put the SAME inode back
+  // (a hard link keeps the displaced owner's fd bound to the path) and never
+  // overwrite a third lock that may have appeared in the meantime. linkSync is
+  // atomic-if-absent on NTFS and POSIX; FAT/exFAT has no hard links, so the
+  // rename fallback applies only when the path is still free.
+  try {
+    try {
+      fs.linkSync(temp, lockPath);
+    } catch {
+      if (fs.existsSync(lockPath)) throw new Error("the lock path was recreated while restoring");
+      fs.renameSync(temp, lockPath);
+    }
+    fs.unlinkSync(temp);
+  } catch {
+    try {
+      fs.unlinkSync(temp);
+    } catch {
+      /* already gone */
+    }
+  }
+  options.logger?.warn("VAULT_LOCK_RECLAIM_RACED", "a stale-lock reclaim lost the race to a newer owner; refusing this attempt");
+  return "raced";
+}
+
+/**
  * Acquire the single-writer lock for `dataDir`. Throws
  * `VaultAlreadyLockedError` when a live instance holds it, and
  * `VaultLockUnavailableError` when the lock file cannot be created at all
@@ -257,21 +326,14 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     const existing = readOwner(lockPath, options);
     if (existing !== undefined && holderIsLive(existing, options)) throw new VaultAlreadyLockedError(existing, lockPath);
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
-    // settle, re-read, then remove only if the same stale owner is still there
+    // settle so a near-simultaneous reclaimer is likely decided, then reclaim
+    // atomically; a lost race refuses this boot instead of acquiring over it
     Bun.sleepSync(options.stealSettleMs ?? 200);
-    const current = readOwner(lockPath, options);
-    if (existing !== undefined && current !== undefined && current.token !== existing.token) continue;
-    try {
-      fs.unlinkSync(lockPath);
-      options.logger?.warn(
-        "VAULT_LOCK_RECLAIMED",
-        existing === undefined
-          ? `reclaimed an unreadable lock at ${lockPath}`
-          : `reclaimed a stale lock left by ${existing.host} pid ${existing.pid}`,
-      );
-    } catch {
-      /* another process raced us; the next attempt sees its fresh lock */
+    const outcome = reclaimStaleLock(lockPath, readOwner(lockPath, options), options);
+    if (outcome === "raced") {
+      throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
     }
+    if (outcome === "retry") continue;
   }
   throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
 }
@@ -290,15 +352,50 @@ function ensureExitHook(): void {
   });
 }
 
+/**
+ * The one place the lock refusal copy lives. This standalone page is served on
+ * the second instance's reserved port BEFORE the web bundle exists, so it has
+ * no i18n runtime and its Arabic is deliberately embedded here (the web owns
+ * all in-app copy — see apps/api/src/lib/locale-neutral.test.ts).
+ */
+const VAULT_LOCK_PAGE_COPY = {
+  title: "دكان — قيد الاستعمال",
+  heading: "البيانات قيد الاستعمال",
+  hint: "لا تُعدّل بيانات المتجر ولا تحذف أي ملف. أغلق النسخة الأخرى فقط.",
+  fallbackHost: "جهاز غير معروف",
+  unknownOwner: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+  ownerTemplate: "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز {host}، العملية {pid}). أغلق النسخة الأخرى ثم أعد فتح التطبيق.",
+} as const;
+
+/**
+ * Strip a lock record's host to the hostname charset before display. The
+ * record is an on-disk file, so a hostile value must never reach the page as
+ * markup; the length bound is enforced by the read schema as well.
+ */
+function sanitizeHostForDisplay(host: string): string {
+  const cleaned = host.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
+  return cleaned === "" ? VAULT_LOCK_PAGE_COPY.fallbackHost : cleaned;
+}
+
+function escapeHtml(value: string): string {
+  let out = "";
+  for (const char of value) {
+    if (char === "&") out += "&amp;";
+    else if (char === "<") out += "&lt;";
+    else if (char === ">") out += "&gt;";
+    else if (char === '"') out += "&quot;";
+    else if (char === "'") out += "&#39;";
+    else out += char;
+  }
+  return out;
+}
+
 /** The Arabic refusal shown when another instance owns the folder. */
 export function vaultLockRefusalMessage(owner: VaultLockOwner | undefined): string {
-  if (owner === undefined) {
-    return "البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد. أغلق النسخة الأخرى ثم أعد فتح التطبيق.";
-  }
-  return (
-    `البيانات مفتوحة في نسخة أخرى من دكان على هذا المجلد (الجهاز ${owner.host}، العملية ${owner.pid}). ` +
-    "أغلق النسخة الأخرى ثم أعد فتح التطبيق."
-  );
+  if (owner === undefined) return VAULT_LOCK_PAGE_COPY.unknownOwner;
+  return VAULT_LOCK_PAGE_COPY.ownerTemplate
+    .replace("{host}", sanitizeHostForDisplay(owner.host))
+    .replace("{pid}", String(owner.pid));
 }
 
 /** Standalone Arabic page for the second instance (mirrors the schema page). */
@@ -308,7 +405,7 @@ export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined): str
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>دكان — قيد الاستعمال</title>
+    <title>${escapeHtml(VAULT_LOCK_PAGE_COPY.title)}</title>
     <style>
       body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fafafa; color: #111; font-family: system-ui, sans-serif; }
       main { max-width: 32rem; margin: 1rem; padding: 2rem; background: #fff; border: 1px solid #e5e5e5; border-radius: 1rem; text-align: center; box-shadow: 0 1px 2px rgb(0 0 0 / 0.05); }
@@ -319,13 +416,32 @@ export function vaultLockRefusalPageHtml(owner: VaultLockOwner | undefined): str
   </head>
   <body>
     <main>
-      <h1>البيانات قيد الاستعمال</h1>
-      <p>${vaultLockRefusalMessage(owner)}</p>
-      <p class="hint">لا تُعدّل بيانات المتجر ولا تحذف أي ملف. أغلق النسخة الأخرى فقط.</p>
+      <h1>${escapeHtml(VAULT_LOCK_PAGE_COPY.heading)}</h1>
+      <p>${escapeHtml(vaultLockRefusalMessage(owner))}</p>
+      <p class="hint">${escapeHtml(VAULT_LOCK_PAGE_COPY.hint)}</p>
     </main>
   </body>
 </html>
 `;
+}
+
+/**
+ * Close the encrypted store BEFORE releasing the single-writer lock
+ * (round-5 finding): `close()` drains the persist queue and runs the final
+ * checkpoint, and a replacement instance must not open the folder while the
+ * exiting sidecar can still write its snapshot. Release runs in `finally` so
+ * a failing close cannot strand the lock. Every main.ts shutdown path uses
+ * this helper.
+ */
+export async function closeVaultThenReleaseLock(
+  connection: { close(): Promise<void> } | undefined,
+  lock: VaultLock | undefined,
+): Promise<void> {
+  try {
+    await connection?.close();
+  } finally {
+    lock?.release();
+  }
 }
 
 /**

@@ -215,10 +215,12 @@ describe("vault HTTP gate", () => {
       body: JSON.stringify({ passphrase: "short" }),
     });
     expect(short.status).toBe(400);
-    // SAFETY: the error contract is { error: { code, message } }
-    const shortBody = await json<{ error: { code: string; message: string } }>(short);
+    // SAFETY: the error contract is { error: { code } }: the API is
+    // locale-neutral and never ships display copy (round-6)
+    const shortBody = await json<{ error: { code: string; message?: string } }>(short);
     expect(shortBody.error.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
-    expect(shortBody.error.message).toContain("كلمة المرور");
+    expect(shortBody.error.message).toBeUndefined();
+    expect(JSON.stringify(shortBody)).not.toMatch(/[\u0600-\u06FF]/);
 
     const setup = await h.gate.request("/api/vault/setup", {
       method: "POST",
@@ -322,10 +324,12 @@ describe("vault HTTP gate", () => {
       body: JSON.stringify({ passphrase: "wrong horse battery" }),
     });
     expect(wrong.status).toBe(401);
-    // SAFETY: the error contract is { error: { code, message } }
-    const body = await json<{ error: { code: string; message: string } }>(wrong);
+    // SAFETY: the error contract is { error: { code } }: the API is
+    // locale-neutral and never ships display copy (round-6)
+    const body = await json<{ error: { code: string; message?: string } }>(wrong);
     expect(body.error.code).toBe("VAULT_WRONG_PASSPHRASE");
-    expect(body.error.message).toContain("كلمة المرور");
+    expect(body.error.message).toBeUndefined();
+    expect(JSON.stringify(body)).not.toMatch(/[\u0600-\u06FF]/);
     // the header and snapshot are untouched
     expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(true);
 
@@ -461,7 +465,7 @@ describe("vault gate hardening (review supplement)", () => {
     const h = harness(tempDir("dokan-vault-norm-"));
     const spaces = await setupVault(h, "        ");
     expect(spaces.status).toBe(400);
-    // SAFETY: the error contract is { error: { code, message } }
+    // SAFETY: the error contract is { error: { code } }
     expect((await json<{ error: { code: string } }>(spaces)).error.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
     // a padded short passphrase normalizes below the floor too
     expect((await setupVault(h, "  short  ")).status).toBe(400);
@@ -690,7 +694,7 @@ describe("vault gate hardening (review supplement)", () => {
     // key nor a session token
     const intruder = await setupVault(h, "another long passphrase");
     expect(intruder.status).toBe(401);
-    // SAFETY: the error contract is { error: { code, message } }
+    // SAFETY: the error contract is { error: { code } }
     const intruderBody = await json<{ error: { code: string } }>(intruder);
     expect(intruderBody.error.code).toBe("VAULT_WRONG_PASSPHRASE");
     expect(JSON.stringify(intruderBody)).not.toContain(recoveryKey);

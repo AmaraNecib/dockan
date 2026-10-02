@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 
+import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
+
 import { DEFAULT_KDF_PARAMS, VaultAuthenticationError, deriveKey, generateMasterKey, generateSalt, normalizePassphrase, open, seal, type KdfParams } from "./crypto";
 import { type VaultHeader, type VaultWrap, VAULT_FORMAT_VERSION, generateRecoveryCode, parseRecoveryCode, parseVaultHeader, serializeVaultHeader, wrapAad } from "./format";
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "./messages";
 
 /**
  * VaultCore — the passphrase/recovery-key layer over one `vault.json`. It owns

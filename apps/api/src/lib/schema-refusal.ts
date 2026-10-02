@@ -12,17 +12,32 @@ import { UnsupportedSchemaVersionError } from "./schema-version";
  * navigates to this page, so the owner sees the Arabic "update the app"
  * message instead of a generic startup failure.
  */
+/**
+ * The standalone page's copy. This page is served before the web bundle (or
+ * any API route) exists, so it has no i18n runtime and its Arabic is
+ * deliberately embedded here; every in-app string lives in
+ * apps/web/src/lib/i18n.ts (locale-neutral guard allow-lists these lines).
+ */
+const SCHEMA_REFUSAL_PAGE_COPY = {
+  title: "دكان — تحديث مطلوب",
+  heading: "تحديث مطلوب",
+  hint: "بياناتك سليمة ولم تُمسّ. ثبّت إصداراً أحدث من دكان ثم أعد فتح التطبيق.",
+  messageTemplate: "تعذّر فتح البيانات: هذه النسخة من التطبيق أقدم من قاعدة البيانات (نسخة قاعدة البيانات {found}، والمدعومة {supported}). حدّث دكان ثم أعد المحاولة.",
+} as const;
+
+function refusalMessage(foundVersion: number, supportedVersion: number): string {
+  return SCHEMA_REFUSAL_PAGE_COPY.messageTemplate
+    .replace("{found}", String(foundVersion))
+    .replace("{supported}", String(supportedVersion));
+}
+
 export function refusalPageHtml(foundVersion: number, supportedVersion: number): string {
-  const message =
-    "تعذّر فتح البيانات: هذه النسخة من التطبيق أقدم من قاعدة البيانات " +
-    `(نسخة قاعدة البيانات ${foundVersion}، والمدعومة ${supportedVersion}). ` +
-    "حدّث دكان ثم أعد المحاولة.";
   return `<!doctype html>
 <html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>دكان — تحديث مطلوب</title>
+    <title>${SCHEMA_REFUSAL_PAGE_COPY.title}</title>
     <style>
       body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #fafafa; color: #111; font-family: system-ui, sans-serif; }
       main { max-width: 32rem; margin: 1rem; padding: 2rem; background: #fff; border: 1px solid #e5e5e5; border-radius: 1rem; text-align: center; box-shadow: 0 1px 2px rgb(0 0 0 / 0.05); }
@@ -33,9 +48,9 @@ export function refusalPageHtml(foundVersion: number, supportedVersion: number):
   </head>
   <body>
     <main>
-      <h1>تحديث مطلوب</h1>
-      <p>${message}</p>
-      <p class="hint">بياناتك سليمة ولم تُمسّ. ثبّت إصداراً أحدث من دكان ثم أعد فتح التطبيق.</p>
+      <h1>${SCHEMA_REFUSAL_PAGE_COPY.heading}</h1>
+      <p>${refusalMessage(foundVersion, supportedVersion)}</p>
+      <p class="hint">${SCHEMA_REFUSAL_PAGE_COPY.hint}</p>
     </main>
   </body>
 </html>

@@ -183,11 +183,13 @@ describe("desktop shell vault broker", () => {
     child = spawnBroker(dir, port);
     const nextLine = lineReader(child);
     send(child, JSON.stringify({ action: "unlock", passphrase: "wrong horse battery" }));
-    // SAFETY: the broker contract is a single JSON reply line per request
+    // SAFETY: the broker contract is a single JSON reply line per request;
+    // failures carry only the stable code (locale-neutral, round-6)
     const reply = JSON.parse(await nextLine()) as { ok: boolean; code?: string; message?: string };
     expect(reply.ok).toBe(false);
     expect(reply.code).toBe("VAULT_WRONG_PASSPHRASE");
-    expect(reply.message).toContain("كلمة المرور");
+    expect(reply.message).toBeUndefined();
+    expect(JSON.stringify(reply)).not.toMatch(/[\u0600-\u06FF]/);
     // and the process is gone (no lingering pre-unlock server)
     await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
     expect(child?.exitCode).not.toBe(0);

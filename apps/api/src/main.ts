@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { serve } from "@hono/node-server";
+import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
 import { serveStatic } from "hono/bun";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -22,9 +23,8 @@ import { ensureSessionSecret } from "./lib/session-secret";
 import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypto";
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
-import { createVaultLockRefusalApp, VaultAlreadyLockedError, acquireVaultLock, type VaultLock } from "./lib/vault/lock";
+import { closeVaultThenReleaseLock, createVaultLockRefusalApp, VaultAlreadyLockedError, acquireVaultLock, type VaultLock } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError } from "./lib/vault/manager";
-import { MIN_VAULT_PASSPHRASE_LENGTH, vaultErrorMessage } from "./lib/vault/messages";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 import type { StorePort } from "./store/port";
@@ -90,7 +90,7 @@ let vaultApp: Hono | undefined;
 
 /** Before the app is ready, /api/* must refuse instead of falling through to the SPA. */
 const lockedApiHandler: RequestHandler = () =>
-  Response.json({ error: { code: "VAULT_NOT_UNLOCKED", message: vaultErrorMessage("VAULT_NOT_UNLOCKED") } }, { status: 503 });
+  Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 503 });
 let activeHandler: RequestHandler = lockedApiHandler;
 
 /** Read the packaged index once; dev/e2e have no bundled UI (vite serves it). */
@@ -317,7 +317,7 @@ const brokerRequestSchema = z.object({
 
 type BrokerReply =
   | { ok: true; sessionToken: string; recoveryKey?: string; plaintextRemaining?: string[] }
-  | { ok: false; code: string; message: string; retryAfterMs?: number };
+  | { ok: false; code: VaultErrorCode; retryAfterMs?: number };
 
 function writeBrokerReply(reply: BrokerReply): void {
   process.stdout.write(`${JSON.stringify(reply)}\n`);
@@ -336,29 +336,29 @@ async function readStdinLine(): Promise<string | undefined> {
 }
 
 function brokerFailure(action: "unlock" | "recovery" | "setup", error: Error): BrokerReply {
-  const wrongCode = action === "recovery" ? "VAULT_WRONG_RECOVERY" : "VAULT_WRONG_PASSPHRASE";
-  if (error instanceof VaultAuthenticationError) return { ok: false, code: wrongCode, message: vaultErrorMessage(wrongCode) };
+  const wrongCode: VaultErrorCode = action === "recovery" ? "VAULT_WRONG_RECOVERY" : "VAULT_WRONG_PASSPHRASE";
+  if (error instanceof VaultAuthenticationError) return { ok: false, code: wrongCode };
   if (error instanceof VaultLockedError) {
-    return { ok: false, code: "VAULT_LOCKED", message: vaultErrorMessage("VAULT_LOCKED"), retryAfterMs: error.retryAfterMs };
+    return { ok: false, code: "VAULT_LOCKED", retryAfterMs: error.retryAfterMs };
   }
-  if (error instanceof VaultFormatError) return { ok: false, code: "VAULT_INVALID", message: vaultErrorMessage("VAULT_INVALID") };
+  if (error instanceof VaultFormatError) return { ok: false, code: "VAULT_INVALID" };
   if (error instanceof UnsupportedSchemaVersionError) {
-    return { ok: false, code: "VAULT_SCHEMA_TOO_NEW", message: vaultErrorMessage("VAULT_SCHEMA_TOO_NEW") };
+    return { ok: false, code: "VAULT_SCHEMA_TOO_NEW" };
   }
   if (error instanceof VaultNotUnlockedError) {
-    return { ok: false, code: "VAULT_NOT_UNLOCKED", message: vaultErrorMessage("VAULT_NOT_UNLOCKED") };
+    return { ok: false, code: "VAULT_NOT_UNLOCKED" };
   }
   if (error instanceof MissingVaultDatabaseError) {
-    return { ok: false, code: "VAULT_DATABASE_MISSING", message: vaultErrorMessage("VAULT_DATABASE_MISSING") };
+    return { ok: false, code: "VAULT_DATABASE_MISSING" };
   }
   if (error instanceof VaultCorruptionError) {
-    return { ok: false, code: "VAULT_CORRUPT", message: vaultErrorMessage("VAULT_CORRUPT") };
+    return { ok: false, code: "VAULT_CORRUPT" };
   }
   if (error instanceof VaultSetupInProgressError) {
-    return { ok: false, code: "VAULT_SETUP_IN_PROGRESS", message: vaultErrorMessage("VAULT_SETUP_IN_PROGRESS") };
+    return { ok: false, code: "VAULT_SETUP_IN_PROGRESS" };
   }
-  const fallback = action === "setup" ? "VAULT_SETUP_FAILED" : wrongCode;
-  return { ok: false, code: fallback, message: vaultErrorMessage(fallback) };
+  const fallback: VaultErrorCode = action === "setup" ? "VAULT_SETUP_FAILED" : wrongCode;
+  return { ok: false, code: fallback };
 }
 
 /**
@@ -374,12 +374,12 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
     if (line === undefined) throw new Error("stdin closed");
     decoded = JSON.parse(line);
   } catch {
-    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED", message: vaultErrorMessage("VAULT_SETUP_FAILED") });
+    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
     process.exit(1);
   }
   const parsedRequest = brokerRequestSchema.safeParse(decoded);
   if (!parsedRequest.success) {
-    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED", message: vaultErrorMessage("VAULT_SETUP_FAILED") });
+    writeBrokerReply({ ok: false, code: "VAULT_SETUP_FAILED" });
     process.exit(1);
   }
   const request = parsedRequest.data;
@@ -388,7 +388,7 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       const passphrase = request.passphrase ?? "";
       // the NORMALIZED passphrase decides: eight spaces is empty
       if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
-        writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT", message: vaultErrorMessage("VAULT_PASSPHRASE_TOO_SHORT") });
+        writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT" });
         process.exit(1);
       }
       const prepared = await vault.prepareSetup(passphrase);
@@ -513,12 +513,12 @@ function startServer(): void {
   });
 
   // graceful shutdown: reconcile FIRST (registry removed, canonical pointed at
-  // a survivor), then tear down the db and exit — single listener, so no
-  // shutdown path can exit before the reconcile finishes
+  // a survivor), then close the store and only then release the lock — the
+  // lock must outlive the final checkpoint (round-5 finding) — single
+  // listener, so no shutdown path can exit before the reconcile finishes
   server.on("close", async () => {
     await reconcileBeforeExit();
-    vaultLock?.release();
-    await activeConnection?.close();
+    await closeStoreThenLock();
     process.exit(0);
   });
 }
@@ -532,6 +532,20 @@ async function forgetPort(): Promise<void> {
   await forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid });
 }
 
+/**
+ * Close the store (draining pending snapshot writes and the final checkpoint)
+ * and only then release the single-writer lock; the lock and the connection
+ * are module-level so every shutdown path shares this order. A close failure
+ * is logged, never fatal: the helper already released the lock in `finally`.
+ */
+async function closeStoreThenLock(): Promise<void> {
+  try {
+    await closeVaultThenReleaseLock(activeConnection, vaultLock);
+  } catch (err) {
+    logger.error("SERVER_ERROR", "store close failed during shutdown", err instanceof Error ? err : new Error(String(err)));
+  }
+}
+
 /** Cleanup must be observable: exiting successfully after a failed reconcile
  * leaves the proxy with stale discovery data. */
 async function reconcileBeforeExit(): Promise<void> {
@@ -543,8 +557,7 @@ async function reconcileBeforeExit(): Promise<void> {
       "port record cleanup failed before exit",
       err instanceof Error ? err : new Error(String(err)),
     );
-    vaultLock?.release();
-    await activeConnection?.close();
+    await closeStoreThenLock();
     process.exit(1);
   }
 }
@@ -555,11 +568,11 @@ async function reconcileBeforeExit(): Promise<void> {
 function beginShutdown(): void {
   server?.close();
   // a stuck close (keep-alive connection) must not hang the kiosk forever;
-  // the forced path still awaits the full reconcile before exiting
+  // the forced path still awaits the full reconcile and the store close before
+  // releasing the lock and exiting
   setTimeout(async () => {
     await reconcileBeforeExit();
-    vaultLock?.release();
-    await activeConnection?.close();
+    await closeStoreThenLock();
     process.exit(0);
   }, 3000).unref();
 }

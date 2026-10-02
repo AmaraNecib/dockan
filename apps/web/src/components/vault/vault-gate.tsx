@@ -9,6 +9,7 @@ import {
   readSetupTokenFromHash,
   storeVaultSessionToken,
   stripVaultFragment,
+  vaultErrorCopy,
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
@@ -140,8 +141,8 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
     try {
       await action();
     } catch (err) {
-      if (err instanceof VaultRequestError) fail(err.message, err.retryAfterMs);
-      else fail(err instanceof Error ? err.message : t("vaultUnexpected"));
+      // the API ships codes, not copy: translate here (round-6)
+      fail(vaultErrorCopy(err instanceof Error ? err : undefined), err instanceof VaultRequestError ? err.retryAfterMs : undefined);
     } finally {
       busyRef.current = false;
       setBusy(false);

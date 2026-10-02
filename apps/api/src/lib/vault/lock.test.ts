@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, VaultAlreadyLockedError, VaultLockUnavailableError, vaultLockRefusalPageHtml } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, VaultAlreadyLockedError, VaultLockUnavailableError, vaultLockRefusalPageHtml } from "./lock";
 
 let dir: string;
 
@@ -141,5 +141,121 @@ describe("vault single-writer lock", () => {
     expect(html).toContain("البيانات مفتوحة في نسخة أخرى");
     expect(html).toContain("shop-pc");
     expect(html).toContain("4242");
+  });
+
+  it("refuses instead of deleting a replacement lock when the stale file changes hands mid-reclaim (round-5)", () => {
+    writeLock({ host: "old-dead-host", heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "stale-token" });
+    const realRename = fs.renameSync.bind(fs);
+    let swapped = false;
+    // interleaving: our stale check passed, then another sidecar won the
+    // reclaim and created its own lock before our rename ran
+    const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (!swapped && String(from) === lockPath()) {
+        swapped = true;
+        fs.writeFileSync(
+          lockPath(),
+          JSON.stringify({
+            pid: 999_999,
+            host: os.hostname(),
+            startedAt: new Date().toISOString(),
+            heartbeatAt: new Date().toISOString(),
+            token: "replacement-token",
+          }),
+        );
+      }
+      // SAFETY: the spy is typed with fs.renameSync's own PathLike overload;
+      // production only ever passes PathLike values here
+      return realRename(from as fs.PathLike, to as fs.PathLike);
+    });
+    try {
+      expect(() => acquireVaultLock(dir, fastSteal)).toThrow(VaultAlreadyLockedError);
+    } finally {
+      spy.mockRestore();
+    }
+    // the replacement survives at the path and no temp copy is left behind
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("replacement-token");
+    expect(fs.readdirSync(dir).filter((name) => name.includes(".reclaim-"))).toEqual([]);
+  });
+
+  it("fail-stops when the lock file is replaced by another owner (round-5)", async () => {
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, { heartbeatIntervalMs: 20, onLost: (reason) => lost.push(reason) });
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ token: "another-owner" });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(lost.length).toBeGreaterThan(0);
+    lock.release();
+    // the heartbeat never deleted the replacement's file
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("another-owner");
+  });
+
+  it("holds the lock until the store close (final checkpoint) finishes (round-5)", async () => {
+    const lock = acquireVaultLock(dir);
+    let releaseObservedDuringClose: boolean | undefined;
+    const closing = closeVaultThenReleaseLock(
+      {
+        async close() {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          releaseObservedDuringClose = !fs.existsSync(lockPath());
+        },
+      },
+      lock,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // while close is in flight the lock is still held
+    expect(fs.existsSync(lockPath())).toBe(true);
+    await closing;
+    expect(releaseObservedDuringClose).toBe(false);
+    expect(fs.existsSync(lockPath())).toBe(false);
+  });
+
+  it("releases the lock even when the store close fails (round-5)", async () => {
+    const lock = acquireVaultLock(dir);
+    await expect(
+      closeVaultThenReleaseLock(
+        {
+          async close() {
+            throw new Error("snapshot persist failed");
+          },
+        },
+        lock,
+      ),
+    ).rejects.toThrow("snapshot persist failed");
+    expect(fs.existsSync(lockPath())).toBe(false);
+  });
+
+  it("escapes a hostile lock-record host in the refusal page (round-5)", () => {
+    const html = vaultLockRefusalPageHtml({
+      pid: 7,
+      host: '<img src=x onerror="alert(1)">',
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      token: "t",
+    });
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("onerror=");
+    expect(html).not.toContain("<script");
+    // the record is still identified, stripped to the hostname charset
+    expect(html).toContain("imgsrcxonerroralert1");
+  });
+
+  it("treats a lock record with an over-long host as unreadable (round-5)", () => {
+    fs.writeFileSync(
+      lockPath(),
+      JSON.stringify({
+        pid: 1,
+        host: "h".repeat(65),
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        token: "t",
+      }),
+    );
+    const lock = acquireVaultLock(dir, fastSteal);
+    expect(lock.currentOwner().pid).toBe(process.pid);
+    lock.release();
   });
 });

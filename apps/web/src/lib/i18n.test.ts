@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { VAULT_ERROR_CODES } from "@dokan/contracts";
+
 import i18n, { authErrorKey, serverErrorKey, tError } from "./i18n";
 
 /**
@@ -111,6 +113,24 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
 });
 
 /** Issue #120 — the UI uses the canonical role words, never the retired «الطرف». */
+/**
+ * Round 6 — translation single-source: the API returns stable vault codes and
+ * no Arabic; every code it (or the web vault client) can emit must have its
+ * own key here, so no raw code can ever reach the owner.
+ */
+describe("vault error codes stay translatable (round 6)", () => {
+  it("every stable vault code has its own Arabic key", () => {
+    for (const code of VAULT_ERROR_CODES) {
+      // serverErrorKey resolves a code only when its i18n key exists
+      expect(serverErrorKey(code), `missing i18n key for ${code}`).toBe(code);
+      const copy = tError(code);
+      expect(copy, `missing copy for ${code}`).not.toBe(code);
+      expect(copy.length, `empty copy for ${code}`).toBeGreaterThan(0);
+      expect(copy, `non-Arabic copy for ${code}`).toMatch(/[\u0600-\u06FF]/);
+    }
+  });
+});
+
 describe("party labels (issue 120)", () => {
   it("labels an invoice's party with the canonical زبون/مورّد pair", () => {
     expect(i18n.t("invoiceParty")).toContain("الزبون");

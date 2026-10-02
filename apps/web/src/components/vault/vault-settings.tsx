@@ -11,7 +11,7 @@ import {
   removeRecoveryKey,
   resetVaultPassphrase,
   storeVaultSessionToken,
-  VaultRequestError,
+  vaultErrorCopy,
 } from "@/lib/vault-client";
 
 /**
@@ -52,7 +52,7 @@ export function VaultSettings() {
       setNewPassphrase("");
       setConfirmPassphrase("");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("vaultUnexpected")),
+    onError: (err) => setError(vaultErrorCopy(err)),
   });
 
   const createKey = useMutation({
@@ -61,7 +61,7 @@ export function VaultSettings() {
       setNewKey(created.code);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
     },
-    onError: (err) => setError(err instanceof VaultRequestError ? err.message : t("vaultUnexpected")),
+    onError: (err) => setError(vaultErrorCopy(err)),
   });
 
   const deleteKey = useMutation({
@@ -72,7 +72,7 @@ export function VaultSettings() {
       setPendingDelete(null);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("vaultUnexpected")),
+    onError: (err) => setError(vaultErrorCopy(err)),
   });
 
   const recoveryReset = useMutation({
@@ -85,7 +85,7 @@ export function VaultSettings() {
       setResetRecoveryKey("");
       setResetNewPassphrase("");
     },
-    onError: (err) => setError(err instanceof Error ? err.message : t("vaultUnexpected")),
+    onError: (err) => setError(vaultErrorCopy(err)),
   });
 
   // the legacy plaintext build has no vault section at all

@@ -13,11 +13,13 @@ import {
 
 import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
-import { createAppConfig } from "./config";
-import { openConnection } from "./db/connection";
+import { createAppConfig, type AppConfig } from "./config";
+import { openConnection, type Connection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
+import { createSchemaRefusalApp } from "./lib/schema-refusal";
+import { UnsupportedSchemaVersionError } from "./lib/schema-version";
 import { ensureSessionSecret } from "./lib/session-secret";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -35,7 +37,17 @@ fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
 
 const logger = new AppLogger(config.dataDir);
-const conn = openConnection(config);
+let conn: Connection;
+try {
+  conn = openConnection(config);
+} catch (error) {
+  if (error instanceof UnsupportedSchemaVersionError) {
+    // ADR-0008 §4.5: never a generic crash. Serve the Arabic update page on
+    // the shell-assigned port and stay alive so the webview can show it.
+    await serveSchemaRefusal(config, error);
+  }
+  throw error;
+}
 const store = createDrizzleStore(conn, logger);
 
 await store.setup();
@@ -139,6 +151,61 @@ function findWorkspaceRoot(): string {
     if (parent === dir) return process.cwd();
     dir = parent;
   }
+}
+
+/**
+ * Serve the standalone update page when this build is older than the
+ * database. The store, auth and router never start, so nothing touches the
+ * newer file. The shell's identity probe still passes (the token echo and the
+ * port-record publication below), so the packaged webview navigates here and
+ * the owner reads the Arabic message (ADR-0008 §4.5). Never returns: the
+ * process stays up while the owner reads the page.
+ */
+async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVersionError): Promise<never> {
+  const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
+  const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
+  if (config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
+  const portFile = path.resolve(portRecordDir, ".dokan-port");
+  const portLockDir = path.join(portRecordDir, ".dokan-port.lock");
+  const registryDir = path.join(portRecordDir, ".dokan-port.registry");
+  const refusalApp = createSchemaRefusalApp(config, error);
+
+  const server = serve(
+    { fetch: refusalApp.fetch, port, hostname: config.host },
+    async (info) => {
+      try {
+        await publishPort({
+          portFile,
+          lockDir: portLockDir,
+          registryDir,
+          pid: process.pid,
+          host: config.host,
+          port: info.port,
+        });
+      } catch (err) {
+        logger.error(
+          "SERVER_ERROR",
+          `refusal page port publication failed after binding ${info.port}`,
+          err instanceof Error ? err : new Error(String(err)),
+        );
+        process.exit(1);
+      }
+      logger.warn("SCHEMA_VERSION_REFUSED", `serving the update-required page on http://${info.address}:${info.port}`);
+    },
+  );
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    logger.error("SERVER_ERROR", `could not bind the refusal page on ${config.host}:${port}`, err);
+    process.exit(1);
+  });
+  const shutdown = () => {
+    server.close(() => {
+      void forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid }).finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  // never resolves: the event loop keeps the refusal server alive
+  return new Promise<never>(() => {});
 }
 
 // An explicitly configured port is authoritative: falling back silently

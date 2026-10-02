@@ -7,6 +7,7 @@ import "./lib/i18n";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
+import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
@@ -275,6 +276,9 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
         password,
         storeName,
         storeAddress: storeAddress || undefined,
+        // Packaged installs: the one-time token the shell put in the URL
+        // fragment. Absent in dev/e2e; the api ignores it there.
+        setupToken: readSetupToken(),
       });
       onDone();
     } catch (err) {

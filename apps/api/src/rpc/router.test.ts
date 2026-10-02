@@ -2873,11 +2873,12 @@ describe("first-time setup provisioning", () => {
     for (const close of teardown) close();
   });
 
-  const openInstance = async () => {
+  const openInstance = async (extraEnv: NodeJS.ProcessEnv = {}) => {
     const instanceDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-setup-"));
     const instanceConfig = createAppConfig({
       DOKAN_DATA_DIR: instanceDir,
       DOKAN_DB_PATH: path.join(instanceDir, "setup.db"),
+      ...extraEnv,
     });
     const instanceConn = openConnection(instanceConfig);
     const instanceStore = createDrizzleStore(instanceConn);
@@ -2982,6 +2983,39 @@ describe("first-time setup provisioning", () => {
       message: "SETUP_LOCKED",
     });
     expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+  });
+
+  it("requires the shell's one-time token in packaged builds", async () => {
+    const token = "a".repeat(64);
+    const inst = await openInstance({ DOKAN_BOOT_TOKEN: token });
+
+    // a local process that merely found the loopback port has no token
+    await expect(setupCalls(inst.client, "متطفل", "0550222222")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "SETUP_TOKEN_REQUIRED",
+    });
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "متطفل",
+        phoneNumber: "0550222222",
+        password: "pass-1234",
+        storeName: "متجر",
+        setupToken: "wrong-token",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN", message: "SETUP_TOKEN_REQUIRED" });
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+
+    // the shell's own window holds the token and provisions normally
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "مالك",
+        phoneNumber: "0550111111",
+        password: "pass-1234",
+        storeName: "متجر",
+        setupToken: token,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(1);
   });
 
   it("provisions exactly one owner when two setups race", async () => {

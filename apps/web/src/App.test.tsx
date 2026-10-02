@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
+import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
@@ -22,6 +23,7 @@ let signInThrows = false;
 /** How long a sign-in call stays in flight, so a double submit can race it. */
 let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
+let firstTimeSetupArgs: { setupToken?: string } | null = null;
 let setupError: Error | null = null;
 
 // issue #97 follow-up: the shell's preference migration
@@ -34,8 +36,9 @@ let preferenceReadCalls = 0;
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
     needsSetup: async () => ({ needsSetup, setupBlocked }),
-    firstTimeSetup: async () => {
+    firstTimeSetup: async (input: { setupToken?: string }) => {
       firstTimeSetupCalls += 1;
+      firstTimeSetupArgs = input;
       if (setupError !== null) throw setupError;
       return {};
     },
@@ -85,6 +88,7 @@ afterEach(() => {
   signInThrows = false;
   signInDelayMs = 0;
   firstTimeSetupCalls = 0;
+  firstTimeSetupArgs = null;
   setupError = null;
   sessionData = null;
   sessionPending = false;
@@ -92,6 +96,7 @@ afterEach(() => {
   preferenceReadGate = null;
   preferenceReadCalls = 0;
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 function renderWithClient(root: ReturnType<typeof createRoot>, ui: React.ReactElement, client: QueryClient): void {
@@ -175,6 +180,37 @@ describe("ownerless non-empty database (ADR-0008 §4.1)", () => {
     });
     expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="setup-blocked"]')).toBeNull();
+  });
+});
+
+describe("setup token (ADR-0008 ownership race)", () => {
+  it("forwards the shell's one-time token to the api", async () => {
+    needsSetup = true;
+    window.sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, "shell-token");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(firstTimeSetupArgs?.setupToken).toBe("shell-token");
+  });
+
+  it("sends no token outside the packaged shell", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(firstTimeSetupArgs?.setupToken).toBeUndefined();
   });
 });
 

@@ -38,7 +38,7 @@ import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import { stampSchemaVersion } from "../lib/schema-version";
+import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
 import { PartyError } from "./port";
 
@@ -825,9 +825,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
 
     // ADR-0008 §4.5: every forward migration above has run; stamp the data
-    // format this build writes. An interrupted earlier boot left the version
-    // unstamped, so the next setup re-runs the (idempotent) migrations.
-    stampSchemaVersion(conn.raw);
+    // format this build writes. The stamp is write-locked and re-reads the
+    // version first: a newer build that opened the same file meanwhile must
+    // never be overwritten with this build's older version. An interrupted
+    // earlier boot left the version unstamped, so the next setup re-runs the
+    // (idempotent) migrations.
+    stampSchemaVersionLocked(conn.raw);
   }
 
   /**

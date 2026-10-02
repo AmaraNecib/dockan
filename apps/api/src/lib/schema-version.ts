@@ -58,3 +58,22 @@ export function stampSchemaVersion(raw: Database, version = CURRENT_SCHEMA_VERSI
   }
   raw.exec(`PRAGMA user_version = ${version}`);
 }
+
+/**
+ * Re-check and stamp as one write-locked unit. `store.setup()` may have been
+ * migrating while a NEWER build opened the same file and stamped it; a bare
+ * stamp would then overwrite the newer version with ours. BEGIN IMMEDIATE
+ * holds the write lock across the read and the write, so a version that
+ * advanced past what this build supports is refused and left untouched.
+ */
+export function stampSchemaVersionLocked(raw: Database, version = CURRENT_SCHEMA_VERSION): void {
+  raw.exec("BEGIN IMMEDIATE");
+  try {
+    assertSchemaVersionSupported(raw, version);
+    stampSchemaVersion(raw, version);
+    raw.exec("COMMIT");
+  } catch (error) {
+    raw.exec("ROLLBACK");
+    throw error;
+  }
+}

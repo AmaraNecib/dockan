@@ -16,6 +16,7 @@ import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
+import { tokenMatches } from "../lib/boot-token";
 import { localDate, localDateTime } from "../lib/logger";
 
 /**
@@ -217,6 +218,17 @@ export function createRpcRouter(deps: RpcDeps) {
       // §4.1). No secret gates this: the database state does.
       if (!(await deps.store.databaseIsEmpty())) {
         throw new ORPCError("FORBIDDEN", { message: "SETUP_DATABASE_NOT_EMPTY" });
+      }
+
+      // Packaged installs only: only the shell's own webview holds the
+      // one-time boot token (injected into the initial navigation). Without
+      // this gate any local process that found the loopback port could claim
+      // a fresh install as its own owner. Dev/e2e set no boot token and keep
+      // the open gate (the server is loopback-only there).
+      if (deps.config.bootToken !== undefined) {
+        if (input.setupToken === undefined || !tokenMatches(input.setupToken, deps.config.bootToken)) {
+          throw new ORPCError("FORBIDDEN", { message: "SETUP_TOKEN_REQUIRED" });
+        }
       }
 
       // The password hash below is a deliberate CPU cost on a public endpoint;

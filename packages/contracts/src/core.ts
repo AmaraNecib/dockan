@@ -564,6 +564,10 @@ export const firstTimeSetupInputSchema = z.object({
   password: z.string().min(MIN_PASSWORD_LENGTH),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
+  // Packaged installs only: the one-time boot token the desktop shell injects
+  // into the webview's initial navigation. Absent in dev/e2e (no boot token),
+  // where the loopback-only server keeps the open gate.
+  setupToken: z.string().min(1).optional(),
 });
 
 export const firstTimeSetupOutputSchema = z.object({

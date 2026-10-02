@@ -12,6 +12,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   readSchemaVersion,
   stampSchemaVersion,
+  stampSchemaVersionLocked,
   UnsupportedSchemaVersionError,
 } from "./schema-version";
 
@@ -65,6 +66,33 @@ describe("readSchemaVersion / stampSchemaVersion", () => {
     try {
       expect(() => stampSchemaVersion(raw, 0)).toThrow(/invalid schema version/);
       expect(() => stampSchemaVersion(raw, 1.5)).toThrow(/invalid schema version/);
+    } finally {
+      raw.close();
+    }
+  });
+});
+
+describe("stampSchemaVersionLocked", () => {
+  it("stamps an older database under the write lock", () => {
+    const dir = tempDir();
+    const raw = new Database(path.join(dir, "locked-stamp.db"), { create: true });
+    try {
+      stampSchemaVersionLocked(raw);
+      expect(readSchemaVersion(raw)).toBe(CURRENT_SCHEMA_VERSION);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it("refuses a version that advanced past this build and leaves it untouched", () => {
+    const dir = tempDir();
+    const raw = new Database(path.join(dir, "locked-newer.db"), { create: true });
+    try {
+      // a newer build stamped the file after this instance opened it
+      stampSchemaVersion(raw, CURRENT_SCHEMA_VERSION + 1);
+      expect(() => stampSchemaVersionLocked(raw)).toThrow(UnsupportedSchemaVersionError);
+      // the lock + re-read refused instead of overwriting the newer version
+      expect(readSchemaVersion(raw)).toBe(CURRENT_SCHEMA_VERSION + 1);
     } finally {
       raw.close();
     }

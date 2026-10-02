@@ -45,8 +45,10 @@
 use std::io::{BufRead, Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use tauri::{App, AppHandle, Manager, WebviewWindow};
@@ -67,6 +69,12 @@ const BOOT_TOKEN_LEN: usize = 32;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const PROBE_INTERVAL: Duration = Duration::from_millis(150);
 
+/// How long one broker request may wait for its reply. The api answers well
+/// inside this even on a cold Argon2id; a child that never answers (a stuck
+/// process, a squatter's page) must not hang the shell or its shutdown
+/// (round-2 finding 5).
+const BROKER_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Everything needed to spawn (or respawn after a failed attempt) the sidecar
 /// on the shell-reserved port. Pure data: no secret ever lands here; the
 /// passphrase only exists in the IPC call and the broker's stdin pipe.
@@ -81,11 +89,14 @@ pub struct SidecarConfig {
 }
 
 /// The live sidecar plus its broker pipes (issue #141). The shell writes one
-/// JSON request line to `stdin` and reads one JSON reply line from `stdout`.
+/// JSON request line to `stdin`; a reader thread turns `stdout` lines into a
+/// channel so the request path can wait with a timeout WITHOUT holding the
+/// sidecar-state mutex (round-2 finding 5).
 pub struct Sidecar {
     child: Child,
     stdin: ChildStdin,
-    stdout: std::io::BufReader<ChildStdout>,
+    /// reply lines from the reader thread; disconnected when the child exits
+    replies: Arc<Mutex<Receiver<String>>>,
     /// true once an unlock/setup was accepted: the child then serves the app
     /// and no longer reads the broker pipe, so it must not be asked again
     served: bool,
@@ -178,8 +189,9 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         port,
         boot_token: boot_token.clone(),
     };
-    let sidecar = spawn_sidecar(&config).map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
-    let child_pid = sidecar.child.id();
+    // the SAME verified-launch helper every respawn uses (round-2 finding 3)
+    let sidecar = launch_verified_sidecar_with_reservation(&config, reservation)
+        .map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 
     let state = app.state::<SidecarState>();
     {
@@ -188,19 +200,44 @@ fn spawn_and_navigate(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         guard.sidecar = Some(sidecar);
     }
 
-    // Release the reservation so the child can bind exactly `port`. Ownership
-    // is then proven two ways, never by a file alone: the one-time token echo
-    // (only the spawned child knows the token) AND the port-record registry
-    // entry under the child's own pid (a hijacker who took the port instead
-    // would have made the child's explicit bind fail and exit — no entry).
-    drop(reservation);
-    if !wait_for_verified_health(port, &boot_token, &port_root, child_pid) {
-        return Err(format!("api on port {port} did not verify identity within {STARTUP_TIMEOUT:?}").into());
-    }
     if let Some(window) = app.get_webview_window("main") {
         navigate(window, &setup_navigation_url(port, &boot_token))?;
     }
     Ok(())
+}
+
+/// Spawn, release the reservation and verify the child owns what it serves:
+/// the one-time token echo (only the spawned child knows the token) AND the
+/// port-record registry entry under the child's own pid (a hijacker who took
+/// the port instead would have made the child's explicit bind fail and exit —
+/// no entry). Shared by the first launch and every respawn so the respawn can
+/// never skip these checks (round-2 finding 3).
+fn launch_verified_sidecar_with_reservation(
+    config: &SidecarConfig,
+    reservation: std::net::TcpListener,
+) -> Result<Sidecar, String> {
+    let sidecar = spawn_sidecar(config)?;
+    let child_pid = sidecar.child.id();
+    // Release the reservation so the child can bind exactly `config.port`.
+    drop(reservation);
+    if !wait_for_verified_health(config.port, &config.boot_token, &config.port_root, child_pid) {
+        let mut sidecar = sidecar;
+        let _ = sidecar.child.kill();
+        let _ = sidecar.child.wait();
+        return Err(format!(
+            "api on port {} did not verify identity within {STARTUP_TIMEOUT:?}",
+            config.port
+        ));
+    }
+    Ok(sidecar)
+}
+
+/// Respawn on the already-assigned port: reserve it first (a squatter now owns
+/// it -> fail loudly rather than let the window load a stranger's page), then
+/// run the same verified launch as the first boot.
+fn launch_verified_sidecar(config: &SidecarConfig) -> Result<Sidecar, String> {
+    let (_port, reservation) = reserve_port_on(config.port)?;
+    launch_verified_sidecar_with_reservation(config, reservation)
 }
 
 /// Spawn one sidecar with PIPED stdin/stdout for the broker (issue #141): the
@@ -215,7 +252,30 @@ fn spawn_sidecar(config: &SidecarConfig) -> Result<Sidecar, String> {
     let mut child = command.spawn().map_err(|err| format!("could not spawn the sidecar: {err}"))?;
     let stdin = child.stdin.take().ok_or("the sidecar stdin pipe is unavailable")?;
     let stdout = child.stdout.take().ok_or("the sidecar stdout pipe is unavailable")?;
-    Ok(Sidecar { child, stdin, stdout: std::io::BufReader::new(stdout), served: false, consumed: false })
+    // The reader thread owns stdout and pushes framed lines into the channel;
+    // when the child exits the senders drop and a waiting recv disconnects.
+    let (sender, receiver) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    Ok(Sidecar {
+        child,
+        stdin,
+        replies: Arc::new(Mutex::new(receiver)),
+        served: false,
+        consumed: false,
+    })
 }
 
 /// The webview URL for a verified sidecar. The one-time boot token rides in
@@ -261,8 +321,10 @@ fn parse_broker_reply(line: &str) -> Result<BrokerReply, String> {
     serde_json::from_str(line.trim()).map_err(|err| format!("malformed broker reply: {err}"))
 }
 
-/// The exact exchange used with the live child, generic over the pipes so
-/// cargo tests can drive it with in-memory readers and writers.
+/// The exact exchange used by the in-memory tests: one newline-framed request
+/// out, one reply line in. Kept next to the live path so the protocol is
+/// pinned without a real child.
+#[cfg(test)]
 fn exchange_on_pipes<W: Write, R: BufRead>(stdin: &mut W, stdout: &mut R, request: &str) -> Result<BrokerReply, String> {
     stdin
         .write_all(request.as_bytes())
@@ -278,40 +340,109 @@ fn exchange_on_pipes<W: Write, R: BufRead>(stdin: &mut W, stdout: &mut R, reques
     parse_broker_reply(&line)
 }
 
-/// Send one broker request to the live sidecar (respawned if a previous
-/// one-shot attempt already consumed it) and return its reply. Holds the
-/// state lock across the blocking exchange: the broker is strictly one
-/// request at a time.
-fn broker_exchange(app: &AppHandle, action: &str, payload: serde_json::Value) -> Result<BrokerReply, String> {
-    let state = app.state::<SidecarState>();
-    let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let config = guard.config.clone().ok_or("the sidecar was never started")?;
-    if guard.sidecar.as_ref().is_some_and(|sidecar| sidecar.served) {
-        return Err("the vault is already unlocked".to_string());
+/// Serializes broker commands process-wide (one sidecar per app). The
+/// sidecar-state mutex is deliberately NOT held across the reply wait, so
+/// shutdown can still kill the child (round-2 finding 5).
+static BROKER_GATE: Mutex<()> = Mutex::new(());
+
+fn write_broker_request(stdin: &mut ChildStdin, request: &str) -> Result<(), String> {
+    stdin
+        .write_all(request.as_bytes())
+        .and_then(|()| stdin.flush())
+        .map_err(|err| format!("could not reach the sidecar: {err}"))
+}
+
+/// Wait for one reply line with a deadline. The reader thread drops the
+/// sender when the child exits, so a dead child disconnects immediately; the
+/// timeout covers a child that stays alive but silent (round-2 finding 5).
+fn await_broker_reply_with_timeout(
+    replies: &Arc<Mutex<Receiver<String>>>,
+    timeout: Duration,
+) -> Result<BrokerReply, String> {
+    let line = {
+        let receiver = replies.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        receiver.recv_timeout(timeout).map_err(|err| match err {
+            mpsc::RecvTimeoutError::Timeout => "the sidecar did not answer in time".to_string(),
+            mpsc::RecvTimeoutError::Disconnected => "the sidecar closed the broker pipe".to_string(),
+        })?
+    };
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.is_empty() {
+        return Err("the sidecar closed the broker pipe".to_string());
     }
-    let needs_respawn = match guard.sidecar.as_mut() {
-        None => true,
+    parse_broker_reply(line)
+}
+
+/// Send one broker request to the live sidecar (respawned if a previous
+/// one-shot attempt already consumed it) and return its reply. Commands are
+/// serialized by `BROKER_GATE`; the sidecar-state mutex is held only for
+/// short bookkeeping, never across the reply wait.
+fn broker_exchange(app: &AppHandle, action: &str, payload: serde_json::Value) -> Result<BrokerReply, String> {
+    let _gate = BROKER_GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = app.state::<SidecarState>();
+    let config = {
+        let guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.config.clone().ok_or("the sidecar was never started")?
+    };
+    let needs_respawn = {
+        let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.sidecar.as_ref().is_some_and(|sidecar| sidecar.served) {
+            return Err("the vault is already unlocked".to_string());
+        }
         // consumed = a failed one-shot attempt already answered; exit/error
         // also forces a fresh child (the broker rejects a second request)
-        Some(sidecar) => sidecar.consumed || !matches!(sidecar.child.try_wait(), Ok(None)),
+        let needs = match guard.sidecar.as_mut() {
+            None => true,
+            Some(sidecar) => sidecar.consumed || !matches!(sidecar.child.try_wait(), Ok(None)),
+        };
+        if needs {
+            // reap the old child before the new one binds the same port
+            if let Some(mut old) = guard.sidecar.take() {
+                let _ = old.child.kill();
+                let _ = old.child.wait();
+            }
+        }
+        needs
     };
     if needs_respawn {
-        // reap the old child before the new one binds the same port
-        if let Some(mut old) = guard.sidecar.take() {
-            let _ = old.child.kill();
-            let _ = old.child.wait();
+        // the SAME verified launch as the first boot: reserve the port, then
+        // prove the child owns it (token echo + pid-keyed registry entry), so
+        // a squatter is never loaded into the window (round-2 finding 3)
+        let sidecar = launch_verified_sidecar(&config)?;
+        let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.sidecar = Some(sidecar);
+    }
+    let replies = {
+        let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let sidecar = guard.sidecar.as_mut().ok_or("the sidecar is unavailable")?;
+        write_broker_request(&mut sidecar.stdin, &broker_request_line(action, &payload))?;
+        if action != "status" {
+            sidecar.consumed = true;
         }
-        guard.sidecar = Some(spawn_sidecar(&config)?);
+        Arc::clone(&sidecar.replies)
+    };
+    // no state lock here: a shutdown kill must never queue behind this wait
+    match await_broker_reply_with_timeout(&replies, BROKER_REPLY_TIMEOUT) {
+        Ok(reply) => {
+            if reply.ok && reply.session_token.is_some() {
+                let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(sidecar) = guard.sidecar.as_mut() {
+                    sidecar.served = true;
+                }
+            }
+            Ok(reply)
+        }
+        Err(error) => {
+            // unusable child (timeout or closed pipe): kill it so shutdown and
+            // the next request never wait on it
+            let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut sidecar) = guard.sidecar.take() {
+                let _ = sidecar.child.kill();
+                let _ = sidecar.child.wait();
+            }
+            Err(error)
+        }
     }
-    let sidecar = guard.sidecar.as_mut().ok_or("the sidecar is unavailable")?;
-    let reply = exchange_on_pipes(&mut sidecar.stdin, &mut sidecar.stdout, &broker_request_line(action, &payload))?;
-    if action != "status" {
-        sidecar.consumed = true;
-    }
-    if reply.ok && reply.session_token.is_some() {
-        sidecar.served = true;
-    }
-    Ok(reply)
 }
 
 async fn run_broker_task<T: Send + 'static>(
@@ -347,6 +478,25 @@ pub async fn vault_unlock_recovery(app: AppHandle, recovery_key: String) -> Resu
     run_broker_task(move || broker_exchange(&app, "recovery", serde_json::json!({ "recoveryKey": recovery_key }))).await
 }
 
+/// Recovery-authorised passphrase reset over the pipe (round-2 finding 2):
+/// settings needs it, and broker mode refuses the HTTP route. The secret
+/// exists only in this call and on the child's stdin pipe.
+#[tauri::command]
+pub async fn vault_reset_passphrase(
+    app: AppHandle,
+    recovery_key: String,
+    new_passphrase: String,
+) -> Result<BrokerReply, String> {
+    run_broker_task(move || {
+        broker_exchange(
+            &app,
+            "reset",
+            serde_json::json!({ "recoveryKey": recovery_key, "newPassphrase": new_passphrase }),
+        )
+    })
+    .await
+}
+
 /// Tell the child the owner saved the one-time recovery key. No reply is
 /// expected, so this must never read stdout.
 #[tauri::command]
@@ -355,12 +505,35 @@ pub async fn vault_setup_saved(app: AppHandle) -> Result<(), String> {
         let state = app.state::<SidecarState>();
         let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let sidecar = guard.sidecar.as_mut().ok_or("the sidecar is unavailable")?;
-        let line = broker_request_line("setup-saved", &serde_json::json!({}));
-        sidecar
-            .stdin
-            .write_all(line.as_bytes())
-            .and_then(|()| sidecar.stdin.flush())
-            .map_err(|err| format!("could not reach the sidecar: {err}"))
+        write_broker_request(&mut sidecar.stdin, &broker_request_line("setup-saved", &serde_json::json!({})))
+    })
+    .await
+}
+
+/// End the session (round-2 finding 1). The web revokes the HTTP session
+/// first; this replaces the served child with a freshly verified one waiting
+/// on the broker pipe, so the reloaded gate can unlock again over the broker
+/// without an app restart, and the new process starts locked.
+#[tauri::command]
+pub async fn vault_logout(app: AppHandle) -> Result<(), String> {
+    run_broker_task(move || {
+        let _gate = BROKER_GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = app.state::<SidecarState>();
+        let config = {
+            let guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.config.clone().ok_or("the sidecar was never started")?
+        };
+        {
+            let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(mut old) = guard.sidecar.take() {
+                let _ = old.child.kill();
+                let _ = old.child.wait();
+            }
+        }
+        let sidecar = launch_verified_sidecar(&config)?;
+        let mut guard = state.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.sidecar = Some(sidecar);
+        Ok(())
     })
     .await
 }
@@ -424,9 +597,21 @@ fn ensure_dir(dir: PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// child bound it). The caller spawns the child and only then drops the
 /// reservation so the child can bind exactly that port.
 fn reserve_port() -> Result<(u16, std::net::TcpListener), Box<dyn std::error::Error>> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    Ok((port, listener))
+    reserve_port_on(0).map_err(|err| err.into())
+}
+
+/// Bind one specific loopback port and hold it; binding before the spawn is
+/// the PR #51 TOCTOU fix and is repeated on every respawn (round-2 finding 3),
+/// so a process that grabbed the released port fails the respawn loudly
+/// instead of receiving the desktop window.
+fn reserve_port_on(port: u16) -> Result<(u16, std::net::TcpListener), String> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|err| format!("could not reserve 127.0.0.1:{port}: {err}"))?;
+    let assigned = listener
+        .local_addr()
+        .map_err(|err| format!("could not read the reserved port: {err}"))?
+        .port();
+    Ok((assigned, listener))
 }
 
 /// One-time per-boot token (64 hex chars) that only this spawn shares with
@@ -747,6 +932,35 @@ mod tests {
     }
 
     #[test]
+    fn respawn_reservation_refuses_a_port_someone_else_holds() {
+        // round-2 finding 3: a respawn must reserve the port first, so a
+        // squatter that grabbed it can never receive the desktop window
+        let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+        let error = reserve_port_on(taken).unwrap_err();
+        assert!(error.contains(&taken.to_string()), "{error}");
+        drop(squatter);
+        // released: the same call now succeeds (the respawn path can proceed)
+        assert!(reserve_port_on(taken).is_ok());
+    }
+
+    #[test]
+    fn broker_reply_wait_times_out_instead_of_hanging() {
+        // round-2 finding 5: a child that stays alive but never answers must
+        // not block the shell; the wait is bounded and reports itself
+        let (_sender, receiver) = mpsc::channel::<String>();
+        let replies = Arc::new(Mutex::new(receiver));
+        let error = await_broker_reply_with_timeout(&replies, Duration::from_millis(30)).unwrap_err();
+        assert!(error.contains("did not answer in time"), "{error}");
+        // and a disconnected child resolves immediately (kill_sidecar path)
+        let (sender, receiver) = mpsc::channel::<String>();
+        drop(sender);
+        let replies = Arc::new(Mutex::new(receiver));
+        let error = await_broker_reply_with_timeout(&replies, Duration::from_secs(5)).unwrap_err();
+        assert!(error.contains("closed the broker pipe"), "{error}");
+    }
+
+    #[test]
     fn registry_owned_by_accepts_the_apis_own_entry() {
         let dir = std::env::temp_dir().join(format!("dokan-registry-accept-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".dokan-port.registry")).unwrap();
@@ -841,12 +1055,27 @@ mod tests {
             .unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if sender.send(line).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         {
             let mut guard = state.0.lock().unwrap();
             guard.sidecar = Some(Sidecar {
                 child,
                 stdin,
-                stdout: std::io::BufReader::new(stdout),
+                replies: Arc::new(Mutex::new(receiver)),
                 served: false,
                 consumed: false,
             });

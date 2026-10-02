@@ -2,7 +2,7 @@ import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
 import { z } from "zod";
 
 import { tError } from "./i18n";
-import { brokerAvailable, brokerCommands, invokeBroker, type BrokerInvokeArgs, type BrokerReply } from "./vault-broker";
+import { brokerAvailable, brokerCommands, invokeBroker, invokeBrokerVoid, type BrokerInvokeArgs, type BrokerReply } from "./vault-broker";
 
 /**
  * The vault gate's browser client (ADR-0008 §4.6). All vault routes are plain
@@ -273,7 +273,7 @@ export async function vaultSetup(
 export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
   if (!broker) return;
   try {
-    await invokeBroker(brokerCommands.setupSaved);
+    await invokeBrokerVoid(brokerCommands.setupSaved);
   } catch {
     /* the vault is committed; a lost ack only leaves the child on the key screen */
   }
@@ -354,9 +354,17 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
 
 /**
  * Recovery-authorised reset (finding C4): the recovery key replaces the
- * forgotten passphrase without needing the current one.
+ * forgotten passphrase without needing the current one. In broker mode the
+ * settings UI routes this through the shell's pipe (round-2 finding 2), since
+ * the HTTP route is refused there.
  */
-export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string): Promise<string> {
+export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<string> {
+  if (broker) {
+    const reply = await callBroker(brokerCommands.reset, { recoveryKey, newPassphrase });
+    if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    return reply.sessionToken;
+  }
   const result = await request(
     "/api/vault/reset-passphrase",
     { method: "POST", body: JSON.stringify({ recoveryKey, newPassphrase }) },

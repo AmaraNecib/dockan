@@ -273,9 +273,15 @@ key-saved acknowledgement): the API then refuses the HTTP credential routes
 (`VAULT_BROKER_REQUIRED`), so the one secret that decrypts everything never
 crosses the network stack, argv, the environment or disk. The status route
 advertises `broker: true` and the gate UI uses IPC whenever it sees that flag
-(the browser keeps HTTP). Keeping all cryptography in one implemented module
-(rather than duplicating Argon2id in Rust) is what makes the transports
-provably identical.
+(the browser keeps HTTP). A recovery-authorised reset also has a pipe command
+(`vault_reset_passphrase`) because settings needs it while the HTTP route is
+refused. Logout replaces the one-shot child with a freshly verified sibling
+(`vault_logout`), so the reloaded gate can unlock over the pipe again without
+an app restart, and every respawn repeats the reservation plus token/registry
+identity checks the first launch performs. The reply wait is bounded by a
+timeout and never holds the state lock, so a silent child cannot block
+shutdown. Keeping all cryptography in one implemented module (rather than
+duplicating Argon2id in Rust) is what makes the transports provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to
 the client; the router accepts it over the `x-vault-session` header as the

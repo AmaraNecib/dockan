@@ -18,7 +18,9 @@ pub fn run() {
             desktop::vault_unlock,
             desktop::vault_setup,
             desktop::vault_unlock_recovery,
-            desktop::vault_setup_saved
+            desktop::vault_reset_passphrase,
+            desktop::vault_setup_saved,
+            desktop::vault_logout
         ])
         .setup(desktop::setup)
         .on_window_event(|window, event| {

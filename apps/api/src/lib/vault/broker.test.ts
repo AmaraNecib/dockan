@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
+import { Database } from "bun:sqlite";
+
 import { readVaultBackupBundle } from "./backup";
 
 /**
@@ -270,6 +272,64 @@ describe("desktop shell vault broker", () => {
     const setupReply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string };
     expect(setupReply.ok).toBe(true);
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  }, BROKER_TIMEOUT_MS);
+
+  it("resets the passphrase from a recovery key over the pipe (round-2 finding 2)", async () => {
+    child = spawnBroker(dir, port);
+    const firstLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const setupReply = JSON.parse(await firstLine()) as { recoveryKey: string };
+    send(child, "ack");
+    await waitForHealth(port);
+    await stopAndWait();
+
+    // settings resets from the recovery key while the vault is open; broker
+    // mode refuses the HTTP route, so the reset must work on the pipe
+    child = spawnBroker(dir, port);
+    const resetLine = lineReader(child);
+    send(
+      child,
+      JSON.stringify({ action: "reset", recoveryKey: setupReply.recoveryKey, newPassphrase: "a brand new passphrase" }),
+    );
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const resetReply = JSON.parse(await resetLine()) as { ok: boolean; sessionToken?: string };
+    expect(resetReply.ok).toBe(true);
+    expect(resetReply.sessionToken?.length).toBeGreaterThan(20);
+    await waitForHealth(port);
+    await stopAndWait();
+
+    // the new passphrase is the one that unlocks now
+    child = spawnBroker(dir, port);
+    const unlockLine = lineReader(child);
+    send(child, JSON.stringify({ action: "unlock", passphrase: "a brand new passphrase" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const unlockReply = JSON.parse(await unlockLine()) as { ok: boolean; sessionToken?: string };
+    expect(unlockReply.ok).toBe(true);
+    expect(unlockReply.sessionToken?.length).toBeGreaterThan(20);
+  }, BROKER_TIMEOUT_MS);
+
+  it("reports plaintext files that could not be removed in the setup reply (round-2 finding 4)", async () => {
+    // an unencryptable legacy backup: the sweep reports it instead of hiding it
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const stubborn = path.join(backupsDir, "dokan-2020-01-02.db");
+    const legacy = new Database(stubborn, { create: true });
+    legacy.exec("CREATE TABLE t(a TEXT)");
+    legacy.exec("PRAGMA user_version = 99");
+    legacy.close();
+
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker setup contract carries the cleanup list
+    const reply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string; plaintextRemaining?: string[] };
+    expect(reply.ok).toBe(true);
+    expect(reply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    // the warning data rides the one reply the owner sees
+    expect(reply.plaintextRemaining).toEqual([stubborn]);
+    send(child, "ack");
+    await waitForHealth(port);
   }, BROKER_TIMEOUT_MS);
 
   it("keeps the passphrase out of the sidecar's argv and environment (issue #141)", async () => {

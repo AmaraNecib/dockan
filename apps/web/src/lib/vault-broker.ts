@@ -44,7 +44,9 @@ export const brokerCommands = {
   unlock: "vault_unlock",
   setup: "vault_setup",
   recovery: "vault_unlock_recovery",
+  reset: "vault_reset_passphrase",
   setupSaved: "vault_setup_saved",
+  logout: "vault_logout",
 } as const;
 
 /** One decoded broker reply; the API's stable `code` carries the failure. */
@@ -62,7 +64,10 @@ const brokerReplySchema = z.object({
 export type BrokerReply = z.infer<typeof brokerReplySchema>;
 
 /** The payloads the gate sends over the broker; each command names its own. */
-export type BrokerInvokeArgs = { passphrase: string } | { recoveryKey: string };
+export type BrokerInvokeArgs =
+  | { passphrase: string }
+  | { recoveryKey: string }
+  | { recoveryKey: string; newPassphrase: string };
 
 /**
  * Invoke one broker command and decode its reply. A rejection (the shell has
@@ -75,4 +80,11 @@ export async function invokeBroker(command: string, args?: BrokerInvokeArgs): Pr
   const decoded = brokerReplySchema.safeParse(await invoke(command, args));
   if (!decoded.success) throw new Error("the desktop broker returned an unexpected reply");
   return decoded.data;
+}
+
+/** Fire a broker command whose reply is not an envelope (acks, restart). */
+export async function invokeBrokerVoid(command: string): Promise<void> {
+  const invoke = tauriInvoke();
+  if (invoke === undefined) throw new Error("the desktop broker is not available");
+  await invoke(command);
 }

@@ -280,9 +280,10 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 const brokerRequestSchema = z.object({
-  action: z.enum(["unlock", "recovery", "setup", "status"]),
+  action: z.enum(["unlock", "recovery", "setup", "status", "reset"]),
   passphrase: z.string().optional(),
   recoveryKey: z.string().optional(),
+  newPassphrase: z.string().optional(),
 });
 
 /** The vault status payload the pipe and the HTTP status route both serve. */
@@ -353,8 +354,8 @@ async function readStdinLine(): Promise<string | undefined> {
   return stdinLineReader();
 }
 
-function brokerFailure(action: "unlock" | "recovery" | "setup", error: Error): BrokerReply {
-  const wrongCode: VaultErrorCode = action === "recovery" ? "VAULT_WRONG_RECOVERY" : "VAULT_WRONG_PASSPHRASE";
+function brokerFailure(action: "unlock" | "recovery" | "setup" | "reset", error: Error): BrokerReply {
+  const wrongCode: VaultErrorCode = action === "unlock" ? "VAULT_WRONG_PASSPHRASE" : "VAULT_WRONG_RECOVERY";
   if (error instanceof VaultAuthenticationError) return { ok: false, code: wrongCode };
   if (error instanceof VaultLockedError) {
     return { ok: false, code: "VAULT_LOCKED", retryAfterMs: error.retryAfterMs };
@@ -422,19 +423,49 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
         // single-request anyway
         vault.finishSetupBootstrap();
         const session = await vault.commitSetup();
-        // the recovery key reaches the shell first: cleanup and the first backup
-        // are retried on later unlocks and must never delay or fail the one-time reply
-        writeBrokerReply({ ok: true, sessionToken: session.token, sessionGeneration: session.generation, recoveryKey: prepared.recoveryKey });
-        const cleanup = await vault.cleanupLegacyPlaintext();
-        if (cleanup.plaintextRemaining.length > 0) {
-          logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.plaintextRemaining.join(", ")}`);
+        // Cleanup runs BEFORE the reply so the paths that could not be removed
+        // ride the one reply the owner sees (round-2 finding 4); a cleanup
+        // failure is logged but must not fail the committed setup.
+        let plaintextRemaining: string[] = [];
+        try {
+          const cleanup = await vault.cleanupLegacyPlaintext();
+          plaintextRemaining = cleanup.plaintextRemaining;
+          if (plaintextRemaining.length > 0) {
+            logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${plaintextRemaining.join(", ")}`);
+          }
+        } catch (error) {
+          logger.error(
+            "VAULT_SETUP_CLEANUP_FAILED",
+            "plaintext files could not be removed after vault setup",
+            error instanceof Error ? error : new Error(String(error)),
+          );
         }
+        // the recovery key reaches the shell together with any plaintext warning
+        writeBrokerReply({
+          ok: true,
+          sessionToken: session.token,
+          sessionGeneration: session.generation,
+          recoveryKey: prepared.recoveryKey,
+          plaintextRemaining,
+        });
         // the first daily backup needs the committed header, which now exists
         await runVaultDailyBackup();
         // wait for the owner's acknowledgement (the shell shows the key); a
         // closed pipe means the app quit on the key screen, which is safe: the
         // vault exists and the key can be regenerated after unlocking
         await readStdinLine();
+        return;
+      }
+      if (request.action === "reset") {
+        const newPassphrase = request.newPassphrase ?? "";
+        if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
+          writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT" });
+          process.exit(1);
+        }
+        // recovery-authorised reset (round-2 finding 2): the settings UI needs
+        // it while the vault is open, and broker mode refuses the HTTP route
+        const session = await vault.setPassphraseFromRecovery(request.recoveryKey ?? "", newPassphrase);
+        writeBrokerReply({ ok: true, sessionToken: session.token, sessionGeneration: session.generation });
         return;
       }
       const session =

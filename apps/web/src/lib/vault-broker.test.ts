@@ -4,6 +4,7 @@ import {
   acknowledgeVaultSetup,
   fetchVaultStatus,
   readVaultSessionToken,
+  resetVaultPassphrase,
   VaultRequestError,
   vaultSetup,
   vaultUnlock,
@@ -156,6 +157,19 @@ describe("desktop stdin broker transport (issue #141)", () => {
     const token = await vaultUnlockWithRecovery("ABCD-EFGH-IJKL", true);
     expect(token).toBe("recovery-token");
     expect(calls[0]).toEqual({ command: "vault_unlock_recovery", args: { recoveryKey: "ABCD-EFGH-IJKL" } });
+    expect(httpCalls).toBe(0);
+  });
+
+  it("resets the passphrase from a recovery key over the broker for settings (round-2 finding 2)", async () => {
+    installTauri();
+    responder = () => ({ ok: true, sessionToken: "reset-token", sessionGeneration: 6 });
+    const token = await resetVaultPassphrase("ABCD-EFGH-IJKL", "a brand new passphrase", true);
+    expect(token).toBe("reset-token");
+    expect(calls[0]).toEqual({
+      command: "vault_reset_passphrase",
+      args: { recoveryKey: "ABCD-EFGH-IJKL", newPassphrase: "a brand new passphrase" },
+    });
+    expect(readVaultSessionToken()).toBe("reset-token");
     expect(httpCalls).toBe(0);
   });
 

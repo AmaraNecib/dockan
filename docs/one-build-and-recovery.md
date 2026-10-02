@@ -59,8 +59,11 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 
 ### 4.2 First run
 
-- On a fresh database, generate a strong random **session signing secret** and store
-  it in `settings` (e.g. `auth_secret`). Never regenerate it on later runs.
+- On a fresh database — **or an existing database with no stored secret** (a shop
+  migrating from a per-customer build) — generate a strong random **session signing
+  secret** and store it in `settings` (e.g. `auth_secret`). Never regenerate it once
+  present. A migration therefore invalidates old sessions exactly once and must offer
+  a recovery code at that moment.
 - If the database is copied/restored, the secret comes with it → sessions survive.
 - The secret is a normal row in the portable database; the stick is the boundary
   (see §7).
@@ -73,14 +76,20 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
   removes the "is SHA-256 enough?" question). Never store the plaintext.
 - Rules: single-use; never expires while unused; **max 5** active codes.
 - Using a code:
-  - consumes it (mark used), then
-  - if it was the **last** active code, immediately generate and show a replacement.
+  - consumes it and, when it was the **last** active code, generates its replacement
+    **in the same transaction** (a partial failure must not leave the owner with no
+    active code); then
+  - revokes every existing session (see 4.4).
 - Generating more: only while authenticated as the owner (re-enter the password).
   At the 5-code limit, refuse with a clear message (or let the owner delete one).
 - Never log a code; never show it again after the generation screen.
 - **Rate-limit** attempts at the recovery/reset screens (per install, with backoff),
   and log failed attempts to the activity log. Without this, an attacker with local
   access can guess short codes.
+- **Entropy:** codes are long random values (≥ 128 bits, e.g. 20+ base32 characters),
+  so an offline guess against a copied stick is infeasible even against Argon2id.
+- **Attempt limit:** at most 5 failed redemptions, then a lockout with backoff — the
+  unauthenticated redemption flow needs the same limit as the authenticated one.
 
 ### 4.4 Vendor fallback (challenge–response)
 
@@ -101,6 +110,18 @@ breaks the ability to reset an old install.
 rotation runbook is written. Losing a private key means installs that accept only
 that version can never be reset through the vendor path again.
 
+**Single-use challenges.** The app stores the challenge nonce it displayed and accepts
+a matching signed token **once**; a consumed nonce is rejected, so a still-valid token
+cannot be replayed. Tokens also carry a short expiry (e.g. 24h).
+
+**Compromised keys.** If a private key is compromised, the vendor stops signing with
+that version for new builds but must keep it to reset the existing installs that trust
+it; because a token is only accepted against a live, single-use challenge, the window
+is bounded. Document this trade-off in the rotation runbook.
+
+**Session revocation.** Both recovery paths revoke **every** existing session when the
+password changes — someone holding a pre-reset session must not keep access.
+
 ### 4.5 Schema version and import
 
 - Store a **schema version** in the database (`PRAGMA user_version` or a `settings`
@@ -109,7 +130,9 @@ that version can never be reset through the vendor path again.
   version; newer → refuse with a clear Arabic message; run `PRAGMA quick_check` on an
   imported file first.
 - Import is a first-class action: back up the current database, verify integrity,
-  check the version, show a preview, then swap.
+  check the version, show a preview, then **close the running SQLite connection and
+  checkpoint the WAL**, swap the file, and reopen (re-running migrations). Replacing
+  the file under a live connection is not acceptable.
 
 ### 4.6 Optional later: portable vault
 

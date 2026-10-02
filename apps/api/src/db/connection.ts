@@ -29,6 +29,12 @@ export function openConnection(config: AppConfig): Connection {
 
   if (driver === "sqlite") {
     const sqlite = new Database(config.db.path, { create: true });
+    // Wait for a concurrent writer BEFORE the version read below: the read
+    // runs on a fresh database that may still be in rollback mode, and a
+    // busy writer there would otherwise surface as SQLITE_BUSY instead of the
+    // real answer. busy_timeout is connection state, not a disk write, so it
+    // is safe to set ahead of the gate.
+    sqlite.exec("PRAGMA busy_timeout = 5000;");
     // Import/restore safety FIRST (ADR-0008 §4.5): the check only reads the
     // header, so it must run before any pragma that writes. On read-only
     // media `journal_mode = WAL` would throw SQLITE_READONLY before the gate
@@ -43,10 +49,6 @@ export function openConnection(config: AppConfig): Connection {
     }
     sqlite.exec("PRAGMA journal_mode = WAL;");
     sqlite.exec("PRAGMA foreign_keys = ON;");
-    // Separate app processes may briefly contend while SQLite serializes a
-    // database write (notably invoice-number allocation). Wait for the writer
-    // rather than turning a normal concurrent request into SQLITE_BUSY.
-    sqlite.exec("PRAGMA busy_timeout = 5000;");
     const db = drizzle(sqlite, { schema });
     return {
       db,

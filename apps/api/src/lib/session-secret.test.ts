@@ -31,7 +31,10 @@ import {
  */
 let cleanups: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups) cleanup();
+  // LIFO: resources are released in reverse acquisition order, so every
+  // connection closes before the temp dir it lives in is removed (Windows
+  // refuses to delete an open database file).
+  for (const cleanup of cleanups.reverse()) cleanup();
   cleanups = [];
 });
 
@@ -136,6 +139,23 @@ describe("ensureSessionSecret", () => {
     }
   });
 
+  it("keeps the regenerated secret even when the warning logger throws", async () => {
+    const dir = tempDir();
+    const conn = openTestConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
+    const store = createDrizzleStore(conn);
+    await store.setup();
+    await store.setSetting(SESSION_SECRET_SETTING_KEY, "short-secret");
+    const logger = { warn: () => { throw new Error("log-boom"); } };
+
+    // The warning is emitted AFTER the transaction commits, so a failed log
+    // write cannot roll the secret back (a full disk must not strand boot
+    // with the damaged value still in place).
+    await expect(ensureSessionSecret(store, logger)).rejects.toThrow("log-boom");
+    const stored = await store.getSetting(SESSION_SECRET_SETTING_KEY);
+    expect(stored).toBeDefined();
+    expect(isStrongSessionSecret(stored ?? "")).toBe(true);
+  });
+
   it("converges on one secret across two processes opening the same fresh database", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "test.db");
@@ -182,7 +202,7 @@ console.log(secret);
     // SAFETY: COUNT(*) returns one row with a numeric count
     const rows = verify.raw.query("SELECT COUNT(*) AS count FROM settings WHERE key = ?").get(SESSION_SECRET_SETTING_KEY) as { count: number };
     expect(rows.count).toBe(1);
-  });
+  }, 15_000);
 
   it("migrates a pre-universal database once, with no recovery credential", async () => {
     const dir = tempDir();

@@ -36,12 +36,15 @@ fn main() {
     // would never re-run this script when the API changes.
     println!("cargo:rerun-if-changed=../../api/src");
     println!("cargo:rerun-if-changed=../../api/package.json");
+    println!("cargo:rerun-if-changed=../../api/tsconfig.json");
     println!("cargo:rerun-if-changed=../../../packages/contracts/src");
     // the contracts package.json carries the exports map the sidecar bundles
     println!("cargo:rerun-if-changed=../../../packages/contracts/package.json");
     println!("cargo:rerun-if-changed=../../../bun.lock");
     // the root tsconfig feeds the API build (paths/options)
     println!("cargo:rerun-if-changed=../../../tsconfig.base.json");
+    // the root package.json pins the workspace + package manager the build uses
+    println!("cargo:rerun-if-changed=../../../package.json");
     // Replacing the staged binary (e.g. the release pipeline just compiled it)
     // must invalidate the stamp, so track the binary itself too.
     println!("cargo:rerun-if-changed={}", sidecar.display());
@@ -49,10 +52,12 @@ fn main() {
     let input_paths = [
         manifest_dir.join("../../api/src"),
         manifest_dir.join("../../api/package.json"),
+        manifest_dir.join("../../api/tsconfig.json"),
         manifest_dir.join("../../../packages/contracts/src"),
         manifest_dir.join("../../../packages/contracts/package.json"),
         manifest_dir.join("../../../bun.lock"),
         manifest_dir.join("../../../tsconfig.base.json"),
+        manifest_dir.join("../../../package.json"),
     ];
     let sources = fingerprint(&input_paths);
     let stamp_path = sidecar.with_extension("stamp");

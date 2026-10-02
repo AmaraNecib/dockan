@@ -59,6 +59,9 @@ export function createSetupThrottle(options: SetupThrottleOptions = {}): SetupTh
 
     recordAttempt(): void {
       const now = clockNow();
+      // While locked, an attempt is a no-op: hammering cannot extend the
+      // lockout, which stays bounded by construction.
+      if (lockedUntil > now) return;
       // decay: an attempt trail older than the window is not a burst
       if (firstAttemptAt !== null && now - firstAttemptAt > windowMs) {
         attempts = 0;

@@ -392,6 +392,25 @@ describe("auth transport failures stay calm (issue #100)", () => {
     expect(host.querySelector('[data-testid="forgot-password"]')).toBeNull();
   });
 
+  it("a locked setup names the lockout on the form", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_LOCKED");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_LOCKED"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(firstTimeSetupCalls).toBe(1);
+    // still the setup form: the owner waits and retries there
+    expect(host.querySelector('[data-testid="login-submit"]')).toBeNull();
+  });
+
   it("clears a stale field error as soon as the owner corrects that field", async () => {
     needsSetup = false;
     const host = await mountAuthGate();

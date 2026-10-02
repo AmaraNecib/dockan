@@ -85,11 +85,22 @@ describe("createSetupThrottle", () => {
     expect(tuned.check().allowed).toBe(true);
   });
 
-  it("never extends the lockout past one window from the last attempt", () => {
+  it("never extends the lockout while locked (bounded by construction)", () => {
     for (let i = 0; i < MAX_ATTEMPTS; i++) attempt();
-    const retryAfter = throttle.check().retryAfterMs;
-    // hammering recordAttempt from a parallel path cannot stretch the window
-    for (let i = 0; i < MAX_ATTEMPTS * 4; i++) attempt();
-    expect(throttle.check().retryAfterMs).toBeLessThanOrEqual(retryAfter);
+    const deadline = now + LOCKOUT_MS;
+    expect(throttle.check().retryAfterMs).toBe(LOCKOUT_MS);
+
+    // hammer with an ADVANCING clock: attempts while locked are no-ops, so
+    // the deadline must not move forward
+    for (let i = 0; i < MAX_ATTEMPTS * 4; i++) {
+      now += 1_000;
+      attempt();
+    }
+    expect(throttle.check().retryAfterMs).toBe(deadline - now);
+    expect(throttle.check().retryAfterMs).toBeLessThan(LOCKOUT_MS);
+
+    // and the original deadline still lifts it
+    now = deadline + 1;
+    expect(throttle.check()).toEqual({ allowed: true, retryAfterMs: 0 });
   });
 });

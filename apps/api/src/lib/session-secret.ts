@@ -45,17 +45,23 @@ export function generateSessionSecret(): string {
 export async function ensureSessionSecret(store: StorePort, logger?: SessionSecretLogger): Promise<string> {
   const existing = await store.getSetting(SESSION_SECRET_SETTING_KEY);
   if (existing !== undefined && isStrongSessionSecret(existing)) return existing;
-  return store.withTransactionImmediate(async (tx) => {
+  let damaged: string | undefined;
+  const secret = await store.withTransactionImmediate(async (tx) => {
     const current = await tx.getSetting(SESSION_SECRET_SETTING_KEY);
     if (current !== undefined && isStrongSessionSecret(current)) return current;
-    if (current !== undefined) {
-      logger?.warn(
-        "SESSION_SECRET_REGENERATED",
-        `stored ${SESSION_SECRET_SETTING_KEY} is empty, short or malformed (${current.length} chars); generating a new one (existing sessions invalidate once)`,
-      );
-    }
+    damaged = current;
     const generated = generateSessionSecret();
     await tx.setSetting(SESSION_SECRET_SETTING_KEY, generated);
     return generated;
   });
+  // Warning AFTER the transaction: AppLogger appends synchronously, and a
+  // full disk must not roll the committed secret back (or fail boot from
+  // inside the unit).
+  if (damaged !== undefined) {
+    logger?.warn(
+      "SESSION_SECRET_REGENERATED",
+      `stored ${SESSION_SECRET_SETTING_KEY} is empty, short or malformed (${damaged.length} chars); generating a new one (existing sessions invalidate once)`,
+    );
+  }
+  return secret;
 }

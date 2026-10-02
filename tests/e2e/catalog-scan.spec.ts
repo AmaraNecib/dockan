@@ -176,6 +176,24 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بلا حركة/ })).toBeVisible();
+
+  // 8. a PLAIN scan's filled draft survives the same tab switch: only the
+  //    stocked choice discards a draft (there is no required stock to protect)
+  await page.keyboard.type("UNKNOWN-557", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create").click();
+  await page.getByTestId("item-name").fill("منتج عادي بمسودة");
+  await page.getByLabel("سعر الشراء (دج)").fill("60");
+  await page.getByLabel("سعر البيع (دج)").fill("90");
+  await openItemsTab(page, "products");
+  await openItemsTab(page, "add");
+  await expect(page.getByTestId("item-name")).toHaveValue("منتج عادي بمسودة");
+  await expect(page.getByTestId("item-barcode")).toHaveValue("UNKNOWN-557");
+  await expect(page.getByTestId("initial-stock")).not.toHaveAttribute("aria-required", "true");
+  await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
+  await expect(page.getByRole("row", { name: /منتج عادي بمسودة/ })).toBeVisible();
 });
 
 test("stale scan lookups never overwrite newer results", async ({ page }) => {

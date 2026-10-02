@@ -106,15 +106,15 @@ export function ItemsPage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
-  /** A scan session lives and dies with the add tab that opened it: leaving
-   * ends it. The seed, its required-stock mode, AND the filled draft go
-   * together — keeping the draft would let a later save drop the opening stock
-   * the scan choice required, and keeping the requirement would refuse a form
-   * the operator reasonably reads as plain. */
+  /** A scan session ends when the add tab is left. The seed always goes; the
+   * filled draft goes only when the scan's choice REQUIRED opening stock —
+   * otherwise that draft could be saved later without the stock the choice
+   * promised. A plain scan's draft is ordinary work and survives the switch,
+   * exactly like a hand-started draft. */
   function selectTab(next: ItemsTab) {
     if (next !== "add" && formSeed !== null) {
       setFormSeed(null);
-      setFormResetKey((key) => key + 1);
+      if (formSeed.withStock) setFormResetKey((key) => key + 1);
     }
     setTab(next);
   }

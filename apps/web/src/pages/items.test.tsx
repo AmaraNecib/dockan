@@ -607,6 +607,36 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     expect(createWithStockInputs.length).toBe(0);
   });
 
+  it("keeps a plain scan's filled draft across a tab switch, unlike a stocked one", async () => {
+    // the plain create choice carries no required stock, so its filled draft is
+    // ordinary unsaved work the tab switch must not throw away
+    await mount();
+    await scanUnknown("UNKNOWN-PLAIN-1");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-PLAIN-1");
+
+    setInput("item-name", "مسح عادي بمسودة");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+
+    // the draft survived, and the plain form carries no required-stock signal
+    expect(inputByTestId("item-name").value).toBe("مسح عادي بمسودة");
+    expect(inputByTestId("item-barcode").value).toBe("UNKNOWN-PLAIN-1");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBeNull();
+
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "مسح عادي بمسودة", costPrice: 100, sellingPrice: 180 });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
   it("marks the seeded stock field required and the plain one optional", async () => {
     await openStockSeedForm("UNKNOWN-STOCK-A11Y");
     const seeded = inputByTestId("initial-stock");

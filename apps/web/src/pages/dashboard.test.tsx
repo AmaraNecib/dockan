@@ -363,6 +363,13 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(await waitFor(() => page.error() !== null)).toBe(true);
     expect(page.error()?.getAttribute("role")).toBe("alert");
     expect(page.error()?.textContent).toContain(i18n.t("dashboardError"));
+    // The panel's progress read only starts after the preferences read lands,
+    // and the panel shows no skeleton while it waits, so a bare skeleton count
+    // can read 0 before the progress query has even started. Wait for that read
+    // to settle (the panel only renders once its data arrives) before reading
+    // the count, so this asserts the finished page rather than a half-mounted
+    // one (issue #136, Greptile #137).
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
     expect(page.skeletons().length).toBe(0);
     await page.unmount();
   });

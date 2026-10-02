@@ -28,6 +28,8 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
       // exact keys matching the mounted queries (a bare prefix string does not
       // reliably refetch the orpc-generated `["path", { input, type }]` keys)
       queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: {} }) }),
+      // the shell badge and dashboard notice read this aggregate (issue #118)
+      queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
       queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
       queryClient.invalidateQueries({ queryKey: ["itemsList"] }),
     ]);

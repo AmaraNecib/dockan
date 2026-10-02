@@ -25,6 +25,7 @@ mock.module("@tanstack/react-router", () => ({
 mock.module("@/lib/rpc", () => ({
   orpc: {
     returnsList: { queryKey: ({ input }: { input?: { invoiceId?: string } }) => ["returnsList", input ?? {}] },
+    returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
     activitiesList: { queryKey: () => ["activitiesList"] },
     invoicesList: { queryKey: () => ["invoicesList"] },
     returnsAccept: {

@@ -217,6 +217,8 @@ export interface StorePort {
   insertReturnLine(line: ReturnLineInsert): Promise<void>;
   /** full return with lines, newest-first; optional invoice scope */
   listReturns(filters: { invoiceId?: string }): Promise<ReturnDetail[]>;
+  /** count of PENDING_REVIEW returns (issue 118); a SQL aggregate, never a list sum */
+  pendingReturnsCount(): Promise<number>;
   getReturnDetail(returnId: string): Promise<ReturnDetail | undefined>;
   /** return header joined to its invoice identity (internal + diagnostics) */
   getReturnHeader(returnId: string): Promise<ReturnDetail | undefined>;

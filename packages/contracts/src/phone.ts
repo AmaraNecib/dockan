@@ -7,7 +7,11 @@
 const MOBILE_RE = /^(?:(\+213)|(00213)|(0)|(213))?([5-7]\d{8})$/;
 
 export function normalizeAlgerianPhone(raw: string): string | null {
-  const cleaned = raw.replace(/[\s.()-]/g, "");
+  // Arabic-Indic and Extended Arabic-Indic digits are what an Arabic keyboard
+  // produces by default; fold them to ASCII before matching so ٠٥٥٠١٢٣١٢٣ and
+  // 0550123123 are one identity and the owner can never be locked out by the
+  // numerals of the language the app is written in (issue #108).
+  const cleaned = foldArabicDigits(raw).replace(/[\s.()-]/g, "");
   const match = cleaned.match(MOBILE_RE);
   const local = match?.[5];
   if (local === undefined) return null;

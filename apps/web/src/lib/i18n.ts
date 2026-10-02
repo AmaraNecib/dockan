@@ -109,6 +109,10 @@ const resources = {
       dashboardCategoriesCount: "عدد التصنيفات",
       dashboardLowStock: "منتجات على وشك النفاد",
       dashboardLowStockEmpty: "لا توجد منتجات منخفضة حالياً",
+      // issue #118 — a pending return is invisible money until accepted
+      dashboardPendingReturns: "مرتجعات قيد المراجعة",
+      dashboardPendingReturnsHint: "يوجد {{count}} مرجوع قيد المراجعة لا يؤثر على الأرصدة حتى قبوله.",
+      dashboardPendingReturnsAction: "مراجعة المرتجعات",
       // issue #97 — getting-started checklist
       onboardingTitle: "خطواتك الأولى",
       onboardingHint: "أربع خطوات بسيطة لتشغيل متجرك.",
@@ -441,6 +445,8 @@ const resources = {
       invoiceTotal: "الإجمالي",
       invoicePaid: "المدفوع",
       invoiceRemaining: "المتبقي",
+      // issue #126 — notes live on the invoice detail screen, never the print
+      invoiceNotes: "ملاحظات",
       pmtTitle: "سجل الدفعات",
       pmtEmpty: "لا توجد دفعات بعد",
       pmtDate: "التاريخ",
@@ -503,6 +509,12 @@ const resources = {
       returnsDebtOffsetApplied: "خصم من الدين (مطبّق)",
       returnsDebtOffsetNotApplied: "خصم من الدين (لم يُطبّق)",
       returnsDebtAppliesOnAccept: "خصم الدين يُطبّق عند قبول المرجوع — الفاتورة تبقى مدينة حتى ذلك الحين",
+      // issue #118 — a pending return does not move the balance until accepted,
+      // so the invoice screen and the shell must say so instead of staying silent
+      returnsPendingNotice: "يوجد {{count}} مرجوع قيد المراجعة. لا يتغيّر المتبقي حتى قبوله.",
+      returnsPendingCountLabel: "قيد المراجعة: {{count}}",
+      returnsReviewedCountLabel: "تمت مراجعتها: {{count}}",
+      returnsPendingBadgeLabel: "قيد المراجعة: {{count}}",
       returnsCashWarning: "تنبيه: المبلغ النقدي ({{paid}} دج المحصل في الفاتورة) يتجاوز ما حُصّل فعلاً — القرار لك",
       returnsInvalidCash: "أدخل مبلغاً نقدياً صحيحاً ضمن قيمة المرجوع",      returnsStatus: "الحالة",
       returnsStatus_PENDING_REVIEW: "قيد المراجعة",

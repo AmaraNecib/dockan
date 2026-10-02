@@ -62,13 +62,19 @@ afterEach(() => {
  * Every nav target gets a route so Link resolution never falls back to an
  * error; nothing else from the app graph is imported.
  */
-async function mountSidebar(collapsed: boolean): Promise<HTMLElement> {
+async function mountSidebar(collapsed: boolean, pendingReturnsCount = 0): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
   const rootRoute = createRootRoute({
     component: () => (
-      <AppSidebar collapsed={collapsed} activeKey="sale" user={{ name: "مالك", phone: null }} onExpand={() => {}} />
+      <AppSidebar
+        collapsed={collapsed}
+        activeKey="sale"
+        user={{ name: "مالك", phone: null }}
+        pendingReturnsCount={pendingReturnsCount}
+        onExpand={() => {}}
+      />
     ),
   });
   const routes = NAV_GROUPS.flatMap((group) =>
@@ -259,5 +265,30 @@ describe("AppSidebar accessible names (issue #94)", () => {
     const salesLink = linkFor(host, "/sale");
     expect(salesLink?.textContent).toBe("");
     expect(salesLink?.getAttribute("aria-current")).toBe("page");
+  });
+});
+
+describe("AppSidebar pending-returns badge (issue #118)", () => {
+  it("shows the pending count as a badge on the returns link", async () => {
+    const host = await mountSidebar(false, 2);
+    const badge = host.querySelector('[data-testid="nav-returns-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("2");
+    // the badge rides the «المرتجعات» link, not another one
+    expect(linkFor(host, "/returns")?.querySelector('[data-testid="nav-returns-badge"]')).not.toBeNull();
+  });
+
+  it("shows no badge when nothing is pending", async () => {
+    const host = await mountSidebar(false, 0);
+    expect(host.querySelector('[data-testid="nav-returns-badge"]')).toBeNull();
+  });
+
+  it("keeps the collapsed link's accessible name, count included", async () => {
+    const host = await mountSidebar(true, 3);
+    const returnsLink = linkFor(host, "/returns");
+    expect(returnsLink?.getAttribute("aria-label")).toBe(
+      `${i18n.t("navReturns")} — ${i18n.t("returnsPendingBadgeLabel", { count: 3 })}`,
+    );
+    expect(host.querySelector('[data-testid="nav-returns-badge"]')?.textContent).toBe("3");
   });
 });

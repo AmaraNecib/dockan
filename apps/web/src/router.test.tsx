@@ -33,6 +33,10 @@ let invoiceMutationResolves = true;
 // the real form without a network seam.
 mock.module("@/lib/rpc", () => ({
   orpc: {
+    // the shell's pending-returns badge query (issue #118)
+    returnsPendingCount: {
+      queryOptions: () => ({ queryKey: ["returnsPendingCount"], queryFn: async () => ({ count: 0 }) }),
+    },
     categoriesList: {
       queryOptions: () => ({
         queryKey: ["categories"],

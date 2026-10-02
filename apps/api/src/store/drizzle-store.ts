@@ -1464,6 +1464,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       }
       return headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[];
     },
+    /** One COUNT for the shell badge and dashboard notice (issue 118): the
+     * pending mark lives only in `returns.status`, so a SQL aggregate is the
+     * authoritative source and never a filtered client list. */
+    async pendingReturnsCount() {
+      const rows = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(returns)
+        .where(eq(returns.status, "PENDING_REVIEW"));
+      return Number(rows[0]?.count ?? 0);
+    },
     /** Authoritative review guard: the conditional UPDATE refuses a return that
      * is no longer pending, so two processes can never both consume the mark.
      * Raw SQL is fine here: this file is the driver adapter (ADR-0003), and

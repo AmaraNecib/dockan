@@ -9,12 +9,26 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
-import type { InvoiceDetail } from "@dokan/contracts";
+import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
 /** which procedure the mocked seam should fail on, or null for success */
 let failInvoicesPay = false;
 /** last mutation input, for asserting what the panel actually sends */
 let lastPayInput: { invoiceId: string; amount: number; method: string; note?: string } | null = null;
+/** the detail the page-level notes test serves */
+let invoiceDetail: InvoiceDetail | undefined;
+/** this invoice's returns for the panel mounted inside the page */
+let invoiceReturns: ReturnDetail[] = [];
+
+// The page renders router Links and (through ReturnsPanel) useParams; mirror the
+// seam the other page tests use so InvoicePage is testable without a router.
+mock.module("@tanstack/react-router", () => ({
+  Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
+    const { children, params, to, ...rest } = props;
+    return <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>;
+  },
+  useParams: () => ({ invoiceId: "00000000-0000-4000-8000-000000000001" }),
+}));
 
 // The page module imports the rpc client at module scope; stub the whole
 // seam so the panel is testable without a network. The mock mirrors the real
@@ -23,11 +37,22 @@ let lastPayInput: { invoiceId: string; amount: number; method: string; note?: st
 mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesGet: {
-      queryOptions: () => ({ queryKey: ["invoicesGet"], queryFn: async () => undefined }),
+      queryOptions: () => ({ queryKey: ["invoicesGet"], queryFn: async () => invoiceDetail }),
       queryKey: ({ input }: { input: { id: string } }) => ["invoicesGet", input],
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
     activitiesList: { queryKey: () => ["activitiesList"] },
+    settingsGet: {
+      queryOptions: () => ({ queryKey: ["settingsGet"], queryFn: async () => ({ storeName: "متجر", storePhone: null }) }),
+    },
+    returnsList: {
+      queryOptions: () => ({ queryKey: ["returnsList"], queryFn: async () => ({ items: invoiceReturns }) }),
+      queryKey: () => ["returnsList"],
+    },
+    returnsCreate: {
+      mutationOptions: () => ({ mutationFn: async () => ({}) }),
+    },
+    returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
     invoicesPay: {
       // merges the caller's { onSuccess, onError } like the real utils do
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
@@ -44,7 +69,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { paymentAmountError, PaymentPanel } = await import("./invoice");
+const { paymentAmountError, PaymentPanel, InvoicePage } = await import("./invoice");
 
 function makeInvoice(remaining: number, payments: InvoiceDetail["payments"] = []): InvoiceDetail {
   return {
@@ -77,6 +102,8 @@ beforeEach(() => {
   document.body.appendChild(host);
   failInvoicesPay = false;
   lastPayInput = null;
+  invoiceDetail = undefined;
+  invoiceReturns = [];
 });
 
 afterEach(() => {
@@ -96,6 +123,28 @@ function renderPanel(invoice: InvoiceDetail) {
       </QueryClientProvider>,
     );
   });
+}
+
+/** Renders the real InvoicePage (router-free) and waits for the detail read. */
+async function renderPage(invoice: InvoiceDetail) {
+  invoiceDetail = invoice;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const root = createRoot(host);
+  roots.push(root);
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <InvoicePage />
+      </QueryClientProvider>,
+    );
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (host.querySelector('[data-testid="invoice-page"]') !== null) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error("InvoicePage did not settle");
 }
 
 /** Sets a controlled input through the native setter + input event so React's
@@ -220,5 +269,25 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(host.querySelector('[data-testid="pmt-unavailable"]')?.textContent).toContain("مسدّدة بالكامل");
     expect(host.querySelector('[data-testid="pmt-submit"]')).toBeNull();
     expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+  });
+});
+
+describe("InvoicePage notes (issue #126)", () => {
+  it("shows the notes section with the stored text when present", async () => {
+    await renderPage({ ...makeInvoice(900), notes: "الاتصال قبل التسليم" });
+    const notes = host.querySelector('[data-testid="invoice-notes"]');
+    expect(notes).not.toBeNull();
+    expect(notes?.textContent).toContain("ملاحظات");
+    expect(notes?.textContent).toContain("الاتصال قبل التسليم");
+  });
+
+  it("shows nothing for an absent note", async () => {
+    await renderPage(makeInvoice(900));
+    expect(host.querySelector('[data-testid="invoice-notes"]')).toBeNull();
+  });
+
+  it("shows nothing for a blank note", async () => {
+    await renderPage({ ...makeInvoice(900), notes: "   " });
+    expect(host.querySelector('[data-testid="invoice-notes"]')).toBeNull();
   });
 });

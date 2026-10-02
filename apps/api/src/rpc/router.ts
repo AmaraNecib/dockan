@@ -1072,6 +1072,7 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
     returnsList: os.returnsList.handler(guardedInput(async ({ invoiceId }) => ({ items: await deps.store.listReturns({ invoiceId }) }))),
+    returnsPendingCount: os.returnsPendingCount.handler(guarded(async () => ({ count: await deps.store.pendingReturnsCount() }))),
     // Review accept: consumes the pending stock mark — the returned goods are
     // confirmed salable. The ledger facts are untouched; only the review tag
     // transitions, in the same unit as the status (append-only preserved).

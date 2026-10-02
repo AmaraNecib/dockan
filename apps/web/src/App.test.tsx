@@ -11,6 +11,7 @@ import i18n, { type AuthErrorInput } from "./lib/i18n";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
+let setupBlocked = false;
 /** The better-auth error shape the login page maps (code/message/status). */
 type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
@@ -32,7 +33,7 @@ let preferenceReadCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
-    needsSetup: async () => ({ needsSetup }),
+    needsSetup: async () => ({ needsSetup, setupBlocked }),
     firstTimeSetup: async () => {
       firstTimeSetupCalls += 1;
       if (setupError !== null) throw setupError;
@@ -77,6 +78,7 @@ afterEach(() => {
   mounted = [];
   document.body.innerHTML = "";
   needsSetup = false;
+  setupBlocked = false;
   signInResult = { error: null };
   signInArgs = null;
   signInCalls = 0;
@@ -96,7 +98,7 @@ function renderWithClient(root: ReturnType<typeof createRoot>, ui: React.ReactEl
   root.render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
-async function mountAuthGate(): Promise<HTMLElement> {
+async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -110,12 +112,16 @@ async function mountAuthGate(): Promise<HTMLElement> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (host.querySelector("form") !== null) return host;
+    if (host.querySelector(selector) !== null) return host;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
   }
-  throw new Error("auth gate did not render a form");
+  throw new Error(`auth gate did not render ${selector}`);
+}
+
+async function mountAuthGate(): Promise<HTMLElement> {
+  return mountAuthGateFor("form");
 }
 
 function inputByName(host: HTMLElement, name: string): HTMLInputElement {
@@ -142,6 +148,35 @@ async function submitForm(host: HTMLElement): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
 }
+
+describe("ownerless non-empty database (ADR-0008 §4.1)", () => {
+  it("shows the blocked message instead of a login form that cannot succeed", async () => {
+    needsSetup = false;
+    setupBlocked = true;
+    const host = await mountAuthGateFor('[data-testid="setup-blocked"]');
+
+    const alert = host.querySelector('[data-testid="setup-blocked"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_DATABASE_NOT_EMPTY"));
+    expect(host.querySelector('[data-testid="login-submit"]')).toBeNull();
+    expect(host.querySelector("form")).toBeNull();
+  });
+
+  it("retries the check and moves on when the condition clears", async () => {
+    needsSetup = false;
+    setupBlocked = true;
+    const host = await mountAuthGateFor('[data-testid="setup-blocked"]');
+    expect(host.querySelector('[data-testid="setup-blocked"]')).not.toBeNull();
+
+    // the underlying condition is gone: the retry must reach the login form
+    setupBlocked = false;
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="setup-blocked-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="setup-blocked"]')).toBeNull();
+  });
+});
 
 describe("auth phone inputs (issue #94)", () => {
   it("setup: the phone field is a named tel input with the tel keypad", async () => {

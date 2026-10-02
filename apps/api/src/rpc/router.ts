@@ -15,6 +15,7 @@ import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime,
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
+import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { localDate, localDateTime } from "../lib/logger";
 
 /**
@@ -35,6 +36,9 @@ type RpcDeps = {
   logger: AppLogger;
   store: StorePort;
   auth: BetterAuthInstance;
+  /** injectable so tests can drive the provisioning lockout clock; a fresh
+   * in-memory limiter is created per router when omitted */
+  setupThrottle?: SetupThrottle;
   /** injectable so tests can pin the server day instead of reading the wall
    * clock; the real clock is used when omitted */
   now?: () => Date;
@@ -153,6 +157,8 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
 export function createRpcRouter(deps: RpcDeps) {
   const os = implement(dokanContract).$context<RpcContext>();
 
+  const setupThrottle = deps.setupThrottle ?? createSetupThrottle();
+
   const requireSession = async (context: RpcContext) => {
     // SAFETY: getSession validates the cookie against the session store and
     // returns null for anything missing or expired
@@ -188,10 +194,13 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- auth ----------------------------------------------------------------
     needsSetup: os.needsSetup.handler(async () => {
       const rows = await deps.db.select({ id: users.id }).from(users).limit(1);
-      if (rows.length > 0) return { needsSetup: false };
+      if (rows.length > 0) return { needsSetup: false, setupBlocked: false };
       // Shop records without an owner are not a fresh install: provisioning
-      // refuses them, so the gate must not offer setup either (ADR-0008 §4.1).
-      return { needsSetup: await deps.store.databaseIsEmpty() };
+      // refuses them, so the gate must not offer setup either. The UI needs
+      // the distinction to show the refusal instead of a login form that
+      // cannot succeed (ADR-0008 §4.1).
+      const empty = await deps.store.databaseIsEmpty();
+      return { needsSetup: empty, setupBlocked: !empty };
     }),
 
     firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
@@ -210,6 +219,16 @@ export function createRpcRouter(deps: RpcDeps) {
         throw new ORPCError("FORBIDDEN", { message: "SETUP_DATABASE_NOT_EMPTY" });
       }
 
+      // The password hash below is a deliberate CPU cost on a public endpoint;
+      // bound the attempts so an unauthenticated caller cannot use setup as a
+      // KDF amplifier. Checked after the cheap gates, before the hash.
+      const throttle = setupThrottle.check();
+      if (!throttle.allowed) {
+        deps.logger.warn("SETUP_LOCKED", `firstTimeSetup refused while the setup lockout is active (retry in ~${Math.ceil(throttle.retryAfterMs / 1000)}s)`);
+        throw new ORPCError("TOO_MANY_REQUESTS", { message: "SETUP_LOCKED" });
+      }
+      setupThrottle.recordAttempt();
+
       const phone = normalizeAlgerianPhone(input.phoneNumber);
       if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
       const username = phoneToUsername(phone);
@@ -223,7 +242,7 @@ export function createRpcRouter(deps: RpcDeps) {
       // concurrent setups both pass and create competing owners, and a failure
       // after the user insert left a user row that made needsSetup false, so
       // setup could never be retried while no credential worked.
-      return deps.store.withTransactionImmediate(async (tx) => {
+      const result = await deps.store.withTransactionImmediate(async (tx) => {
         const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
         if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
         if (!(await tx.databaseIsEmpty())) throw new ORPCError("FORBIDDEN", { message: "SETUP_DATABASE_NOT_EMPTY" });
@@ -267,6 +286,9 @@ export function createRpcRouter(deps: RpcDeps) {
         deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
         return { ok: true as const };
       });
+      // a completed setup clears the lockout for the next boot
+      setupThrottle.recordSuccess();
+      return result;
     }),
 
     // --- categories (ticket 03) ----------------------------------------------

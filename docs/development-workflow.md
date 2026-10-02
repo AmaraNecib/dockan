@@ -152,8 +152,10 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
   or race-hijacked record or port can never redirect the webview.
 - **First run** (ADR-0008 §4.1): the setup flow creates the owner account on
   an empty database; it no longer types a secret. A database with shop records
-  but no owner refuses provisioning (reset goes through the recovery paths in
-  a later change).
+  but no owner refuses provisioning (the app shows the refusal instead of a
+  login form). Phase 1 intentionally has NO password-reset path — a forgotten
+  password is permanent until the recovery lane — and `auth_secret` is
+  plaintext in the database and every backup until the vault lands.
 - If the app is hard-killed the sidecar may linger; the next launch probes a
   free port and rewrites the port record, so discovery self-heals.
 

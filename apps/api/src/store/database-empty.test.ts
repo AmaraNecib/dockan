@@ -48,7 +48,6 @@ describe("databaseIsEmpty", () => {
     expect((await store.getSettings()).storeName).toBe("Dokan");
     // ...and settings/preferences/activity the app writes at boot must not
     // make the database look claimed (a DAILY_BACKUP activity is normal)
-    await store.setSetting("adminUserId", "00000000-0000-4000-8000-000000000000");
     await store.setPreference("ui.onboarding.dismissed", "true");
     await store.insertActivity({ type: "BACKUP_CREATED", summary: "DAILY_BACKUP test.db" });
     expect(await store.databaseIsEmpty()).toBe(true);
@@ -60,6 +59,33 @@ describe("databaseIsEmpty", () => {
     const category = (await store.listCategories())[0];
     expect(category).toBeDefined();
     await store.createItem({ name: "منتج", categoryId: category?.id ?? "", costPrice: 100, sellingPrice: 200 });
+
+    expect(await store.databaseIsEmpty()).toBe(false);
+  });
+
+  it("is false when the admin identity marker survives without a user row", async () => {
+    const store = makeStore();
+    await store.setup();
+    // a half-restored folder: the provisioning marker remains, the user row
+    // does not. It was claimed once and must never be claimed again.
+    await store.setSetting("adminUserId", "00000000-0000-4000-8000-000000000000");
+
+    expect(await store.databaseIsEmpty()).toBe(false);
+  });
+
+  it("is false when the invoice number sequence has been used", async () => {
+    const store = makeStore();
+    await store.setup();
+    // setup seeds next_number = 1; one allocation proves an invoice existed
+    await store.allocateInvoiceNumber();
+
+    expect(await store.databaseIsEmpty()).toBe(false);
+  });
+
+  it("is false when the return number sequence has been used", async () => {
+    const store = makeStore();
+    await store.setup();
+    await store.allocateReturnNumber();
 
     expect(await store.databaseIsEmpty()).toBe(false);
   });

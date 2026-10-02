@@ -239,6 +239,7 @@ const resources = {
       AUTH_PASSWORD_TOO_SHORT: `كلمة السر قصيرة جداً. استعمل ${MIN_PASSWORD_LENGTH} أحرف على الأقل.`,
       SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
       SETUP_DATABASE_NOT_EMPTY: "قاعدة البيانات تحتوي على بيانات متجر بدون حساب مالك، فلا يمكن إنشاء حساب جديد. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
+      SETUP_LOCKED: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
       CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       BARCODE_EXISTS: "هذا الباركود مستعمل مع منتج آخر",
@@ -689,7 +690,7 @@ const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
 const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
 
 /**
- * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, RESET_LOCKED, …).
+ * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, SETUP_LOCKED, …).
  * Anything else — a bare word a stray `Error` happened to carry — is not an
  * error key and must not render a UI label as if it were one.
  */

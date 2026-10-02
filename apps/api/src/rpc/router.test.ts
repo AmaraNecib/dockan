@@ -14,6 +14,7 @@ import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
 import { AppLogger } from "../lib/logger";
 import { ensureSessionSecret } from "../lib/session-secret";
+import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
@@ -2886,12 +2887,13 @@ describe("first-time setup provisioning", () => {
     // One universal build: the signing secret is a normal database row.
     const instanceAuth = createAuth(instanceConn.db, instanceConfig, await ensureSessionSecret(instanceStore));
 
-    const clientFor = (storeFor: StorePort): DokanClient => {
+    const clientFor = (storeFor: StorePort, routerDeps: { setupThrottle?: SetupThrottle } = {}): DokanClient => {
       const app = createApp({
         config: instanceConfig,
         logger: instanceLogger,
         auth: instanceAuth,
         rpcRouter: createRpcRouter({
+          ...routerDeps,
           db: instanceConn.db,
           config: instanceConfig,
           logger: instanceLogger,
@@ -2933,12 +2935,12 @@ describe("first-time setup provisioning", () => {
 
   it("provisions the owner on an empty database", async () => {
     const inst = await openInstance();
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
     await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
     const userRows = await inst.conn.db.select({ id: users.id }).from(users);
     expect(userRows).toHaveLength(1);
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: false });
   });
 
   it("refuses uniformly once an owner exists", async () => {
@@ -2960,15 +2962,31 @@ describe("first-time setup provisioning", () => {
     expect(category).toBeDefined();
     await inst.store.createItem({ name: "منتج-بدون-مالك", categoryId: category?.id ?? "", costPrice: 100, sellingPrice: 200 });
 
-    // neither the gate nor the procedure offers a way in
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false });
+    // neither the gate nor the procedure offers a way in, and the UI can tell
+    // the blocked state from a fresh install
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: true });
     await expect(setupCalls(inst.client, "متطفل", "0550222222")).rejects.toThrow("SETUP_DATABASE_NOT_EMPTY");
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+  });
+
+  it("refuses while the setup lockout is active and writes nothing", async () => {
+    const inst = await openInstance();
+    // the KDF is a public CPU cost: a denied throttle must stop the handler
+    // before the password hash and before any write
+    const locked = createSetupThrottle({ maxAttempts: 1 });
+    locked.recordAttempt();
+    const lockedClient = inst.clientFor(inst.store, { setupThrottle: locked });
+
+    await expect(setupCalls(lockedClient, "متطفل", "0550222222")).rejects.toMatchObject({
+      code: "TOO_MANY_REQUESTS",
+      message: "SETUP_LOCKED",
+    });
     expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
   });
 
   it("provisions exactly one owner when two setups race", async () => {
     const inst = await openInstance();
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
     // The gate checks and every write must share one BEGIN IMMEDIATE unit.
     // Before that, both requests passed the check while the password hash was
@@ -2989,7 +3007,7 @@ describe("first-time setup provisioning", () => {
     expect(["متجر أ", "متجر ب"]).toContain(settings.storeName);
 
     // and setup is closed afterwards
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: false });
     await expect(setupCalls(inst.client, "ج", "0550333333")).rejects.toThrow();
   });
 
@@ -3024,7 +3042,7 @@ describe("first-time setup provisioning", () => {
 
     const afterFailure = await inst.conn.db.select({ id: users.id }).from(users);
     expect(afterFailure).toHaveLength(0);
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
     // the retry succeeds, and the address the form sent is retained
     await expect(

@@ -1,5 +1,10 @@
 mod desktop;
 
+// The sidecar freshness/stamp logic is exercised by `cargo test`; build.rs
+// includes the same file textually.
+#[cfg(test)]
+mod sidecar_freshness;
+
 use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

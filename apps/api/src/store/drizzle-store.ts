@@ -35,7 +35,7 @@ import type {
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersion } from "../lib/schema-version";
@@ -1748,7 +1748,23 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         db.$count(stockMovements),
         db.$count(stockLinks),
       ]);
-      return counts.every((count) => count === 0);
+      if (counts.some((count) => count > 0)) return false;
+
+      // Shop records can be gone while the database is still a previously
+      // provisioned shop: a tampered or half-restored folder. The identity
+      // marker and a used number sequence prove it was claimed, so first-run
+      // setup must refuse (ADR-0008 §4.1).
+      // SAFETY: settings.key is the primary key; the literal SELECT yields one
+      // string value per row
+      const adminMarker = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, "adminUserId")).limit(1);
+      if (adminMarker.length > 0) return false;
+      const sequences = await Promise.all([
+        db.select({ next: invoiceNumberSequence.nextNumber }).from(invoiceNumberSequence).limit(1),
+        db.select({ next: returnNumberSequence.nextNumber }).from(returnNumberSequence).limit(1),
+      ]);
+      // A fresh setup seeds both sequences at 1; any allocation moves one
+      // past 1 (allocateInvoiceNumber / allocateReturnNumber).
+      return sequences.every((rows) => (rows[0]?.next ?? 1) <= 1);
     },
     async getSetting(key: string) {
       const row = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1);

@@ -146,10 +146,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** Decides whether to show setup, login, or forgot-password. */
+/** Decides whether to show setup, the blocked screen, or login. */
 function AuthGate() {
   const { t } = useTranslation();
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [setupBlocked, setSetupBlocked] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
   /** the reason the setup form handed the owner to the login form */
   const [loginNotice, setLoginNotice] = useState<MessageKey | null>(null);
@@ -162,11 +163,14 @@ function AuthGate() {
   const checkSetup = useCallback(() => {
     const seq = ++checkSeqRef.current;
     setNeedsSetup(null);
+    setSetupBlocked(false);
     setCheckFailed(false);
     rpcClient
       .needsSetup()
       .then((res) => {
-        if (seq === checkSeqRef.current) setNeedsSetup(res.needsSetup);
+        if (seq !== checkSeqRef.current) return;
+        setNeedsSetup(res.needsSetup);
+        setSetupBlocked(res.setupBlocked);
       })
       // A failed check must not read as "setup not needed". On an empty
       // installation that shows login, which has no account to accept, and the
@@ -196,6 +200,24 @@ function AuthGate() {
   }
 
   if (needsSetup === null) return <LoadingScreen />;
+
+  // No owner, but the database already holds shop data: setup is refused and
+  // login has no account to accept. Say what happened instead of showing a
+  // form that cannot succeed (ADR-0008 §4.1).
+  if (setupBlocked) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert" data-testid="setup-blocked">
+            {t("SETUP_DATABASE_NOT_EMPTY")}
+          </p>
+          <button type="button" onClick={checkSetup} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80" data-testid="setup-blocked-retry">
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   if (needsSetup) {
     return (

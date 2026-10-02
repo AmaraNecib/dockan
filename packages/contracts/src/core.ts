@@ -552,6 +552,10 @@ export const MIN_PASSWORD_LENGTH = 4;
 
 export const needsSetupOutputSchema = z.object({
   needsSetup: z.boolean(),
+  /** true when there is no owner but the database already holds shop data:
+   * first-run setup is refused, and the UI must say so instead of showing a
+   * login form that cannot succeed (ADR-0008 §4.1). */
+  setupBlocked: z.boolean(),
 });
 
 export const firstTimeSetupInputSchema = z.object({

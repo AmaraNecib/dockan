@@ -44,7 +44,7 @@ await store.setup();
 // here on first run and stored in the database. A pre-universal database with
 // no stored secret gets one now, invalidating its old sessions exactly once;
 // no recovery credential is handed out at this moment.
-const sessionSecret = await ensureSessionSecret(store);
+const sessionSecret = await ensureSessionSecret(store, logger);
 
 // daily startup backup (ticket 13): one copy per Algeria-local day. A failed
 // backup is logged loudly but must not block boot — a full disk should not

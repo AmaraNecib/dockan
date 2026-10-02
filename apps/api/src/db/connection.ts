@@ -29,14 +29,10 @@ export function openConnection(config: AppConfig): Connection {
 
   if (driver === "sqlite") {
     const sqlite = new Database(config.db.path, { create: true });
-    sqlite.exec("PRAGMA journal_mode = WAL;");
-    sqlite.exec("PRAGMA foreign_keys = ON;");
-    // Separate app processes may briefly contend while SQLite serializes a
-    // database write (notably invoice-number allocation). Wait for the writer
-    // rather than turning a normal concurrent request into SQLITE_BUSY.
-    sqlite.exec("PRAGMA busy_timeout = 5000;");
-    // Import/restore safety (ADR-0008 §4.5): a database written by a newer
-    // app is refused here, before any migration or write. Older formats pass
+    // Import/restore safety FIRST (ADR-0008 §4.5): the check only reads the
+    // header, so it must run before any pragma that writes. On read-only
+    // media `journal_mode = WAL` would throw SQLITE_READONLY before the gate
+    // could report the real problem (a newer database). Older formats pass
     // and are migrated by store.setup(), which stamps the current version.
     try {
       assertSchemaVersionSupported(sqlite);
@@ -45,6 +41,12 @@ export function openConnection(config: AppConfig): Connection {
       sqlite.close();
       throw error;
     }
+    sqlite.exec("PRAGMA journal_mode = WAL;");
+    sqlite.exec("PRAGMA foreign_keys = ON;");
+    // Separate app processes may briefly contend while SQLite serializes a
+    // database write (notably invoice-number allocation). Wait for the writer
+    // rather than turning a normal concurrent request into SQLITE_BUSY.
+    sqlite.exec("PRAGMA busy_timeout = 5000;");
     const db = drizzle(sqlite, { schema });
     return {
       db,

@@ -105,16 +105,38 @@ describe("the version gate", () => {
     }
   });
 
-  it("refuses a newer database before store.setup() can touch it", () => {
+  it("refuses a newer database before any write, leaves it untouched and closes the handle", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "newer-open.db");
     const seed = new Database(dbPath, { create: true });
     seed.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION + 1}`);
+    seed.exec("CREATE TABLE marker (id TEXT PRIMARY KEY)");
     seed.close();
 
     expect(() => openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath }))).toThrow(
       UnsupportedSchemaVersionError,
     );
+
+    // the version check ran BEFORE the WAL pragma: a WAL connection would have
+    // created the sidecars even though the gate refused
+    expect(fs.existsSync(`${dbPath}-wal`)).toBe(false);
+    expect(fs.existsSync(`${dbPath}-shm`)).toBe(false);
+
+    // the refused file is byte-for-byte usable and the version is unchanged
+    const reopened = new Database(dbPath);
+    try {
+      expect(readSchemaVersion(reopened)).toBe(CURRENT_SCHEMA_VERSION + 1);
+      // SAFETY: sqlite_master.name is a TEXT column; the literal query returns
+      // one name per table
+      const tables = reopened.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+      expect(tables.map((table) => table.name)).toEqual(["marker"]);
+    } finally {
+      reopened.close();
+    }
+
+    // the refusal closed its handle: on Windows an open database file cannot
+    // be deleted (on POSIX this assertion is trivially true but harmless)
+    expect(() => fs.rmSync(dbPath)).not.toThrow();
   });
 });
 

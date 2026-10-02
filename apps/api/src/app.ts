@@ -39,8 +39,8 @@ export function createApp(deps: AppDeps) {
   app.get("/health", (c) => c.json({ ok: true, version: config.version, time: localDateTime() }));
 
   // better-auth handles /api/auth/* itself (sign-in, session, sign-out);
-  // account creation is NOT allowed: the single admin is provisioned by the
-  // build secret only, so the sign-up route is blocked before it can run
+  // account creation is NOT allowed: the single admin is provisioned by
+  // first-run setup only, so the sign-up route is blocked before it can run
   app.all("/api/auth/*", (c) => {
     if (c.req.method === "POST" && c.req.path.includes("/sign-up")) {
       return c.json({ error: { message: "SIGNUP_FORBIDDEN" } }, 403);

@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Dokan desktop shell — the webview talks to the api over plain HTTP (same origin in production, vite proxy in dev), so no IPC permissions are needed beyond core defaults.",
+  "description": "Dokan desktop shell — the main window is navigated to the sidecar's loopback origin, which Tauri treats as a REMOTE context (the local origin is the tauri:// asset protocol). A capability reaches a remote webview only when its origin is listed under remote.urls and its app commands are granted, so the vault gate's IPC bridge (issue #141) is declared here for loopback only.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": ["core:default", "allow-vault-broker"]
 }

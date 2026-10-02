@@ -6,6 +6,8 @@ import { z } from "zod";
 
 import { readFileIfExists, writeFileAtomic, writeFileAtomicSync } from "../atomic-file";
 import { localDateTime, type AppLogger } from "../logger";
+import { buildEncryptedSnapshot, readLegacyDatabaseImage } from "../../db/encrypted-connection";
+import { createVaultBackupBundle } from "./backup";
 import { VaultAuthenticationError, normalizePassphrase, tokensMatch, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore, type VaultMetadata } from "./core";
 import { VaultFormatError } from "./format";
@@ -222,6 +224,11 @@ export class VaultManager {
     return this.pendingSetup.masterKey;
   }
 
+  /** The prepared recovery key, so a failed header write can be resumed. */
+  pendingRecoveryKey(): string | undefined {
+    return this.pendingSetup?.recoveryKey;
+  }
+
   /** Drop a prepared-but-uncommitted setup (a failed first snapshot attempt). */
   abortSetup(): void {
     if (this.pendingSetup === undefined) return;
@@ -236,18 +243,42 @@ export class VaultManager {
    */
   async commitSetup(): Promise<string> {
     return this.enqueue(async () => {
-      const pending = this.pendingSetup;
-      if (pending === undefined) throw new VaultNotUnlockedError();
-      await writeFileAtomic(this.headerPath, pending.headerText);
-      this.pendingSetup = undefined;
-      this.core = pending.core;
-      this.replaceMasterKey(pending.masterKey);
-      this.sessionToken = this.mintSessionToken();
-      // must not enqueue again: commitSetup holds the write queue already
-      await this.resetFailuresInternal();
-      this.logger.info("VAULT_CREATED", "vault created and unlocked", { version: pending.vaultId });
-      return this.sessionToken;
+      // a concurrent retry may have committed the same pending setup first;
+      // that is a success, not a missing-vault error
+      if (this.pendingSetup === undefined) {
+        if (this.sessionToken !== undefined) return this.sessionToken;
+        throw new VaultNotUnlockedError();
+      }
+      return this.commitPending();
     });
+  }
+
+  /**
+   * Resume a first-run attempt that wrote its snapshot but whose header write
+   * failed (finding 3). A request that finds setup in progress may only commit
+   * when the snapshot already exists; otherwise the first request is still
+   * bootstrapping and must finish its own unit (VaultSetupInProgressError).
+   */
+  async resumeSetup(): Promise<string> {
+    return this.enqueue(() => {
+      if (this.pendingSetup === undefined) throw new VaultNotUnlockedError();
+      if (!fs.existsSync(this.snapshotPath)) throw new VaultSetupInProgressError();
+      return this.commitPending();
+    });
+  }
+
+  private async commitPending(): Promise<string> {
+    const pending = this.pendingSetup;
+    if (pending === undefined) throw new VaultNotUnlockedError();
+    await writeFileAtomic(this.headerPath, pending.headerText);
+    this.pendingSetup = undefined;
+    this.core = pending.core;
+    this.replaceMasterKey(pending.masterKey);
+    this.sessionToken = this.mintSessionToken();
+    // must not enqueue again: the caller already holds the write queue
+    await this.resetFailuresInternal();
+    this.logger.info("VAULT_CREATED", "vault created and unlocked", { version: pending.vaultId });
+    return this.sessionToken;
   }
 
   /** Unlock with the passphrase; returns the in-process session token. */
@@ -336,8 +367,7 @@ export class VaultManager {
     return this.enqueue(() => core.addRecoveryKey(this.requireMasterKey()));
   }
 
-  async removeRecoveryKey(id: string): Promise<string> {
-    const core = this.requireCore();
+  async removeRecoveryKey(id: string): Promise<string> {    const core = this.requireCore();
     await this.enqueue(() => core.removeRecoveryKey(id));
     // deleting a credential revokes every session minted before it: rotate the
     // in-process token and return the fresh one for the caller's client
@@ -393,28 +423,94 @@ export class VaultManager {
     return this.sessionToken;
   }
 
-  /**
-   * Delete the migrated plaintext database if a committed vault exists. This
-   * is retried on every unlock (not only right after setup), because a failed
-   * or interrupted cleanup must never leave the plaintext copy on the stick
-   * forever. A vault is authoritative once its header is committed.
-   */
-  async cleanupLegacyPlaintext(): Promise<void> {
-    if (!this.headerExists()) return;
+  /** Result of a plaintext sweep: paths that are still readable in the clear. */
+  async cleanupLegacyPlaintext(): Promise<{ plaintextRemaining: string[] }> {
+    const remaining: string[] = [];
+    if (!this.headerExists()) return { plaintextRemaining: remaining };
+    // 1. the live legacy database and its sidecars
     for (const suffix of ["", "-wal", "-shm"] as const) {
+      const candidate = `${this.legacyDbPath}${suffix}`;
       try {
-        await fs.promises.unlink(`${this.legacyDbPath}${suffix}`);
-        this.logger.warn("VAULT_LEGACY_PLAINTEXT_REMOVED", `removed stale plaintext database ${this.legacyDbPath}${suffix}`);
+        await fs.promises.unlink(candidate);
+        this.logger.warn("VAULT_LEGACY_PLAINTEXT_REMOVED", `removed stale plaintext database ${candidate}`);
       } catch (error) {
         // SAFETY: the `"code" in error` probe establishes the NodeJS errno shape
         if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        remaining.push(candidate);
         this.logger.error(
           "VAULT_LEGACY_PLAINTEXT_STAYED",
-          `could not remove plaintext database ${this.legacyDbPath}${suffix}; will retry on next unlock`,
+          `could not remove plaintext database ${candidate}; will retry on next unlock`,
           error instanceof Error ? error : new Error(String(error)),
         );
       }
     }
+    // 2. historical plaintext backups (finding: they survived the migration):
+    // each is encrypted in place into a self-contained bundle, so the backup
+    // history stays restorable without leaving shop data readable on the stick
+    remaining.push(...(await this.encryptLegacyBackups()));
+    return { plaintextRemaining: remaining };
+  }
+
+  /**
+   * Replace every plaintext `backups/*.db` with an encrypted bundle. The file
+   * is overwritten through the atomic writer, so a crash leaves either the old
+   * plaintext file or the new bundle, never a truncated one.
+   */
+  private async encryptLegacyBackups(): Promise<string[]> {
+    const masterKey = this.masterKey;
+    const headerText = readFileIfExists(this.headerPath);
+    if (masterKey === undefined || headerText === undefined) return [];
+    const backupsDir = path.join(path.dirname(this.legacyDbPath), "backups");
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(backupsDir);
+    } catch {
+      return [];
+    }
+    const vaultId = this.core?.metadata().vaultId ?? "";
+    if (vaultId === "") return [];
+    const remaining: string[] = [];
+    for (const entry of entries) {
+      if (!entry.startsWith("dokan-") || !entry.endsWith(".db")) continue;
+      const file = path.join(backupsDir, entry);
+      let head: Buffer;
+      try {
+        head = Buffer.from((await fs.promises.readFile(file)).subarray(0, 16));
+      } catch {
+        remaining.push(file);
+        continue;
+      }
+      // already converted (or not a plaintext database): nothing to do
+      if (head.toString("utf8") !== "SQLite format 3\u0000") continue;
+      try {
+        const { image } = readLegacyDatabaseImage(file);
+        const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(masterKey, vaultId, image));
+        await writeFileAtomic(file, bundle);
+        for (const suffix of ["-wal", "-shm"] as const) {
+          try {
+            await fs.promises.unlink(`${file}${suffix}`);
+          } catch {
+            /* no sidecar */
+          }
+        }
+        this.logger.info("VAULT_LEGACY_BACKUP_ENCRYPTED", `encrypted legacy plaintext backup ${entry}`);
+      } catch (error) {
+        remaining.push(file);
+        this.logger.error(
+          "VAULT_LEGACY_BACKUP_STAYED",
+          `could not encrypt legacy plaintext backup ${entry}; it still contains readable shop data`,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    }
+    return remaining;
+  }
+
+  /** Revoke the in-process session (logout): every existing token stops working. */
+  revokeSession(): void {
+    if (this.sessionToken === undefined) return;
+    this.sessionToken = undefined;
+    this.logger.info("VAULT_SESSION_REVOKED", "vault session revoked (logout)");
   }
 
   /** Drain the queued pre-unlock failure events for the activity log. */

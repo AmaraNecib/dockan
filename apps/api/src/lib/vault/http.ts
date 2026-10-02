@@ -34,14 +34,22 @@ export type VaultBootstrapInput = {
   fresh: boolean;
 };
 
+/** Paths still readable in the clear after a setup/unlock sweep. */
+export type VaultCleanupResult = { plaintextRemaining: string[] };
+
+/** What prepareSetup hands to the commit step. */
+type PreparedSetup = { recoveryKey: string; vaultId: string };
+
 export type VaultHttpDeps = {
   manager: VaultManager;
   config: AppConfig;
   logger: AppLogger;
   /** Build the store/app once the vault is open; must persist the first snapshot. */
   bootstrap: (input: VaultBootstrapInput) => Promise<void>;
-  /** Called only after the header is committed: delete the migrated plaintext files. */
-  onSetupCommitted?: () => Promise<void>;
+  /** Called only after the header is committed: encrypt/remove the migrated plaintext files. */
+  onSetupCommitted?: () => Promise<VaultCleanupResult>;
+  /** Called after the header commit, with the app live (e.g. the first daily backup). */
+  afterSetup?: () => Promise<void>;
 };
 
 const setupSchema = z.object({ passphrase: z.string().min(1), setupToken: z.string().optional() });
@@ -107,38 +115,79 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
     }
     try {
-      const prepared = await deps.manager.prepareSetup(body.data.passphrase);
+      // Resume a previous attempt whose header write failed: leaving the
+      // pending slot occupied would make every retry answer
+      // VAULT_SETUP_IN_PROGRESS until the sidecar restarts (finding 3).
+      let prepared: PreparedSetup;
+      let sessionToken: string | undefined;
       try {
-        await deps.bootstrap({ masterKey: deps.manager.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+        prepared = await deps.manager.prepareSetup(body.data.passphrase);
       } catch (error) {
-        // the header was never committed; drop the prepared key so a retry
-        // starts clean and the plaintext database stays as it was
-        deps.manager.abortSetup();
-        if (error instanceof UnsupportedSchemaVersionError) return errorResponse("VAULT_SCHEMA_TOO_NEW", 409);
-        deps.logger.error("VAULT_SETUP_FAILED", "first snapshot could not be written", error instanceof Error ? error : new Error(String(error)));
-        return errorResponse("VAULT_SETUP_FAILED", 500);
+        if (!(error instanceof VaultSetupInProgressError)) throw error;
+        const recoveryKey = deps.manager.pendingRecoveryKey();
+        if (recoveryKey === undefined) throw error;
+        // only commits when the first attempt already wrote its snapshot;
+        // otherwise this rethrows VaultSetupInProgressError (409)
+        sessionToken = await deps.manager.resumeSetup();
+        prepared = { recoveryKey, vaultId: deps.manager.metadata().vaultId };
       }
-      const sessionToken = await deps.manager.commitSetup();
+      if (sessionToken === undefined) {
+        try {
+          await deps.bootstrap({ masterKey: deps.manager.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+        } catch (error) {
+          // the header was never committed; drop the prepared key so a retry
+          // starts clean and the plaintext database stays as it was
+          deps.manager.abortSetup();
+          if (error instanceof UnsupportedSchemaVersionError) return errorResponse("VAULT_SCHEMA_TOO_NEW", 409);
+          deps.logger.error(
+            "VAULT_SETUP_FAILED",
+            "first snapshot could not be written",
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          return errorResponse("VAULT_SETUP_FAILED", 500);
+        }
+        sessionToken = await deps.manager.commitSetup();
+      }
+      let plaintextRemaining: string[] = [];
       try {
-        await deps.onSetupCommitted?.();
+        plaintextRemaining = (await deps.onSetupCommitted?.())?.plaintextRemaining ?? [];
       } catch (error) {
         // the vault is committed and the recovery key must still reach the
-        // owner; plaintext cleanup is best-effort (the header now owns the data)
+        // owner; plaintext cleanup is best-effort (a later unlock retries)
         deps.logger.error(
           "VAULT_SETUP_CLEANUP_FAILED",
           "plaintext files could not be removed after vault setup",
           error instanceof Error ? error : new Error(String(error)),
         );
       }
+      if (plaintextRemaining.length > 0) {
+        deps.logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${plaintextRemaining.join(", ")}`);
+      }
+      try {
+        await deps.afterSetup?.();
+      } catch (error) {
+        deps.logger.error(
+          "VAULT_SETUP_BACKUP_FAILED",
+          "the first daily backup could not be created after setup",
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
       deps.logger.info("VAULT_SETUP_DONE", "vault created; recovery key shown once");
       // the recovery key is the only time the plaintext code ever leaves the vault
-      return c.json({ ok: true as const, recoveryKey: prepared.recoveryKey, sessionToken });
+      return c.json({ ok: true as const, recoveryKey: prepared.recoveryKey, sessionToken, plaintextRemaining });
     } catch (error) {
       if (error instanceof VaultAlreadyConfiguredError) return errorResponse("VAULT_ALREADY_CONFIGURED", 409);
       if (error instanceof VaultSetupInProgressError) return errorResponse("VAULT_SETUP_IN_PROGRESS", 409);
       if (error instanceof Error && error.message === "VAULT_PASSPHRASE_TOO_SHORT") return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
       throw error;
     }
+  });
+
+  app.post("/api/vault/logout", (c) => {
+    if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
+    // revoke the in-process session: a copied token stops authorising RPCs
+    deps.manager.revokeSession();
+    return c.json({ ok: true as const });
   });
 
   app.post("/api/vault/unlock", async (c) => {

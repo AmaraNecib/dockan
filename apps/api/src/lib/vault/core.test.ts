@@ -48,9 +48,9 @@ describe("VaultCore", () => {
 
   it("normalises the passphrase (NFC + surrounding whitespace)", async () => {
     const { store } = memoryStore();
-    const { core } = await VaultCore.create(store, "  café  ", { kdf: FAST_KDF });
-    expect(() => core.unlockPassphrase("café")).not.toThrow();
-    expect(() => core.unlockPassphrase("cafe\u0301")).not.toThrow();
+    const { core } = await VaultCore.create(store, "  café pass  ", { kdf: FAST_KDF });
+    expect(() => core.unlockPassphrase("café pass")).not.toThrow();
+    expect(() => core.unlockPassphrase("cafe\u0301 pass")).not.toThrow();
   });
 
   it("adds recovery keys that unwrap the master key, without invalidating each other", async () => {
@@ -124,8 +124,16 @@ describe("VaultCore", () => {
 
   it("refuses to create a vault over an existing header", async () => {
     const { store } = memoryStore();
-    await VaultCore.create(store, "one");
-    await expect(VaultCore.create(store, "two")).rejects.toThrow();
+    await VaultCore.create(store, "one long enough");
+    await expect(VaultCore.create(store, "two long enough")).rejects.toThrow();
+  });
+
+  it("enforces the passphrase floor in create() itself (normalized, finding 7)", async () => {
+    const { store, text } = memoryStore();
+    await expect(VaultCore.create(store, "        ", { kdf: FAST_KDF })).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
+    await expect(VaultCore.create(store, "  short  ", { kdf: FAST_KDF })).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
+    // nothing was written: the primitive did not half-create a vault
+    expect(() => text()).toThrow();
   });
 
   it("generates codes whose checksum verifies the key bytes (not just the checksum chars)", () => {

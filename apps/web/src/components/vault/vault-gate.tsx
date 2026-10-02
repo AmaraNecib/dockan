@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -23,8 +23,10 @@ import {
 
 type VaultHook = {
   status: VaultStatus | undefined;
-  failed: boolean;
+  /** "unsupported" = legacy build; "unreachable" = show retry, never login */
+  failure: "unsupported" | "unreachable" | undefined;
   setStatus: (status: VaultStatus) => void;
+  refresh: () => void;
 };
 
 /**
@@ -34,28 +36,36 @@ type VaultHook = {
  */
 export function useVaultStatus(): VaultHook {
   const [status, setStatus] = useState<VaultStatus | undefined>(undefined);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<"unsupported" | "unreachable" | undefined>(undefined);
+  const aliveRef = useRef(true);
+
+  const load = useCallback(() => {
+    setFailure(undefined);
+    fetchVaultStatus()
+      .then((result) => {
+        if (aliveRef.current) setStatus(result);
+      })
+      .catch((reason) => {
+        if (!aliveRef.current) return;
+        const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
+        setFailure(code === "VAULT_UNSUPPORTED" ? "unsupported" : "unreachable");
+      });
+  }, []);
 
   useEffect(() => {
+    aliveRef.current = true;
     const fromHash = readSessionTokenFromHash();
     if (fromHash !== undefined) {
       storeVaultSessionToken(fromHash);
       stripVaultFragment();
     }
-    let alive = true;
-    fetchVaultStatus()
-      .then((result) => {
-        if (alive) setStatus(result);
-      })
-      .catch(() => {
-        if (alive) setFailed(true);
-      });
+    load();
     return () => {
-      alive = false;
+      aliveRef.current = false;
     };
-  }, []);
+  }, [load]);
 
-  return { status, failed, setStatus };
+  return { status, failure, setStatus, refresh: load };
 }
 
 /** A form-level error announced through role="alert". */
@@ -91,6 +101,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [confirm, setConfirm] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [plaintextRemaining, setPlaintextRemaining] = useState<string[]>([]);
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
@@ -158,6 +169,17 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           {recoveryKey}
         </p>
         <p className="mt-3 text-sm text-destructive">{t("vaultLostBothWarning")}</p>
+        {plaintextRemaining.length > 0 && (
+          <p
+            className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            data-testid="vault-plaintext-warning"
+          >
+            {t("vaultPlaintextRemaining")}
+            <span className="mt-1 block font-mono text-xs break-all" dir="ltr">
+              {plaintextRemaining.join("\n")}
+            </span>
+          </p>
+        )}
         <label className="mt-4 flex items-start gap-2 text-sm">
           <input
             type="checkbox"
@@ -245,6 +267,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               const result = await vaultSetup(passphrase, readSetupTokenFromHash());
               storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
+              setPlaintextRemaining(result.plaintextRemaining);
               setScreen("recovery-show");
             });
           }}

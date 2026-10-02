@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -76,7 +76,28 @@ const { RequireSession } = await import("./App");
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
+/**
+ * The legacy auth screens are what these tests exercise, so the vault status
+ * route answers 404 by default (a legacy build). Tests that need the vault
+ * paths override this (see the unreachable-status regression).
+ */
+const originalFetch = globalThis.fetch;
+let vaultStatusResponse: () => Promise<Response> = async () => new Response("not found", { status: 404 });
+
+beforeEach(() => {
+  globalThis.fetch = Object.assign(
+    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (new URL(url, "http://localhost").pathname === "/api/vault/status") return vaultStatusResponse();
+      return originalFetch(input, init);
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+});
+
 afterEach(() => {
+  globalThis.fetch = originalFetch;
+  vaultStatusResponse = async () => new Response("not found", { status: 404 });
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   document.body.innerHTML = "";
@@ -128,6 +149,45 @@ async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
 async function mountAuthGate(): Promise<HTMLElement> {
   return mountAuthGateFor("form");
 }
+
+describe("vault status retry (finding 5)", () => {
+  it("shows a retry state when the status is unreachable, never the legacy login", async () => {
+    let calls = 0;
+    vaultStatusResponse = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("api not up");
+      return Response.json({
+        mode: "vault",
+        state: "locked",
+        legacyDatabase: false,
+        recoveryKeyCount: 0,
+        lockedForMs: 0,
+        unlocked: false,
+      });
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <RequireSession>{null}</RequireSession>
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-status-unavailable"]')).not.toBeNull();
+    // the legacy login must NOT appear for a vault install with a blip
+    expect(host.querySelector("form")).toBeNull();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+  });
+});
 
 function inputByName(host: HTMLElement, name: string): HTMLInputElement {
   const input = host.querySelector<HTMLInputElement>(`input[name="${name}"]`);

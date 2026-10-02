@@ -15,7 +15,7 @@ import { openVaultStore } from "../../db/vault-store";
 import { AppLogger } from "../../lib/logger";
 import { ensureSessionSecret } from "../../lib/session-secret";
 import { type KdfParams } from "./crypto";
-import { createVaultHttpApp } from "./http";
+import { createVaultHttpApp, type VaultCleanupResult } from "./http";
 import { VaultManager } from "./manager";
 import { createRpcRouter } from "../../rpc/router";
 import type { StorePort } from "../../store/port";
@@ -87,7 +87,10 @@ type GateHarness = {
   linkWith: (headers: Record<string, string>) => DokanClient;
 };
 
-function harness(dir: string, options: { onSetupCommitted?: () => Promise<void> } = {}): GateHarness {
+function harness(
+  dir: string,
+  options: { onSetupCommitted?: () => Promise<VaultCleanupResult>; afterSetup?: () => Promise<void> } = {},
+): GateHarness {
   const config = createAppConfig({
     DOKAN_DATA_DIR: dir,
     DOKAN_DB_PATH: path.join(dir, "dokan.db"),
@@ -150,7 +153,9 @@ function harness(dir: string, options: { onSetupCommitted?: () => Promise<void> 
             /* already gone */
           }
         }
+        return { plaintextRemaining: [] };
       }),
+    afterSetup: options.afterSetup,
   });
 
   return {
@@ -466,20 +471,26 @@ describe("vault gate hardening (review supplement)", () => {
 
   it("keeps first-run setup single-flight (finding: concurrent setups mixing keys)", async () => {
     const h = harness(tempDir("dokan-vault-single-flight-"));
-    const [a, b] = await Promise.all([setupVault(h), setupVault(h)]);
-    expect([a.status, b.status].sort()).toEqual([200, 409]);
-    const winner = a.status === 200 ? a : b;
-    // SAFETY: the setup contract carries the recovery key
-    const { recoveryKey } = await json<{ recoveryKey: string }>(winner);
-    // the winner's recovery key must unlock the COMMITTED header
+    const responses = await Promise.all([setupVault(h), setupVault(h)]);
+    // one request wins; a concurrent retry may resume the same pending setup,
+    // so both may legitimately answer 200 with the SAME pending recovery key
+    for (const response of responses) expect([200, 409]).toContain(response.status);
+    expect(responses.some((response) => response.status === 200)).toBe(true);
+    const winners = responses.filter((response) => response.status === 200);
+    const keys = await Promise.all(winners.map(async (winner) => (await json<{ recoveryKey: string }>(winner)).recoveryKey));
+    expect(new Set(keys).size).toBe(1);
+    // every key the winner(s) saw must unlock the COMMITTED header
     h.manager.close();
     h.resetApp();
-    const unlock = await h.gate.request("/api/vault/unlock-recovery", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ recoveryKey }),
-    });
-    expect(unlock.status).toBe(200);
+    for (const recoveryKey of keys) {
+      h.manager.close();
+      const unlock = await h.gate.request("/api/vault/unlock-recovery", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ recoveryKey }),
+      });
+      expect(unlock.status).toBe(200);
+    }
   });
 
   it("refuses a torn or damaged snapshot as corruption, never as a wrong passphrase", async () => {
@@ -647,6 +658,62 @@ describe("vault gate hardening (review supplement)", () => {
     const status = await json<{ recoveryKeyCount: number; state: string }>(await h.gate.request("/api/vault/status"));
     expect(status.state).toBe("locked");
     expect(status.recoveryKeyCount).toBe(0);
+  });
+
+  it("reports the cleanup result on setup and resumes a pending setup whose header write failed (findings 2 and 3)", async () => {
+    const dir = tempDir("dokan-vault-resume-");
+    const h = harness(dir);
+    // simulate the crash window: the first attempt prepared the vault and wrote
+    // its snapshot, then died before committing the header
+    const { recoveryKey } = await h.manager.prepareSetup("correct horse battery");
+    fs.writeFileSync(h.manager.snapshotPath, "placeholder-snapshot");
+
+    const retry = await setupVault(h);
+    expect(retry.status).toBe(200);
+    // SAFETY: the setup contract carries the recovery key and the cleanup list
+    const body = await json<{ recoveryKey: string; plaintextRemaining: string[] }>(retry);
+    // the pending recovery key is returned again and the header is committed
+    expect(body.recoveryKey).toBe(recoveryKey);
+    expect(body.plaintextRemaining).toEqual([]);
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+    expect(h.manager.pendingRecoveryKey()).toBeUndefined();
+  });
+
+  it("surfaces plaintext files that could not be removed instead of silently succeeding", async () => {
+    const dir = tempDir("dokan-vault-remaining-");
+    const h = harness(dir, {
+      onSetupCommitted: async () => ({ plaintextRemaining: ["C:/data/dokan.db"] }),
+    });
+    const setup = await setupVault(h);
+    expect(setup.status).toBe(200);
+    // SAFETY: the setup contract carries the cleanup list
+    const body = await json<{ plaintextRemaining: string[] }>(setup);
+    expect(body.plaintextRemaining).toEqual(["C:/data/dokan.db"]);
+  });
+
+  it("revokes the in-process session on logout (finding 4)", async () => {
+    const h = harness(tempDir("dokan-vault-logout-"));
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(200);
+
+    const logout = await h.gate.request("/api/vault/logout", {
+      method: "POST",
+      headers: { "x-vault-session": sessionToken },
+    });
+    expect(logout.status).toBe(200);
+    // a copied token is dead: the unlocked process no longer accepts it
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(401);
+    // the client can unlock again and receive a fresh token
+    h.manager.close();
+    expect((await setupVault(h, "another passphrase")).status).toBe(409); // already configured
+    const unlock = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(unlock.status).toBe(200);
   });
 });
 

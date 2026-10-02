@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { AppLogger } from "../logger";
+import { readVaultBackupBundle, extractVaultBackup } from "./backup";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, VaultSetupInProgressError, unlockBackoffMs } from "./manager";
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
+const PASSPHRASE = "correct horse";
 
 let dir: string;
 let clock: number;
@@ -34,7 +37,7 @@ afterEach(() => {
 });
 
 async function createVault(vault: VaultManager): Promise<string> {
-  await vault.prepareSetup("correct horse");
+  await vault.prepareSetup(PASSPHRASE);
   const token = await vault.commitSetup();
   return token;
 }
@@ -225,5 +228,70 @@ describe("VaultManager", () => {
     const vault = manager();
     // the lock is clamped to the 15-minute maximum, not a decade
     expect(vault.status().lockedForMs).toBeLessThanOrEqual(15 * 60_000);
+  });
+
+  it("encrypts legacy plaintext backups during cleanup (finding: backups survived migration)", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const legacyBackup = path.join(backupsDir, "dokan-2020-01-01.db");
+    const db = new Database(legacyBackup, { create: true });
+    db.exec("CREATE TABLE items(id TEXT); INSERT INTO items VALUES ('historic')");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+
+    const vault = manager();
+    const { recoveryKey } = await vault.prepareSetup(PASSPHRASE);
+    await vault.commitSetup();
+
+    const result = await vault.cleanupLegacyPlaintext();
+    expect(result.plaintextRemaining).toEqual([]);
+    const bytes = fs.readFileSync(legacyBackup);
+    expect(bytes.subarray(0, 8).toString("ascii")).toBe("DKNVBACK");
+    expect(bytes.includes(Buffer.from("historic"))).toBe(false);
+    expect(readVaultBackupBundle(bytes)).toBeDefined();
+    // the bundle unlocks with the recovery key on a fresh dir
+    const restoredDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-backup-restore-"));
+    extraDirs.push(restoredDir);
+    await extractVaultBackup(bytes, restoredDir);
+    const restored = new VaultManager({
+      dataDir: restoredDir,
+      legacyDbPath: path.join(restoredDir, "dokan.db"),
+      logger: new AppLogger(restoredDir),
+      kdf: FAST_KDF,
+    });
+    await restored.unlockRecovery(recoveryKey);
+    expect(restored.unlocked).toBe(true);
+    restored.close();
+  });
+
+  it("reports a plaintext backup it could not encrypt (never silently succeeds)", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const newerBackup = path.join(backupsDir, "dokan-2020-01-02.db");
+    const db = new Database(newerBackup, { create: true });
+    db.exec("CREATE TABLE t(a TEXT)");
+    db.exec("PRAGMA user_version = 99");
+    db.close();
+
+    const vault = manager();
+    await createVault(vault);
+    const result = await vault.cleanupLegacyPlaintext();
+    expect(result.plaintextRemaining).toEqual([newerBackup]);
+    // the unencrypted backup is left untouched for a human to handle
+    expect(fs.readFileSync(newerBackup).subarray(0, 15).toString("utf8")).toBe("SQLite format 3");
+  });
+
+  it("resumes a setup only after its snapshot exists (finding 3)", async () => {
+    const vault = manager();
+    const { recoveryKey } = await vault.prepareSetup(PASSPHRASE);
+    // the first request is still bootstrapping: no snapshot on disk yet
+    await expect(vault.resumeSetup()).rejects.toThrow(VaultSetupInProgressError);
+    expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
+    // once the snapshot is written, a retry may commit the same pending setup
+    fs.writeFileSync(vault.snapshotPath, "placeholder-snapshot");
+    const token = await vault.resumeSetup();
+    expect(vault.sessionMatches(token)).toBe(true);
+    expect(vault.pendingRecoveryKey()).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
 });

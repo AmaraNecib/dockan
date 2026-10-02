@@ -188,6 +188,17 @@ async function startPlaintext(): Promise<void> {
  * legacy plaintext database the serialised image is adopted first and the
  * schema version is preserved by the image itself.
  */
+/** The live store/connection pair, for post-setup work (the first backup). */
+let vaultStoreForBackup: StorePort | undefined;
+
+/** The first daily backup needs the committed header, so it runs post-commit. */
+async function runVaultDailyBackup(): Promise<void> {
+  const store = vaultStoreForBackup;
+  const conn = activeConnection;
+  if (store === undefined || conn === undefined) return;
+  await runDailyBackup(store, conn.validateSnapshotFile?.bind(conn));
+}
+
 async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   if (appReady) return;
   const vault = vaultManager;
@@ -226,7 +237,6 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       await store.insertActivity({ type: "VAULT_UNLOCK_FAILED", summary: event });
     }
     const sessionSecret = await ensureSessionSecret(store, logger);
-    await runDailyBackup(store, (backupPath) => conn.validateSnapshotFile(backupPath));
     const ownerId = await store.getSetting("adminUserId");
     if (ownerId !== undefined) vault.setOwnerId(ownerId);
 
@@ -246,12 +256,19 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     const deps: AppDeps = { config, logger, auth, rpcRouter };
     const app = createApp(deps);
     activeConnection = conn;
+    vaultStoreForBackup = store;
     appReady = true;
     activeHandler = buildOverlay((req) => app.fetch(req));
-    // A committed vault owns the data; a plaintext database left behind by a
-    // failed or interrupted first-run cleanup is stale and must not survive on
-    // the stick. Retry on every unlock until it is gone.
-    await vault.cleanupLegacyPlaintext();
+    // A committed vault owns the data; a plaintext database (live or under
+    // backups/) left behind by a failed or interrupted first-run cleanup is
+    // stale and must not survive. Retry on every unlock until it is gone.
+    const cleanup = await vault.cleanupLegacyPlaintext();
+    if (cleanup.plaintextRemaining.length > 0) {
+      logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.plaintextRemaining.join(", ")}`);
+    }
+    // unlock path only: the first-run path runs this after commitSetup, when
+    // the header exists and a self-contained backup can actually be written
+    if (!input.fresh) await runVaultDailyBackup();
     logger.info("SERVER_BOOT_DONE", "vault store and auth ready", { driver: "sqlite-encrypted" });
   } catch (error) {
     await conn.close();
@@ -270,7 +287,7 @@ const brokerRequestSchema = z.object({
 });
 
 type BrokerReply =
-  | { ok: true; sessionToken: string; recoveryKey?: string }
+  | { ok: true; sessionToken: string; recoveryKey?: string; plaintextRemaining?: string[] }
   | { ok: false; code: string; message: string; retryAfterMs?: number };
 
 function writeBrokerReply(reply: BrokerReply): void {
@@ -348,10 +365,15 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       const prepared = await vault.prepareSetup(passphrase);
       await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
       const sessionToken = await vault.commitSetup();
-      // the recovery key reaches the shell first; cleanup is retried on every
-      // unlock anyway, so it must never delay or fail the one-time reply
+      // the recovery key reaches the shell first: cleanup and the first backup
+      // are retried on later unlocks and must never delay or fail the one-time reply
       writeBrokerReply({ ok: true, sessionToken, recoveryKey: prepared.recoveryKey });
-      await vault.cleanupLegacyPlaintext();
+      const cleanup = await vault.cleanupLegacyPlaintext();
+      if (cleanup.plaintextRemaining.length > 0) {
+        logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.plaintextRemaining.join(", ")}`);
+      }
+      // the first daily backup needs the committed header, which now exists
+      await runVaultDailyBackup();
       // wait for the owner's acknowledgement (the shell shows the key); a
       // closed pipe means the app quit on the key screen, which is safe: the
       // vault exists and the key can be regenerated after unlocking
@@ -536,6 +558,7 @@ if (config.vault === "on") {
     logger,
     bootstrap: bootstrapVault,
     onSetupCommitted: () => manager.cleanupLegacyPlaintext(),
+    afterSetup: runVaultDailyBackup,
   });
   activeHandler = buildOverlay(undefined);
   startServer();

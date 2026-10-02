@@ -499,7 +499,9 @@ mod tests {
 
     #[test]
     fn verified_requires_token_echo_and_registry_ownership() {
-        let dir = std::env::temp_dir().join(format!("dokan-wait-test-{}", std::process::id()));
+        // unique per test: Rust tests run in parallel and a shared temp dir
+        // let the sibling decoy test delete our registry entry mid-assert
+        let dir = std::env::temp_dir().join(format!("dokan-wait-verified-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".dokan-port.registry")).unwrap();
         let token = "deadbeef";
         let echo = format!("{{\"ok\":true,\"token\":\"{token}\"}}");
@@ -517,7 +519,7 @@ mod tests {
 
     #[test]
     fn verified_rejects_a_decoy_without_registry_ownership() {
-        let dir = std::env::temp_dir().join(format!("dokan-wait-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dokan-wait-decoy-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".dokan-port.registry")).unwrap();
         // decoy: answers 200 with the token echo on every path, but there is
         // no registry entry under our pid — a hijacker who took the port

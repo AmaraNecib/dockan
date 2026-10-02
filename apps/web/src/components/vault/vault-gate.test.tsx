@@ -138,6 +138,24 @@ describe("VaultGate", () => {
     expect(unlocked).toBe(1);
   });
 
+  it("warns when setup could not remove plaintext files (finding 2)", async () => {
+    const recoveryKey = "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BC";
+    routes.set("/api/vault/setup", () =>
+      Response.json({
+        ok: true,
+        recoveryKey,
+        sessionToken: "session-token",
+        plaintextRemaining: ["C:/data/backups/dokan-2020-01-01.db"],
+      }),
+    );
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    const warning = host.querySelector('[data-testid="vault-plaintext-warning"]');
+    expect(warning?.textContent).toContain("dokan-2020-01-01.db");
+  });
+
   it("rejects a whitespace-only passphrase before any request (normalized floor)", async () => {
     let setupCalls = 0;
     routes.set("/api/vault/setup", () => {

@@ -35,7 +35,11 @@ const statusSchema = z.object({
   lockedForMs: z.number(),
   unlocked: z.boolean(),
 });
-const setupResponseSchema = z.object({ recoveryKey: z.string().min(1), sessionToken: z.string().min(1) });
+const setupResponseSchema = z.object({
+  recoveryKey: z.string().min(1),
+  sessionToken: z.string().min(1),
+  plaintextRemaining: z.array(z.string()).optional(),
+});
 const sessionResponseSchema = z.object({ sessionToken: z.string().min(1) });
 const recoveryKeysSchema = z.object({
   keys: z.array(z.object({ id: z.string().min(1), kind: z.literal("recovery"), label: z.string().optional(), createdAt: z.string() })),
@@ -136,18 +140,40 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
 }
 
 export async function fetchVaultStatus(): Promise<VaultStatus> {
-  const response = await fetch("/api/vault/status");
-  if (!response.ok) {
-    // an unreachable vault route means the legacy build; treat it as disabled
+  let response: Response;
+  try {
+    response = await fetch("/api/vault/status");
+  } catch {
+    // the server is unreachable (booting, proxy blip): the caller shows RETRY,
+    // never the legacy login screen
     throw new VaultRequestError("VAULT_UNREACHABLE", "تعذّر الاتصال بالخادم.");
   }
+  if (response.status === 404) {
+    // no vault route at all: this is the legacy plaintext build
+    throw new VaultRequestError("VAULT_UNSUPPORTED", "هذه النسخة لا تستعمل الخزنة.");
+  }
+  if (!response.ok) throw new VaultRequestError("VAULT_UNREACHABLE", "تعذّر الاتصال بالخادم.");
   const decoded = statusSchema.safeParse(JSON.parse(await response.text()));
   if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE", "تعذّر تنفيذ العملية. أعد المحاولة.");
   return decoded.data;
 }
 
-export async function vaultSetup(passphrase: string, setupToken?: string): Promise<{ recoveryKey: string; sessionToken: string }> {
-  return request("/api/vault/setup", { method: "POST", body: JSON.stringify({ passphrase, setupToken }) }, false, setupResponseSchema);
+export async function vaultSetup(
+  passphrase: string,
+  setupToken?: string,
+): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[] }> {
+  const result = await request(
+    "/api/vault/setup",
+    { method: "POST", body: JSON.stringify({ passphrase, setupToken }) },
+    false,
+    setupResponseSchema,
+  );
+  return { recoveryKey: result.recoveryKey, sessionToken: result.sessionToken, plaintextRemaining: result.plaintextRemaining ?? [] };
+}
+
+/** Revoke the in-process vault session server-side (logout). */
+export async function revokeVaultSession(): Promise<void> {
+  await request("/api/vault/logout", { method: "POST" }, true, z.object({ ok: z.literal(true) }));
 }
 
 export async function vaultUnlock(passphrase: string): Promise<string> {

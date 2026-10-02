@@ -41,6 +41,11 @@ export type Connection = {
    */
   writeBackupTo?: (destPath: string) => Promise<void>;
   /**
+   * Vault seam: verify one encrypted snapshot OR self-contained backup bundle.
+   * Absent on the legacy file-backed connection.
+   */
+  validateSnapshotFile?: (filePath: string) => boolean;
+  /**
    * Vault seam: fail-stop hook invoked when a committed unit cannot be written
    * to its durable snapshot. main.ts exits the process here (never report a
    * committed write as failed); tests leave it unset.

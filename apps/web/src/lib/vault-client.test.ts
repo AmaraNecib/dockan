@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
   changeVaultPassphrase,
+  fetchVaultStatus,
   isVaultPassphraseLongEnough,
   removeRecoveryKey,
   resetVaultPassphrase,
+  revokeVaultSession,
   storeVaultSessionToken,
   VaultRequestError,
 } from "./vault-client";
@@ -96,5 +98,26 @@ describe("vault credential calls return and adopt the rotated session token", ()
     });
     await changeVaultPassphrase("old passphrase", "new passphrase");
     expect(seen.value).toBe("stored-token");
+  });
+});
+
+describe("vault status and logout", () => {
+  it("distinguishes a legacy build (404) from an unreachable server", async () => {
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNSUPPORTED" });
+    routes.set("/api/vault/status", () => {
+      throw new Error("api down");
+    });
+    await expect(fetchVaultStatus()).rejects.toMatchObject({ code: "VAULT_UNREACHABLE" });
+  });
+
+  it("revokeVaultSession posts with the stored token", async () => {
+    storeVaultSessionToken("session-tok");
+    const seen = { value: "" };
+    routes.set("/api/vault/logout", (init) => {
+      seen.value = new Headers(init?.headers).get("x-vault-session") ?? "";
+      return Response.json({ ok: true });
+    });
+    await revokeVaultSession();
+    expect(seen.value).toBe("session-tok");
   });
 });

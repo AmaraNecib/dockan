@@ -53,6 +53,9 @@ export class VaultCore {
     deps: VaultCoreDeps = {},
   ): Promise<{ core: VaultCore; masterKey: Buffer }> {
     if (store.read() !== undefined) throw new Error("refusing to create a vault over an existing vault header");
+    // the primitive owns its floor (finding: create() trusted its callers): a
+    // normalized whitespace-only passphrase must never become a usable wrap
+    if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
     const now = deps.now ?? (() => new Date());
     const randomId = deps.randomId ?? (() => randomUUID());
     const kdf = deps.kdf ?? DEFAULT_KDF_PARAMS;

@@ -139,12 +139,34 @@ export function RequireSession({ children }: { children: ReactNode }) {
     }
     return <VaultOwnerGate>{children}</VaultOwnerGate>;
   }
-  // An unreachable status route means this build has no vault gate (the
-  // legacy/plaintext path) or the API is down; the auth screens own the
-  // retry either way. While the status is still loading on a vault install,
-  // show the loading screen instead of flashing the legacy login form.
-  if (vault.status === undefined && !vault.failed) return <LoadingScreen />;
+  // A status route that 404s means this build has no vault gate (legacy
+  // plaintext) and falls through to the auth screens. A network/5xx failure on
+  // a vault install shows a RETRY screen, never the legacy login (finding 5).
+  if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
+  if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return <LegacySessionGate>{children}</LegacySessionGate>;
+}
+
+/** The API booted but the vault status could not be read: retry, never login. */
+function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <main className="grid min-h-screen place-items-center bg-background p-4">
+      <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+        <p className="text-sm text-destructive" role="alert" data-testid="vault-status-unavailable">
+          {t("startupCheckFailed")}
+        </p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80"
+          data-testid="vault-status-retry"
+        >
+          {t("itemsSearchRetry")}
+        </button>
+      </div>
+    </main>
+  );
 }
 
 /** Owner provisioning after the vault is open (no separate login exists). */

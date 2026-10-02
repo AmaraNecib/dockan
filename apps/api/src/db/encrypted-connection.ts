@@ -111,6 +111,14 @@ function sealSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array)
   return Buffer.concat([VAULT_SNAPSHOT_MAGIC, Buffer.from([VAULT_SNAPSHOT_VERSION]), sealed]);
 }
 
+/**
+ * Public wrapper for callers that migrate a legacy plaintext database (e.g. a
+ * historical backup) into the vault's encrypted format.
+ */
+export function buildEncryptedSnapshot(masterKey: Uint8Array, vaultId: string, image: Uint8Array): Buffer {
+  return sealSnapshot(masterKey, vaultId, image);
+}
+
 /** Decrypt an envelope; structural damage and bad keys are both corruption here. */
 function openSnapshot(masterKey: Uint8Array, vaultId: string, envelope: Uint8Array): Buffer {
   if (envelope.length <= VAULT_SNAPSHOT_MAGIC.length + 1) throw new VaultCorruptionError("snapshot is truncated");
@@ -182,6 +190,8 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
       try {
+        // single-writer per data dir is issue #142: two sidecars both hold an
+        // in-memory image and this rename is last-writer-wins until the lock lands
         await writeFileAtomic(snapshotPath, envelope);
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush

@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
+import { readVaultBackupBundle } from "./backup";
+
 /**
  * The desktop shell's pre-boot broker (DOKAN_VAULT_STDIN=1) over its real
  * process boundary: the passphrase/recovery key goes in on stdin, exactly one
@@ -17,6 +19,13 @@ import readline from "node:readline";
 let dir: string;
 let port: number;
 let child: ChildProcessWithoutNullStreams | undefined;
+
+/**
+ * CI is slower than a dev laptop: every broker test spawns a real process and
+ * runs Argon2id inside it, so each test states its own per-test budget (the
+ * default 5s timed out in CI).
+ */
+const BROKER_TIMEOUT_MS = 30_000;
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -74,6 +83,22 @@ async function waitForHealth(apiPort: number, timeoutMs = 15_000): Promise<void>
   }
 }
 
+/** The first daily backup lands right after the setup reply; poll for it. */
+async function waitForBackupFile(timeoutMs = 15_000): Promise<string> {
+  const backupsDir = path.join(dir, "backups");
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const entry = fs.readdirSync(backupsDir).find((name) => name.startsWith("dokan-"));
+      if (entry !== undefined) return path.join(backupsDir, entry);
+    } catch {
+      /* the folder does not exist yet */
+    }
+    if (Date.now() >= deadline) throw new Error("daily backup was never created after setup");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 async function stopAndWait(): Promise<void> {
   if (child === undefined) return;
   const running = child;
@@ -111,7 +136,7 @@ describe("desktop shell vault broker", () => {
     expect(reply.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
     await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
     expect(child?.exitCode).not.toBe(0);
-  });
+  }, BROKER_TIMEOUT_MS);
 
   it("sets up over stdin, returns the recovery key once, and serves the app after the ack", async () => {
     child = spawnBroker(dir, port);
@@ -137,7 +162,12 @@ describe("desktop shell vault broker", () => {
       body: "{}",
     });
     expect(rpc.ok).toBe(true);
-  });
+
+    // the first daily backup runs AFTER the header commit (finding 6): the
+    // brand-new shop has a valid self-contained backup without another unlock
+    const backupFile = await waitForBackupFile();
+    expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
+  }, BROKER_TIMEOUT_MS);
 
   it("refuses a wrong passphrase with the Arabic code and exits without serving", async () => {
     // create a vault first
@@ -161,7 +191,7 @@ describe("desktop shell vault broker", () => {
     // and the process is gone (no lingering pre-unlock server)
     await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
     expect(child?.exitCode).not.toBe(0);
-  });
+  }, BROKER_TIMEOUT_MS);
 
   it("unlocks with a recovery key over stdin", async () => {
     child = spawnBroker(dir, port);
@@ -181,5 +211,5 @@ describe("desktop shell vault broker", () => {
     expect(reply.ok).toBe(true);
     expect(reply.sessionToken?.length).toBeGreaterThan(20);
     await waitForHealth(port);
-  });
+  }, BROKER_TIMEOUT_MS);
 });

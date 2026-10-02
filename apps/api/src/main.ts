@@ -22,11 +22,13 @@ import { ensureSessionSecret } from "./lib/session-secret";
 import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypto";
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
+import { createVaultLockRefusalApp, VaultAlreadyLockedError, acquireVaultLock, type VaultLock } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError } from "./lib/vault/manager";
 import { MIN_VAULT_PASSPHRASE_LENGTH, vaultErrorMessage } from "./lib/vault/messages";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 import type { StorePort } from "./store/port";
+
 /**
  * Boot: config, logger, the one StorePort seam, auth, rpc, the app, then the
  * server. main.ts knows seams, not SQL (ADR-0003).
@@ -50,6 +52,33 @@ fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
 
 const logger = new AppLogger(config.dataDir);
+
+/**
+ * Issue #142: one writer per vault data folder. The lock is acquired before
+ * any vault file is opened and held for the process lifetime; the module's
+ * exit hook releases it on fail-stop exits too. A second instance serves the
+ * Arabic refusal page instead of touching the data.
+ */
+let vaultLock: VaultLock | undefined;
+if (config.vault === "on") {
+  try {
+    vaultLock = acquireVaultLock(config.dataDir, {
+      logger,
+      onLost: (reason) => {
+        logger.error("VAULT_LOCK_LOST", `the single-writer lock was lost (${reason}); exiting to avoid two writers`);
+        process.exit(1);
+      },
+    });
+  } catch (error) {
+    if (error instanceof VaultAlreadyLockedError) await serveLockRefusal(config, error);
+    logger.error(
+      "VAULT_LOCK_FAILED",
+      "the vault data folder could not be locked",
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    process.exit(1);
+  }
+}
 
 /** The connection is created only when a vault opens; shutdown treats it as optional. */
 let activeConnection: Connection | undefined;
@@ -488,6 +517,7 @@ function startServer(): void {
   // shutdown path can exit before the reconcile finishes
   server.on("close", async () => {
     await reconcileBeforeExit();
+    vaultLock?.release();
     await activeConnection?.close();
     process.exit(0);
   });
@@ -513,6 +543,7 @@ async function reconcileBeforeExit(): Promise<void> {
       "port record cleanup failed before exit",
       err instanceof Error ? err : new Error(String(err)),
     );
+    vaultLock?.release();
     await activeConnection?.close();
     process.exit(1);
   }
@@ -527,6 +558,7 @@ function beginShutdown(): void {
   // the forced path still awaits the full reconcile before exiting
   setTimeout(async () => {
     await reconcileBeforeExit();
+    vaultLock?.release();
     await activeConnection?.close();
     process.exit(0);
   }, 3000).unref();
@@ -575,22 +607,19 @@ if (config.vault === "on") {
 }
 
 /**
- * Serve the standalone update page when this build is older than the
- * database. The store, auth and router never start, so nothing touches the
- * newer file (plaintext mode only; the vault path returns the refusal through
- * the unlock screen instead). The shell's identity probe still passes (the
- * token echo and the port-record publication below), so the packaged webview
- * navigates here and the owner reads the Arabic message (ADR-0008 §4.5).
+ * Serve one standalone refusal page on the reserved/app port, publishing the
+ * port record and echoing the boot token so the desktop shell's identity probe
+ * still passes and the webview navigates to the Arabic message. Shared by the
+ * schema gate (ADR-0008 §4.5) and the single-writer lock gate (issue #142).
  * Never returns: the process stays up while the owner reads the page.
  */
-async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVersionError): Promise<never> {
+async function serveRefusalServer(config: AppConfig, refusalApp: Hono, event: string): Promise<never> {
   const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
   const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
   if (config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
   const portFile = path.resolve(portRecordDir, ".dokan-port");
   const portLockDir = path.join(portRecordDir, ".dokan-port.lock");
   const registryDir = path.join(portRecordDir, ".dokan-port.registry");
-  const refusalApp = createSchemaRefusalApp(config, error);
 
   const server = serve(
     { fetch: refusalApp.fetch, port, hostname: config.host },
@@ -612,7 +641,7 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
         );
         process.exit(1);
       }
-      logger.warn("SCHEMA_VERSION_REFUSED", `serving the update-required page on http://${info.address}:${info.port}`);
+      logger.warn(event, `serving a refusal page on http://${info.address}:${info.port}`);
     },
   );
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -628,4 +657,23 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
   process.on("SIGTERM", shutdown);
   // never resolves: the event loop keeps the refusal server alive
   return new Promise<never>(() => {});
+}
+
+/**
+ * The standalone update page when this build is older than the database. The
+ * store, auth and router never start, so nothing touches the newer file
+ * (plaintext mode only; the vault path returns the refusal through the unlock
+ * screen instead).
+ */
+async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVersionError): Promise<never> {
+  return serveRefusalServer(config, createSchemaRefusalApp(config, error), "SCHEMA_VERSION_REFUSED");
+}
+
+/**
+ * The second instance on one vault folder: the lock was refused, so no vault
+ * file is opened and the owner reads why. The first instance keeps running
+ * untouched.
+ */
+async function serveLockRefusal(config: AppConfig, error: VaultAlreadyLockedError): Promise<never> {
+  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED");
 }

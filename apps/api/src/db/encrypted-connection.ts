@@ -24,10 +24,10 @@ import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-v
  * below mean a failed write is retried instead of being mistaken for saved
  * data, and `inTransaction` keeps a rolled-back unit out of the snapshot.
  *
- * KNOWN DEFERRED (issue #142, do not fix in this lane): two sidecars on the
- * same data dir both hold in-memory images and last-writer-wins the snapshot.
- * A single-writer lock for the vault data dir is the follow-up; the desktop
- * shell runs exactly one sidecar today.
+ * Single writer (issue #142): the vault data folder is guarded by an exclusive
+ * lock file (`lib/vault/lock.ts`) acquired before this connection opens, so two
+ * sidecars on one folder can no longer load separate in-memory images and
+ * last-writer-win the snapshot.
  */
 
 export type EncryptedConnection = {
@@ -190,8 +190,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
       try {
-        // single-writer per data dir is issue #142: two sidecars both hold an
-        // in-memory image and this rename is last-writer-wins until the lock lands
+        // the single-writer lock (lib/vault/lock.ts) keeps a second process
+        // from holding a competing in-memory image, so this rename is the only
+        // writer for the folder
         await writeFileAtomic(snapshotPath, envelope);
         // only now is the version durable; a mutation during the write set
         // mutationVersion beyond `version` and schedules the next flush

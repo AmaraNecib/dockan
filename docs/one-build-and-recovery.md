@@ -214,6 +214,18 @@ throttle counters. Logs remain plaintext operational diagnostics and are
 engineered never to contain a secret or a wrapped key; the stick-takeover
 threat model is about the data, and logs are excluded deliberately.
 
+**Single writer (issue #142).** The vault data folder is guarded by an
+exclusive lock file (`vault.lock`, created with `O_CREAT | O_EXCL` — atomic on
+NTFS, SMB/UNC shares and local POSIX filesystems) acquired before any vault
+file opens and held for the process lifetime. The holder records
+`{pid, host, startedAt, heartbeatAt, token}` and heartbeats every 10s; a second
+instance serves an Arabic "data in use" page and never touches the data. A lock
+left by a hard-killed process is reclaimed once the same-host PID is gone, or —
+for a stick moved to another machine — once the heartbeat is quiet for 60s. A
+lock file that cannot be created (read-only media, permissions) fails the boot
+loudly instead of silently running unlocked, and losing the lock while running
+is fail-stop.
+
 **Migration.** A legacy plaintext `dokan.db` is checkpointed out of WAL,
 `quick_check`ed, schema-gated (newer refuses), serialized, adopted into memory,
 written as the encrypted snapshot, and only then is the vault header committed;

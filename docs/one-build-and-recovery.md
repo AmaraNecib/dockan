@@ -81,6 +81,13 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 - If the database is copied/restored, the secret comes with it → sessions survive.
 - The secret is a normal row in the portable database; the stick is the boundary
   (see §7).
+- **Phase-1 interim exposure.** Until the vault lands, `auth_secret` is a plaintext
+  row in the database and therefore in every backup copy. Anyone who can read the
+  portable data folder can forge sessions; the vault (§4.6) is what closes this.
+- **Phase 1 has no password-reset path.** The build-secret reset is removed before the
+  recovery paths (§4.3/§4.4) exist, so a forgotten password is permanent until this
+  lane lands (restore a backup, or wait for recovery). Phase 1 is not a general
+  release for shops that depend on reset.
 
 ### 4.3 Recovery key
 
@@ -159,8 +166,11 @@ password changes — someone holding a pre-reset session must not keep access.
   path and **rename** it into place (crash-safe on a USB); **delete the stale
   `dokan.db-wal` / `dokan.db-shm` sidecars**; then **restart the process or fully
   re-init** the store, auth and router (they capture the connection and the signing
-  secret at boot), draining in-flight requests first. Migrations and the version stamp
-  run in one transaction; if a post-swap migration fails, restore the backup.
+  secret at boot), draining in-flight requests first. Migrations and the version
+  stamp run in one transaction **on import**; the ordinary boot migration is a
+  sequence of idempotent, marker-gated steps with the version stamped last, so an
+  interrupted boot re-runs them safely. If a post-swap migration fails, restore the
+  backup.
 - Version storage: use `PRAGMA user_version` (decided); a database with no version is
   treated as the oldest pre-universal format.
 

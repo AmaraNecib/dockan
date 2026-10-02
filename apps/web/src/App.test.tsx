@@ -8,9 +8,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
+import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
+let setupBlocked = false;
 /** The better-auth error shape the login page maps (code/message/status). */
 type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
@@ -21,8 +23,8 @@ let signInThrows = false;
 /** How long a sign-in call stays in flight, so a double submit can race it. */
 let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
+let firstTimeSetupArgs: { setupToken?: string } | null = null;
 let setupError: Error | null = null;
-let resetPasswordCalls = 0;
 
 // issue #97 follow-up: the shell's preference migration
 let sessionData: { user: { id: string } } | null = null;
@@ -33,14 +35,11 @@ let preferenceReadCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
-    needsSetup: async () => ({ needsSetup }),
-    firstTimeSetup: async () => {
+    needsSetup: async () => ({ needsSetup, setupBlocked }),
+    firstTimeSetup: async (input: { setupToken?: string }) => {
       firstTimeSetupCalls += 1;
+      firstTimeSetupArgs = input;
       if (setupError !== null) throw setupError;
-      return {};
-    },
-    authResetPassword: async () => {
-      resetPasswordCalls += 1;
       return {};
     },
     preferencesGet: async () => {
@@ -82,27 +81,29 @@ afterEach(() => {
   mounted = [];
   document.body.innerHTML = "";
   needsSetup = false;
+  setupBlocked = false;
   signInResult = { error: null };
   signInArgs = null;
   signInCalls = 0;
   signInThrows = false;
   signInDelayMs = 0;
   firstTimeSetupCalls = 0;
+  firstTimeSetupArgs = null;
   setupError = null;
-  resetPasswordCalls = 0;
   sessionData = null;
   sessionPending = false;
   preferenceStore = {};
   preferenceReadGate = null;
   preferenceReadCalls = 0;
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 function renderWithClient(root: ReturnType<typeof createRoot>, ui: React.ReactElement, client: QueryClient): void {
   root.render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
-async function mountAuthGate(): Promise<HTMLElement> {
+async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -116,12 +117,16 @@ async function mountAuthGate(): Promise<HTMLElement> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (host.querySelector("form") !== null) return host;
+    if (host.querySelector(selector) !== null) return host;
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
   }
-  throw new Error("auth gate did not render a form");
+  throw new Error(`auth gate did not render ${selector}`);
+}
+
+async function mountAuthGate(): Promise<HTMLElement> {
+  return mountAuthGateFor("form");
 }
 
 function inputByName(host: HTMLElement, name: string): HTMLInputElement {
@@ -149,17 +154,65 @@ async function submitForm(host: HTMLElement): Promise<void> {
   });
 }
 
-async function openForgotPassword(): Promise<HTMLElement> {
-  needsSetup = false;
-  const host = await mountAuthGate();
-  const button = host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]');
-  if (button === null) throw new Error("login form has no forgot-password button");
-  await act(async () => {
-    button.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+describe("ownerless non-empty database (ADR-0008 §4.1)", () => {
+  it("shows the blocked message instead of a login form that cannot succeed", async () => {
+    needsSetup = false;
+    setupBlocked = true;
+    const host = await mountAuthGateFor('[data-testid="setup-blocked"]');
+
+    const alert = host.querySelector('[data-testid="setup-blocked"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_DATABASE_NOT_EMPTY"));
+    expect(host.querySelector('[data-testid="login-submit"]')).toBeNull();
+    expect(host.querySelector("form")).toBeNull();
   });
-  return host;
-}
+
+  it("retries the check and moves on when the condition clears", async () => {
+    needsSetup = false;
+    setupBlocked = true;
+    const host = await mountAuthGateFor('[data-testid="setup-blocked"]');
+    expect(host.querySelector('[data-testid="setup-blocked"]')).not.toBeNull();
+
+    // the underlying condition is gone: the retry must reach the login form
+    setupBlocked = false;
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="setup-blocked-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="setup-blocked"]')).toBeNull();
+  });
+});
+
+describe("setup token (ADR-0008 ownership race)", () => {
+  it("forwards the shell's one-time token to the api", async () => {
+    needsSetup = true;
+    window.sessionStorage.setItem(SETUP_TOKEN_STORAGE_KEY, "shell-token");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(firstTimeSetupArgs?.setupToken).toBe("shell-token");
+  });
+
+  it("sends no token outside the packaged shell", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(firstTimeSetupCalls).toBe(1);
+    expect(firstTimeSetupArgs?.setupToken).toBeUndefined();
+  });
+});
 
 describe("auth phone inputs (issue #94)", () => {
   it("setup: the phone field is a named tel input with the tel keypad", async () => {
@@ -238,32 +291,6 @@ describe("login failures name the problem (issue #100)", () => {
     expect(inputByName(host, "password").getAttribute("minlength")).toBe("4");
   });
 
-  it("does not re-announce the setup notice after a trip to forgot-password", async () => {
-    needsSetup = true;
-    setupError = new Error("SETUP_ALREADY_DONE");
-    const host = await mountAuthGate();
-
-    setInputValue(inputByName(host, "ownerName"), "مالك");
-    setInputValue(inputByName(host, "storeName"), "متجر");
-    setInputValue(inputByName(host, "phone"), "0550123123");
-    setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
-    await submitForm(host);
-    expect(host.querySelector('[role="alert"]')).not.toBeNull();
-
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    // back to login: the notice was a one-shot handoff and is spent
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="forgot-back"]')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
-    expect(host.querySelector('[role="alert"]')).toBeNull();
-  });
-
   it("a malformed phone shows the phone message and never calls sign-in", async () => {
     needsSetup = false;
     const host = await mountAuthGate();
@@ -329,7 +356,7 @@ describe("login failures name the problem (issue #100)", () => {
   });
 });
 
-describe("setup and reset name the field (issue #100)", () => {
+describe("setup names the field (issue #100)", () => {
   it("setup: a three-character password is rejected in Arabic without a request", async () => {
     needsSetup = true;
     const host = await mountAuthGate();
@@ -355,39 +382,10 @@ describe("setup and reset name the field (issue #100)", () => {
     // be over-rejected by the new pre-submit check
     setInputValue(inputByName(host, "phone"), "00213 550 123 123");
     setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
     await submitForm(host);
 
     expect(firstTimeSetupCalls).toBe(1);
     expect(host.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("reset: a malformed phone is rejected in Arabic without a request", async () => {
-    const host = await openForgotPassword();
-
-    setInputValue(inputByName(host, "secret"), "secret");
-    setInputValue(inputByName(host, "phone"), "12345");
-    setInputValue(inputByName(host, "newPassword"), "abcd");
-    await submitForm(host);
-
-    const alert = host.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
-    expect(document.activeElement).toBe(inputByName(host, "phone"));
-    expect(resetPasswordCalls).toBe(0);
-  });
-
-  it("reset: a two-character new password is rejected in Arabic without a request", async () => {
-    const host = await openForgotPassword();
-
-    setInputValue(inputByName(host, "secret"), "secret");
-    setInputValue(inputByName(host, "phone"), "0550123123");
-    setInputValue(inputByName(host, "newPassword"), "ab");
-    await submitForm(host);
-
-    const alert = host.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
-    expect(document.activeElement).toBe(inputByName(host, "newPassword"));
-    expect(resetPasswordCalls).toBe(0);
   });
 });
 
@@ -417,16 +415,36 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "storeName"), "متجر");
     setInputValue(inputByName(host, "phone"), "0550123123");
     setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
     await submitForm(host);
 
     const alert = host.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
-    // the message says "sign in", so the form that can do it must be on screen
+    // the message says "sign in", so the form that can do it must be on screen,
+    // and the removed secret/reset entry points must not come back
     expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="setup-secret"]')).toBeNull();
+    expect(host.querySelector('[data-testid="forgot-password"]')).toBeNull();
+  });
+
+  it("a locked setup names the lockout on the form", async () => {
+    needsSetup = true;
+    setupError = new Error("SETUP_LOCKED");
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("SETUP_LOCKED"));
+    expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
+    expect(firstTimeSetupCalls).toBe(1);
+    // still the setup form: the owner waits and retries there
+    expect(host.querySelector('[data-testid="login-submit"]')).toBeNull();
   });
 
   it("clears a stale field error as soon as the owner corrects that field", async () => {

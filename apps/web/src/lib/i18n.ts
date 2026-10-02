@@ -29,11 +29,6 @@ const resources = {
       password: "كلمة السر",
       login: "دخول",
       logout: "خروج",
-      firstTime: "المرة الأولى؟ أنشئ كلمة السر بالرمز السري",
-      setupHeading: "الإعداد الأول (الرمز السري)",
-      secret: "الرمز السري",
-      resetDone: "تم الإعداد، سجّل الدخول الآن",
-      resetBusy: "جاري الإعداد…",
       home: "تم تسجيل الدخول بنجاح",
       homeHint: "يمكنك القدوم إلى المتجر وبدء البيع.",
       unexpected: "حدث خطأ غير متوقع",
@@ -243,11 +238,10 @@ const resources = {
       AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
       AUTH_PASSWORD_TOO_SHORT: `كلمة السر قصيرة جداً. استعمل ${MIN_PASSWORD_LENGTH} أحرف على الأقل.`,
       SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
+      SETUP_DATABASE_NOT_EMPTY: "قاعدة البيانات تحتوي على بيانات متجر بدون حساب مالك، فلا يمكن إنشاء حساب جديد. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
+      SETUP_LOCKED: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
+      SETUP_TOKEN_REQUIRED: "تعذّر التحقق من نافذة التطبيق. افتح شاشة الإعداد من نافذة دكان نفسها ثم أعد المحاولة.",
       INVALID_ORIGIN: "المصدر غير مصرح به — أعد تحميل الصفحة",
-      WRONG_BUILD_SECRET: "الرمز السري غير صحيح",
-      // issue #52 — reset lockout after repeated wrong-secret attempts
-      RESET_LOCKED: "تم إيقاف إعادة التعيين مؤقتاً بعد محاولات خاطئة متكررة؛ أعد المحاولة بعد قليل",
-      BUILD_SECRET_NOT_CONFIGURED: "لم يتم ضبط الرمز السري بعد",
       CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       BARCODE_EXISTS: "هذا الباركود مستعمل مع منتج آخر",
       INVALID_BARCODE: "الباركود غير صالح (حروف لاتينية وأرقام فقط)",
@@ -554,13 +548,8 @@ const resources = {
       setupOwnerName: "اسم المالك",
       setupStoreName: "اسم المتجر",
       setupStoreAddress: "عنوان المتجر (اختياري)",
-      setupSecret: "الرمز السري",
       setupCreate: "إنشاء الحساب",
-      forgotPassword: "نسيت كلمة السر؟",
-      forgotPasswordHint: "أدخل الرمز السري وكلمة السر الجديدة",
-      forgotPasswordReset: "إعادة التعيين",
-      forgotPasswordDone: "تم إعادة التعيين. سجّل الدخول الآن.",
-      
+
       // app shell — sidebar / header / theme / shortcuts / logout
       shellGroupMain: "العمل اليومي",
       shellGroupSystem: "النظام",
@@ -702,7 +691,7 @@ const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
 const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
 
 /**
- * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, RESET_LOCKED, …).
+ * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, SETUP_LOCKED, …).
  * Anything else — a bare word a stray `Error` happened to carry — is not an
  * error key and must not render a UI label as if it were one.
  */

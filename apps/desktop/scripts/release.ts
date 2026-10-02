@@ -1,69 +1,27 @@
 /**
- * Per-customer release pipeline (ticket 15 / PR #51 findings 2 & 5, issue
- * 64). Run via `bun run portable` (default target) or `bun run installer`
+ * Release pipeline (ticket 15, issue 64; one universal build, ADR-0008).
+ * Run via `bun run portable` (default target) or `bun run installer`
  * (see package.json).
  *
  * Flow:
- *   1. validate DOKAN_BUILD_SECRET (>= 16 chars) AND DOKAN_AUTH_SECRET
- *      (>= 32 chars) — fail loudly, never ship a default or weak secret
- *   2. compile the api sidecar with both secrets inlined (--define)
- *   3. build the requested target:
+ *   1. compile the api sidecar (no baked secrets — one build for every shop)
+ *   2. build the requested target:
  *      - portable (default, `--portable`): `tauri build --no-bundle` (the
  *        nsis installer is NEVER produced on this path), then assemble
  *        `bundle/portable/Dokan-portable/` (folder) + `Dokan-portable.zip`
  *        (portable.mjs). The folder runs in place anywhere: data lives next
  *        to the exe under `data/` (Rust portable marker, issue 64).
- *      - installer (`--installer`): `tauri build --bundles nsis`, then
- *        rename the installer with the customer slug when DOKAN_CUSTOMER_SLUG
- *        is set (lower-case letters, digits and dashes only).
- *
- * Documented per-customer commands (issue 64):
- *   portable zip + folder:
- *     DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
- *     DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
- *     bun run --filter @dokan/desktop portable
- *   per-customer installer:
- *     DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
- *     DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
- *     DOKAN_CUSTOMER_SLUG='shop-slug' \
- *     bun run --filter @dokan/desktop installer
+ *      - installer (`--installer`): `tauri build --bundles nsis`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
 import { assemblePortable } from "./portable.mjs";
-import { compileSidecar, validateAuthSecret, validateBuildSecret } from "./sidecar";
-
-const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
-/** Matches ONLY the pristine tauri NSIS artifact `Dokan_<version>_<arch>-setup.exe`
- * (arch is a single token, never an underscore) — an already slug-renamed
- * file like `Dokan_0.1.0_acme-shop_x64-setup.exe` must not be re-renamed. */
-const SETUP_GLOB = /^Dokan_\d+\.\d+\.\d+_[a-zA-Z0-9]+-setup\.exe$/;
+import { compileSidecar } from "./sidecar";
 
 const FLAG_INSTALLER = "--installer";
 const FLAG_PORTABLE = "--portable";
-
-/** Find the pristine installer artifact among the bundle-dir entries. */
-export function findInstallerName(names: string[]): string | undefined {
-  return names.find((name) => SETUP_GLOB.test(name));
-}
-
-/** Sanitize an optional customer slug: `[a-z0-9][a-z0-9-]*` or undefined. */
-export function customerSlug(raw: string | undefined): string | undefined {
-  const slug = raw?.trim();
-  if (slug === undefined || slug === "") return undefined;
-  return /^[a-z0-9][a-z0-9-]*$/.test(slug) ? slug : undefined;
-}
-
-/**
- * Insert the slug into the tauri artifact name:
- * `Dokan_0.1.0_x64-setup.exe` → `Dokan_0.1.0_<slug>_x64-setup.exe`.
- */
-export function renamedInstaller(fileName: string, slug: string): string {
-  const secondUnderscore = fileName.indexOf("_", fileName.indexOf("_") + 1);
-  return `${fileName.slice(0, secondUnderscore)}_${slug}${fileName.slice(secondUnderscore)}`;
-}
 
 /**
  * Which distribution the pipeline should produce. Portable (folder + zip) is
@@ -95,20 +53,9 @@ async function runTauri(args: string[]): Promise<void> {
   }
 }
 
-/** nsis installer target: build the installer and apply the optional slug. */
-async function buildInstaller(slug: string | undefined): Promise<void> {
+/** nsis installer target: build the installer artifact. */
+async function buildInstaller(): Promise<void> {
   await runTauri(["build", "--bundles", "nsis"]);
-
-  if (slug !== undefined) {
-    const setupName = findInstallerName(fs.readdirSync(BUNDLE_DIR));
-    if (setupName === undefined) {
-      console.error(`[dokan] installer artifact not found in ${BUNDLE_DIR}`);
-      process.exit(1);
-    }
-    const renamed = renamedInstaller(setupName, slug);
-    fs.renameSync(path.join(BUNDLE_DIR, setupName), path.join(BUNDLE_DIR, renamed));
-    console.log(`[dokan] installer renamed to ${renamed} (customer slug "${slug}")`);
-  }
 }
 
 /**
@@ -144,34 +91,12 @@ async function buildPortable(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const secret = validateBuildSecret();
-  if (!secret.ok) {
-    console.error(`[dokan] build secret rejected: ${secret.reason}`);
-    console.error("[dokan] set a unique per-customer secret, e.g.:");
-    console.error("  DOKAN_BUILD_SECRET='<unique-per-shop-secret>' bun run --filter @dokan/desktop portable");
-    process.exit(1);
-  }
-  const authSecret = validateAuthSecret();
-  if (!authSecret.ok) {
-    console.error(`[dokan] auth secret rejected: ${authSecret.reason}`);
-    console.error("[dokan] set a unique per-customer session-signing secret, e.g.:");
-    console.error("  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' bun run --filter @dokan/desktop portable");
-    process.exit(1);
-  }
-
-  const slug = customerSlug(process.env.DOKAN_CUSTOMER_SLUG);
-
-  await compileSidecar(secret.secret, authSecret.secret);
-  console.log(
-    `[dokan] sidecar compiled with a ${secret.secret.length}-char build secret and ${authSecret.secret.length}-char auth secret inlined`,
-  );
+  await compileSidecar();
+  console.log("[dokan] sidecar compiled (universal build, no baked secrets)");
 
   if (requestedTarget(Bun.argv) === "installer") {
-    await buildInstaller(slug);
+    await buildInstaller();
   } else {
-    if (slug !== undefined) {
-      console.log("[dokan] note: DOKAN_CUSTOMER_SLUG only applies to the installer target — the portable folder is customer-neutral");
-    }
     await buildPortable();
   }
 }

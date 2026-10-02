@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 
 import type { AppConfig } from "../config";
+import { assertSchemaVersionSupported } from "../lib/schema-version";
 import * as schema from "./schema";
 
 export type Schema = typeof schema;
@@ -28,12 +29,26 @@ export function openConnection(config: AppConfig): Connection {
 
   if (driver === "sqlite") {
     const sqlite = new Database(config.db.path, { create: true });
+    // Wait for a concurrent writer BEFORE the version read below: the read
+    // runs on a fresh database that may still be in rollback mode, and a
+    // busy writer there would otherwise surface as SQLITE_BUSY instead of the
+    // real answer. busy_timeout is connection state, not a disk write, so it
+    // is safe to set ahead of the gate.
+    sqlite.exec("PRAGMA busy_timeout = 5000;");
+    // Import/restore safety FIRST (ADR-0008 §4.5): the check only reads the
+    // header, so it must run before any pragma that writes. On read-only
+    // media `journal_mode = WAL` would throw SQLITE_READONLY before the gate
+    // could report the real problem (a newer database). Older formats pass
+    // and are migrated by store.setup(), which stamps the current version.
+    try {
+      assertSchemaVersionSupported(sqlite);
+    } catch (error) {
+      // do not leak the file handle on the refusal path
+      sqlite.close();
+      throw error;
+    }
     sqlite.exec("PRAGMA journal_mode = WAL;");
     sqlite.exec("PRAGMA foreign_keys = ON;");
-    // Separate app processes may briefly contend while SQLite serializes a
-    // database write (notably invoice-number allocation). Wait for the writer
-    // rather than turning a normal concurrent request into SQLITE_BUSY.
-    sqlite.exec("PRAGMA busy_timeout = 5000;");
     const db = drizzle(sqlite, { schema });
     return {
       db,

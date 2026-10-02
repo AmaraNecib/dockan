@@ -50,8 +50,6 @@ import {
   purchasesLinkStockInputSchema,
   purchasesLinkStockOutputSchema,
   purchasesProposalOutputSchema,
-  resetPasswordInputSchema,
-  resetPasswordOutputSchema,
   needsSetupOutputSchema,
   firstTimeSetupInputSchema,
   firstTimeSetupOutputSchema,
@@ -77,7 +75,6 @@ export const dokanContract = {
   // --- auth ----------------------------------------------------------------
   needsSetup: oc.output(needsSetupOutputSchema),
   firstTimeSetup: oc.input(firstTimeSetupInputSchema).output(firstTimeSetupOutputSchema),
-  authResetPassword: oc.input(resetPasswordInputSchema).output(resetPasswordOutputSchema),
 
   // --- categories ----------------------------------------------------------
   categoriesList: oc.output(z.object({ items: z.array(categorySchema) })),

@@ -35,9 +35,10 @@ import type {
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
+import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
 import { PartyError } from "./port";
 
@@ -822,6 +823,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         WHERE NOT EXISTS (SELECT 1 FROM stock_movements WHERE item_id = ${item.id})
       `);
     }
+
+    // ADR-0008 §4.5: every forward migration above has run; stamp the data
+    // format this build writes. The stamp is write-locked and re-reads the
+    // version first: a newer build that opened the same file meanwhile must
+    // never be overwritten with this build's older version. An interrupted
+    // earlier boot left the version unstamped, so the next setup re-runs the
+    // (idempotent) migrations.
+    stampSchemaVersionLocked(conn.raw);
   }
 
   /**
@@ -1723,6 +1732,42 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // same-second entries break alphabetical id tiebreaks; rowid keeps
       // insertion order, so newest written comes first within a second
       return db.select(activityCols).from(activities).orderBy(desc(activities.at), sql`rowid DESC`).limit(limit);
+    },
+    async databaseIsEmpty() {
+      // The tables a provisioned shop writes to. Seed rows (categories,
+      // expense categories, settings, sequences, migration markers) and the
+      // activity log are deliberately excluded: a startup DAILY_BACKUP
+      // activity row must not read as "the shop already has data".
+      const counts = await Promise.all([
+        db.$count(items),
+        db.$count(invoices),
+        db.$count(invoiceLines),
+        db.$count(payments),
+        db.$count(customers),
+        db.$count(suppliers),
+        db.$count(expenses),
+        db.$count(returns),
+        db.$count(returnLines),
+        db.$count(stockMovements),
+        db.$count(stockLinks),
+      ]);
+      if (counts.some((count) => count > 0)) return false;
+
+      // Shop records can be gone while the database is still a previously
+      // provisioned shop: a tampered or half-restored folder. The identity
+      // marker and a used number sequence prove it was claimed, so first-run
+      // setup must refuse (ADR-0008 §4.1).
+      // SAFETY: settings.key is the primary key; the literal SELECT yields one
+      // string value per row
+      const adminMarker = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, "adminUserId")).limit(1);
+      if (adminMarker.length > 0) return false;
+      const sequences = await Promise.all([
+        db.select({ next: invoiceNumberSequence.nextNumber }).from(invoiceNumberSequence).limit(1),
+        db.select({ next: returnNumberSequence.nextNumber }).from(returnNumberSequence).limit(1),
+      ]);
+      // A fresh setup seeds both sequences at 1; any allocation moves one
+      // past 1 (allocateInvoiceNumber / allocateReturnNumber).
+      return sequences.every((rows) => (rows[0]?.next ?? 1) <= 1);
     },
     async getSetting(key: string) {
       const row = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1);

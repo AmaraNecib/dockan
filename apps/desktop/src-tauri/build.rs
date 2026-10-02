@@ -1,32 +1,69 @@
 //! Build script. Two jobs:
 //!
-//! 1. Ensure the API sidecar binary exists (PR #51 finding 3). tauri-build
-//!    hard-fails when `bundle.externalBin` is missing, so a clean checkout
-//!    must be able to run `cargo build` / `cargo test` / `cargo clippy` /
-//!    `tauri build` without a manual sidecar step. When the configured binary
-//!    is absent, compile it first via the same command the pipeline uses.
-//!
-//!    The per-customer secrets (PR #51 findings 2 & 5) are ONLY inlined when
-//!    strong `DOKAN_BUILD_SECRET` / `DOKAN_AUTH_SECRET` values are present in
-//!    the build environment — this path is for the dev/test gates; the
-//!    shippable artifacts come from `bun run portable` / `bun run build`,
-//!    which validate both secrets and refuse to build without them.
+//! 1. Ensure the API sidecar binary exists and is fresh (ADR-0008 §5).
+//!    tauri-build hard-fails when `bundle.externalBin` is missing, so a clean
+//!    checkout must be able to run `cargo build` / `cargo test` /
+//!    `cargo clippy` / `tauri build` without a manual sidecar step. A staged
+//!    sidecar is reused only when a freshness stamp proves it was compiled
+//!    from the current API and contract sources and from the same binary
+//!    bytes; cargo would not otherwise re-run this script when the API
+//!    changes, so those inputs are declared with `rerun-if-changed` too.
+//!    One universal build: no secret is baked in — the session-signing secret
+//!    is generated at first run and lives in the database.
 //! 2. Delegate to tauri-build for the app manifest, icons and capabilities.
+//!
+//! The fingerprint/stamp logic lives in `src/sidecar_freshness.rs`, shared
+//! with the crate's test build so `cargo test` covers it.
+
+include!("src/sidecar_freshness.rs");
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the `.exe`
-/// suffix on Windows; tauri-build's `externalBin` resolves the same name.
+/// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the platform
+/// executable suffix; tauri-build's `externalBin` resolves the same name.
 const SIDECAR_NAME: &str = "dokan-api-x86_64-pc-windows-msvc";
-const MIN_BUILD_SECRET_LEN: usize = 16;
-const MIN_AUTH_SECRET_LEN: usize = 32;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let sidecar = manifest_dir.join("binaries").join(SIDECAR_NAME);
-    if sidecar.is_file() {
+    let sidecar = manifest_dir
+        .join("binaries")
+        .join(format!("{SIDECAR_NAME}{}", env::consts::EXE_SUFFIX));
+
+    // The sidecar's inputs live outside this package; without these cargo
+    // would never re-run this script when the API changes.
+    println!("cargo:rerun-if-changed=../../api/src");
+    println!("cargo:rerun-if-changed=../../api/package.json");
+    println!("cargo:rerun-if-changed=../../api/tsconfig.json");
+    println!("cargo:rerun-if-changed=../../../packages/contracts/src");
+    // the contracts package.json carries the exports map the sidecar bundles
+    println!("cargo:rerun-if-changed=../../../packages/contracts/package.json");
+    println!("cargo:rerun-if-changed=../../../bun.lock");
+    // the root tsconfig feeds the API build (paths/options)
+    println!("cargo:rerun-if-changed=../../../tsconfig.base.json");
+    // the root package.json pins the workspace + package manager the build uses
+    println!("cargo:rerun-if-changed=../../../package.json");
+    // Replacing the staged binary (e.g. the release pipeline just compiled it)
+    // must invalidate the stamp, so track the binary itself too.
+    println!("cargo:rerun-if-changed={}", sidecar.display());
+
+    let input_paths = [
+        manifest_dir.join("../../api/src"),
+        manifest_dir.join("../../api/package.json"),
+        manifest_dir.join("../../api/tsconfig.json"),
+        manifest_dir.join("../../../packages/contracts/src"),
+        manifest_dir.join("../../../packages/contracts/package.json"),
+        manifest_dir.join("../../../bun.lock"),
+        manifest_dir.join("../../../tsconfig.base.json"),
+        manifest_dir.join("../../../package.json"),
+    ];
+    let sources = fingerprint(&input_paths);
+    let stamp_path = sidecar.with_extension("stamp");
+    let expected = stamp_value(&sources, &sidecar);
+
+    if reuse_staged_sidecar(sidecar.is_file(), &stamp_path, &expected) {
         tauri_build::build();
         return;
     }
@@ -38,53 +75,17 @@ fn main() {
     cmd.args(["build", "--compile", "../api/src/main.ts", "--outfile"]);
     cmd.arg(&sidecar);
     cmd.current_dir(manifest_dir.join(".."));
-
-    let mut reason = "no DOKAN_BUILD_SECRET / DOKAN_AUTH_SECRET in the build environment (test artifact, not for distribution)";
-    if let Ok(secret) = env::var("DOKAN_BUILD_SECRET") {
-        if secret.len() >= MIN_BUILD_SECRET_LEN {
-            cmd.arg(format!("--define=process.env.DOKAN_BUILD_SECRET={}", js_string(&secret)));
-            reason = "per-customer DOKAN_BUILD_SECRET inlined";
-        }
-    }
-    // PR #51 finding 5: session signing is per-customer too — inline the
-    // auth secret exactly like the build secret when a strong value is
-    // supplied; the packaged-boot guard in main.ts refuses a binary whose
-    // signing secret stayed at the shared dev sentinel.
-    if let Ok(secret) = env::var("DOKAN_AUTH_SECRET") {
-        if secret.len() >= MIN_AUTH_SECRET_LEN {
-            cmd.arg(format!("--define=process.env.DOKAN_AUTH_SECRET={}", js_string(&secret)));
-            if reason == "per-customer DOKAN_BUILD_SECRET inlined" {
-                reason = "per-customer DOKAN_BUILD_SECRET and DOKAN_AUTH_SECRET inlined";
-            } else {
-                reason = "per-customer DOKAN_AUTH_SECRET inlined (no build secret)";
-            }
-        }
-    }
-    // PRINT is the build-script status channel: a loud warning so a sidecar
-    // built for the gates is never mistaken for a shippable artifact.
-    println!("cargo:warning=dokan: sidecar compiled without a release secret ({reason}) — cargo-built artifacts are for tests only; ship via `bun run portable`");
-
     let status = cmd.status().unwrap_or_else(|err| {
         panic!("could not run `bun build --compile` for the api sidecar ({err}); install bun or run `bun run sidecar` manually first")
     });
     assert!(status.success(), "sidecar compile failed with status {status}");
-    tauri_build::build();
-}
 
-/// Render a Rust string as a double-quoted JavaScript string literal for the
-/// `--define` value (no serde dependency in build-dependencies).
-fn js_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c => out.push(c),
-        }
+    // Record the sources and the COMPILED bytes so the next run can trust the
+    // staged sidecar; a failed stamp write only costs a recompile.
+    let compiled = stamp_value(&sources, &sidecar);
+    if let Err(error) = fs::write(&stamp_path, compiled) {
+        println!("cargo:warning=dokan: could not write the sidecar freshness stamp ({error}); the next build will recompile the sidecar");
     }
-    out.push('"');
-    out
+
+    tauri_build::build();
 }

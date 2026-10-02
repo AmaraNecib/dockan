@@ -7,6 +7,7 @@ import "./lib/i18n";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
+import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
@@ -146,12 +147,12 @@ export function RequireSession({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** Decides whether to show setup, login, or forgot-password. */
+/** Decides whether to show setup, the blocked screen, or login. */
 function AuthGate() {
   const { t } = useTranslation();
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [setupBlocked, setSetupBlocked] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
-  const [view, setView] = useState<"login" | "forgot">("login");
   /** the reason the setup form handed the owner to the login form */
   const [loginNotice, setLoginNotice] = useState<MessageKey | null>(null);
   const consumeLoginNotice = useCallback(() => setLoginNotice(null), []);
@@ -163,11 +164,14 @@ function AuthGate() {
   const checkSetup = useCallback(() => {
     const seq = ++checkSeqRef.current;
     setNeedsSetup(null);
+    setSetupBlocked(false);
     setCheckFailed(false);
     rpcClient
       .needsSetup()
       .then((res) => {
-        if (seq === checkSeqRef.current) setNeedsSetup(res.needsSetup);
+        if (seq !== checkSeqRef.current) return;
+        setNeedsSetup(res.needsSetup);
+        setSetupBlocked(res.setupBlocked);
       })
       // A failed check must not read as "setup not needed". On an empty
       // installation that shows login, which has no account to accept, and the
@@ -198,6 +202,24 @@ function AuthGate() {
 
   if (needsSetup === null) return <LoadingScreen />;
 
+  // No owner, but the database already holds shop data: setup is refused and
+  // login has no account to accept. Say what happened instead of showing a
+  // form that cannot succeed (ADR-0008 §4.1).
+  if (setupBlocked) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert" data-testid="setup-blocked">
+            {t("SETUP_DATABASE_NOT_EMPTY")}
+          </p>
+          <button type="button" onClick={checkSetup} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80" data-testid="setup-blocked-retry">
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (needsSetup) {
     return (
       <SetupPage
@@ -208,8 +230,7 @@ function AuthGate() {
       />
     );
   }
-  if (view === "forgot") return <ForgotPasswordPage onDone={() => setView("login")} />;
-  return <LoginPage onForgotPassword={() => setView("forgot")} notice={loginNotice} onNoticeConsumed={consumeLoginNotice} />;
+  return <LoginPage notice={loginNotice} onNoticeConsumed={consumeLoginNotice} />;
 }
 
 function LoadingScreen() {
@@ -228,7 +249,6 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
   const [storeAddress, setStoreAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [secret, setSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const phoneRef = useRef<HTMLInputElement>(null);
@@ -256,7 +276,9 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
         password,
         storeName,
         storeAddress: storeAddress || undefined,
-        secret,
+        // Packaged installs: the one-time token the shell put in the URL
+        // fragment. Absent in dev/e2e; the api ignores it there.
+        setupToken: readSetupToken(),
       });
       onDone();
     } catch (err) {
@@ -302,10 +324,6 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
           {t("password")}
           <input ref={passwordRef} type="password" minLength={MIN_PASSWORD_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
         </label>
-        <label className="mt-3 grid gap-1 text-sm">
-          {t("setupSecret")}
-          <input type="password" className="rounded border border-input bg-background px-3 py-2" name="secret" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" data-testid="setup-secret" />
-        </label>
 
         <AuthErrorAlert key={authError.state?.nonce ?? 0} id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
@@ -320,7 +338,7 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
 /*  Login page                                                         */
 /* ------------------------------------------------------------------ */
 
-function LoginPage({ onForgotPassword, notice, onNoticeConsumed }: { onForgotPassword: () => void; notice: MessageKey | null; onNoticeConsumed: () => void }) {
+function LoginPage({ notice, onNoticeConsumed }: { notice: MessageKey | null; onNoticeConsumed: () => void }) {
   const { t } = useTranslation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -389,93 +407,6 @@ function LoginPage({ onForgotPassword, notice, onNoticeConsumed }: { onForgotPas
         <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" data-testid="login-submit">
           {busy ? t("settingsSaving") : t("login")}
-        </button>
-
-        <button type="button" className="mt-4 text-xs text-muted-foreground underline" onClick={onForgotPassword} data-testid="forgot-password">
-          {t("forgotPassword")}
-        </button>
-      </form>
-    </main>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Forgot password — uses build secret                                */
-/* ------------------------------------------------------------------ */
-
-function ForgotPasswordPage({ onDone }: { onDone: () => void }) {
-  const { t } = useTranslation();
-  const [secret, setSecret] = useState("");
-  const [phone, setPhone] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [success, setSuccess] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
-  const phoneRef = useRef<HTMLInputElement>(null);
-  const passwordRef = useRef<HTMLInputElement>(null);
-  const { authError, report } = useAuthReporter(phoneRef, passwordRef);
-
-  async function reset(e: React.FormEvent) {
-    e.preventDefault();
-    if (busyRef.current) return;
-    const fieldKey = authFieldKey(phone, newPassword);
-    if (fieldKey !== null) {
-      report(fieldKey);
-      return;
-    }
-    busyRef.current = true;
-    setBusy(true);
-    authError.clear();
-    try {
-      await rpcClient.authResetPassword({ secret, phoneNumber: phone, newPassword });
-      setSuccess(true);
-    } catch (err) {
-      report(serverErrorKey(err instanceof Error ? err.message : undefined));
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  }
-
-  if (success) {
-    return (
-      <main className="grid min-h-screen place-items-center bg-background p-4">
-        <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm text-center" dir="rtl">
-          <p className="text-sm text-muted-foreground">{t("forgotPasswordDone")}</p>
-          <button onClick={onDone} className="mt-4 rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80">
-            {t("login")}
-          </button>
-        </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className="grid min-h-screen place-items-center bg-background p-4">
-      <form onSubmit={reset} className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm" dir="rtl">
-        <h1 className="text-center text-2xl font-bold">{t("appTitle")}</h1>
-        <p className="mt-1 text-center text-sm text-muted-foreground">{t("forgotPasswordHint")}</p>
-
-        <label className="mt-3 grid gap-1 text-sm">
-          {t("setupSecret")}
-          <input type="password" className="rounded border border-input bg-background px-3 py-2" name="secret" value={secret} onChange={(e) => setSecret(e.target.value)} required dir="ltr" />
-        </label>
-        <label className="mt-3 grid gap-1 text-sm">
-          {t("username")}
-          <input ref={phoneRef} type="tel" inputMode="tel" className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => setPhone(e.target.value)} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "forgot-error" : undefined} />
-        </label>
-        <label className="mt-3 grid gap-1 text-sm">
-          {t("password")}
-          <input ref={passwordRef} type="password" className="rounded border border-input bg-background px-3 py-2" name="newPassword" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "forgot-error" : undefined} />
-        </label>
-
-        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="forgot-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
-        <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
-          {busy ? t("settingsSaving") : t("forgotPasswordReset")}
-        </button>
-
-        <button type="button" className="mt-4 text-xs text-muted-foreground underline" onClick={onDone} data-testid="forgot-back">
-          {t("login")}
         </button>
       </form>
     </main>

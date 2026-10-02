@@ -23,7 +23,6 @@ beforeAll(async () => {
     createAppConfig({
       DOKAN_DATA_DIR: dir,
       DOKAN_DB_PATH: path.join(dir, "test.db"),
-      DOKAN_BUILD_SECRET: "test-build-secret-123",
     }),
   );
   store = createDrizzleStore(conn);

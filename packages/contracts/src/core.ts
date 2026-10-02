@@ -550,16 +550,12 @@ export const returnDetailSchema = returnSchema.extend({
  */
 export const MIN_PASSWORD_LENGTH = 4;
 
-export const resetPasswordInputSchema = z.object({
-  /** the build secret baked into the app; entering it lets the owner set a new password */
-  secret: z.string().min(1),
-  newPassword: z.string().min(MIN_PASSWORD_LENGTH),
-  /** the owner's Algerian mobile; becomes the login name after +213 normalization */
-  phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
-});
-
 export const needsSetupOutputSchema = z.object({
   needsSetup: z.boolean(),
+  /** true when there is no owner but the database already holds shop data:
+   * first-run setup is refused, and the UI must say so instead of showing a
+   * login form that cannot succeed (ADR-0008 §4.1). */
+  setupBlocked: z.boolean(),
 });
 
 export const firstTimeSetupInputSchema = z.object({
@@ -568,9 +564,10 @@ export const firstTimeSetupInputSchema = z.object({
   password: z.string().min(MIN_PASSWORD_LENGTH),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
-  // provisioning creates the first owner and closes setup, so it is gated by
-  // the same build secret that protects a password reset
-  secret: z.string().min(1),
+  // Packaged installs only: the one-time boot token the desktop shell injects
+  // into the webview's initial navigation. Absent in dev/e2e (no boot token),
+  // where the loopback-only server keeps the open gate.
+  setupToken: z.string().min(1).optional(),
 });
 
 export const firstTimeSetupOutputSchema = z.object({
@@ -884,10 +881,6 @@ export const healthOutputSchema = z.object({
   version: z.string(),
 });
 
-export const resetPasswordOutputSchema = z.object({
-  ok: z.literal(true),
-});
-
 export const entityListOutputSchema = z.object({
   items: z.array(z.unknown()),
 });
@@ -1052,7 +1045,6 @@ export type ReportRangePreset = z.infer<typeof reportRangePresetSchema>;
 export type ExpenseCategoryTotal = z.infer<typeof expenseCategoryTotalSchema>;
 export type ProfitReport = z.infer<typeof profitReportOutputSchema>;
 
-export type ResetPasswordInput = z.infer<typeof resetPasswordInputSchema>;
 export type CatalogSearchInput = z.infer<typeof catalogSearchInputSchema>;
 export type CatalogMatchKind = z.infer<typeof catalogMatchKindSchema>;
 export type CatalogMatch = z.infer<typeof catalogMatchSchema>;

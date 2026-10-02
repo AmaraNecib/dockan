@@ -13,11 +13,14 @@ import {
 
 import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
-import { createAppConfig, DEV_AUTH_SECRET, MIN_AUTH_SECRET_LEN } from "./config";
+import { createAppConfig, type AppConfig } from "./config";
 import { openConnection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
+import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
+import { UnsupportedSchemaVersionError } from "./lib/schema-version";
+import { ensureSessionSecret } from "./lib/session-secret";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 
@@ -27,43 +30,6 @@ import { createDrizzleStore } from "./store/drizzle-store";
  */
 const config = createAppConfig();
 
-// Per-customer provisioning secret (PR #51 finding 2): the release pipeline
-// bakes the vendor-supplied secret into this compiled exe by replacing the
-// `process.env.DOKAN_BUILD_SECRET` expression below with a string literal
-// (`bun build --define`, see apps/desktop/scripts/sidecar.ts). In packaged
-// builds nothing sets the env var at runtime, so this fill is what makes the
-// secret available for the reset procedure; in dev it reads the shell env as
-// before. It is a comparison-only credential — never logged, never stored.
-config.buildSecret ??= process.env.DOKAN_BUILD_SECRET;
-
-// Per-customer session-signing secret (PR #51 finding 5): mirrors the build
-// secret seam exactly — the release pipeline inlines DOKAN_AUTH_SECRET with
-// the SAME `bun build --define` mechanism, replacing the expression below
-// with a string literal. Packaged builds never set the env var at runtime,
-// so this fill is what makes better-auth sign sessions with the per-customer
-// key. The dev/test sentinel (DEV_AUTH_SECRET) can never reach a packaged
-// binary: the pipeline requires >= 32 chars AND the packaged-boot guard below
-// refuses to start without it.
-config.authSecret = process.env.DOKAN_AUTH_SECRET ?? config.authSecret;
-
-// PR #51 finding 5 packaged-boot guard: the desktop shell signals "packaged"
-// by setting webDataDir/bootToken, so a packaged binary must NEVER sign
-// sessions with the shared dev sentinel — extracting it from the binary would
-// forge admin sessions fleet-wide. The release pipeline validates the secret
-// at build time; this is the runtime backstop for a misbuilt/downgraded
-// artifact.
-if (
-  (config.webDataDir !== undefined || config.bootToken !== undefined) &&
-  (config.authSecret.length < MIN_AUTH_SECRET_LEN || config.authSecret === DEV_AUTH_SECRET)
-) {
-  console.error(
-    "[dokan] refusing to boot: packaged build without a strong per-customer DOKAN_AUTH_SECRET (>= " +
-      `${MIN_AUTH_SECRET_LEN} chars) — rebuild via ` +
-      "`bun run --filter @dokan/desktop portable` with DOKAN_AUTH_SECRET set.",
-  );
-  process.exit(1);
-}
-
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
 // so the process would die on first openConnection; make the whole tree now.
@@ -71,10 +37,32 @@ fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
 
 const logger = new AppLogger(config.dataDir);
-const conn = openConnection(config);
+// The open gate and the write-locked stamp in setup() can both discover a
+// newer database; both must land on the Arabic refusal page (ADR-0008 §4.5).
+const conn = await guardBootStep(
+  () => openConnection(config),
+  (error) => serveSchemaRefusal(config, error),
+);
 const store = createDrizzleStore(conn, logger);
+try {
+  await guardBootStep(
+    () => store.setup(),
+    (error) => {
+      // release the file before serving the page; the store never started
+      conn.close();
+      return serveSchemaRefusal(config, error);
+    },
+  );
+} catch (error) {
+  conn.close();
+  throw error;
+}
 
-await store.setup();
+// One universal build (ADR-0008 §4.2): the session-signing secret is generated
+// here on first run and stored in the database. A pre-universal database with
+// no stored secret gets one now, invalidating its old sessions exactly once;
+// no recovery credential is handed out at this moment.
+const sessionSecret = await ensureSessionSecret(store, logger);
 
 // daily startup backup (ticket 13): one copy per Algeria-local day. A failed
 // backup is logged loudly but must not block boot — a full disk should not
@@ -92,7 +80,7 @@ try {
   logger.error("SERVER_ERROR", "daily startup backup failed", err instanceof Error ? err : new Error(String(err)));
 }
 
-const auth = createAuth(conn.db, config);
+const auth = createAuth(conn.db, config, sessionSecret);
 const rpcRouter = createRpcRouter({ db: conn.db, config, logger, store, auth });
 const deps: AppDeps = { config, logger, auth, rpcRouter };
 const app = createApp(deps);
@@ -169,6 +157,61 @@ function findWorkspaceRoot(): string {
     if (parent === dir) return process.cwd();
     dir = parent;
   }
+}
+
+/**
+ * Serve the standalone update page when this build is older than the
+ * database. The store, auth and router never start, so nothing touches the
+ * newer file. The shell's identity probe still passes (the token echo and the
+ * port-record publication below), so the packaged webview navigates here and
+ * the owner reads the Arabic message (ADR-0008 §4.5). Never returns: the
+ * process stays up while the owner reads the page.
+ */
+async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVersionError): Promise<never> {
+  const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
+  const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
+  if (config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
+  const portFile = path.resolve(portRecordDir, ".dokan-port");
+  const portLockDir = path.join(portRecordDir, ".dokan-port.lock");
+  const registryDir = path.join(portRecordDir, ".dokan-port.registry");
+  const refusalApp = createSchemaRefusalApp(config, error);
+
+  const server = serve(
+    { fetch: refusalApp.fetch, port, hostname: config.host },
+    async (info) => {
+      try {
+        await publishPort({
+          portFile,
+          lockDir: portLockDir,
+          registryDir,
+          pid: process.pid,
+          host: config.host,
+          port: info.port,
+        });
+      } catch (err) {
+        logger.error(
+          "SERVER_ERROR",
+          `refusal page port publication failed after binding ${info.port}`,
+          err instanceof Error ? err : new Error(String(err)),
+        );
+        process.exit(1);
+      }
+      logger.warn("SCHEMA_VERSION_REFUSED", `serving the update-required page on http://${info.address}:${info.port}`);
+    },
+  );
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    logger.error("SERVER_ERROR", `could not bind the refusal page on ${config.host}:${port}`, err);
+    process.exit(1);
+  });
+  const shutdown = () => {
+    server.close(() => {
+      void forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid }).finally(() => process.exit(0));
+    });
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  // never resolves: the event loop keeps the refusal server alive
+  return new Promise<never>(() => {});
 }
 
 // An explicitly configured port is authoritative: falling back silently

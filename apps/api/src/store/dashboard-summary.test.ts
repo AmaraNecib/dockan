@@ -36,7 +36,7 @@ async function freshStoreWithConn(logger?: StoreLogger): Promise<{ store: StoreP
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-dash-"));
   tempDirs.push(dir);
   const conn = openConnection(
-    createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }),
   );
   conns.push(conn);
   const store = createDrizzleStore(conn, logger);

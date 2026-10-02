@@ -47,7 +47,6 @@ const LOCALE_NEUTRAL_FILES = [
   "apps/web/src/pages/returns.tsx",
   // issue #63 — api/web files whose Arabic moved to the i18n layer
   "apps/api/src/main.ts",
-  "apps/api/src/auth/admin.ts",
   "apps/api/src/rpc/router.ts",
   "apps/web/src/pages/activity.tsx",
   "apps/web/src/pages/stock.tsx",

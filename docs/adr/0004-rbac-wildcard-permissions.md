@@ -1,10 +1,10 @@
 # RBAC reserved: wildcard permissions, admin owns `*`
 
-Dokan keeps a single provisioned admin for the MVP (provisioned via the build secret,
-enforced by the `adminUserId` setting). There is no username field anywhere: login is
-phone number + password; names like `admin` are display-only labels and are never used
-for authentication or authorization. We reserve the authorization model now so future
-roles bolt on without reworking call sites:
+Dokan keeps a single provisioned admin for the MVP (provisioned by first-run setup,
+enforced by the `adminUserId` setting; ADR-0008 removed the build secret). There is
+no username field anywhere: login is phone number + password; names like `admin` are
+display-only labels and are never used for authentication or authorization. We reserve
+the authorization model now so future roles bolt on without reworking call sites:
 
 - **Permissions are strings** in `domain:action` form (e.g. `stock:add`, `items:search`,
   `invoices:pay`). Domains mirror the contract prefixes (`stock`, `items`, `categories`,

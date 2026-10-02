@@ -42,6 +42,6 @@ block a merge.
 
 ## Not in CI
 
-The desktop/Tauri build is not built in CI: it needs per-customer
-`DOKAN_BUILD_SECRET` / `DOKAN_AUTH_SECRET` values that must never be stored as
-CI secrets (see `development-workflow.md` §5).
+The desktop/Tauri build is not built in CI: it is a Windows-only Rust/Tauri
+build and local gates cover it (see `development-workflow.md` §5). The api and
+web gates in CI are the same commands the local Guard runs.

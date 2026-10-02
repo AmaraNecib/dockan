@@ -9,12 +9,12 @@ import { ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/co
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
-import { resetAdminPassword } from "../auth/admin";
 import { createAppConfig, type AppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { accounts, users } from "../db/schema";
 import { AppLogger } from "../lib/logger";
-import { createResetThrottle } from "../lib/reset-throttle";
+import { ensureSessionSecret } from "../lib/session-secret";
+import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
@@ -23,7 +23,8 @@ import type { StorePort } from "../store/port";
  * Wire-seam tests for the merged router. The typed oRPC client calls the real
  * HTTP seam (app.fetch through RPCLink); the store sits on sqlite :memory:.
  * Ticket 02's session guard is part of the seam, so the client authenticates
- * first: provision the admin via the build secret and capture its cookie.
+ * first: provision the admin through the public first-run setup and capture
+ * its cookie.
  */
 let dir: string;
 let conn: Connection;
@@ -43,30 +44,15 @@ beforeAll(async () => {
   config = createAppConfig({
     DOKAN_DATA_DIR: dir,
     DOKAN_DB_PATH: path.join(dir, "test.db"),
-    DOKAN_AUTH_SECRET: "test-auth-secret",
-    DOKAN_BUILD_SECRET: "test-build-secret-123",
   });
   conn = openConnection(config);
   store = createDrizzleStore(conn);
   await store.setup();
   logger = new AppLogger(dir);
-  auth = createAuth(conn.db, config);
+  // One universal build (ADR-0008 §4.2): the session-signing secret is a
+  // normal database row generated on first use.
+  auth = createAuth(conn.db, config, await ensureSessionSecret(store));
   const app = createApp({ config, logger, auth, rpcRouter: createRpcRouter({ db: conn.db, config, logger, store, auth }) });
-
-  await resetAdminPassword(
-    { db: conn.db, auth, store, config, logger },
-    { secret: "test-build-secret-123", newPassword: "dokan-1234", phoneNumber: "0550123123" },
-  );
-
-  const login = await auth.handler(
-    new Request("http://localhost/api/auth/sign-in/username", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "213550123123", password: "dokan-1234" }),
-    }),
-  );
-  expect(login.status).toBe(200);
-  cookie = login.headers.get("set-cookie") ?? "";
 
   const linkWith = (cookieToSend: string) =>
     new RPCLink({
@@ -78,6 +64,27 @@ beforeAll(async () => {
         return Promise.resolve(app.fetch(new Request(request, { headers })));
       },
     });
+
+  // The public first-run setup is the only owner-provisioning path; use the
+  // real wire seam so the guard tests exercise what the app actually does.
+  const setupClient: DokanClient = createORPCClient(linkWith(""));
+  await setupClient.firstTimeSetup({
+    ownerName: "مالك الاختبار",
+    phoneNumber: "0550123123",
+    password: "dokan-1234",
+    storeName: "متجر الاختبار",
+  });
+
+  const login = await auth.handler(
+    new Request("http://localhost/api/auth/sign-in/username", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "213550123123", password: "dokan-1234" }),
+    }),
+  );
+  expect(login.status).toBe(200);
+  cookie = login.headers.get("set-cookie") ?? "";
+
   client = createORPCClient(linkWith(cookie));
   unauthed = createORPCClient(linkWith(""));
 });
@@ -513,8 +520,8 @@ describe("settings (ticket 10)", () => {
     await expect(unauthed.settingsUpdate({ storeName: "متجر" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
-  it("reports the seeded defaults before any edit", async () => {
-    expect(await client.settingsGet()).toEqual({ storeName: "Dokan", storePhone: null, storeAddress: null });
+  it("reports the store identity the first-run setup wrote", async () => {
+    expect(await client.settingsGet()).toEqual({ storeName: "متجر الاختبار", storePhone: "+213550123123", storeAddress: null });
   });
 
   it("normalizes a loose Algerian phone, persists, and audits the change", async () => {
@@ -2230,146 +2237,6 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
   });
 });
 
-/**
- * Issue #52: the authResetPassword lockout wiring. Self-contained app +
- * injected throttle clock so exhausting attempts here cannot poison the
- * shared router above, and unlocking is deterministic without real sleeps.
- */
-describe("authResetPassword throttling", () => {
-  let tDir: string;
-  let tDirBare: string;
-  let tConn: Connection;
-  let tConnBare: Connection;
-  let lockedClient: DokanClient;
-  let bareClient: DokanClient;
-  let now: number;
-  const LOCKOUT_MS = 30_000;
-  const WRONG = { secret: "guess", newPassword: "dokan-1234", phoneNumber: "0550123123" };
-  const CORRECT = { secret: "throttled-secret-1", newPassword: "dokan-1234", phoneNumber: "0550123123" };
-
-  beforeAll(async () => {
-    tDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-throttle-"));
-    const tConfig = createAppConfig({
-      DOKAN_DATA_DIR: tDir,
-      DOKAN_DB_PATH: path.join(tDir, "test.db"),
-      DOKAN_AUTH_SECRET: "test-auth-secret",
-      DOKAN_BUILD_SECRET: "throttled-secret-1",
-    });
-    tConn = openConnection(tConfig);
-    const tStore = createDrizzleStore(tConn);
-    await tStore.setup();
-    const tLogger = new AppLogger(tDir);
-    const tAuth = createAuth(tConn.db, tConfig);
-    now = 1_000_000;
-    const throttle = createResetThrottle({ now: () => now });
-    const tApp = createApp({
-      config: tConfig,
-      logger: tLogger,
-      auth: tAuth,
-      rpcRouter: createRpcRouter({ db: tConn.db, config: tConfig, logger: tLogger, store: tStore, auth: tAuth, resetThrottle: throttle }),
-    });
-    // SAFETY: the typed client from the link implements exactly DokanClient
-    lockedClient = createORPCClient(
-      new RPCLink({
-        url: `http://127.0.0.1:${tConfig.port}/api/rpc`,
-        fetch: (request) => Promise.resolve(tApp.fetch(request)),
-      }),
-    );
-
-    // a second app WITHOUT a build secret proves operator errors never count
-    // toward the lockout (the counting rule is the wire-level behavior)
-    tDirBare = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-rpc-throttle-bare-"));
-    const bareConfig = createAppConfig({
-      DOKAN_DATA_DIR: tDirBare,
-      DOKAN_DB_PATH: path.join(tDirBare, "test.db"),
-      DOKAN_AUTH_SECRET: "test-auth-secret",
-      // no DOKAN_BUILD_SECRET: reset always answers BUILD_SECRET_NOT_CONFIGURED
-    });
-    tConnBare = openConnection(bareConfig);
-    const bareStore = createDrizzleStore(tConnBare);
-    await bareStore.setup();
-    const bareLogger = new AppLogger(tDirBare);
-    const bareAuth = createAuth(tConnBare.db, bareConfig);
-    // maxFailures 1: a single mis-counted failure would lock everything
-    const bareThrottle = createResetThrottle({ maxFailures: 1 });
-    const bareApp = createApp({
-      config: bareConfig,
-      logger: bareLogger,
-      auth: bareAuth,
-      rpcRouter: createRpcRouter({
-        db: tConnBare.db,
-        config: bareConfig,
-        logger: bareLogger,
-        store: bareStore,
-        auth: bareAuth,
-        resetThrottle: bareThrottle,
-      }),
-    });
-    bareClient = createORPCClient(
-      new RPCLink({
-        url: `http://127.0.0.1:${bareConfig.port}/api/rpc`,
-        fetch: (request) => Promise.resolve(bareApp.fetch(request)),
-      }),
-    );
-  });
-
-  afterAll(() => {
-    tConn.close();
-    tConnBare.close();
-    // SAFETY: Windows holds the sqlite file briefly after close (same retry
-    // pattern as the shared suite's afterAll above)
-    for (const d of [tDir, tDirBare]) {
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          fs.rmSync(d, { recursive: true, force: true });
-          break;
-        } catch {
-          Bun.sleepSync(50);
-        }
-      }
-    }
-  });
-
-  it("locks after repeated wrong secrets, gates a CORRECT secret while locked, then unlocks after the wait", async () => {
-    for (let i = 0; i < 4; i++) {
-      // SAFETY: ORPCError exposes .code and .message on rejection
-      await expect(lockedClient.authResetPassword(WRONG)).rejects.toMatchObject({
-        code: "FORBIDDEN",
-        message: "WRONG_BUILD_SECRET",
-      });
-    }
-    // the 5th wrong guess still answers FORBIDDEN (it records failure 5);
-    // the lockout only shows on the NEXT attempt
-    await expect(lockedClient.authResetPassword(WRONG)).rejects.toMatchObject({
-      code: "FORBIDDEN",
-      message: "WRONG_BUILD_SECRET",
-    });
-
-    // even the right secret is gated while locked
-    await expect(lockedClient.authResetPassword(CORRECT)).rejects.toMatchObject({
-      code: "TOO_MANY_REQUESTS",
-      message: "RESET_LOCKED",
-    });
-
-    now += LOCKOUT_MS + 1; // deterministic wait via the injected clock
-    const out = await lockedClient.authResetPassword(CORRECT);
-    expect(out.ok).toBe(true);
-  });
-
-  it("does NOT count operator errors (BUILD_SECRET_NOT_CONFIGURED) as guessing attempts", async () => {
-    // two consecutive unconfig failures with a maxFailures:1 throttle: had the
-    // second counted, it would answer RESET_LOCKED instead
-    await expect(bareClient.authResetPassword(WRONG)).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message: "BUILD_SECRET_NOT_CONFIGURED",
-    });
-    await expect(bareClient.authResetPassword(WRONG)).rejects.toMatchObject({
-      code: "BAD_REQUEST",
-      message: "BUILD_SECRET_NOT_CONFIGURED",
-    });
-  });
-});
-
 // returns & refunds: cash refunds, per-line caps, marked stock movements
 // ---------------------------------------------------------------------------
 describe("returns & refunds", () => {
@@ -2989,14 +2856,16 @@ describe("returns & refunds", () => {
 });
 
 // ---------------------------------------------------------------------------
-// First-run setup provisioning (greptile PR #74)
+// First-run setup provisioning (greptile PR #74, ADR-0008 §4.1)
 // ---------------------------------------------------------------------------
 
 /**
  * Setup is the only unauthenticated write that can create an owner, so these
  * cover the two ways it could hand out a broken or duplicated account: two
  * concurrent setups racing, and a partial failure that leaves a user row but no
- * working credential.
+ * working credential. The gate is the database state, not a secret: an empty
+ * database may be claimed once; a database that already carries shop records
+ * refuses a new owner.
  */
 describe("first-time setup provisioning", () => {
   const teardown: Array<() => void> = [];
@@ -3004,27 +2873,28 @@ describe("first-time setup provisioning", () => {
     for (const close of teardown) close();
   });
 
-  const openInstance = async () => {
+  const openInstance = async (extraEnv: NodeJS.ProcessEnv = {}) => {
     const instanceDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-setup-"));
     const instanceConfig = createAppConfig({
       DOKAN_DATA_DIR: instanceDir,
       DOKAN_DB_PATH: path.join(instanceDir, "setup.db"),
-      DOKAN_AUTH_SECRET: "test-auth-secret",
-      DOKAN_BUILD_SECRET: "test-build-secret-123",
+      ...extraEnv,
     });
     const instanceConn = openConnection(instanceConfig);
     const instanceStore = createDrizzleStore(instanceConn);
     // a fresh database has no tables until the store creates them
     await instanceStore.setup();
     const instanceLogger = new AppLogger(instanceDir);
-    const instanceAuth = createAuth(instanceConn.db, instanceConfig);
+    // One universal build: the signing secret is a normal database row.
+    const instanceAuth = createAuth(instanceConn.db, instanceConfig, await ensureSessionSecret(instanceStore));
 
-    const clientFor = (storeFor: StorePort): DokanClient => {
+    const clientFor = (storeFor: StorePort, routerDeps: { setupThrottle?: SetupThrottle } = {}): DokanClient => {
       const app = createApp({
         config: instanceConfig,
         logger: instanceLogger,
         auth: instanceAuth,
         rpcRouter: createRpcRouter({
+          ...routerDeps,
           db: instanceConn.db,
           config: instanceConfig,
           logger: instanceLogger,
@@ -3056,60 +2926,103 @@ describe("first-time setup provisioning", () => {
     return { conn: instanceConn, store: instanceStore, client: clientFor(instanceStore), clientFor };
   };
 
-  const SETUP_SECRET = "test-build-secret-123";
-
   const setupCalls = (client: DokanClient, ownerName: string, phoneNumber: string) =>
     client.firstTimeSetup({
       ownerName,
       phoneNumber,
       password: "pass-1234",
       storeName: `متجر ${ownerName}`,
-      secret: SETUP_SECRET,
     });
 
-  it("refuses to provision for anyone without the build secret", async () => {
+  it("provisions the owner on an empty database", async () => {
     const inst = await openInstance();
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
-    // Provisioning closes setup to everyone else, so an unprotected call would
-    // let any client that reached a fresh installation become the owner.
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+    const userRows = await inst.conn.db.select({ id: users.id }).from(users);
+    expect(userRows).toHaveLength(1);
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: false });
+  });
+
+  it("refuses uniformly once an owner exists", async () => {
+    const inst = await openInstance();
+    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
+
+    // A completed installation must never mint a second owner, whatever the
+    // caller sends.
+    await expect(setupCalls(inst.client, "متطفل", "0550222222")).rejects.toThrow("SETUP_ALREADY_DONE");
+    const userRows = await inst.conn.db.select({ id: users.id }).from(users);
+    expect(userRows).toHaveLength(1);
+  });
+
+  it("refuses a non-empty database with no owner and writes nothing", async () => {
+    const inst = await openInstance();
+    // A shop record with no owner: a tampered or half-restored data folder.
+    // Setup must refuse it, or anyone holding the stick could claim the shop.
+    const category = (await inst.store.listCategories())[0];
+    expect(category).toBeDefined();
+    await inst.store.createItem({ name: "منتج-بدون-مالك", categoryId: category?.id ?? "", costPrice: 100, sellingPrice: 200 });
+
+    // neither the gate nor the procedure offers a way in, and the UI can tell
+    // the blocked state from a fresh install
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: true });
+    await expect(setupCalls(inst.client, "متطفل", "0550222222")).rejects.toThrow("SETUP_DATABASE_NOT_EMPTY");
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+  });
+
+  it("refuses while the setup lockout is active and writes nothing", async () => {
+    const inst = await openInstance();
+    // the KDF is a public CPU cost: a denied throttle must stop the handler
+    // before the password hash and before any write
+    const locked = createSetupThrottle({ maxAttempts: 1 });
+    locked.recordAttempt();
+    const lockedClient = inst.clientFor(inst.store, { setupThrottle: locked });
+
+    await expect(setupCalls(lockedClient, "متطفل", "0550222222")).rejects.toMatchObject({
+      code: "TOO_MANY_REQUESTS",
+      message: "SETUP_LOCKED",
+    });
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
+  });
+
+  it("requires the shell's one-time token in packaged builds", async () => {
+    const token = "a".repeat(64);
+    const inst = await openInstance({ DOKAN_BOOT_TOKEN: token });
+
+    // a local process that merely found the loopback port has no token
+    await expect(setupCalls(inst.client, "متطفل", "0550222222")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: "SETUP_TOKEN_REQUIRED",
+    });
     await expect(
       inst.client.firstTimeSetup({
         ownerName: "متطفل",
-        phoneNumber: "0550999999",
+        phoneNumber: "0550222222",
         password: "pass-1234",
         storeName: "متجر",
-        secret: "wrong-secret",
+        setupToken: "wrong-token",
       }),
-    ).rejects.toThrow();
-
-    // refused before anything was written
+    ).rejects.toMatchObject({ code: "FORBIDDEN", message: "SETUP_TOKEN_REQUIRED" });
     expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(0);
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
 
-    // and the real owner can still set up
-    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
-  });
-
-  it("refuses uniformly once set up, so the secret cannot be probed", async () => {
-    const inst = await openInstance();
-    await expect(setupCalls(inst.client, "مالك", "0550111111")).resolves.toEqual({ ok: true });
-
-    // a completed installation must not tell a right guess from a wrong one,
-    // or this public procedure becomes an oracle for the secret that also
-    // unlocks a password reset. Both attempts must fail the same way: if a
-    // wrong secret produced WRONG_BUILD_SECRET, this assertion would fail.
-    const attempt = (secret: string) =>
-      inst.client.firstTimeSetup({ ownerName: "متطفل", phoneNumber: "0550222222", password: "pass-1234", storeName: "متجر", secret });
-
-    await expect(attempt("wrong-secret")).rejects.toThrow("SETUP_ALREADY_DONE");
-    await expect(attempt(SETUP_SECRET)).rejects.toThrow("SETUP_ALREADY_DONE");
+    // the shell's own window holds the token and provisions normally
+    await expect(
+      inst.client.firstTimeSetup({
+        ownerName: "مالك",
+        phoneNumber: "0550111111",
+        password: "pass-1234",
+        storeName: "متجر",
+        setupToken: token,
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(await inst.conn.db.select({ id: users.id }).from(users)).toHaveLength(1);
   });
 
   it("provisions exactly one owner when two setups race", async () => {
     const inst = await openInstance();
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
-    // The existence check and the writes must share one BEGIN IMMEDIATE unit.
+    // The gate checks and every write must share one BEGIN IMMEDIATE unit.
     // Before that, both requests passed the check while the password hash was
     // pending and each created an owner.
     const results = await Promise.allSettled([
@@ -3128,7 +3041,7 @@ describe("first-time setup provisioning", () => {
     expect(["متجر أ", "متجر ب"]).toContain(settings.storeName);
 
     // and setup is closed afterwards
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: false, setupBlocked: false });
     await expect(setupCalls(inst.client, "ج", "0550333333")).rejects.toThrow();
   });
 
@@ -3158,13 +3071,12 @@ describe("first-time setup provisioning", () => {
         password: "pass-1234",
         storeName: "متجر",
         storeAddress: "شارع الاستقلال 12",
-        secret: SETUP_SECRET,
       }),
     ).rejects.toThrow();
 
     const afterFailure = await inst.conn.db.select({ id: users.id }).from(users);
     expect(afterFailure).toHaveLength(0);
-    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true });
+    expect(await inst.client.needsSetup()).toEqual({ needsSetup: true, setupBlocked: false });
 
     // the retry succeeds, and the address the form sent is retained
     await expect(
@@ -3174,7 +3086,6 @@ describe("first-time setup provisioning", () => {
         password: "pass-1234",
         storeName: "متجر",
         storeAddress: "شارع الاستقلال 12",
-        secret: SETUP_SECRET,
       }),
     ).resolves.toEqual({ ok: true });
     expect(await inst.store.getSettings()).toEqual({

@@ -40,8 +40,28 @@ enforce. To make these checks required on `develop` an admin must:
 Until that is done the workflow still runs and reports, but a red run does not
 block a merge.
 
-## Not in CI
+## Desktop installer (nightly + manual)
 
-The desktop/Tauri build is not built in CI: it is a Windows-only Rust/Tauri
-build and local gates cover it (see `development-workflow.md` §5). The api and
-web gates in CI are the same commands the local Guard runs.
+`.github/workflows/desktop-installer.yml` builds the one universal Tauri app
+(ADR-0008) and uploads the NSIS installer as a workflow artifact. It runs only
+on `workflow_dispatch` and a nightly `schedule` — never on pull requests — and
+is intentionally **not** one of the required status checks, so a slow or broken
+desktop build can never block an ordinary PR.
+
+The build is the documented release command
+(`bun run --filter @dokan/desktop installer`: sidecar compile + `tauri build
+--bundles nsis`), run on `windows-latest` because the Tauri shell and the
+portable/NSIS deliverables are Windows-only (`development-workflow.md` §5). No
+repository secrets are used: ADR-0008 removed the per-customer build secrets.
+
+Artifacts: the NSIS installer (`dokan-installer-<run_number>-<run_attempt>`),
+retained 14 days. A run that produces no installer fails loudly
+(`if-no-files-found: error` plus an explicit size check).
+
+## Not in the PR gate
+
+The desktop/Tauri build is not part of the PR gate: it is a Windows-only
+Rust/Tauri build, and the api/web gates in CI are the same commands the local
+Guard runs. It has its own nightly/manual workflow (above) and is not a
+required status check. The rest of the desktop path is covered by local gates
+(see `development-workflow.md` §5).

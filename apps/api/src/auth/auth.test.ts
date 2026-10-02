@@ -100,6 +100,27 @@ describe("phone normalization", () => {
     expect(normalizeAlgerianPhone("2660123123")).toBeNull();
     expect(normalizeAlgerianPhone("abc")).toBeNull();
   });
+
+  // issue #108 — the Arabic-keyboard numerals must be one identity with ASCII
+  it("folds Arabic-Indic digits to the same canonical ASCII number", () => {
+    expect(normalizeAlgerianPhone("٠٥٥٠١٢٣١٢٣")).toBe("+213550123123");
+  });
+
+  it("folds Extended Arabic-Indic digits to the same canonical ASCII number", () => {
+    expect(normalizeAlgerianPhone("۰۵۵۰۱۲۳۱۲۳")).toBe("+213550123123");
+  });
+
+  it("folds mixed digit sets and separators in one number", () => {
+    expect(normalizeAlgerianPhone("٠٥٥ 012 ٣١ ۲۳")).toBe("+213550123123");
+    expect(normalizeAlgerianPhone("٠٥٥-012-٣١-۲۳")).toBe("+213550123123");
+  });
+
+  it("keeps the stored/returned value ASCII and identical across digit sets", () => {
+    const ascii = normalizeAlgerianPhone("0550123123");
+    expect(normalizeAlgerianPhone("٠٥٥٠١٢٣١٢٣")).toBe(ascii);
+    expect(normalizeAlgerianPhone("۰۵۵۰۱۲۳۱۲۳")).toBe(ascii);
+    expect(ascii).toBe("+213550123123");
+  });
 });
 
 describe("auth seam", () => {
@@ -138,6 +159,18 @@ describe("auth seam", () => {
 
   it("signs in the provisioned owner with the phone digits", async () => {
     const login = await signIn(USERNAME, PASSWORD);
+    expect(login.status).toBe(200);
+    // SAFETY: a 200 sign-in response always carries the user object
+    const body = (await login.json()) as { user: { username: string } };
+    expect(body.user.username).toBe(USERNAME);
+  });
+
+  // issue #108 — the login path itself, not just the pure normaliser
+  it("signs in the owner when the phone is typed in Arabic-Indic digits", async () => {
+    const normalized = normalizeAlgerianPhone("٠٥٥٠١٢٣١٢٣");
+    expect(normalized).toBe(PHONE);
+    // SAFETY: the shared normaliser returned a canonical value just above
+    const login = await signIn(phoneToUsername(normalized!), PASSWORD);
     expect(login.status).toBe(200);
     // SAFETY: a 200 sign-in response always carries the user object
     const body = (await login.json()) as { user: { username: string } };

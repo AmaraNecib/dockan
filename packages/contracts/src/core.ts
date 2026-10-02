@@ -940,6 +940,15 @@ export const returnsListOutputSchema = z.object({
   items: z.array(returnDetailSchema),
 });
 
+/**
+ * Lightweight pending-return count (issue 118) for the shell badge and the
+ * dashboard notice. A dedicated aggregate keeps the always-mounted sidebar
+ * from pulling every return row just to render a number.
+ */
+export const returnsPendingCountOutputSchema = z.object({
+  count: z.number().int().min(0),
+});
+
 export const itemHistoryOutputSchema = z.object({
   movements: z.array(stockMovementWithBalanceSchema),
   stockOnHand: z.number().int().min(0),
@@ -1074,6 +1083,7 @@ export type ReturnMark = z.infer<typeof returnMarkSchema>;
 export type ReturnStatus = z.infer<typeof returnStatusSchema>;
 export type ReturnLine = z.infer<typeof returnLineSchema>;
 export type ReturnDetail = z.infer<typeof returnDetailSchema>;
+export type ReturnsPendingCount = z.infer<typeof returnsPendingCountOutputSchema>;
 export type Payment = z.infer<typeof paymentSchema>;
 export type Activity = z.infer<typeof activitySchema>;
 export type ActivityType = z.infer<typeof activityTypeSchema>;

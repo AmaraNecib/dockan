@@ -255,6 +255,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [recorded, setRecorded] = useState(false);
 
   const returns = returnsQuery.data?.items ?? [];
+  // issue #118 — a pending return does not move the balance until accepted;
+  // grouping it above the reviewed rows keeps the missing money explainable
+  const pendingReturns = returns.filter((record) => record.status === "PENDING_REVIEW");
+  const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
 
   // client projection of the return value from the entered drafts (the api
@@ -291,6 +295,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setRecorded(true);
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: { invoiceId: invoice.id } }) }),
+          // the shell badge and dashboard notice read this aggregate (issue #118)
+          queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),
           queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
         ]);
@@ -339,6 +345,16 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   return (
     <div className="rounded border bg-card p-4" data-testid="returns-panel">
       <h2 className="font-semibold">{t("returnsTitle")}</h2>
+      {pendingReturns.length > 0 && (
+        <p role="status" className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-sm text-warning" data-testid="returns-pending-notice">
+          {t("returnsPendingNotice", { count: pendingReturns.length })}
+        </p>
+      )}
+      {returns.length > 0 && (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="returns-counts">
+          {t("returnsPendingCountLabel", { count: pendingReturns.length })} · {t("returnsReviewedCountLabel", { count: reviewedReturns.length })}
+        </p>
+      )}
       {returns.length === 0 ? (
         <p className="mt-2 text-sm text-muted-foreground" data-testid="returns-empty">{t("returnsEmpty")}</p>
       ) : (
@@ -352,7 +368,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             </tr>
           </thead>
           <tbody>
-            {returns.map((record) => (
+            {[...pendingReturns, ...reviewedReturns].map((record) => (
               <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
                 <td className="p-2" dir="ltr">{record.returnNumber}</td>
                 <td className="p-2 font-medium">{record.refundAmount} {t("dzd")}</td>
@@ -498,6 +514,22 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   );
 }
 
+/**
+ * Invoice notes (issue #126). The printed receipt deliberately carries no
+ * notes; the detail screen is the one place they are shown. Absent or blank
+ * notes render nothing at all.
+ */
+export function InvoiceNotes({ notes }: { notes: string | null }) {
+  const { t } = useTranslation();
+  if (notes === null || notes.trim() === "") return null;
+  return (
+    <div className="mt-3 rounded border bg-accent p-3 text-sm" data-testid="invoice-notes">
+      <div className="text-muted-foreground">{t("invoiceNotes")}</div>
+      <p className="mt-1 whitespace-pre-wrap">{notes}</p>
+    </div>
+  );
+}
+
 export function InvoicePage() {
   const { t } = useTranslation();
   const { invoiceId } = useParams({ from: "/invoices/$invoiceId" });
@@ -549,6 +581,8 @@ export function InvoicePage() {
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>
           <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining"><Amount value={remaining} /></dd></div>
         </dl>
+
+        <InvoiceNotes notes={invoice.notes} />
 
         {invoice.lines.length > 0 && (
           <>

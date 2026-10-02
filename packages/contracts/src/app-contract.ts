@@ -58,6 +58,7 @@ import {
   returnsGetInputSchema,
   returnsListInputSchema,
   returnsListOutputSchema,
+  returnsPendingCountOutputSchema,
   returnsReviewInputSchema,
   settingsSchema,
   settingsUpdateInputSchema,
@@ -117,6 +118,8 @@ export const dokanContract = {
   returnsCreate: oc.input(returnsCreateInputSchema).output(returnDetailSchema),
   /** all returns, optionally scoped to one invoice (review page + invoice panel) */
   returnsList: oc.input(returnsListInputSchema).output(returnsListOutputSchema),
+  /** pending-review count for the sidebar badge and dashboard notice (issue 118) */
+  returnsPendingCount: oc.output(returnsPendingCountOutputSchema),
   /** owner confirms the returned goods: consumes the pending stock mark */
   returnsAccept: oc.input(returnsReviewInputSchema).output(returnDetailSchema),
   /** owner flags the returned goods as damaged: MANUAL_ADJUSTMENT removal */

@@ -1904,6 +1904,26 @@ describe("returns seam (cash refunds + review marks)", () => {
     expect(totals.get(a.line.id)?.refundAmount).toBe(100);
   });
 
+  it("counts only PENDING_REVIEW returns (issue #118)", async () => {
+    const { invoice } = await makeSaleFixture("مرجوع-عدّ", 300);
+    const before = await store.pendingReturnsCount();
+    const { id } = await store.insertReturn({
+      returnNumber: await store.allocateReturnNumber(),
+      invoiceId: invoice.id,
+      refundAmount: 300,
+      cashPaidOut: 300,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "PENDING_REVIEW",
+      occurredAt: stamp(),
+    });
+    expect(await store.pendingReturnsCount()).toBe(before + 1);
+    // once reviewed it no longer awaits the owner
+    expect(await store.transitionReturnStatus(id, "ACCEPTED")).toBe(true);
+    expect(await store.pendingReturnsCount()).toBe(before);
+  });
+
   it("transitions status exactly once (conditional guard) and consumes the pending marks", async () => {
     const { invoice, line } = await makeSaleFixture("مرجوع-مراجعة", 500);
     const { id: returnId } = await store.insertReturn({

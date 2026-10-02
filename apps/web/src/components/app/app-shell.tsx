@@ -5,6 +5,7 @@ import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
 import { logoutAndReload } from "@/lib/logout";
+import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
@@ -134,6 +135,9 @@ export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
   const activeTitleKey = pageTitleFor(activeKey);
+  // issue #118 — one shared, polled aggregate keeps the «المرتجعات» badge in
+  // step with the dashboard and a second window (round-2 findings 1 + 2).
+  const pendingReturns = usePendingReturnsCount();
 
   function toggleSidebar() {
     updateCollapsed((current) => !current);
@@ -156,6 +160,8 @@ export function AppShell() {
         collapsed={collapsed}
         activeKey={activeKey}
         user={user}
+        pendingReturnsCount={pendingReturns.data?.count ?? null}
+        pendingReturnsError={pendingReturns.isError}
         onExpand={() => updateCollapsed(() => false)}
       />
 

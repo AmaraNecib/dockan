@@ -58,6 +58,9 @@ let failAcknowledge = false;
 let acknowledgeCount = 0;
 let fetchCount = 0;
 let progressFetchCount = 0;
+let pendingReturnsCount = 0;
+let pendingFetchCount = 0;
+let failPendingReturns = false;
 
 function invoice(over: Partial<Invoice>): Invoice {
   return {
@@ -103,6 +106,16 @@ mock.module("@/lib/rpc", () => ({
           fetchCount += 1;
           if (failSummary) throw new Error("DASHBOARD_SUMMARY_FAILED");
           return summary;
+        },
+      }),
+    },
+    returnsPendingCount: {
+      queryOptions: () => ({
+        queryKey: ["returnsPendingCount"],
+        queryFn: async () => {
+          pendingFetchCount += 1;
+          if (failPendingReturns) throw new Error("PENDING_RETURNS_UNAVAILABLE");
+          return { count: pendingReturnsCount };
         },
       }),
     },
@@ -186,6 +199,10 @@ async function mount(queryClient: QueryClient, opts: { refreshMs?: number } = {}
     error: () => container.querySelector<HTMLElement>("[data-testid='dashboard-error']"),
     dismissFailed: () => container.querySelector<HTMLElement>("[data-testid='getting-started-dismiss-error']"),
     stale: () => container.querySelector<HTMLElement>("[data-testid='dashboard-stale']"),
+    pendingNotice: () => container.querySelector<HTMLElement>("[data-testid='dashboard-pending-returns']"),
+    pendingLink: () => container.querySelector<HTMLAnchorElement>("[data-testid='dashboard-pending-returns-link']"),
+    pendingUnavailable: () => container.querySelector<HTMLElement>("[data-testid='dashboard-pending-returns-unavailable']"),
+    pendingRetry: () => container.querySelector<HTMLButtonElement>("[data-testid='dashboard-pending-returns-retry']"),
     skeletons: () => container.querySelectorAll("[data-slot='skeleton']"),
     unmount: async () => {
       await act(async () => root.unmount());
@@ -210,6 +227,9 @@ describe("DashboardPage summary (issue 84)", () => {
     acknowledgeCount = 0;
     fetchCount = 0;
     progressFetchCount = 0;
+    pendingReturnsCount = 0;
+    pendingFetchCount = 0;
+    failPendingReturns = false;
     preferenceStore = {};
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {
@@ -289,6 +309,68 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
     // issue #119: day-first display, still the server's calendar day
     expect(page.card("dashboard-day")?.textContent).toBe("31/08/2026");
+    await page.unmount();
+  });
+
+  it("hides the pending-returns notice when no return awaits review", async () => {
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.card("dashboard-day") !== null)).toBe(true);
+    expect(page.pendingNotice()).toBeNull();
+    await page.unmount();
+  });
+
+  it("surfaces pending returns with the count and a link to review them", async () => {
+    pendingReturnsCount = 2;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.pendingNotice() !== null)).toBe(true);
+    expect(page.pendingNotice()?.getAttribute("role")).toBe("status");
+    expect(page.pendingNotice()?.textContent).toContain("2");
+    expect(page.pendingNotice()?.textContent).toContain(i18n.t("dashboardPendingReturns"));
+    expect(page.pendingLink()?.getAttribute("href")?.split("?")[0]).toBe("/returns");
+    await page.unmount();
+  });
+
+  // round-2 finding 2 — the shell badge and this notice read one shared hook,
+  // so convergence is proven here and the sidebar gets the same behaviour
+  it("polls the pending-return count so the badge converges without an invalidation", async () => {
+    const page = await mount(queryClient, { refreshMs: 20 }); // 20ms refresh keeps the test fast
+    expect(await waitFor(() => pendingFetchCount >= 2)).toBe(true);
+    await page.unmount();
+  });
+
+  it("refetches the shared pending-return count when another surface invalidates it", async () => {
+    const page = await mount(queryClient);
+    expect(await waitFor(() => pendingFetchCount >= 1)).toBe(true);
+    const before = pendingFetchCount;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["returnsPendingCount"] });
+    });
+    expect(await waitFor(() => pendingFetchCount > before)).toBe(true);
+    await page.unmount();
+  });
+
+  it("shows the unavailable notice, not silence, when the count read fails", async () => {
+    failPendingReturns = true;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.pendingUnavailable() !== null)).toBe(true);
+    expect(page.pendingUnavailable()?.getAttribute("role")).toBe("status");
+    expect(page.pendingUnavailable()?.textContent).toContain(i18n.t("dashboardPendingReturnsUnavailable"));
+    // a failed read is neither the normal notice nor nothing at all
+    expect(page.pendingNotice()).toBeNull();
+    expect(page.pendingRetry()).not.toBeNull();
+    await page.unmount();
+  });
+
+  it("recovers the notice after a failed count is retried successfully", async () => {
+    failPendingReturns = true;
+    pendingReturnsCount = 2;
+    const page = await mount(queryClient);
+    expect(await waitFor(() => page.pendingRetry() !== null)).toBe(true);
+    failPendingReturns = false;
+    await act(async () => page.pendingRetry()?.click());
+    expect(await waitFor(() => page.pendingNotice() !== null)).toBe(true);
+    expect(page.pendingUnavailable()).toBeNull();
+    expect(page.pendingNotice()?.textContent).toContain("2");
     await page.unmount();
   });
 
@@ -411,6 +493,9 @@ describe("GettingStartedPanel on the dashboard (issue #97)", () => {
     acknowledgeCount = 0;
     fetchCount = 0;
     progressFetchCount = 0;
+    pendingReturnsCount = 0;
+    pendingFetchCount = 0;
+    failPendingReturns = false;
     preferenceStore = {};
     progress = { hasItems: false, hasPurchase: false, hasSale: false, hasDebt: false };
     summary = {

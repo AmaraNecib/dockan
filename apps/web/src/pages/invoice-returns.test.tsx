@@ -41,6 +41,9 @@ mock.module("@/lib/rpc", () => ({
       }),
       queryKey: ({ input }: { input: { invoiceId: string } }) => ["returnsList", input],
     },
+    returnsPendingCount: {
+      queryKey: () => ["returnsPendingCount"],
+    },
     returnsCreate: {
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["returnsCreate"],
@@ -275,6 +278,31 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(row?.textContent).toContain("900 دج");
     expect(row?.textContent).toContain("قيد المراجعة");
     expect(host.querySelector('[data-testid="return-print-RTN-0001"]')).toBeTruthy();
+  });
+
+  it("flags a pending return and separates it from the reviewed ones (issue #118)", async () => {
+    returnsData = [
+      returnRecord({ id: "00000000-0000-4000-8000-0000000000d3", returnNumber: "RTN-0002", status: "ACCEPTED" }),
+      returnRecord(),
+    ];
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    const notice = host.querySelector('[data-testid="returns-pending-notice"]');
+    expect(notice).not.toBeNull();
+    expect(notice?.getAttribute("role")).toBe("status");
+    expect(notice?.textContent).toContain("1");
+    expect(host.querySelector('[data-testid="returns-counts"]')?.textContent).toContain("قيد المراجعة: 1");
+    // pending rows render first even when the api ordered the accepted one first
+    const rows = Array.from(host.querySelectorAll('[data-testid="returns-row"]'));
+    expect(rows[0]?.textContent).toContain("RTN-0001");
+    expect(rows[1]?.textContent).toContain("RTN-0002");
+  });
+
+  it("shows no pending notice once every return is reviewed", async () => {
+    returnsData = [returnRecord({ status: "ACCEPTED" })];
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    expect(host.querySelector('[data-testid="returns-pending-notice"]')).toBeNull();
   });
 
   it("blocks an over-cap draft client-side and sends nothing", () => {

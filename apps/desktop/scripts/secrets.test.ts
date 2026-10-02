@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -344,6 +344,56 @@ describe("ensureReleaseSecrets per customer (PR #117 finding 1)", () => {
     const result = JSON.parse(out.trim());
     expect(result.secrets.DOKAN_BUILD_SECRET).toBe(baseBuild);
     expect(result.sources.DOKAN_BUILD_SECRET).toBe("env");
+  });
+
+  it("ignores a secret inherited from the outer cwd .env even when BUN_OPTIONS proved no child preload", () => {
+    // the outer `bun run desktop:*` process pre-loads the repo-root .env
+    // BEFORE the script sets BUN_OPTIONS; that value must never become a
+    // customer's secret (PR #117 re-review finding 1)
+    const dir = scratchDir();
+    const ambient = path.join(dir, "root.env");
+    writeFileSync(ambient, renderEnvFile({ DOKAN_BUILD_SECRET: "inherited-build-secret-01" }, releaseEnvHeader()));
+
+    const result = ensureReleaseSecrets({
+      env: { DOKAN_BUILD_SECRET: "inherited-build-secret-01" },
+      envDir: dir,
+      customerSlug: "acme",
+      envIsExplicit: true,
+      ambientEnvFilePath: ambient,
+    });
+
+    expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe("inherited-build-secret-01");
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
+  });
+
+  it("ignores a customer-less secret inherited from a repo-root .env (outer bun run preload)", async () => {
+    const root = scratchDir();
+    const desktop = path.join(root, "apps", "desktop");
+    mkdirSync(desktop, { recursive: true });
+    const inherited = "inherited-build-secret-01";
+    writeFileSync(path.join(root, ".env"), renderEnvFile({ DOKAN_BUILD_SECRET: inherited }, releaseEnvHeader()));
+    const secretsModule = pathToFileURL(path.join(import.meta.dir, "secrets.ts")).href;
+    const child = `
+      const mod = await import(${JSON.stringify(secretsModule)});
+      const result = mod.ensureReleaseSecrets({ customerSlug: "acme" });
+      console.log(JSON.stringify({ secrets: result.secrets, sources: result.sources }));
+    `;
+    // simulate the outer `bun run` having pre-loaded root/.env, then the script
+    // chain running with BUN_OPTIONS=--no-env-file
+    const env = { ...process.env, BUN_OPTIONS: "--no-env-file", DOKAN_BUILD_SECRET: inherited };
+    delete env.DOKAN_AUTH_SECRET;
+    delete env.DOKAN_CUSTOMER_SLUG;
+    const proc = Bun.spawn(["bun", "-e", child], { cwd: desktop, env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new Error(`child failed: ${code}\n${err}`);
+
+    const result = JSON.parse(out.trim());
+    expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe(inherited);
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
   });
 
   it("rejects a slug that could escape the secrets directory", () => {

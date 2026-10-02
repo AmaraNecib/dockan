@@ -147,3 +147,20 @@ ensureReleaseSecrets({
 4. **Temp file outside the ignore pattern (P1).** `envTempPath` names the crash
    temp file `.env[.<slug>].<pid>.<random>.tmp`; `git check-ignore` confirms the
    existing `.env.*` rule covers it.
+
+## Round 4 (PR re-review fixes on 2a64c8b)
+
+1. **Outer `bun run` preload (P1).** `BUN_OPTIONS=--no-env-file` is set by the
+   script command, but the OUTER `bun run desktop:*` process starts before that
+   and can pre-load a repo-root `.env`; those values were inherited yet treated
+   as explicit. The resolver now reads the repo-root `.env`/`.env.local` (only
+   when resolving with the real process environment) and never classifies a
+   value matching them as an override for a slugged build. Explicit overrides
+   that equal the customer-less `apps/desktop/.env` are still honoured when
+   auto-loading was proven off, so both re-review findings hold at once.
+2. **Shared target/packaging paths (P1).** `release.ts` and `build.ts` now hold
+   a checkout-wide lock (`src-tauri/target/.dokan-release.lock`) from secret
+   resolution through bundling, via `withCheckoutReleaseLock`. The lock is
+   refreshed every 30 s while held (a multi-minute build is not stolen as
+   stale), waits up to an hour for another release, and is released on
+   `process.exit` too. Standalone sidecar compiles keep their per-customer lock.

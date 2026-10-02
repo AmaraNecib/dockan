@@ -228,6 +228,11 @@ interface ResolveContext {
   stored: EnvFileValues;
   /** The customer-less `.env`; only meaningful while resolving a slugged build. */
   baseStored: EnvFileValues;
+  /**
+   * Values from the `.env` the OUTER `bun run` may have pre-loaded (the cwd
+   * above the desktop package). A match here is inherited, never an override.
+   */
+  ambientStored: EnvFileValues;
   envFilePath: string;
   slug: string | undefined;
   /** True when every DOKAN_* value in `env` came from the caller, not `.env`. */
@@ -244,29 +249,33 @@ function resolveOne(spec: SecretSpec, ctx: ResolveContext): ResolvedOne {
   const explicit = ctx.env[spec.key];
   if (explicit !== undefined && explicit !== "") {
     const fromTargetFile = ctx.stored[spec.key] === explicit;
-    // The package scripts run with `bun --no-env-file`, so no `.env` value can
-    // be sitting in `env` by accident: ANY value is a deliberate override and
-    // must be honoured, even one equal to the customer-less `.env` value
-    // (PR #117 finding 3). Only an auto-loaded environment needs the
-    // preload-vs-override heuristic below.
-    if (ctx.envIsExplicit) {
-      const check = spec.validate({ [spec.key]: explicit });
-      if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
-      return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
-    }
+    // The root `desktop:*` scripts set BUN_OPTIONS=--no-env-file, but the OUTER
+    // `bun run` process was started before that and may already have pre-loaded
+    // a `.env` from its cwd. A value inherited that way must never be an
+    // override for a customer build (PR #117 re-review finding 1): two shops
+    // could otherwise ship with the same signing and password-reset secrets.
+    const fromAmbientFile = ctx.ambientStored[spec.key] === explicit;
+    if (!fromAmbientFile) {
+      // With `.env` auto-loading proven off for the whole child tree, any
+      // remaining value is a deliberate override and must be honoured, even
+      // one equal to the customer-less `.env` value (PR #117 finding 3).
+      if (ctx.envIsExplicit) {
+        const check = spec.validate({ [spec.key]: explicit });
+        if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
+        return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
+      }
 
-    // `bun run` pre-loads the customer-less `.env` into process.env. For a
-    // slugged build that value belongs to whoever last built without a slug,
-    // NOT to this customer, so it must not be mistaken for an override
-    // (PR #117 finding 1). Only a value that is not the base file's own value
-    // — and is not this customer's stored value — is a genuine override.
-    const fromBaseFile = ctx.baseStored[spec.key] === explicit;
-    if (fromTargetFile || !fromBaseFile) {
-      const check = spec.validate({ [spec.key]: explicit });
-      if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
-      // An env value that MATCHES the file came from the file; call it "file"
-      // so the owner is pointed at the place to edit.
-      return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
+      // Without that proof an ancestor may have pre-loaded the customer-less
+      // `.env` (PR #117 finding 1): only a value that is not the base file's
+      // own value — and is not this customer's stored value — is an override.
+      const fromBaseFile = ctx.baseStored[spec.key] === explicit;
+      if (fromTargetFile || !fromBaseFile) {
+        const check = spec.validate({ [spec.key]: explicit });
+        if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
+        // An env value that MATCHES the file came from the file; call it "file"
+        // so the owner is pointed at the place to edit.
+        return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
+      }
     }
   }
 
@@ -295,6 +304,12 @@ export interface EnsureSecretOptions {
    * false.
    */
   envIsExplicit?: boolean;
+  /**
+   * File whose values are treated as inherited from the outer process (tests).
+   * Defaults to the `.env` / `.env.local` two directories above the desktop
+   * package — the cwd the outer `bun run` pre-loads from.
+   */
+  ambientEnvFilePath?: string;
   generate?: (len: number) => string;
   /** Test seams for the cross-process generation lock. */
   lockWaitMs?: number;
@@ -336,11 +351,28 @@ export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): Resolve
   // build recognise (and refuse) values `bun run` pre-loaded from it.
   const baseStored =
     slug === undefined ? {} : readEnvFile(path.join(path.dirname(envFilePath), RELEASE_ENV_FILENAME));
+  // The outer `bun run desktop:*` process pre-loads the `.env` from ITS cwd
+  // (the repo root) before the script sets BUN_OPTIONS. Those values are
+  // inherited, not overrides, so a slugged build must ignore them too. The
+  // check only applies to the real process environment; a caller-supplied
+  // `env` (tests) has no outer process to inherit from.
+  const ambientStored =
+    slug === undefined
+      ? {}
+      : options.ambientEnvFilePath !== undefined
+        ? readEnvFile(options.ambientEnvFilePath)
+        : options.env !== undefined
+          ? {}
+          : {
+              ...readEnvFile(path.resolve(RELEASE_ENV_DIR, "..", "..", RELEASE_ENV_FILENAME)),
+              ...readEnvFile(path.resolve(RELEASE_ENV_DIR, "..", "..", ".env.local")),
+            };
 
   const ctx: ResolveContext = {
     env,
     stored: readEnvFile(envFilePath),
     baseStored,
+    ambientStored,
     envFilePath,
     slug,
     envIsExplicit,
@@ -387,6 +419,11 @@ export interface FileLockOptions {
   waitMs?: number;
   retryMs?: number;
   staleMs?: number;
+  /**
+   * When set, touch the lock file this often while it is held, so a long build
+   * (minutes) is never mistaken for a crashed owner and stolen.
+   */
+  refreshMs?: number;
 }
 
 /**
@@ -426,10 +463,28 @@ export function acquireFileLock(lockPath: string, options: FileLockOptions = {})
   }
   fs.writeSync(fd, token);
 
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  if (options.refreshMs !== undefined) {
+    refreshTimer = setInterval(() => {
+      try {
+        // only refresh a lock we still own: after a stale steal, touching the
+        // thief's lock would keep it alive forever
+        if (fs.readFileSync(lockPath, "utf8") === token) {
+          const now = new Date();
+          fs.utimesSync(lockPath, now, now);
+        }
+      } catch {
+        // released or stolen meanwhile
+      }
+    }, options.refreshMs);
+    refreshTimer.unref();
+  }
+
   let released = false;
   return () => {
     if (released) return;
     released = true;
+    if (refreshTimer !== undefined) clearInterval(refreshTimer);
     try {
       fs.closeSync(fd);
     } catch {

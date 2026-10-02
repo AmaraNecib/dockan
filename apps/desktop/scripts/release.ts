@@ -40,6 +40,7 @@ import path from "node:path";
 
 import { assemblePortable } from "./portable.mjs";
 import { compileSidecar, tauriExternalBinOverride } from "./sidecar";
+import { withCheckoutReleaseLock } from "./release-lock";
 import { ensureReleaseSecrets, type ResolvedReleaseSecrets } from "./secrets";
 
 const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
@@ -193,6 +194,13 @@ export function adoptReleaseSecrets(
 }
 
 async function main(): Promise<void> {
+  // The cargo target dir and the pristine bundle are shared by every customer,
+  // so the whole release — compile through packaging — is serialized against
+  // other releases in this checkout (PR #117 re-review finding 2).
+  await withCheckoutReleaseLock(runRelease);
+}
+
+async function runRelease(): Promise<void> {
   const rawSlug = process.env.DOKAN_CUSTOMER_SLUG;
   const slug = customerSlug(rawSlug);
   // A typo'd slug must not silently fall back to the customer-less `.env`,

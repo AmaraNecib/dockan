@@ -181,11 +181,25 @@ a missing file resolve to one secret set and a reader can never see a
 half-written file. Generated files are written 0600, and a pre-existing loose
 file is restricted before the secret lands in it.
 
-A slugged build must go through this pipeline (or run `bun run --filter
-@dokan/desktop sidecar` first). `build.rs` cannot read `.env.<slug>` itself, so
-when `DOKAN_CUSTOMER_SLUG` is set it refuses to compile against a staged sidecar
+A slugged build must go through this pipeline (or run `bun run desktop:sidecar`
+first). `build.rs` cannot read `.env.<slug>` itself, so when
+`DOKAN_CUSTOMER_SLUG` is set it refuses to compile against a staged sidecar
 that is not stamped for that same customer — it never silences the mismatch by
 inlining a different shop's secrets.
+
+**An inherited value is never an override.** The outer `bun run desktop:*`
+process may pre-load a `.env` from the repo root before the script disables
+auto-loading, so a slugged build ignores any `DOKAN_*` value that matches the
+repo-root `.env`/`.env.local` or, without proof that auto-loading was off, the
+customer-less `apps/desktop/.env`. A value inherited that way can therefore
+never become a customer's signing or password-reset secret.
+
+**One release at a time per checkout.** `release.ts` and `build.ts` hold
+`src-tauri/target/.dokan-release.lock` from secret resolution through bundling
+(the cargo target dir and the pristine `bundle/nsis` artifact are shared), so
+concurrent customer releases wait for each other instead of packaging each
+other's sidecar. The lock is refreshed while held. Do not run a standalone
+`bun run desktop:sidecar` while a release is packaging.
 
 ```bash
 # a specific customer's secrets, for one build, without touching the file

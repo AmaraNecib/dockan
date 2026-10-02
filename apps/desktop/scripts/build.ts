@@ -9,10 +9,18 @@
  */
 
 import { adoptReleaseSecrets } from "./release";
+import { withCheckoutReleaseLock } from "./release-lock";
 import { ensureReleaseSecrets, type ResolvedReleaseSecrets } from "./secrets";
 import { compileSidecar, tauriExternalBinOverride } from "./sidecar";
 
 async function main(): Promise<void> {
+  // Cargo's target dir and the bundler output are shared by every customer,
+  // so a build holds the checkout-wide release lock through bundling
+  // (PR #117 re-review finding 2).
+  await withCheckoutReleaseLock(runBuild);
+}
+
+async function runBuild(): Promise<void> {
   let resolved: ResolvedReleaseSecrets;
   try {
     // DOKAN_CUSTOMER_SLUG selects `.env.<slug>`; an unset slug uses `.env`.

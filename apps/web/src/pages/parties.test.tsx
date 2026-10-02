@@ -220,7 +220,7 @@ describe("PartiesPage (issue 120)", () => {
     });
     await click(host, '[data-testid="party-form-save"]');
 
-    expect(createdParties).toEqual([{ name: "زبون جديد", phone: "0555111222" }]);
+    expect(createdParties).toEqual([{ name: "زبون جديد", phone: "+213555111222" }]);
     expect(host.querySelector('[data-testid="party-create-dialog"]')).toBeNull();
     expect(host.querySelector('[data-testid="parties-notice"]')).not.toBeNull();
   });

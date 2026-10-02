@@ -188,7 +188,11 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
  */
 async function settlePartyDebts(page: Page, names: string[]): Promise<void> {
   await page.goto("/invoices");
-  await expect(page.getByTestId("invoices-page")).toBeVisible();
+  // The page shell renders before the invoice query settles. Waiting for the
+  // table-or-empty state is what makes a zero-row count trustworthy; counting
+  // during the pending interval would skip every debt and leak unpaid balances
+  // into later specs' global debt totals (Greptile finding 1).
+  await expect(page.getByTestId("invoices-table").or(page.getByTestId("invoices-empty"))).toBeVisible();
   const rows = page.getByTestId("invoice-row");
   const targets: string[] = [];
   for (let index = 0; index < (await rows.count()); index++) {
@@ -206,6 +210,6 @@ async function settlePartyDebts(page: Page, names: string[]): Promise<void> {
     await page.getByTestId("pmt-submit").click();
     await expect(page.getByTestId("pmt-done")).toBeVisible();
     await page.goto("/invoices");
-    await expect(page.getByTestId("invoices-page")).toBeVisible();
+    await expect(page.getByTestId("invoices-table").or(page.getByTestId("invoices-empty"))).toBeVisible();
   }
 }

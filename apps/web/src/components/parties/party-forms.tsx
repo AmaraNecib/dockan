@@ -3,6 +3,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
+import { normalizePartyPhone } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -68,7 +69,10 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
       setError(t("partyNameRequired"));
       return;
     }
-    const cleanPhone = phone.trim() === "" ? null : phone.trim();
+    // canonical identity, not the raw spelling: re-entering the same number in
+    // a local format is not a change, so it must not write or audit (Greptile
+    // finding 2)
+    const cleanPhone = normalizePartyPhone(phone);
     const onSuccess = (saved: Party) => {
       invalidateParties(queryClient);
       onSaved(saved, party === undefined || party === null ? "created" : "updated");
@@ -80,8 +84,7 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
       // overwritten by a stale form value (Greptile P1.2)
       const patch: PartyUpdateInput = { id: party.id };
       if (trimmed !== party.name) patch.name = trimmed;
-      const currentPhone = party.phone ?? null;
-      if (cleanPhone !== currentPhone) patch.phone = cleanPhone;
+      if (cleanPhone !== normalizePartyPhone(party.phone)) patch.phone = cleanPhone;
       if (patch.name === undefined && patch.phone === undefined) {
         onSaved(party, "updated");
         return;

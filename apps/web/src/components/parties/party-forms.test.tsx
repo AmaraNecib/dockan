@@ -157,7 +157,22 @@ describe("PartyForm concurrent edits (issue 120, Greptile P1.2)", () => {
     });
     await submit(host);
 
-    expect(updates).toEqual([{ id: "c-1", phone: "0666111222" }]);
+    // the canonical identity is what gets sent
+    expect(updates).toEqual([{ id: "c-1", phone: "+213666111222" }]);
+  });
+
+  it("treats the same phone in another valid format as unchanged", async () => {
+    const host = await mount();
+    const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+    await act(async () => {
+      // local spelling of the stored +213555123456
+      if (phone !== null) setElementValue(phone, "0555 12 34 56");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await submit(host);
+
+    expect(updates).toEqual([]);
+    expect(saved).toEqual([{ name: "علي", mode: "updated" }]);
   });
 
   it("does not write when nothing changed", async () => {

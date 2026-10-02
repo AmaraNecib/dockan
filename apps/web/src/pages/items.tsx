@@ -321,14 +321,27 @@ function ItemForm({
   // plain add form (no seed) keeps blank = no opening stock.
   const stockRequired = seed?.withStock === true;
 
+  /** Every draft input except the chosen category, which deliberately carries
+   * over between items. A successful save and a fresh scan both start from
+   * this, so a new barcode can never ride on the previous item's details. */
+  function clearDraft() {
+    setName("");
+    setCost("");
+    setSell("");
+    setThreshold("5");
+    setBarcode("");
+    setInitialStock("");
+    setError(null);
+  }
+
   // prefill from an unknown-scan choice; "create with stock" focuses the
   // (always-visible) quantity field and makes it required for this seed
   useEffect(() => {
     if (seed !== null) {
+      // a new scan is a new item: name, prices and quantity from the previous
+      // draft must not ride along on the new barcode
+      clearDraft();
       setBarcode(seed.barcode);
-      // a fresh scan must not inherit a quantity typed for a previous item
-      setInitialStock("");
-      setError(null);
       if (seed.withStock) initialStockRef.current?.focus();
       else nameRef.current?.focus();
     }
@@ -359,13 +372,7 @@ function ItemForm({
   );
 
   function resetFields() {
-    setName("");
-    setCost("");
-    setSell("");
-    setThreshold("5");
-    setBarcode("");
-    setInitialStock("");
-    setError(null);
+    clearDraft();
     onSeedConsumed();
   }
 

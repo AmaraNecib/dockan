@@ -637,6 +637,43 @@ describe("scan create-with-stock requires the opening quantity (issue #125)", ()
     expect(createWithStockInputs.length).toBe(0);
   });
 
+  it("does not let a new scan barcode inherit the previous plain draft's details", async () => {
+    // barcode A: a plain draft that survives an ordinary tab switch
+    await mount();
+    await scanUnknown("UNKNOWN-A-1");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-A-1");
+    setInput("item-name", "منتج أ");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(inputByTestId("item-name").value).toBe("منتج أ");
+
+    // barcode B: the new seed starts clean instead of reusing A's details
+    await scanUnknown("UNKNOWN-B-2");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-B-2");
+    expect(inputByTestId("item-name").value).toBe("");
+    expect(inputByTestId("item-cost").value).toBe("");
+    expect(inputByTestId("item-sell").value).toBe("");
+    expect(inputByTestId("initial-stock").value).toBe("");
+
+    // the save carries B with the details typed after the scan
+    setInput("item-name", "منتج ب");
+    setInput("item-cost", "200");
+    setInput("item-sell", "260");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "منتج ب", costPrice: 200, sellingPrice: 260 });
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
   it("marks the seeded stock field required and the plain one optional", async () => {
     await openStockSeedForm("UNKNOWN-STOCK-A11Y");
     const seeded = inputByTestId("initial-stock");

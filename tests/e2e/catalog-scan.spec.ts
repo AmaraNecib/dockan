@@ -191,9 +191,23 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await expect(page.getByTestId("item-name")).toHaveValue("منتج عادي بمسودة");
   await expect(page.getByTestId("item-barcode")).toHaveValue("UNKNOWN-557");
   await expect(page.getByTestId("initial-stock")).not.toHaveAttribute("aria-required", "true");
+
+  // a DIFFERENT scan must not inherit the surviving draft's details: the new
+  // barcode replaces the whole draft, so its name and prices start empty
+  await page.keyboard.type("UNKNOWN-558", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create").click();
+  await expect(page.getByTestId("item-barcode")).toHaveValue("UNKNOWN-558");
+  await expect(page.getByTestId("item-name")).toHaveValue("");
+  await expect(page.getByLabel("سعر الشراء (دج)")).toHaveValue("");
+  await expect(page.getByLabel("سعر البيع (دج)")).toHaveValue("");
+  await page.getByTestId("item-name").fill("منتج عادي ثان");
+  await page.getByLabel("سعر الشراء (دج)").fill("70");
+  await page.getByLabel("سعر البيع (دج)").fill("95");
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
-  await expect(page.getByRole("row", { name: /منتج عادي بمسودة/ })).toBeVisible();
+  await expect(page.getByRole("row", { name: /منتج عادي ثان/ })).toBeVisible();
 });
 
 test("stale scan lookups never overwrite newer results", async ({ page }) => {

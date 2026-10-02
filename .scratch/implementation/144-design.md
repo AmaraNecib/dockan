@@ -74,3 +74,15 @@ untouched; a newer DB still refuses cleanly (covered by existing tests).
 - Store: close/reopen keeps the corrected cost and the movement.
 - Web: the new activity summary token translates; reason token translates.
 - E2E: edit the cost, then add stock; the corrected cost survives the blend.
+
+## Round 2 (review findings)
+
+- **Future-dated inflow**: the correction was dated at the wall clock, so an
+  existing future-dated inflow replayed after it and blended over the edit
+  (edit to 300 stored 250). `costCorrectionTime(now, movements)` dates the
+  correction at `max(now, newest movement)`; the appended row's seq/input-order
+  tiebreak keeps it last, and the recompute uses the same candidate.
+- **Neutral zero-delta styling**: the history quantity cell styled every
+  non-positive delta as a destructive outflow, so a cost correction showed a
+  red 0. `movementDeltaClass` returns success for inflows, destructive for
+  outflows, and neutral for a zero-delta event.

@@ -222,6 +222,14 @@ export function movementReasonText(t: (key: string, vars?: Record<string, string
   return reason;
 }
 
+/** Delta-cell styling: inflows are gains, outflows losses, and a zero-delta
+ * event (a cost correction) is neutral — never styled as stock removed. */
+export function movementDeltaClass(delta: number): string {
+  if (delta > 0) return "text-success";
+  if (delta < 0) return "text-destructive";
+  return "text-muted-foreground";
+}
+
 export function ItemHistoryPage() {
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
@@ -271,7 +279,7 @@ export function ItemHistoryPage() {
                     <span className="mr-2 text-xs text-muted-foreground">({movementReasonText(t, movement.reason)})</span>
                   )}
                 </td>
-                <td className={`p-3 ${movement.delta > 0 ? "text-success" : "text-destructive"}`}>
+                <td className={`p-3 ${movementDeltaClass(movement.delta)}`}>
                   {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
                 </td>
                 <td className="p-3">{movement.unitCost ?? "—"}</td>

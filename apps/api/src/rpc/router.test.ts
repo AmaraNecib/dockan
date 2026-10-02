@@ -3367,4 +3367,27 @@ describe("items cost correction (issue 144)", () => {
     // the cache agrees with a full replay of whatever order the queue chose
     expect(row.costPrice).toBe(weightedAverageCost(movements));
   });
+
+  it("dates a correction after a future-dated inflow so the edit is not overwritten", async () => {
+    const item = await makeItem(`تصحيح-مستقبل-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE", occurredAt: "2020-01-01T00:00:00" });
+    // a manually entered future-dated inflow must not leapfrog the correction
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 200, kind: "PURCHASE", occurredAt: "2999-01-01T00:00:00" });
+
+    const edited = await client.itemsUpdate({ id: item.id, costPrice: 300 });
+    expect(edited?.costPrice).toBe(300);
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(20);
+    const correction = history.movements.find((m) => m.reason === "COST_CORRECTION");
+    expect(correction?.unitCost).toBe(300);
+    // dated at the newest movement, so it replays after the future-dated inflow
+    expect(correction?.occurredAt).toBe("2999-01-01T00:00:00");
+
+    // a later inflow dated after the correction blends from the corrected 300
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 150, kind: "PURCHASE", occurredAt: "2999-12-31T00:00:00" });
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(30);
+    expect(row.costPrice).toBe(250); // (20×300 + 10×150) / 30
+  });
 });

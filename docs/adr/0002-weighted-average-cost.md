@@ -14,7 +14,10 @@ Stock is valued at the weighted average of unit costs across purchases: buy 100 
 > `reason = "COST_CORRECTION"` token. This defines the zero-quantity case the
 > formula `(oldQty*oldCost + qty*cost)/(oldQty+qty)` leaves undefined: a
 > zero-quantity correction **sets** the running weighted average to its unit
-> cost without changing quantity. Replay then stays safe — a later inflow
+> cost without changing quantity. The correction is dated at the later of the
+> wall clock and the item's newest existing movement, so a future-dated inflow
+> replays before it instead of blending over it; when the timestamps tie, the
+> appended correction's rowid keeps it last. Replay then stays safe — a later inflow
 > weights the corrected average by the on-hand quantity (weight zero when the
 > correction landed on an empty item, so it cannot corrupt that inflow), and a
 > later outflow only reduces quantity. The correction revalues the live

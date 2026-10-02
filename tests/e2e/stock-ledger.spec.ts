@@ -112,6 +112,9 @@ test("an edited cost survives the next inflow and shows as a correction movement
   await expect(historyRows).toHaveCount(2);
   await expect(historyRows.last()).toContainText("تصحيح تكلفة يدوي");
   await expect(historyRows.last()).toContainText("300");
+  // a zero-quantity correction is not a stock loss: neutral delta styling
+  await expect(historyRows.last().getByRole("cell").nth(2)).toHaveClass(/text-muted-foreground/);
+  await expect(historyRows.last().getByRole("cell").nth(2)).not.toHaveClass(/text-destructive/);
 
   // a later inflow replays the ledger: (10×300 + 10×200) / 20 = 250
   await page.goto("/items");

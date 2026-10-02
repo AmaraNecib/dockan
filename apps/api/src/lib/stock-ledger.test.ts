@@ -4,6 +4,7 @@ import {
   StockLedgerError,
   averageCostAfter,
   COST_CORRECTION_REASON,
+  costCorrectionTime,
   fifoOutflowCost,
   historyWithRemaining,
   projectLedger,
@@ -312,5 +313,23 @@ describe("weightedAverageCost — zero-quantity cost correction (issue 144)", ()
   it("lets a later correction override an earlier one (last chronological wins)", () => {
     const movements = [correction(150, "2025-01-01T00:00:00"), correction(175, "2025-01-02T00:00:00")];
     expect(weightedAverageCost(movements)).toBe(175);
+  });
+});
+
+describe("costCorrectionTime (issue 144 round 2)", () => {
+  it("uses the wall clock when every movement is in the past", () => {
+    expect(costCorrectionTime("2026-06-03T10:00:00", [m("PURCHASE", 5, 100, "2026-06-01T08:00:00")])).toBe(
+      "2026-06-03T10:00:00",
+    );
+  });
+
+  it("moves after a future-dated movement so it cannot leapfrog the correction", () => {
+    expect(costCorrectionTime("2026-06-03T10:00:00", [m("PURCHASE", 5, 100, "2030-01-01T08:00:00")])).toBe(
+      "2030-01-01T08:00:00",
+    );
+  });
+
+  it("uses the wall clock on an empty ledger", () => {
+    expect(costCorrectionTime("2026-06-03T10:00:00", [])).toBe("2026-06-03T10:00:00");
   });
 });

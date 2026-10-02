@@ -209,6 +209,24 @@ export function saleMovementTime(invoiceDate: string, movements: readonly Ledger
   return latestInflow !== "" && latestInflow > dayStart ? latestInflow : dayStart;
 }
 
+/**
+ * Timestamp for an owner cost-correction movement (ADR-0002 / issue 144): the
+ * later of the wall clock and the item's newest existing movement. A correction
+ * dated at the wall clock can replay BEFORE a future-dated inflow, so the
+ * inflow blends over it and the owner's entered cost never lands; dating the
+ * correction at the newest movement makes it the ledger's last event. When the
+ * timestamps are equal the caller appends the correction after the existing
+ * rows, and the ledger tiebreak (seq for stored rows, then input order) keeps
+ * it last, so the recompute sees the same order.
+ */
+export function costCorrectionTime(now: string, movements: readonly LedgerMovement[]): string {
+  let latest = "";
+  for (const movement of movements) {
+    if (movement.occurredAt > latest) latest = movement.occurredAt;
+  }
+  return latest > now ? latest : now;
+}
+
 /** ADR-0002 weighted average after an inflow lands on top of current holdings. */
 export function averageCostAfter(
   currentAvgCost: number,

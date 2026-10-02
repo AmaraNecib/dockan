@@ -3,7 +3,7 @@ import i18n from "i18next";
 import type { TFunction } from "i18next";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar)
-import { movementReasonText } from "./stock";
+import { movementDeltaClass, movementReasonText } from "./stock";
 
 // SAFETY: the initialized i18next instance is a TFunction; the module's default
 // export is typed as a broader i18n interface, so the narrowing is asserted here
@@ -20,5 +20,13 @@ describe("stock movement reason tokens", () => {
 
   it("renders an unknown legacy reason raw", () => {
     expect(movementReasonText(t, "opening")).toBe("opening");
+  });
+
+  it("styles a zero-delta cost correction as neutral, never as a loss", () => {
+    expect(movementDeltaClass(0)).not.toBe("text-destructive");
+    expect(movementDeltaClass(0)).toBe("text-muted-foreground");
+    // real movements keep their gain/loss styling
+    expect(movementDeltaClass(4)).toBe("text-success");
+    expect(movementDeltaClass(-3)).toBe("text-destructive");
   });
 });

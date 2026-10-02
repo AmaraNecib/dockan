@@ -23,9 +23,11 @@ on:
   schedule:
     - cron: "17 3 * * *"
 
-# One desktop build at a time; a newer run supersedes an in-flight one.
+# Cancel duplicate runs of the SAME trigger, but never a manual run because a
+# nightly (or vice versa) started — an on-demand installer must survive to
+# upload its artifact. `event_name` keeps the two trigger streams apart.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

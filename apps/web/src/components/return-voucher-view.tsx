@@ -1,104 +1,100 @@
 import { useTranslation } from "react-i18next";
 
-import { debtOffsetDisplay, type ReturnVoucher } from "../lib/return-voucher";
+import { formatDate } from "../lib/dates";
+import { debtOffsetDisplay, paginateReturnVoucher, type ReturnVoucher } from "../lib/return-voucher";
+import { PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
 /**
- * Return voucher printing — the print-only voucher layout (mirror of
- * ReceiptView for the returns route). Presentational: data arrives as a fully
+ * Return voucher printing — the print-only A4 voucher sheets (mirror of
+ * ReceiptView for the returns route). It shares the settled sheet frame from
+ * `PrintSheet`, so it too loses the browser's URL/date header and carries the
+ * store header and a foot. A return can carry up to 200 lines, so the lines
+ * paginate: the full header repeats on every sheet, the table continues, and
+ * the totals close the last sheet. Presentational: data arrives as a fully
  * assembled `ReturnVoucher` (see lib/return-voucher.ts), so this view is
- * deterministic to render and needs no queries. RTL by default (the app is
- * Arabic); dates, the phone and the document numbers stay left-to-right spans
- * exactly like the invoice detail screen.
+ * deterministic to render and needs no queries.
  */
 export function ReturnVoucherView({ voucher }: { voucher: ReturnVoucher }) {
   const { t } = useTranslation();
   const debt = debtOffsetDisplay(voucher.status, voucher.debtOffset, voucher.debtApplied);
+  const pages = paginateReturnVoucher(voucher);
 
   return (
-    <article dir="rtl" className="rounded border bg-card p-6" data-testid="return-voucher-view">
-      <header className="border-b border-border pb-3 text-center">
-        <h1 className="text-xl font-bold" data-testid="return-voucher-store">{voucher.storeName}</h1>
-        {voucher.storePhone && (
-          <p dir="ltr" className="mt-1 text-sm text-muted-foreground" data-testid="return-voucher-phone">
-            {voucher.storePhone}
-          </p>
-        )}
-        <p className="mt-1 text-sm font-semibold">{t("returnVoucherTitle")}</p>
-      </header>
+    <div dir="rtl" className="print-doc" data-testid="return-voucher-view">
+      {pages.map((page) => (
+        <PrintSheet
+          key={page.number}
+          testIdPrefix="return-voucher"
+          storeName={voucher.storeName}
+          storePhone={voucher.storePhone}
+          storeAddress={voucher.storeAddress}
+          pageNumber={page.number}
+          pageCount={pages.length}
+          documentRef={voucher.returnNumber}
+        >
+          <dl className="print-sheet-meta print-sheet-meta-list">
+            <div>
+              <dt>{t("returnNumber")}</dt>
+              <dd dir="ltr" className="print-sheet-ltr" data-testid="return-voucher-number">
+                {voucher.returnNumber}
+              </dd>
+            </div>
+            <div>
+              <dt>{t("returnVoucherInvoice")}</dt>
+              <dd dir="ltr" className="print-sheet-ltr" data-testid="return-voucher-invoice">
+                {voucher.invoiceNumber}
+              </dd>
+            </div>
+            <div>
+              <dt>{t("invoiceDate")}</dt>
+              <dd className="print-sheet-digits" data-testid="return-voucher-date">
+                {formatDate(voucher.invoiceDate)}
+              </dd>
+            </div>
+            <div className="print-sheet-meta-wrap">
+              <dt>{t("invoiceParty")}</dt>
+              <dd data-testid="return-voucher-party">{voucher.counterpartyName ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>{t("returnsPayoutMethod")}</dt>
+              <dd data-testid="return-voucher-method">{t(`pmtMethod_${voucher.payoutMethod}`)}</dd>
+            </div>
+            <div>
+              <dt>{t("returnsStatus")}</dt>
+              <dd data-testid="return-voucher-status">{t(`returnsStatus_${voucher.status}`)}</dd>
+            </div>
+            {voucher.reason && (
+              <div className="print-sheet-meta-wide">
+                <dt>{t("returnsReason")}</dt>
+                <dd data-testid="return-voucher-reason">{voucher.reason}</dd>
+              </div>
+            )}
+          </dl>
 
-      <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("returnNumber")}</dt>
-          <dd dir="ltr" data-testid="return-voucher-number">{voucher.returnNumber}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("returnVoucherInvoice")}</dt>
-          <dd dir="ltr" data-testid="return-voucher-invoice">{voucher.invoiceNumber}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("invoiceDate")}</dt>
-          <dd dir="ltr" data-testid="return-voucher-date">{voucher.invoiceDate}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("invoiceParty")}</dt>
-          <dd data-testid="return-voucher-party">{voucher.counterpartyName ?? "—"}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("returnsPayoutMethod")}</dt>
-          <dd data-testid="return-voucher-method">{t(`pmtMethod_${voucher.payoutMethod}`)}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt className="text-muted-foreground">{t("returnsStatus")}</dt>
-          <dd data-testid="return-voucher-status">{t(`returnsStatus_${voucher.status}`)}</dd>
-        </div>
-        {voucher.reason && (
-          <div className="flex justify-between border-b py-1 col-span-2">
-            <dt className="text-muted-foreground">{t("returnsReason")}</dt>
-            <dd data-testid="return-voucher-reason">{voucher.reason}</dd>
-          </div>
-        )}
-      </dl>
+          {page.lines.length > 0 && (
+            <PrintItemTable
+              title={page.number === 1 ? t("returnVoucherLines") : undefined}
+              tableTestId="return-voucher-lines"
+              rowTestId="return-voucher-line"
+              unitPriceLabel={t("returnsRefundUnit")}
+              lineTotalLabel={t("returnsRefund")}
+              lines={page.lines}
+              unitPrice={(line) => line.refundUnitPrice}
+              lineTotal={(line) => line.refundAmount}
+            />
+          )}
 
-      {voucher.lines.length > 0 && (
-        <>
-          <h2 className="mt-4 font-semibold">{t("returnVoucherLines")}</h2>
-          <table className="mt-2 w-full text-sm" data-testid="return-voucher-lines">
-            <thead>
-              <tr className="border-b text-right text-muted-foreground">
-                <th className="p-1">{t("itemsName")}</th>
-                <th className="p-1">{t("saleQuantity")}</th>
-                <th className="p-1">{t("returnsRefundUnit")}</th>
-                <th className="p-1">{t("returnsRefund")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {voucher.lines.map((line, index) => (
-                <tr key={`${line.description}-${index}`} className="border-b last:border-0" data-testid="return-voucher-line">
-                  <td className="p-1">{line.description}</td>
-                  <td className="p-1">{line.quantity}</td>
-                  <td className="p-1">{line.refundUnitPrice} {t("dzd")}</td>
-                  <td className="p-1">{line.refundAmount} {t("dzd")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-
-      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-        <div className="flex justify-between border-b py-1 text-base font-bold">
-          <dt>{t("returnsRefundTotal")}</dt>
-          <dd data-testid="return-voucher-total">{voucher.refundAmount} {t("dzd")}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt>{t("returnsCashNow")}</dt>
-          <dd data-testid="return-voucher-cash">{voucher.cashPaidOut} {t("dzd")}</dd>
-        </div>
-        <div className="flex justify-between border-b py-1">
-          <dt>{t(debt.labelKey)}</dt>
-          <dd data-testid="return-voucher-debt">{debt.value} {t("dzd")}</dd>
-        </div>
-      </dl>
-    </article>
+          {page.closes && (
+            <PrintTotals
+              rows={[
+                { label: t("returnsRefundTotal"), amount: voucher.refundAmount, grand: true, valueTestId: "return-voucher-total" },
+                { label: t("returnsCashNow"), amount: voucher.cashPaidOut, valueTestId: "return-voucher-cash" },
+                { label: t(debt.labelKey), amount: debt.value, valueTestId: "return-voucher-debt" },
+              ]}
+            />
+          )}
+        </PrintSheet>
+      ))}
+    </div>
   );
 }

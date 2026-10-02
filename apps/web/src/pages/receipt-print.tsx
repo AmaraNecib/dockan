@@ -18,7 +18,7 @@ import { orpc } from "../lib/rpc";
  *
  * The auto-print fires exactly once per mount (StrictMode-safe ref gate) once
  * both reads land, with a short settle delay so fonts/layout are ready before
- * the dialog captures the page. A manual "طباعة الآن" button is the escape
+ * the dialog captures the page. A manual "print now" button is the escape
  * hatch, and the document stays on screen behind the dialog for review.
  */
 export function ReceiptPrintPage() {
@@ -71,7 +71,7 @@ export function ReceiptPrintPage() {
   const receipt = buildReceipt(detail.data, settings.data);
 
   return (
-    <section className="grid gap-3" data-testid="receipt-page">
+    <section className="print-page grid gap-3" data-testid="receipt-page">
       <div className="flex items-center justify-between print-hidden">
         <Link
           to="/invoices/$invoiceId"

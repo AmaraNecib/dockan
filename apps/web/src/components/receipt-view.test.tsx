@@ -8,25 +8,25 @@ import { createRoot } from "react-dom/client";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
-import type { Receipt } from "../lib/receipt";
+import type { Receipt, ReceiptLine } from "../lib/receipt";
 import { ReceiptView } from "./receipt-view";
 
 /**
- * Receipt printing — deterministic render of the print-only receipt view. The view
- * is presentational (no queries, no router): with a fixed Receipt fixture,
- * the exact document that reaches the paper is asserted — store identity,
- * header, lines, totals, paid/remaining and payment history, with RTL root
- * and ltr spans for dates/numbers.
+ * Receipt printing — deterministic render of the print-only A4 invoice sheet.
+ * The view is presentational (no queries, no router): with a fixed Receipt
+ * fixture, the exact document that reaches the paper is asserted — the full
+ * store header on every sheet, the one-line meta row, the items table, the
+ * carried totals, the pinned footer with «صفحة X من Y» and the payment history.
  */
 
 const receipt: Receipt = {
   storeName: "دكان التجربة",
   storePhone: "+213550123123",
+  storeAddress: "شارع الاستقلال 12",
   invoiceNumber: "INV-0007",
   kind: "SALE",
-  invoiceDate: "2026-08-25",
+  invoiceDateTime: "2026-08-25T10:00:00",
   counterpartyName: "زبون النقد",
-  notes: "توصيل للنهار",
   lines: [
     { description: "بطارية", quantity: 2, unitPrice: 550, netTotal: 1000 },
     { description: "تركيب", quantity: 1, unitPrice: 100, netTotal: 50 },
@@ -40,6 +40,35 @@ const receipt: Receipt = {
     { paidAt: "2026-08-25T10:01:00", method: "CASH", amount: 300, note: "أول دفعة" },
     { paidAt: "2026-08-25T11:30:00", method: "BANK", amount: 200, note: null },
   ],
+};
+
+function line(index: number): ReceiptLine {
+  return { description: `منتج ${index}`, quantity: 1, unitPrice: 100, netTotal: 100 };
+}
+
+const longReceipt: Receipt = {
+  ...receipt,
+  invoiceNumber: "INV-0100",
+  lines: Array.from({ length: 12 }, (_, i) => line(i + 1)),
+  subtotalAmount: 1200,
+  discountAmount: 0,
+  totalAmount: 1200,
+  paidAmount: 500,
+  remainingAmount: 700,
+  payments: [{ paidAt: "2026-08-25T10:01:00", method: "CASH", amount: 500, note: null }],
+};
+
+/** 20 unit-priced lines with no payments: three sheets, 7 / 7 / 6. */
+const threeSheetReceipt: Receipt = {
+  ...receipt,
+  invoiceNumber: "INV-0300",
+  lines: Array.from({ length: 20 }, (_, i) => line(i + 1)),
+  subtotalAmount: 2000,
+  discountAmount: 0,
+  totalAmount: 2000,
+  paidAmount: 0,
+  remainingAmount: 2000,
+  payments: [],
 };
 
 let roots: Array<{ unmount: () => void }> = [];
@@ -56,7 +85,7 @@ afterEach(() => {
   host.remove();
 });
 
-function renderReceipt(data: Receipt) {
+function renderReceipt(data: Receipt = receipt) {
   const root = createRoot(host);
   roots.push(root);
   act(() => {
@@ -64,107 +93,200 @@ function renderReceipt(data: Receipt) {
   });
 }
 
-const text = () => (host.textContent ?? "").replace(/\s+/g, " ").trim();
+function text(element: Element | null = host): string {
+  return (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+}
 
-describe("ReceiptView — document content", () => {
-  it("prints the store identity, invoice number, date and party", () => {
-    renderReceipt(receipt);
-    expect(text()).toContain("دكان التجربة");
-    expect(text()).toContain("+213550123123");
-    expect(text()).toContain("INV-0007");
-    expect(text()).toContain("25/08/2026");
-    expect(text()).toContain("زبون النقد");
-    expect(text()).toContain("توصيل للنهار");
+function sheets(): HTMLElement[] {
+  return Array.from(host.querySelectorAll<HTMLElement>('[data-testid="receipt-sheet"]'));
+}
+
+describe("ReceiptView — the settled A4 sheet", () => {
+  it("prints the store header, one-line meta row and invoice values", () => {
+    renderReceipt();
+    expect(text(host.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
+    expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+    expect(text(host.querySelector('[data-testid="receipt-address"]'))).toBe("شارع الاستقلال 12");
+    // the date is the app-wide shape, never the raw ISO value
+    // «التاريخ والوقت» promises both: the recording timestamp, day-first 24h
+    expect(text(host.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
+    expect(text(host.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0007");
+    expect(text(host.querySelector('[data-testid="receipt-party"]'))).toBe("زبون النقد");
+    expect(text(host.querySelector('[data-testid="receipt-kind"]'))).toBe("فاتورة بيع");
+    expect(text()).toContain("الزبون");
   });
 
-  it("renders every line with quantity, unit price and net total", () => {
-    renderReceipt(receipt);
-    const lines = Array.from(host.querySelectorAll('[data-testid="receipt-line"]'));
-    const cells = lines.map((row) =>
-      Array.from(row.querySelectorAll("td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    );
+  it("labels a purchase with المورّد and فاتورة شراء", () => {
+    renderReceipt({ ...receipt, kind: "PURCHASE" });
+    expect(text(host.querySelector('[data-testid="receipt-kind"]'))).toBe("فاتورة شراء");
+    expect(text()).toContain("المورّد");
+    expect(text()).not.toContain("فاتورة بيع");
+  });
+
+  it("shows the label with an em dash when the phone or address is missing", () => {
+    renderReceipt({ ...receipt, storePhone: null, storeAddress: null });
+    expect(host.querySelector('[data-testid="receipt-phone"]')).toBeNull();
+    expect(host.querySelector('[data-testid="receipt-address"]')).toBeNull();
+    const contacts = host.querySelector(".print-sheet-contacts");
+    expect(text(contacts)).toContain("رقم الهاتف");
+    expect(text(contacts)).toContain("العنوان");
+    expect(text(contacts)).toContain("—");
+  });
+
+  it("titles the items table المشتريات and prints every line with grouped Western amounts", () => {
+    renderReceipt();
+    expect(text(host.querySelector('[data-testid="receipt-items-title"]'))).toBe("المشتريات");
+    const rows = Array.from(host.querySelectorAll('[data-testid="receipt-line"]'));
+    const cells = rows.map((row) => Array.from(row.querySelectorAll("td")).map((cell) => text(cell)));
     expect(cells).toEqual([
-      ["بطارية", "2", "550 دج", "1000 دج"],
+      ["بطارية", "2", "550 دج", "1,000 دج"],
       ["تركيب", "1", "100 دج", "50 دج"],
     ]);
+    // currency sits after the amount in the DOM: in the RTL cell that is to its left
+    expect(rows[0]?.querySelector("td:last-child")?.querySelector(".print-sheet-ltr")?.textContent).toBe("1,000");
   });
 
-  it("prints subtotal, discount, total, paid and remaining exactly as assembled", () => {
-    renderReceipt(receipt);
-    expect(host.querySelector('[data-testid="receipt-subtotal"]')?.textContent).toBe("1000 دج");
-    expect(host.querySelector('[data-testid="receipt-discount"]')?.textContent).toBe("-100 دج");
-    expect(host.querySelector('[data-testid="receipt-total"]')?.textContent).toBe("950 دج");
-    expect(host.querySelector('[data-testid="receipt-paid"]')?.textContent).toBe("500 دج");
-    expect(host.querySelector('[data-testid="receipt-remaining"]')?.textContent).toBe("450 دج");
+  it("prints the totals block on the closing sheet", () => {
+    renderReceipt();
+    expect(text(host.querySelector('[data-testid="receipt-subtotal"]'))).toBe("1,000 دج");
+    expect(text(host.querySelector('[data-testid="receipt-discount"]'))).toBe("-100 دج");
+    expect(text(host.querySelector('[data-testid="receipt-total"]'))).toBe("950 دج");
+    expect(text(host.querySelector('[data-testid="receipt-paid"]'))).toBe("500 دج");
+    expect(text(host.querySelector('[data-testid="receipt-remaining"]'))).toBe("450 دج");
+    expect(text()).toContain("مجموع المشتريات");
+    expect(text()).toContain("الإجمالي");
   });
 
-  it("shows a zero discount and the invoice kind label in the header", () => {
+  it("prints a zero discount as 0, not a negative amount", () => {
     renderReceipt({ ...receipt, discountAmount: 0 });
-    expect(host.querySelector('[data-testid="receipt-discount"]')?.textContent).toBe("0 دج");
-    expect(text()).toContain("بيع"); // invoiceKind_SALE label
+    expect(text(host.querySelector('[data-testid="receipt-discount"]'))).toBe("0 دج");
   });
 
-  it("prints the party cell separately from the free-form document text", () => {
-    renderReceipt(receipt);
-    expect(host.querySelector('[data-testid="receipt-party"]')?.textContent).toBe("زبون النقد");
-  });
-
-  it("prints the full payment history in order", () => {
-    renderReceipt(receipt);
+  it("prints the payment history with formatted timestamps and no raw T", () => {
+    renderReceipt();
     const rows = Array.from(host.querySelectorAll('[data-testid="receipt-payment"]'));
-    const cells = rows.map((row) =>
-      Array.from(row.querySelectorAll("td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()),
-    );
+    const cells = rows.map((row) => Array.from(row.querySelectorAll("td")).map((cell) => text(cell)));
     expect(cells).toEqual([
-      // issue #119: payment moments render day-first, 24-hour, no T/seconds
       ["25/08/2026 10:01", "300 دج", "نقداً", "أول دفعة"],
       ["25/08/2026 11:30", "200 دج", "تحويل بنكي", "—"],
     ]);
+    expect(text()).not.toContain("T10:01");
   });
 
-  it("renders a paid-off invoice with remaining zero", () => {
-    renderReceipt({ ...receipt, paidAmount: 950, remainingAmount: 0, payments: receipt.payments });
-    expect(host.querySelector('[data-testid="receipt-paid"]')?.textContent).toBe("950 دج");
-    expect(host.querySelector('[data-testid="receipt-remaining"]')?.textContent).toBe("0 دج");
-  });
-
-  it("shows an empty-payments notice instead of a phantom table", () => {
+  it("renders no payment section when the invoice has no payments", () => {
     renderReceipt({ ...receipt, payments: [] });
-    expect(host.querySelector('[data-testid="receipt-payments-empty"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="receipt-payments"]')).toBeNull();
     expect(host.querySelector('[data-testid="receipt-payment"]')).toBeNull();
+    // the totals still close the sheet
+    expect(text(host.querySelector('[data-testid="receipt-total"]'))).toBe("950 دج");
   });
 
-  it("hides the notes row and skips the phone line when absent", () => {
-    renderReceipt({ ...receipt, notes: null, storePhone: null });
-    expect(host.querySelector('[data-testid="receipt-notes"]')).toBeNull();
-    expect(host.querySelector('[data-testid="receipt-phone"]')).toBeNull();
-    expect(text()).toContain("بطارية"); // the rest of the document stays intact
+  it("pins the foot of a closing one-page sheet with صفحة 1 من 1 and the invoice number", () => {
+    renderReceipt();
+    expect(text(host.querySelector('[data-testid="receipt-page-num"]'))).toBe("صفحة 1 من 1");
+    expect(text(host.querySelector('[data-testid="receipt-ref"]'))).toBe("INV-0007");
+    expect(host.querySelectorAll('[data-testid="receipt-sheet"]')).toHaveLength(1);
+  });
+});
+
+describe("ReceiptView — a long invoice paginates", () => {
+  it("renders one sheet per page with the full header on each", () => {
+    renderReceipt(longReceipt);
+    const pages = sheets();
+    expect(pages).toHaveLength(2);
+    // full header (store + contacts + meta) on both sheets
+    for (const sheet of pages) {
+      expect(text(sheet.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
+      expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+      expect(text(sheet.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0100");
+      expect(text(sheet.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
+    }
+    const firstLines = pages[0]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];
+    const lastLines = pages[1]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];
+    expect(firstLines).toHaveLength(10);
+    expect(lastLines).toHaveLength(2);
+  });
+
+  it("carries the running total off a non-closing sheet and back onto the next", () => {
+    renderReceipt(longReceipt);
+    const pages = sheets();
+    // page 1: carried total only — never «مجموع هذه الصفحة»
+    const carried = text(pages[0]?.querySelector('[data-testid="receipt-carried-total"]'));
+    expect(carried).toContain("المجموع المنقول");
+    expect(carried).toContain("1,000 دج");
+    expect(text(pages[0])).not.toContain("مجموع هذه الصفحة");
+    expect(pages[0]?.querySelector('[data-testid="receipt-total"]')).toBeNull();
+    // page 2: the banner, the closing totals and the payment history
+    const carryIn = text(pages[1]?.querySelector('[data-testid="receipt-carry-in"]'));
+    expect(carryIn).toContain("منقول من الصفحة السابقة");
+    expect(carryIn).toContain("1,000 دج");
+    expect(text(pages[1]?.querySelector('[data-testid="receipt-subtotal"]'))).toBe("1,200 دج");
+    expect(pages[1]?.querySelectorAll('[data-testid="receipt-payment"]')).toHaveLength(1);
+  });
+
+  it("numbers every foot against the sheet count", () => {
+    renderReceipt(longReceipt);
+    const pages = sheets();
+    expect(text(pages[0]?.querySelector('[data-testid="receipt-page-num"]'))).toBe("صفحة 1 من 2");
+    expect(text(pages[1]?.querySelector('[data-testid="receipt-page-num"]'))).toBe("صفحة 2 من 2");
+    expect(text(pages[1]?.querySelector('[data-testid="receipt-ref"]'))).toBe("INV-0100");
+  });
+
+  it("shows the items title only on the first sheet", () => {
+    renderReceipt(longReceipt);
+    const pages = sheets();
+    expect(pages[0]?.querySelector('[data-testid="receipt-items-title"]')).not.toBeNull();
+    expect(pages[1]?.querySelector('[data-testid="receipt-items-title"]')).toBeNull();
+  });
+
+  it("prints both carry texts on a middle sheet: the banner in, the carried total out", () => {
+    renderReceipt(threeSheetReceipt);
+    const pages = sheets();
+    expect(pages).toHaveLength(3);
+    const middle = pages[1];
+    const carryIn = text(middle?.querySelector('[data-testid="receipt-carry-in"]'));
+    expect(carryIn).toContain("منقول من الصفحة السابقة");
+    expect(carryIn).toContain("700");
+    const carried = text(middle?.querySelector('[data-testid="receipt-carried-total"]'));
+    expect(carried).toContain("المجموع المنقول");
+    expect(carried).toContain("1,400");
+    expect(middle?.querySelector('[data-testid="receipt-total"]')).toBeNull();
+    // the closing sheet keeps the banner and replaces the carried total with the full totals
+    const closing = pages[2];
+    expect(text(closing?.querySelector('[data-testid="receipt-carry-in"]'))).toContain("منقول من الصفحة السابقة");
+    expect(closing?.querySelector('[data-testid="receipt-carried-total"]')).toBeNull();
+    expect(text(closing?.querySelector('[data-testid="receipt-total"]'))).toContain("2,000");
+    expect(text(closing?.querySelector('[data-testid="receipt-page-num"]'))).toBe("صفحة 3 من 3");
   });
 });
 
 describe("ReceiptView — RTL layout tokens", () => {
   it("roots the document in rtl", () => {
-    renderReceipt(receipt);
+    renderReceipt();
     expect(host.querySelector('[data-testid="receipt-view"]')?.getAttribute("dir")).toBe("rtl");
   });
 
-  it("keeps the invoice number and phone left-to-right, and the date day-first", () => {
-    renderReceipt(receipt);
-    // issue #119: a `DD/MM/YYYY` value is a single left-to-right number run, so
-    // the shared formatter needs no LTR wrapper — one would also flip the
-    // cell's `text-align: start` to the left
-    expect(host.querySelector('[data-testid="receipt-date"]')?.getAttribute("dir")).toBeNull();
-    expect(host.querySelector('[data-testid="receipt-date"]')?.textContent).toBe("25/08/2026");
+  it("isolates the invoice number and phone left-to-right, but not the date run", () => {
+    renderReceipt();
     expect(host.querySelector('[data-testid="receipt-number"]')?.getAttribute("dir")).toBe("ltr");
     expect(host.querySelector('[data-testid="receipt-phone"]')?.getAttribute("dir")).toBe("ltr");
+    expect(host.querySelector('[data-testid="receipt-ref"]')?.getAttribute("dir")).toBe("ltr");
+    // #119 rule: the day-first date/time output lays out correctly in RTL and
+    // must not be wrapped in an LTR node (that flips the run order)
+    expect(host.querySelector('[data-testid="receipt-date"]')?.getAttribute("dir")).toBeNull();
   });
 
-  it("leaves the payment timestamp unwrapped so the date reads on the right", () => {
-    renderReceipt(receipt);
+  it("isolates every printed amount left-to-right", () => {
+    renderReceipt();
+    for (const cell of host.querySelectorAll(".print-sheet-ltr")) {
+      expect(cell.getAttribute("dir")).toBe("ltr");
+    }
+  });
+
+  it("does not isolate the payment timestamp (day-first run order in RTL)", () => {
+    renderReceipt();
     const firstDateCell = host.querySelector('[data-testid="receipt-payment"] td');
     expect(firstDateCell?.getAttribute("dir")).toBeNull();
-    // the logical string is day-first; the RTL run order puts the date on the
-    // right and its time on the left
-    expect(firstDateCell?.textContent).toBe("25/08/2026 10:01");
+    expect(firstDateCell?.className).toContain("print-sheet-digits");
   });
 });

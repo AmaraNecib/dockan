@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { formatDate, formatDateTime, nowDateTimeText, parseDateTimeText } from "./dates";
+import { combineBusinessDateTime, formatDate, formatDateTime, nowDateTimeText, parseDateTimeText } from "./dates";
 
 /**
  * Issue #119 — the stored values are naive Algeria-local ISO strings with no
@@ -156,6 +156,20 @@ describe("parseDateTimeText (issue #119)", () => {
   it("rejects Arabic-Indic digits: the api's shape is ASCII, so half-parse is worse than none", () => {
     expect(parseDateTimeText("٠١/١٠/٢٠٢٦ ٠٠:٣٤")).toBeNull();
     expect(parseDateTimeText("٠١/١٠/٢٠٢٦")).toBeNull();
+  });
+});
+
+describe("combineBusinessDateTime (issue #121)", () => {
+  it("keeps the business day and takes the recorded clock time", () => {
+    // a backdated invoice recorded two days later: the paper shows the
+    // business date with the recording time
+    expect(combineBusinessDateTime("2026-10-01", "2026-10-03T14:32:00")).toBe("2026-10-01T14:32:00");
+    expect(formatDateTime(combineBusinessDateTime("2026-10-01", "2026-10-03T14:32:00"))).toBe("01/10/2026 14:32");
+  });
+
+  it("falls back to the business date when the moment carries no time", () => {
+    expect(combineBusinessDateTime("2026-10-01", "2026-10-01")).toBe("2026-10-01");
+    expect(formatDateTime(combineBusinessDateTime("2026-10-01", "2026-10-01"))).toBe("01/10/2026");
   });
 });
 

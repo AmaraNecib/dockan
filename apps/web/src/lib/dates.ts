@@ -111,6 +111,17 @@ export function formatDateTime(iso: string): string {
 }
 
 /**
+ * A business date with the clock time of the moment the row was recorded:
+ * `2026-10-01` + `2026-10-02T14:32:00` → `2026-10-01T14:32:00`. The business
+ * date stays authoritative for the day (a backdated invoice keeps its own
+ * date); the moment only supplies the time. Feed the result to `formatDateTime`.
+ */
+export function combineBusinessDateTime(businessDate: string, recordedAt: string): string {
+  const time = recordedAt.slice(11);
+  return time === "" ? businessDate : `${businessDate}T${time}`;
+}
+
+/**
  * Parse the text the editable date/time field teaches: `D/M/YYYY` with an
  * optional `H:mm` (and optional `:ss`). Whitespace is trimmed and runs of
  * whitespace between the date and the time are accepted; a bare date means

@@ -64,7 +64,7 @@ export function ReturnVoucherPrintPage() {
   const voucher = buildReturnVoucher(detail.data, settings.data);
 
   return (
-    <section className="grid gap-3" data-testid="return-voucher-page">
+    <section className="print-page grid gap-3" data-testid="return-voucher-page">
       <div className="flex items-center justify-between print-hidden">
         <Link
           to="/invoices/$invoiceId"

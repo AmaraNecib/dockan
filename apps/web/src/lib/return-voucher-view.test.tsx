@@ -75,14 +75,14 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     expect(view.querySelector('[data-testid="return-voucher-number"]')?.textContent).toBe("RTN-0042");
     expect(view.querySelector('[data-testid="return-voucher-invoice"]')?.textContent).toBe("INV-0101");
     expect(view.querySelector('[data-testid="return-voucher-party"]')?.textContent).toBe("يوسف");
-    expect(view.querySelector('[data-testid="return-voucher-total"]')?.textContent).toContain("1700");
-    expect(view.querySelector('[data-testid="return-voucher-cash"]')?.textContent).toContain("1700");
+    expect(view.querySelector('[data-testid="return-voucher-total"]')?.textContent).toContain("1,700");
+    expect(view.querySelector('[data-testid="return-voucher-cash"]')?.textContent).toContain("1,700");
     expect(view.querySelector('[data-testid="return-voucher-debt"]')?.textContent).toContain("0");
     // one line with its refund unit price and amount
     const line = view.querySelector('[data-testid="return-voucher-line"]')!;
     expect(line.textContent).toContain("بطارية");
     expect(line.textContent).toContain("850");
-    expect(line.textContent).toContain("1700");
+    expect(line.textContent).toContain("1,700");
     expect(view.querySelector('[data-testid="return-voucher-status"]')?.textContent).toContain("قيد المراجعة");
     expect(view.querySelector('[data-testid="return-voucher-reason"]')?.textContent).toContain("الزبون بدل رأيه");
   });
@@ -124,5 +124,39 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     debtRow = view.querySelector('[data-testid="return-voucher-debt"]')!;
     expect(debtRow.textContent).toContain("400");
     expect(view.textContent).toContain("خصم من الدين (مطبّق)");
+  });
+
+  it("prints the day-first invoice date without an LTR isolation (#119)", () => {
+    renderVoucher(buildReturnVoucher(makeReturn(), { storeName: "متجر الكرامة", storePhone: null, storeAddress: null }));
+    const date = host.querySelector('[data-testid="return-voucher-date"]');
+    expect(date?.textContent).toBe("26/08/2026");
+    // UAX#9 lays the numeric run out correctly in RTL; an LTR node would flip it
+    expect(date?.getAttribute("dir")).toBeNull();
+    expect(date?.className).toContain("print-sheet-digits");
+  });
+
+  it("paginates a long return: full header on every sheet, totals last, page X of Y", () => {
+    const detail = makeReturn();
+    const many: ReturnDetail = {
+      ...detail,
+      lines: Array.from({ length: 12 }, (_, index) => ({
+        ...detail.lines[0]!,
+        id: `line-${index}`,
+        invoiceLineId: `invoice-line-${index}`,
+        description: `بطارية ${index}`,
+      })),
+    };
+    renderVoucher(buildReturnVoucher(many, { storeName: "متجر الكرامة", storePhone: "+213661234567", storeAddress: null }));
+    const pages = Array.from(host.querySelectorAll('[data-testid="return-voucher-sheet"]'));
+    expect(pages).toHaveLength(2);
+    for (const page of pages) {
+      expect(page.querySelector('[data-testid="return-voucher-store"]')?.textContent).toBe("متجر الكرامة");
+    }
+    expect(host.querySelectorAll('[data-testid="return-voucher-line"]')).toHaveLength(12);
+    // the totals close the last sheet only
+    expect(pages[0]?.querySelector('[data-testid="return-voucher-total"]')).toBeNull();
+    expect(pages[1]?.querySelector('[data-testid="return-voucher-total"]')).not.toBeNull();
+    expect(pages[0]?.querySelector('[data-testid="return-voucher-page-num"]')?.textContent).toBe("صفحة 1 من 2");
+    expect(pages[1]?.querySelector('[data-testid="return-voucher-page-num"]')?.textContent).toBe("صفحة 2 من 2");
   });
 });

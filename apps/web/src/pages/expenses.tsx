@@ -42,7 +42,7 @@ function withSeconds(value: string): string | undefined {
 }
 
 /** The record form's error, tagged with the control it belongs to so a field
- * action (the «الآن» button) clears only its own refusal. */
+ * action (the Now button) clears only its own field refusal. */
 type RecordError = { message: string; field: "amount" | "category" | "date" | "save" };
 
 export function ExpensesPage() {

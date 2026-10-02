@@ -10,12 +10,22 @@ import type { movementKinds } from "@dokan/contracts";
 
 export type MovementKind = (typeof movementKinds)[number];
 
+/**
+ * Stable audit token on a zero-quantity `MANUAL_ADJUSTMENT` that corrects the
+ * running weighted-average unit cost (ADR-0002, issue 144). The reason field is
+ * what identifies a cost correction; the legacy opening-balance backfill also
+ * writes zero-delta rows (`reason: "opening"`) and must stay a replay no-op.
+ */
+export const COST_CORRECTION_REASON = "COST_CORRECTION";
+
 export interface LedgerMovement {
   kind: MovementKind;
   /** signed quantity: positive = stock in, negative = stock out */
   delta: number;
   /** per-unit cost of an inflow; null for outflows */
   unitCost: number | null;
+  /** locale-neutral audit reason; identifies a cost correction (see above) */
+  reason?: string | null;
   occurredAt: string;
   /** store rowid tiebreaker for identical timestamps; array order wins when absent */
   seq?: number;
@@ -217,6 +227,16 @@ export function averageCostAfter(
  * outflows only reduce quantity. Position-independent — this is the single
  * source of truth for `cost_price` after ANY write, including backdated
  * inserts, so callers never need special-case math per insertion point.
+ *
+ * A zero-quantity cost correction (`delta === 0`, a non-null unit cost, and
+ * the COST_CORRECTION_REASON token) sets the running average to that cost
+ * without changing quantity. This is the defined zero-quantity case for the
+ * ADR-0002 formula `(oldQty*oldCost + qty*cost)/(oldQty+qty)`: with a zero
+ * quantity the correction replaces the average instead of blending. A later
+ * inflow then weights the corrected average by the on-hand quantity, so a
+ * correction on an empty item cannot corrupt a later inflow; a later outflow
+ * leaves the corrected average untouched. Any other zero-delta movement is a
+ * no-op, so the legacy opening rows stay inert.
  */
 export function weightedAverageCost(
   movements: readonly LedgerMovement[],
@@ -232,6 +252,9 @@ export function weightedAverageCost(
         movement.delta,
         movement.unitCost ?? opts.fallbackUnitCost ?? 0,
       );
+    } else if (movement.delta === 0 && movement.unitCost !== null && movement.reason === COST_CORRECTION_REASON) {
+      // explicit cost correction: set the average for the on-hand quantity
+      average = movement.unitCost;
     }
     quantity += movement.delta;
   }

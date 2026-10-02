@@ -38,6 +38,8 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   if (tag === "ITEM_CREATED_WITH_STOCK" && tokens.length >= 3) return t("activityItemCreatedWithStock", { name: tokens.slice(2).join(" "), stock: tokens[1] });
   if (tag === "ITEM_CREATED" && tokens.length >= 2) return t("activityItemCreated", { name: tokens.slice(1).join(" ") });
   if (tag === "ITEM_UPDATED" && tokens.length >= 2) return t("activityItemUpdated", { name: tokens.slice(1).join(" ") });
+  // locale-neutral cost correction: cost then the free-text name last
+  if (tag === "ITEM_COST_CORRECTED" && tokens.length >= 3) return t("activityItemCostCorrected", { cost: tokens[1], name: tokens.slice(2).join(" ") });
   // issue 120: party rows carry a role token, then the free-text name
   if ((tag === "PARTY_CREATED" || tag === "PARTY_UPDATED" || tag === "PARTY_DELETED") && tokens.length >= 3) {
     const role = tokens[1] === "SUPPLIER" ? t("partySupplier") : t("partyCustomer");

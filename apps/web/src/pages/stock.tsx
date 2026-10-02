@@ -206,7 +206,8 @@ function kindLabel(t: (key: string) => string, kind: string): string {
  * the correction token (`INVOICE_CORRECTION <invoiceNumber> #<lineId>`).
  * Unknown/legacy reasons (opening, pre-token Arabic corrections) render raw.
  * The api stores keys; this view owns the copy. */
-function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+export function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+  if (reason === "COST_CORRECTION") return t("historyReasonCostCorrection");
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
     const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();

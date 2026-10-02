@@ -55,6 +55,7 @@ const resources = {
       activityItemCreated: "إنشاء منتج {{name}}",
       activityItemCreatedWithStock: "إنشاء منتج {{name}} بمخزون أولي {{stock}}",
       activityItemUpdated: "تعديل منتج {{name}}",
+      activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى {{cost}} دج",
       activityStockAdjusted: "تسوية مخزون {{name}}",
       activityStockLinked: "ربط مخزون سابق بفاتورة {{number}}",
       activityPurchaseCorrected: "تصحيح شراء {{name}}",
@@ -73,6 +74,7 @@ const resources = {
       activityType_CATEGORY_CREATED: "إنشاء تصنيف",
       activityType_ITEM_CREATED: "إنشاء منتج",
       activityType_ITEM_UPDATED: "تعديل منتج",
+      activityType_ITEM_COST_CORRECTED: "تصحيح تكلفة",
       activityType_PARTY_CREATED: "إنشاء جهة",
       activityType_SALE_CREATED: "فاتورة بيع",
       activityType_PURCHASE_CREATED: "فاتورة مشتريات",
@@ -539,6 +541,7 @@ const resources = {
       activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} ({{amount}} دج)",
       historyReasonReturnRecorded: "مرجوع",
       historyReasonReturnRejected: "مرجوع تالف {{context}}",
+      historyReasonCostCorrection: "تصحيح تكلفة يدوي",
       historyReasonInvoiceCorrection: "تصحيح فاتورة {{number}} {{line}}",
       /** whole-DZD unit suffix; the api never embeds it in strings */
       dzd: "دج",

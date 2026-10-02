@@ -22,6 +22,7 @@ describe("activity summary tokens render translated copy", () => {
     { summary: "ITEM_CREATED_WITH_STOCK 12 بطارية", keeps: ["12", "بطارية"] },
     { summary: "ITEM_CREATED بطارية", keeps: ["بطارية"] },
     { summary: "ITEM_UPDATED بطارية", keeps: ["بطارية"] },
+    { summary: "ITEM_COST_CORRECTED 150 بطارية", keeps: ["150", "بطارية"] },
     { summary: "PARTY_CREATED CUSTOMER علي علي", keeps: ["علي علي", "زبون"] },
     { summary: "PARTY_UPDATED SUPPLIER صالح بن علي", keeps: ["صالح بن علي", "مورّد"] },
     { summary: "PARTY_DELETED CUSTOMER عماره", keeps: ["عماره", "زبون"] },

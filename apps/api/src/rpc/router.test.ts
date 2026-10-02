@@ -18,6 +18,7 @@ import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { createRpcRouter } from "./router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
+import { weightedAverageCost } from "../lib/stock-ledger";
 
 /**
  * Wire-seam tests for the merged router. The typed oRPC client calls the real
@@ -3244,5 +3245,126 @@ describe("onboarding completion milestone (issue 97 follow-up)", () => {
     expect(await client.onboardingComplete()).toEqual({ completed: true });
     const { values } = await client.preferencesGet();
     expect(values[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue 144 — a manual cost edit is a ledger fact
+// ---------------------------------------------------------------------------
+describe("items cost correction (issue 144)", () => {
+  async function makeItem(name: string, costPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({
+      name,
+      categoryId: categories.items[0]!.id,
+      costPrice,
+      sellingPrice: costPrice * 2,
+      lowStockThreshold: 0,
+    });
+  }
+
+  it("keeps an edited cost across a later purchase replay", async () => {
+    const item = await makeItem(`تصحيح-شراء-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+
+    const edited = await client.itemsUpdate({ id: item.id, costPrice: 300 });
+    expect(edited?.costPrice).toBe(300);
+
+    // the correction is a real ledger row, not only a cache write
+    const historyAfterEdit = await client.itemsHistory({ itemId: item.id });
+    expect(historyAfterEdit.stockOnHand).toBe(10);
+    expect(
+      historyAfterEdit.movements.some((m) => m.delta === 0 && m.unitCost === 300 && m.reason === "COST_CORRECTION"),
+    ).toBe(true);
+
+    // a later purchase replays the full ledger: (10×300 + 10×200) / 20 = 250
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 10, unitPrice: 200 }] });
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(20);
+    expect(row.costPrice).toBe(250);
+  });
+
+  it("keeps an edited cost across a later outflow replay", async () => {
+    const item = await makeItem(`تصحيح-بيع-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+    await client.itemsUpdate({ id: item.id, costPrice: 300 });
+
+    // a sale replays the ledger; without the movement the edit would revert to 100
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(8);
+    expect(row.costPrice).toBe(300);
+  });
+
+  it("a cost-only correction defines the zero-quantity case without touching quantity", async () => {
+    const item = await makeItem(`تصحيح-صفر-${Date.now()}`, 100);
+
+    // zero on hand: the correction is the only movement and sets the cache
+    const edited = await client.itemsUpdate({ id: item.id, costPrice: 300 });
+    expect(edited?.costPrice).toBe(300);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(0);
+    expect(history.movements).toHaveLength(1);
+    expect(history.movements[0]).toMatchObject({
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 0,
+      unitCost: 300,
+      reason: "COST_CORRECTION",
+    });
+
+    // the next inflow ignores the zero-quantity correction and takes the buy cost
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 8, unitPrice: 250 }] });
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(8);
+    expect(row.costPrice).toBe(250);
+  });
+
+  it("still blends a manual quantity adjustment against the corrected cost", async () => {
+    const item = await makeItem(`تصحيح-كمية-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+    await client.itemsUpdate({ id: item.id, costPrice: 300 });
+
+    // +5 @ 100: (10×300 + 5×100) / 15 = 233.33 → 233
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100 });
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(15);
+    expect(row.costPrice).toBe(233);
+  });
+
+  it("writes exactly one correction activity row, and none on replay", async () => {
+    const item = await makeItem(`تصحيح-سجل-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+    await client.itemsUpdate({ id: item.id, costPrice: 300 });
+    await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 5, unitPrice: 200 }] });
+    await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+
+    const activities = await client.activitiesList({ limit: 200 });
+    const corrections = activities.items.filter((a) => a.type === "ITEM_COST_CORRECTED" && a.ref === item.id);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]!.summary).toBe(`ITEM_COST_CORRECTED 300 ${item.name}`);
+    // locale-neutral: an ASCII action tag, then data, free text last
+    expect(corrections[0]!.summary.split(" ")[0]).toBe("ITEM_COST_CORRECTED");
+
+    const movements = (await client.itemsHistory({ itemId: item.id })).movements;
+    expect(movements.filter((m) => m.reason === "COST_CORRECTION")).toHaveLength(1);
+  });
+
+  it("stays consistent when an edit and a purchase race", async () => {
+    const item = await makeItem(`تصحيح-سباق-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+
+    const results = await Promise.allSettled([
+      client.itemsUpdate({ id: item.id, costPrice: 300 }),
+      client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 10, unitPrice: 200 }] }),
+    ]);
+    for (const result of results) expect(result.status).toBe("fulfilled");
+
+    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const movements = (await client.itemsHistory({ itemId: item.id })).movements;
+    expect(row.stockOnHand).toBe(20);
+    expect(movements.filter((m) => m.reason === "COST_CORRECTION")).toHaveLength(1);
+    expect(movements.filter((m) => m.kind === "PURCHASE")).toHaveLength(2);
+    // the cache agrees with a full replay of whatever order the queue chose
+    expect(row.costPrice).toBe(weightedAverageCost(movements));
   });
 });

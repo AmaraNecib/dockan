@@ -230,6 +230,8 @@ interface ResolveContext {
   baseStored: EnvFileValues;
   envFilePath: string;
   slug: string | undefined;
+  /** True when every DOKAN_* value in `env` came from the caller, not `.env`. */
+  envIsExplicit: boolean;
   generate: (len: number) => string;
 }
 
@@ -241,12 +243,23 @@ interface ResolveContext {
 function resolveOne(spec: SecretSpec, ctx: ResolveContext): ResolvedOne {
   const explicit = ctx.env[spec.key];
   if (explicit !== undefined && explicit !== "") {
+    const fromTargetFile = ctx.stored[spec.key] === explicit;
+    // The package scripts run with `bun --no-env-file`, so no `.env` value can
+    // be sitting in `env` by accident: ANY value is a deliberate override and
+    // must be honoured, even one equal to the customer-less `.env` value
+    // (PR #117 finding 3). Only an auto-loaded environment needs the
+    // preload-vs-override heuristic below.
+    if (ctx.envIsExplicit) {
+      const check = spec.validate({ [spec.key]: explicit });
+      if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
+      return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
+    }
+
     // `bun run` pre-loads the customer-less `.env` into process.env. For a
     // slugged build that value belongs to whoever last built without a slug,
     // NOT to this customer, so it must not be mistaken for an override
     // (PR #117 finding 1). Only a value that is not the base file's own value
     // — and is not this customer's stored value — is a genuine override.
-    const fromTargetFile = ctx.stored[spec.key] === explicit;
     const fromBaseFile = ctx.baseStored[spec.key] === explicit;
     if (fromTargetFile || !fromBaseFile) {
       const check = spec.validate({ [spec.key]: explicit });
@@ -275,6 +288,13 @@ export interface EnsureSecretOptions {
   envFilePath?: string;
   /** Select this customer's `.env.<slug>`; defaults to `env.DOKAN_CUSTOMER_SLUG`. */
   customerSlug?: string;
+  /**
+   * True when every DOKAN_* value in `env` was supplied by the caller. The
+   * entry points run under `BUN_OPTIONS=--no-env-file` and detect it
+   * automatically; tests simulate a pre-loaded environment by leaving this
+   * false.
+   */
+  envIsExplicit?: boolean;
   generate?: (len: number) => string;
   /** Test seams for the cross-process generation lock. */
   lockWaitMs?: number;
@@ -298,6 +318,15 @@ function readEnvFile(envFilePath: string): EnvFileValues {
  */
 export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): ResolvedReleaseSecrets {
   const env = options.env ?? process.env;
+  // `BUN_OPTIONS=--no-env-file` on the entry point disables `.env` auto-loading
+  // for the whole `bun run` process tree, so any DOKAN_* value left in `env`
+  // is a deliberate override and must be honoured even when it equals the
+  // customer-less `.env` value (PR #117 finding 3). Without that proof an
+  // ancestor may have pre-loaded `.env`, so the base-file heuristic below
+  // stays in charge.
+  const envIsExplicit =
+    options.envIsExplicit ??
+    (options.env === undefined && (process.env.BUN_OPTIONS ?? "").includes("--no-env-file"));
   const rawSlug = options.customerSlug ?? env.DOKAN_CUSTOMER_SLUG;
   const trimmedSlug = rawSlug?.trim();
   const slug = trimmedSlug === undefined || trimmedSlug === "" ? undefined : assertCustomerSlug(trimmedSlug);
@@ -314,6 +343,7 @@ export function ensureReleaseSecrets(options: EnsureSecretOptions = {}): Resolve
     baseStored,
     envFilePath,
     slug,
+    envIsExplicit,
     generate: options.generate ?? generateSecret,
   };
 
@@ -353,12 +383,28 @@ function persistGenerated(ctx: ResolveContext, ...resolved: ResolvedOne[]): void
   writeEnvFile(ctx.envFilePath, values, ctx.slug);
 }
 
-function withGenerationLock<T>(envFilePath: string, options: EnsureSecretOptions, work: () => T): T {
-  const lockPath = `${envFilePath}${RELEASE_ENV_LOCK_SUFFIX}`;
-  const retryMs = options.lockRetryMs ?? LOCK_RETRY_MS;
-  const staleMs = options.lockStaleMs ?? LOCK_STALE_MS;
-  const deadline = Date.now() + (options.lockWaitMs ?? LOCK_WAIT_MS);
+export interface FileLockOptions {
+  waitMs?: number;
+  retryMs?: number;
+  staleMs?: number;
+}
+
+/**
+ * Acquire an exclusive cross-process lock (an `O_EXCL` lock file) and return
+ * an idempotent release.
+ *
+ * The lock file carries an owner token, and release only unlinks a lock that
+ * still holds its token: a process whose stale lock was stolen cannot delete
+ * the new owner's lock on its way out. The mutual exclusion itself is the
+ * atomic `wx` create; a lock older than `staleMs` is stolen so a crash cannot
+ * wedge every later build.
+ */
+export function acquireFileLock(lockPath: string, options: FileLockOptions = {}): () => void {
+  const retryMs = options.retryMs ?? LOCK_RETRY_MS;
+  const staleMs = options.staleMs ?? LOCK_STALE_MS;
+  const deadline = Date.now() + (options.waitMs ?? LOCK_WAIT_MS);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const token = `${process.pid}.${randomBytes(8).toString("hex")}`;
 
   let fd: number | undefined;
   while (fd === undefined) {
@@ -371,27 +417,42 @@ function withGenerationLock<T>(envFilePath: string, options: EnsureSecretOptions
       if (tryStealStaleLock(lockPath, staleMs)) continue;
       if (Date.now() >= deadline) {
         throw new Error(
-          `timed out waiting for ${lockPath} — another release-secret generation is still running; ` +
-            "if no build is running, delete that lock file and retry",
+          `timed out waiting for ${lockPath} — another build step is still running; ` +
+            "if nothing is running, delete that lock file and retry",
         );
       }
       sleepSync(retryMs);
     }
   }
+  fs.writeSync(fd, token);
 
-  try {
-    return work();
-  } finally {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
     try {
       fs.closeSync(fd);
     } catch {
       // already closed
     }
     try {
-      fs.unlinkSync(lockPath);
+      if (fs.readFileSync(lockPath, "utf8") === token) fs.unlinkSync(lockPath);
     } catch {
-      // stolen as stale; nothing left to release
+      // already released, or stolen as stale: never delete another owner's lock
     }
+  };
+}
+
+function withGenerationLock<T>(envFilePath: string, options: EnsureSecretOptions, work: () => T): T {
+  const release = acquireFileLock(`${envFilePath}${RELEASE_ENV_LOCK_SUFFIX}`, {
+    waitMs: options.lockWaitMs,
+    retryMs: options.lockRetryMs,
+    staleMs: options.lockStaleMs,
+  });
+  try {
+    return work();
+  } finally {
+    release();
   }
 }
 
@@ -438,6 +499,19 @@ function sleepSync(ms: number): void {
 }
 
 /**
+ * Temp path for the atomic env write. The name keeps the `.env.` prefix, so
+ * `.gitignore`'s `.env.*` rule covers a crash leftover. The old `..env...tmp`
+ * shape (the leading dot was added twice) did not match and `git add .` could
+ * stage a secret-bearing temp file (PR #117 finding 4).
+ */
+export function envTempPath(envFilePath: string): string {
+  return path.join(
+    path.dirname(envFilePath),
+    `${path.basename(envFilePath)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
+  );
+}
+
+/**
  * Write `values` into the env file, atomically.
  *
  * The temp file is created owner-only and renamed over the target, so readers
@@ -460,10 +534,7 @@ function writeEnvFile(envFilePath: string, values: EnvFileValues, slug: string |
 
   const content =
     existing === undefined ? renderEnvFile(values, releaseEnvHeader(slug)) : mergeEnvFile(existing, values);
-  const tempPath = path.join(
-    path.dirname(envFilePath),
-    `.${path.basename(envFilePath)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
-  );
+  const tempPath = envTempPath(envFilePath);
   try {
     fs.writeFileSync(tempPath, content, { mode: 0o600, flag: "wx" });
     try {

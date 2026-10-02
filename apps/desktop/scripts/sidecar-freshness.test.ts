@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  fnv1a32Hex,
   fnv1a64Hex,
+  sidecarBinaryFingerprint,
   sidecarSourceFingerprint,
   sidecarStampPath,
   stagedSidecarPath,
@@ -25,6 +27,24 @@ describe("fnv1a64Hex", () => {
     expect(fnv1a64Hex("")).toBe("cbf29ce484222325");
     expect(fnv1a64Hex("a")).toBe("af63dc4c8601ec8c");
     expect(fnv1a64Hex("foobar")).toBe("85944171f73967e8");
+  });
+});
+
+describe("fnv1a32Hex / sidecarBinaryFingerprint (PR #117 finding 2)", () => {
+  it("matches the published FNV-1a 32 vectors", () => {
+    expect(fnv1a32Hex("")).toBe("811c9dc5");
+    expect(fnv1a32Hex("a")).toBe("e40c292c");
+    expect(fnv1a32Hex("foobar")).toBe("bf9cf968");
+  });
+
+  it("pins a file's bytes and changes when they change", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "dokan-bin-fp-"));
+    const binary = path.join(dir, "sidecar.exe");
+    writeFileSync(binary, "binary-bytes");
+    // the same literal is asserted by the Rust integration test
+    expect(sidecarBinaryFingerprint(binary)).toBe("f44e0ab6");
+    writeFileSync(binary, "other-bytes");
+    expect(sidecarBinaryFingerprint(binary)).toBe("8e3f4b73");
   });
 });
 
@@ -78,21 +98,17 @@ describe("sidecarSourceFingerprint", () => {
 });
 
 describe("writeSidecarStamp", () => {
-  it("records the customer, sources and both secrets (never the secrets)", () => {
+  it("records the customer, sources, binary and both secrets (never the secrets)", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
-    const stampPath = path.join(dir, "sidecar.exe.stamp");
-    writeSidecarStamp(
-      FIXTURE_API_DIR,
-      path.join(dir, "sidecar.exe"),
-      "acme",
-      "build-secret-0123456789",
-      "a".repeat(40),
-    );
+    const sidecar = path.join(dir, "sidecar.exe");
+    writeFileSync(sidecar, "stamp-bytes");
+    writeSidecarStamp(FIXTURE_API_DIR, sidecar, "acme", "build-secret-0123456789", "a".repeat(40));
 
-    const text = readFileSync(stampPath, "utf8");
+    const text = readFileSync(`${sidecar}.stamp`, "utf8");
     expect(text).toContain("dokan-sidecar-stamp v1");
     expect(text).toContain("customer acme");
     expect(text).toContain(`sources ${FIXTURE_GOLDEN}`);
+    expect(text).toContain(`binary ${fnv1a32Hex("stamp-bytes")}`);
     expect(text).toContain(`build-secret ${fnv1a64Hex("build-secret-0123456789")}`);
     expect(text).toContain(`auth-secret ${fnv1a64Hex("a".repeat(40))}`);
     // the raw secret must never be written
@@ -103,6 +119,7 @@ describe("writeSidecarStamp", () => {
   it("marks a customer-less build with '-'", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "dokan-stamp-"));
     const sidecar = path.join(dir, "sidecar.exe");
+    writeFileSync(sidecar, "stamp-bytes");
     writeSidecarStamp(FIXTURE_API_DIR, sidecar, undefined, "build-secret-0123456789", "a".repeat(40));
     expect(readFileSync(`${sidecar}.stamp`, "utf8")).toContain("customer -\n");
   });

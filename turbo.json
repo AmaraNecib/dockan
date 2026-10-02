@@ -1,5 +1,7 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalEnv": ["DOKAN_CUSTOMER_SLUG", "DOKAN_BUILD_SECRET", "DOKAN_AUTH_SECRET"],
+  "globalPassThroughEnv": ["BUN_OPTIONS"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

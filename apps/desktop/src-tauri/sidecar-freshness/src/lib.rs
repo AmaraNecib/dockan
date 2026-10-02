@@ -38,6 +38,30 @@ pub fn fnv1a64_hex(input: &str) -> String {
     format!("{:016x}", fnv1a64(input.as_bytes()))
 }
 
+const FNV32_OFFSET: u32 = 0x811c9dc5;
+const FNV32_PRIME: u32 = 0x01000193;
+
+/// FNV-1a 32 of `bytes`.
+pub fn fnv1a32(bytes: &[u8]) -> u32 {
+    let mut hash = FNV32_OFFSET;
+    for &byte in bytes {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(FNV32_PRIME);
+    }
+    hash
+}
+
+/// FNV-1a 32 of `input`, as 8 lower-case hex digits.
+pub fn fnv1a32_hex(input: &str) -> String {
+    format!("{:08x}", fnv1a32(input.as_bytes()))
+}
+
+/// FNV-1a 32 of a file's bytes; pins the exact staged sidecar binary so a
+/// stamp left over from another compile cannot describe it.
+pub fn binary_fingerprint(binary: &Path) -> io::Result<String> {
+    Ok(format!("{:08x}", fnv1a32(&fs::read(binary)?)))
+}
+
 fn collect_files(dir: &Path, base: &Path, out: &mut Vec<(String, Vec<u8>)>) -> io::Result<()> {
     let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -87,21 +111,24 @@ pub fn source_fingerprint(api_dir: &Path) -> io::Result<String> {
 pub struct Stamp {
     pub customer: Option<String>,
     pub sources: String,
+    pub binary: Option<String>,
     pub build_secret: Option<String>,
     pub auth_secret: Option<String>,
 }
 
 impl Stamp {
-    /// Build a stamp: the source fingerprint verbatim, each secret as a hash.
+    /// Build a stamp: the fingerprints verbatim, each secret as a hash.
     pub fn new(
         sources: impl Into<String>,
         customer: Option<&str>,
+        binary: Option<&str>,
         build_secret: Option<&str>,
         auth_secret: Option<&str>,
     ) -> Self {
         Self {
             customer: customer.map(str::to_string),
             sources: sources.into(),
+            binary: binary.map(str::to_string),
             build_secret: build_secret.map(fnv1a64_hex),
             auth_secret: auth_secret.map(fnv1a64_hex),
         }
@@ -109,9 +136,10 @@ impl Stamp {
 
     pub fn render(&self) -> String {
         format!(
-            "{STAMP_VERSION}\ncustomer {}\nsources {}\nbuild-secret {}\nauth-secret {}\n",
+            "{STAMP_VERSION}\ncustomer {}\nsources {}\nbinary {}\nbuild-secret {}\nauth-secret {}\n",
             self.customer.as_deref().unwrap_or("-"),
             self.sources,
+            self.binary.as_deref().unwrap_or("-"),
             self.build_secret.as_deref().unwrap_or("-"),
             self.auth_secret.as_deref().unwrap_or("-"),
         )
@@ -124,6 +152,7 @@ impl Stamp {
         }
         let mut customer = None;
         let mut sources = None;
+        let mut binary = None;
         let mut build_secret = None;
         let mut auth_secret = None;
         for line in lines {
@@ -131,6 +160,7 @@ impl Stamp {
             match key {
                 "customer" => customer = secret_value(value),
                 "sources" => sources = Some(value.to_string()),
+                "binary" => binary = secret_value(value),
                 "build-secret" => build_secret = secret_value(value),
                 "auth-secret" => auth_secret = secret_value(value),
                 _ => return None,
@@ -139,6 +169,7 @@ impl Stamp {
         Some(Self {
             customer,
             sources: sources?,
+            binary,
             build_secret,
             auth_secret,
         })
@@ -173,20 +204,26 @@ pub fn write_stamp(path: &Path, stamp: &Stamp) -> io::Result<()> {
 
 /// Whether `stamp` still describes the sidecar that this build needs.
 ///
-/// The sources must always match. A secret only has to match when it is
-/// present in the build environment: the release pipeline exports the resolved
-/// values to the cargo child, so a present value is always authoritative, and
-/// an absent one tells cargo nothing.
+/// The sources and the binary must always match: the binary check is what
+/// catches a compile that overwrote the executable without its stamp
+/// (PR #117 finding 2). A secret only has to match when it is present in the
+/// build environment: the release pipeline exports the resolved values to the
+/// cargo child, so a present value is always authoritative, and an absent one
+/// tells cargo nothing.
 ///
-/// This is the low-level check. {@link decide} adds the customer-slug policy
-/// that `build.rs` actually applies.
+/// This is the low-level check. {@link decide} adds the customer policy that
+/// `build.rs` actually applies.
 pub fn is_fresh(
     stamp: &Stamp,
     sources_fingerprint: &str,
+    binary_fingerprint: &str,
     build_secret: Option<&str>,
     auth_secret: Option<&str>,
 ) -> bool {
     if stamp.sources != sources_fingerprint {
+        return false;
+    }
+    if stamp.binary.as_deref() != Some(binary_fingerprint) {
         return false;
     }
     if let Some(secret) = build_secret {
@@ -211,27 +248,26 @@ pub enum Decision {
     Reuse,
     /// Compile the sidecar now (the stamp is absent, stale, or unverifiable).
     Rebuild,
-    /// Refuse the build: a slugged build cannot resolve `.env.<slug>` here, so
-    /// compiling would inline the wrong customer's secrets.
+    /// Refuse the build: a customer-scoped build cannot be resolved here, so
+    /// compiling would inline the wrong customer's secrets, and a customer
+    /// sidecar must never leak into an unscoped artifact.
     Refuse(String),
 }
 
 /// The `build.rs` reuse policy.
 ///
-/// Without `DOKAN_CUSTOMER_SLUG`, this is sources + the secrets present in the
+/// Without `DOKAN_CUSTOMER_SLUG`, the sidecar must be customer-less, and the
+/// stamp must match the sources, the binary and any secret present in the
 /// environment. With a slug, the sidecar is only reusable when the stamp says
-/// it was built for that exact customer — `build.rs` cannot read
-/// `.env.<slug>`, so anything else must be restamped by `bun run sidecar` or
-/// the release pipeline rather than silently compiled with whatever is in the
-/// environment (PR #117 findings 1 and 5).
-///
-/// `stamp` may be `None` (no file / unparsable) and `sources_fingerprint` may
-/// be empty if the API tree could not be read; both force a rebuild or a
-/// refusal.
+/// it was built for that exact customer from the same sources and the same
+/// binary — `build.rs` cannot read `.env.<slug>`, so anything else must be
+/// restamped by `bun run sidecar` or the release pipeline rather than silently
+/// compiled with whatever is in the environment (PR #117 findings 1, 2, 5).
 pub fn decide(
     stamp: Option<&Stamp>,
     sidecar_present: bool,
     sources_fingerprint: &str,
+    binary_fingerprint: &str,
     customer_slug: Option<&str>,
     build_secret: Option<&str>,
     auth_secret: Option<&str>,
@@ -242,8 +278,8 @@ pub fn decide(
                 "no staged sidecar and DOKAN_CUSTOMER_SLUG={slug} is set — run `DOKAN_CUSTOMER_SLUG={slug} bun run sidecar` (or the release pipeline) instead of a bare cargo/tauri build",
             ));
         }
-        let current = stamp.filter(|s| {
-            !sources_fingerprint.is_empty() && s.sources == sources_fingerprint
+        let current = stamp.filter(|stamp| {
+            is_fresh(stamp, sources_fingerprint, binary_fingerprint, None, None)
         });
         return match current {
             Some(stamp) if stamp.customer.as_deref() == Some(slug) => Decision::Reuse,
@@ -252,7 +288,7 @@ pub fn decide(
                 stamp.customer.as_deref().unwrap_or("<none>"),
             )),
             None => Decision::Refuse(format!(
-                "DOKAN_CUSTOMER_SLUG={slug} is set but build.rs cannot read `.env.{slug}` — run `DOKAN_CUSTOMER_SLUG={slug} bun run sidecar` (or the release pipeline) instead of a bare cargo/tauri build",
+                "the staged sidecar for DOKAN_CUSTOMER_SLUG={slug} is missing or does not match its stamp — run `DOKAN_CUSTOMER_SLUG={slug} bun run sidecar` (or the release pipeline) before shipping it",
             )),
         };
     }
@@ -263,7 +299,14 @@ pub fn decide(
     let Some(stamp) = stamp else {
         return Decision::Rebuild;
     };
-    if !is_fresh(stamp, sources_fingerprint, build_secret, auth_secret) {
+    // A customer-stamped sidecar must never be reused in an unscoped artifact:
+    // an NSIS installer with no slug would silently carry that shop's secrets.
+    if let Some(customer) = stamp.customer.as_deref() {
+        return Decision::Refuse(format!(
+            "the staged sidecar is stamped for customer {customer} — an unscoped build must not reuse it; set DOKAN_CUSTOMER_SLUG={customer} to ship that customer, or run `bun run sidecar` without a slug to restage a customer-less sidecar",
+        ));
+    }
+    if !is_fresh(stamp, sources_fingerprint, binary_fingerprint, build_secret, auth_secret) {
         return Decision::Rebuild;
     }
     Decision::Reuse

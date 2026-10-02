@@ -1,7 +1,16 @@
 import { describe, expect, it } from "bun:test";
+import path from "node:path";
 
 import { adoptReleaseSecrets, customerSlug, findInstallerName, renamedInstaller } from "./release";
-import { MIN_AUTH_SECRET_LEN, MIN_BUILD_SECRET_LEN, validateAuthSecret, validateBuildSecret } from "./sidecar";
+import {
+  MIN_AUTH_SECRET_LEN,
+  MIN_BUILD_SECRET_LEN,
+  sidecarExternalBin,
+  sidecarOutfile,
+  tauriExternalBinOverride,
+  validateAuthSecret,
+  validateBuildSecret,
+} from "./sidecar";
 
 /**
  * PR #51 finding 2: the per-customer build secret is a build-time input —
@@ -83,6 +92,23 @@ describe("validateAuthSecret (PR #51 finding 5 — session-forgery)", () => {
     const weakErr = await new Response(weak.stderr).text();
     expect(weakCode).toBe(1);
     expect(weakErr).toContain("must be at least 32");
+  });
+});
+
+describe("per-customer sidecar staging (PR #117 finding 2)", () => {
+  it("keeps each customer's binary, stamp and bundler path separate", () => {
+    expect(sidecarOutfile(undefined)).toBe(path.resolve("src-tauri/binaries/dokan-api-x86_64-pc-windows-msvc"));
+    expect(sidecarOutfile("acme")).toBe(path.resolve("src-tauri/binaries/acme/dokan-api-x86_64-pc-windows-msvc"));
+    expect(sidecarOutfile("acme")).not.toBe(sidecarOutfile("beta"));
+
+    expect(sidecarExternalBin(undefined)).toBe("binaries/dokan-api");
+    expect(sidecarExternalBin("acme")).toBe("binaries/acme/dokan-api");
+    expect(JSON.parse(tauriExternalBinOverride("acme"))).toEqual({
+      bundle: { externalBin: ["binaries/acme/dokan-api"] },
+    });
+    expect(JSON.parse(tauriExternalBinOverride(undefined))).toEqual({
+      bundle: { externalBin: ["binaries/dokan-api"] },
+    });
   });
 });
 

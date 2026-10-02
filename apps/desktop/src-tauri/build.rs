@@ -8,18 +8,24 @@
 //!    pipeline uses.
 //!
 //!    A staged sidecar is reused ONLY when its freshness stamp proves it was
-//!    compiled from the current API sources, for the same customer, and from
-//!    the secrets present in this build environment (PR #117 findings 1/5). A
-//!    `.exe` lying around is not evidence of anything. A build with
-//!    `DOKAN_CUSTOMER_SLUG` set never falls through to the compile path —
-//!    `build.rs` cannot read `.env.<slug>`, so it refuses and points at the
-//!    release pipeline instead of inlining the wrong customer's secrets.
+//!    compiled from the current API sources, for the same customer, from the
+//!    same binary and from the secrets present in this build environment
+//!    (PR #117 findings 1, 2, 5). A `.exe` lying around is not evidence of
+//!    anything.
+//!      - a customer-stamped sidecar is REFUSED by an unscoped build (and by
+//!        any other customer): an installer with no slug must never carry a
+//!        shop's secrets;
+//!      - a build with `DOKAN_CUSTOMER_SLUG` set never falls through to the
+//!        compile path — `build.rs` cannot read `.env.<slug>`, so it refuses
+//!        and points at `bun run sidecar` / the release pipeline;
+//!      - the stamp pins the binary's bytes, so a compile that overwrote only
+//!        the executable is detected.
 //!
 //!    The per-customer secrets (PR #51 findings 2 & 5) are only inlined when
 //!    strong `DOKAN_BUILD_SECRET` / `DOKAN_AUTH_SECRET` values are present in
 //!    the build environment — this path is for the dev/test gates; the
 //!    shippable artifacts come from `bun run portable` / `bun run build`,
-//!    which resolve both secrets and stamp the sidecar.
+//!    which resolve both secrets, stage per customer and stamp the sidecar.
 //! 2. Delegate to tauri-build for the app manifest, icons and capabilities.
 
 use std::env;
@@ -27,23 +33,31 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use dokan_sidecar_freshness::{
-    decide, read_stamp, source_fingerprint, stamp_path_for, write_stamp, Decision, Stamp,
+    binary_fingerprint, decide, read_stamp, source_fingerprint, stamp_path_for, write_stamp, Decision,
+    Stamp,
 };
 
-/// Relative to `CARGO_MANIFEST_DIR` (src-tauri). Bun appends the `.exe`
-/// suffix on Windows; tauri-build's `externalBin` resolves the same name.
-const SIDECAR_NAME: &str = "dokan-api-x86_64-pc-windows-msvc";
+/// Stem of the sidecar file. tauri-build appends `-<target triple>` from
+/// `bundle.externalBin`; bun appends the `.exe` suffix on Windows.
+const SIDECAR_STEM: &str = "dokan-api";
 const MIN_BUILD_SECRET_LEN: usize = 16;
 const MIN_AUTH_SECRET_LEN: usize = 32;
 
-/// The staged sidecar as it actually lands on disk. Bun appends the platform
-/// executable suffix, so on Windows the file is `<SIDECAR_NAME>.exe` — the
-/// bare name never exists, which used to defeat the "already compiled by the
-/// pipeline" fast path below and silently rebuild it here instead.
-fn staged_sidecar(manifest_dir: &Path) -> PathBuf {
-    manifest_dir
-        .join("binaries")
-        .join(format!("{SIDECAR_NAME}{}", env::consts::EXE_SUFFIX))
+/// The staged sidecar as it actually lands on disk, in the same per-customer
+/// directory the TS pipeline stages it in. Bun appends the platform executable
+/// suffix, so on Windows the file is `<stem>-<triple>.exe` — the bare name
+/// never exists, which used to defeat the "already compiled by the pipeline"
+/// fast path and silently rebuild it here instead.
+fn staged_sidecar(manifest_dir: &Path, customer_slug: Option<&str>) -> PathBuf {
+    let file_name = format!(
+        "{SIDECAR_STEM}-{}{}",
+        env::var("TARGET").unwrap_or_else(|_| "x86_64-pc-windows-msvc".to_string()),
+        env::consts::EXE_SUFFIX
+    );
+    match customer_slug {
+        Some(slug) => manifest_dir.join("binaries").join(slug).join(file_name),
+        None => manifest_dir.join("binaries").join(file_name),
+    }
 }
 
 fn main() {
@@ -60,11 +74,30 @@ fn main() {
     // customer when only the environment changed.
     println!("cargo:rerun-if-env-changed=DOKAN_BUILD_SECRET");
     println!("cargo:rerun-if-env-changed=DOKAN_AUTH_SECRET");
-    // A changed customer must invalidate (or refuse) a previously staged
-    // sidecar for another shop.
+    // A changed customer selects a different staged sidecar entirely.
     println!("cargo:rerun-if-env-changed=DOKAN_CUSTOMER_SLUG");
 
-    let sidecar = staged_sidecar(&manifest_dir);
+    let customer_slug = env::var("DOKAN_CUSTOMER_SLUG")
+        .ok()
+        .map(|slug| slug.trim().to_string())
+        .filter(|slug| !slug.is_empty());
+
+    // A slugged build must come through the pipeline (`release.ts` /
+    // `build.ts` / `sidecar.ts`): those pass the matching `--config` override
+    // so tauri-build and the bundler read `binaries/<slug>/dokan-api`. Without
+    // it a bare `tauri build` would copy the shared default path and either
+    // fail or bundle the wrong customer's sidecar.
+    if let Some(slug) = &customer_slug {
+        let expected = format!("binaries/{slug}/{SIDECAR_STEM}");
+        let configured = env::var("TAURI_CONFIG").unwrap_or_default();
+        if !configured.contains(&expected) {
+            panic!(
+                "dokan: DOKAN_CUSTOMER_SLUG={slug} requires the release pipeline (or `tauri build --config` with externalBin `{expected}`); refusing a bare cargo/tauri build"
+            );
+        }
+    }
+
+    let sidecar = staged_sidecar(&manifest_dir, customer_slug.as_deref());
     let api_dir = manifest_dir.join("../..").join("api");
     let sources_fingerprint = match source_fingerprint(&api_dir) {
         Ok(fingerprint) => fingerprint,
@@ -76,11 +109,7 @@ fn main() {
             String::new()
         }
     };
-
-    let customer_slug = env::var("DOKAN_CUSTOMER_SLUG")
-        .ok()
-        .map(|slug| slug.trim().to_string())
-        .filter(|slug| !slug.is_empty());
+    let binary_fp = binary_fingerprint(&sidecar).unwrap_or_default();
 
     let build_secret = env::var("DOKAN_BUILD_SECRET")
         .ok()
@@ -90,25 +119,21 @@ fn main() {
         .filter(|secret| secret.len() >= MIN_AUTH_SECRET_LEN);
 
     // Reuse the staged sidecar only when the stamp proves it belongs to THIS
-    // build. A slugged build must never fall through to the compile path: the
-    // customer's secrets live in `.env.<slug>`, which this script cannot read,
-    // so compiling would inline the customer-less values `bun run` preloaded.
+    // build. A customer-stamped binary is never reused without that customer's
+    // slug, and a slugged build never falls through to the compile path (the
+    // customer's secrets live in `.env.<slug>`, which this script cannot read).
     let stamp_path = stamp_path_for(&sidecar);
     let stamp = read_stamp(&stamp_path);
     match decide(
         stamp.as_ref(),
         sidecar.is_file(),
         &sources_fingerprint,
+        &binary_fp,
         customer_slug.as_deref(),
         build_secret.as_deref(),
         auth_secret.as_deref(),
     ) {
         Decision::Reuse => {
-            if customer_slug.is_none() {
-                if let Some(customer) = stamp.as_ref().and_then(|stamp| stamp.customer.as_deref()) {
-                    println!("cargo:warning=dokan: reusing a sidecar stamped for customer {customer}; set DOKAN_CUSTOMER_SLUG={customer} if you meant to ship it");
-                }
-            }
             // `bun run sidecar` / `release.ts` already compiled it WITH the
             // secrets validated and inlined; rebuilding it here would throw
             // that away.
@@ -170,10 +195,13 @@ fn main() {
 
     // Record what this sidecar was built from so the next run can trust it.
     // `build.rs` cannot know about a customer's `.env.<slug>`, so it never
-    // claims a customer: only the TS pipeline stamps one.
+    // claims a customer: only the TS pipeline stamps one (the slug path never
+    // reaches this compile branch).
+    let compiled_fp = binary_fingerprint(&sidecar).unwrap_or_default();
     let stamp = Stamp::new(
         sources_fingerprint,
         None,
+        Some(&compiled_fp),
         build_secret.as_deref(),
         auth_secret.as_deref(),
     );

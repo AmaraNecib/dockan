@@ -23,19 +23,23 @@
  *
  * Documented per-customer commands (issue 64):
  *   portable zip + folder (uses the customer-less `.env`):
- *     bun run --filter @dokan/desktop portable
+ *     bun run desktop:portable
  *   per-customer installer (uses `.env.<slug>`):
- *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run --filter @dokan/desktop installer
+ *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run desktop:installer
  *   one-off override, without rewriting the file:
  *     DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
- *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run --filter @dokan/desktop installer
+ *     DOKAN_CUSTOMER_SLUG='shop-slug' bun run desktop:installer
+ *
+ * The root `desktop:*` scripts run with `BUN_OPTIONS=--no-env-file`, so Bun
+ * never pre-loads `.env` anywhere in the process tree: every DOKAN_* value in
+ * the environment is a deliberate override (PR #117 finding 3).
  */
 
 import fs from "node:fs";
 import path from "node:path";
 
 import { assemblePortable } from "./portable.mjs";
-import { compileSidecar } from "./sidecar";
+import { compileSidecar, tauriExternalBinOverride } from "./sidecar";
 import { ensureReleaseSecrets, type ResolvedReleaseSecrets } from "./secrets";
 
 const BUNDLE_DIR = path.resolve("src-tauri/target/release/bundle/nsis");
@@ -85,12 +89,21 @@ export function requestedTarget(argv: string[]): "portable" | "installer" {
   return "portable";
 }
 
-/** Run a tauri CLI command, inheriting stdio, and propagate failures. */
-async function runTauri(args: string[]): Promise<void> {
-  const tauri = Bun.spawn(["bunx", "tauri", ...args], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
+/**
+ * Run a tauri CLI command with the bundler pointed at this customer's staged
+ * sidecar, inheriting stdio, and propagate failures. The config override is
+ * what keeps two customer releases from one checkout on separate binary
+ * paths; without it the bundler would read the shared `binaries/dokan-api`
+ * path (PR #117 finding 2).
+ */
+async function runTauri(args: string[], customerSlug: string | undefined): Promise<void> {
+  const tauri = Bun.spawn(
+    ["bunx", "tauri", ...args, "--config", tauriExternalBinOverride(customerSlug)],
+    {
+      stdout: "inherit",
+      stderr: "inherit",
+    },
+  );
   const code = await tauri.exited;
   if (code !== 0) {
     console.error(`[dokan] tauri build failed with exit code ${code}`);
@@ -100,7 +113,7 @@ async function runTauri(args: string[]): Promise<void> {
 
 /** nsis installer target: build the installer and apply the optional slug. */
 async function buildInstaller(slug: string | undefined): Promise<void> {
-  await runTauri(["build", "--bundles", "nsis"]);
+  await runTauri(["build", "--bundles", "nsis"], slug);
 
   if (slug !== undefined) {
     const setupName = findInstallerName(fs.readdirSync(BUNDLE_DIR));
@@ -121,7 +134,7 @@ async function buildInstaller(slug: string | undefined): Promise<void> {
  * `bundle/nsis` from an earlier installer run is removed so the portable
  * output can never ship installer leftovers.
  */
-async function buildPortable(): Promise<void> {
+async function buildPortable(slug: string | undefined): Promise<void> {
   // the portable deliverable and its trusted-tar zip are Windows-only; fail
   // BEFORE a multi-minute tauri build instead of after it with a misleading
   // “missing dokan.exe” error on POSIX (where cargo emits `dokan`)
@@ -132,7 +145,7 @@ async function buildPortable(): Promise<void> {
     process.exit(1);
   }
 
-  await runTauri(["build", "--no-bundle"]);
+  await runTauri(["build", "--no-bundle"], slug);
 
   const nsisDir = path.resolve("src-tauri/target/release/bundle/nsis");
   if (fs.existsSync(nsisDir)) {
@@ -157,7 +170,7 @@ function resolveSecretsOrExit(slug: string | undefined): ResolvedReleaseSecrets 
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`[dokan] release secret rejected: ${reason}`);
     console.error("[dokan] fix the value in the customer env file, or pass a strong one for this build:");
-    console.error("  DOKAN_AUTH_SECRET='<32+ chars>' bun run --filter @dokan/desktop portable");
+    console.error("  DOKAN_AUTH_SECRET='<32+ chars>' bun run desktop:portable");
     process.exit(1);
   }
 }
@@ -218,7 +231,7 @@ async function main(): Promise<void> {
         `[dokan] note: DOKAN_CUSTOMER_SLUG selects the per-customer secrets (.env.${slug}); the portable folder name stays customer-neutral`,
       );
     }
-    await buildPortable();
+    await buildPortable(slug);
   }
 }
 

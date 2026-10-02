@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { MIN_AUTH_SECRET_LEN, MIN_BUILD_SECRET_LEN } from "./sidecar";
 import {
   ensureReleaseSecrets,
+  envTempPath,
   generateSecret,
   mergeEnvFile,
   parseEnvFile,
@@ -298,6 +299,53 @@ describe("ensureReleaseSecrets per customer (PR #117 finding 1)", () => {
     expect(result.generated.sort()).toEqual(["DOKAN_AUTH_SECRET", "DOKAN_BUILD_SECRET"]);
   });
 
+  it("honours an explicit override equal to the customer-less value when no preload is possible", () => {
+    // the package scripts run with `bun --no-env-file`, so an env value is
+    // always deliberate — even when it happens to equal the base `.env` value
+    // (PR #117 finding 3)
+    const dir = scratchDir();
+    const baseBuild = "base-build-secret-0001";
+    writeFileSync(path.join(dir, ".env"), renderEnvFile({ DOKAN_BUILD_SECRET: baseBuild }, releaseEnvHeader()));
+
+    const result = ensureReleaseSecrets({
+      env: { DOKAN_BUILD_SECRET: baseBuild },
+      envDir: dir,
+      customerSlug: "acme",
+      envIsExplicit: true,
+    });
+
+    expect(result.secrets.DOKAN_BUILD_SECRET).toBe(baseBuild);
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("env");
+    // and a one-off override is never written into the customer file
+    expect(parseEnvFile(readFileSync(path.join(dir, ".env.acme"), "utf8")).DOKAN_BUILD_SECRET).toBeUndefined();
+  });
+
+  it("detects BUN_OPTIONS=--no-env-file and honours an override equal to the base value", async () => {
+    const dir = scratchDir();
+    const baseBuild = "base-build-secret-0001";
+    writeFileSync(path.join(dir, ".env"), renderEnvFile({ DOKAN_BUILD_SECRET: baseBuild }, releaseEnvHeader()));
+    const secretsModule = pathToFileURL(path.join(import.meta.dir, "secrets.ts")).href;
+    const child = `
+      const mod = await import(${JSON.stringify(secretsModule)});
+      const result = mod.ensureReleaseSecrets({ customerSlug: "acme" });
+      console.log(JSON.stringify({ secrets: result.secrets, sources: result.sources }));
+    `;
+    const env = { ...process.env, BUN_OPTIONS: "--no-env-file", DOKAN_BUILD_SECRET: baseBuild };
+    delete env.DOKAN_AUTH_SECRET;
+    delete env.DOKAN_CUSTOMER_SLUG;
+    const proc = Bun.spawn(["bun", "-e", child], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new Error(`child failed: ${code}\n${err}`);
+
+    const result = JSON.parse(out.trim());
+    expect(result.secrets.DOKAN_BUILD_SECRET).toBe(baseBuild);
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("env");
+  });
+
   it("rejects a slug that could escape the secrets directory", () => {
     const dir = scratchDir();
     expect(() => ensureReleaseSecrets({ env: {}, envDir: dir, customerSlug: "../evil" })).toThrow(/slug/);
@@ -395,6 +443,15 @@ describe("ensureReleaseSecrets source reporting (bun pre-loads .env)", () => {
     const result = ensureReleaseSecrets({ env: { DOKAN_AUTH_SECRET: "y".repeat(40) }, envFilePath: file });
     expect(result.sources.DOKAN_AUTH_SECRET).toBe("env");
     expect(result.secrets.DOKAN_AUTH_SECRET).toBe("y".repeat(40));
+  });
+});
+
+describe("envTempPath (PR #117 finding 4)", () => {
+  it("keeps the .env. prefix so the .env.* ignore rule covers a crash leftover", () => {
+    expect(path.basename(envTempPath("/x/.env"))).toMatch(/^\.env\.[0-9]+\.[0-9a-f]+\.tmp$/);
+    expect(path.basename(envTempPath("/x/.env.acme"))).toMatch(/^\.env\.acme\.[0-9]+\.[0-9a-f]+\.tmp$/);
+    // the old `..env...tmp` shape did not match `.env.*`
+    expect(path.basename(envTempPath("/x/.env")).startsWith("..")).toBe(false);
   });
 });
 

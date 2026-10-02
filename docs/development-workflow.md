@@ -132,8 +132,8 @@ bun run desktop:secrets                  # the customer-less .env
 bun run desktop:secrets --customer acme  # that customer's .env.acme
 bun run desktop:secrets --show           # also prints the values
 
-# pieces separately
-bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
+# pieces separately (the root wrapper keeps `.env` from being pre-loaded)
+bun run desktop:sidecar   # validating compile → src-tauri/binaries/
 ```
 
 The portable target is **Windows-only** and produces no installer.

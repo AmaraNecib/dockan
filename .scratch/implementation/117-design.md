@@ -120,3 +120,30 @@ ensureReleaseSecrets({
 - **Cross-language fingerprint:** both implementations are pinned by the same
   golden hex in TS and Rust tests; any drift fails a gate.
 - `.gitignore`: add `.env.*` so per-customer files can never be committed.
+
+## Round 3 (PR re-review fixes on 9d3505c)
+
+1. **Unscoped build reusing a customer stamp (P1).** `decide` refuses any
+   customer-stamped sidecar for an unscoped build (refuse, not warn); a slugged
+   build already refused a different/absent slug. The refusal is covered by
+   Rust tests and verified end-to-end (exit 101).
+2. **One staged sidecar path for every customer (P1).** Each customer stages in
+   `binaries/<slug>/` (customer-less stays in `binaries/`); the stamp records an
+   FNV-1a-32 hash of the binary; `compileSidecar` holds a per-customer lock
+   across the binary + stamp writes; and the bundler is pointed at the
+   per-customer path with `tauri build --config '{"bundle":{"externalBin":[...]}}'`
+   from `release.ts`, the new `build.ts` and `build.rs` (which also requires
+   that override when a slug is set). A full `DOKAN_CUSTOMER_SLUG=acme bun run
+   build` was verified to stage and bundle the acme binary, not the shared one.
+3. **Explicit override equal to the customer-less value ignored (P1).** The root
+   `desktop:*` and `build` scripts run under `BUN_OPTIONS=--no-env-file`, which
+   disables `.env` auto-loading for the whole process tree; the resolver detects
+   that and treats every DOKAN_* value as a deliberate override, honouring one
+   that equals the base `.env` value. Paths without that proof keep the
+   preload heuristic, so finding 1's cross-shop protection still holds there.
+   `turbo.json` declares the customer/secret env vars (`globalEnv`) and
+   `BUN_OPTIONS` (`globalPassThroughEnv`) so turbo passes them and keys the
+   cache on the customer/secrets.
+4. **Temp file outside the ignore pattern (P1).** `envTempPath` names the crash
+   temp file `.env[.<slug>].<pid>.<random>.tmp`; `git check-ignore` confirms the
+   existing `.env.*` rule covers it.

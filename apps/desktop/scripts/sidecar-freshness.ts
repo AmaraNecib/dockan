@@ -1,7 +1,8 @@
 /**
- * Sidecar freshness: fingerprint the API sources and stamp the secret values
- * that were inlined, so `build.rs` can tell a current sidecar from a stale one
- * and never bundle yesterday's API with today's secrets (PR #117 finding 5).
+ * Sidecar freshness: fingerprint the API sources, the compiled binary and the
+ * secret values that were inlined, so `build.rs` can tell a current sidecar
+ * from a stale or torn one and never bundle yesterday's API — or another
+ * customer's binary — with today's secrets (PR #117 findings 1, 2, 5).
  *
  * The fingerprint format is duplicated (in the small) by the
  * `src-tauri/sidecar-freshness` Rust crate that `build.rs` uses; both editors
@@ -17,6 +18,9 @@ const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const U64_MASK = 0xffffffffffffffffn;
 
+const FNV32_OFFSET = 0x811c9dc5;
+const FNV32_PRIME = 0x01000193;
+
 function fnv1a64Bytes(start: bigint, bytes: Uint8Array): bigint {
   let hash = start;
   for (const byte of bytes) {
@@ -29,6 +33,30 @@ function fnv1a64Bytes(start: bigint, bytes: Uint8Array): bigint {
 /** FNV-1a 64 of `input`, as 16 lower-case hex digits. */
 export function fnv1a64Hex(input: string): string {
   return fnv1a64Bytes(FNV_OFFSET, Buffer.from(input, "utf8")).toString(16).padStart(16, "0");
+}
+
+function fnv1a32Bytes(bytes: Uint8Array): number {
+  let hash = FNV32_OFFSET;
+  for (let i = 0; i < bytes.length; i += 1) {
+    // SAFETY: `i` is bounded by `bytes.length`, so the element exists.
+    hash ^= bytes[i] as number;
+    // Math.imul keeps this a 32-bit FNV-1a and stays fast over a ~100 MB exe.
+    hash = Math.imul(hash, FNV32_PRIME) >>> 0;
+  }
+  return hash;
+}
+
+/** FNV-1a 32 of `input`, as 8 lower-case hex digits. */
+export function fnv1a32Hex(input: string): string {
+  return fnv1a32Bytes(Buffer.from(input, "utf8")).toString(16).padStart(8, "0");
+}
+
+/**
+ * FNV-1a 32 of a file's bytes. The sidecar stamp pins the exact binary, so a
+ * compile that overwrote only the binary (without its stamp) is detected.
+ */
+export function sidecarBinaryFingerprint(binaryPath: string): string {
+  return fnv1a32Bytes(fs.readFileSync(binaryPath)).toString(16).padStart(8, "0");
 }
 
 function* walkFiles(dir: string): Generator<string> {
@@ -88,6 +116,7 @@ export function stagedSidecarPath(outfile: string): string {
 export function renderSidecarStamp(
   sourcesFingerprint: string,
   customerSlug: string | undefined,
+  binaryFingerprint: string,
   buildSecret: string,
   authSecret: string,
 ): string {
@@ -96,6 +125,7 @@ export function renderSidecarStamp(
       SIDECAR_STAMP_VERSION,
       `customer ${customerSlug ?? "-"}`,
       `sources ${sourcesFingerprint}`,
+      `binary ${binaryFingerprint}`,
       `build-secret ${fnv1a64Hex(buildSecret)}`,
       `auth-secret ${fnv1a64Hex(authSecret)}`,
     ].join("\n") + "\n"
@@ -114,7 +144,13 @@ export function writeSidecarStamp(
   buildSecret: string,
   authSecret: string,
 ): void {
-  const content = renderSidecarStamp(sidecarSourceFingerprint(apiDir), customerSlug, buildSecret, authSecret);
+  const content = renderSidecarStamp(
+    sidecarSourceFingerprint(apiDir),
+    customerSlug,
+    sidecarBinaryFingerprint(sidecarPath),
+    buildSecret,
+    authSecret,
+  );
   fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
   fs.writeFileSync(sidecarStampPath(sidecarPath), content, { mode: 0o600 });
 }

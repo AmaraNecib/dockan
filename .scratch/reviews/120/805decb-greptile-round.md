@@ -1,6 +1,6 @@
 # Issue #120 — Greptile review round (PR #132)
 
-- **Fixed code SHA / evidence HEAD:** `555c493f302489914eccced97efd5cfe6c949379`
+- **Fixed code SHA / evidence HEAD:** `805decbc37648d219ba14dede66c05b2b8ffc823` (first Greptile round at `555c493`)
 - **Base:** `origin/develop` @ `1d02f93`
 - **Prior evidence:** `5f94d75-debate.md`, `5f94d75-test-audit.md`,
   `5f94d75-code-review.md` (rebased integration round)
@@ -31,4 +31,20 @@ All 7 PR #132 findings fixed in this worktree, each with a regression test.
 - `bun run typecheck` — 3/3 pass
 - `bun run lint` — 0 errors
 - `bun run test` — 474 web tests + API suites pass (235 in the two touched API files)
+- `bun run test:e2e` — 38/38 pass
+
+## Greptile round 2 (PR #132 re-review)
+
+Two remaining findings, both fixed at `805decb`:
+
+| # | Finding | Fix | Test |
+|---|---------|-----|------|
+| R2.1 | `settlePartyDebts` counted `/invoices` rows while the invoice query was still pending (the shell renders first), so it could see zero rows, skip every debt, and leak unpaid balances into later specs' global debt totals | The sweep now waits for the settled list state — `invoices-table` or `invoices-empty` — before treating a zero-row count as empty, both on the first load and after each payment navigation | Full e2e suite 38/38 with the cleanup still settling the customers spec's debts before `debts.spec` asserts exact totals |
+| R2.2 | `PartyForm` compared the raw phone input against the canonical stored value, so re-entering the same number in another valid format (`0567654321` vs `+213567654321`) was treated as a change and wrote an unnecessary update + misleading audit row | The changed-field check compares canonical identities via `normalizePartyPhone`; the patch (and create) now carries the canonical value | `party-forms.test.tsx`: the same phone in local format submits nothing; the changed-phone test asserts the canonical payload; `parties.test.tsx` create-dialog asserts the canonical phone |
+
+## Gates at 805decb
+
+- `bun run typecheck` — 3/3 pass (`apps/web` re-verified directly: exit 0)
+- `bun run lint` — 0 errors
+- `bun run test` — 475 web tests + API suites pass
 - `bun run test:e2e` — 38/38 pass

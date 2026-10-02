@@ -8,8 +8,9 @@ in `engineering-workflow.md`.
 | --- | --- |
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, `bun run test:e2e` on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`) |
+| `rust` | `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 
-The two jobs are independent. A typecheck/lint/test failure and a Playwright
+The three jobs are independent. A typecheck/lint/test failure and a Playwright
 flake are visible without one hiding the other.
 
 ## Audit policy
@@ -26,6 +27,41 @@ on purpose — an unverifiable audit is not a green audit.
 `oven-sh/setup-bun` reads `packageManager` from `package.json`
 (`bun@1.3.14`), so CI tracks the repo pin automatically.
 
+## Rust capability guards (`rust` job)
+
+The desktop crate's Rust tests include the guard added in #153: it drives the
+real `tauri-utils` URLPattern matcher over `setup_navigation_url()` and the
+resolved ACL over `capabilities/default.json`. That guard exists because a
+missing `remote.urls` entry or a missing `allow-vault-broker` permission
+silently broke the packaged app — a release-blocking bug found only by running
+the real installer. Before this job, nothing in PR CI ran `cargo test`, so the
+regression could be re-introduced unnoticed. The job runs the crate's tests
+and `cargo clippy -- -D warnings` so those guards gate PRs.
+
+The job runs on `windows-latest` deliberately: `desktop-installer.yml` already
+proves the crate compiles and links there, and the Windows image ships stable
+Rust, rustup and the WebView2 runtime. A Linux runner would need the
+`webkit2gtk`/`libsoup` Tauri system packages installed via apt before a single
+test compiles — a slower and more fragile gate. The toolchain is pinned with
+`dtolnay/rust-toolchain` (stable + clippy) and `Swatinem/rust-cache` caches
+`apps/desktop/src-tauri -> target`, folding the runner OS/arch and the
+`Cargo.lock` hash into its key. Every action is pinned to a full commit SHA.
+
+Two preconditions are part of the job because `build.rs` needs them before
+`cargo` compiles a single test:
+
+- Bun dependencies (`bun install --frozen-lockfile`): `build.rs` compiles the
+  api sidecar with `bun build --compile`.
+- The web frontend (`bun run --filter @dokan/web build`): `tauri.conf.json`
+  bundles `apps/web/dist` as the `ui` resource and `build.rs` hard-fails when
+  that path is absent. The release workflow gets this from tauri's
+  `beforeBuildCommand`, which does not run for a bare `cargo test`.
+
+The job has no `paths:` filter. A filtered job reports "skipped", and a skipped
+required check never satisfies branch protection, so a docs-only PR would stay
+pending forever. The trade-off is that the job runs (and pays the cold-build
+cost) on every PR; the rust-cache keeps the warm path cheap.
+
 ## Required checks — manual step
 
 Branch protection is a GitHub repository setting, not something a workflow can
@@ -35,10 +71,14 @@ enforce. To make these checks required on `develop` an admin must:
    existing `develop` rule).
 2. Branch name pattern: `develop`.
 3. Enable **Require status checks to pass before merging**.
-4. Select the `typecheck, lint, test, audit` and `playwright e2e` checks.
+4. Select the `typecheck, lint, test, audit`, `playwright e2e` and
+   `rust test, clippy` checks.
 
 Until that is done the workflow still runs and reports, but a red run does not
-block a merge.
+block a merge. Making the `rust` job (or any check) required is a repository
+setting the workflow itself cannot apply — it must be done by a repo admin in
+branch protection. Until the owner selects it, `rust` still runs and reports on
+every PR, but a red run does not block a merge.
 
 ## Desktop release (manual + version tags)
 
@@ -94,8 +134,10 @@ never runs on a pull request, so it can never block an ordinary PR.
 
 ## Not in the PR gate
 
-The desktop/Tauri build is not part of the PR gate: it is a Windows-only
-Rust/Tauri build, and the api/web gates in CI are the same commands the local
-Guard runs. It has its own manual/tag workflow (above) and is not a required
-status check. The rest of the desktop path is covered by local gates
+The full desktop/Tauri **build** (installer and portable) is not part of the PR
+gate: it is a Windows-only Rust/Tauri release build with its own manual/tag
+workflow (above) and is not a required status check. The Rust **tests and
+clippy** for the desktop crate *are* in the PR gate now (the `rust` job),
+because the capability/permission guards in that crate are the regression net
+for the packaged app. The rest of the desktop path is covered by local gates
 (see `development-workflow.md` §5).

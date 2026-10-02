@@ -855,6 +855,116 @@ describe("SalePage quick-add stock (issue #119)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-9001");
     expect(document.activeElement).toBe(stock);
   });
+
+  /** scan an unknown code and take one of the dialog's two create paths */
+  async function scanAndChoose(host: HTMLElement, code: string, choice: "scan-create" | "scan-create-stock") {
+    await scan(code);
+    expect(host.querySelector('[data-testid="unknown-scan-dialog"]')).not.toBeNull();
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>(`[data-testid="${choice}"]`)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it("refuses a blank stock field on the scan's create-with-stock path (issue #125)", async () => {
+    unknownScanCode = "UNKNOWN-REQ-1";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-REQ-1", "scan-create-stock");
+    await fillQuick(host); // the field the choice exists for stays blank
+    await submitQuick(host);
+
+    // nothing is created: a stocked item without its opening movement could
+    // not be sold later
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockRequired"));
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+  });
+
+  it("refuses an explicit 0 on the scan's create-with-stock path (issue #125)", async () => {
+    unknownScanCode = "UNKNOWN-REQ-2";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-REQ-2", "scan-create-stock");
+    await fillQuick(host, "0");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockRequired"));
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).not.toBeNull();
+
+    // a value that cannot be read is a different refusal, not the required one
+    await act(async () => setInput(host, "sale-quick-stock", "-1"));
+    await submitQuick(host);
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("scanStockInvalid"));
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).not.toContain(i18n.t("scanStockRequired"));
+  });
+
+  it("creates with opening stock from the scan path when a positive quantity is typed (issue #125)", async () => {
+    unknownScanCode = "UNKNOWN-REQ-3";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-REQ-3", "scan-create-stock");
+    await fillQuick(host, "4");
+    await submitQuick(host);
+
+    expect(lastCreateInput).toBeNull();
+    expect(lastCreateWithStockInput).toMatchObject({ name: "منتج سريع", stockOnHand: 4, barcode: "UNKNOWN-REQ-3" });
+    expect(host.querySelector('[data-testid="sale-quick-form"]')).toBeNull();
+    expect(host.querySelector('[data-testid="sale-lines"]')?.textContent).toContain("منتج سريع");
+  });
+
+  it("keeps blank = zero stock when the plain new-item action reopens the form (issue #125)", async () => {
+    unknownScanCode = "UNKNOWN-REQ-4";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-REQ-4", "scan-create-stock");
+    await fillQuick(host); // refused on the stocked path
+    await submitQuick(host);
+    expect(lastCreateInput).toBeNull();
+
+    // the plain create path must not inherit the stocked path's requirement
+    await openQuick(host);
+    await fillQuick(host);
+    await submitQuick(host);
+
+    expect(lastCreateWithStockInput).toBeNull();
+    expect(lastCreateInput).toMatchObject({ name: "منتج سريع", categoryId: "cat-1" });
+    expect(lastCreateInput).not.toHaveProperty("stockOnHand");
+  });
+
+  it("focuses the stock field when a later unknown scan picks create-with-stock while the form is already open (issue #125)", async () => {
+    unknownScanCode = "UNKNOWN-FIRST";
+    const host = await mountSale();
+    await scanAndChoose(host, "UNKNOWN-FIRST", "scan-create");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-FIRST");
+    // the plain path opens the same form without taking focus
+    expect(document.activeElement).not.toBe(host.querySelector('[data-testid="sale-quick-stock"]'));
+
+    unknownScanCode = "UNKNOWN-SECOND";
+    await scanAndChoose(host, "UNKNOWN-SECOND", "scan-create-stock");
+
+    // the same form is reused (quickOpen never left true) and the new code
+    // replaced the old one; focus must still land on the quantity
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-SECOND");
+    expect(document.activeElement).toBe(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]'));
+  });
+
+  it("marks the stock field required only on the scan's create-with-stock path (issue #125)", async () => {
+    const host = await mountSale();
+    await openQuick(host);
+    const plain = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]');
+    expect(plain?.getAttribute("aria-required")).toBeNull();
+    expect(host.querySelector('[data-testid="sale-quick-form"]')?.textContent).toContain(i18n.t("saleQuickStock"));
+
+    unknownScanCode = "UNKNOWN-REQ-A11Y";
+    await scanAndChoose(host, "UNKNOWN-REQ-A11Y", "scan-create-stock");
+
+    // the required path tells assistive tech and shows a required label, so the
+    // refusal can never look like an optional field misbehaving
+    const required = host.querySelector<HTMLInputElement>('[data-testid="sale-quick-stock"]');
+    expect(required?.getAttribute("aria-required")).toBe("true");
+    expect(host.querySelector('[data-testid="sale-quick-form"]')?.textContent).toContain(i18n.t("saleQuickStockRequired"));
+  });
 });
 
 describe("SalePage party picker (issue 120)", () => {

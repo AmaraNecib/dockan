@@ -92,6 +92,9 @@ const stockInputs: CapturedStockInput[] = [];
 let updateFails = false;
 let updateDeferred = false;
 let resolveUpdate: (() => void) | null = null;
+/** holds a create-with-stock save open so a stale settlement is observable */
+let createWithStockDeferred = false;
+let resolveCreateWithStock: (() => void) | null = null;
 /** holds the itemsList refetch open so the stale-cache window is observable */
 let itemsGate: Promise<void> | null = null;
 let releaseItemsGate: (() => void) | null = null;
@@ -129,8 +132,15 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsCreateWithStock: {
       mutationOptions: (opts?: MutationOptions) => ({
+        // SAFETY: the resolver is stored by the deferred branch and invoked by
+        // the stale-save test; the immediate branch keeps every other test fast
         mutationFn: async (input: CapturedCreateInput) => {
           createWithStockInputs.push(input);
+          if (createWithStockDeferred) {
+            return new Promise<{ id: string }>((resolve) => {
+              resolveCreateWithStock = () => resolve({ id: "created-with-stock" });
+            });
+          }
           return { id: "created-with-stock" };
         },
         ...opts,
@@ -328,6 +338,8 @@ beforeEach(() => {
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
+  createWithStockDeferred = false;
+  resolveCreateWithStock = null;
   itemsGate = null;
   releaseItemsGate = null;
   document.body.innerHTML = "";
@@ -487,6 +499,247 @@ describe("add item form opening stock", () => {
       expect(createInputs.length).toBe(0);
       expect(createWithStockInputs.length).toBe(0);
     }
+  });
+});
+
+describe("scan create-with-stock requires the opening quantity (issue #125)", () => {
+  /** wedge-scan a code: the mocked catalogSearch never resolves an exact item */
+  async function scanUnknown(code: string) {
+    await act(async () => {
+      for (const character of code) {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: character, bubbles: true }));
+      }
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** take the unknown dialog's stocked path and land on the seeded add form */
+  async function openStockSeedForm(barcode: string): Promise<void> {
+    await mount();
+    await scanUnknown(barcode);
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create-stock");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(inputByTestId("item-barcode").value).toBe(barcode);
+  }
+
+  it("refuses a blank opening quantity and creates nothing", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-1");
+
+    setInput("item-name", "ممسوح بلا كمية");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => document.querySelector('[data-testid="form-error"]') !== null);
+
+    expect(el<HTMLElement>('[data-testid="form-error"]').textContent).toContain("أدخل كمية مخزون أكبر من صفر");
+    expect(createInputs.length).toBe(0);
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("refuses 0 with the required message, keeps the unreadable message distinct, then creates on a positive value", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-2");
+
+    setInput("item-name", "ممسوح بكمية");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    setInput("initial-stock", "0");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createInputs.length).toBe(0);
+    expect(createWithStockInputs.length).toBe(0);
+
+    // a value that cannot be read keeps its own refusal
+    setInput("initial-stock", "-3");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل مخزوناً افتتاحياً صحيحاً") === true);
+    expect(createWithStockInputs.length).toBe(0);
+
+    // a positive quantity is the one path that records the opening movement
+    setInput("initial-stock", "6");
+    click("item-save");
+    await waitFor(() => createWithStockInputs.length === 1);
+    expect(createWithStockInputs[0]).toMatchObject({ name: "ممسوح بكمية", stockOnHand: 6 });
+    expect(createInputs.length).toBe(0);
+  });
+
+  it("drops the requirement when a later scan chooses the plain create path", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-3");
+
+    // the same form is reseeded plain: blank stock is a plain create again
+    await scanUnknown("UNKNOWN-STOCK-4");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-STOCK-4");
+
+    setInput("item-name", "مسح عادي");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "مسح عادي" });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("clears the filled scan draft with its session, so it cannot bypass the required stock", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-5");
+
+    setInput("item-name", "عودة للتبويب");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    // the seeded form refuses blank stock…
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createInputs.length).toBe(0);
+
+    // …and leaving the add tab ends the whole scan session: the seed AND the
+    // filled draft go together, so the scanned item cannot be saved later
+    // without the opening stock the choice required
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    expect(inputByTestId("item-name").value).toBe("");
+    expect(inputByTestId("item-barcode").value).toBe("");
+    expect(inputByTestId("initial-stock").value).toBe("");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBeNull();
+
+    // a return through the tab is a fresh, plain add where blank stock is an
+    // explicit no-movement create
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    setInput("item-name", "عودة للتبويب");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "عودة للتبويب" });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("keeps a plain scan's filled draft across a tab switch, unlike a stocked one", async () => {
+    // the plain create choice carries no required stock, so its filled draft is
+    // ordinary unsaved work the tab switch must not throw away
+    await mount();
+    await scanUnknown("UNKNOWN-PLAIN-1");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-PLAIN-1");
+
+    setInput("item-name", "مسح عادي بمسودة");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+
+    // the draft survived, and the plain form carries no required-stock signal
+    expect(inputByTestId("item-name").value).toBe("مسح عادي بمسودة");
+    expect(inputByTestId("item-barcode").value).toBe("UNKNOWN-PLAIN-1");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBeNull();
+
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "مسح عادي بمسودة", costPrice: 100, sellingPrice: 180 });
+    expect(createInputs[0]?.stockOnHand).toBeUndefined();
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("does not let a new scan barcode inherit the previous plain draft's details", async () => {
+    // barcode A: a plain draft that survives an ordinary tab switch
+    await mount();
+    await scanUnknown("UNKNOWN-A-1");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-A-1");
+    setInput("item-name", "منتج أ");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    click("items-tab-add");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(inputByTestId("item-name").value).toBe("منتج أ");
+
+    // barcode B: the new seed starts clean instead of reusing A's details
+    await scanUnknown("UNKNOWN-B-2");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-B-2");
+    expect(inputByTestId("item-name").value).toBe("");
+    expect(inputByTestId("item-cost").value).toBe("");
+    expect(inputByTestId("item-sell").value).toBe("");
+    expect(inputByTestId("initial-stock").value).toBe("");
+
+    // the save carries B with the details typed after the scan
+    setInput("item-name", "منتج ب");
+    setInput("item-cost", "200");
+    setInput("item-sell", "260");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "منتج ب", costPrice: 200, sellingPrice: 260 });
+    expect(createWithStockInputs.length).toBe(0);
+  });
+
+  it("ignores a stale save so a new scan keeps its required stock and no old error", async () => {
+    createWithStockDeferred = true;
+    await openStockSeedForm("UNKNOWN-STOCK-6");
+
+    setInput("item-name", "منتج قديم بمخزون");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    setInput("initial-stock", "5");
+    click("item-save");
+    await waitFor(() => createWithStockInputs.length === 1);
+
+    // the save is still in flight while the operator leaves the tab (the form
+    // remounts) and starts a fresh stocked scan in a new session
+    click("items-tab-products");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === true);
+    await scanUnknown("UNKNOWN-STOCK-7");
+    await waitFor(() => document.querySelector('[data-testid="unknown-scan-dialog"]') !== null);
+    click("scan-create-stock");
+    await waitFor(() => inputByTestId("item-barcode").value === "UNKNOWN-STOCK-7");
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBe("true");
+
+    // the OLD save settles late: it must not clear the new scan's requirement
+    // or leave its result (or error) on the new draft
+    await act(async () => {
+      resolveCreateWithStock?.();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(inputByTestId("initial-stock").getAttribute("aria-required")).toBe("true");
+    expect(document.querySelector('[data-testid="form-error"]')).toBeNull();
+
+    // and the new item still refuses blank stock instead of saving silently
+    setInput("item-name", "منتج جديد بمخزون");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    click("item-save");
+    await waitFor(() => el<HTMLElement>('[data-testid="form-error"]').textContent?.includes("أدخل كمية مخزون أكبر من صفر") === true);
+    expect(createWithStockInputs.length).toBe(1); // only the old save was sent
+    expect(createInputs.length).toBe(0);
+  });
+
+  it("marks the seeded stock field required and the plain one optional", async () => {
+    await openStockSeedForm("UNKNOWN-STOCK-A11Y");
+    const seeded = inputByTestId("initial-stock");
+    expect(seeded.getAttribute("aria-required")).toBe("true");
+    // the visible hint and its screen-reader text live on the label
+    expect(seeded.closest("label")?.textContent).toContain("مطلوب");
+  });
+
+  it("leaves the plain add form's stock field optional", async () => {
+    await mount();
+    await openAddTab();
+    const plain = inputByTestId("initial-stock");
+    expect(plain.getAttribute("aria-required")).toBeNull();
+    expect(plain.closest("label")?.textContent).not.toContain("مطلوب");
   });
 });
 

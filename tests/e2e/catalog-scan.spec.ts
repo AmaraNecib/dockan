@@ -123,18 +123,91 @@ test("catalog search, wedge scanning, and the unknown-scan path", async ({ page 
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("scan-found")).toContainText("منتج ممسوح");
 
-  // 6. create-with-stock path lands stock on hand > 0
+  // 6. create-with-stock path lands stock on hand > 0 — and must not create
+  //    without its opening quantity (the scan choice promises a movement)
   await page.keyboard.type("UNKNOWN-555", { delay: 12 });
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
   await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("initial-stock")).toHaveAttribute("aria-required", "true");
   await page.getByTestId("item-name").fill("منتج بمخزون");
-  await page.getByTestId("initial-stock").fill("7");
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("300");
+
+  // blank and 0 are refused by name; an unreadable value keeps its own message
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await page.getByTestId("initial-stock").fill("0");
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await page.getByTestId("initial-stock").fill("-1");
+  await page.getByTestId("item-save").click();
+  await expect(page.getByTestId("form-error")).toContainText("أدخل مخزوناً افتتاحياً صحيحاً");
+  await expect(page.getByTestId("form-error")).not.toContainText("أدخل كمية مخزون أكبر من صفر");
+
+  // and the positive quantity still creates in one step
+  await page.getByTestId("initial-stock").fill("7");
   await page.getByTestId("item-save").click();
   await openItemsTab(page, "products");
   await expect(page.getByRole("row", { name: /منتج بمخزون/ })).toContainText("7");
+
+  // 7. leaving the add tab ends the whole scan session: the seed AND the filled
+  //    draft go together, so the scanned draft cannot be saved without the
+  //    opening stock its choice required; a return is a fresh plain add
+  await page.keyboard.type("UNKNOWN-556", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("initial-stock")).toHaveAttribute("aria-required", "true");
+  await page.getByTestId("item-name").fill("منتج بلا حركة");
+  await page.getByLabel("سعر الشراء (دج)").fill("50");
+  await page.getByLabel("سعر البيع (دج)").fill("80");
+
+  await openItemsTab(page, "products");
+  await openItemsTab(page, "add");
+  // the scan draft is gone with its session…
+  await expect(page.getByTestId("item-name")).toHaveValue("");
+  await expect(page.getByTestId("item-barcode")).toHaveValue("");
+  await expect(page.getByTestId("initial-stock")).not.toHaveAttribute("aria-required", "true");
+  // …so this is a fresh plain draft: blank stock creates without a movement
+  await page.getByTestId("item-name").fill("منتج بلا حركة");
+  await page.getByLabel("سعر الشراء (دج)").fill("50");
+  await page.getByLabel("سعر البيع (دج)").fill("80");
+  await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
+  await expect(page.getByRole("row", { name: /منتج بلا حركة/ })).toBeVisible();
+
+  // 8. a PLAIN scan's filled draft survives the same tab switch: only the
+  //    stocked choice discards a draft (there is no required stock to protect)
+  await page.keyboard.type("UNKNOWN-557", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create").click();
+  await page.getByTestId("item-name").fill("منتج عادي بمسودة");
+  await page.getByLabel("سعر الشراء (دج)").fill("60");
+  await page.getByLabel("سعر البيع (دج)").fill("90");
+  await openItemsTab(page, "products");
+  await openItemsTab(page, "add");
+  await expect(page.getByTestId("item-name")).toHaveValue("منتج عادي بمسودة");
+  await expect(page.getByTestId("item-barcode")).toHaveValue("UNKNOWN-557");
+  await expect(page.getByTestId("initial-stock")).not.toHaveAttribute("aria-required", "true");
+
+  // a DIFFERENT scan must not inherit the surviving draft's details: the new
+  // barcode replaces the whole draft, so its name and prices start empty
+  await page.keyboard.type("UNKNOWN-558", { delay: 12 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create").click();
+  await expect(page.getByTestId("item-barcode")).toHaveValue("UNKNOWN-558");
+  await expect(page.getByTestId("item-name")).toHaveValue("");
+  await expect(page.getByLabel("سعر الشراء (دج)")).toHaveValue("");
+  await expect(page.getByLabel("سعر البيع (دج)")).toHaveValue("");
+  await page.getByTestId("item-name").fill("منتج عادي ثان");
+  await page.getByLabel("سعر الشراء (دج)").fill("70");
+  await page.getByLabel("سعر البيع (دج)").fill("95");
+  await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
+  await expect(page.getByRole("row", { name: /منتج عادي ثان/ })).toBeVisible();
 });
 
 test("stale scan lookups never overwrite newer results", async ({ page }) => {

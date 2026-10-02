@@ -12,7 +12,7 @@ import { Amount } from "@/components/ui/amount";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { normalizeBarcode } from "@dokan/contracts";
-import { parseWholeNumber } from "../lib/numeric-input";
+import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -62,6 +62,13 @@ export function ItemsPage() {
   const [tab, setTab] = useState<ItemsTab>("products");
   /** what the item form gets prefilled with after an unknown-scan choice */
   const [formSeed, setFormSeed] = useState<{ barcode: string; withStock: boolean } | null>(null);
+  /** Identifies the current add-form session. Bumped when a scan seed starts:
+   * an in-flight save from the previous draft may still settle, but it must
+   * not reset the newer draft or clear its required-stock mode. */
+  const formSessionRef = useRef(0);
+  /** bump to remount the add form: used when a scan session ends, so its
+   * filled draft cannot outlive the required-stock intent it carried */
+  const [formResetKey, setFormResetKey] = useState(0);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   /** bumps on every committed scan: an edit draft open at scan time is stale */
   const [scanNonce, setScanNonce] = useState(0);
@@ -103,6 +110,19 @@ export function ItemsPage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
+  /** A scan session ends when the add tab is left. The seed always goes; the
+   * filled draft goes only when the scan's choice REQUIRED opening stock —
+   * otherwise that draft could be saved later without the stock the choice
+   * promised. A plain scan's draft is ordinary work and survives the switch,
+   * exactly like a hand-started draft. */
+  function selectTab(next: ItemsTab) {
+    if (next !== "add" && formSeed !== null) {
+      setFormSeed(null);
+      if (formSeed.withStock) setFormResetKey((key) => key + 1);
+    }
+    setTab(next);
+  }
+
   // Keyboard behaviour for the tablist: arrows move focus AND selection
   // (automatic activation), Home/End jump to the ends. RTL users get the same
   // result from either horizontal arrow on a two-tab set.
@@ -116,11 +136,14 @@ export function ItemsPage() {
     event.preventDefault();
     const target = ITEMS_TABS[next];
     if (target === undefined) return;
-    setTab(target.id);
+    selectTab(target.id);
     document.getElementById(`items-tab-${target.id}`)?.focus();
   }
 
   function openAddTab(seed: { barcode: string; withStock: boolean }) {
+    // a new scan starts a new session: a save left in flight by the previous
+    // draft no longer owns the form (see ItemForm's mutation callbacks)
+    formSessionRef.current += 1;
     setFormSeed(seed);
     setTab("add");
   }
@@ -153,7 +176,7 @@ export function ItemsPage() {
             aria-selected={tab === entry.id}
             aria-controls={`items-panel-${entry.id}`}
             tabIndex={tab === entry.id ? 0 : -1}
-            onClick={() => setTab(entry.id)}
+            onClick={() => selectTab(entry.id)}
             onKeyDown={(event) => onTabKeyDown(event, index)}
             data-testid={`items-tab-${entry.id}`}
             className={
@@ -172,7 +195,7 @@ export function ItemsPage() {
         <ItemList scanNonce={scanNonce} />
       </div>
       <div role="tabpanel" id="items-panel-add" aria-labelledby="items-tab-add" hidden={tab !== "add"}>
-        <ItemForm seed={formSeed} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
+        <ItemForm key={formResetKey} seed={formSeed} sessionRef={formSessionRef} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
         <StockForm />
       </div>
 
@@ -276,10 +299,14 @@ function CatalogSearch() {
 
 function ItemForm({
   seed,
+  sessionRef,
   onSeedConsumed,
   onSaved,
 }: {
   seed: { barcode: string; withStock: boolean } | null;
+  /** identifies the current add-form session; a save only applies its result
+   * while this still matches the session that started it */
+  sessionRef: { current: number };
   onSeedConsumed: () => void;
   onSaved: () => void;
 }) {
@@ -293,6 +320,9 @@ function ItemForm({
   const [barcode, setBarcode] = useState("");
   const [initialStock, setInitialStock] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** the session that started the in-flight save, so a late result can tell
+   * whether it still owns this form */
+  const saveSessionRef = useRef<number | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const initialStockRef = useRef<HTMLInputElement>(null);
 
@@ -300,15 +330,32 @@ function ItemForm({
   // that same choice in the trigger: the operator must always see the category
   // the item will be filed under (greptile PR #80).
   const selectedCategoryId = categoryId || categories.data?.items[0]?.id || "";
+  // The unknown-scan "create with stock" choice promises an opening movement,
+  // so while this form carries that seed a blank/zero quantity is refused; the
+  // plain add form (no seed) keeps blank = no opening stock.
+  const stockRequired = seed?.withStock === true;
 
-  // prefill from an unknown-scan choice; "create with stock" only focuses the
-  // (now always-visible) quantity field — it never gates or forces it
+  /** Every draft input except the chosen category, which deliberately carries
+   * over between items. A successful save and a fresh scan both start from
+   * this, so a new barcode can never ride on the previous item's details. */
+  function clearDraft() {
+    setName("");
+    setCost("");
+    setSell("");
+    setThreshold("5");
+    setBarcode("");
+    setInitialStock("");
+    setError(null);
+  }
+
+  // prefill from an unknown-scan choice; "create with stock" focuses the
+  // (always-visible) quantity field and makes it required for this seed
   useEffect(() => {
     if (seed !== null) {
+      // a new scan is a new item: name, prices and quantity from the previous
+      // draft must not ride along on the new barcode
+      clearDraft();
       setBarcode(seed.barcode);
-      // a fresh scan must not inherit a quantity typed for a previous item
-      setInitialStock("");
-      setError(null);
       if (seed.withStock) initialStockRef.current?.focus();
       else nameRef.current?.focus();
     }
@@ -321,31 +368,36 @@ function ItemForm({
   const create = useMutation(
     orpc.itemsCreate.mutationOptions({
       onSuccess: () => {
-        resetFields();
+        // the write exists either way, so refresh the lists; only the session
+        // that started the save may have its draft reset by the result
         invalidate();
+        if (saveSessionRef.current !== sessionRef.current) return;
+        resetFields();
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        // a stale failure belongs to a draft that is no longer on screen
+        if (saveSessionRef.current !== sessionRef.current) return;
+        setError(tError(err.message));
+      },
     }),
   );
 
   const createWithStock = useMutation(
     orpc.itemsCreateWithStock.mutationOptions({
       onSuccess: () => {
-        resetFields();
         invalidate();
+        if (saveSessionRef.current !== sessionRef.current) return;
+        resetFields();
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => {
+        if (saveSessionRef.current !== sessionRef.current) return;
+        setError(tError(err.message));
+      },
     }),
   );
 
   function resetFields() {
-    setName("");
-    setCost("");
-    setSell("");
-    setThreshold("5");
-    setBarcode("");
-    setInitialStock("");
-    setError(null);
+    clearDraft();
     onSeedConsumed();
   }
 
@@ -388,12 +440,12 @@ function ItemForm({
       }
       normalizedBarcode = normalized;
     }
-    // empty means zero (a deliberate "not counted yet"), so only a positive
-    // whole number takes the one-step create-with-stock path
-    const stockText = initialStock.trim();
-    const stock = stockText === "" ? 0 : parseWholeNumber(stockText);
-    if (stock === null) {
-      setError(t("itemsStockInvalid"));
+    // the plain form reads blank and 0 as a deliberate "not counted yet"; the
+    // scan's create-with-stock seed requires a positive count — the resolver
+    // owns that rule, the messages stay here
+    const stock = resolveOpeningStock(initialStock, stockRequired);
+    if (!stock.ok) {
+      setError(t(stock.reason === "required" ? "scanStockRequired" : "itemsStockInvalid"));
       return;
     }
     const base: ItemCreate = {
@@ -404,7 +456,11 @@ function ItemForm({
       lowStockThreshold: parsedThreshold,
     };
     if (normalizedBarcode !== undefined) base.barcode = normalizedBarcode;
-    if (stockText !== "" && stock > 0) void createWithStock.mutate({ ...base, stockOnHand: stock });    else void create.mutate(base);
+    // this save belongs to the session submitting it: a later scan seed makes
+    // its settlement stale (see the mutation callbacks)
+    saveSessionRef.current = sessionRef.current;
+    if (stock.value > 0) void createWithStock.mutate({ ...base, stockOnHand: stock.value });
+    else void create.mutate(base);
   }
 
   return (
@@ -464,7 +520,15 @@ function ItemForm({
         </label>
       </div>
       <label className="grid gap-1">
-        {t("scanStockInitial")}
+        <span>
+          {t("scanStockInitial")}
+          {stockRequired && (
+            <>
+              <span className="text-destructive" aria-hidden="true"> *</span>
+              <span className="sr-only"> ({t("fieldRequired")})</span>
+            </>
+          )}
+        </span>
         <input
           ref={initialStockRef}
           className="rounded border px-3 py-2"
@@ -473,6 +537,7 @@ function ItemForm({
           value={initialStock}
           onChange={(e) => setInitialStock(e.target.value)}
           inputMode="numeric"
+          aria-required={stockRequired || undefined}
           data-testid="initial-stock"
         />
       </label>

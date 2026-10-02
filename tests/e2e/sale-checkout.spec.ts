@@ -6,8 +6,79 @@ import { chooseSelectOption } from "./select-helpers";
  * Sale checkout through the existing catalog seams. The flow uses
  * an unknown scan's explicit create-with-stock choice, the picker, an exact
  * scan, both negotiated-price modes, both invoice discount modes, and an
- * oversell rejection that leaves the cart available.
+ * oversell rejection that leaves the cart available. The stocked path is
+ * pinned separately for its required opening quantity and its focus move.
  */
+test("scan create-with-stock refuses a blank or zero quantity and focuses it on a second scan", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `مسح-تصنيف-${stamp}`;
+  const itemName = `مسح-بمخزون-${stamp}`;
+  const firstUnknown = `REQ-A-${stamp}`;
+  const secondUnknown = `REQ-B-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+
+  // First unknown scan takes the PLAIN create path, which may stay open while
+  // the next scan arrives — the stocked path must still land focus on stock.
+  await page.keyboard.type(firstUnknown, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create").click();
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+  await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(firstUnknown);
+  // the plain path's quantity stays optional
+  await expect(page.getByTestId("sale-quick-stock")).not.toHaveAttribute("aria-required", "true");
+
+  await page.keyboard.type(secondUnknown, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  // same form, new code, and focus on the field the choice was made for
+  await expect(page.getByTestId("sale-quick-barcode")).toHaveValue(secondUnknown);
+  await expect(page.getByTestId("sale-quick-stock")).toBeFocused();
+  await expect(page.getByTestId("sale-quick-stock")).toHaveAttribute("aria-required", "true");
+
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+
+  // blank must not create an unsellable item: the submit is refused by name
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+
+  // an explicit 0 is refused on this path too
+  await page.getByTestId("sale-quick-stock").fill("0");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل كمية مخزون أكبر من صفر");
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+
+  // an unreadable value keeps the invalid-value message, distinct from the
+  // required-quantity one
+  await page.getByTestId("sale-quick-stock").fill("-1");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل مخزوناً أولياً صحيحاً");
+  await expect(page.getByTestId("sale-error")).not.toContainText("أدخل كمية مخزون أكبر من صفر");
+
+  // a positive quantity records the opening movement and lines the item up
+  await page.getByTestId("sale-quick-stock").fill("3");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+
+  // and that stock is real: the sale against it passes the stock check
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+});
+
 test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", async ({ page }) => {
   await signIn(page);
 

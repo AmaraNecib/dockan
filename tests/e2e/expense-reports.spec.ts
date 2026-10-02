@@ -88,12 +88,17 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await dateField.fill("2020-01-15T12:00");
   await page.getByTestId("expense-save").click();
   await expect(page.getByTestId("expense-error")).toContainText("01/10/2026 00:34");
+  await expect(dateField).toHaveAttribute("aria-invalid", "true");
   await expect(page.getByTestId("expense-history")).not.toContainText(backdatedNote);
 
-  // «الآن» restores a live now-shaped value, then the real backdated moment
-  // records in the field's own shape
+  // «الآن» restores a live now-shaped value AND clears the field's stale
+  // refusal, so the error text and aria-invalid go with it
   await page.getByTestId("expense-date-now").click();
   await expect(dateField).toHaveValue(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  await expect(dateField).not.toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByTestId("expense-error")).toBeHidden();
+
+  // the real backdated moment records in the field's own shape
   await dateField.fill("15/01/2020 12:00");
   await page.getByTestId("expense-save").click();
   // assert on this row's own note, never on the amount: the other rows carry

@@ -41,6 +41,10 @@ function withSeconds(value: string): string | undefined {
   return value.length === 16 ? `${value}:00` : value;
 }
 
+/** The record form's error, tagged with the control it belongs to so a field
+ * action (the Now button) clears only its own field refusal. */
+type RecordError = { message: string; field: "amount" | "category" | "date" | "save" };
+
 export function ExpensesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -51,7 +55,7 @@ export function ExpensesPage() {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [occurredAt, setOccurredAt] = useState(nowDateTimeText());
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<RecordError | null>(null);
   /** the date field's own invalid marker, so the form-level alert is wired to it */
   const [dateInvalid, setDateInvalid] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -90,7 +94,7 @@ export function ExpensesPage() {
         // new raw row; refetching the app's few active queries keeps them honest
         void queryClient.invalidateQueries();
       },
-      onError: (err) => setError(tError(err.message)),
+      onError: (err) => setError({ message: tError(err.message), field: "save" }),
     }),
   );
 
@@ -184,11 +188,11 @@ export function ExpensesPage() {
     setDateInvalid(false);
     const parsed = Number(amount);
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      setError(t("expenseInvalidAmount"));
+      setError({ message: t("expenseInvalidAmount"), field: "amount" });
       return;
     }
     if (categoryId === "") {
-      setError(t("expenseChooseCategory"));
+      setError({ message: t("expenseChooseCategory"), field: "category" });
       return;
     }
     // the field teaches `DD/MM/YYYY HH:mm`; a bare date means midnight, and an
@@ -197,7 +201,7 @@ export function ExpensesPage() {
     const occurredAtIso = dateText === "" ? undefined : parseDateTimeText(dateText);
     if (dateText !== "" && occurredAtIso === null) {
       setDateInvalid(true);
-      setError(t("expenseDateInvalid"));
+      setError({ message: t("expenseDateInvalid"), field: "date" });
       return;
     }
     void createExpense.mutate({
@@ -335,7 +339,19 @@ export function ExpensesPage() {
             }}
             data-testid="expense-date"
           />
-          <Button type="button" variant="outline" disabled={disabled} onClick={() => setOccurredAt(nowDateTimeText())} data-testid="expense-date-now">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled}
+            onClick={() => {
+              setOccurredAt(nowDateTimeText());
+              // a fresh now is valid: clear only the date field's own refusal —
+              // an amount/category/save error is not this button's to hide
+              setDateInvalid(false);
+              if (error?.field === "date") setError(null);
+            }}
+            data-testid="expense-date-now"
+          >
             {t("dateNow")}
           </Button>
         </div>
@@ -389,7 +405,7 @@ export function ExpensesPage() {
                 </Button>
                 {saved && <span className="text-sm text-success" data-testid="expense-saved">{t("expenseSaved")}</span>}
               </div>
-              {error && <p id="expense-error" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error}</p>}
+              {error && <p id="expense-error" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid="expense-error">{error.message}</p>}
             </form>
 
             {categoryFormOpen && categoryForm}

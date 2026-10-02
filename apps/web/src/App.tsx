@@ -170,16 +170,24 @@ function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
 }
 
 /** Owner provisioning after the vault is open (no separate login exists). */
+const OWNER_CHECK_RETRY_DELAYS_MS = [200, 500, 1_000] as const;
+
 function VaultOwnerGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
   const [setupBlocked, setSetupBlocked] = useState(false);
   const [checkFailed, setCheckFailed] = useState(false);
   const checkSeqRef = useRef(0);
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useSidebarPreferenceMigration(needsSetup === false);
 
   const checkSetup = useCallback(() => {
     const seq = ++checkSeqRef.current;
+    if (retryTimerRef.current !== undefined) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
     setNeedsSetup(null);
     setSetupBlocked(false);
     setCheckFailed(false);
@@ -187,19 +195,55 @@ function VaultOwnerGate({ children }: { children: ReactNode }) {
       .needsSetup()
       .then((res) => {
         if (seq !== checkSeqRef.current) return;
+        retryAttemptRef.current = 0;
         setNeedsSetup(res.needsSetup);
         setSetupBlocked(res.setupBlocked);
       })
       .catch(() => {
-        if (seq === checkSeqRef.current) setCheckFailed(true);
+        if (seq !== checkSeqRef.current) return;
+        // a brief proxy/API interruption after unlock must not hang the
+        // loading screen forever: retry a bounded number of times, then show
+        // the owner a working retry button (round-7 finding 4)
+        const delay = OWNER_CHECK_RETRY_DELAYS_MS[retryAttemptRef.current];
+        if (delay !== undefined) {
+          retryAttemptRef.current += 1;
+          retryTimerRef.current = setTimeout(() => checkSetup(), delay);
+          return;
+        }
+        setCheckFailed(true);
       });
   }, []);
 
   useEffect(() => {
     checkSetup();
+    return () => {
+      if (retryTimerRef.current !== undefined) clearTimeout(retryTimerRef.current);
+    };
   }, [checkSetup]);
 
-  if (checkFailed || needsSetup === null) return <LoadingScreen />;
+  if (checkFailed) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert" data-testid="owner-check-failed">
+            {t("startupCheckFailed")}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              retryAttemptRef.current = 0;
+              checkSetup();
+            }}
+            className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80"
+            data-testid="owner-check-retry"
+          >
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
+  if (needsSetup === null) return <LoadingScreen />;
   if (setupBlocked) {
     return (
       <main className="grid min-h-screen place-items-center bg-background p-4">

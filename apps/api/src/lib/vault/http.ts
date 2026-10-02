@@ -1,5 +1,5 @@
 import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 
 import { tokenMatches } from "../boot-token";
@@ -52,6 +52,13 @@ export type VaultHttpDeps = {
   onSetupCommitted?: () => Promise<VaultCleanupResult>;
   /** Called after the header commit, with the app live (e.g. the first daily backup). */
   afterSetup?: () => Promise<void>;
+  /**
+   * Called after any credential change (add/remove recovery key, change/reset
+   * passphrase): the daily backup embeds the header wraps, so it must be
+   * refreshed or the owner could not restore it with their current credentials
+   * (round-7 finding 3).
+   */
+  afterCredentialChange?: () => Promise<void>;
 };
 
 const setupSchema = z.object({ passphrase: z.string().min(1), setupToken: z.string().optional() });
@@ -81,8 +88,54 @@ function isJsonRequest(contentType: string | undefined): boolean {
   return contentType !== undefined && contentType.startsWith("application/json");
 }
 
+/**
+ * Credential-bearing vault routes are loopback-only: a passphrase, recovery
+ * key or session token must never cross a LAN in cleartext HTTP, and setup
+ * also returns the recovery key (round-7 finding 6). `/api/vault/status`
+ * carries no secret and stays reachable for the shell's readiness probes.
+ */
+function requiresLoopback(path: string): boolean {
+  return (
+    path === "/api/vault/setup" ||
+    path === "/api/vault/unlock" ||
+    path === "/api/vault/unlock-recovery" ||
+    path === "/api/vault/reset-passphrase" ||
+    path === "/api/vault/change-passphrase" ||
+    path === "/api/vault/logout" ||
+    path.startsWith("/api/vault/recovery-keys")
+  );
+}
+
+function isLoopbackRequest(c: Context): boolean {
+  // SAFETY: @hono/node-server sets env.incoming to the Node IncomingMessage;
+  // app.request() (tests) has no env, and an absent address is trusted because
+  // there is no socket to observe
+  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
+  const address = env?.incoming?.socket?.remoteAddress;
+  if (address === undefined) return true;
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
 export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   const app = new Hono();
+
+  app.use("/api/vault/*", async (c, next) => {
+    if (requiresLoopback(c.req.path) && !isLoopbackRequest(c)) return errorResponse("VAULT_LOOPBACK_REQUIRED", 403);
+    return next();
+  });
+
+  /** Refresh today's backup after a credential change; never fatal. */
+  const refreshBackupAfterCredentialChange = async (): Promise<void> => {
+    try {
+      await deps.afterCredentialChange?.();
+    } catch (error) {
+      deps.logger.error(
+        "VAULT_BACKUP_REFRESH_FAILED",
+        "the daily backup could not be refreshed after a credential change",
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+  };
 
   /** Packaged installs: only the shell's webview holds the one-time boot token. */
   const setupTokenOk = (provided: string | undefined): boolean => {
@@ -149,6 +202,9 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
           );
           return errorResponse("VAULT_SETUP_FAILED", 500);
         }
+        // the app came up: only now may another request resume-commit the
+        // pending setup (round-7 finding 1)
+        deps.manager.finishSetupBootstrap();
         sessionToken = await deps.manager.commitSetup();
       }
       let plaintextRemaining: string[] = [];
@@ -177,7 +233,13 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       }
       deps.logger.info("VAULT_SETUP_DONE", "vault created; recovery key shown once");
       // the recovery key is the only time the plaintext code ever leaves the vault
-      return c.json({ ok: true as const, recoveryKey: prepared.recoveryKey, sessionToken, plaintextRemaining });
+      return c.json({
+        ok: true as const,
+        recoveryKey: prepared.recoveryKey,
+        sessionToken,
+        sessionGeneration: deps.manager.sessionEpoch(),
+        plaintextRemaining,
+      });
     } catch (error) {
       if (error instanceof VaultAlreadyConfiguredError) return errorResponse("VAULT_ALREADY_CONFIGURED", 409);
       if (error instanceof VaultSetupInProgressError) return errorResponse("VAULT_SETUP_IN_PROGRESS", 409);
@@ -221,6 +283,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
     try {
       const added = await deps.manager.addRecoveryKey();
+      await refreshBackupAfterCredentialChange();
       return c.json({ ok: true as const, id: added.id, code: added.code, createdAt: added.createdAt });
     } catch (error) {
       if (error instanceof Error && error.message === "VAULT_RECOVERY_LIMIT") return errorResponse("VAULT_RECOVERY_LIMIT", 409);
@@ -232,7 +295,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
     try {
       const sessionToken = await deps.manager.removeRecoveryKey(c.req.param("id"));
-      return c.json({ ok: true as const, sessionToken });
+      await refreshBackupAfterCredentialChange();
+      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
     } catch (error) {
       if (error instanceof Error && error.message === "VAULT_RECOVERY_NOT_FOUND") return errorResponse("VAULT_RECOVERY_NOT_FOUND", 404);
       if (error instanceof Error && error.message === "VAULT_LAST_RECOVERY_KEY") return errorResponse("VAULT_LAST_RECOVERY_KEY", 409);
@@ -246,7 +310,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     if (!body.success) return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
     try {
       const sessionToken = await deps.manager.changePassphrase(body.data.currentPassphrase, body.data.newPassphrase);
-      return c.json({ ok: true as const, sessionToken });
+      await refreshBackupAfterCredentialChange();
+      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_PASSPHRASE", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -269,7 +334,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     }
     try {
       const sessionToken = await deps.manager.setPassphraseFromRecovery(body.data.recoveryKey, body.data.newPassphrase);
-      return c.json({ ok: true as const, sessionToken });
+      await refreshBackupAfterCredentialChange();
+      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_RECOVERY", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -282,7 +348,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
 }
 
 async function unlockResponse(
-  c: { json: (body: { ok: true; sessionToken: string }, status: 200) => Response },
+  c: { json: (body: { ok: true; sessionToken: string; sessionGeneration: number }, status: 200) => Response },
   deps: VaultHttpDeps,
   unlock: () => Promise<string>,
   wrongCode: VaultErrorCode,
@@ -290,7 +356,7 @@ async function unlockResponse(
   try {
     const sessionToken = await unlock();
     await deps.bootstrap({ masterKey: deps.manager.requireMasterKey(), vaultId: deps.manager.metadata().vaultId, fresh: false });
-    return c.json({ ok: true as const, sessionToken }, 200);
+    return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() }, 200);
   } catch (error) {
     if (error instanceof VaultAuthenticationError) return errorResponse(wrongCode, 401);
     if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });

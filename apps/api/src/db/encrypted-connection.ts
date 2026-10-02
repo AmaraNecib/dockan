@@ -9,7 +9,7 @@ import * as schema from "./schema";
 import { cleanupStalePartials, writeFileAtomic, writeFileAtomicSync } from "../lib/atomic-file";
 import { createVaultBackupBundle, readVaultBackupBundle } from "../lib/vault/backup";
 import { open, seal } from "../lib/vault/crypto";
-import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, parseVaultHeader, snapshotAad } from "../lib/vault/format";
+import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION, parseVaultHeader, snapshotAad, type VaultWrap } from "../lib/vault/format";
 import { assertSchemaVersionSupported, readSchemaVersion } from "../lib/schema-version";
 
 /**
@@ -131,6 +131,20 @@ function openSnapshot(masterKey: Uint8Array, vaultId: string, envelope: Uint8Arr
 }
 
 /** PRAGMA quick_check on a live connection (one text column). */
+/**
+ * Compare two headers' credential wraps as multisets. A backup bundle embeds
+ * its header, and a backup whose wraps are stale would restore a header the
+ * owner can no longer open with their current passphrase/recovery keys
+ * (round-7 finding 3).
+ */
+function wrapsMatch(left: VaultWrap[], right: VaultWrap[]): boolean {
+  if (left.length !== right.length) return false;
+  const identity = (wrap: VaultWrap): string => `${wrap.kind}:${wrap.id}:${wrap.salt}:${wrap.nonce}:${wrap.ciphertext}`;
+  const leftIds = left.map(identity).sort();
+  const rightIds = right.map(identity).sort();
+  return leftIds.every((value, index) => value === rightIds[index]);
+}
+
 function quickCheckIsOk(db: Database): boolean {
   // SAFETY: PRAGMA quick_check returns exactly one row with a "quick_check" text column
   const row = db.query("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
@@ -251,8 +265,15 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
         const bytes = fs.readFileSync(filePath);
         const bundle = readVaultBackupBundle(bytes);
         if (bundle !== undefined) {
-          // a self-contained backup must belong to this vault's header/keys
-          if (parseVaultHeader(bundle.headerText).vaultId !== vaultId) return false;
+          // a self-contained backup must belong to this vault's header AND
+          // carry the LIVE credential wraps: after a passphrase change or a
+          // recovery-key change the old bundle is refused here, so the daily
+          // pass rebuilds it instead of trusting an unopenable copy
+          const bundleHeader = parseVaultHeader(bundle.headerText);
+          if (bundleHeader.vaultId !== vaultId) return false;
+          if (headerPath === undefined) return false;
+          const liveHeader = parseVaultHeader(fs.readFileSync(headerPath, "utf8"));
+          if (!wrapsMatch(bundleHeader.wraps, liveHeader.wraps)) return false;
           candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bundle.snapshot));
         } else {
           candidate = Database.deserialize(openSnapshot(connectionKey, vaultId, bytes));

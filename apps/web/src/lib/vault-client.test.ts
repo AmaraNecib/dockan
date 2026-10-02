@@ -4,6 +4,7 @@ import {
   changeVaultPassphrase,
   fetchVaultStatus,
   isVaultPassphraseLongEnough,
+  readVaultSessionToken,
   removeRecoveryKey,
   resetVaultPassphrase,
   revokeVaultSession,
@@ -117,6 +118,25 @@ describe("vault credential calls return and adopt the rotated session token", ()
     });
     await changeVaultPassphrase("old passphrase", "new passphrase");
     expect(seen.value).toBe("stored-token");
+  });
+
+  it("keeps the newest session when an older rotation response arrives late (round-7 finding 5)", async () => {
+    // the server records generations; a late response with a smaller one must
+    // never revive the token it revoked
+    storeVaultSessionToken("newer-token", 7);
+    storeVaultSessionToken("older-token", 3);
+    expect(readVaultSessionToken()).toBe("newer-token");
+    storeVaultSessionToken("newest-token", 9);
+    expect(readVaultSessionToken()).toBe("newest-token");
+  });
+
+  it("adopts the rotation generation returned by the server", async () => {
+    routes.set("/api/vault/change-passphrase", () => Response.json({ ok: true, sessionToken: "rotated-5", sessionGeneration: 5 }));
+    await changeVaultPassphrase("old passphrase", "new passphrase");
+    expect(readVaultSessionToken()).toBe("rotated-5");
+    // a slower response from an earlier rotation cannot clobber it
+    storeVaultSessionToken("rotated-2", 2);
+    expect(readVaultSessionToken()).toBe("rotated-5");
   });
 });
 

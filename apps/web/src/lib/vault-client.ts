@@ -40,9 +40,14 @@ const statusSchema = z.object({
 const setupResponseSchema = z.object({
   recoveryKey: z.string().min(1),
   sessionToken: z.string().min(1),
+  // absent only when talking to a build older than round-7
+  sessionGeneration: z.number().int().nonnegative().optional(),
   plaintextRemaining: z.array(z.string()).optional(),
 });
-const sessionResponseSchema = z.object({ sessionToken: z.string().min(1) });
+const sessionResponseSchema = z.object({
+  sessionToken: z.string().min(1),
+  sessionGeneration: z.number().int().nonnegative().optional(),
+});
 const recoveryKeysSchema = z.object({
   keys: z.array(z.object({ id: z.string().min(1), kind: z.literal("recovery"), label: z.string().optional(), createdAt: z.string() })),
 });
@@ -79,6 +84,18 @@ export function vaultErrorCopy(error: Error | undefined): string {
 }
 
 const SESSION_STORAGE_KEY = "dokan.vault.session";
+const SESSION_GENERATION_KEY = "dokan.vault.session-generation";
+
+function readStoredGeneration(): number | undefined {
+  try {
+    const raw = sessionStorage.getItem(SESSION_GENERATION_KEY);
+    if (raw === null || raw === "") return undefined;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** The in-process session token minted at unlock; sessionStorage dies with the tab. */
 export function readVaultSessionToken(): string | undefined {
@@ -92,17 +109,36 @@ export function readVaultSessionToken(): string | undefined {
   }
 }
 
-export function storeVaultSessionToken(token: string): void {
+/**
+ * Persist a session token. Rotating endpoints return a monotonic generation;
+ * a response that arrives out of order carries an older generation and must
+ * never revive an already-revoked token (round-7 finding 5). A call without a
+ * generation (the fragment handoff, or an older server) stores the token but
+ * leaves the recorded generation untouched.
+ */
+export function storeVaultSessionToken(token: string, generation?: number): void {
   try {
+    if (generation !== undefined) {
+      const stored = readStoredGeneration();
+      if (stored !== undefined && generation < stored) return;
+      sessionStorage.setItem(SESSION_GENERATION_KEY, String(generation));
+    }
     sessionStorage.setItem(SESSION_STORAGE_KEY, token);
   } catch {
     /* non-fatal: the session lives in memory for this page only */
   }
 }
 
+/** Adopt the session carried by a minting response through the generation guard. */
+function adoptSession(response: { sessionToken: string; sessionGeneration?: number }): string {
+  storeVaultSessionToken(response.sessionToken, response.sessionGeneration);
+  return response.sessionToken;
+}
+
 export function clearVaultSessionToken(): void {
   try {
     sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    sessionStorage.removeItem(SESSION_GENERATION_KEY);
   } catch {
     /* nothing to clear */
   }
@@ -185,6 +221,7 @@ export async function vaultSetup(
     false,
     setupResponseSchema,
   );
+  adoptSession(result);
   return { recoveryKey: result.recoveryKey, sessionToken: result.sessionToken, plaintextRemaining: result.plaintextRemaining ?? [] };
 }
 
@@ -195,7 +232,7 @@ export async function revokeVaultSession(): Promise<void> {
 
 export async function vaultUnlock(passphrase: string): Promise<string> {
   const result = await request("/api/vault/unlock", { method: "POST", body: JSON.stringify({ passphrase }) }, false, sessionResponseSchema);
-  return result.sessionToken;
+  return adoptSession(result);
 }
 
 export async function vaultUnlockWithRecovery(recoveryKey: string): Promise<string> {
@@ -205,7 +242,7 @@ export async function vaultUnlockWithRecovery(recoveryKey: string): Promise<stri
     false,
     sessionResponseSchema,
   );
-  return result.sessionToken;
+  return adoptSession(result);
 }
 
 export async function listRecoveryKeys(): Promise<VaultRecoveryKey[]> {
@@ -217,7 +254,11 @@ export async function addRecoveryKey(): Promise<{ id: string; code: string }> {
   return request("/api/vault/recovery-keys", { method: "POST" }, true, addedKeySchema);
 }
 
-const removedOrChangedSchema = z.object({ ok: z.literal(true), sessionToken: z.string().min(1) });
+const removedOrChangedSchema = z.object({
+  ok: z.literal(true),
+  sessionToken: z.string().min(1),
+  sessionGeneration: z.number().int().nonnegative().optional(),
+});
 
 /**
  * The passphrase floor is checked on the NORMALIZED value: eight spaces trim
@@ -230,7 +271,7 @@ export function isVaultPassphraseLongEnough(value: string): boolean {
 export async function removeRecoveryKey(id: string): Promise<string> {
   // deleting a credential rotates the session: keep the fresh token
   const result = await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, removedOrChangedSchema);
-  return result.sessionToken;
+  return adoptSession(result);
 }
 
 export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
@@ -242,7 +283,7 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
     true,
     removedOrChangedSchema,
   );
-  return result.sessionToken;
+  return adoptSession(result);
 }
 
 /**
@@ -256,5 +297,5 @@ export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: s
     false,
     removedOrChangedSchema,
   );
-  return result.sessionToken;
+  return adoptSession(result);
 }

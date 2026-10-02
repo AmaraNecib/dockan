@@ -197,6 +197,23 @@ describe("VaultManager", () => {
     expect(vault.sessionMatches(after)).toBe(true);
   });
 
+  it("serializes concurrent credential changes so each response carries a valid, ordered token (round-7 finding 5)", async () => {
+    const vault = manager();
+    await createVault(vault);
+    const added = await vault.addRecoveryKey();
+    // two credential changes race: the mutation AND its rotation are now one
+    // queued unit, so the generations are strictly ordered
+    const before = vault.sessionEpoch();
+    const [changed, removed] = await Promise.all([
+      vault.changePassphrase("correct horse", "a brand new passphrase"),
+      vault.removeRecoveryKey(added.id),
+    ]);
+    expect(vault.sessionEpoch()).toBe(before + 2);
+    // both rotations were minted in queue order, and exactly the newest one is
+    // still accepted; its generation is what the web keeps
+    expect(changed).not.toBe(removed);
+    expect([changed, removed].filter((token) => vault.sessionMatches(token))).toHaveLength(1);
+  });
   it("retries the legacy plaintext cleanup on a later unlock until it is gone (finding C11)", async () => {
     const legacyPath = path.join(dir, "dokan.db");
     fs.writeFileSync(legacyPath, "SQLite format 3\u0000");
@@ -290,9 +307,11 @@ describe("VaultManager", () => {
     // the first request is still bootstrapping: no snapshot on disk yet
     await expect(vault.resumeSetup(PASSPHRASE)).rejects.toThrow(VaultSetupInProgressError);
     expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
-    // once the snapshot is written, a WRONG passphrase is refused and the
-    // pending slot (with its recovery key) stays reserved
+    // once the bootstrap finished and the snapshot is written, a WRONG
+    // passphrase is refused and the pending slot (with its recovery key) stays
+    // reserved
     fs.writeFileSync(vault.snapshotPath, "placeholder-snapshot");
+    vault.finishSetupBootstrap();
     await expect(vault.resumeSetup("a totally different passphrase")).rejects.toThrow(VaultAuthenticationError);
     expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
     // the original passphrase resumes and releases the token
@@ -300,6 +319,20 @@ describe("VaultManager", () => {
     expect(vault.sessionMatches(token)).toBe(true);
     expect(vault.pendingRecoveryKey()).toBeUndefined();
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  });
+
+  it("never resumes while the first bootstrap is running, even with a snapshot on disk (round-7 finding 1)", async () => {
+    const vault = manager();
+    await vault.prepareSetup(PASSPHRASE);
+    // the snapshot is written mid-bootstrap; the app is NOT ready yet
+    fs.writeFileSync(vault.snapshotPath, "placeholder-snapshot");
+    await expect(vault.resumeSetup(PASSPHRASE)).rejects.toThrow(VaultSetupInProgressError);
+    expect(vault.pendingRecoveryKey()).toBeDefined();
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
+    // a failed bootstrap drops the pending key, so a fresh setup is retryable
+    vault.abortSetup();
+    await expect(vault.prepareSetup(PASSPHRASE)).resolves.toBeDefined();
+    vault.abortSetup();
   });
 
   it("never reads a whole backup file during the sweep (round-4 performance)", async () => {
@@ -334,6 +367,22 @@ describe("VaultManager", () => {
       expect(secondPass).not.toHaveBeenCalled();
     } finally {
       secondPass.mockRestore();
+    }
+  });
+
+  it("checks legacy database existence with stat, never a full read (round-7 finding 7)", () => {
+    const legacyPath = path.join(dir, "dokan.db");
+    // a large file: a readFile-based existence check would block and allocate it
+    fs.writeFileSync(legacyPath, Buffer.alloc(4 * 1024 * 1024, 7));
+    const vault = manager();
+    const readSpy = spyOn(fs, "readFileSync");
+    try {
+      const status = vault.status();
+      expect(status.legacyDatabase).toBe(true);
+      // the header read is fine; the legacy database must never be read whole
+      expect(readSpy.mock.calls.map(([file]) => String(file))).not.toContain(legacyPath);
+    } finally {
+      readSpy.mockRestore();
     }
   });
 });

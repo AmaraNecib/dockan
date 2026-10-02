@@ -14,7 +14,8 @@ import { createEncryptedConnection, readLegacyDatabaseImage } from "../../db/enc
 import { openVaultStore } from "../../db/vault-store";
 import { AppLogger } from "../../lib/logger";
 import { ensureSessionSecret } from "../../lib/session-secret";
-import { type KdfParams } from "./crypto";
+import { VaultAuthenticationError, type KdfParams } from "./crypto";
+import { extractVaultBackup } from "./backup";
 import { createVaultHttpApp, type VaultCleanupResult } from "./http";
 import { VaultManager } from "./manager";
 import { createRpcRouter } from "../../rpc/router";
@@ -89,7 +90,12 @@ type GateHarness = {
 
 function harness(
   dir: string,
-  options: { onSetupCommitted?: () => Promise<VaultCleanupResult>; afterSetup?: () => Promise<void> } = {},
+  options: {
+    onSetupCommitted?: () => Promise<VaultCleanupResult>;
+    afterSetup?: () => Promise<void>;
+    afterCredentialChange?: () => Promise<void>;
+    bootstrap?: (input: { masterKey: Buffer; vaultId: string; fresh: boolean }) => Promise<void>;
+  } = {},
 ): GateHarness {
   const config = createAppConfig({
     DOKAN_DATA_DIR: dir,
@@ -138,11 +144,13 @@ function harness(
     app = createApp({ config, logger, auth, rpcRouter: router });
   };
 
+  const gateBootstrap = options.bootstrap ?? bootstrap;
+
   const gate = createVaultHttpApp({
     manager,
     config,
     logger,
-    bootstrap,
+    bootstrap: gateBootstrap,
     onSetupCommitted:
       options.onSetupCommitted ??
       (async () => {
@@ -156,6 +164,7 @@ function harness(
         return { plaintextRemaining: [] };
       }),
     afterSetup: options.afterSetup,
+    afterCredentialChange: options.afterCredentialChange,
   });
 
   return {
@@ -667,10 +676,11 @@ describe("vault gate hardening (review supplement)", () => {
   it("reports the cleanup result on setup and resumes a pending setup whose header write failed (findings 2 and 3)", async () => {
     const dir = tempDir("dokan-vault-resume-");
     const h = harness(dir);
-    // simulate the crash window: the first attempt prepared the vault and wrote
-    // its snapshot, then died before committing the header
+    // simulate the crash window: the first attempt prepared the vault, bootstrapped
+    // (snapshot written), then died before committing the header
     const { recoveryKey } = await h.manager.prepareSetup("correct horse battery");
     fs.writeFileSync(h.manager.snapshotPath, "placeholder-snapshot");
+    h.manager.finishSetupBootstrap();
 
     const retry = await setupVault(h);
     expect(retry.status).toBe(200);
@@ -689,6 +699,7 @@ describe("vault gate hardening (review supplement)", () => {
     // simulate the crash window: snapshot written, header uncommitted
     const { recoveryKey } = await h.manager.prepareSetup("correct horse battery");
     fs.writeFileSync(h.manager.snapshotPath, "placeholder-snapshot");
+    h.manager.finishSetupBootstrap();
 
     // a second caller with any other passphrase must get neither the recovery
     // key nor a session token
@@ -746,6 +757,149 @@ describe("vault gate hardening (review supplement)", () => {
       body: JSON.stringify({ passphrase: "correct horse battery" }),
     });
     expect(unlock.status).toBe(200);
+  });
+
+  it("keeps first-run setup retryable when the bootstrap fails after the snapshot landed (round-7 finding 1)", async () => {
+    const dir = tempDir("dokan-vault-bootstrap-fail-");
+    let releaseBootstrap: (() => void) | undefined;
+    const bootstrapGate = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    let bootstrapCalls = 0;
+    const h = harness(dir, {
+      bootstrap: async () => {
+        bootstrapCalls += 1;
+        // bootstrapVault flushes the snapshot before the app build can fail
+        fs.writeFileSync(path.join(dir, "dokan.db.enc"), "placeholder-snapshot");
+        if (bootstrapCalls === 1) {
+          await bootstrapGate;
+          throw new Error("app build failed after the snapshot");
+        }
+      },
+    });
+    const startSetup = async (): Promise<Response> =>
+      h.gate.request("/api/vault/setup", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ passphrase: "correct horse battery" }),
+      });
+    const first = startSetup();
+    for (let attempt = 0; attempt < 200 && !fs.existsSync(path.join(dir, "dokan.db.enc")); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // a second setup must not commit (and hand out the recovery key) while the
+    // first app is still bootstrapping
+    const second = await startSetup();
+    expect(second.status).toBe(409);
+    expect((await json<{ error: { code: string } }>(second)).error.code).toBe("VAULT_SETUP_IN_PROGRESS");
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
+
+    // the bootstrap fails: nothing was committed and the install stays retryable
+    releaseBootstrap?.();
+    expect((await first).status).toBe(500);
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
+    const retry = await startSetup();
+    expect(retry.status).toBe(200);
+    const retryBody = await json<{ recoveryKey: string; sessionToken: string }>(retry);
+    expect(retryBody.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  });
+
+  it("refuses credential routes from a non-loopback address (round-7 finding 6)", async () => {
+    const h = harness(tempDir("dokan-vault-loopback-"));
+    const remoteEnv = { incoming: { socket: { remoteAddress: "192.168.1.50" } } };
+    const remotePost = async (route: string, body: Record<string, string>): Promise<Response> =>
+      h.gate.request(route, { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) }, remoteEnv);
+    for (const [route, body] of [
+      ["/api/vault/setup", { passphrase: "correct horse battery" }],
+      ["/api/vault/unlock", { passphrase: "correct horse battery" }],
+      ["/api/vault/unlock-recovery", { recoveryKey: "AAAA-AAAA" }],
+      ["/api/vault/reset-passphrase", { recoveryKey: "AAAA-AAAA", newPassphrase: "a brand new passphrase" }],
+      ["/api/vault/logout", {}],
+    ] as const) {
+      const response = await remotePost(route, body);
+      expect(response.status).toBe(403);
+      expect((await json<{ error: { code: string } }>(response)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    }
+    // no refusal wrote any vault file, and status (no secret) stays reachable
+    expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
+    expect((await h.gate.request("/api/vault/status", {}, remoteEnv)).status).toBe(200);
+    // loopback still reaches first-run setup
+    const local = await h.gate.request(
+      "/api/vault/setup",
+      { method: "POST", headers: jsonHeaders, body: JSON.stringify({ passphrase: "correct horse battery" }) },
+      { incoming: { socket: { remoteAddress: "127.0.0.1" } } },
+    );
+    expect(local.status).toBe(200);
+  });
+
+  it("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {
+    const h = harness(tempDir("dokan-vault-generation-"));
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    const first = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { ...jsonHeaders, "x-vault-session": sessionToken },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "another long passphrase" }),
+    });
+    expect(first.status).toBe(200);
+    // SAFETY: the rotation contract carries a token and its generation
+    const firstBody = await json<{ sessionToken: string; sessionGeneration: number }>(first);
+    const second = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { ...jsonHeaders, "x-vault-session": firstBody.sessionToken },
+      body: JSON.stringify({ currentPassphrase: "another long passphrase", newPassphrase: "a third long passphrase" }),
+    });
+    expect(second.status).toBe(200);
+    // SAFETY: the rotation contract carries a token and its generation
+    const secondBody = await json<{ sessionToken: string; sessionGeneration: number }>(second);
+    expect(secondBody.sessionGeneration).toBeGreaterThan(firstBody.sessionGeneration);
+    // the newest generation corresponds to the server's live token
+    expect(h.manager.sessionMatches(secondBody.sessionToken)).toBe(true);
+  });
+
+  it("refuses a stale backup after a credential change and restores the refreshed one with the new passphrase (round-7 finding 3)", async () => {
+    let refreshes = 0;
+    const h = harness(tempDir("dokan-vault-backup-refresh-"), {
+      afterCredentialChange: async () => {
+        refreshes += 1;
+      },
+    });
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    const backupPath = path.join(h.dir, "backups", "dokan-2026-01-01.db");
+    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
+    await h.connection().writeBackupTo(backupPath);
+    expect(h.connection().validateSnapshotFile(backupPath)).toBe(true);
+
+    const changed = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { ...jsonHeaders, "x-vault-session": sessionToken },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a brand new passphrase" }),
+    });
+    expect(changed.status).toBe(200);
+    expect(refreshes).toBe(1);
+    // the embedded header still has the OLD passphrase wrap: refused, so the
+    // daily pass rebuilds today's file instead of trusting an unopenable copy
+    expect(h.connection().validateSnapshotFile(backupPath)).toBe(false);
+    await h.connection().writeBackupTo(backupPath);
+    expect(h.connection().validateSnapshotFile(backupPath)).toBe(true);
+
+    // restore on a fresh dir and unlock with the NEW passphrase
+    const restoreDir = tempDir("dokan-vault-backup-restore-");
+    await extractVaultBackup(fs.readFileSync(backupPath), restoreDir);
+    const restored = new VaultManager({
+      dataDir: restoreDir,
+      legacyDbPath: path.join(restoreDir, "dokan.db"),
+      logger: new AppLogger(restoreDir),
+      kdf: FAST_KDF,
+    });
+    const restoredToken = await restored.unlock("a brand new passphrase");
+    expect(restored.sessionMatches(restoredToken)).toBe(true);
+    await expect(restored.unlock("correct horse battery")).rejects.toThrow(VaultAuthenticationError);
+    restored.close();
   });
 });
 

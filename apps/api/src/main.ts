@@ -393,6 +393,9 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       }
       const prepared = await vault.prepareSetup(passphrase);
       await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+      // the app is up; a concurrent resume would now be safe, but the broker is
+      // single-request anyway
+      vault.finishSetupBootstrap();
       const sessionToken = await vault.commitSetup();
       // the recovery key reaches the shell first: cleanup and the first backup
       // are retried on later unlocks and must never delay or fail the one-time reply
@@ -604,6 +607,9 @@ if (config.vault === "on") {
     bootstrap: bootstrapVault,
     onSetupCommitted: () => manager.cleanupLegacyPlaintext(),
     afterSetup: runVaultDailyBackup,
+    // a credential change makes today's backup stale (its embedded header has
+    // the old wraps); the daily pass rebuilds it with the live header
+    afterCredentialChange: runVaultDailyBackup,
   });
   activeHandler = buildOverlay(undefined);
   startServer();
@@ -620,16 +626,27 @@ if (config.vault === "on") {
 }
 
 /**
- * Serve one standalone refusal page on the reserved/app port, publishing the
- * port record and echoing the boot token so the desktop shell's identity probe
- * still passes and the webview navigates to the Arabic message. Shared by the
- * schema gate (ADR-0008 §4.5) and the single-writer lock gate (issue #142).
+ * Serve one standalone refusal page on the reserved/app port, echoing the boot
+ * token so the desktop shell's identity probe still passes and the webview
+ * navigates to the Arabic message. Shared by the schema gate (ADR-0008 §4.5)
+ * and the single-writer lock gate (issue #142).
+ *
+ * The schema gate is the only instance on the folder, so it publishes the
+ * shared `.dokan-port` record the proxy reads. The lock-refusal instance does
+ * NOT: it does not own the folder, and publishing would point the first
+ * instance's clients at the refusal server (round-7 finding 2).
  * Never returns: the process stays up while the owner reads the page.
  */
-async function serveRefusalServer(config: AppConfig, refusalApp: Hono, event: string): Promise<never> {
+async function serveRefusalServer(
+  config: AppConfig,
+  refusalApp: Hono,
+  event: string,
+  options: { publishPortRecord?: boolean } = {},
+): Promise<never> {
+  const publish = options.publishPortRecord ?? true;
   const port = config.portExplicit ? config.port : await firstFreePort(config.port, config.probeHost);
   const portRecordDir = config.portRecordDir ?? findWorkspaceRoot();
-  if (config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
+  if (publish && config.portRecordDir !== undefined) fs.mkdirSync(portRecordDir, { recursive: true });
   const portFile = path.resolve(portRecordDir, ".dokan-port");
   const portLockDir = path.join(portRecordDir, ".dokan-port.lock");
   const registryDir = path.join(portRecordDir, ".dokan-port.registry");
@@ -637,24 +654,31 @@ async function serveRefusalServer(config: AppConfig, refusalApp: Hono, event: st
   const server = serve(
     { fetch: refusalApp.fetch, port, hostname: config.host },
     async (info) => {
-      try {
-        await publishPort({
-          portFile,
-          lockDir: portLockDir,
-          registryDir,
-          pid: process.pid,
-          host: config.host,
-          port: info.port,
-        });
-      } catch (err) {
-        logger.error(
-          "SERVER_ERROR",
-          `refusal page port publication failed after binding ${info.port}`,
-          err instanceof Error ? err : new Error(String(err)),
-        );
-        process.exit(1);
+      if (publish) {
+        try {
+          await publishPort({
+            portFile,
+            lockDir: portLockDir,
+            registryDir,
+            pid: process.pid,
+            host: config.host,
+            port: info.port,
+          });
+        } catch (err) {
+          logger.error(
+            "SERVER_ERROR",
+            `refusal page port publication failed after binding ${info.port}`,
+            err instanceof Error ? err : new Error(String(err)),
+          );
+          process.exit(1);
+        }
       }
-      logger.warn(event, `serving a refusal page on http://${info.address}:${info.port}`);
+      logger.warn(
+        event,
+        publish
+          ? `serving a refusal page on http://${info.address}:${info.port}`
+          : `serving a refusal page on http://${info.address}:${info.port} (port record untouched: another instance owns the folder)`,
+      );
     },
   );
   server.on("error", (err: NodeJS.ErrnoException) => {
@@ -663,7 +687,10 @@ async function serveRefusalServer(config: AppConfig, refusalApp: Hono, event: st
   });
   const shutdown = () => {
     server.close(() => {
-      void forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid }).finally(() => process.exit(0));
+      const cleanup = publish
+        ? forgetPortRecord({ portFile, lockDir: portLockDir, registryDir, pid: process.pid })
+        : Promise.resolve();
+      void cleanup.finally(() => process.exit(0));
     });
   };
   process.on("SIGINT", shutdown);
@@ -688,5 +715,7 @@ async function serveSchemaRefusal(config: AppConfig, error: UnsupportedSchemaVer
  * untouched.
  */
 async function serveLockRefusal(config: AppConfig, error: VaultAlreadyLockedError): Promise<never> {
-  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED");
+  // the first instance owns the folder and the shared port record; this
+  // second instance must not overwrite it (round-7 finding 2)
+  return serveRefusalServer(config, createVaultLockRefusalApp(config, error), "VAULT_LOCK_REFUSED", { publishPortRecord: false });
 }

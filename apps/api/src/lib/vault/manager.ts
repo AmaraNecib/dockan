@@ -119,7 +119,16 @@ export class VaultManager {
   private currentOwnerId: string | undefined;
 
   /** prepared first-run state; committed only after the snapshot is on disk */
-  private pendingSetup: { core: VaultCore; masterKey: Buffer; headerText: string; recoveryKey: string; vaultId: string } | undefined;
+  private pendingSetup:
+    | { core: VaultCore; masterKey: Buffer; headerText: string; recoveryKey: string; vaultId: string; bootstrapping: boolean }
+    | undefined;
+
+  /**
+   * Bumped on every minted session token. Rotating endpoints return it so the
+   * web can ignore an out-of-order response that carries an older session
+   * (round-7 finding 5).
+   */
+  private sessionGeneration = 0;
 
   /** serialises header/state writes so two unlock attempts cannot interleave */
   private writeQueue: Promise<unknown> = Promise.resolve();
@@ -179,7 +188,10 @@ export class VaultManager {
   }
 
   private legacyDatabaseExists(): boolean {
-    return readFileIfExists(this.legacyDbPath) !== undefined;
+    // existence only: status() runs on every locked poll, and reading a whole
+    // (possibly multi-GB) legacy SQLite file here blocked the API (round-7
+    // finding 7). main.ts reads the file once, for the actual migration.
+    return fs.existsSync(this.legacyDbPath);
   }
 
   /**
@@ -213,9 +225,20 @@ export class VaultManager {
         masterKey.fill(0);
         throw error;
       }
-      this.pendingSetup = { core, masterKey, headerText: deferred.text, recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
+      this.pendingSetup = { core, masterKey, headerText: deferred.text, recoveryKey: recovery.code, vaultId: core.metadata().vaultId, bootstrapping: true };
       return { recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
     });
+  }
+
+  /**
+   * The preparing request's bootstrap finished; only now may another request
+   * resume-commit the pending setup (round-7 finding 1). Until this is called,
+   * a resume would hand out the recovery key and a session for an app that the
+   * first request can still fail to boot.
+   */
+  finishSetupBootstrap(): void {
+    if (this.pendingSetup === undefined) return;
+    this.pendingSetup.bootstrapping = false;
   }
 
   /** The prepared master key, for building the first encrypted snapshot. */
@@ -266,6 +289,9 @@ export class VaultManager {
     return this.enqueue(async () => {
       const pending = this.pendingSetup;
       if (pending === undefined) throw new VaultNotUnlockedError();
+      // the first request may still be bootstrapping the app: never commit (and
+      // release the recovery key) for an app that can still fail to boot
+      if (pending.bootstrapping) throw new VaultSetupInProgressError();
       if (!fs.existsSync(this.snapshotPath)) throw new VaultSetupInProgressError();
       // verify against the PENDING passphrase wrap before releasing anything
       try {
@@ -288,7 +314,13 @@ export class VaultManager {
     if (pending === undefined) throw new VaultNotUnlockedError();
     await writeFileAtomic(this.headerPath, pending.headerText);
     this.pendingSetup = undefined;
-    this.core = pending.core;
+    // Re-open from disk instead of keeping the prepared core: the prepared
+    // core's store was a deferred buffer (nothing may be written before the
+    // snapshot exists), so later credential changes would silently never be
+    // persisted (found by the round-7 backup-refresh test).
+    const committedCore = this.openCore();
+    if (committedCore === undefined) throw new Error("the committed vault header could not be read back");
+    this.core = committedCore;
     this.replaceMasterKey(pending.masterKey);
     this.sessionToken = this.mintSessionToken();
     // must not enqueue again: the caller already holds the write queue
@@ -347,7 +379,13 @@ export class VaultManager {
   }
 
   private mintSessionToken(): string {
+    this.sessionGeneration += 1;
     return randomBytes(32).toString("base64url");
+  }
+
+  /** Monotonic session generation; see the field comment (round-7 finding 5). */
+  sessionEpoch(): number {
+    return this.sessionGeneration;
   }
 
   sessionMatches(token: string | null | undefined): boolean {
@@ -383,18 +421,28 @@ export class VaultManager {
     return this.enqueue(() => core.addRecoveryKey(this.requireMasterKey()));
   }
 
-  async removeRecoveryKey(id: string): Promise<string> {    const core = this.requireCore();
-    await this.enqueue(() => core.removeRecoveryKey(id));
-    // deleting a credential revokes every session minted before it: rotate the
-    // in-process token and return the fresh one for the caller's client
-    return this.rotateSession("VAULT_RECOVERY_KEY_REMOVED");
+  async removeRecoveryKey(id: string): Promise<string> {
+    const core = this.requireCore();
+    // serialize the mutation and its rotation: concurrent credential changes
+    // must not interleave rotations, or a response can carry a token that a
+    // later rotation already revoked (round-7 finding 5)
+    return this.enqueue(async () => {
+      await core.removeRecoveryKey(id);
+      // deleting a credential revokes every session minted before it: rotate
+      // the in-process token and return the fresh one for the caller's client
+      return this.rotateSession("VAULT_RECOVERY_KEY_REMOVED");
+    });
   }
 
   async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
     this.assertAttemptAllowed();
     const core = this.requireCore();
+    let token: string;
     try {
-      await this.enqueue(() => core.changePassphrase(currentPassphrase, newPassphrase));
+      token = await this.enqueue(async () => {
+        await core.changePassphrase(currentPassphrase, newPassphrase);
+        return this.rotateSession("VAULT_PASSPHRASE_CHANGED");
+      });
     } catch (error) {
       // a wrong current passphrase is an unlock attempt and feeds the same
       // persisted backoff as the unlock screen
@@ -402,9 +450,9 @@ export class VaultManager {
       throw error;
     }
     this.logger.info("VAULT_PASSPHRASE_CHANGED", "vault passphrase changed");
-    // the old passphrase (and any token minted while it was valid) is refused
+    // the old passphrase (and every token minted while it was valid) is refused
     // from now on; the caller keeps working on the freshly minted token
-    return this.rotateSession("VAULT_PASSPHRASE_CHANGED");
+    return token;
   }
 
   /**
@@ -424,13 +472,19 @@ export class VaultManager {
       throw error;
     }
     try {
-      await this.enqueue(() => core.setPassphraseFromMasterKey(masterKey, newPassphrase));
+      return await this.enqueue(async () => {
+        try {
+          await core.setPassphraseFromMasterKey(masterKey, newPassphrase);
+        } finally {
+          masterKey.fill(0);
+        }
+        await this.resetFailuresInternal();
+        this.logger.info("VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key");
+        return this.rotateSession("VAULT_PASSPHRASE_RESET");
+      });
     } finally {
       masterKey.fill(0);
     }
-    await this.enqueue(() => this.resetFailuresInternal());
-    this.logger.info("VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key");
-    return this.rotateSession("VAULT_PASSPHRASE_RESET");
   }
 
   private rotateSession(event: string): string {

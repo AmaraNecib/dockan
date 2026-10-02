@@ -199,6 +199,8 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     vaultId: input.vaultId,
     masterKey: input.masterKey,
     snapshotPath: vault.snapshotPath,
+    // first run: an orphan snapshot from a crashed attempt is overwritten
+    fresh: input.fresh,
   };
   if (seedBytes !== undefined) connectionOptions.seedBytes = seedBytes;
   const conn = createEncryptedConnection(connectionOptions);

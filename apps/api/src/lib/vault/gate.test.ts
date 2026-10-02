@@ -85,7 +85,7 @@ type GateHarness = {
   linkWith: (headers: Record<string, string>) => DokanClient;
 };
 
-function harness(dir: string): GateHarness {
+function harness(dir: string, options: { onSetupCommitted?: () => Promise<void> } = {}): GateHarness {
   const config = createAppConfig({
     DOKAN_DATA_DIR: dir,
     DOKAN_DB_PATH: path.join(dir, "dokan.db"),
@@ -135,15 +135,17 @@ function harness(dir: string): GateHarness {
     config,
     logger,
     bootstrap,
-    onSetupCommitted: async () => {
-      for (const suffix of ["", "-wal", "-shm"] as const) {
-        try {
-          await fs.promises.unlink(`${config.db.path}${suffix}`);
-        } catch {
-          /* already gone */
+    onSetupCommitted:
+      options.onSetupCommitted ??
+      (async () => {
+        for (const suffix of ["", "-wal", "-shm"] as const) {
+          try {
+            await fs.promises.unlink(`${config.db.path}${suffix}`);
+          } catch {
+            /* already gone */
+          }
         }
-      }
-    },
+      }),
   });
 
   return {
@@ -241,6 +243,53 @@ describe("vault HTTP gate", () => {
       body: JSON.stringify({ recoveryKey: setupBody.recoveryKey }),
     });
     expect(recoveryUnlock.status).toBe(200);
+  });
+
+  it("refuses a non-JSON pre-auth request (cross-site POST) without consuming an attempt", async () => {
+    const h = harness(tempDir("dokan-vault-csrf-"));
+    await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    h.manager.close();
+
+    // a browser simple request cannot set application/json without a preflight
+    const csrf = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      body: JSON.stringify({ passphrase: "wrong horse battery" }),
+    });
+    expect(csrf.status).toBe(415);
+
+    // and it never counted as a failed attempt: the right passphrase still works
+    const right = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(right.status).toBe(200);
+  });
+
+  it("still returns the recovery key when post-commit plaintext cleanup fails", async () => {
+    const dir = tempDir("dokan-vault-cleanup-");
+    createLegacyDatabaseOutsideProcess(dir);
+    const h = harness(dir, {
+      onSetupCommitted: async () => {
+        throw new Error("EBUSY");
+      },
+    });
+    const setup = await h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(setup.status).toBe(200);
+    // SAFETY: the setup contract carries the recovery key
+    const body = await json<{ recoveryKey: string }>(setup);
+    expect(body.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    // the vault is committed even though the plaintext files remain
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+    h.connection().close();
   });
 
   it("refuses a wrong passphrase with Arabic copy and never corrupts the vault", async () => {

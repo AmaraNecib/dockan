@@ -54,6 +54,17 @@ function errorResponse(code: string, status: number, extra: Record<string, strin
   return Response.json({ error: { code, message: vaultErrorMessage(code), ...extra } }, { status });
 }
 
+/**
+ * Pre-auth vault mutations require a JSON content type. A browser cross-site
+ * `no-cors` POST can only send a simple content type (text/plain etc.), and
+ * this server sends no CORS headers, so requiring application/json closes the
+ * CSRF path that could otherwise burn unlock attempts from a visited page.
+ * Native local callers (curl, the shell) can set the header freely.
+ */
+function isJsonRequest(contentType: string | undefined): boolean {
+  return contentType !== undefined && contentType.startsWith("application/json");
+}
+
 export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   const app = new Hono();
 
@@ -78,6 +89,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.post("/api/vault/setup", async (c) => {
+    if (!isJsonRequest(c.req.header("content-type"))) return errorResponse("VAULT_SETUP_FAILED", 415);
     const body = setupSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return errorResponse("VAULT_SETUP_FAILED", 400);
     if (!setupTokenOk(body.data.setupToken)) return errorResponse("VAULT_SETUP_TOKEN_REQUIRED", 403);
@@ -95,7 +107,17 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         return errorResponse("VAULT_SETUP_FAILED", 500);
       }
       const sessionToken = await deps.manager.commitSetup();
-      await deps.onSetupCommitted?.();
+      try {
+        await deps.onSetupCommitted?.();
+      } catch (error) {
+        // the vault is committed and the recovery key must still reach the
+        // owner; plaintext cleanup is best-effort (the header now owns the data)
+        deps.logger.error(
+          "VAULT_SETUP_CLEANUP_FAILED",
+          "plaintext files could not be removed after vault setup",
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
       deps.logger.info("VAULT_SETUP_DONE", "vault created; recovery key shown once");
       // the recovery key is the only time the plaintext code ever leaves the vault
       return c.json({ ok: true as const, recoveryKey: prepared.recoveryKey, sessionToken });
@@ -106,12 +128,14 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   });
 
   app.post("/api/vault/unlock", async (c) => {
+    if (!isJsonRequest(c.req.header("content-type"))) return errorResponse("VAULT_WRONG_PASSPHRASE", 415);
     const body = unlockSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return errorResponse("VAULT_WRONG_PASSPHRASE", 400);
     return unlockResponse(c, deps, () => deps.manager.unlock(body.data.passphrase), "VAULT_WRONG_PASSPHRASE");
   });
 
   app.post("/api/vault/unlock-recovery", async (c) => {
+    if (!isJsonRequest(c.req.header("content-type"))) return errorResponse("VAULT_WRONG_RECOVERY", 415);
     const body = recoveryUnlockSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return errorResponse("VAULT_WRONG_RECOVERY", 400);
     return unlockResponse(c, deps, () => deps.manager.unlockRecovery(body.data.recoveryKey), "VAULT_WRONG_RECOVERY");
@@ -154,6 +178,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       return c.json({ ok: true as const });
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_PASSPHRASE", 401);
+      if (error instanceof Error && error.message === "VAULT_PASSPHRASE_TOO_SHORT") return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
       throw error;
     }
   });

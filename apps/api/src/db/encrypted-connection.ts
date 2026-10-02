@@ -46,6 +46,13 @@ export type EncryptedConnectionOptions = {
   snapshotPath: string;
   /** decrypted SQLite image to adopt (legacy migration); absent = fresh database */
   seedBytes?: Uint8Array;
+  /**
+   * First-run semantics: with no seed, any file already at `snapshotPath` is
+   * an orphan of an earlier uncommitted attempt (the header does not exist, so
+   * its key was discarded) and is overwritten instead of decrypted. Unlock
+   * paths never set this: a committed snapshot must authenticate or refuse.
+   */
+  fresh?: boolean;
 };
 
 /** Build the envelope: magic ‖ version ‖ nonce ‖ ciphertext+tag. */
@@ -77,10 +84,12 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
   let raw: Database;
   if (options.seedBytes !== undefined) {
     raw = Database.deserialize(options.seedBytes);
-  } else if (fs.existsSync(snapshotPath)) {
+  } else if (!options.fresh && fs.existsSync(snapshotPath)) {
     const image = openSnapshot(masterKey, vaultId, fs.readFileSync(snapshotPath));
     raw = Database.deserialize(image);
   } else {
+    // a fresh setup owns the path: drop any orphan from a crashed first attempt
+    if (fs.existsSync(snapshotPath)) fs.rmSync(snapshotPath, { force: true });
     raw = new Database(":memory:");
   }
   raw.exec("PRAGMA foreign_keys = ON;");
@@ -98,9 +107,14 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       dirty = true;
     },
     async persistIfDirty() {
-      if (!dirty || connection.inTransaction) return;
-      dirty = false;
+      if (!dirty) return;
       const run = persistQueue.then(async () => {
+        // Re-check inside the queued task: a new transaction may have opened
+        // after this call was scheduled, and serializing mid-unit would persist
+        // pages a later ROLLBACK undoes. Leaving dirty=true defers the flush to
+        // the unit's own COMMIT path.
+        if (!dirty || connection.inTransaction) return;
+        dirty = false;
         const image = raw.serialize();
         await writeFileAtomic(snapshotPath, sealSnapshot(masterKey, vaultId, image));
       });

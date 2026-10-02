@@ -290,6 +290,7 @@ export function createRpcRouter(deps: RpcDeps) {
       // concurrent setups both pass and create competing owners, and a failure
       // after the user insert left a user row that made needsSetup false, so
       // setup could never be retried while no credential worked.
+      let provisionedUserId: string | undefined;
       const result = await deps.store.withTransactionImmediate(async (tx) => {
         const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
         if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
@@ -333,11 +334,13 @@ export function createRpcRouter(deps: RpcDeps) {
         });
         await tx.setSetting("adminUserId", userId);
         await tx.insertActivity({ type: "STORE_SETUP", summary: `STORE_SETUP ${input.storeName}` });
-        // the vault-unlocked owner identity now exists for the session guard
-        deps.vault?.setOwnerId(userId);
+        provisionedUserId = userId;
         deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
         return { ok: true as const };
       });
+      // publish the owner identity only after the unit committed: a rolled-back
+      // provisioning must not leave a phantom owner for the session guard
+      if (provisionedUserId !== undefined) deps.vault?.setOwnerId(provisionedUserId);
       // a completed setup clears the lockout for the next boot
       setupThrottle.recordSuccess();
       return result;

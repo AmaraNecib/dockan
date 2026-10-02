@@ -81,6 +81,20 @@ describe("encrypted connection", () => {
     conn.close();
   });
 
+  it("overwrites an orphan snapshot on a fresh setup instead of failing auth", async () => {
+    const first = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
+    first.raw.exec("CREATE TABLE orphan(a)");
+    first.markDirty();
+    await first.persistIfDirty();
+    first.close();
+
+    // a crash between the first flush and the header commit leaves this image
+    // with no owner; the retry must start from an empty database
+    const retry = createEncryptedConnection({ vaultId, masterKey: otherKey, snapshotPath: snapshotPath(), fresh: true });
+    expect(retry.raw.query("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
+    retry.close();
+  });
+
   it("validates a good snapshot and rejects a corrupt one", async () => {
     const conn = createEncryptedConnection({ vaultId, masterKey, snapshotPath: snapshotPath() });
     conn.raw.exec("CREATE TABLE t(a TEXT)");

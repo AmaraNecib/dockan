@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { DEFAULT_KDF_PARAMS, VaultAuthenticationError, deriveKey, generateMasterKey, generateSalt, normalizePassphrase, open, seal, type KdfParams } from "./crypto";
 import { type VaultHeader, type VaultWrap, VAULT_FORMAT_VERSION, generateRecoveryCode, parseRecoveryCode, parseVaultHeader, serializeVaultHeader, wrapAad } from "./format";
+import { MIN_VAULT_PASSPHRASE_LENGTH } from "./messages";
 
 /**
  * VaultCore — the passphrase/recovery-key layer over one `vault.json`. It owns
@@ -146,6 +147,7 @@ export class VaultCore {
    * master key; the new wrap is committed before anything else can observe it.
    */
   async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
+    if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
     const masterKey = this.unlockPassphrase(currentPassphrase);
     try {
       const next = this.buildWrap(masterKey, normalizePassphrase(newPassphrase), "passphrase");

@@ -542,8 +542,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // and can never land inside this transaction (greptile P1).
     return runSerialized(async () => {
       const tx = directSeed(store);
-      conn.inTransaction = true;
       conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
+      // set the flag only after BEGIN succeeded: a failed BEGIN must never
+      // leave persistence permanently disabled, and the catch below must only
+      // run with a real open transaction
+      conn.inTransaction = true;
       try {
         const result = await fn(tx);
         conn.raw.exec("COMMIT");
@@ -555,8 +558,12 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         await conn.persistIfDirty();
         return result;
       } catch (err) {
-        conn.raw.exec("ROLLBACK");
         conn.inTransaction = false;
+        try {
+          conn.raw.exec("ROLLBACK");
+        } catch {
+          // a failed COMMIT or the persist write already closed the unit
+        }
         throw err;
       }
     });

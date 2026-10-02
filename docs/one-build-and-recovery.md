@@ -69,8 +69,8 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 
 - On account creation, generate **one** recovery code, show it once, ask the owner to
   save it.
-- Store only a hash (Argon2id preferred; SHA-256 is acceptable for a long random
-  code — decide in implementation). Never store the plaintext.
+- Store only a hash. **Decided: Argon2id** (the extra cost is negligible and it
+  removes the "is SHA-256 enough?" question). Never store the plaintext.
 - Rules: single-use; never expires while unused; **max 5** active codes.
 - Using a code:
   - consumes it (mark used), then
@@ -78,6 +78,9 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 - Generating more: only while authenticated as the owner (re-enter the password).
   At the 5-code limit, refuse with a clear message (or let the owner delete one).
 - Never log a code; never show it again after the generation screen.
+- **Rate-limit** attempts at the recovery/reset screens (per install, with backoff),
+  and log failed attempts to the activity log. Without this, an attacker with local
+  access can guess short codes.
 
 ### 4.4 Vendor fallback (challenge–response)
 
@@ -93,6 +96,10 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 the current public key version; older builds keep their own. To reset an old install,
 the vendor signs with the key version that install accepts. Rotating a key never
 breaks the ability to reset an old install.
+
+**Key custody.** Every private-key version is backed up offline (escrow), and a
+rotation runbook is written. Losing a private key means installs that accept only
+that version can never be reset through the vendor path again.
 
 ### 4.5 Schema version and import
 
@@ -121,9 +128,12 @@ stored) for owners who carry the stick around. Additive; not part of this change
   baked-secret boot guard.
 - Vendor tooling (repo `tools/`): `reset-tool` — sign a challenge with a private key,
   versioned. Ships to the vendor only; the private keys are never committed.
-- Removal: `apps/desktop/scripts/secrets.ts`, `sidecar-freshness` crate,
-  `apps/desktop/.env*` handling, `DOKAN_CUSTOMER_SLUG`, the freshness stamp and its
-  TS/Rust golden, the related tests.
+- Removal: `apps/desktop/scripts/secrets.ts`, the per-customer `.env*` handling,
+  `DOKAN_CUSTOMER_SLUG`, the **secret-hash** part of the sidecar stamp, and the
+  "inherited vs explicit secret" detection.
+- **Keep** the build-time sidecar freshness check (cargo `rerun-if-changed` on the API
+  and contract sources) — it guards against bundling a stale sidecar, a separate
+  problem from per-customer secrets. Remove only its secret coupling.
 
 ## 6. Tests
 
@@ -136,14 +146,18 @@ stored) for owners who carry the stick around. Additive; not part of this change
 
 ## 7. Risks / open questions
 
-- **Boundary:** the data (and the secret) sit in plaintext on the stick. Accepted;
-  the optional vault (§4.6) is the mitigation. Decide whether to offer it at launch.
+- **Boundary (elevated):** the data (and the session secret) sit in plaintext on the
+  stick, so anyone who copies `data/` can forge an owner session and bypass the
+  password — an escalation over "can only read the data". This makes the vault (§4.6)
+  more than optional. Decide at launch: (a) ship the passphrase vault with the
+  universal build, or (b) accept and document the escalation. Recommendation: (a).
 - **Key custody:** the vendor must keep every private key. Document an offline backup
   and a rotation runbook.
-- **Code hashing:** Argon2id vs SHA-256 — decide in implementation (long random codes
-  make SHA-256 defensible; Argon2id is safer if codes are shorter).
-- **Existing installs:** how a shop currently on a per-customer build moves to the
-  universal build (migration path and session invalidation).
+- **Code hashing:** decided — Argon2id (§4.3).
+- **Existing installs:** a shop on a per-customer build already has a `data/` folder
+  with no stored session secret. On first open of an existing database the universal
+  build must **generate and store the secret if missing** (invalidating old sessions
+  once) and **offer a recovery code** at that moment. Document this migration.
 
 ## 8. Alternatives considered
 

@@ -679,6 +679,34 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.pendingRecoveryKey()).toBeUndefined();
   });
 
+  it("refuses to resume a pending setup for a DIFFERENT passphrase (round-4 security)", async () => {
+    const dir = tempDir("dokan-vault-resume-auth-");
+    const h = harness(dir);
+    // simulate the crash window: snapshot written, header uncommitted
+    const { recoveryKey } = await h.manager.prepareSetup("correct horse battery");
+    fs.writeFileSync(h.manager.snapshotPath, "placeholder-snapshot");
+
+    // a second caller with any other passphrase must get neither the recovery
+    // key nor a session token
+    const intruder = await setupVault(h, "another long passphrase");
+    expect(intruder.status).toBe(401);
+    // SAFETY: the error contract is { error: { code, message } }
+    const intruderBody = await json<{ error: { code: string } }>(intruder);
+    expect(intruderBody.error.code).toBe("VAULT_WRONG_PASSPHRASE");
+    expect(JSON.stringify(intruderBody)).not.toContain(recoveryKey);
+    // the pending setup is untouched
+    expect(h.manager.pendingRecoveryKey()).toBe(recoveryKey);
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
+
+    // the original passphrase still resumes and receives the token
+    const owner = await setupVault(h, "correct horse battery");
+    expect(owner.status).toBe(200);
+    // SAFETY: the setup contract carries the recovery key and the session token
+    const ownerBody = await json<{ recoveryKey: string; sessionToken: string }>(owner);
+    expect(ownerBody.recoveryKey).toBe(recoveryKey);
+    expect(ownerBody.sessionToken.length).toBeGreaterThan(20);
+  });
+
   it("surfaces plaintext files that could not be removed instead of silently succeeding", async () => {
     const dir = tempDir("dokan-vault-remaining-");
     const h = harness(dir, {

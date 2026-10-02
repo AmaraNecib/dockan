@@ -238,14 +238,17 @@ and re-wraps a new passphrase, no current passphrase required. The last recovery
 key cannot be deleted, and changing the passphrase or deleting a key rotates
 the in-process session token (the pre-rotation token is refused).
 
-**Round-3 hardening.** Migration also encrypts historical plaintext backups
-under `backups/` in place (a file that cannot be converted is reported back and
-shown in the setup screen, never silently ignored). A first-run attempt whose
-header write failed is resumable (`resumeSetup`), so the pending slot can no
-longer strand every retry. The first daily backup runs after the header commit.
-Logout revokes the server-side session token, so a copied token dies
-immediately. The app distinguishes a legacy build (404 on the status route)
-from an unreachable vault API, which shows a retry screen instead of the
+**Round-3/4 hardening.** Migration converts historical plaintext backups
+under `backups/` to `.dknvbak` bundles (only each candidate's 16-byte magic is
+read; converted names are never rescanned, so unlocks stay fast on a large
+history; a file that cannot be converted is reported back and shown in the
+setup screen, never silently ignored). A first-run attempt whose header write
+failed is resumable (`resumeSetup`), but only after the requester proves the
+pending passphrase, so an unauthenticated caller can never receive the first
+owner's recovery key or session token. The first daily backup runs after the
+header commit. Logout revokes the server-side session token, so a copied token
+dies immediately. The app distinguishes a legacy build (404 on the status
+route) from an unreachable vault API, which shows a retry screen instead of the
 legacy login.
 
 **Gate transport.** In dev, e2e and the packaged shell the gate is same-origin

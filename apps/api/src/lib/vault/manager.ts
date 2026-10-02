@@ -256,13 +256,29 @@ export class VaultManager {
   /**
    * Resume a first-run attempt that wrote its snapshot but whose header write
    * failed (finding 3). A request that finds setup in progress may only commit
-   * when the snapshot already exists; otherwise the first request is still
-   * bootstrapping and must finish its own unit (VaultSetupInProgressError).
+   * when the snapshot already exists, AND it must authenticate as the pending
+   * setup's owner: without this, any local HTTP client could submit a
+   * different passphrase and walk away with the first caller's recovery key
+   * and session token (round-4 security finding).
    */
-  async resumeSetup(): Promise<string> {
-    return this.enqueue(() => {
-      if (this.pendingSetup === undefined) throw new VaultNotUnlockedError();
+  async resumeSetup(passphrase: string): Promise<string> {
+    this.assertAttemptAllowed();
+    return this.enqueue(async () => {
+      const pending = this.pendingSetup;
+      if (pending === undefined) throw new VaultNotUnlockedError();
       if (!fs.existsSync(this.snapshotPath)) throw new VaultSetupInProgressError();
+      // verify against the PENDING passphrase wrap before releasing anything
+      try {
+        const masterKey = pending.core.unlockPassphrase(passphrase);
+        masterKey.fill(0);
+      } catch (error) {
+        if (error instanceof VaultAuthenticationError) {
+          // must not re-enqueue: resumeSetup already holds the write queue
+          await this.recordFailureInternal("VAULT_SETUP_RESUME_FAILED");
+          throw error;
+        }
+        throw error;
+      }
       return this.commitPending();
     });
   }
@@ -445,16 +461,30 @@ export class VaultManager {
       }
     }
     // 2. historical plaintext backups (finding: they survived the migration):
-    // each is encrypted in place into a self-contained bundle, so the backup
-    // history stays restorable without leaving shop data readable on the stick
+    // each is converted to a self-contained bundle under a `.dknvbak` name, so
+    // the backup history stays restorable without leaving shop data readable
+    // on the stick; converted files are never scanned again (round-4 perf)
     remaining.push(...(await this.encryptLegacyBackups()));
     return { plaintextRemaining: remaining };
   }
 
+  /** Read only the leading magic bytes of a file; never the whole file. */
+  private async readHead(file: string, length = 16): Promise<Buffer> {
+    const handle = await fs.promises.open(file, "r");
+    try {
+      const buffer = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, 0);
+      return buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  }
+
   /**
-   * Replace every plaintext `backups/*.db` with an encrypted bundle. The file
-   * is overwritten through the atomic writer, so a crash leaves either the old
-   * plaintext file or the new bundle, never a truncated one.
+   * Convert every plaintext `backups/*.db` into `*.dknvbak` bundles. The
+   * plaintext file is deleted only after the bundle is on disk; the next
+   * unlock retries anything left. Converted names are the durable "already
+   * done" marker, so a migrated history is never rescanned or read again.
    */
   private async encryptLegacyBackups(): Promise<string[]> {
     const masterKey = this.masterKey;
@@ -475,17 +505,30 @@ export class VaultManager {
       const file = path.join(backupsDir, entry);
       let head: Buffer;
       try {
-        head = Buffer.from((await fs.promises.readFile(file)).subarray(0, 16));
+        head = await this.readHead(file);
       } catch {
         remaining.push(file);
         continue;
       }
       // already converted (or not a plaintext database): nothing to do
       if (head.toString("utf8") !== "SQLite format 3\u0000") continue;
+      const converted = file.replace(/\.db$/i, ".dknvbak");
       try {
         const { image } = readLegacyDatabaseImage(file);
         const bundle = createVaultBackupBundle(headerText, buildEncryptedSnapshot(masterKey, vaultId, image));
-        await writeFileAtomic(file, bundle);
+        await writeFileAtomic(converted, bundle);
+        // the plaintext original leaves only after its replacement is durable
+        try {
+          await fs.promises.unlink(file);
+        } catch (error) {
+          remaining.push(file);
+          this.logger.error(
+            "VAULT_LEGACY_BACKUP_STAYED",
+            `encrypted copy of ${entry} was written but the plaintext original could not be deleted`,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          continue;
+        }
         for (const suffix of ["-wal", "-shm"] as const) {
           try {
             await fs.promises.unlink(`${file}${suffix}`);
@@ -493,7 +536,7 @@ export class VaultManager {
             /* no sidecar */
           }
         }
-        this.logger.info("VAULT_LEGACY_BACKUP_ENCRYPTED", `encrypted legacy plaintext backup ${entry}`);
+        this.logger.info("VAULT_LEGACY_BACKUP_ENCRYPTED", `encrypted legacy plaintext backup ${entry} as ${path.basename(converted)}`);
       } catch (error) {
         remaining.push(file);
         this.logger.error(
@@ -570,15 +613,18 @@ export class VaultManager {
   }
 
   private async recordFailure(event: string): Promise<void> {
-    await this.enqueue(async () => {
-      const state = this.loadThrottle();
-      const failedAttempts = state.failedAttempts + 1;
-      const lockUntil = this.now().getTime() + unlockBackoffMs(failedAttempts);
-      const pendingEvents = [...state.pendingEvents, `${event} ${localDateTime(this.now())}`].slice(-200);
-      this.saveThrottle({ failedAttempts, lockUntil, pendingEvents });
-      const retryAfterMs = Math.max(0, lockUntil - this.now().getTime());
-      this.logger.warn("VAULT_ATTEMPT_FAILED", `vault attempt ${failedAttempts} failed${retryAfterMs > 0 ? `; locked for ${Math.ceil(retryAfterMs / 1000)}s` : ""}`);
-    });
+    await this.enqueue(() => this.recordFailureInternal(event));
+  }
+
+  /** Must not be called while holding the write queue (see resumeSetup). */
+  private async recordFailureInternal(event: string): Promise<void> {
+    const state = this.loadThrottle();
+    const failedAttempts = state.failedAttempts + 1;
+    const lockUntil = this.now().getTime() + unlockBackoffMs(failedAttempts);
+    const pendingEvents = [...state.pendingEvents, `${event} ${localDateTime(this.now())}`].slice(-200);
+    this.saveThrottle({ failedAttempts, lockUntil, pendingEvents });
+    const retryAfterMs = Math.max(0, lockUntil - this.now().getTime());
+    this.logger.warn("VAULT_ATTEMPT_FAILED", `vault attempt ${failedAttempts} failed${retryAfterMs > 0 ? `; locked for ${Math.ceil(retryAfterMs / 1000)}s` : ""}`);
   }
 
   private async resetFailuresInternal(): Promise<void> {

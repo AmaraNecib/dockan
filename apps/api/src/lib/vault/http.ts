@@ -126,9 +126,10 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         if (!(error instanceof VaultSetupInProgressError)) throw error;
         const recoveryKey = deps.manager.pendingRecoveryKey();
         if (recoveryKey === undefined) throw error;
-        // only commits when the first attempt already wrote its snapshot;
-        // otherwise this rethrows VaultSetupInProgressError (409)
-        sessionToken = await deps.manager.resumeSetup();
+        // only commits when the first attempt already wrote its snapshot AND
+        // the submitted passphrase matches the pending wrap (round-4 security);
+        // otherwise VaultSetupInProgressError (409) or wrong-passphrase (401)
+        sessionToken = await deps.manager.resumeSetup(body.data.passphrase);
         prepared = { recoveryKey, vaultId: deps.manager.metadata().vaultId };
       }
       if (sessionToken === undefined) {
@@ -178,6 +179,10 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     } catch (error) {
       if (error instanceof VaultAlreadyConfiguredError) return errorResponse("VAULT_ALREADY_CONFIGURED", 409);
       if (error instanceof VaultSetupInProgressError) return errorResponse("VAULT_SETUP_IN_PROGRESS", 409);
+      // a resume attempt that fails the pending passphrase is an auth failure,
+      // never a credential release
+      if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_PASSPHRASE", 401);
+      if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
       if (error instanceof Error && error.message === "VAULT_PASSPHRASE_TOO_SHORT") return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
       throw error;
     }

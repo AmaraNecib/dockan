@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
@@ -245,7 +245,10 @@ describe("VaultManager", () => {
 
     const result = await vault.cleanupLegacyPlaintext();
     expect(result.plaintextRemaining).toEqual([]);
-    const bytes = fs.readFileSync(legacyBackup);
+    // the plaintext name is gone; the bundle lives under .dknvbak
+    expect(fs.existsSync(legacyBackup)).toBe(false);
+    const bundlePath = path.join(backupsDir, "dokan-2020-01-01.dknvbak");
+    const bytes = fs.readFileSync(bundlePath);
     expect(bytes.subarray(0, 8).toString("ascii")).toBe("DKNVBACK");
     expect(bytes.includes(Buffer.from("historic"))).toBe(false);
     expect(readVaultBackupBundle(bytes)).toBeDefined();
@@ -281,17 +284,56 @@ describe("VaultManager", () => {
     expect(fs.readFileSync(newerBackup).subarray(0, 15).toString("utf8")).toBe("SQLite format 3");
   });
 
-  it("resumes a setup only after its snapshot exists (finding 3)", async () => {
+  it("resumes a setup only after its snapshot exists and only with its passphrase (findings 3 + round-4 security)", async () => {
     const vault = manager();
     const { recoveryKey } = await vault.prepareSetup(PASSPHRASE);
     // the first request is still bootstrapping: no snapshot on disk yet
-    await expect(vault.resumeSetup()).rejects.toThrow(VaultSetupInProgressError);
+    await expect(vault.resumeSetup(PASSPHRASE)).rejects.toThrow(VaultSetupInProgressError);
     expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
-    // once the snapshot is written, a retry may commit the same pending setup
+    // once the snapshot is written, a WRONG passphrase is refused and the
+    // pending slot (with its recovery key) stays reserved
     fs.writeFileSync(vault.snapshotPath, "placeholder-snapshot");
-    const token = await vault.resumeSetup();
+    await expect(vault.resumeSetup("a totally different passphrase")).rejects.toThrow(VaultAuthenticationError);
+    expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
+    // the original passphrase resumes and releases the token
+    const token = await vault.resumeSetup(PASSPHRASE);
     expect(vault.sessionMatches(token)).toBe(true);
     expect(vault.pendingRecoveryKey()).toBeUndefined();
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  });
+
+  it("never reads a whole backup file during the sweep (round-4 performance)", async () => {
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const legacyBackup = path.join(backupsDir, "dokan-2020-01-03.db");
+    const db = new Database(legacyBackup, { create: true });
+    db.exec("CREATE TABLE items(id TEXT)");
+    // make the file multi-megabyte with a few zeroblob inserts (no slow loop)
+    for (let index = 0; index < 6; index += 1) db.exec("INSERT INTO items SELECT zeroblob(250000)");
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+    expect(fs.statSync(legacyBackup).size).toBeGreaterThan(1_000_000);
+
+    const vault = manager();
+    await createVault(vault);
+    const readFileSpy = spyOn(fs.promises, "readFile");
+    try {
+      const result = await vault.cleanupLegacyPlaintext();
+      expect(result.plaintextRemaining).toEqual([]);
+      // the sweep must inspect the magic with a short read, never readFile()
+      expect(readFileSpy).not.toHaveBeenCalled();
+    } finally {
+      readFileSpy.mockRestore();
+    }
+    expect(fs.existsSync(path.join(backupsDir, "dokan-2020-01-03.dknvbak"))).toBe(true);
+
+    // a second sweep has nothing left to open: the converted name is the marker
+    const secondPass = spyOn(fs.promises, "open");
+    try {
+      expect((await vault.cleanupLegacyPlaintext()).plaintextRemaining).toEqual([]);
+      expect(secondPass).not.toHaveBeenCalled();
+    } finally {
+      secondPass.mockRestore();
+    }
   });
 });

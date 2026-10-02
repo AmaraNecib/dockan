@@ -552,6 +552,14 @@ export const returnDetailSchema = returnSchema.extend({
 export const MIN_PASSWORD_LENGTH = 4;
 
 /**
+ * The three outcomes of the legacy-plaintext sweep. "clean" and "remaining"
+ * are confirmed facts; "unknown" means the sweep could not run (it threw or
+ * the shell never heard back), and the UI must not present it as clean.
+ */
+export const plaintextCleanupStatuses = ["clean", "remaining", "unknown"] as const;
+export type PlaintextCleanupStatus = (typeof plaintextCleanupStatuses)[number];
+
+/**
  * The shortest vault passphrase the unified vault accepts (ADR-0008 §4.6).
  * Exported so the API's refusal and the web form's pre-check cannot drift.
  */
@@ -566,6 +574,7 @@ export const MIN_VAULT_PASSPHRASE_LENGTH = 8;
 export const VAULT_ERROR_CODES = [
   // emitted by the API gate, the broker and the lock refusal app
   "VAULT_ALREADY_CONFIGURED",
+  "VAULT_BROKER_REQUIRED",
   "VAULT_CORRUPT",
   "VAULT_DATABASE_MISSING",
   "VAULT_INVALID",

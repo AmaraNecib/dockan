@@ -1,7 +1,8 @@
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
+import { MIN_VAULT_PASSPHRASE_LENGTH, type PlaintextCleanupStatus } from "@dokan/contracts";
 import { z } from "zod";
 
 import { tError } from "./i18n";
+import { brokerAvailable, brokerCommands, invokeBroker, invokeBrokerVoid, type BrokerInvokeArgs, type BrokerReply } from "./vault-broker";
 
 /**
  * The vault gate's browser client (ADR-0008 §4.6). All vault routes are plain
@@ -19,6 +20,8 @@ export type VaultStatus = {
   recoveryKeyCount: number;
   lockedForMs: number;
   unlocked: boolean;
+  /** the shell owns the pre-boot credential prompt over its stdin pipe */
+  broker: boolean;
 };
 
 export type VaultRecoveryKey = {
@@ -36,14 +39,28 @@ const statusSchema = z.object({
   recoveryKeyCount: z.number(),
   lockedForMs: z.number(),
   unlocked: z.boolean(),
+  // absent on a build older than issue #141: those keep the HTTP transport
+  broker: z.boolean().default(false),
 });
 const setupResponseSchema = z.object({
   recoveryKey: z.string().min(1),
   sessionToken: z.string().min(1),
   // absent only when talking to a build older than round-7
   sessionGeneration: z.number().int().nonnegative().optional(),
+  // the sweep outcome: absent on older builds, which must read as unknown
+  plaintextStatus: z.enum(["clean", "remaining", "unknown"]).optional(),
   plaintextRemaining: z.array(z.string()).optional(),
 });
+
+/**
+ * The three outcomes of the legacy-plaintext sweep (round-4 finding). An
+ * unknown outcome must never be presented as the clean story: plaintext data
+ * may still be on disk.
+ */
+export type VaultCleanupOutcome =
+  | { status: "clean" }
+  | { status: "remaining"; paths: string[] }
+  | { status: "unknown" };
 const sessionResponseSchema = z.object({
   sessionToken: z.string().min(1),
   sessionGeneration: z.number().int().nonnegative().optional(),
@@ -192,7 +209,36 @@ async function request<T>(path: string, init: RequestInit, authenticated: boolea
   return decoded.data;
 }
 
+/**
+ * Map a broker refusal to the same error the HTTP path throws, so the gate UI
+ * and its i18n codes cannot tell the transports apart.
+ */
+function brokerRefusal(reply: BrokerReply): VaultRequestError {
+  return new VaultRequestError(reply.code ?? "VAULT_UNEXPECTED", reply.retryAfterMs ?? undefined);
+}
+
+/** Invoke a broker command; a dead bridge becomes the generic refusal. */
+async function callBroker(command: string, args?: BrokerInvokeArgs): Promise<BrokerReply> {
+  try {
+    return await invokeBroker(command, args);
+  } catch {
+    throw new VaultRequestError("VAULT_UNEXPECTED");
+  }
+}
+
 export async function fetchVaultStatus(): Promise<VaultStatus> {
+  // Inside the desktop shell the broker is the authoritative gate transport:
+  // try it first (no secret involved) and fall back to HTTP when the shell has
+  // no sidecar (dev window) or the bridge is absent (browser)
+  if (brokerAvailable()) {
+    try {
+      const reply = await invokeBroker(brokerCommands.status);
+      const decoded = statusSchema.safeParse(reply.status);
+      if (reply.ok && decoded.success) return decoded.data;
+    } catch {
+      /* no broker child yet: the HTTP gate below is the fallback */
+    }
+  }
   let response: Response;
   try {
     response = await fetch("/api/vault/status");
@@ -214,7 +260,21 @@ export async function fetchVaultStatus(): Promise<VaultStatus> {
 export async function vaultSetup(
   passphrase: string,
   setupToken?: string,
-): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[] }> {
+  broker = false,
+): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
+  if (broker) {
+    const reply = await callBroker(brokerCommands.setup, { passphrase });
+    if (!reply.ok || reply.sessionToken == null || reply.recoveryKey == null) throw brokerRefusal(reply);
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    // the key reply deliberately carries no cleanup verdict: it follows on
+    // vault_setup_warning, so until then the outcome is UNKNOWN (round-4)
+    return {
+      recoveryKey: reply.recoveryKey,
+      sessionToken: reply.sessionToken,
+      plaintextRemaining: reply.plaintextRemaining ?? [],
+      plaintextStatus: "unknown",
+    };
+  }
   const result = await request(
     "/api/vault/setup",
     { method: "POST", body: JSON.stringify({ passphrase, setupToken }) },
@@ -222,7 +282,51 @@ export async function vaultSetup(
     setupResponseSchema,
   );
   adoptSession(result);
-  return { recoveryKey: result.recoveryKey, sessionToken: result.sessionToken, plaintextRemaining: result.plaintextRemaining ?? [] };
+  return {
+    recoveryKey: result.recoveryKey,
+    sessionToken: result.sessionToken,
+    plaintextRemaining: result.plaintextRemaining ?? [],
+    // an older build that omits the status cannot confirm clean
+    plaintextStatus: result.plaintextStatus ?? (result.plaintextRemaining !== undefined && result.plaintextRemaining.length > 0 ? "remaining" : "unknown"),
+  };
+}
+
+/**
+ * Tell the shell the owner acknowledged the one-time recovery key, so the
+ * sidecar can leave its key screen. Non-fatal: the app already serves.
+ */
+export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
+  if (!broker) return;
+  try {
+    await invokeBrokerVoid(brokerCommands.setupSaved);
+  } catch {
+    /* the vault is committed; a lost ack only leaves the child on the key screen */
+  }
+}
+
+/**
+ * The setup follow-up (round-3 finding 1, round-4 finding): after the key has
+ * safely reached the owner, ask how the plaintext sweep ended. Failures — a
+ * timeout, a broken pipe, a replied error — are UNKNOWN, never "clean": the
+ * owner must be told to verify by hand instead of being reassured.
+ */
+export async function fetchVaultSetupWarning(broker: boolean): Promise<VaultCleanupOutcome> {
+  if (!broker) return { status: "clean" };
+  let reply: BrokerReply;
+  try {
+    reply = await invokeBroker(brokerCommands.setupWarning);
+  } catch {
+    // timeout / dead pipe / restart: the sweep result is unknown
+    return { status: "unknown" };
+  }
+  const paths = reply.plaintextRemaining ?? [];
+  if (paths.length > 0) return { status: "remaining", paths };
+  if (reply.plaintextStatus === "clean") return { status: "clean" };
+  if (reply.plaintextStatus === "remaining" || reply.plaintextStatus === "unknown") {
+    return reply.plaintextStatus === "remaining" ? { status: "remaining", paths } : { status: "unknown" };
+  }
+  // no verdict on the wire (older build): unknown, never clean
+  return { status: "unknown" };
 }
 
 /** Revoke the in-process vault session server-side (logout). */
@@ -230,12 +334,24 @@ export async function revokeVaultSession(): Promise<void> {
   await request("/api/vault/logout", { method: "POST" }, true, z.object({ ok: z.literal(true) }));
 }
 
-export async function vaultUnlock(passphrase: string): Promise<string> {
+export async function vaultUnlock(passphrase: string, broker = false): Promise<string> {
+  if (broker) {
+    const reply = await callBroker(brokerCommands.unlock, { passphrase });
+    if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    return reply.sessionToken;
+  }
   const result = await request("/api/vault/unlock", { method: "POST", body: JSON.stringify({ passphrase }) }, false, sessionResponseSchema);
   return adoptSession(result);
 }
 
-export async function vaultUnlockWithRecovery(recoveryKey: string): Promise<string> {
+export async function vaultUnlockWithRecovery(recoveryKey: string, broker = false): Promise<string> {
+  if (broker) {
+    const reply = await callBroker(brokerCommands.recovery, { recoveryKey });
+    if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    return reply.sessionToken;
+  }
   const result = await request(
     "/api/vault/unlock-recovery",
     { method: "POST", body: JSON.stringify({ recoveryKey }) },
@@ -288,9 +404,17 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
 
 /**
  * Recovery-authorised reset (finding C4): the recovery key replaces the
- * forgotten passphrase without needing the current one.
+ * forgotten passphrase without needing the current one. In broker mode the
+ * settings UI routes this through the shell's pipe (round-2 finding 2), since
+ * the HTTP route is refused there.
  */
-export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string): Promise<string> {
+export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<string> {
+  if (broker) {
+    const reply = await callBroker(brokerCommands.reset, { recoveryKey, newPassphrase });
+    if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
+    adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
+    return reply.sessionToken;
+  }
   const result = await request(
     "/api/vault/reset-passphrase",
     { method: "POST", body: JSON.stringify({ recoveryKey, newPassphrase }) },

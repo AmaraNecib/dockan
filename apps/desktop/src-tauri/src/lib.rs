@@ -11,6 +11,18 @@ use tauri::{Manager, RunEvent};
 pub fn run() {
     tauri::Builder::default()
         .manage(desktop::SidecarState::default())
+        // issue #141: the vault gate's pre-boot credentials travel over the
+        // sidecar's stdin pipe through these commands, never HTTP
+        .invoke_handler(tauri::generate_handler![
+            desktop::vault_status,
+            desktop::vault_unlock,
+            desktop::vault_setup,
+            desktop::vault_unlock_recovery,
+            desktop::vault_reset_passphrase,
+            desktop::vault_setup_saved,
+            desktop::vault_setup_warning,
+            desktop::vault_logout
+        ])
         .setup(desktop::setup)
         .on_window_event(|window, event| {
             // Closing the last window shuts the app down; take the sidecar

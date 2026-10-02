@@ -3,7 +3,9 @@ import { useTranslation } from "react-i18next";
 
 import {
   VaultRequestError,
+  acknowledgeVaultSetup,
   fetchVaultStatus,
+  fetchVaultSetupWarning,
   isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
   readSetupTokenFromHash,
@@ -13,6 +15,7 @@ import {
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
+  type VaultCleanupOutcome,
   type VaultStatus,
 } from "@/lib/vault-client";
 
@@ -102,7 +105,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [confirm, setConfirm] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
-  const [plaintextRemaining, setPlaintextRemaining] = useState<string[]>([]);
+  const [cleanup, setCleanup] = useState<VaultCleanupOutcome | undefined>(undefined);
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
@@ -170,15 +173,23 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           {recoveryKey}
         </p>
         <p className="mt-3 text-sm text-destructive">{t("vaultLostBothWarning")}</p>
-        {plaintextRemaining.length > 0 && (
+        {cleanup?.status === "remaining" && (
           <p
             className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
             data-testid="vault-plaintext-warning"
           >
             {t("vaultPlaintextRemaining")}
             <span className="mt-1 block font-mono text-xs break-all" dir="ltr">
-              {plaintextRemaining.join("\n")}
+              {cleanup.paths.join("\n")}
             </span>
+          </p>
+        )}
+        {cleanup?.status === "unknown" && (
+          <p
+            className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            data-testid="vault-plaintext-unknown"
+          >
+            {t("vaultPlaintextUnknown")}
           </p>
         )}
         <label className="mt-4 flex items-start gap-2 text-sm">
@@ -191,11 +202,23 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           />
           <span>{t("vaultRecoveryConfirm")}</span>
         </label>
+        {cleanup === undefined && (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="vault-plaintext-checking">
+            {t("vaultCheckingPlaintext")}
+          </p>
+        )}
         <button
           type="button"
           className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50"
-          disabled={!savedConfirmed}
-          onClick={onUnlocked}
+          // the key is already on screen; keep the owner here until the sweep
+          // reports (or cannot be checked), so a warning can never be missed
+          // and a failed check is never mistaken for clean (round-4 finding)
+          disabled={!savedConfirmed || cleanup === undefined}
+          onClick={() => {
+            // release the shell's key screen; the app already serves either way
+            void acknowledgeVaultSetup(status.broker);
+            onUnlocked();
+          }}
           data-testid="vault-recovery-continue"
         >
           {t("vaultContinue")}
@@ -214,7 +237,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           onSubmit={(event) => {
             event.preventDefault();
             void run(async () => {
-              const token = await vaultUnlockWithRecovery(recoveryInput);
+              const token = await vaultUnlockWithRecovery(recoveryInput, status.broker);
               storeVaultSessionToken(token);
               onUnlocked();
             });
@@ -265,11 +288,26 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               return;
             }
             void run(async () => {
-              const result = await vaultSetup(passphrase, readSetupTokenFromHash());
+              const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
               storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
-              setPlaintextRemaining(result.plaintextRemaining);
               setScreen("recovery-show");
+              if (status.broker) {
+                // the key is on screen now: the sweep verdict follows on the
+                // shell's own longer budget (round-3 finding 1); until it
+                // arrives the outcome is UNKNOWN, never clean (round-4)
+                setCleanup(undefined);
+                void fetchVaultSetupWarning(true).then(setCleanup);
+              } else {
+                // the HTTP setup response already carries the sweep verdict
+                setCleanup(
+                  result.plaintextRemaining.length > 0
+                    ? { status: "remaining", paths: result.plaintextRemaining }
+                    : result.plaintextStatus === "clean"
+                      ? { status: "clean" }
+                      : { status: "unknown" },
+                );
+              }
             });
           }}
         >
@@ -320,7 +358,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
         onSubmit={(event) => {
           event.preventDefault();
           void run(async () => {
-            const token = await vaultUnlock(passphrase);
+            const token = await vaultUnlock(passphrase, status.broker);
             storeVaultSessionToken(token);
             onUnlocked();
           });

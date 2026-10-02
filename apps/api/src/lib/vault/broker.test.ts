@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
+import { Database } from "bun:sqlite";
+
 import { readVaultBackupBundle } from "./backup";
 
 /**
@@ -40,16 +42,25 @@ async function freePort(): Promise<number> {
   });
 }
 
+/**
+ * The exact environment the shell hands the broker. A passphrase must never
+ * appear here (issue #141): it travels on stdin only. Pure so the test can pin
+ * the contract without racing the child.
+ */
+function brokerEnvironment(dataDir: string, apiPort: number): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    DOKAN_DATA_DIR: dataDir,
+    DOKAN_PORT: String(apiPort),
+    DOKAN_PORT_ROOT: path.join(dataDir, "run"),
+    DOKAN_VAULT_STDIN: "1",
+  };
+}
+
 function spawnBroker(dataDir: string, apiPort: number): ChildProcessWithoutNullStreams {
   return spawn("bun", ["src/main.ts"], {
     cwd: path.join(import.meta.dir, "..", "..", ".."),
-    env: {
-      ...process.env,
-      DOKAN_DATA_DIR: dataDir,
-      DOKAN_PORT: String(apiPort),
-      DOKAN_PORT_ROOT: path.join(dataDir, "run"),
-      DOKAN_VAULT_STDIN: "1",
-    },
+    env: brokerEnvironment(dataDir, apiPort),
     stdio: ["pipe", "pipe", "pipe"],
   });
 }
@@ -212,6 +223,160 @@ describe("desktop shell vault broker", () => {
     const reply = JSON.parse(await nextLine()) as { ok: boolean; sessionToken?: string };
     expect(reply.ok).toBe(true);
     expect(reply.sessionToken?.length).toBeGreaterThan(20);
+    await waitForHealth(port);
+  }, BROKER_TIMEOUT_MS);
+
+  it("answers a status probe over the pipe without consuming the one-shot request (issue #141)", async () => {
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "status" }));
+    // SAFETY: the broker status contract is a single JSON reply line
+    const statusReply = JSON.parse(await nextLine()) as { ok: boolean; status?: { broker?: boolean; state?: string } };
+    expect(statusReply.ok).toBe(true);
+    expect(statusReply.status?.broker).toBe(true);
+    expect(statusReply.status?.state).toBe("unconfigured");
+
+    // the same child still takes the real one-shot request
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const setupReply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string };
+    expect(setupReply.ok).toBe(true);
+    expect(setupReply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    send(child, "ack");
+    await waitForHealth(port);
+  }, BROKER_TIMEOUT_MS);
+
+  it("refuses HTTP pre-boot credential routes in broker mode: the secret has only the pipe (issue #141)", async () => {
+    child = spawnBroker(dir, port);
+    await waitForHealth(port);
+    const status = await fetch(`http://127.0.0.1:${port}/api/vault/status`);
+    expect(status.status).toBe(200);
+    // SAFETY: the status route contract includes the broker flag
+    expect(((await status.json()) as { broker?: boolean }).broker).toBe(true);
+
+    for (const route of ["/api/vault/setup", "/api/vault/unlock", "/api/vault/unlock-recovery", "/api/vault/reset-passphrase"]) {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ passphrase: "over http", recoveryKey: "AAAA-AAAA", newPassphrase: "over http too" }),
+      });
+      expect(response.status).toBe(403);
+      // SAFETY: the error contract is { error: { code } }
+      expect(((await response.json()) as { error?: { code?: string } }).error?.code).toBe("VAULT_BROKER_REQUIRED");
+    }
+
+    // the HTTP refusals did not consume the pipe: the real request still works
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const setupReply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string };
+    expect(setupReply.ok).toBe(true);
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
+  }, BROKER_TIMEOUT_MS);
+
+  it("resets the passphrase from a recovery key over the pipe (round-2 finding 2)", async () => {
+    child = spawnBroker(dir, port);
+    const firstLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const setupReply = JSON.parse(await firstLine()) as { recoveryKey: string };
+    send(child, "ack");
+    await waitForHealth(port);
+    await stopAndWait();
+
+    // settings resets from the recovery key while the vault is open; broker
+    // mode refuses the HTTP route, so the reset must work on the pipe
+    child = spawnBroker(dir, port);
+    const resetLine = lineReader(child);
+    send(
+      child,
+      JSON.stringify({ action: "reset", recoveryKey: setupReply.recoveryKey, newPassphrase: "a brand new passphrase" }),
+    );
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const resetReply = JSON.parse(await resetLine()) as { ok: boolean; sessionToken?: string };
+    expect(resetReply.ok).toBe(true);
+    expect(resetReply.sessionToken?.length).toBeGreaterThan(20);
+    await waitForHealth(port);
+    await stopAndWait();
+
+    // the new passphrase is the one that unlocks now
+    child = spawnBroker(dir, port);
+    const unlockLine = lineReader(child);
+    send(child, JSON.stringify({ action: "unlock", passphrase: "a brand new passphrase" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const unlockReply = JSON.parse(await unlockLine()) as { ok: boolean; sessionToken?: string };
+    expect(unlockReply.ok).toBe(true);
+    expect(unlockReply.sessionToken?.length).toBeGreaterThan(20);
+  }, BROKER_TIMEOUT_MS);
+
+  it("delivers the recovery key before the plaintext sweep and the warning as a follow-up (round-3 finding 1)", async () => {
+    // an unencryptable legacy backup: the sweep reports it instead of hiding it
+    const backupsDir = path.join(dir, "backups");
+    fs.mkdirSync(backupsDir, { recursive: true });
+    const stubborn = path.join(backupsDir, "dokan-2020-01-02.db");
+    const legacy = new Database(stubborn, { create: true });
+    legacy.exec("CREATE TABLE t(a TEXT)");
+    legacy.exec("PRAGMA user_version = 99");
+    legacy.close();
+
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // MESSAGE 1 is the one-time key: nothing about the sweep may delay it
+    // (a slow sweep would otherwise outlive the shell's reply timeout and the
+    // child would be killed before the owner ever saw the key).
+    // SAFETY: the broker setup contract carries the recovery key
+    const keyReply = JSON.parse(await nextLine()) as {
+      ok: boolean;
+      recoveryKey?: string;
+      sessionToken?: string;
+      plaintextRemaining?: string[];
+      warning?: string;
+    };
+    expect(keyReply.ok).toBe(true);
+    expect(keyReply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+    expect(keyReply.sessionToken?.length).toBeGreaterThan(20);
+    expect(keyReply.plaintextRemaining).toBeUndefined();
+    expect(keyReply.warning).toBeUndefined();
+
+    // MESSAGE 2 is the follow-up warning the owner still sees
+    // SAFETY: the broker warning contract is a single JSON reply line
+    const warningReply = JSON.parse(await nextLine()) as {
+      ok: boolean;
+      warning?: string;
+      plaintextStatus?: string;
+      plaintextRemaining?: string[];
+    };
+    expect(warningReply.ok).toBe(true);
+    expect(warningReply.warning).toBe("plaintext");
+    expect(warningReply.plaintextStatus).toBe("remaining");
+    expect(warningReply.plaintextRemaining).toEqual([stubborn]);
+    send(child, "ack");
+    await waitForHealth(port);
+  }, BROKER_TIMEOUT_MS);
+
+  it("keeps the passphrase out of the sidecar's argv and environment (issue #141)", async () => {
+    const secret = "phrase only the stdin pipe may see";
+    const env = brokerEnvironment(dir, port);
+    expect(JSON.stringify(Object.entries(env))).not.toContain(secret);
+    child = spawnBroker(dir, port);
+    await waitForHealth(port);
+    const nextLine = lineReader(child);
+    // the secret goes in ONLY on stdin
+    send(child, JSON.stringify({ action: "setup", passphrase: secret }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const reply = JSON.parse(await nextLine()) as { ok: boolean };
+    expect(reply.ok).toBe(true);
+
+    // the live process's own argv/env must not carry it (Linux exposes both)
+    expect(child.spawnargs.join(" ")).not.toContain(secret);
+    if (process.platform === "linux" && child.pid !== undefined) {
+      const cmdline = fs.readFileSync(`/proc/${child.pid}/cmdline`, "utf8");
+      const environ = fs.readFileSync(`/proc/${child.pid}/environ`, "utf8");
+      expect(cmdline).not.toContain(secret);
+      expect(environ).not.toContain(secret);
+    }
+    send(child, "ack");
     await waitForHealth(port);
   }, BROKER_TIMEOUT_MS);
 });

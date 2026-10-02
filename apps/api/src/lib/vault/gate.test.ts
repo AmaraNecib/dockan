@@ -102,12 +102,15 @@ function harness(
     afterSetup?: () => Promise<void>;
     afterCredentialChange?: () => Promise<void>;
     bootstrap?: (input: { masterKey: Buffer; vaultId: string; fresh: boolean }) => Promise<void>;
+    /** run the gate as the desktop shell's stdin-broker mode (issue #141) */
+    broker?: boolean;
   } = {},
 ): GateHarness {
   const config = createAppConfig({
     DOKAN_DATA_DIR: dir,
     DOKAN_DB_PATH: path.join(dir, "dokan.db"),
     DOKAN_PORT: "4399",
+    DOKAN_VAULT_STDIN: options.broker ? "1" : undefined,
   });
   const logger = new AppLogger(dir);
   const manager = new VaultManager({ dataDir: dir, legacyDbPath: config.db.path, logger, kdf: FAST_KDF });
@@ -747,9 +750,26 @@ describe("vault gate hardening (review supplement)", () => {
     });
     const setup = await setupVault(h);
     expect(setup.status).toBe(200);
-    // SAFETY: the setup contract carries the cleanup list
-    const body = await json<{ plaintextRemaining: string[] }>(setup);
+    // SAFETY: the setup contract carries the cleanup list and its status
+    const body = await json<{ plaintextStatus?: string; plaintextRemaining: string[] }>(setup);
+    expect(body.plaintextStatus).toBe("remaining");
     expect(body.plaintextRemaining).toEqual(["C:/data/dokan.db"]);
+  });
+
+  it("reports UNKNOWN when the HTTP cleanup throws instead of a clean empty list (round-4 finding)", async () => {
+    const h = harness(tempDir("dokan-vault-cleanup-unknown-"), {
+      onSetupCommitted: async () => {
+        throw new Error("cleanup exploded");
+      },
+    });
+    const setup = await setupVault(h);
+    // the committed setup still succeeds and the key is returned
+    expect(setup.status).toBe(200);
+    // SAFETY: the setup contract carries the cleanup list and its status
+    const body = await json<{ plaintextStatus?: string; plaintextRemaining?: string[]; recoveryKey?: string }>(setup);
+    expect(body.plaintextStatus).toBe("unknown");
+    expect(body.plaintextRemaining).toEqual([]);
+    expect(body.recoveryKey).toBeDefined();
   });
 
   it("revokes the in-process session on logout (finding 4)", async () => {
@@ -856,6 +876,37 @@ describe("vault gate hardening (review supplement)", () => {
     // loopback through the same overlay still reaches first-run setup
     const local = await overlay(setupRequest(), { incoming: { socket: { remoteAddress: "127.0.0.1" } } });
     expect(local.status).toBe(200);
+  });
+
+  it("refuses HTTP pre-boot credential routes in broker mode; post-unlock routes stay HTTP (issue #141)", async () => {
+    const h = harness(tempDir("dokan-vault-broker-mode-"), { broker: true });
+    // SAFETY: the status route contract carries the broker flag
+    const status = await json<{ broker: boolean }>(await h.gate.request("/api/vault/status"));
+    expect(status.broker).toBe(true);
+
+    for (const route of ["/api/vault/setup", "/api/vault/unlock", "/api/vault/unlock-recovery", "/api/vault/reset-passphrase"]) {
+      const response = await h.gate.request(route, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ passphrase: "correct horse battery", recoveryKey: "AAAA-AAAA", newPassphrase: "another long passphrase" }),
+      });
+      expect(response.status).toBe(403);
+      // SAFETY: the error contract is { error: { code } }
+      expect((await json<{ error: { code: string } }>(response)).error.code).toBe("VAULT_BROKER_REQUIRED");
+    }
+    // none of the refusals created a vault
+    expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
+
+    // post-unlock credential routes stay HTTP: authenticated and already open
+    await h.manager.prepareSetup("correct horse battery");
+    h.manager.finishSetupBootstrap();
+    const session = await h.manager.commitSetup();
+    const changed = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { ...jsonHeaders, "x-vault-session": session.token },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "another long passphrase" }),
+    });
+    expect(changed.status).toBe(200);
   });
 
   it("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {

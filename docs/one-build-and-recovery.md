@@ -263,15 +263,34 @@ dies immediately. The app distinguishes a legacy build (404 on the status
 route) from an unreachable vault API, which shows a retry screen instead of the
 legacy login.
 
-**Gate transport.** In dev, e2e and the packaged shell the gate is same-origin
-HTTP (`/api/vault/*`) served by the locked sidecar: the desktop window opens on
-the vault screen and the app routes and the store start only after unlock. A
-one-request stdin JSON broker (`DOKAN_VAULT_STDIN=1`) is implemented and tested
-as the shell-driven transport for the next shell iteration, so a future prompt
-can hand the passphrase over a pipe (never argv, the environment or disk)
-without changing the vault at all. Keeping all cryptography in one implemented
-module (rather than duplicating Argon2id in Rust) is what makes the transports
-provably identical.
+**Gate transport.** Dev and e2e use the same-origin HTTP gate (`/api/vault/*`)
+served by the locked sidecar; the desktop window opens on the vault screen and
+the app routes and the store start only after unlock. In a packaged build the
+shell launches the sidecar with `DOKAN_VAULT_STDIN=1` and carries the
+pre-boot prompt over the child's stdin pipe through Tauri IPC commands
+(`vault_unlock`, `vault_setup`, `vault_unlock_recovery`, `vault_status`, plus a
+key-saved acknowledgement): the API then refuses the HTTP credential routes
+(`VAULT_BROKER_REQUIRED`), so the one secret that decrypts everything never
+crosses the network stack, argv, the environment or disk. The status route
+advertises `broker: true` and the gate UI uses IPC whenever it sees that flag
+(the browser keeps HTTP). A recovery-authorised reset also has a pipe command
+(`vault_reset_passphrase`) because settings needs it while the HTTP route is
+refused. The setup reply carrying the one-time recovery key is written BEFORE
+the legacy plaintext sweep, and the sweep verdict follows as a second framed
+message on its own, longer budget (`vault_setup_warning`): confirmed clean,
+confirmed remaining paths, or UNKNOWN when the sweep threw or the shell never
+heard back. Unknown keeps the owner warned with a manual-verification message
+and never masquerades as a clean result, so a slow sweep can neither cost the
+key nor hide plaintext data. Logout replaces the one-shot
+child with a freshly verified sibling (`vault_logout`), so the reloaded gate
+can unlock over the pipe again without an app restart, and every respawn
+repeats the reservation plus token/registry identity checks the first launch
+performs. The reply wait is bounded by a timeout and never holds the state
+lock, so a silent child cannot block shutdown; a shutdown flag makes launch and
+shutdown mutually exclusive, so a respawn that races window close cannot leave
+an orphan sidecar holding the vault lock. Keeping all cryptography in one
+implemented module (rather than duplicating Argon2id in Rust) is what makes the
+transports provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to
 the client; the router accepts it over the `x-vault-session` header as the

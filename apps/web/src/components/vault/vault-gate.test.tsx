@@ -8,7 +8,11 @@ import { createRoot } from "react-dom/client";
 
 import "@/lib/i18n";
 import { VaultGate } from "./vault-gate";
+import type { BrokerInvokeArgs, BrokerReply } from "@/lib/vault-broker";
 import type { VaultStatus } from "@/lib/vault-client";
+
+/** The global the Tauri webview injects; tests stand in with this shape. */
+type FakeTauriInternals = { invoke: (command: string, args?: BrokerInvokeArgs) => Promise<BrokerReply> };
 
 const statusFor = (state: VaultStatus["state"], extra: Partial<VaultStatus> = {}): VaultStatus => ({
   mode: "vault",
@@ -17,6 +21,7 @@ const statusFor = (state: VaultStatus["state"], extra: Partial<VaultStatus> = {}
   recoveryKeyCount: state === "unconfigured" ? 0 : 1,
   lockedForMs: 0,
   unlocked: state === "unlocked",
+  broker: false,
   ...extra,
 });
 
@@ -45,6 +50,8 @@ afterEach(() => {
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   globalThis.fetch = originalFetch;
+  // SAFETY: the broker tests installed this exact optional global above
+  delete (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 });
 
 async function mount(status: VaultStatus, onUnlocked: () => void): Promise<HTMLElement> {
@@ -108,6 +115,163 @@ describe("VaultGate", () => {
     await act(async () => {
       continueButton?.click();
     });
+    expect(unlocked).toBe(1);
+  });
+
+  it("takes the passphrase over the desktop broker when the status says so (issue #141)", async () => {
+    const calls: Array<{ command: string; args?: BrokerInvokeArgs }> = [];
+    // SAFETY: this is the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "vault_unlock") return { ok: true, sessionToken: "broker-session", sessionGeneration: 1 };
+        return { ok: true };
+      },
+    };
+    let unlocked = 0;
+    const host = await mount(
+      statusFor("locked", { broker: true }),
+      () => {
+        unlocked += 1;
+      },
+    );
+    setValue(host, "vault-passphrase", "correct horse battery");
+    await submit(host, "vault-unlock-submit");
+
+    expect(calls[0]).toEqual({ command: "vault_unlock", args: { passphrase: "correct horse battery" } });
+    expect(window.sessionStorage.getItem("dokan.vault.session")).toBe("broker-session");
+    expect(unlocked).toBe(1);
+  });
+
+  it("acknowledges the recovery key over the broker after first-run setup (issue #141)", async () => {
+    const commands: string[] = [];
+    // SAFETY: this is the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        commands.push(command);
+        if (command === "vault_setup") return { ok: true, sessionToken: "setup-session", recoveryKey: "ABCD-EFGH", plaintextRemaining: [] };
+        return { ok: true };
+      },
+    };
+    let unlocked = 0;
+    const host = await mount(
+      statusFor("unconfigured", { broker: true }),
+      () => {
+        unlocked += 1;
+      },
+    );
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe("ABCD-EFGH");
+
+    const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
+    if (checkbox === null) throw new Error("missing recovery confirm");
+    await act(async () => {
+      checkbox.click();
+    });
+    await submit(host, "vault-recovery-continue");
+    expect(commands).toEqual(["vault_setup", "vault_setup_warning", "vault_setup_saved"]);
+    expect(unlocked).toBe(1);
+  });
+
+  it("shows the recovery key while the plaintext sweep is still pending (round-3 finding 1)", async () => {
+    // SAFETY: the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_setup") return { ok: true, sessionToken: "setup-session", recoveryKey: "ABCD-EFGH" };
+        // the sweep never reports (a huge legacy backup set)
+        if (command === "vault_setup_warning") return await new Promise<BrokerReply>(() => {});
+        return { ok: true };
+      },
+    };
+    const host = await mount(statusFor("unconfigured", { broker: true }), () => {});
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+
+    // the one-time key is safely on screen even though the sweep has not reported
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe("ABCD-EFGH");
+    expect(host.querySelector('[data-testid="vault-plaintext-checking"]')).not.toBeNull();
+    const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
+    if (checkbox === null) throw new Error("missing recovery confirm");
+    await act(async () => {
+      checkbox.click();
+    });
+    // the owner cannot leave before the warning arrives (or fails)
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="vault-recovery-continue"]')?.disabled).toBe(true);
+  });
+
+  it("shows the plaintext warning when the follow-up arrives (round-3 finding 1)", async () => {
+    let resolveWarning: ((reply: BrokerReply) => void) | undefined;
+    // SAFETY: the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_setup") return { ok: true, sessionToken: "setup-session", recoveryKey: "ABCD-EFGH" };
+        if (command === "vault_setup_warning") {
+          return await new Promise<BrokerReply>((resolve) => {
+            resolveWarning = resolve;
+          });
+        }
+        return { ok: true };
+      },
+    };
+    let unlocked = 0;
+    const host = await mount(
+      statusFor("unconfigured", { broker: true }),
+      () => {
+        unlocked += 1;
+      },
+    );
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
+    if (checkbox === null) throw new Error("missing recovery confirm");
+    await act(async () => {
+      checkbox.click();
+    });
+
+    await act(async () => {
+      resolveWarning?.({ ok: true, warning: "plaintext", plaintextStatus: "remaining", plaintextRemaining: ["C:/data/dokan.db"] });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector('[data-testid="vault-plaintext-warning"]')?.textContent).toContain("C:/data/dokan.db");
+    expect(host.querySelector('[data-testid="vault-plaintext-checking"]')).toBeNull();
+    await submit(host, "vault-recovery-continue");
+    expect(unlocked).toBe(1);
+  });
+
+  it("warns the owner when the sweep outcome is unknown instead of showing the clean story (round-4 finding)", async () => {
+    // SAFETY: the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_setup") return { ok: true, sessionToken: "setup-session", recoveryKey: "ABCD-EFGH" };
+        if (command === "vault_setup_warning") return { ok: true, warning: "plaintext", plaintextStatus: "unknown", plaintextRemaining: [] };
+        return { ok: true };
+      },
+    };
+    let unlocked = 0;
+    const host = await mount(
+      statusFor("unconfigured", { broker: true }),
+      () => {
+        unlocked += 1;
+      },
+    );
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    // the key is visible and the manual-verification warning is shown
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe("ABCD-EFGH");
+    expect(host.querySelector('[data-testid="vault-plaintext-unknown"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-plaintext-warning"]')).toBeNull();
+
+    const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
+    if (checkbox === null) throw new Error("missing recovery confirm");
+    await act(async () => {
+      checkbox.click();
+    });
+    await submit(host, "vault-recovery-continue");
     expect(unlocked).toBe(1);
   });
 

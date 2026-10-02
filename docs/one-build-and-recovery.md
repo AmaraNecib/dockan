@@ -27,11 +27,14 @@ Design document for ADR-0008. This replaces the per-customer secret baking in PR
 **Non-goals**
 - Multiple user accounts. The model below is owner-centric and extends cleanly.
 
-**Decided at launch (not deferred)**
-- **The portable vault.** Copying `data/` is a full takeover (§7), so the vault is not
-  an optional extra. Ship it with the universal build, or explicitly accept the
-  takeover risk. If shipped, document its own recovery model: a forgotten passphrase
-  is unrecoverable, the recovery codes live inside it, and the vendor cannot decrypt it.
+**Decided: the unified vault**
+- The data folder is encrypted with a **master key**. The owner unlocks it with a
+  **passphrase**, and the same passphrase signs them in — one step, no separate login.
+- The master key is also wrapped by a **recovery key** (a long random value shown once
+  at first run). Either the passphrase or the recovery key unwraps the master key, so a
+  forgotten passphrase is recoverable **by the recovery key**, not by the vendor.
+- If both the passphrase and the recovery key are lost, the data is cryptographically
+  unrecoverable. This must be stated plainly at first run.
 
 ## 3. Domain model
 
@@ -79,34 +82,23 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 - The secret is a normal row in the portable database; the stick is the boundary
   (see §7).
 
-### 4.3 Recovery codes
+### 4.3 Recovery key
 
-- On account creation, generate **one** recovery code, show it once, ask the owner to
-  save it.
-- Store only a hash. **Decided: Argon2id** (the extra cost is negligible and it
-  removes the "is SHA-256 enough?" question). Never store the plaintext.
-- Rules: single-use; never expires while unused; **max 5** active codes.
-- Using a code:
-  - consumes it and, when it was the **last** active code, generates its replacement
-    **in the same transaction** (a partial failure must not leave the owner with no
-    active code); then
-  - revokes every existing session (see 4.4).
-- Generating more: only while authenticated as the owner (re-enter the password).
-  At the 5-code limit, refuse with a clear message (or let the owner delete one).
-- Never log a code; never show it again after the generation screen.
-- **Entropy:** codes carry ≥ 128 bits, e.g. **26+ random base32 characters** (20 would
-  be only 100 bits). Group them for transcription and add a checksum.
-- **Hashing:** Argon2id; name the library and parameters in implementation (Bun's
-  `Bun.password` or the better-auth hash — pick one).
+- At first run, generate a **recovery key** (≥ 128 bits, e.g. 26+ base32 characters),
+  show it **once**, and ask the owner to save it. It unwraps the master key (§4.6), so
+  it recovers a forgotten passphrase.
+- Store only the **wrapped** master key, never the plaintext passphrase or key.
+- The owner may rotate the recovery key from settings (after unlocking) and keep up to
+  **5**, each able to unwrap the master key; using one does not invalidate the others,
+  and generating more requires the vault to be unlocked.
+- Never log it; never show it again after the generation screen.
+- **Entropy:** ≥ 128 bits; group for transcription and add a checksum.
+- **Passphrase derivation:** Argon2id; name the library and parameters in
+  implementation.
 - **Rate-limit, persisted:** attempts are limited **per install** and the counter is
   stored in the database (the existing in-memory throttle clears on restart). Backoff
-  after 5 failures, shared across the code and token screens, failures written to the
-  activity log.
-- **Verify + consume are atomic:** a concurrent double-submit cannot redeem one code
-  twice.
-- **Invalidation:** changing the password invalidates all outstanding codes; using one
-  code does not invalidate the others. At the 5-code limit, **refuse** with a clear
-  message and let the owner delete one first.
+  after 5 failures, shared across the unlock and recovery screens, failures written to
+  the activity log.
 
 ### 4.4 Vendor fallback (challenge–response)
 
@@ -172,13 +164,20 @@ password changes — someone holding a pre-reset session must not keep access.
 - Version storage: use `PRAGMA user_version` (decided); a database with no version is
   treated as the oldest pre-universal format.
 
-### 4.6 Portable vault (decided at launch)
+### 4.6 Unified vault (decided)
 
-A passphrase that encrypts the data folder (key derived from the passphrase, nothing
-stored). Because copying `data/` is a full takeover (§7), this is **launch-blocking**,
-not additive: either ship it with the universal build or explicitly accept the risk.
-If shipped, document its own recovery model — a forgotten passphrase is unrecoverable,
-the recovery codes live inside the vault, and the vendor cannot decrypt it.
+- **Master key:** random, generated at first run. It encrypts the data folder with an
+  AEAD (e.g. XChaCha20-Poly1305).
+- **Passphrase:** `Argon2id(passphrase, salt)` unwraps the master key **and** signs the
+  owner in — one step, no separate login. The owner row stays for store settings; it is
+  no longer a separate credential.
+- **Recovery key:** unwraps the master key too (§4.3), so a forgotten passphrase is
+  recoverable. Recovery is for the vault, not a separate login.
+- **Lost both:** the data is unrecoverable — say this plainly on the first-run screen.
+- **Sessions:** the session-signing secret lives inside the encrypted database, so it
+  travels and is protected. Employee accounts (later) log in after the vault is open.
+- **Vendor cannot decrypt.** The vendor fallback can authorize a reset of the app
+  login, but it can never recover a lost vault key.
 
 ## 5. Interfaces / files (indicative)
 
@@ -219,11 +218,10 @@ the recovery codes live inside the vault, and the vendor cannot decrypt it.
 
 ## 7. Risks / open questions
 
-- **Boundary (elevated):** the data (and the session secret) sit in plaintext on the
-  stick, so anyone who copies `data/` can forge an owner session, edit the owner row,
-  or re-run first-time setup — a full takeover, not just a read. The session secret is
-  not the deciding control; the vault is. **Decided at launch** (§2): ship the vault,
-  or explicitly accept the takeover risk.
+- **Boundary (resolved):** the unified vault (§4.6) encrypts the data folder, so a
+  copied stick is useless without the passphrase or the recovery key. This closes the
+  takeover path. The residual is the forgotten-passphrase case, mitigated by the
+  recovery key and stated plainly at first run.
 - **Key custody:** the vendor must keep every private key, with offline redundant
   escrow and a rotation runbook (§4.4).
 - **Code hashing:** decided — Argon2id (§4.3).

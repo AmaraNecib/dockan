@@ -13,9 +13,10 @@ We decided:
 - Generate the **session-signing secret at first run** and store it in the database
   (`settings`), so it travels with the portable data. Copying or restoring the
   database preserves sessions.
-- Recover access with **single-use recovery codes** (max 5, only their hashes
-  stored, shown once when generated; using the last one generates a replacement;
-  generating more requires the owner's password).
+- Encrypt the portable data with a **unified vault**: one **passphrase** unwraps a
+  master key and signs the owner in (one step, no separate login). A **recovery key**
+  (shown once, up to 5) also unwraps the master key, so a forgotten passphrase is
+  recoverable; losing both means the data is unrecoverable.
 - Keep a **vendor fallback**: a challenge–response where the app shows a device
   challenge and the vendor signs it with a **versioned** private key. The app ships
   the matching **public** keys (not secret), so this does not reintroduce
@@ -28,5 +29,6 @@ Consequences worth remembering: one build serves every shop and updates are a si
 artifact; the per-customer `.env` files, the **secret-hash** sidecar stamp, and the
 "inherited vs explicit secret" detection are removed (the build-time source/binary
 freshness check stays); copying the portable data folder is a full takeover, so the
-**passphrase vault is a launch decision, not a later option**; and the vendor becomes
-the custodian of a set of signing keys that must never be deleted.
+data is protected by a **unified vault** (one passphrase unlocks the app and the data,
+with a recovery key for a forgotten passphrase); and the vendor becomes the custodian
+of a set of signing keys that must never be deleted.

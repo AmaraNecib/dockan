@@ -446,26 +446,45 @@ describe("desktop release workflow", () => {
   });
 
   it.skipIf(!PWSH_AVAILABLE)(
-    "runs the version step: a -rc tag is a prerelease, a plain tag is not",
+    "runs the version step: pre-release kind and target gating come from the ref",
     () => {
       const version = readDesktopVersion();
 
+      // a tag builds both targets and is a normal release
       const plain = runVersionStep(`refs/tags/v${version}`, "push", "");
       expect(plain.status, "a plain tag must pass the version check").toBe(0);
       expect(plain.outputs.get("version")).toBe(version);
       expect(plain.outputs.get("prerelease")).toBe("false");
+      expect(plain.outputs.get("build_portable")).toBe("true");
+      expect(plain.outputs.get("build_installer")).toBe("true");
 
+      // a -rc tag is a prerelease and still builds both
       const rc = runVersionStep(`refs/tags/v${version}-rc.1`, "push", "");
       expect(rc.status, "a pre-release tag must pass the version check").toBe(0);
       expect(rc.outputs.get("prerelease")).toBe("true");
+      expect(rc.outputs.get("build_portable")).toBe("true");
+      expect(rc.outputs.get("build_installer")).toBe("true");
 
-      const manual = runVersionStep("refs/heads/develop", "workflow_dispatch", "all");
-      expect(manual.status).toBe(0);
-      expect(manual.outputs.get("prerelease")).toBe("false");
+      // a manual installer run selects ONLY the installer
+      const installer = runVersionStep("refs/heads/develop", "workflow_dispatch", "installer");
+      expect(installer.status).toBe(0);
+      expect(installer.outputs.get("prerelease")).toBe("false");
+      expect(installer.outputs.get("build_portable")).toBe("false");
+      expect(installer.outputs.get("build_installer")).toBe("true");
 
+      // a manual portable run selects ONLY the portable
+      const portable = runVersionStep("refs/heads/develop", "workflow_dispatch", "portable");
+      expect(portable.status).toBe(0);
+      expect(portable.outputs.get("build_portable")).toBe("true");
+      expect(portable.outputs.get("build_installer")).toBe("false");
+
+      // a tag that does not match the version fails loudly
       const wrong = runVersionStep("refs/tags/v999.0.0", "push", "");
       expect(wrong.status, "a tag that does not match the version must fail").not.toBe(0);
     },
+    // pwsh cold-start on the runner is slower than the 5s default; each
+    // scenario spawns one pwsh, so give the whole test a generous budget.
+    { timeout: 60_000 },
   );
 
   it("passes --prerelease only for a pre-release tag and keeps the kind on a re-run", () => {
@@ -490,6 +509,23 @@ describe("desktop release workflow", () => {
     expect(stepNamed(steps, "Build installer").run).toBe(
       "bun run --filter @dokan/desktop installer",
     );
+  });
+
+  it("gates every target step on its dispatch flag", () => {
+    const steps = parseSteps(WORKFLOW_SOURCE, "build");
+    // a manual `installer` run must build, verify and upload ONLY the installer:
+    // every portable step is gated on build_portable and every installer step
+    // on build_installer (the version step resolves those from the input).
+    for (const name of ["Build portable", "Verify portable", "Upload portable"]) {
+      expect(stepNamed(steps, name).condition, `${name} must be gated on build_portable`).toBe(
+        "steps.version.outputs.build_portable == 'true'",
+      );
+    }
+    for (const name of ["Build installer", "Verify installer", "Upload installer"]) {
+      expect(stepNamed(steps, name).condition, `${name} must be gated on build_installer`).toBe(
+        "steps.version.outputs.build_installer == 'true'",
+      );
+    }
   });
 
   it("does not accept a build command that only appears in a comment", () => {

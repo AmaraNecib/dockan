@@ -15,7 +15,9 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const WORKFLOW_PATH = path.resolve(
@@ -30,6 +32,7 @@ type WorkflowStep = {
   readonly uses: string;
   readonly condition: string;
   readonly with: ReadonlyMap<string, string>;
+  readonly env: ReadonlyMap<string, string>;
 };
 
 type MutableStep = {
@@ -38,10 +41,13 @@ type MutableStep = {
   uses: string;
   condition: string;
   with: Map<string, string>;
+  env: Map<string, string>;
 };
 
+type NestedField = "with" | "env";
+
 type BlockScalar = {
-  readonly target: "run" | "with";
+  readonly target: "run" | NestedField;
   readonly key: string;
   readonly indent: number;
 };
@@ -78,6 +84,13 @@ function normaliseScalar(value: string): string {
   return lines.map((line) => line.slice(commonIndent)).join("\n").trimEnd();
 }
 
+/** Normalise every value of a parsed `with:`/`env:` map. */
+function normaliseMap(source: ReadonlyMap<string, string>): ReadonlyMap<string, string> {
+  const result = new Map<string, string>();
+  for (const [key, value] of source) result.set(key, normaliseScalar(value));
+  return result;
+}
+
 /**
  * Parse the `jobs.<jobName>.steps` list into named steps with their `run`,
  * `uses`, `if` and `with` values. Only the fields a step actually declares are
@@ -103,19 +116,18 @@ function parseSteps(source: string, jobName: string): readonly WorkflowStep[] {
   const steps: WorkflowStep[] = [];
   let current: MutableStep | null = null;
   let block: BlockScalar | null = null;
-  let inWith = false;
+  let nested: NestedField | null = null;
 
   const flush = () => {
     if (current === null) return;
     const step = current;
-    const normalisedWith = new Map<string, string>();
-    for (const [key, value] of step.with) normalisedWith.set(key, normaliseScalar(value));
     steps.push({
       name: step.name,
       run: normaliseScalar(step.run),
       uses: step.uses,
       condition: step.condition,
-      with: normalisedWith,
+      with: normaliseMap(step.with),
+      env: normaliseMap(step.env),
     });
   };
 
@@ -130,9 +142,9 @@ function parseSteps(source: string, jobName: string): readonly WorkflowStep[] {
     const stepStart = /^      - (.*)$/u.exec(line);
     if (stepStart !== null) {
       flush();
-      current = { name: "", run: "", uses: "", condition: "", with: new Map() };
+      current = { name: "", run: "", uses: "", condition: "", with: new Map(), env: new Map() };
       block = null;
-      inWith = false;
+      nested = null;
       const field = /^([\w-]+):\s*(.*)$/u.exec(stepStart[1]);
       if (field !== null && field[1] === "name") current.name = field[2].trim();
       if (field !== null && field[1] === "uses") current.uses = field[2].trim();
@@ -141,11 +153,14 @@ function parseSteps(source: string, jobName: string): readonly WorkflowStep[] {
 
     if (current === null) continue;
 
-    // continuation of a block scalar (`run: |` or a `with:` value)
+    // continuation of a block scalar (`run: |`, a `with:` or an `env:` value)
     if (block !== null && indent > block.indent) {
       const text = `${line.slice(block.indent)}\n`;
       if (block.target === "run") current.run += text;
-      else current.with.set(block.key, (current.with.get(block.key) ?? "") + text);
+      else {
+        const map = block.target === "with" ? current.with : current.env;
+        map.set(block.key, (map.get(block.key) ?? "") + text);
+      }
       continue;
     }
     block = null;
@@ -163,21 +178,23 @@ function parseSteps(source: string, jobName: string): readonly WorkflowStep[] {
           block = { target: "run", key: "run", indent };
           current.run = "";
         } else current.run = value;
-      } else if (key === "with") inWith = true;
-      else inWith = false;
+      } else if (key === "with") nested = "with";
+      else if (key === "env") nested = "env";
+      else nested = null;
       continue;
     }
 
-    if (inWith && indent === 10) {
+    if (nested !== null && indent === 10) {
       const field = /^          ([\w-]+):\s*(.*)$/u.exec(line);
       if (field === null) continue;
       const key = field[1];
       const value = field[2].trim();
+      const map = nested === "with" ? current.with : current.env;
       if (value.startsWith("|") || value.startsWith(">")) {
-        block = { target: "with", key, indent };
-        current.with.set(key, "");
+        block = { target: nested, key, indent };
+        map.set(key, "");
       } else {
-        current.with.set(key, value);
+        map.set(key, value);
       }
     }
   }
@@ -282,6 +299,73 @@ function cacheKeys(): string[] {
   return keys;
 }
 
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
+const VERSION_STEP_RUN = stepNamed(
+  parseSteps(WORKFLOW_SOURCE, "build"),
+  "Resolve and validate version",
+).run;
+
+/** The version declared in apps/desktop/package.json. */
+function readDesktopVersion(): string {
+  const match = /"version":\s*"([^"]+)"/u.exec(
+    readFileSync(path.join(REPO_ROOT, "apps/desktop/package.json"), "utf8"),
+  );
+  if (match === null) throw new Error("apps/desktop/package.json has no version");
+  return match[1];
+}
+
+/** pwsh is on ubuntu-latest and Windows; the behavioural test skips elsewhere. */
+function hasPwsh(): boolean {
+  const probe = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"], {
+    stdio: "ignore",
+  });
+  return probe.status === 0;
+}
+
+const PWSH_AVAILABLE = hasPwsh();
+
+type VersionRun = {
+  readonly status: number;
+  readonly outputs: ReadonlyMap<string, string>;
+};
+
+/**
+ * Run the workflow's actual version step under pwsh for a given ref/event.
+ * Behavioural, not a copy: a regression in the shipped PowerShell fails here.
+ */
+function runVersionStep(ref: string, event: string, target: string): VersionRun {
+  const dir = mkdtempSync(path.join(tmpdir(), "dokan-version-"));
+  const scriptPath = path.join(dir, "step.ps1");
+  const outputPath = path.join(dir, "output.txt");
+  const summaryPath = path.join(dir, "summary.txt");
+  writeFileSync(scriptPath, VERSION_STEP_RUN, "utf8");
+  try {
+    const result = spawnSync("pwsh", ["-NoProfile", "-File", scriptPath], {
+      cwd: REPO_ROOT,
+      env: {
+        ...process.env,
+        GITHUB_OUTPUT: outputPath,
+        GITHUB_STEP_SUMMARY: summaryPath,
+        GITHUB_REF: ref,
+        GITHUB_EVENT_NAME: event,
+        DISPATCH_TARGET: target,
+      },
+    });
+    const outputs = new Map<string, string>();
+    if (existsSync(outputPath)) {
+      for (const line of readFileSync(outputPath, "utf8").split("\n")) {
+        const separator = line.indexOf("=");
+        if (separator > 0) {
+          outputs.set(line.slice(0, separator), line.slice(separator + 1).trim());
+        }
+      }
+    }
+    return { status: result.status ?? 1, outputs };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe("desktop release workflow", () => {
   it("runs only on workflow_dispatch and v* tags, never on a schedule or PRs", () => {
     const triggers = onLines(WORKFLOW_SOURCE).join("\n");
@@ -350,6 +434,52 @@ describe("desktop release workflow", () => {
     expect(stepNamed(steps, "Upload installer").with.get("name")).toContain(
       "steps.version.outputs.version",
     );
+  });
+
+  it("derives the prerelease flag from the tag and reports it", () => {
+    const version = stepNamed(parseSteps(WORKFLOW_SOURCE, "build"), "Resolve and validate version");
+    expect(version.run).toContain('prerelease=$($prerelease.ToString().ToLowerInvariant())');
+    // the flag is wired out of the build job for the release job
+    expect(jobLines(WORKFLOW_SOURCE, "build").join("\n")).toContain(
+      "prerelease: ${{ steps.version.outputs.prerelease }}",
+    );
+  });
+
+  it.skipIf(!PWSH_AVAILABLE)(
+    "runs the version step: a -rc tag is a prerelease, a plain tag is not",
+    () => {
+      const version = readDesktopVersion();
+
+      const plain = runVersionStep(`refs/tags/v${version}`, "push", "");
+      expect(plain.status, "a plain tag must pass the version check").toBe(0);
+      expect(plain.outputs.get("version")).toBe(version);
+      expect(plain.outputs.get("prerelease")).toBe("false");
+
+      const rc = runVersionStep(`refs/tags/v${version}-rc.1`, "push", "");
+      expect(rc.status, "a pre-release tag must pass the version check").toBe(0);
+      expect(rc.outputs.get("prerelease")).toBe("true");
+
+      const manual = runVersionStep("refs/heads/develop", "workflow_dispatch", "all");
+      expect(manual.status).toBe(0);
+      expect(manual.outputs.get("prerelease")).toBe("false");
+
+      const wrong = runVersionStep("refs/tags/v999.0.0", "push", "");
+      expect(wrong.status, "a tag that does not match the version must fail").not.toBe(0);
+    },
+  );
+
+  it("passes --prerelease only for a pre-release tag and keeps the kind on a re-run", () => {
+    const publish = stepNamed(parseSteps(WORKFLOW_SOURCE, "release"), "Publish release");
+    // the flag comes from the build job's resolved kind
+    expect(publish.env.get("PRERELEASE")).toBe("${{ needs.build.outputs.prerelease }}");
+    // create carries the flag when the tag is a pre-release
+    expect(publish.run).toContain('PRERELEASE_ARG="--prerelease"');
+    expect(publish.run).toContain("gh release create");
+    expect(publish.run).toContain("${PRERELEASE_ARG}");
+    // a re-run re-applies the derived kind instead of dropping or flipping it
+    expect(publish.run).toContain("gh release edit");
+    expect(publish.run).toContain('--prerelease="${PRERELEASE}"');
+    expect(publish.run).toContain("gh release upload");
   });
 
   it("builds both the portable and the installer targets", () => {

@@ -59,6 +59,7 @@ jobs:
     # The resolved version feeds the artifact names and the release job.
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,13 +105,16 @@ jobs:
             throw "version mismatch: apps/desktop/package.json is '$packageVersion' but apps/desktop/src-tauri/tauri.conf.json is '$tauriVersion' - bump BOTH to the same version"
           }
 
+          $prerelease = $packageVersion.Contains("-")
           if ($env:GITHUB_REF -like "refs/tags/v*") {
             $tagVersion = $env:GITHUB_REF -replace "^refs/tags/v", ""
             $escapedVersion = [regex]::Escape($packageVersion)
             if ($tagVersion -ne $packageVersion -and $tagVersion -notmatch "^$escapedVersion-[0-9A-Za-z.-]+$") {
               throw "tag $env:GITHUB_REF does not match the version '$packageVersion' (expected v$packageVersion or v$packageVersion-<prerelease>)"
             }
-            Write-Host "tag $env:GITHUB_REF matches version $packageVersion"
+            # a tag carrying a pre-release suffix is published as a prerelease
+            $prerelease = $prerelease -or $tagVersion.Contains("-")
+            Write-Host "tag $env:GITHUB_REF matches version $packageVersion (prerelease=$prerelease)"
           }
 
           $target = if ($env:GITHUB_EVENT_NAME -eq "push") { "all" } else { "$env:DISPATCH_TARGET" }
@@ -120,11 +124,14 @@ jobs:
           $buildPortable = $target -in @("all", "portable")
           $buildInstaller = $target -in @("all", "installer")
 
+          $kind = if ($prerelease) { "prerelease" } else { "release" }
+
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$packageVersion"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$($prerelease.ToString().ToLowerInvariant())"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "build_portable=$($buildPortable.ToString().ToLowerInvariant())"
           Add-Content -Path $env:GITHUB_OUTPUT -Value "build_installer=$($buildInstaller.ToString().ToLowerInvariant())"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Resolved version: $packageVersion (portable=$buildPortable, installer=$buildInstaller)"
-          Write-Host "resolved version $packageVersion; build portable=$buildPortable, build installer=$buildInstaller"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Resolved version: $packageVersion ($kind; portable=$buildPortable, installer=$buildInstaller)"
+          Write-Host "resolved version $packageVersion ($kind); build portable=$buildPortable, build installer=$buildInstaller"
 
       # Caches ~/.cargo and the tauri target dir. rust-cache folds the runner
       # OS/arch and the Cargo.lock hash into its own key, so Windows caches
@@ -246,9 +253,19 @@ jobs:
           # the automatic run token, not a repository secret
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # derived from the tag by the version step: v0.2.0-rc.1 => true
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
+          if [ "${PRERELEASE}" = "true" ]; then
+            PRERELEASE_ARG="--prerelease"
+          else
+            PRERELEASE_ARG=""
+          fi
+
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            # a re-run of the same tag replaces the assets
+            # a re-run replaces the assets and re-applies the kind derived from
+            # the tag, so it can never flip a prerelease into a normal release
+            gh release edit "${GITHUB_REF_NAME}" --prerelease="${PRERELEASE}"
             gh release upload "${GITHUB_REF_NAME}" \
               dist/installer/*.exe \
               dist/portable/*.zip \
@@ -257,6 +274,7 @@ jobs:
             gh release create "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
               --generate-notes \
+              ${PRERELEASE_ARG} \
               dist/installer/*.exe \
               dist/portable/*.zip
           fi

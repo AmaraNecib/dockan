@@ -77,7 +77,10 @@ job instead of leaving a partial success.
 
 4. The workflow builds **both** targets, then a separate `release` job — the
    only job with `contents: write` — publishes a GitHub release for the tag with
-   the installer `.exe` and the portable `.zip` attached.
+   the installer `.exe` and the portable `.zip` attached. A tag with a
+   pre-release suffix (`v0.2.0-rc.1`) is published as a GitHub **prerelease**;
+   a plain `v0.2.0` is a normal release. The resolved kind is shown in the run
+   summary, and a re-run re-applies it rather than flipping the release.
 
 ### One-off manual build (does NOT publish a release)
 

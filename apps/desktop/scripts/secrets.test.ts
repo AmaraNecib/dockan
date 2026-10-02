@@ -87,6 +87,16 @@ describe("parseEnvFile matches Bun's dotenv rules (PR #117 findings 1/5)", () =>
       ),
     ).toEqual({ A: "quoted", B: "single", C: "a#b", D: "a", E: 'a\\"b', F: "x" });
   });
+
+  it("keeps an unmatched opening quote and strips the comment, like Bun (re-review finding 1)", () => {
+    // no closing quote anywhere in the rest of each file
+    expect(parseEnvFile(`A="unterminated\nB=next\n`)).toEqual({ A: '"unterminated', B: "next" });
+    expect(parseEnvFile(`C="unterminated # note\n`)).toEqual({ C: '"unterminated' });
+  });
+
+  it("spans lines for an unmatched quote only when a closer exists later, like Bun", () => {
+    expect(parseEnvFile(`A="unterminated\nB="closer"\n`)).toEqual({ A: "unterminated\nB=" });
+  });
 });
 
 describe("mergeEnvFile (PR #117 finding 3 — never re-serialise existing values)", () => {
@@ -424,6 +434,84 @@ describe("ensureReleaseSecrets per customer (PR #117 finding 1)", () => {
 
     expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe("inherited-build-secret-01");
     expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
+  });
+
+  it("ignores an ambient value with an unmatched opening quote (re-review finding 1)", () => {
+    const dir = scratchDir();
+    const ambient = path.join(dir, "root.env");
+    // Bun pre-loads the value WITH the opening quote when no closer exists;
+    // a parser that strips it would treat the inherited value as an override
+    const inherited = '"unterminated-secret-0123456';
+    writeFileSync(ambient, `DOKAN_BUILD_SECRET=${inherited}\n`);
+
+    const result = ensureReleaseSecrets({
+      env: { DOKAN_BUILD_SECRET: inherited },
+      envDir: dir,
+      customerSlug: "acme",
+      envIsExplicit: true,
+      ambientEnvFilePath: ambient,
+    });
+
+    expect(result.secrets.DOKAN_BUILD_SECRET).not.toBe(inherited);
+    expect(result.sources.DOKAN_BUILD_SECRET).toBe("generated");
+  });
+
+  it("does not let an inherited empty value block a valid customer file (re-review finding 2)", () => {
+    const dir = scratchDir();
+    const customerBuild = "customer-build-secret-0123";
+    const customerAuth = "customer-auth-secret-0123456789abcdefghij";
+    writeFileSync(
+      path.join(dir, ".env.acme"),
+      renderEnvFile({ DOKAN_BUILD_SECRET: customerBuild, DOKAN_AUTH_SECRET: customerAuth }, releaseEnvHeader("acme")),
+    );
+    const ambient = path.join(dir, "root.env");
+    writeFileSync(ambient, "DOKAN_AUTH_SECRET=\n");
+
+    const result = ensureReleaseSecrets({
+      env: { DOKAN_AUTH_SECRET: "" },
+      envDir: dir,
+      customerSlug: "acme",
+      envIsExplicit: true,
+      ambientEnvFilePath: ambient,
+    });
+
+    expect(result.secrets.DOKAN_AUTH_SECRET).toBe(customerAuth);
+    expect(result.secrets.DOKAN_BUILD_SECRET).toBe(customerBuild);
+    expect(result.generated).toEqual([]);
+  });
+
+  it("does not let an inherited empty value block a valid .env.<slug> (outer bun run preload)", async () => {
+    const root = scratchDir();
+    const desktop = path.join(root, "apps", "desktop");
+    mkdirSync(desktop, { recursive: true });
+    const customerBuild = "customer-build-secret-0123";
+    const customerAuth = "customer-auth-secret-0123456789abcdefghij";
+    writeFileSync(
+      path.join(desktop, ".env.acme"),
+      renderEnvFile({ DOKAN_BUILD_SECRET: customerBuild, DOKAN_AUTH_SECRET: customerAuth }, releaseEnvHeader("acme")),
+    );
+    writeFileSync(path.join(root, ".env"), "DOKAN_AUTH_SECRET=\n");
+    const secretsModule = pathToFileURL(path.join(import.meta.dir, "secrets.ts")).href;
+    const child = `
+      const mod = await import(${JSON.stringify(secretsModule)});
+      const result = mod.ensureReleaseSecrets({ customerSlug: "acme" });
+      console.log(JSON.stringify({ secrets: result.secrets, generated: result.generated }));
+    `;
+    // simulate the outer `bun run` pre-loading root/.env with an empty value
+    const env = { ...process.env, BUN_OPTIONS: "--no-env-file", DOKAN_AUTH_SECRET: "" };
+    delete env.DOKAN_BUILD_SECRET;
+    delete env.DOKAN_CUSTOMER_SLUG;
+    const proc = Bun.spawn(["bun", "-e", child], { cwd: desktop, env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    if (code !== 0) throw new Error(`child failed: ${code}\n${err}`);
+
+    const result = JSON.parse(out.trim());
+    expect(result.secrets.DOKAN_AUTH_SECRET).toBe(customerAuth);
+    expect(result.generated).toEqual([]);
   });
 
   it("ignores a customer-less secret inherited from a repo-root .env (outer bun run preload)", async () => {

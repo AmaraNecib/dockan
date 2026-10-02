@@ -187,3 +187,15 @@ ensureReleaseSecrets({
    replaying a stale build.
 8. `source_fingerprint` now covers `packages/contracts/src` and `bun.lock`
    (issue #134) with the shared TS/Rust golden updated.
+
+## Round 6 (PR re-review fixes on ccfd747, 2 findings)
+
+1. `parseEnvValueFrom` mirrors Bun for an unmatched opening quote: if no
+   closer exists anywhere in the rest of the file, the value keeps the opening
+   quote and the rest of its line (comment stripped) and following lines parse
+   normally; if a closer exists later, the value spans lines up to it. A
+   parity check against Bun passed for all six probe shapes.
+2. The empty-value rejection now happens only for a genuine explicit override:
+   an inherited empty value (ambient repo-root `.env`, or the customer-less
+   `.env` without proof auto-loading was off) falls through to a valid
+   `.env.<slug>` instead of blocking the release.

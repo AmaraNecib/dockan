@@ -59,18 +59,23 @@ const ENV_LINE_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
 
 /**
  * Bun's dotenv value rules, as observed on Bun 1.4:
- *   - a value starting with `"` or `'` is read up to its matching closing
- *     quote (backslash escapes the next character inside `"` only, and the
- *     backslash is kept verbatim); anything after the closing quote — an
- *     inline `# comment` or trailing junk — is ignored;
+ *   - a value starting with `"` or `'` closes at its matching quote
+ *     (backslash escapes the next character inside `"` only, and the
+ *     backslash is kept verbatim); the value is everything between, possibly
+ *     spanning lines, and anything after the closing quote — an inline
+ *     `# comment` or trailing junk — is ignored;
+ *   - a quote with NO closer anywhere in the rest of the file keeps the rest
+ *     of its line, INCLUDING the opening quote, with an inline comment
+ *     stripped;
  *   - otherwise the first `#` starts a comment and the rest is trimmed.
  * Keeping this in lockstep matters: the base/ambient preload check compares
  * the value Bun loaded against a re-parse of the same line, and a divergence
  * would let a customer-less secret pass as an explicit override
- * (PR #117 findings 1, and re-review finding 1 for commented quotes).
+ * (PR #117 findings 1, re-review findings 1 for commented quotes and
+ * unmatched quotes).
  */
-function findClosingQuote(value: string, quote: string): number {
-  for (let i = 1; i < value.length; i += 1) {
+function findClosingQuote(value: string, quote: string, start: number): number {
+  for (let i = start; i < value.length; i += 1) {
     if (quote === '"' && value[i] === "\\") {
       i += 1; // escaped character: Bun keeps the backslash but skips the quote
       continue;
@@ -80,20 +85,37 @@ function findClosingQuote(value: string, quote: string): number {
   return -1;
 }
 
-function parseEnvValue(raw: string): string {
-  const value = raw.trim();
+interface ParsedEnvValue {
+  value: string;
+  lastLine: number;
+}
+
+/**
+ * Parse one line's value the way Bun does. Returns the value and the index of
+ * the last line it consumed (a quote can span lines when a closer exists
+ * later in the file).
+ */
+function parseEnvValueFrom(rest: string, lines: string[], lineIndex: number): ParsedEnvValue {
+  const value = rest.trim();
   const quote = value[0];
   if (quote === '"' || quote === "'") {
-    const closing = findClosingQuote(value, quote);
-    if (closing !== -1) return value.slice(1, closing);
-    // Bun lets an unterminated quote span lines; this line-based parser does
-    // not model that. Drop the opening quote and any comment so a malformed
-    // line stays inert instead of poisoning the whole file.
+    for (let i = lineIndex; i < lines.length; i += 1) {
+      const haystack = i === lineIndex ? value : lines[i] ?? "";
+      const close = findClosingQuote(haystack, quote, i === lineIndex ? 1 : 0);
+      if (close === -1) continue;
+      const parts =
+        i === lineIndex
+          ? [value.slice(1, close)]
+          : [value.slice(1), ...lines.slice(lineIndex + 1, i), haystack.slice(0, close)];
+      return { value: parts.join("\n"), lastLine: i };
+    }
+    // No closer anywhere: Bun keeps the opening quote and the rest of the
+    // line (comment stripped), and parses the following lines normally.
     const comment = value.indexOf("#");
-    return (comment === -1 ? value : value.slice(0, comment)).slice(1).trim();
+    return { value: (comment === -1 ? value : value.slice(0, comment)).trim(), lastLine: lineIndex };
   }
   const comment = value.indexOf("#");
-  return (comment === -1 ? value : value.slice(0, comment)).trim();
+  return { value: (comment === -1 ? value : value.slice(0, comment)).trim(), lastLine: lineIndex };
 }
 
 /** The `KEY` and `export ` prefix of a `KEY=value` line, or undefined. */
@@ -154,13 +176,18 @@ export interface EnvFileValues {
 /** Read `KEY=value` lines, ignoring blanks and comments, like Bun's loader. */
 export function parseEnvFile(text: string): EnvFileValues {
   const values: EnvFileValues = {};
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line === undefined) continue;
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
     const match = ENV_LINE_PATTERN.exec(trimmed);
     const key = match?.[1];
     if (match === null || key === undefined) continue;
-    values[key] = parseEnvValue(match[2] ?? "");
+    const parsed = parseEnvValueFrom(match[2] ?? "", lines, i);
+    values[key] = parsed.value;
+    i = parsed.lastLine;
   }
   return values;
 }
@@ -269,42 +296,27 @@ interface ResolveContext {
 function resolveOne(spec: SecretSpec, ctx: ResolveContext): ResolvedOne {
   const explicit = ctx.env[spec.key];
   if (explicit !== undefined) {
-    // An explicitly provided EMPTY secret is a broken configuration, not a
-    // missing one: generating a replacement would silently rotate the signing
-    // key / password-reset secret on the next rebuild (PR #117 re-review
-    // finding 2). Fail loudly before any preload reasoning.
-    if (explicit === "") {
-      const check = spec.validate({ [spec.key]: explicit });
-      throw new Error(`${spec.key}: ${check.ok ? "is empty — refusing to ship a default secret" : check.reason}`);
-    }
     const fromTargetFile = ctx.stored[spec.key] === explicit;
-    // The root `desktop:*` scripts set BUN_OPTIONS=--no-env-file, but the OUTER
-    // `bun run` process was started before that and may already have pre-loaded
-    // a `.env` from its cwd. A value inherited that way must never be an
-    // override for a customer build (PR #117 re-review finding 1): two shops
-    // could otherwise ship with the same signing and password-reset secrets.
+    // A value inherited from the outer-cwd `.env` — or from the customer-less
+    // `.env` when auto-loading was not proven off — is never an override. That
+    // includes an EMPTY value: an inherited `DOKAN_X=` must not block a valid
+    // `.env.<slug>` (PR #117 re-review finding 2).
     const fromAmbientFile = ctx.ambientStored[spec.key] === explicit;
-    if (!fromAmbientFile) {
-      // With `.env` auto-loading proven off for the whole child tree, any
-      // remaining value is a deliberate override and must be honoured, even
-      // one equal to the customer-less `.env` value (PR #117 finding 3).
-      if (ctx.envIsExplicit) {
+    const fromBaseFile = ctx.baseStored[spec.key] === explicit;
+    const inherited = fromAmbientFile || (!ctx.envIsExplicit && fromBaseFile);
+    if (!inherited) {
+      // A genuine explicit empty value is a broken configuration, not a
+      // missing one: generating a replacement would silently rotate the
+      // signing key / password-reset secret on the next rebuild.
+      if (explicit === "") {
         const check = spec.validate({ [spec.key]: explicit });
-        if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
-        return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
+        throw new Error(`${spec.key}: ${check.ok ? "is empty — refusing to ship a default secret" : check.reason}`);
       }
-
-      // Without that proof an ancestor may have pre-loaded the customer-less
-      // `.env` (PR #117 finding 1): only a value that is not the base file's
-      // own value — and is not this customer's stored value — is an override.
-      const fromBaseFile = ctx.baseStored[spec.key] === explicit;
-      if (fromTargetFile || !fromBaseFile) {
-        const check = spec.validate({ [spec.key]: explicit });
-        if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
-        // An env value that MATCHES the file came from the file; call it "file"
-        // so the owner is pointed at the place to edit.
-        return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
-      }
+      const check = spec.validate({ [spec.key]: explicit });
+      if (!check.ok) throw new Error(`${spec.key}: ${check.reason}`);
+      // An env value that MATCHES the file came from the file; call it "file"
+      // so the owner is pointed at the place to edit.
+      return { key: spec.key, value: explicit, source: fromTargetFile ? "file" : "env", created: false };
     }
   }
 

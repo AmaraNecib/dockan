@@ -14,11 +14,11 @@ import {
 import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
 import { createAppConfig, type AppConfig } from "./config";
-import { openConnection, type Connection } from "./db/connection";
+import { openConnection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
-import { createSchemaRefusalApp } from "./lib/schema-refusal";
+import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
 import { UnsupportedSchemaVersionError } from "./lib/schema-version";
 import { ensureSessionSecret } from "./lib/session-secret";
 import { createRpcRouter } from "./rpc/router";
@@ -37,20 +37,26 @@ fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.dataDir, "backups"), { recursive: true });
 
 const logger = new AppLogger(config.dataDir);
-let conn: Connection;
+// The open gate and the write-locked stamp in setup() can both discover a
+// newer database; both must land on the Arabic refusal page (ADR-0008 §4.5).
+const conn = await guardBootStep(
+  () => openConnection(config),
+  (error) => serveSchemaRefusal(config, error),
+);
+const store = createDrizzleStore(conn, logger);
 try {
-  conn = openConnection(config);
+  await guardBootStep(
+    () => store.setup(),
+    (error) => {
+      // release the file before serving the page; the store never started
+      conn.close();
+      return serveSchemaRefusal(config, error);
+    },
+  );
 } catch (error) {
-  if (error instanceof UnsupportedSchemaVersionError) {
-    // ADR-0008 §4.5: never a generic crash. Serve the Arabic update page on
-    // the shell-assigned port and stay alive so the webview can show it.
-    await serveSchemaRefusal(config, error);
-  }
+  conn.close();
   throw error;
 }
-const store = createDrizzleStore(conn, logger);
-
-await store.setup();
 
 // One universal build (ADR-0008 §4.2): the session-signing secret is generated
 // here on first run and stored in the database. A pre-universal database with

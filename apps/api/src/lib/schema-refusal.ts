@@ -2,7 +2,7 @@ import { Hono } from "hono";
 
 import type { AppConfig } from "../config";
 import { tokenMatches } from "./boot-token";
-import type { UnsupportedSchemaVersionError } from "./schema-version";
+import { UnsupportedSchemaVersionError } from "./schema-version";
 
 /**
  * The standalone page an older build serves when it opens a database stamped
@@ -43,9 +43,32 @@ export function refusalPageHtml(foundVersion: number, supportedVersion: number):
 }
 
 /**
+ * Run one boot step and route an unsupported-schema error to the refusal
+ * path. The error can come from the open gate OR from the write-locked stamp
+ * in `store.setup()` (a newer sidecar stamped the shared file between our
+ * open and our stamp); both must land on the same standalone Arabic page
+ * instead of crashing the sidecar into the shell's generic failure UI.
+ */
+export async function guardBootStep<T>(
+  step: () => T | Promise<T>,
+  refuse: (error: UnsupportedSchemaVersionError) => Promise<never>,
+): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    if (error instanceof UnsupportedSchemaVersionError) {
+      await refuse(error);
+    }
+    throw error;
+  }
+}
+
+/**
  * The minimal refusal app. `/health-token` keeps the shell's identity probe
  * working (the token echo is the same contract the normal boot serves), and
- * everything else answers the update page — never the API.
+ * everything else answers the update page — never the API. `/health` answers
+ * 503 as well: a status-only readiness check must see the refusal, not a
+ * healthy API whose body says otherwise.
  */
 export function createSchemaRefusalApp(config: AppConfig, error: UnsupportedSchemaVersionError): Hono {
   const app = new Hono();
@@ -56,12 +79,15 @@ export function createSchemaRefusalApp(config: AppConfig, error: UnsupportedSche
     return c.text("not found", 404);
   });
   app.get("/health", (c) =>
-    c.json({
-      ok: false,
-      error: "SCHEMA_VERSION_TOO_NEW",
-      foundVersion: error.foundVersion,
-      supportedVersion: error.supportedVersion,
-    }),
+    c.json(
+      {
+        ok: false,
+        error: "SCHEMA_VERSION_TOO_NEW",
+        foundVersion: error.foundVersion,
+        supportedVersion: error.supportedVersion,
+      },
+      503,
+    ),
   );
   app.all("*", (c) => c.html(refusalPageHtml(error.foundVersion, error.supportedVersion), 503));
   return app;

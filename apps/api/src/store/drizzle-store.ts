@@ -462,6 +462,46 @@ type DebtSummaryRow = {
 };
 
 /**
+ * Store methods that write to the database. The vault connection must be told
+ * when the in-memory image changes; the wrapper below marks it before the
+ * queued call runs. Read-only methods are absent on purpose, so a page load
+ * never triggers a snapshot write.
+ */
+const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
+  "setup",
+  "createCategory",
+  "createItem",
+  "updateItem",
+  "setItemStockAndCost",
+  "insertStockMovement",
+  "insertStockLink",
+  "createExpenseCategory",
+  "insertExpense",
+  "createParty",
+  "updateParty",
+  "deleteParty",
+  "allocateInvoiceNumber",
+  "allocateReturnNumber",
+  "insertReturn",
+  "insertReturnLine",
+  "transitionReturnStatus",
+  "applyDebtOffsetToInvoice",
+  "setDebtApplied",
+  "setReturnMarks",
+  "setReturnReason",
+  "insertInvoice",
+  "insertInvoiceLine",
+  "insertPayment",
+  "applyPaymentToInvoice",
+  "setInvoicePaidAmounts",
+  "recordOnboardingCompletion",
+  "insertActivity",
+  "setSetting",
+  "setPreference",
+  "updateSettings",
+]);
+
+/**
  * SQLite adapter for StorePort, built on Drizzle + bun:sqlite.
  * This file is the only place that knows the driver; everything above it
  * speaks StorePort (ADR-0003). A postgres adapter replaces this file, not
@@ -502,13 +542,21 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // and can never land inside this transaction (greptile P1).
     return runSerialized(async () => {
       const tx = directSeed(store);
+      conn.inTransaction = true;
       conn.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
       try {
         const result = await fn(tx);
         conn.raw.exec("COMMIT");
+        // the unit committed: vault mode must persist the image before the
+        // caller sees the result (a crash after a money response must not
+        // lose the money); the file-backed connection ignores this seam
+        conn.inTransaction = false;
+        conn.markDirty();
+        await conn.persistIfDirty();
         return result;
       } catch (err) {
         conn.raw.exec("ROLLBACK");
+        conn.inTransaction = false;
         throw err;
       }
     });
@@ -531,11 +579,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: value is the raw method this key names; binding the receiver
       // keeps this.*-style methods (settings, activities) callable without
       // changing the call signature (R resolves at each call site)
-      // SAFETY: value is the raw method this key names (its result type is R);
-      // .bind fixes the receiver, so this.*-style methods keep working; the
-      // cast keeps the same call signature
-      const wrapped = <R,>(...args: never[]): Promise<R> =>
-        runSerialized(() => (value as (...a: never[]) => Promise<R>).bind(raw)(...args));
+      const wrapped = <R,>(...args: never[]): Promise<R> => {
+        // SAFETY: value is the raw method this key names (its result type is R);
+        // .bind fixes the receiver, so this.*-style methods keep working
+        const job = runSerialized(() => (value as (...a: never[]) => Promise<R>).bind(raw)(...args));
+        if (!MUTATING_METHODS.has(key)) return job;
+        // vault mode: a direct mutating store call commits its own statement(s),
+        // so the in-memory image must reach the encrypted snapshot before the
+        // caller observes success (money paths additionally flush at COMMIT)
+        conn.markDirty();
+        return job.then(async (result) => {
+          await conn.persistIfDirty();
+          return result;
+        });
+      };
       // SAFETY: wrapped implements the raw method named by key via its generic R
       return [key, wrapped as StorePort[keyof StorePort]];
     };
@@ -831,6 +888,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // earlier boot left the version unstamped, so the next setup re-runs the
     // (idempotent) migrations.
     stampSchemaVersionLocked(conn.raw);
+    // boot migrations write through raw exec and setup's own statements; mark
+    // the vault image dirty so the first snapshot materialises even when the
+    // store is otherwise only read from
+    conn.markDirty();
+    await conn.persistIfDirty();
   }
 
   /**

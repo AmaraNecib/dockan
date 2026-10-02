@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { VaultSettings } from "../components/vault/vault-settings";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -147,6 +148,8 @@ export function SettingsPage() {
           </button>
         </form>
       )}
+
+      <VaultSettings />
     </section>
   );
 }

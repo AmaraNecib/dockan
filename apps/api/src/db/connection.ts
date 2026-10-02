@@ -22,6 +22,17 @@ export type Connection = {
   /** WAL checkpoint, so a straight file copy of the db is consistent */
   checkpoint(): void;
   close(): void;
+  /** true while an explicit multi-statement unit is open (vault persistence waits) */
+  inTransaction: boolean;
+  /**
+   * Vault seam: mark the in-memory image dirty. The legacy file-backed
+   * connection is already on disk, so its implementation is a no-op.
+   */
+  markDirty(): void;
+  /** Vault seam: write the encrypted snapshot when dirty; legacy no-op. */
+  persistIfDirty(): Promise<void>;
+  /** Vault seam: force-write the current image; legacy = WAL checkpoint. */
+  flush(): Promise<void>;
 };
 
 export function openConnection(config: AppConfig): Connection {
@@ -54,11 +65,21 @@ export function openConnection(config: AppConfig): Connection {
       db,
       dbPath: config.db.path,
       raw: sqlite,
+      inTransaction: false,
       checkpoint() {
         sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
       },
       close() {
         sqlite.close();
+      },
+      markDirty() {
+        // the legacy file-backed database is the persistence; nothing to mark
+      },
+      async persistIfDirty() {
+        // no in-memory image exists in legacy mode
+      },
+      async flush() {
+        sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
       },
     };
   }

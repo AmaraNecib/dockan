@@ -30,6 +30,14 @@ export type AppConfig = {
    * dev/e2e: no token endpoint exists there. */
   bootToken: string | undefined;
   version: string;
+  /**
+   * Unified vault (ADR-0008 §4.6). "on" (default) requires the encrypted
+   * store: no database is opened and no app route is served until the vault
+   * is unlocked. "disabled" keeps the legacy plaintext path and exists only
+   * for development and the e2e suite; the packaged desktop shell never sets
+   * it, so a shop install is always encrypted.
+   */
+  vault: "on" | "disabled";
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
     driver: "sqlite" | "postgres";
@@ -51,6 +59,10 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const portRecordDir =
     env.DOKAN_PORT_ROOT === undefined || env.DOKAN_PORT_ROOT === "" ? undefined : path.resolve(env.DOKAN_PORT_ROOT);
   const bootToken = env.DOKAN_BOOT_TOKEN === undefined || env.DOKAN_BOOT_TOKEN === "" ? undefined : env.DOKAN_BOOT_TOKEN;
+  // Vault opt-out is explicit and dev/e2e-only: anything other than the exact
+  // string "disabled" keeps encryption on, so a mistyped or inherited value
+  // fails safe (encrypted).
+  const vault = env.DOKAN_VAULT === "disabled" ? "disabled" : "on";
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -88,6 +100,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     webDataDir,
     portRecordDir,
     bootToken,
+    vault,
     version: "0.1.0",
     db: {
       driver: requested,

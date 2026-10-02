@@ -1,0 +1,187 @@
+import { z } from "zod";
+
+/**
+ * The vault gate's browser client (ADR-0008 §4.6). All vault routes are plain
+ * JSON under /api/vault/* because the gate must work before the RPC router
+ * exists; the unlocked owner session rides the `x-vault-session` header, never
+ * a cookie, so a cross-origin page cannot act as the owner.
+ */
+
+export type VaultState = "unconfigured" | "locked" | "unlocked" | "invalid";
+
+export type VaultStatus = {
+  mode: "vault" | "disabled";
+  state: VaultState;
+  legacyDatabase: boolean;
+  recoveryKeyCount: number;
+  lockedForMs: number;
+  unlocked: boolean;
+};
+
+export type VaultRecoveryKey = {
+  id: string;
+  kind: "recovery";
+  label?: string;
+  createdAt: string;
+};
+
+/** External JSON is decoded at the boundary; no raw cast reaches a caller. */
+const statusSchema = z.object({
+  mode: z.enum(["vault", "disabled"]),
+  state: z.enum(["unconfigured", "locked", "unlocked", "invalid"]),
+  legacyDatabase: z.boolean(),
+  recoveryKeyCount: z.number(),
+  lockedForMs: z.number(),
+  unlocked: z.boolean(),
+});
+const setupResponseSchema = z.object({ recoveryKey: z.string().min(1), sessionToken: z.string().min(1) });
+const sessionResponseSchema = z.object({ sessionToken: z.string().min(1) });
+const recoveryKeysSchema = z.object({
+  keys: z.array(z.object({ id: z.string().min(1), kind: z.literal("recovery"), label: z.string().optional(), createdAt: z.string() })),
+});
+const addedKeySchema = z.object({ id: z.string().min(1), code: z.string().min(1) });
+const errorEnvelopeSchema = z.object({
+  error: z.object({ code: z.string().optional(), message: z.string().optional(), retryAfterMs: z.number().optional() }).optional(),
+});
+
+/** A refusal with the API's stable code and Arabic message. */
+export class VaultRequestError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retryAfterMs?: number,
+  ) {
+    super(message);
+    this.name = "VaultRequestError";
+  }
+}
+
+const SESSION_STORAGE_KEY = "dokan.vault.session";
+
+/** The in-process session token minted at unlock; sessionStorage dies with the tab. */
+export function readVaultSessionToken(): string | undefined {
+  try {
+    const value = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    return value === null || value === "" ? undefined : value;
+  } catch {
+    // storage can be blocked by the webview (private modes); the owner simply
+    // has to unlock again on the next request
+    return undefined;
+  }
+}
+
+export function storeVaultSessionToken(token: string): void {
+  try {
+    sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+  } catch {
+    /* non-fatal: the session lives in memory for this page only */
+  }
+}
+
+export function clearVaultSessionToken(): void {
+  try {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
+
+/** Read the Arabic setup token the desktop shell put in the URL fragment. */
+export function readSetupTokenFromHash(): string | undefined {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const params = new URLSearchParams(hash);
+  const token = params.get("setup_token");
+  return token === null || token === "" ? undefined : token;
+}
+
+/** The vault session token the shell passed in the navigation fragment. */
+export function readSessionTokenFromHash(): string | undefined {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  const params = new URLSearchParams(hash);
+  const token = params.get("vault_session");
+  return token === null || token === "" ? undefined : token;
+}
+
+/** Strip the one-time fragment secrets from the visible URL. */
+export function stripVaultFragment(): void {
+  if (window.location.hash === "") return;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
+
+type VaultErrorBody = { error?: { code?: string; message?: string; retryAfterMs?: number } };
+
+async function request<T>(path: string, init: RequestInit, authenticated: boolean, schema: z.ZodType<T>): Promise<T> {
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "application/json");
+  if (authenticated) {
+    const token = readVaultSessionToken();
+    if (token !== undefined) headers.set("x-vault-session", token);
+  }
+  const response = await fetch(path, { ...init, headers });
+  const text = await response.text();
+  if (!response.ok) {
+    let parsed: VaultErrorBody = {};
+    try {
+      parsed = errorEnvelopeSchema.parse(JSON.parse(text));
+    } catch {
+      /* non-JSON failure: fall through to the generic refusal */
+    }
+    const code = parsed.error?.code ?? "VAULT_UNEXPECTED";
+    throw new VaultRequestError(code, parsed.error?.message ?? "تعذّر تنفيذ العملية. أعد المحاولة.", parsed.error?.retryAfterMs);
+  }
+  const decoded = schema.safeParse(JSON.parse(text));
+  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE", "تعذّر تنفيذ العملية. أعد المحاولة.");
+  return decoded.data;
+}
+
+export async function fetchVaultStatus(): Promise<VaultStatus> {
+  const response = await fetch("/api/vault/status");
+  if (!response.ok) {
+    // an unreachable vault route means the legacy build; treat it as disabled
+    throw new VaultRequestError("VAULT_UNREACHABLE", "تعذّر الاتصال بالخادم.");
+  }
+  const decoded = statusSchema.safeParse(JSON.parse(await response.text()));
+  if (!decoded.success) throw new VaultRequestError("VAULT_MALFORMED_RESPONSE", "تعذّر تنفيذ العملية. أعد المحاولة.");
+  return decoded.data;
+}
+
+export async function vaultSetup(passphrase: string, setupToken?: string): Promise<{ recoveryKey: string; sessionToken: string }> {
+  return request("/api/vault/setup", { method: "POST", body: JSON.stringify({ passphrase, setupToken }) }, false, setupResponseSchema);
+}
+
+export async function vaultUnlock(passphrase: string): Promise<string> {
+  const result = await request("/api/vault/unlock", { method: "POST", body: JSON.stringify({ passphrase }) }, false, sessionResponseSchema);
+  return result.sessionToken;
+}
+
+export async function vaultUnlockWithRecovery(recoveryKey: string): Promise<string> {
+  const result = await request(
+    "/api/vault/unlock-recovery",
+    { method: "POST", body: JSON.stringify({ recoveryKey }) },
+    false,
+    sessionResponseSchema,
+  );
+  return result.sessionToken;
+}
+
+export async function listRecoveryKeys(): Promise<VaultRecoveryKey[]> {
+  const result = await request("/api/vault/recovery-keys", { method: "GET" }, true, recoveryKeysSchema);
+  return result.keys;
+}
+
+export async function addRecoveryKey(): Promise<{ id: string; code: string }> {
+  return request("/api/vault/recovery-keys", { method: "POST" }, true, addedKeySchema);
+}
+
+export async function removeRecoveryKey(id: string): Promise<void> {
+  await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, z.object({ ok: z.literal(true) }));
+}
+
+export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
+  await request(
+    "/api/vault/change-passphrase",
+    { method: "POST", body: JSON.stringify({ currentPassphrase, newPassphrase }) },
+    true,
+    z.object({ ok: z.literal(true) }),
+  );
+}

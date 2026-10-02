@@ -53,6 +53,7 @@ export const activityTypes = [
   "SETTINGS_UPDATED",
   "EXPENSE_RECORDED",
   "EXPENSE_CATEGORY_CREATED",
+  "VAULT_UNLOCK_FAILED",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -550,6 +551,12 @@ export const returnDetailSchema = returnSchema.extend({
  */
 export const MIN_PASSWORD_LENGTH = 4;
 
+/**
+ * The shortest vault passphrase the unified vault accepts (ADR-0008 §4.6).
+ * Exported so the API's refusal and the web form's pre-check cannot drift.
+ */
+export const MIN_VAULT_PASSPHRASE_LENGTH = 8;
+
 export const needsSetupOutputSchema = z.object({
   needsSetup: z.boolean(),
   /** true when there is no owner but the database already holds shop data:
@@ -561,7 +568,11 @@ export const needsSetupOutputSchema = z.object({
 export const firstTimeSetupInputSchema = z.object({
   ownerName: z.string().trim().min(1),
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
-  password: z.string().min(MIN_PASSWORD_LENGTH),
+  // The unified vault (ADR-0008 §4.6) makes the passphrase the owner credential,
+  // so the vault setup form sends no password. The legacy plaintext path still
+  // requires one and refuses the call server-side when it is absent (and the
+  // boot-token flow stays the only way to reach owner provisioning).
+  password: z.string().min(MIN_PASSWORD_LENGTH).optional(),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
   // Packaged installs only: the one-time boot token the desktop shell injects

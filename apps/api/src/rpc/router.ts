@@ -31,6 +31,10 @@ import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../li
 
 export type RpcContext = { request: Request };
 
+/** The identity a guarded procedure runs as; better-auth sessions and the
+ * vault-unlocked owner both project onto it. */
+type SessionIdentity = { user: { id: string } };
+
 type RpcDeps = {
   db: DrizzleDb;
   config: AppConfig;
@@ -43,6 +47,17 @@ type RpcDeps = {
   /** injectable so tests can pin the server day instead of reading the wall
    * clock; the real clock is used when omitted */
   now?: () => Date;
+  /**
+   * Unified-vault seam (ADR-0008 §4.6). Present only when the encrypted store
+   * is active. An unlocked vault authenticates the owner over the
+   * `x-vault-session` header; the auth layer itself is untouched, so employee
+   * logins can be added later without changing the vault.
+   */
+  vault?: {
+    sessionMatches(token: string | null | undefined): boolean;
+    ownerId(): string | undefined;
+    setOwnerId(ownerId: string): void;
+  };
 };
 
 /**
@@ -160,7 +175,19 @@ export function createRpcRouter(deps: RpcDeps) {
 
   const setupThrottle = deps.setupThrottle ?? createSetupThrottle();
 
-  const requireSession = async (context: RpcContext) => {
+  const requireSession = async (context: RpcContext): Promise<SessionIdentity> => {
+    // Unified vault: unlocking the vault signs the owner in for this process.
+    // The token is a custom header, never a cookie, so a cross-origin page
+    // cannot ride the unlocked session (CSRF is refused at the preflight).
+    // Vault mode accepts ONLY this credential: a legacy password account that
+    // survived a migration must not act as a second, weaker credential.
+    if (deps.vault !== undefined) {
+      if (deps.vault.sessionMatches(context.request.headers.get("x-vault-session"))) {
+        const ownerId = deps.vault.ownerId();
+        if (ownerId !== undefined) return { user: { id: ownerId } };
+      }
+      throw new ORPCError("UNAUTHORIZED", { message: "AUTH_REQUIRED" });
+    }
     // SAFETY: getSession validates the cookie against the session store and
     // returns null for anything missing or expired
     const session = await deps.auth.api.getSession({ headers: context.request.headers });
@@ -245,9 +272,18 @@ export function createRpcRouter(deps: RpcDeps) {
       if (phone === null) throw new ORPCError("BAD_REQUEST", { message: "INVALID_PHONE_NUMBER" });
       const username = phoneToUsername(phone);
 
+      // Vault mode (ADR-0008 §4.6): the passphrase already authenticated the
+      // owner, so no credential account is created. The legacy path keeps the
+      // password contract and refuses a setup without one.
+      const vaultMode = deps.vault !== undefined;
+      if (!vaultMode && input.password === undefined) {
+        throw new ORPCError("BAD_REQUEST", { message: "AUTH_PASSWORD_TOO_SHORT" });
+      }
+
       // Hashing is the slow step and needs no lock, so it runs before the unit.
+      // Vault mode skips it entirely: there is no password to hash.
       const ctx = await deps.auth.$context;
-      const hashed = await ctx.password.hash(input.password);
+      const hashed = vaultMode ? undefined : await ctx.password.hash(input.password ?? "");
 
       // The "no users yet" check and every provisioning write commit as one
       // BEGIN IMMEDIATE unit. Checking before the awaited hash let two
@@ -271,22 +307,24 @@ export function createRpcRouter(deps: RpcDeps) {
           updatedAt: new Date(),
         }).run();
 
-        await deps.db.insert(accounts).values({
-          id: randomUUID(),
-          userId,
-          accountId: userId,
-          providerId: "credential",
-          issuer: "local:credential",
-          accessToken: null,
-          refreshToken: null,
-          idToken: null,
-          accessTokenExpiresAt: null,
-          refreshTokenExpiresAt: null,
-          scope: null,
-          password: hashed,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        }).run();
+        if (hashed !== undefined) {
+          await deps.db.insert(accounts).values({
+            id: randomUUID(),
+            userId,
+            accountId: userId,
+            providerId: "credential",
+            issuer: "local:credential",
+            accessToken: null,
+            refreshToken: null,
+            idToken: null,
+            accessTokenExpiresAt: null,
+            refreshTokenExpiresAt: null,
+            scope: null,
+            password: hashed,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }).run();
+        }
 
         await tx.updateSettings({
           storeName: input.storeName,
@@ -295,6 +333,8 @@ export function createRpcRouter(deps: RpcDeps) {
         });
         await tx.setSetting("adminUserId", userId);
         await tx.insertActivity({ type: "STORE_SETUP", summary: `STORE_SETUP ${input.storeName}` });
+        // the vault-unlocked owner identity now exists for the session guard
+        deps.vault?.setOwnerId(userId);
         deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
         return { ok: true as const };
       });

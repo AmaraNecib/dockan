@@ -36,6 +36,14 @@ export function backupFilePath(dataDir: string, localDateString: string = localD
 export type BackupResult = { path: string; createdAt: string };
 
 /**
+ * How a backup file is checked before it is trusted as today's copy. The
+ * legacy database is a SQLite file (`isValidSqliteBackup`); an encrypted
+ * snapshot is an AEAD container and is validated by the vault connection.
+ * main.ts injects the vault validator in vault mode.
+ */
+export type BackupFileValidator = (path: string) => boolean;
+
+/**
  * A file only counts as today's backup when it opens as a real SQLite db AND
  * passes `PRAGMA quick_check` — a magic header alone can survive a truncation
  * that cut whole pages off the tail (greptile P1 on the header-probe fix).
@@ -115,14 +123,17 @@ export async function ensureDailyBackup({
   store,
   dataDir,
   today = localDate(),
+  validate = isValidSqliteBackup,
 }: {
   store: StorePort;
   dataDir: string;
   /** injectable for tests */
   today?: string;
+  /** backup-file check; defaults to the legacy SQLite quick_check probe */
+  validate?: BackupFileValidator;
 }): Promise<{ path: string; created: boolean }> {
   const dest = backupFilePath(dataDir, today);
-  if (fs.existsSync(dest) && isValidSqliteBackup(dest)) return { path: dest, created: false };
+  if (fs.existsSync(dest) && validate(dest)) return { path: dest, created: false };
   await writeBackupCopy(store, dest);
   return { path: dest, created: true };
 }

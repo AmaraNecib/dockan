@@ -11,7 +11,7 @@ import {
   vaultUnlock,
   vaultUnlockWithRecovery,
 } from "./vault-client";
-import type { BrokerInvokeArgs } from "./vault-broker";
+import { brokerAvailable, type BrokerInvokeArgs } from "./vault-broker";
 
 /**
  * Issue #141: inside the desktop shell the gate's passphrase travels over the
@@ -129,11 +129,53 @@ describe("desktop stdin broker transport (issue #141)", () => {
     await expect(vaultUnlock("correct horse battery", true)).rejects.toThrow("VAULT_UNEXPECTED");
   });
 
+  it("fails with VAULT_BROKER_REQUIRED, never VAULT_UNEXPECTED, when the API says broker mode but the webview has no bridge (shipped bug)", async () => {
+    // The real shipped bug: the sidecar runs in broker mode, so the HTTP
+    // /api/vault/status reports broker: true, but the Tauri capability did not
+    // list the loopback remote origin, so the webview never got the IPC
+    // bridge. The secret must not be handed to a missing invoke AND must not
+    // fall back to HTTP (the API refuses broker-mode credential routes).
+    expect(brokerAvailable()).toBe(false);
+
+    const attempts = [
+      () => vaultSetup("correct horse battery", "setup-token", true),
+      () => vaultUnlock("correct horse battery", true),
+      () => vaultUnlockWithRecovery("ABCD-EFGH-IJKL", true),
+      () => resetVaultPassphrase("ABCD-EFGH-IJKL", "a brand new passphrase", true),
+    ];
+    for (const attempt of attempts) {
+      let caught: Error | undefined;
+      try {
+        await attempt();
+      } catch (error) {
+        caught = error instanceof Error ? error : new Error(String(error));
+      }
+      expect(caught).toBeInstanceOf(VaultRequestError);
+      if (caught instanceof VaultRequestError) expect(caught.code).toBe("VAULT_BROKER_REQUIRED");
+    }
+
+    // no IPC call was attempted and the secret never reached the network
+    expect(calls).toEqual([]);
+    expect(httpCalls).toBe(0);
+  });
+
   it("keeps HTTP for a browser (dev/e2e) with no broker flag", async () => {
     await vaultUnlock("correct horse battery");
     expect(calls).toEqual([]);
     expect(httpCalls).toBe(1);
     expect(readVaultSessionToken()).toBe("http-token");
+  });
+
+  it("keeps HTTP when the Tauri dev window has a bridge but the API is not in broker mode", async () => {
+    // `tauri dev` injects the bridge but spawns no sidecar, so the API status
+    // reports broker: false. The API flag must gate the bridge (AND), not the
+    // reverse: otherwise dev unlock would try a nonexistent sidecar and fail.
+    installTauri();
+    responder = () => ({ ok: true, sessionToken: "broker-token" });
+    const token = await vaultUnlock("correct horse battery", false);
+    expect(token).toBe("http-token");
+    expect(calls).toEqual([]);
+    expect(httpCalls).toBe(1);
   });
 
   it("sets up over the broker and acknowledges the recovery key over the same pipe", async () => {
@@ -200,6 +242,12 @@ describe("desktop stdin broker transport (issue #141)", () => {
     responder = () => {
       throw new Error("the sidecar did not answer in time");
     };
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "unknown" });
+  });
+
+  it("reports UNKNOWN for the setup warning when broker mode has no bridge, never clean", async () => {
+    // the trailing follow-up of the same shipped bug: broker mode but no
+    // bridge must not tell the owner the plaintext sweep was clean
     await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "unknown" });
   });
 

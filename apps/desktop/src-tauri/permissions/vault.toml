@@ -1,0 +1,21 @@
+# App permissions for the vault gate's IPC bridge (issue #141).
+#
+# The packaged shell serves the main window from the sidecar's loopback origin
+# (http://127.0.0.1:<port>), which Tauri classifies as a REMOTE context. A
+# remote webview gets no custom app command for free, so the default capability
+# must reference this permission for vault_setup/unlock/... to resolve. The
+# permission is scoped to the exact commands the gate uses and nothing else.
+
+[[permission]]
+identifier = "allow-vault-broker"
+description = "Allows the vault gate's custom IPC commands over the shell's stdin broker."
+commands.allow = [
+  "vault_status",
+  "vault_unlock",
+  "vault_setup",
+  "vault_unlock_recovery",
+  "vault_reset_passphrase",
+  "vault_setup_saved",
+  "vault_setup_warning",
+  "vault_logout",
+]

@@ -217,13 +217,35 @@ function brokerRefusal(reply: BrokerReply): VaultRequestError {
   return new VaultRequestError(reply.code ?? "VAULT_UNEXPECTED", reply.retryAfterMs ?? undefined);
 }
 
-/** Invoke a broker command; a dead bridge becomes the generic refusal. */
+/**
+ * Invoke a broker command. A present-but-failing bridge (the child died
+ * mid-call, the command was rejected without an envelope) becomes the generic
+ * refusal; a missing bridge never reaches here — vaultTransport rejects it as
+ * VAULT_BROKER_REQUIRED first.
+ */
 async function callBroker(command: string, args?: BrokerInvokeArgs): Promise<BrokerReply> {
   try {
     return await invokeBroker(command, args);
   } catch {
     throw new VaultRequestError("VAULT_UNEXPECTED");
   }
+}
+
+/**
+ * The one place that decides a vault call's transport. `brokerRequested` is
+ * the API's broker flag; the bridge's presence is the only thing that can
+ * actually carry the secret, so broker is used only when BOTH agree. When the
+ * API says broker mode but the webview has no bridge — e.g. a capability that
+ * does not list the remote loopback origin, the shipped VAULT_UNEXPECTED bug —
+ * every secret-bearing call fails with VAULT_BROKER_REQUIRED: handing the
+ * passphrase to HTTP would defeat broker mode (the API refuses those routes
+ * anyway), and handing it to a missing IPC would lie about what happened.
+ * Call sites cannot bypass this: they pass the API flag, never the bridge.
+ */
+function vaultTransport(brokerRequested: boolean): "broker" | "http" {
+  if (brokerRequested && brokerAvailable()) return "broker";
+  if (brokerRequested) throw new VaultRequestError("VAULT_BROKER_REQUIRED");
+  return "http";
 }
 
 export async function fetchVaultStatus(): Promise<VaultStatus> {
@@ -262,7 +284,7 @@ export async function vaultSetup(
   setupToken?: string,
   broker = false,
 ): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
-  if (broker) {
+  if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.setup, { passphrase });
     if (!reply.ok || reply.sessionToken == null || reply.recoveryKey == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
@@ -296,7 +318,9 @@ export async function vaultSetup(
  * sidecar can leave its key screen. Non-fatal: the app already serves.
  */
 export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
-  if (!broker) return;
+  // broker-only, best-effort: the bridge must actually exist, but a missing
+  // one is not worth failing a setup that already committed
+  if (!broker || !brokerAvailable()) return;
   try {
     await invokeBrokerVoid(brokerCommands.setupSaved);
   } catch {
@@ -312,6 +336,9 @@ export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
  */
 export async function fetchVaultSetupWarning(broker: boolean): Promise<VaultCleanupOutcome> {
   if (!broker) return { status: "clean" };
+  // the API says broker mode but the bridge is gone: the sweep result is
+  // unknowable here, and unknown must never be presented as clean
+  if (!brokerAvailable()) return { status: "unknown" };
   let reply: BrokerReply;
   try {
     reply = await invokeBroker(brokerCommands.setupWarning);
@@ -335,7 +362,7 @@ export async function revokeVaultSession(): Promise<void> {
 }
 
 export async function vaultUnlock(passphrase: string, broker = false): Promise<string> {
-  if (broker) {
+  if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.unlock, { passphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
@@ -346,7 +373,7 @@ export async function vaultUnlock(passphrase: string, broker = false): Promise<s
 }
 
 export async function vaultUnlockWithRecovery(recoveryKey: string, broker = false): Promise<string> {
-  if (broker) {
+  if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.recovery, { recoveryKey });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
@@ -409,7 +436,7 @@ export async function changeVaultPassphrase(currentPassphrase: string, newPassph
  * the HTTP route is refused there.
  */
 export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string, broker = false): Promise<string> {
-  if (broker) {
+  if (vaultTransport(broker) === "broker") {
     const reply = await callBroker(brokerCommands.reset, { recoveryKey, newPassphrase });
     if (!reply.ok || reply.sessionToken == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });

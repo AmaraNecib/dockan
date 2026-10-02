@@ -1470,7 +1470,7 @@ describe("debts screen (ticket 9)", () => {
     const saleItem = await makeItem("ديون-جهة-معروفة", 400, 1_000);
     // the customers/suppliers RPC seams belong to another lane; seed the
     // known party through the store seam the grouping key actually reads
-    const customer = await store.createCustomer({ name: "زبون مسجل" });
+    const customer = await store.createParty("customer", { name: "زبون مسجل" });
     const invoice = await client.invoicesCreate({
       kind: "SALE",
       counterpartyId: customer.id,
@@ -1493,6 +1493,148 @@ describe("debts screen (ticket 9)", () => {
     expect(byMismatchedLabel.items.map((i) => i.id)).toEqual([invoice.id]);
     const byName = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون مسجل" });
     expect(byName.items).toHaveLength(0);
+  });
+});
+
+describe("parties (issue 120)", () => {
+  async function makeItem(name: string, costPrice: number, sellingPrice: number) {
+    const categories = await client.categoriesList();
+    const category = categories.items[0];
+    if (category === undefined) throw new Error("expected a category");
+    return client.itemsCreateWithStock({ name, categoryId: category.id, costPrice, sellingPrice, stockOnHand: 1 });
+  }
+
+  it("guards the party procedures with the session", async () => {
+    await expect(unauthed.customersList()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(unauthed.suppliersCreate({ name: "ممنوع" })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("creates, lists, updates and reads a party detail over the wire", async () => {
+    const created = await client.customersCreate({ name: "زبون جديد", phone: "0660111222" });
+    // the phone is normalized to the canonical identity form before it is stored
+    expect(created.phone).toBe("+213660111222");
+    const list = await client.customersList();
+    const row = list.items.find((item) => item.id === created.id);
+    expect(row?.stats).toEqual({ invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 });
+
+    const updated = await client.customersUpdate({ id: created.id, name: "زبون معدّل", phone: null });
+    expect(updated.name).toBe("زبون معدّل");
+    expect(updated.phone).toBeNull();
+
+    const detail = await client.customersGet({ id: created.id });
+    expect(detail.party).toMatchObject({ id: created.id, name: "زبون معدّل", phone: null });
+    expect(detail.stats).toEqual({ invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 });
+    expect(detail.invoices).toEqual([]);
+    expect(detail.payments).toEqual([]);
+
+    await expect(client.customersGet({ id: "00000000-0000-4000-8000-000000000000" })).rejects.toThrow(/PARTY_NOT_FOUND/);
+    await expect(client.customersUpdate({ id: "00000000-0000-4000-8000-000000000000", name: "لا أحد" })).rejects.toThrow(/PARTY_NOT_FOUND/);
+  });
+
+  it("maps the phone identity rule to the role-specific CONFLICT key", async () => {
+    await client.suppliersCreate({ name: "مورد-هاتف", phone: "0770111222" });
+    await expect(client.suppliersCreate({ name: "مورد-آخر", phone: "0770111222" })).rejects.toThrow(/SUPPLIER_PHONE_EXISTS/);
+    // customers are a separate identity space (different table, same rule)
+    const customer = await client.customersCreate({ name: "زبون-هاتف", phone: "0770111222" });
+    await expect(client.customersCreate({ name: "زبون-هاتف-٢", phone: "0770111222" })).rejects.toThrow(/CUSTOMER_PHONE_EXISTS/);
+    // a walk-in with no phone always saves, twice
+    await client.customersCreate({ name: "بدون رقم ١" });
+    await client.customersCreate({ name: "بدون رقم ٢" });
+    expect(customer.phone).toBe("+213770111222");
+    // an over-long blob is refused at the contract boundary
+    await expect(client.customersCreate({ name: "طويل", phone: "0".repeat(33) })).rejects.toThrow();
+    // whitespace-only clears to null instead of becoming an empty identity
+    expect((await client.customersCreate({ name: "فراغ", phone: "   " })).phone).toBeNull();
+    // deleting through the wrong role is NOT_FOUND, never a cross-table delete
+    const crossRole = await client.suppliersCreate({ name: "مورد-حذف" });
+    await expect(client.customersDelete({ id: crossRole.id })).rejects.toThrow(/PARTY_NOT_FOUND/);
+  });
+
+  it("refuses an invoice whose picked party is unknown or the wrong role", async () => {
+    const item = await makeItem("تحقق-جهة-منتج", 100, 200);
+    await expect(
+      client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: "00000000-0000-4000-8000-000000000000",
+        counterpartyName: "وهمي",
+        lines: [{ itemId: item.id, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/PARTY_NOT_FOUND/);
+    // a supplier id is not a customer identity
+    const supplier = await client.suppliersCreate({ name: "مورد-دور" });
+    await expect(
+      client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: supplier.id,
+        counterpartyName: supplier.name,
+        lines: [{ itemId: item.id, quantity: 1 }],
+      }),
+    ).rejects.toThrow(/PARTY_NOT_FOUND/);
+    // the matching role still lands and carries the id; the resolved record's
+    // name is authoritative over a mismatched typed label
+    const customer = await client.customersCreate({ name: "زبون-دور" });
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: "اسم مغاير",
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    expect(invoice.counterpartyId).toBe(customer.id);
+    expect(invoice.counterpartyName).toBe(customer.name);
+  });
+
+  it("labels a renamed party's debt group with its current name", async () => {
+    const customer = await client.customersCreate({ name: "قبل-إعادة-التسمية" });
+    const item = await makeItem("إعادة-تسمية-منتج", 100, 200);
+    await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+    await client.customersUpdate({ id: customer.id, name: "بعد-إعادة-التسمية" });
+
+    const debts = await client.reportsDebts();
+    const group = debts.owedToUs.find((row) => row.counterpartyId === customer.id);
+    expect(group?.counterpartyName).toBe("بعد-إعادة-التسمية");
+  });
+
+  it("records PARTY_CREATED/UPDATED/DELETED audit rows", async () => {
+    const created = await client.customersCreate({ name: "تدقيق-جهة" });
+    await client.customersUpdate({ id: created.id, name: "تدقيق-معدّل" });
+    await client.customersDelete({ id: created.id });
+    const activities = await client.activitiesList({ limit: 100 });
+    const summaries = activities.items.map((entry) => entry.summary);
+    expect(summaries).toContain("PARTY_CREATED CUSTOMER تدقيق-جهة");
+    expect(summaries).toContain("PARTY_UPDATED CUSTOMER تدقيق-معدّل");
+    expect(summaries).toContain("PARTY_DELETED CUSTOMER تدقيق-معدّل");
+  });
+
+  it("returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices", async () => {
+    const customer = await client.customersCreate({ name: "زبون-محفوظ" });
+    const item = await makeItem("حذف-جهة-منتج", 100, 200);
+    const invoice = await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      initialPaid: 100,
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+
+    const detail = await client.customersGet({ id: customer.id });
+    expect(detail.stats).toEqual({ invoiceCount: 1, totalAmount: 200, paidAmount: 100, remainingAmount: 100 });
+    expect(detail.invoices.map((i) => i.id)).toEqual([invoice.id]);
+    expect(detail.payments).toHaveLength(1);
+    expect(detail.payments[0]?.invoiceNumber).toBe(invoice.invoiceNumber);
+
+    await expect(client.customersDelete({ id: customer.id })).rejects.toThrow(/PARTY_HAS_INVOICES/);
+    // the row survives the refused delete
+    expect((await client.customersList()).items.some((row) => row.id === customer.id)).toBe(true);
+
+    const empty = await client.suppliersCreate({ name: "مورد-فارغ" });
+    expect(await client.suppliersDelete({ id: empty.id })).toEqual({ deleted: true });
+    expect((await client.suppliersList()).items.some((row) => row.id === empty.id)).toBe(false);
+    await expect(client.suppliersDelete({ id: empty.id })).rejects.toThrow(/PARTY_NOT_FOUND/);
   });
 });
 

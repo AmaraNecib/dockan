@@ -660,12 +660,388 @@ describe("barcodes (ticket 28)", () => {
 
 describe("parties", () => {
   it("creates and lists customers and suppliers", async () => {
-    const c = await store.createCustomer({ name: "يوسف", phone: "0550123123" });
-    const s = await store.createSupplier({ name: "مخزن الحاج" });
-    const customers = await store.listCustomers();
-    const suppliers = await store.listSuppliers();
-    expect(customers.some((x) => x.id === c.id && x.phone === "0550123123")).toBe(true);
-    expect(suppliers.some((x) => x.id === s.id && s.name === "مخزن الحاج")).toBe(true);
+    const c = await store.createParty("customer", { name: "يوسف", phone: "0550123123" });
+    const s = await store.createParty("supplier", { name: "مخزن الحاج" });
+    const customers = await store.listParties("customer");
+    const suppliers = await store.listParties("supplier");
+    expect(customers.some((x) => x.id === c.id && x.phone === "+213550123123")).toBe(true);
+    expect(suppliers.some((x) => x.id === s.id && x.name === "مخزن الحاج")).toBe(true);
+  });
+});
+
+describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
+  it("treats phone as identity: unique when present, NULLs distinct, update moves it", async () => {
+    const first = await store.createParty("customer", { name: "هوية-١", phone: "0560123456" });
+    expect(first.phone).toBe("+213560123456");
+    // the same number in another spelling is the same identity
+    await expect(store.createParty("customer", { name: "هوية-٢", phone: "+213 560 123 456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // NULL phones never collide (SQLite keeps NULLs distinct)
+    await store.createParty("customer", { name: "بدون-هاتف-١" });
+    await store.createParty("customer", { name: "بدون-هاتف-٢" });
+    // updating onto a taken phone refuses...
+    const third = await store.createParty("customer", { name: "هوية-٣" });
+    await expect(store.updateParty("customer", third.id, { phone: "0560123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // ...updating the owner with a reformatted same number is fine...
+    const same = await store.updateParty("customer", first.id, { phone: "0560 123 456" });
+    expect(same?.phone).toBe("+213560123456");
+    // ...and clearing the holder's phone frees it for a new record
+    await store.updateParty("customer", first.id, { phone: null });
+    const freed = await store.createParty("customer", { name: "هوية-٤", phone: "0560123456" });
+    expect(freed.phone).toBe("+213560123456");
+    // suppliers are a separate identity space
+    const supplier = await store.createParty("supplier", { name: "مورد-هوية", phone: "0560123456" });
+    expect(supplier.phone).toBe("+213560123456");
+    // updating a missing party reports absence, not a phone refusal
+    expect(await store.updateParty("customer", "00000000-0000-4000-8000-000000000000", { name: "لا أحد" })).toBeUndefined();
+  });
+
+  it("clears separator-only and invisible-only phones to null and strips bidi marks", async () => {
+    const dotted = await store.createParty("customer", { name: "نقاط-١", phone: "..." });
+    const dashed = await store.createParty("customer", { name: "نقاط-٢", phone: " - " });
+    // both clean away to nothing: an unset phone, never an "" identity that
+    // the second walk-in would collide on
+    expect(dotted.phone).toBeNull();
+    expect(dashed.phone).toBeNull();
+    // a bidi mark pasted from WhatsApp must not create a phantom identity
+    const marked = await store.createParty("customer", { name: "علامة-خفيّة", phone: "\u200F0550999888" });
+    expect(marked.phone).toBe("+213550999888");
+    // a landline keeps its digits with separators stripped
+    const landline = await store.createParty("customer", { name: "هاتف-ثابت", phone: "023 55 12 34" });
+    expect(landline.phone).toBe("023551234");
+  });
+
+  it("folds Arabic-Indic digits so the same number is one identity", async () => {
+    const arabic = await store.createParty("customer", { name: "أرقام-عربية", phone: "٠٥٦٧٦٥٤٣٢١" });
+    expect(arabic.phone).toBe("+213567654321");
+    // the ASCII spelling of the same number collides
+    await expect(store.createParty("customer", { name: "أرقام-لاتينية", phone: "0567654321" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+    // Extended Arabic-Indic (Persian) digits fold too
+    const persian = await store.createParty("customer", { name: "أرقام-فارسية", phone: "۰۵۶۸۷۶۵۴۳۲" });
+    expect(persian.phone).toBe("+213568765432");
+  });
+
+  it("keeps the partial unique phone index as the cross-process backstop", async () => {
+    // bypasses the store rule on purpose: proves the DDL index exists and
+    // constrains present phones (NULLs stay distinct by the partial predicate)
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "سباق-١", "+213555000111", localDateTime());
+    expect(() =>
+      conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "سباق-٢", "+213555000111", localDateTime()),
+    ).toThrow(/UNIQUE/);
+    // a second NULL phone is always fine
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-١", localDateTime());
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run(crypto.randomUUID(), "بدون-سباق-٢", localDateTime());
+  });
+
+  it("refuses a canonical phone that a raw non-canonical row already owns", async () => {
+    // an import/adapter that writes a raw spelling must not escape the identity
+    // rule: the store check re-normalizes every stored row before comparing
+    conn.raw.query("INSERT INTO customers (id, name, phone, created_at) VALUES (?, ?, ?, ?)").run(crypto.randomUUID(), "خام-١", "0550 12 34 56", localDateTime());
+    await expect(store.createParty("customer", { name: "خام-٢", phone: "0550123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+  });
+
+  it("hard-deletes only a party with zero invoices (the delete rule)", async () => {
+    const empty = await store.createParty("customer", { name: `حذف-${stamp()}` });
+    expect(await store.deleteParty("customer", empty.id)).toBe("DELETED");
+    expect(await store.getParty("customer", empty.id)).toBeUndefined();
+
+    const kept = await store.createParty("supplier", { name: `مورد-محفوظ-${stamp()}` });
+    await store.insertInvoice({
+      invoiceNumber: `INV-DEL-${Date.now()}`,
+      kind: "PURCHASE",
+      counterpartyId: kept.id,
+      counterpartyName: kept.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 1_000,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 1_000,
+      paidAmount: 0,
+      remainingAmount: 1_000,
+      notes: null,
+    });
+    expect(await store.deleteParty("supplier", kept.id)).toBe("HAS_INVOICES");
+    expect(await store.getParty("supplier", kept.id)).toBeDefined();
+    expect(await store.deleteParty("customer", "00000000-0000-4000-8000-000000000000")).toBe("NOT_FOUND");
+  });
+
+  it("lists kind-scoped aggregates and returns the detail payload", async () => {
+    const customer = await store.createParty("customer", { name: `تفاصيل-${stamp()}` });
+    const other = await store.createParty("supplier", { name: `تفاصيل-مورد-${stamp()}` });
+    const zeroRow = (await store.listParties("customer")).find((row) => row.id === customer.id);
+    expect(zeroRow?.stats).toEqual({ invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 });
+
+    const base = {
+      kind: "SALE" as const,
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      notes: null,
+    };
+    const first = await store.insertInvoice({ ...base, invoiceNumber: `INV-DET-${Date.now()}-1`, totalAmount: 1_000, paidAmount: 400, remainingAmount: 600 });
+    const second = await store.insertInvoice({ ...base, invoiceNumber: `INV-DET-${Date.now()}-2`, totalAmount: 500, paidAmount: 500, remainingAmount: 0 });
+    // a PURCHASE on the same party must not leak into the customer detail
+    await store.insertInvoice({ ...base, kind: "PURCHASE", counterpartyId: other.id, counterpartyName: other.name, invoiceNumber: `INV-DET-${Date.now()}-3`, totalAmount: 700, paidAmount: 0, remainingAmount: 700 });
+    await store.insertPayment({ invoiceId: first.id, amount: 400, method: "CASH", note: null, paidAt: localDateTime() });
+    await store.insertPayment({ invoiceId: second.id, amount: 500, method: "CASH", note: null, paidAt: localDateTime() });
+
+    const row = (await store.listParties("customer")).find((r) => r.id === customer.id);
+    expect(row?.stats).toEqual({ invoiceCount: 2, totalAmount: 1_500, paidAmount: 900, remainingAmount: 600 });
+
+    const detail = await store.partyDetail("customer", customer.id);
+    expect(detail?.party.name).toBe(customer.name);
+    expect(detail?.stats).toEqual({ invoiceCount: 2, totalAmount: 1_500, paidAmount: 900, remainingAmount: 600 });
+    expect(detail?.invoices.map((i) => i.id).sort()).toEqual([first.id, second.id].sort());
+    expect(detail?.payments).toHaveLength(2);
+    expect(detail?.payments.map((p) => p.invoiceNumber).sort()).toEqual([first.invoiceNumber, second.invoiceNumber].sort());
+    // table scoping: a supplier id is not a customer, and vice versa
+    expect(await store.partyDetail("customer", other.id)).toBeUndefined();
+    expect((await store.partyDetail("supplier", other.id))?.stats.invoiceCount).toBe(1);
+    expect(await store.partyDetail("customer", "00000000-0000-4000-8000-000000000000")).toBeUndefined();
+  });
+
+  it("treats an empty update patch as a no-op and clamps legacy aggregate values", async () => {
+    const party = await store.createParty("customer", { name: `تحديث-فارغ-${stamp()}` });
+    expect(await store.updateParty("customer", party.id, {})).toMatchObject({ id: party.id, name: party.name });
+    // a legacy invoice with a malformed stored remaining must not blank the
+    // whole list/detail page through contract output validation
+    await store.insertInvoice({
+      invoiceNumber: `INV-NEG-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: party.id,
+      counterpartyName: party.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 100,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 100,
+      paidAmount: 105,
+      remainingAmount: -5,
+      notes: null,
+    });
+    expect((await store.listParties("customer")).find((row) => row.id === party.id)?.stats.remainingAmount).toBe(0);
+    expect((await store.partyDetail("customer", party.id))?.stats.remainingAmount).toBe(0);
+    expect((await store.partyDetail("customer", party.id))?.invoices).toHaveLength(1);
+    // the high end is clamped too: an aggregate above MAX_SAFE_INTEGER would
+    // otherwise fail dinarsSchema's max and blank the same surfaces
+    const huge = await store.createParty("customer", { name: `حد-أقصى-${stamp()}` });
+    await store.insertInvoice({
+      invoiceNumber: `INV-HUGE-${Date.now()}`,
+      kind: "SALE",
+      counterpartyId: huge.id,
+      counterpartyName: huge.name,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: Number.MAX_SAFE_INTEGER + 10,
+      paidAmount: 0,
+      remainingAmount: Number.MAX_SAFE_INTEGER + 10,
+      notes: null,
+    });
+    expect((await store.partyDetail("customer", huge.id))?.stats.remainingAmount).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it("labels an id-backed debt group with the party's current name", async () => {
+    const originalName = `قبل-التعديل-${stamp()}`;
+    const renamed = `بعد-التعديل-${stamp()}`;
+    const party = await store.createParty("customer", { name: originalName });
+    const invoiceNumber = `INV-RENAME-${Date.now()}`;
+    await store.insertInvoice({
+      invoiceNumber,
+      kind: "SALE",
+      counterpartyId: party.id,
+      counterpartyName: originalName,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 5_000,
+      paidAmount: 0,
+      remainingAmount: 5_000,
+      notes: null,
+    });
+    await store.updateParty("customer", party.id, { name: renamed });
+
+    // the debts screen shows the CURRENT name for the id-backed group...
+    expect((await store.debtSummaries()).find((row) => row.counterpartyId === party.id)?.counterpartyName).toBe(renamed);
+    // ...while the invoice keeps its historical snapshot (history not rewritten)
+    expect((await store.listInvoices({})).items.find((row) => row.invoiceNumber === invoiceNumber)?.counterpartyName).toBe(originalName);
+  });
+
+  it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
+    const backfillDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: backfillDir, DOKAN_DB_PATH: path.join(backfillDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (kind: "SALE" | "PURCHASE", name: string, total: number) =>
+        legacy.insertInvoice({
+          ...base,
+          invoiceNumber: `INV-LEGACY-${++n}`,
+          kind,
+          counterpartyId: null,
+          counterpartyName: name,
+          totalAmount: total,
+          paidAmount: 0,
+          remainingAmount: total,
+        });
+      await seed("SALE", "عماره", 12_000);
+      await seed("SALE", "محمد بنين", 40_000);
+      await seed("SALE", "علي علي", 230_000);
+      await seed("SALE", "  علي علي ", 40_000); // padded same name → one record
+      await seed("PURCHASE", "صالح بن علي", 34_000);
+      await seed("PURCHASE", "ماني", 9_000);
+      // a whitespace-only typed name must never become an invisible party
+      await seed("SALE", "\u00A0", 7_000);
+      // simulate the pre-upgrade database: invoices exist, the marker does not
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      const suppliers = await legacy.listParties("supplier");
+      expect(customers.map((c) => c.name).sort()).toEqual(["علي علي", "عماره", "محمد بنين"].sort());
+      expect(suppliers.map((s) => s.name).sort()).toEqual(["صالح بن علي", "ماني"].sort());
+      // two «علي علي» invoices share one record and aggregate together
+      expect(customers.find((c) => c.name === "علي علي")?.stats).toMatchObject({ invoiceCount: 2, totalAmount: 270_000, remainingAmount: 270_000 });
+      expect(customers.find((c) => c.name === "محمد بنين")?.stats.invoiceCount).toBe(1);
+
+      const invoices = (await legacy.listInvoices({})).items;
+      const linked = invoices.filter((i) => i.counterpartyId !== null);
+      expect(linked).toHaveLength(6);
+      // the whitespace-only name stayed unlinked (no invisible debtor)
+      const blank = invoices.find((i) => i.invoiceNumber === "INV-LEGACY-7");
+      expect(blank?.counterpartyId).toBeNull();
+      // the typed name is preserved verbatim (display/history unchanged)
+      const padded = invoices.find((i) => i.invoiceNumber === "INV-LEGACY-4");
+      expect(padded?.counterpartyName).toBe("  علي علي ");
+      expect(padded?.counterpartyId).toBe(customers.find((c) => c.name === "علي علي")?.id);
+
+      // a second setup is a no-op (marker + reuse-by-name)
+      await legacy.setup();
+      expect(await legacy.listParties("customer")).toHaveLength(3);
+      expect(await legacy.listParties("supplier")).toHaveLength(2);
+
+      // the marker is one-shot: an invoice typed after the backfill keeps its
+      // null id (typed-only invoices are a supported contract path), and no
+      // later boot reopens the migration
+      await seed("SALE", "بعد-الترحيل", 3_000);
+      await legacy.setup();
+      const post = (await legacy.listInvoices({})).items.find((i) => i.invoiceNumber === "INV-LEGACY-8");
+      expect(post?.counterpartyId).toBeNull();
+      expect(await legacy.listParties("customer")).toHaveLength(3);
+    } finally {
+      conn.close();
+      removeTempDirRetry(backfillDir);
+    }
+  });
+
+  it("collapses whitespace and diacritic name variants into one backfilled party", async () => {
+    const variantsDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-variants-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: variantsDir, DOKAN_DB_PATH: path.join(variantsDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (name: string, total: number) =>
+        legacy.insertInvoice({ ...base, invoiceNumber: `INV-VAR-${++n}`, kind: "SALE", counterpartyId: null, counterpartyName: name, totalAmount: total, paidAmount: 0, remainingAmount: total });
+      await seed("علي علي", 10_000);
+      await seed("علي  علي", 20_000); // double inner space
+      await seed("عَلِي عَلِي", 30_000); // diacritics
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers).toHaveLength(1);
+      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 3, totalAmount: 60_000, remainingAmount: 60_000 });
+      const ids = (await legacy.listInvoices({})).items.map((i) => i.counterpartyId);
+      expect(new Set(ids).size).toBe(1);
+      expect(ids.every((id) => id === customers[0]?.id)).toBe(true);
+    } finally {
+      conn.close();
+      removeTempDirRetry(variantsDir);
+    }
+  });
+
+  it("groups a legacy name carrying a bidi mark with its clean spelling", async () => {
+    const bidiDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-bidi-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: bidiDir, DOKAN_DB_PATH: path.join(bidiDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const base = { invoiceDate: localDate(), subtotalAmount: 0, discountType: null, discountValue: null, discountAmount: 0, notes: null };
+      let n = 0;
+      const seed = (name: string, total: number) =>
+        legacy.insertInvoice({ ...base, invoiceNumber: `INV-BIDI-${++n}`, kind: "SALE", counterpartyId: null, counterpartyName: name, totalAmount: total, paidAmount: 0, remainingAmount: total });
+      await seed("علي", 10_000);
+      await seed("علي\u200F", 20_000); // trailing RLM, the usual copy/paste artifact
+      await seed("علي\u061C", 30_000); // Arabic letter mark (Greptile P1.5)
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers).toHaveLength(1);
+      expect(customers[0]?.stats).toMatchObject({ invoiceCount: 3, totalAmount: 60_000 });
+      const ids = (await legacy.listInvoices({})).items.map((i) => i.counterpartyId);
+      expect(new Set(ids).size).toBe(1);
+    } finally {
+      conn.close();
+      removeTempDirRetry(bidiDir);
+    }
+  });
+
+  it("backfill reuses an existing same-named party instead of duplicating a debtor", async () => {
+    const reuseDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-reuse-"));
+    const conn = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: reuseDir, DOKAN_DB_PATH: path.join(reuseDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+    );
+    try {
+      const legacy = createDrizzleStore(conn);
+      await legacy.setup();
+      const existing = await legacy.createParty("customer", { name: "عماره", phone: "0550111222" });
+      await legacy.insertInvoice({
+        invoiceNumber: "INV-REUSE-1",
+        kind: "SALE",
+        counterpartyId: null,
+        counterpartyName: "عماره",
+        invoiceDate: localDate(),
+        subtotalAmount: 0,
+        discountType: null,
+        discountValue: null,
+        discountAmount: 0,
+        totalAmount: 5_000,
+        paidAmount: 0,
+        remainingAmount: 5_000,
+        notes: null,
+      });
+      conn.raw.exec("DELETE FROM settings WHERE key = 'migration.counterpartyBackfillV1'");
+      await legacy.setup();
+
+      const customers = await legacy.listParties("customer");
+      expect(customers.filter((c) => c.name === "عماره")).toHaveLength(1);
+      expect(customers.find((c) => c.name === "عماره")?.id).toBe(existing.id);
+      expect(customers.find((c) => c.name === "عماره")?.phone).toBe("+213550111222");
+      expect((await legacy.listInvoices({})).items.find((i) => i.invoiceNumber === "INV-REUSE-1")?.counterpartyId).toBe(existing.id);
+    } finally {
+      conn.close();
+      removeTempDirRetry(reuseDir);
+    }
   });
 });
 

@@ -38,6 +38,14 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   if (tag === "ITEM_CREATED_WITH_STOCK" && tokens.length >= 3) return t("activityItemCreatedWithStock", { name: tokens.slice(2).join(" "), stock: tokens[1] });
   if (tag === "ITEM_CREATED" && tokens.length >= 2) return t("activityItemCreated", { name: tokens.slice(1).join(" ") });
   if (tag === "ITEM_UPDATED" && tokens.length >= 2) return t("activityItemUpdated", { name: tokens.slice(1).join(" ") });
+  // issue 120: party rows carry a role token, then the free-text name
+  if ((tag === "PARTY_CREATED" || tag === "PARTY_UPDATED" || tag === "PARTY_DELETED") && tokens.length >= 3) {
+    const role = tokens[1] === "SUPPLIER" ? t("partySupplier") : t("partyCustomer");
+    const name = tokens.slice(2).join(" ");
+    if (tag === "PARTY_CREATED") return t("activityPartyCreated", { role, name });
+    if (tag === "PARTY_UPDATED") return t("activityPartyUpdated", { role, name });
+    return t("activityPartyDeleted", { role, name });
+  }
   if (tag === "STOCK_ADJUSTED" && tokens.length >= 2) return t("activityStockAdjusted", { name: tokens.slice(1).join(" ") });
   if (tag === "STOCK_LINKED" && tokens.length >= 2) return t("activityStockLinked", { number: tokens[1] });
   if (tag === "PURCHASE_CORRECTED" && tokens.length >= 2) return t("activityPurchaseCorrected", { name: tokens.slice(1).join(" ") });

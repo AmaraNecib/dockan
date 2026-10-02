@@ -110,3 +110,19 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(serverErrorKey("a sentence no i18n key matches")).not.toBe("UNEXPECTED");
   });
 });
+
+/** Issue #120 — the UI uses the canonical role words, never the retired «الطرف». */
+describe("party labels (issue 120)", () => {
+  it("labels an invoice's party with the canonical زبون/مورّد pair", () => {
+    expect(i18n.t("invoiceParty")).toContain("الزبون");
+    expect(i18n.t("invoiceParty")).toContain("المورّد");
+    expect(i18n.t("invoiceParty")).not.toContain("الطرف");
+  });
+
+  it("names both roles and their role-specific phone conflicts", () => {
+    expect(i18n.t("partyCustomer")).toBe("زبون");
+    expect(i18n.t("partySupplier")).toBe("مورّد");
+    expect(i18n.t("CUSTOMER_PHONE_EXISTS")).toContain("زبون");
+    expect(i18n.t("SUPPLIER_PHONE_EXISTS")).toContain("مورّد");
+  });
+});

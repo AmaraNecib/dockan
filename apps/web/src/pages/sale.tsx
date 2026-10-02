@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
+import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { useSaleDraft } from "@/components/app/sale-draft";
 
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
@@ -118,7 +119,7 @@ export function SalePage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [lines, setLines] = useState<SaleLine[]>([]);
-  const [customer, setCustomer] = useState("");
+  const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<DiscountType>("");
   const [discountValue, setDiscountValue] = useState("");
   const [paidNow, setPaidNow] = useState("");
@@ -198,7 +199,7 @@ export function SalePage() {
         setSavedDebt(invoice.remainingAmount);
         setSavedCustomer(invoice.counterpartyName);
         setLines([]);
-        setCustomer("");
+        setCustomer({ id: null, name: "", needsChoice: false });
         setDiscountType("");
         setDiscountValue("");
         setPaidNow("");
@@ -225,7 +226,7 @@ export function SalePage() {
     quickSell.trim() !== "";
   const draftDirty =
     lines.length > 0 ||
-    customer.trim() !== "" ||
+    customer.name.trim() !== "" ||
     discountType !== "" ||
     discountValue.trim() !== "" ||
     paidNow.trim() !== "" ||
@@ -263,13 +264,19 @@ export function SalePage() {
   // Only claim a customer debt when a party name is present; otherwise the
   // unpaid remainder is unattributed and the Debts screen (grouped by party)
   // cannot show it.
-  const hasCustomer = customer.trim() !== "";
+  const hasCustomer = customer.name.trim() !== "";
   const hasSavedCustomer = savedCustomer !== null && savedCustomer.trim() !== "";
 
   function submit() {
     setError(null);
     if (lines.length === 0) {
       setError(t("saleLinesEmpty"));
+      return;
+    }
+    // an exact typed name that belongs to a record must be picked first: saving
+    // it as typed-only would hide the invoice from that record (P1.1)
+    if (customer.needsChoice === true) {
+      setError(t("partyChooseExisting"));
       return;
     }
     const paid = paidNow === "" ? undefined : Number(paidNow);
@@ -308,7 +315,9 @@ export function SalePage() {
     });
     const invoiceInput: InvoiceCreate = {
       kind: "SALE",
-      counterpartyName: customer.trim() === "" ? undefined : customer.trim(),
+      // the picker keeps the picked record's id; a typed-only name stays null
+      counterpartyId: customer.id === null ? undefined : customer.id,
+      counterpartyName: customer.name.trim() === "" ? undefined : customer.name.trim(),
       initialPaid: paid === 0 ? undefined : paid,
       lines: invoiceLines,
     };
@@ -387,7 +396,7 @@ export function SalePage() {
         <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
         <div className="rounded border bg-card p-5">
           <p className="font-semibold text-success" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}{savedDebt !== null && savedDebt > 0 && <span data-testid="sale-saved-debt">{" "}{hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedDebt} /> {hasSavedCustomer && t("saleDebtCustomer")}</span>}</p>
-          <button type="button" className="mt-4 rounded-lg border px-3 py-2" onClick={() => setSavedNumber(null)}>{t("saleNew")}</button>
+          <button type="button" className="mt-4 rounded-lg border px-3 py-2" onClick={() => setSavedNumber(null)} data-testid="sale-new">{t("saleNew")}</button>
         </div>
       </section>
     );
@@ -399,18 +408,14 @@ export function SalePage() {
 
       <div className="mt-4 grid gap-4">
         <div className="grid grid-cols-2 gap-3 rounded border border-border bg-card p-4">
-          <label className="grid gap-1 text-sm font-medium">
-            {t("saleCustomer")}
-            <input
-              className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
-              name="counterpartyName"
-              autoComplete="off"
-              value={customer}
-              onChange={(event) => setCustomer(event.target.value)}
-              disabled={createInvoice.isPending}
-              data-testid="sale-customer"
-            />
-          </label>
+          <PartyPicker
+            role="customer"
+            label={t("saleCustomer")}
+            value={customer}
+            onChange={setCustomer}
+            disabled={createInvoice.isPending}
+            testId="sale-customer"
+          />
           <label className="grid gap-1 text-sm font-medium">
             {t("salePaid")}
             <input

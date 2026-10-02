@@ -18,6 +18,8 @@ import { ReturnsPage } from "./pages/returns";
 import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
 import { ExpensesPage } from "./pages/expenses";
+import { PartiesPage } from "./pages/parties";
+import { PartyDetailPage } from "./pages/party-detail";
 import { ReportsPage } from "./pages/reports";
 import { AppShell } from "./components/app/app-shell";
 import { SaleDraftProvider } from "./components/app/sale-draft";
@@ -29,6 +31,20 @@ function RootShell() {
       <AppShell />
     </SaleDraftProvider>
   );
+}
+
+/** Role-pinned wrappers keep the route components stable across renders. */
+function CustomersPage() {
+  return <PartiesPage role="customer" />;
+}
+function SuppliersPage() {
+  return <PartiesPage role="supplier" />;
+}
+function CustomerDetailRoutePage() {
+  return <PartyDetailPage role="customer" />;
+}
+function SupplierDetailRoutePage() {
+  return <PartyDetailPage role="supplier" />;
 }
 
 const rootRoute = createRootRoute({
@@ -63,6 +79,10 @@ const saleRoute = createRoute({
   component: SalePage,
 });
 const debtsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/debts", component: DebtsPage });
+const customersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/customers", component: CustomersPage });
+const customerDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/customers/$partyId", component: CustomerDetailRoutePage });
+const suppliersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/suppliers", component: SuppliersPage });
+const supplierDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/suppliers/$partyId", component: SupplierDetailRoutePage });
 const invoicesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices", component: InvoicesPage });
 const invoiceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices/$invoiceId", component: InvoicePage });
 const invoicePrintRoute = createRoute({
@@ -91,6 +111,10 @@ export const routeTree = rootRoute.addChildren([
   purchaseRoute,
   saleRoute,
   debtsRoute,
+  customersRoute,
+  customerDetailRoute,
+  suppliersRoute,
+  supplierDetailRoute,
   invoicesRoute,
   invoiceRoute,
   invoicePrintRoute,

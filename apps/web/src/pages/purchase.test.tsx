@@ -9,6 +9,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
+import { chooseOption } from "../tests/select-driver";
+
 interface ProposalFixture {
   invoiceId: string;
   items: Array<{
@@ -27,8 +29,17 @@ interface PanelMutationOptions {
   onError?: (error: { message?: string }) => void;
 }
 
+/** PartyPicker create options (issue 120); the picker passes callbacks per call. */
+interface PartyCreateMutationOptions {
+  onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
 let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
 let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
+/** the picker's loaded supplier list and the last invoice input (issue 120) */
+let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
+let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string } | null = null;
 
 // The panel resolves proposal + link through orpc.*.queryOptions/mutationOptions;
 // mock the rpc module so tests drive fixtures without a network seam.
@@ -40,6 +51,14 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({ items: [{ id: "cat-1", name: "تصنيف" }] }),
       }),
     },
+    // the post-save screen renders InvoiceHeader, which reads store identity
+    settingsGet: {
+      queryOptions: () => ({
+        queryKey: ["settings"],
+        queryFn: async () => ({ storeName: "متجر الاختبار", storePhone: null, storeAddress: null }),
+      }),
+    },
+    itemsList: { queryKey: () => ["items"] },
     catalogSearch: {
       queryOptions: () => ({
         queryKey: ["catalogSearch"],
@@ -57,7 +76,10 @@ mock.module("@/lib/rpc", () => ({
     invoicesCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
-        mutationFn: async () => ({ id: "inv-1", invoiceNumber: "INV-1" }),
+        mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string }) => {
+          lastPurchaseInput = input;
+          return { id: "inv-1", invoiceNumber: "INV-1" };
+        },
         ...opts,
       }),
     },
@@ -84,6 +106,22 @@ mock.module("@/lib/rpc", () => ({
         },
         ...opts,
       }),
+    },
+    // PartyPicker (issue 120): mounts its list query and create mutations on
+    // the purchase form.
+    suppliersList: {
+      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: supplierFixtures }) }),
+      queryKey: () => ["suppliers"],
+    },
+    customersList: {
+      queryOptions: () => ({ queryKey: ["customers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["customers"],
+    },
+    suppliersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "s-1", name: "مورد", phone: null, createdAt: "" }), ...opts }),
+    },
+    customersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
     },
   },
   rpcClient: {},
@@ -233,5 +271,88 @@ describe("PurchasePage learnability (issue #94)", () => {
 
     await act(async () => root.unmount());
     container.remove();
+  });
+});
+
+describe("PurchasePage party picker (issue 120)", () => {
+  it("carries the picked supplier id onto the purchase invoice", async () => {
+    supplierFixtures = [
+      {
+        id: "s-9",
+        name: "مورد مسجّل",
+        phone: "+213555123456",
+        createdAt: "2026-10-01T10:00:00",
+        stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      },
+    ];
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const setValue = (input: HTMLInputElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+
+    // pick the existing supplier from the filtered list
+    const supplierInput = container.querySelector<HTMLInputElement>('[data-testid="purchase-supplier"]');
+    if (supplierInput === null) throw new Error("missing supplier input");
+    await act(async () => setValue(supplierInput, "مورد مسجّل"));
+    for (let attempt = 0; attempt < 20 && container.querySelector('[data-testid="purchase-supplier-option"]') === null; attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    const option = container.querySelector<HTMLButtonElement>('[data-testid="purchase-supplier-option"]');
+    if (option === null) throw new Error("missing supplier option");
+    await act(async () => {
+      option.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // add a line through the quick-add form, then save
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const quickForm = container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]');
+    if (quickForm === null) throw new Error("missing quick form");
+    const quickName = quickForm.querySelector<HTMLInputElement>('[data-testid="quick-name"]');
+    const quickQty = quickForm.querySelector<HTMLInputElement>('[data-testid="quick-qty"]');
+    const quickCost = quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]');
+    await act(async () => {
+      if (quickName !== null) setValue(quickName, "منتج");
+      if (quickQty !== null) setValue(quickQty, "1");
+      if (quickCost !== null) setValue(quickCost, "100");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const categoryTrigger = quickForm.querySelector<HTMLElement>("button");
+    if (categoryTrigger === null) throw new Error("missing category trigger");
+    await chooseOption(categoryTrigger, "تصنيف");
+    await act(async () => {
+      quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(lastPurchaseInput?.counterpartyId).toBe("s-9");
+    expect(lastPurchaseInput?.counterpartyName).toBe("مورد مسجّل");
+
+    await act(async () => root.unmount());
+    container.remove();
+    queryClient.clear();
   });
 });

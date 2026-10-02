@@ -10,6 +10,7 @@ import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
+import { PartyError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { resetAdminPassword } from "../auth/admin";
 import { AppError } from "../lib/errors";
@@ -510,6 +511,98 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
 
+    // --- parties (issue 120): customers & suppliers share one code path -------
+    customersList: os.customersList.handler(guarded(async () => ({ items: await deps.store.listParties("customer") }))),
+    customersGet: os.customersGet.handler(
+      guardedInput(async ({ id }) => {
+        const detail = await deps.store.partyDetail("customer", id);
+        if (detail === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+        return detail;
+      }),
+    ),
+    customersCreate: os.customersCreate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.createParty("customer", input);
+            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED CUSTOMER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    customersUpdate: os.customersUpdate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.updateParty("customer", input.id, input);
+            if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED CUSTOMER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    customersDelete: os.customersDelete.handler(
+      guardedInput(async ({ id }) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          // read the identity first so the audit row can name a row that is
+          // about to stop existing
+          const party = await tx.getParty("customer", id);
+          if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const result = await tx.deleteParty("customer", id);
+          if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
+          if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED CUSTOMER ${party.name}`, ref: id });
+          return { deleted: true as const };
+        }),
+      ),
+    ),
+    suppliersList: os.suppliersList.handler(guarded(async () => ({ items: await deps.store.listParties("supplier") }))),
+    suppliersGet: os.suppliersGet.handler(
+      guardedInput(async ({ id }) => {
+        const detail = await deps.store.partyDetail("supplier", id);
+        if (detail === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+        return detail;
+      }),
+    ),
+    suppliersCreate: os.suppliersCreate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.createParty("supplier", input);
+            await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED SUPPLIER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    suppliersUpdate: os.suppliersUpdate.handler(
+      guardedInput(async (input) =>
+        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+          deps.store.withTransactionImmediate(async (tx) => {
+            const party = await tx.updateParty("supplier", input.id, input);
+            if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+            await tx.insertActivity({ type: "PARTY_UPDATED", summary: `PARTY_UPDATED SUPPLIER ${party.name}`, ref: party.id });
+            return party;
+          }),
+        ),
+      ),
+    ),
+    suppliersDelete: os.suppliersDelete.handler(
+      guardedInput(async ({ id }) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const party = await tx.getParty("supplier", id);
+          if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const result = await tx.deleteParty("supplier", id);
+          if (result === "HAS_INVOICES") throw new ORPCError("CONFLICT", { message: "PARTY_HAS_INVOICES" });
+          if (result !== "DELETED") throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          await tx.insertActivity({ type: "PARTY_DELETED", summary: `PARTY_DELETED SUPPLIER ${party.name}`, ref: id });
+          return { deleted: true as const };
+        }),
+      ),
+    ),
+
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
       guardedInput(async (input) => {
@@ -524,6 +617,19 @@ export function createRpcRouter(deps: RpcDeps) {
         const itemsById = await tx.getItemsByIds(input.lines.map((line) => line.itemId));
         for (const line of input.lines) {
           if (!itemsById.has(line.itemId)) throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+        }
+        // identity integrity (issue 120): a picked party must exist AND belong
+        // to the invoice's role. Without this a stale picker id (party deleted
+        // in another tab) or a wrong-role id would silently land as an orphan
+        // the party pages can never show, while its debt stays name-grouped.
+        // The resolved record's name is authoritative for the label too, so a
+        // client cannot group a debt under one party and print another name.
+        let partyName = input.counterpartyName ?? null;
+        if (input.counterpartyId !== undefined && input.counterpartyId !== null) {
+          const partyRole = input.kind === "SALE" ? "customer" : "supplier";
+          const party = await tx.getParty(partyRole, input.counterpartyId);
+          if (party === undefined) throw new ORPCError("BAD_REQUEST", { message: "PARTY_NOT_FOUND" });
+          partyName = party.name;
         }
 
         if (input.kind === "SALE") {
@@ -563,7 +669,7 @@ export function createRpcRouter(deps: RpcDeps) {
               invoiceNumber,
               kind: "SALE",
               counterpartyId: input.counterpartyId ?? null,
-              counterpartyName: input.counterpartyName ?? null,
+              counterpartyName: partyName,
               invoiceDate,
               subtotalAmount: totals.subtotalAmount,
               discountType: totals.discountType,
@@ -660,7 +766,7 @@ export function createRpcRouter(deps: RpcDeps) {
             invoiceNumber,
             kind: "PURCHASE",
             counterpartyId: input.counterpartyId ?? null,
-            counterpartyName: input.counterpartyName ?? null,
+            counterpartyName: partyName,
             invoiceDate,
             subtotalAmount: totalAmount,
             discountType: null,
@@ -717,7 +823,7 @@ export function createRpcRouter(deps: RpcDeps) {
               }),
             );
           }
-          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${input.counterpartyName ? ` ${input.counterpartyName}` : ""}`, ref: invoice.id });
+          await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
           return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
         });
       }),
@@ -1472,6 +1578,21 @@ export type RpcRouter = ReturnType<typeof createRpcRouter>;
 /** bun:sqlite surfaces the categories.name UNIQUE constraint as this text */
 function isUniqueViolation(err: Error): boolean {
   return err.message.includes("UNIQUE constraint failed") || err.message.includes("unique constraint");
+}
+
+/**
+ * Translate the store's party identity refusal (and a cross-process race that
+ * lands on the partial phone unique index) into the role-specific CONFLICT key
+ * the ui translates (issue 120).
+ */
+async function withPartyPhoneConflict<T>(phoneKey: "CUSTOMER_PHONE_EXISTS" | "SUPPLIER_PHONE_EXISTS", fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof PartyError && err.code === "PHONE_EXISTS") throw new ORPCError("CONFLICT", { message: phoneKey });
+    if (err instanceof Error && isUniqueViolation(err)) throw new ORPCError("CONFLICT", { message: phoneKey });
+    throw err;
+  }
 }
 
 /** Maps the sqlite UNIQUE race on items.barcode to the stable BARCODE_EXISTS key. */

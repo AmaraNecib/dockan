@@ -18,7 +18,13 @@ import type {
   ItemCreate,
   ItemUpdate,
   OnboardingProgress,
+  Party,
   PartyCreate,
+  PartyDetail,
+  PartyListItem,
+  PartyRole,
+  PartyStats,
+  PartyUpdate,
   Payment,
   ReturnDetail,
   ReturnMark,
@@ -27,12 +33,13 @@ import type {
   StockMovement,
   Supplier,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
+import { PartyError } from "./port";
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -96,6 +103,56 @@ const invoiceCols = {
 };
 const customerCols = { id: customers.id, name: customers.name, phone: customers.phone, createdAt: customers.createdAt };
 const supplierCols = { id: suppliers.id, name: suppliers.name, phone: suppliers.phone, createdAt: suppliers.createdAt };
+
+/** Closed literal map: the role picks the table; never caller text. */
+const PARTY_TABLES = { customer: "customers", supplier: "suppliers" } as const;
+
+/** One SQLite scalar as the driver hands it back: text, number, or NULL. */
+type SqlScalar = string | number | null | undefined;
+
+/**
+ * One aggregate row for a party row (list and detail share this shape).
+ * SQLite returns COUNT/SUM numerically; the mapper coerces once here.
+ */
+type PartyAggregateRow = {
+  id: SqlScalar;
+  name: SqlScalar;
+  phone: SqlScalar;
+  createdAt: SqlScalar;
+  invoiceCount: SqlScalar;
+  totalAmount: SqlScalar;
+  paidAmount: SqlScalar;
+  remainingAmount: SqlScalar;
+};
+
+const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
+  id: String(r.id),
+  name: String(r.name),
+  phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
+  createdAt: String(r.createdAt),
+  stats: safePartyStats(r),
+});
+
+/**
+ * Coerce one SQLite aggregate into the contract's dinars shape. A legacy row
+ * with a negative or fractional stored amount would otherwise fail
+ * `dinarsSchema` output validation and blank the whole list/detail page, so
+ * the store clamps at the edge instead of letting one bad row 500 the screen
+ * (the dashboard's degrade-one-section precedent).
+ */
+const safeWhole = (value: SqlScalar): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(parsed))) : 0;
+};
+
+type SqlPartyStats = { invoiceCount: SqlScalar; totalAmount: SqlScalar; paidAmount: SqlScalar; remainingAmount: SqlScalar };
+
+const safePartyStats = (stats: Partial<SqlPartyStats>): PartyStats => ({
+  invoiceCount: safeWhole(stats.invoiceCount),
+  totalAmount: safeWhole(stats.totalAmount),
+  paidAmount: safeWhole(stats.paidAmount),
+  remainingAmount: safeWhole(stats.remainingAmount),
+});
 const lineCols = {
   id: invoiceLines.id,
   invoiceId: invoiceLines.invoiceId,
@@ -310,6 +367,82 @@ export const seedExpenseCategories = (conn: Connection): void => {
       }
       conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(EXPENSE_CATEGORIES_MARKER);
     }
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
+
+/** Durable marker: the typed-name backfill ran to completion. */
+const COUNTERPARTY_BACKFILL_MARKER = "migration.counterpartyBackfillV1";
+
+/**
+ * One-time backfill (ADR-0007, issue 120): legacy invoices stored only a typed
+ * `counterparty_name` with a null id. Create one party per distinct trimmed
+ * name and point the matching invoices at it, so the debts page and the new
+ * customers pages group by identity instead of by spelling («علي علي» vs
+ * «على علي» are two debtors today).
+ *
+ * Marker-gated AND self-healing: an existing same-named party is reused, so a
+ * crashed or raced run resumes without duplicating a debtor, and the UPDATE
+ * only touches invoices that still have a null id. BEGIN IMMEDIATE reserves
+ * the write lock before the marker read, so two processes booting the same
+ * legacy database converge (the loser waits on busy_timeout, then sees the
+ * winner's marker). The invoice's `counterparty_name` is never rewritten.
+ */
+export const backfillCounterparties = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: settings.key is the primary key; this literal SELECT yields one
+    // string column per row, so the cast names what the driver already returns.
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(COUNTERPARTY_BACKFILL_MARKER) as Array<{ value: string }>;
+    if (marker.length > 0) {
+      conn.raw.exec("COMMIT");
+      return;
+    }
+    // SAFETY: Object.keys over a closed const map yields exactly its keys,
+    // which are the PartyRole literals; the index then reads that same map.
+    const kinds = (Object.keys(partyInvoiceKind) as PartyRole[]).map((role) => ({ kind: partyInvoiceKind[role], table: PARTY_TABLES[role] }));
+    for (const { kind, table } of kinds) {
+      // SAFETY: fixed SQL identifiers and bound parameters; the distinct names
+      // are the only data read and every write binds them.
+      const rawNames = conn.raw
+        .query(
+          `SELECT DISTINCT TRIM(counterparty_name) AS name FROM invoices
+           WHERE kind = ? AND counterparty_id IS NULL AND counterparty_name IS NOT NULL AND TRIM(counterparty_name) <> ''
+           ORDER BY name`,
+        )
+        .all(kind) as Array<{ name: string }>;
+      // Collapse spellings that are the same identity (case, double spaces,
+      // diacritics, tatweel, bidi marks) with the SAME key the picker matches
+      // on, so the backfill cannot leave «علي  علي» as a second debtor. JS trim
+      // also drops NBSP/tab-only names that SQLite's TRIM passes through.
+      // One pass builds every group and its spellings; the write loop below
+      // never rescans the full name set.
+      const groups = new Map<string, { representative: string; spellings: string[] }>();
+      for (const { name } of rawNames) {
+        const key = normalizeTextKey(name);
+        if (key === "") continue;
+        const group = groups.get(key);
+        if (group === undefined) groups.set(key, { representative: name, spellings: [name] });
+        else group.spellings.push(name);
+      }
+      // SAFETY: the party table's id/name columns are TEXT (db/schema.ts);
+      // the SELECT is ordered so a duplicate-name reuse target is deterministic.
+      const existingParties = conn.raw.query(`SELECT id, name FROM ${table} ORDER BY created_at, id`).all() as Array<{ id: string; name: string }>;
+      for (const [key, group] of groups) {
+        const existing = existingParties.find((party) => normalizeTextKey(party.name) === key);
+        const partyId = existing?.id ?? id();
+        if (existing === undefined) {
+          conn.raw.query(`INSERT INTO ${table} (id, name, phone, created_at) VALUES (?, ?, NULL, ?)`).run(partyId, group.representative, now());
+        }
+        for (const spelling of group.spellings) {
+          conn.raw.query(`UPDATE invoices SET counterparty_id = ? WHERE kind = ? AND counterparty_id IS NULL AND TRIM(counterparty_name) = ?`).run(partyId, kind, spelling);
+        }
+      }
+    }
+    conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(COUNTERPARTY_BACKFILL_MARKER);
     conn.raw.exec("COMMIT");
   } catch (err) {
     conn.raw.exec("ROLLBACK");
@@ -634,6 +767,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
+    // issue 120: point legacy typed-name invoices at real party records (once).
+    // Deliberately fail-loud like every other migration in this file: a failed
+    // identity backfill must not boot into name-grouped debts silently.
+    backfillCounterparties(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
     // an existing database cannot both initialize a competing counter. The
@@ -686,6 +823,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       `);
     }
   }
+
+  /**
+   * The store-owned identity rule (ADR-0007): a present phone is unique across
+   * records. The partial unique indexes in SCHEMA_DDL are the cross-process
+   * backstop, but SQLite treats NULLs as distinct and an index violation is
+   * not a translated error, so the check runs here for a clear refusal.
+   */
+  const assertPhoneFree = (role: PartyRole, phone: string | null, excludeId: string | null): void => {
+    if (phone === null) return;
+    // Canonical-form comparison over the rows, not `WHERE phone = ?`: a row
+    // written by a future import/adapter with a raw `0550 12 34 56` must not
+    // escape the rule, and the partial unique index only compares raw strings.
+    // SAFETY: the table name comes from a closed literal map (never input).
+    const rows = conn.raw.query(`SELECT id, phone FROM ${PARTY_TABLES[role]} WHERE phone IS NOT NULL`).all() as Array<{ id: string; phone: string }>;
+    if (rows.some((row) => row.id !== excludeId && normalizePartyPhone(row.phone) === phone)) throw new PartyError("PHONE_EXISTS");
+  };
+
+  const fetchParty = async (role: PartyRole, partyId: string): Promise<Party | undefined> => {
+    if (role === "customer") {
+      const rows = await db.select(customerCols).from(customers).where(eq(customers.id, partyId)).limit(1);
+      return rows.length === 0 ? undefined : toCustomer(firstRowOf(rows));
+    }
+    const rows = await db.select(supplierCols).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
+    return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
+  };
 
   const store: StorePort = {
     setup,
@@ -907,20 +1069,101 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return rows;
     },
 
-    // --- parties -------------------------------------------------------------
-    async listCustomers() {
-      return db.select(customerCols).from(customers).orderBy(customers.name);
+    // --- parties (issue 120): customers & suppliers share one code path -------
+    async listParties(role: PartyRole) {
+      const kind = partyInvoiceKind[role];
+      // One LEFT JOIN keeps a zero-invoice party on the list with zero stats.
+      // SAFETY: the table name comes from a closed literal map (never input);
+      // each alias lands in PartyAggregateRow before typing.
+      const rows = (await db.all(sql`
+        SELECT p.id, p.name, p.phone, p.created_at AS createdAt,
+               COUNT(i.id) AS invoiceCount,
+               COALESCE(SUM(i.total_amount), 0) AS totalAmount,
+               COALESCE(SUM(i.paid_amount), 0) AS paidAmount,
+               COALESCE(SUM(i.remaining_amount), 0) AS remainingAmount
+        FROM ${sql.raw(PARTY_TABLES[role])} p
+        LEFT JOIN invoices i ON i.counterparty_id = p.id AND i.kind = ${kind}
+        GROUP BY p.id
+        ORDER BY p.name`)) as PartyAggregateRow[];
+      return rows.map(toPartyListItem);
     },
-    async createCustomer(input: PartyCreate) {
-      const row = firstRowOf(await db.insert(customers).values({ id: id(), name: input.name, phone: input.phone ?? null, createdAt: now() }).returning());
-      return toCustomer(row);
+    async getParty(role: PartyRole, partyId: string) {
+      return fetchParty(role, partyId);
     },
-    async listSuppliers() {
-      return db.select(supplierCols).from(suppliers).orderBy(suppliers.name);
-    },
-    async createSupplier(input: PartyCreate) {
-      const row = firstRowOf(await db.insert(suppliers).values({ id: id(), name: input.name, phone: input.phone ?? null, createdAt: now() }).returning());
+    async createParty(role: PartyRole, input: PartyCreate) {
+      const phone = normalizePartyPhone(input.phone);
+      assertPhoneFree(role, phone, null);
+      if (role === "customer") {
+        const row = firstRowOf(await db.insert(customers).values({ id: id(), name: input.name, phone, createdAt: now() }).returning());
+        return toCustomer(row);
+      }
+      const row = firstRowOf(await db.insert(suppliers).values({ id: id(), name: input.name, phone, createdAt: now() }).returning());
       return toSupplier(row);
+    },
+    async updateParty(role: PartyRole, partyId: string, patch: PartyUpdate) {
+      // an empty patch is a no-op, not a raw drizzle UPDATE ... SET {} error
+      if (patch.name === undefined && patch.phone === undefined) return fetchParty(role, partyId);
+      const phone = patch.phone === undefined ? undefined : normalizePartyPhone(patch.phone);
+      if (phone !== undefined) assertPhoneFree(role, phone, partyId);
+      const set: PartyUpdate = {};
+      if (patch.name !== undefined) set.name = patch.name;
+      if (phone !== undefined) set.phone = phone;
+      if (role === "customer") {
+        const rows = await db.update(customers).set(set).where(eq(customers.id, partyId)).returning();
+        return rows.length === 0 ? undefined : toCustomer(firstRowOf(rows));
+      }
+      const rows = await db.update(suppliers).set(set).where(eq(suppliers.id, partyId)).returning();
+      return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
+    },
+    async deleteParty(role: PartyRole, partyId: string): Promise<PartyDeleteResult> {
+      const exists = role === "customer"
+        ? await db.select({ id: customers.id }).from(customers).where(eq(customers.id, partyId)).limit(1)
+        : await db.select({ id: suppliers.id }).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
+      if (exists.length === 0) return "NOT_FOUND";
+      // The rule is enforced by ONE conditional DELETE, so it holds at the
+      // statement level even if a future caller forgets the transaction
+      // wrapper; the existence read above only classifies NOT_FOUND.
+      // SAFETY: the table name comes from a closed literal map (never input).
+      const deleted = conn.raw
+        .query(`DELETE FROM ${PARTY_TABLES[role]} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM invoices WHERE counterparty_id = ?)`)
+        .run(partyId, partyId);
+      return Number(deleted.changes) > 0 ? "DELETED" : "HAS_INVOICES";
+    },
+    async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
+      const party = await fetchParty(role, partyId);
+      if (party === undefined) return undefined;
+      const kind = partyInvoiceKind[role];
+      const [invoiceRows, paymentRows] = await Promise.all([
+        db
+          .select(invoiceCols)
+          .from(invoices)
+          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
+          .orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)),
+        db
+          .select({ ...paymentCols, invoiceNumber: invoices.invoiceNumber })
+          .from(payments)
+          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
+          .orderBy(desc(payments.paidAt), desc(payments.createdAt)),
+      ]);
+      // the strip derives from the SAME mapped rows the invoices tab renders:
+      // one malformed legacy row cannot make the numbers and the table disagree
+      const detailInvoices = mapRecentInvoices(invoiceRows) ?? [];
+      const stats = detailInvoices.reduce(
+        (acc, invoice) => ({
+          invoiceCount: acc.invoiceCount + 1,
+          totalAmount: acc.totalAmount + invoice.totalAmount,
+          paidAmount: acc.paidAmount + invoice.paidAmount,
+          remainingAmount: acc.remainingAmount + invoice.remainingAmount,
+        }),
+        { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      );
+      return {
+        party,
+        stats: safePartyStats(stats),
+        invoices: detailInvoices,
+        payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
+      } satisfies PartyDetail;
     },
 
     // --- invoices / payments -------------------------------------------------
@@ -1298,17 +1541,28 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }));
     },
     async debtSummaries(): Promise<DebtSummary[]> {
+      // The label for an id-backed group is the party's CURRENT name (joined
+      // from the role's table), never the historical counterparty_name an
+      // invoice snapshotted — a renamed party must not keep its old label on
+      // the debts screen. Typed-only groups still use their invoice name.
       // SAFETY: GROUP BY yields one row per (kind, party); the keys below
       // match the alias names, columns are TEXT/INTEGER per db/schema.ts.
       const aggregated = (await db.all(sql`
-        SELECT kind, counterparty_id, counterparty_name,
-               SUM(remaining_amount) AS remaining_total,
+        SELECT invoices.kind AS kind,
+               invoices.counterparty_id AS counterparty_id,
+               CASE
+                 WHEN invoices.counterparty_id IS NOT NULL THEN COALESCE(customers.name, suppliers.name, invoices.counterparty_name)
+                 ELSE invoices.counterparty_name
+               END AS counterparty_name,
+               SUM(invoices.remaining_amount) AS remaining_total,
                COUNT(*) AS invoice_count,
-               MIN(invoice_date) AS oldest_date,
-               MAX(invoice_date) AS latest_date
+               MIN(invoices.invoice_date) AS oldest_date,
+               MAX(invoices.invoice_date) AS latest_date
         FROM invoices
-        WHERE remaining_amount > 0 AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
-        GROUP BY kind, COALESCE(counterparty_id, counterparty_name)
+        LEFT JOIN customers ON invoices.counterparty_id = customers.id
+        LEFT JOIN suppliers ON invoices.counterparty_id = suppliers.id
+        WHERE invoices.remaining_amount > 0 AND (invoices.counterparty_id IS NOT NULL OR invoices.counterparty_name IS NOT NULL)
+        GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, invoices.counterparty_name)
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
       return aggregated.map((r) => {
         const kind =

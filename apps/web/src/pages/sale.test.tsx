@@ -23,6 +23,7 @@ interface InvoiceResponse {
 /** Fixture knobs the render tests drive without a network seam. */
 interface CapturedInvoiceInput {
   kind?: string;
+  counterpartyId?: string;
   counterpartyName?: string;
   initialPaid?: number;
   lines?: Array<{ itemId: string; quantity: number }>;
@@ -48,9 +49,17 @@ interface CapturedItemInput {
   stockOnHand?: number;
 }
 
+/** PartyPicker create options (issue 120); the picker passes callbacks per call. */
+interface PartyCreateMutationOptions {
+  onSuccess?: (party: { id: string; name: string; phone: string | null; createdAt: string }) => void;
+  onError?: (error: { message?: string }) => void;
+}
+
 let scanPrice = 1000;
 let scanFails = false;
 let lastInvoiceInput: CapturedInvoiceInput | null = null;
+/** the picker's loaded customer list; tests seed it to exercise picking */
+let partyFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
 let resolveInvoice: ((value: InvoiceResponse) => void) | null = null;
 let resolveItemCreate: ((item: { id: string; name: string; sellingPrice: number }) => void) | null = null;
 /** the last payload each create path received, so a test can assert what was sent */
@@ -121,6 +130,22 @@ mock.module("@/lib/rpc", () => ({
     },
     itemsList: { queryKey: () => ["items"] },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
+    // PartyPicker (issue 120): no records in these fixtures; the picker still
+    // mounts its list query and create mutations.
+    customersList: {
+      queryOptions: () => ({ queryKey: ["customers"], queryFn: async () => ({ items: partyFixtures }) }),
+      queryKey: () => ["customers"],
+    },
+    suppliersList: {
+      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["suppliers"],
+    },
+    customersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
+    },
+    suppliersCreate: {
+      mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "s-1", name: "مورد", phone: null, createdAt: "" }), ...opts }),
+    },
   },
   rpcClient: {
     catalogSearch: async ({ query }: { query: string }) => {
@@ -258,6 +283,7 @@ beforeEach(() => {
   unknownScanCode = null;
   categoriesGate = null;
   releaseCategoriesGate = null;
+  partyFixtures = [];
 });
 
 afterEach(async () => {
@@ -828,5 +854,63 @@ describe("SalePage quick-add stock (issue #119)", () => {
     // the same one form as the plain create, with the scan's code already in it
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-quick-barcode"]')?.value).toBe("UNKNOWN-9001");
     expect(document.activeElement).toBe(stock);
+  });
+});
+
+describe("SalePage party picker (issue 120)", () => {
+  it("carries the picked customer id onto the invoice input", async () => {
+    partyFixtures = [
+      {
+        id: "c-9",
+        name: "زبون مسجّل",
+        phone: "+213555123456",
+        createdAt: "2026-10-01T10:00:00",
+        stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      },
+    ];
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-customer", "زبون مسجّل"));
+
+    // the picker list query resolves a tick after mount
+    for (let attempt = 0; attempt < 20 && host.querySelector('[data-testid="sale-customer-option"]') === null; attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    const option = host.querySelector<HTMLButtonElement>('[data-testid="sale-customer-option"]');
+    if (option === null) throw new Error("missing picker option");
+    await act(async () => {
+      option.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.counterpartyId).toBe("c-9");
+    expect(lastInvoiceInput?.counterpartyName).toBe("زبون مسجّل");
+  });
+
+  it("refuses to save a typed name that exactly matches an existing record", async () => {
+    partyFixtures = [
+      {
+        id: "c-9",
+        name: "زبون مسجّل",
+        phone: "+213555123456",
+        createdAt: "2026-10-01T10:00:00",
+        stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      },
+    ];
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-customer", "زبون مسجّل"));
+    for (let attempt = 0; attempt < 20 && host.querySelector('[data-testid="sale-customer-needs-choice"]') === null; attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
+    await act(async () => saveButton(host).click());
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain("هذا الاسم مسجّل");
+    expect(lastInvoiceInput).toBeNull();
   });
 });

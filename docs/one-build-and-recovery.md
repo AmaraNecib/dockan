@@ -189,6 +189,100 @@ password changes — someone holding a pre-reset session must not keep access.
 - **Vendor cannot decrypt.** The vendor fallback can authorize a reset of the app
   login, but it can never recover a lost vault key.
 
+### 4.6.1 Implementation decisions (phase 2)
+
+**Exact cryptography.** Master key: 32 random bytes (`node:crypto`). KDF:
+Argon2id (`@noble/hashes`), m=32768 KiB, t=3, p=1, 16-byte random salt,
+32-byte output. AEAD: AES-256-GCM (`node:crypto`) with a fresh random 12-byte
+nonce per encryption and domain-separated AAD
+(`dokan:vault:wrap:v1:<vaultId>:<kind>` for wraps,
+`dokan:vault:db:v1:<vaultId>` for snapshots). A wrapped master key is
+`nonce ‖ ciphertext+tag` base64 in `vault.json`; the snapshot is
+`"DKNVAULT" ‖ version ‖ nonce ‖ ciphertext+tag`. Recovery keys: 20 random
+bytes (160 bits) rendered as 32 base32 characters plus a 10-bit SHA-256
+checksum, grouped for transcription; a bad checksum fails before the KDF.
+
+**What is encrypted.** The database is the only shop-data file: the runtime is
+an in-memory SQLite image and every persisted byte is an encrypted snapshot
+(`dokan.db.enc`), so there is no plaintext database and no WAL on disk. Daily
+and manual backups write a self-contained bundle (the encrypted snapshot plus
+the `vault.json` key wraps) so the file unlocks on another install; validation
+decrypts the embedded snapshot and runs `PRAGMA quick_check`. `vault/vault.json`
+holds only
+wrapped keys and format metadata; `vault/state.json` holds only the unlock
+throttle counters. Logs remain plaintext operational diagnostics and are
+engineered never to contain a secret or a wrapped key; the stick-takeover
+threat model is about the data, and logs are excluded deliberately.
+
+**Single writer (issue #142).** The vault data folder is guarded by an
+exclusive lock file (`vault.lock`, created with `O_CREAT | O_EXCL` — atomic on
+NTFS, SMB/UNC shares and local POSIX filesystems) acquired before any vault
+file opens and held for the process lifetime. The holder records
+`{pid, host, startedAt, heartbeatAt, token}` and heartbeats every 10s; a second
+instance serves an Arabic "data in use" page and never touches the data. A lock
+left by a hard-killed process is reclaimed once the same-host PID is gone, or —
+for a stick moved to another machine — once the heartbeat is quiet for 60s. A
+lock file that cannot be created (read-only media, permissions) fails the boot
+loudly instead of silently running unlocked, and losing the lock while running
+is fail-stop.
+
+**Migration.** A legacy plaintext `dokan.db` is checkpointed out of WAL,
+`quick_check`ed, schema-gated (newer refuses), serialized, adopted into memory,
+written as the encrypted snapshot, and only then is the vault header committed;
+the plaintext files are deleted last. `PRAGMA user_version` travels inside the
+image, so the schema version is preserved. A crash before the header commit
+leaves the plaintext install untouched and retryable.
+
+**Persistence.** Every committed store unit and every mutating store call
+serializes → encrypts → writes the snapshot through a temp file + fsync +
+rename; `close()` awaits the persist queue and checkpoints it, and backup copies
+write a **self-contained bundle** (key wraps + snapshot) so an exported backup
+unlocks on another install. A failed write stays dirty and is retried; if it
+still fails, the process fails stop (never reporting a committed unit as
+failed, which a retry would duplicate). A missing snapshot and a torn/damaged
+one are distinct Arabic refusals (`VAULT_DATABASE_MISSING`, `VAULT_CORRUPT`) with
+restore guidance, never a wrong-passphrase message. Legacy plaintext cleanup is
+retried on every unlock until the file is gone.
+
+**Recovery flow.** A forgotten passphrase is fixed from the recovery key alone:
+`POST /api/vault/reset-passphrase` unwraps the master key with the recovery code
+and re-wraps a new passphrase, no current passphrase required. The last recovery
+key cannot be deleted, and changing the passphrase or deleting a key rotates
+the in-process session token (the pre-rotation token is refused).
+
+**Round-3/4 hardening.** Migration converts historical plaintext backups
+under `backups/` to `.dknvbak` bundles (only each candidate's 16-byte magic is
+read; converted names are never rescanned, so unlocks stay fast on a large
+history; a file that cannot be converted is reported back and shown in the
+setup screen, never silently ignored). A first-run attempt whose header write
+failed is resumable (`resumeSetup`), but only after the requester proves the
+pending passphrase, so an unauthenticated caller can never receive the first
+owner's recovery key or session token. The first daily backup runs after the
+header commit. Logout revokes the server-side session token, so a copied token
+dies immediately. The app distinguishes a legacy build (404 on the status
+route) from an unreachable vault API, which shows a retry screen instead of the
+legacy login.
+
+**Gate transport.** In dev, e2e and the packaged shell the gate is same-origin
+HTTP (`/api/vault/*`) served by the locked sidecar: the desktop window opens on
+the vault screen and the app routes and the store start only after unlock. A
+one-request stdin JSON broker (`DOKAN_VAULT_STDIN=1`) is implemented and tested
+as the shell-driven transport for the next shell iteration, so a future prompt
+can hand the passphrase over a pipe (never argv, the environment or disk)
+without changing the vault at all. Keeping all cryptography in one implemented
+module (rather than duplicating Argon2id in Rust) is what makes the transports
+provably identical.
+
+**Owner identity seam.** Unlocking mints an in-process session token returned to
+the client; the router accepts it over the `x-vault-session` header as the
+owner. The auth layer itself is unchanged for the legacy build, and employee logins can later sign in after
+the vault is open without touching the vault.
+
+**Dev/e2e escape hatch.** `DOKAN_VAULT=disabled` keeps the phase-1 plaintext
+path for development and the existing e2e suite; the packaged desktop shell
+never sets it, and any value other than the exact string `disabled` keeps
+encryption on.
+
 ## 5. Interfaces / files (indicative)
 
 - `apps/api/src/lib/recovery.ts` — generate/verify codes, hashing, the 5-code rule.

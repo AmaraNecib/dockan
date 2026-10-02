@@ -21,7 +21,36 @@ export type Connection = {
   raw: Database;
   /** WAL checkpoint, so a straight file copy of the db is consistent */
   checkpoint(): void;
-  close(): void;
+  /** Flush anything in flight, then release the handle. Await for a clean exit. */
+  close(): Promise<void>;
+  /** true while an explicit multi-statement unit is open (vault persistence waits) */
+  inTransaction: boolean;
+  /**
+   * Vault seam: mark the in-memory image dirty. The legacy file-backed
+   * connection is already on disk, so its implementation is a no-op.
+   */
+  markDirty(): void;
+  /** Vault seam: write the encrypted snapshot when dirty; legacy no-op. */
+  persistIfDirty(): Promise<void>;
+  /** Vault seam: force-write the current image; legacy = WAL checkpoint. */
+  flush(): Promise<void>;
+  /**
+   * Vault seam: write a self-contained backup bundle (key wraps + snapshot).
+   * Absent on the legacy file-backed connection, whose plain SQLite file is
+   * already self-contained.
+   */
+  writeBackupTo?: (destPath: string) => Promise<void>;
+  /**
+   * Vault seam: verify one encrypted snapshot OR self-contained backup bundle.
+   * Absent on the legacy file-backed connection.
+   */
+  validateSnapshotFile?: (filePath: string) => boolean;
+  /**
+   * Vault seam: fail-stop hook invoked when a committed unit cannot be written
+   * to its durable snapshot. main.ts exits the process here (never report a
+   * committed write as failed); tests leave it unset.
+   */
+  onFatalError?: (error: Error) => void;
 };
 
 export function openConnection(config: AppConfig): Connection {
@@ -54,11 +83,21 @@ export function openConnection(config: AppConfig): Connection {
       db,
       dbPath: config.db.path,
       raw: sqlite,
+      inTransaction: false,
       checkpoint() {
         sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
       },
-      close() {
+      async close() {
         sqlite.close();
+      },
+      markDirty() {
+        // the legacy file-backed database is the persistence; nothing to mark
+      },
+      async persistIfDirty() {
+        // no in-memory image exists in legacy mode
+      },
+      async flush() {
+        sqlite.exec("PRAGMA wal_checkpoint(TRUNCATE);");
       },
     };
   }

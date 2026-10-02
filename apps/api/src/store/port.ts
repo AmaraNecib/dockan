@@ -52,9 +52,12 @@ export interface ProfitSaleLine {
 /**
  * Minimal logging seam for degraded reads. Structural on purpose: the store
  * reports a failure without importing the app logger, so it stays testable.
+ * `error` is optional so existing test loggers keep compiling; the store uses
+ * it for the fatal snapshot-persistence path.
  */
 export type StoreLogger = {
   warn(event: string, message: string): void;
+  error?(event: string, message: string, error: Error): void;
 };
 
 /**

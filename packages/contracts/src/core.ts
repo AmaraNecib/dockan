@@ -53,6 +53,7 @@ export const activityTypes = [
   "SETTINGS_UPDATED",
   "EXPENSE_RECORDED",
   "EXPENSE_CATEGORY_CREATED",
+  "VAULT_UNLOCK_FAILED",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -550,6 +551,47 @@ export const returnDetailSchema = returnSchema.extend({
  */
 export const MIN_PASSWORD_LENGTH = 4;
 
+/**
+ * The shortest vault passphrase the unified vault accepts (ADR-0008 §4.6).
+ * Exported so the API's refusal and the web form's pre-check cannot drift.
+ */
+export const MIN_VAULT_PASSPHRASE_LENGTH = 8;
+
+/**
+ * Every stable vault error code the API or the web vault client can put in
+ * front of the owner. The API never ships display copy (locale-neutral guard);
+ * the web translates each code through apps/web/src/lib/i18n.ts, and
+ * apps/web/src/lib/i18n.test.ts fails when a code here has no key there.
+ */
+export const VAULT_ERROR_CODES = [
+  // emitted by the API gate, the broker and the lock refusal app
+  "VAULT_ALREADY_CONFIGURED",
+  "VAULT_CORRUPT",
+  "VAULT_DATABASE_MISSING",
+  "VAULT_INVALID",
+  "VAULT_LAST_RECOVERY_KEY",
+  "VAULT_LOCKED",
+  "VAULT_LOCKED_BY_OTHER_INSTANCE",
+  "VAULT_LOOPBACK_REQUIRED",
+  "VAULT_NOT_UNLOCKED",
+  "VAULT_PASSPHRASE_TOO_SHORT",
+  "VAULT_RECOVERY_LIMIT",
+  "VAULT_RECOVERY_NOT_FOUND",
+  "VAULT_RESET_FAILED",
+  "VAULT_SCHEMA_TOO_NEW",
+  "VAULT_SETUP_FAILED",
+  "VAULT_SETUP_IN_PROGRESS",
+  "VAULT_SETUP_TOKEN_REQUIRED",
+  "VAULT_WRONG_PASSPHRASE",
+  "VAULT_WRONG_RECOVERY",
+  // emitted by the web vault client itself (transport/envelope failures)
+  "VAULT_MALFORMED_RESPONSE",
+  "VAULT_UNEXPECTED",
+  "VAULT_UNREACHABLE",
+  "VAULT_UNSUPPORTED",
+] as const;
+export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number];
+
 export const needsSetupOutputSchema = z.object({
   needsSetup: z.boolean(),
   /** true when there is no owner but the database already holds shop data:
@@ -561,7 +603,11 @@ export const needsSetupOutputSchema = z.object({
 export const firstTimeSetupInputSchema = z.object({
   ownerName: z.string().trim().min(1),
   phoneNumber: z.string().refine(isValidAlgerianPhone, "expected an Algerian mobile, e.g. +213550123123 or 0550123123"),
-  password: z.string().min(MIN_PASSWORD_LENGTH),
+  // The unified vault (ADR-0008 §4.6) makes the passphrase the owner credential,
+  // so the vault setup form sends no password. The legacy plaintext path still
+  // requires one and refuses the call server-side when it is absent (and the
+  // boot-token flow stays the only way to reach owner provisioning).
+  password: z.string().min(MIN_PASSWORD_LENGTH).optional(),
   storeName: z.string().trim().min(1),
   storeAddress: z.string().trim().optional(),
   // Packaged installs only: the one-time boot token the desktop shell injects

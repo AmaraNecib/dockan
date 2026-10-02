@@ -36,6 +36,10 @@ export default defineConfig({
         DOKAN_PORT: String(API_PORT),
         DOKAN_DATA_DIR: e2eData,
         E2E_DATA_DIR: e2eData,
+        // The shared suite covers the legacy plaintext flows (setup with a
+        // password, login, session cookies). The unified vault has its own
+        // isolated pair in tests/e2e/vault.spec.ts with DOKAN_VAULT unset.
+        DOKAN_VAULT: "disabled",
       },
     },
     {

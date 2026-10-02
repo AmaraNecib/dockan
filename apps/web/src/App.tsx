@@ -5,6 +5,8 @@ import { authClient, useSession } from "./lib/auth-client";
 import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
+import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
+import { readVaultSessionToken } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
 import { readSetupToken } from "./lib/setup-token";
@@ -118,25 +120,169 @@ function AuthErrorAlert({
 
 /** Blocks children until a session exists; preferences import in the background. */
 export function RequireSession({ children }: { children: ReactNode }) {
-  const sessionResult = useSession();
+  const vault = useVaultStatus();
+  // The vault gate owns the first paint: no app route exists until the
+  // encrypted store is open (ADR-0008 §4.6).
+  if (vault.status !== undefined && vault.status.mode === "vault") {
+    const vaultStatus = vault.status;
+    // A client without the in-process session token is treated as locked even
+    // when the server stays unlocked: a new window must re-enter the passphrase
+    // rather than inherit access it was never given.
+    const hasSession = readVaultSessionToken() !== undefined;
+    if (vaultStatus.state !== "unlocked" || !hasSession) {
+      return (
+        <VaultGate
+          status={vaultStatus}
+          onUnlocked={() => vault.setStatus({ ...vaultStatus, state: "unlocked", unlocked: true })}
+        />
+      );
+    }
+    return <VaultOwnerGate>{children}</VaultOwnerGate>;
+  }
+  // A status route that 404s means this build has no vault gate (legacy
+  // plaintext) and falls through to the auth screens. A network/5xx failure on
+  // a vault install shows a RETRY screen, never the legacy login (finding 5).
+  if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
+  if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
+  return <LegacySessionGate>{children}</LegacySessionGate>;
+}
+
+/** The API booted but the vault status could not be read: retry, never login. */
+function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <main className="grid min-h-screen place-items-center bg-background p-4">
+      <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+        <p className="text-sm text-destructive" role="alert" data-testid="vault-status-unavailable">
+          {t("startupCheckFailed")}
+        </p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80"
+          data-testid="vault-status-retry"
+        >
+          {t("itemsSearchRetry")}
+        </button>
+      </div>
+    </main>
+  );
+}
+
+/** Owner provisioning after the vault is open (no separate login exists). */
+const OWNER_CHECK_RETRY_DELAYS_MS = [200, 500, 1_000] as const;
+
+function VaultOwnerGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [setupBlocked, setSetupBlocked] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
+  const checkSeqRef = useRef(0);
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useSidebarPreferenceMigration(needsSetup === false);
+
+  const checkSetup = useCallback(() => {
+    const seq = ++checkSeqRef.current;
+    if (retryTimerRef.current !== undefined) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = undefined;
+    }
+    setNeedsSetup(null);
+    setSetupBlocked(false);
+    setCheckFailed(false);
+    rpcClient
+      .needsSetup()
+      .then((res) => {
+        if (seq !== checkSeqRef.current) return;
+        retryAttemptRef.current = 0;
+        setNeedsSetup(res.needsSetup);
+        setSetupBlocked(res.setupBlocked);
+      })
+      .catch(() => {
+        if (seq !== checkSeqRef.current) return;
+        // a brief proxy/API interruption after unlock must not hang the
+        // loading screen forever: retry a bounded number of times, then show
+        // the owner a working retry button (round-7 finding 4)
+        const delay = OWNER_CHECK_RETRY_DELAYS_MS[retryAttemptRef.current];
+        if (delay !== undefined) {
+          retryAttemptRef.current += 1;
+          retryTimerRef.current = setTimeout(() => checkSetup(), delay);
+          return;
+        }
+        setCheckFailed(true);
+      });
+  }, []);
+
+  useEffect(() => {
+    checkSetup();
+    return () => {
+      if (retryTimerRef.current !== undefined) clearTimeout(retryTimerRef.current);
+    };
+  }, [checkSetup]);
+
+  if (checkFailed) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert" data-testid="owner-check-failed">
+            {t("startupCheckFailed")}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              retryAttemptRef.current = 0;
+              checkSetup();
+            }}
+            className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80"
+            data-testid="owner-check-retry"
+          >
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
+  if (needsSetup === null) return <LoadingScreen />;
+  if (setupBlocked) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-4">
+        <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
+          <p className="text-sm text-destructive" role="alert" data-testid="setup-blocked">
+            {t("SETUP_DATABASE_NOT_EMPTY")}
+          </p>
+          <button type="button" onClick={checkSetup} className="rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/80" data-testid="setup-blocked-retry">
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      </main>
+    );
+  }
+  if (needsSetup) return <SetupPage vaultMode onDone={() => setNeedsSetup(false)} />;
+  return <>{children}</>;
+}
+
+/** One-time background import of the pre-server sidebar preference. */
+function useSidebarPreferenceMigration(enabled: boolean): void {
   const queryClient = useQueryClient();
   const migrationStarted = useRef(false);
-
-  // One-time background import of the pre-server sidebar preference. The shell
-  // must render immediately — the scanner listens on mount — so this never
-  // blocks; it skips itself if the owner makes a choice while it runs.
   useEffect(() => {
-    if (migrationStarted.current || sessionResult.isPending || sessionResult.data === null) return;
+    if (!enabled || migrationStarted.current) return;
     migrationStarted.current = true;
     void migrateLegacySidebarCollapsed().then((imported) => {
       if (imported === null) return;
-      // surface the imported value without waiting for the query's next refetch
       queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) =>
         previous === undefined ? previous : { ...previous, [SIDEBAR_COLLAPSED_KEY]: imported },
       );
       void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
     });
-  }, [queryClient, sessionResult.data, sessionResult.isPending]);
+  }, [enabled, queryClient]);
+}
+
+/** The legacy plaintext path: better-auth session, setup or login. */
+function LegacySessionGate({ children }: { children: ReactNode }) {
+  const sessionResult = useSession();
+  useSidebarPreferenceMigration(sessionResult.data !== null && !sessionResult.isPending);
 
   if (sessionResult.isPending) {
     return <LoadingScreen />;
@@ -242,7 +388,7 @@ function LoadingScreen() {
 /*  Setup page — first time only                                       */
 /* ------------------------------------------------------------------ */
 
-function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
+function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey) => void; vaultMode?: boolean }) {
   const { t } = useTranslation();
   const [ownerName, setOwnerName] = useState("");
   const [storeName, setStoreName] = useState("");
@@ -260,11 +406,19 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
     // the disabled button does not stop an implicit Enter submit
     if (busyRef.current) return;
     // same rules the contracts enforce, checked before the request so the owner
-    // is told which field is wrong instead of seeing a generic failure
-    const fieldKey = authFieldKey(phone, password);
-    if (fieldKey !== null) {
-      report(fieldKey);
-      return;
+    // is told which field is wrong instead of seeing a generic failure. In
+    // vault mode the passphrase already exists, so only the phone is checked.
+    if (vaultMode) {
+      if (normalizeAlgerianPhone(phone) === null) {
+        report("INVALID_PHONE_NUMBER");
+        return;
+      }
+    } else {
+      const fieldKey = authFieldKey(phone, password);
+      if (fieldKey !== null) {
+        report(fieldKey);
+        return;
+      }
     }
     busyRef.current = true;
     setBusy(true);
@@ -273,7 +427,8 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
       await rpcClient.firstTimeSetup({
         ownerName,
         phoneNumber: phone,
-        password,
+        // vault mode: no password exists; the passphrase is the credential
+        password: vaultMode ? undefined : password,
         storeName,
         storeAddress: storeAddress || undefined,
         // Packaged installs: the one-time token the shell put in the URL
@@ -320,10 +475,13 @@ function SetupPage({ onDone }: { onDone: (notice?: MessageKey) => void }) {
           {t("username")}
           <input ref={phoneRef} type="tel" inputMode="tel" maxLength={PHONE_MAX_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="phone" value={phone} onChange={(e) => { setPhone(e.target.value); authError.clearField("phone"); }} autoComplete="username" required dir="ltr" placeholder={t("phoneExample")} aria-invalid={authError.state?.field === "phone"} aria-describedby={authError.state?.field === "phone" ? "setup-error" : undefined} />
         </label>
-        <label className="mt-3 grid gap-1 text-sm">
-          {t("password")}
-          <input ref={passwordRef} type="password" minLength={MIN_PASSWORD_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
-        </label>
+        {!vaultMode && (
+          <label className="mt-3 grid gap-1 text-sm">
+            {t("password")}
+            <input ref={passwordRef} type="password" minLength={MIN_PASSWORD_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
+          </label>
+        )}
+
 
         <AuthErrorAlert key={authError.state?.nonce ?? 0} id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">

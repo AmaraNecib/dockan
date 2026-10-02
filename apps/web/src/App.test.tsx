@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -8,11 +8,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n, { type AuthErrorInput } from "./lib/i18n";
+import { storeVaultSessionToken } from "./lib/vault-client";
 import { SETUP_TOKEN_STORAGE_KEY } from "./lib/setup-token";
 import { SIDEBAR_COLLAPSED_KEY, useSidebarCollapsed } from "./components/app/sidebar-state";
 
 let needsSetup = false;
 let setupBlocked = false;
+/** Number of needsSetup calls that fail (simulates a proxy/API interruption). */
+let needsSetupFailures = 0;
 /** The better-auth error shape the login page maps (code/message/status). */
 type SignInResult = { error: AuthErrorInput | null };
 let signInResult: SignInResult = { error: null };
@@ -35,7 +38,13 @@ let preferenceReadCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
   rpcClient: {
-    needsSetup: async () => ({ needsSetup, setupBlocked }),
+    needsSetup: async () => {
+      if (needsSetupFailures > 0) {
+        needsSetupFailures -= 1;
+        throw new Error("proxy down");
+      }
+      return { needsSetup, setupBlocked };
+    },
     firstTimeSetup: async (input: { setupToken?: string }) => {
       firstTimeSetupCalls += 1;
       firstTimeSetupArgs = input;
@@ -76,12 +85,34 @@ const { RequireSession } = await import("./App");
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
+/**
+ * The legacy auth screens are what these tests exercise, so the vault status
+ * route answers 404 by default (a legacy build). Tests that need the vault
+ * paths override this (see the unreachable-status regression).
+ */
+const originalFetch = globalThis.fetch;
+let vaultStatusResponse: () => Promise<Response> = async () => new Response("not found", { status: 404 });
+
+beforeEach(() => {
+  globalThis.fetch = Object.assign(
+    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (new URL(url, "http://localhost").pathname === "/api/vault/status") return vaultStatusResponse();
+      return originalFetch(input, init);
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+});
+
 afterEach(() => {
+  globalThis.fetch = originalFetch;
+  vaultStatusResponse = async () => new Response("not found", { status: 404 });
   for (const entry of mounted) act(() => entry.root.unmount());
   mounted = [];
   document.body.innerHTML = "";
   needsSetup = false;
   setupBlocked = false;
+  needsSetupFailures = 0;
   signInResult = { error: null };
   signInArgs = null;
   signInCalls = 0;
@@ -128,6 +159,94 @@ async function mountAuthGateFor(selector: string): Promise<HTMLElement> {
 async function mountAuthGate(): Promise<HTMLElement> {
   return mountAuthGateFor("form");
 }
+
+/** Mount past the vault gate: unlocked status + an in-process session token. */
+async function mountVaultOwnerGateFor(selector: string, children: React.ReactNode = null): Promise<HTMLElement> {
+  vaultStatusResponse = async () =>
+    Response.json({ mode: "vault", state: "unlocked", legacyDatabase: false, recoveryKeyCount: 1, lockedForMs: 0, unlocked: true });
+  storeVaultSessionToken("session-token");
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  mounted.push({ root, host });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <RequireSession>{children}</RequireSession>
+      </QueryClientProvider>,
+    );
+  });
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (host.querySelector(selector) !== null) return host;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  }
+  throw new Error(`vault owner gate did not render ${selector}`);
+}
+
+describe("vault status retry (finding 5)", () => {
+  it("shows a retry state when the status is unreachable, never the legacy login", async () => {
+    let calls = 0;
+    vaultStatusResponse = async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("api not up");
+      return Response.json({
+        mode: "vault",
+        state: "locked",
+        legacyDatabase: false,
+        recoveryKeyCount: 0,
+        lockedForMs: 0,
+        unlocked: false,
+      });
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <RequireSession>{null}</RequireSession>
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-status-unavailable"]')).not.toBeNull();
+    // the legacy login must NOT appear for a vault install with a blip
+    expect(host.querySelector("form")).toBeNull();
+
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="vault-status-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="vault-passphrase"]')).not.toBeNull();
+  });
+});
+
+describe("vault owner gate retry (round-7 finding 4)", () => {
+  it("auto-retries a failed needsSetup check instead of hanging on the loading screen", async () => {
+    needsSetupFailures = 1;
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-content"]', <div data-testid="owner-content" />);
+    // the bounded retry recovered and the owner gate rendered its children
+    expect(host.querySelector('[data-testid="owner-content"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="owner-check-retry"]')).toBeNull();
+  });
+
+  it("shows a working retry button after repeated failures", async () => {
+    needsSetupFailures = 99;
+    const host = await mountVaultOwnerGateFor('[data-testid="owner-check-retry"]');
+    expect(host.querySelector('[data-testid="owner-check-failed"]')).not.toBeNull();
+
+    // the interruption ends: the owner retries from the button and gets in
+    needsSetupFailures = 0;
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="owner-check-retry"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(host.querySelector('[data-testid="owner-check-retry"]')).toBeNull();
+  });
+});
 
 function inputByName(host: HTMLElement, name: string): HTMLInputElement {
   const input = host.querySelector<HTMLInputElement>(`input[name="${name}"]`);

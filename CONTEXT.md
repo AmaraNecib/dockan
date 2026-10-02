@@ -23,14 +23,20 @@
 - **Remaining amount / debt** (الباقي). invoice total minus what has been paid. Direction matters: unpaid *purchases* mean the shop owes the supplier; unpaid *sales* mean the customer owes the shop.
 - **Debt list**. the view grouping invoices by who owes whom: "customers owe us" and "we owe suppliers", with how much remains.
 - **Payment history**. the list of payments recorded against one invoice, shown on that invoice's screen.
-- **Admin login**. the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Recovery is per install — a saved recovery code, or a vendor-signed reset token after out-of-band verification; no email.
+- **Admin login**. the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Phase 2 (ADR-0008 §4.6) moved this to the **unified vault**: one passphrase opens the encrypted data and signs the owner in; the phone-number login remains only for legacy/plaintext builds. Recovery is per install — a saved recovery key, or a vendor-signed reset token after out-of-band verification; no email.
 - **Activity log** (سجل). the trace of what happened in the app (sales, purchases, payments, edits), so the owner can audit past actions.
 - **Backup**. an automatic daily copy of the shop's data plus a manual export button the owner can copy to a USB stick.
 
 ## Build, Access, and Data Format
 
-- **Session signing secret**. the key that signs login sessions. Generated per install on first run and stored with the shop data; never shipped in the build.
-- **Recovery code**. a single-use code the owner saves to regain access when the passphrase is forgotten. Only its hash is stored.
+- **Session signing secret**. the key that signs login sessions. Generated per install on first run and stored with the shop data; never shipped in the build. In the unified vault it lives inside the encrypted snapshot.
+- **Vault**. the encrypted store of the shop's data. One passphrase (or a recovery key) unwraps the master key; the app opens only when the vault is open.
+- **Master key**. a random key generated at first run; it is the key that encrypts the data folder. It never exists in the clear outside memory and is stored only wrapped by the passphrase and the recovery keys.
+- **Vault passphrase**. the owner's single credential: it unwraps the master key and signs the owner in, with no separate login step.
+- **Recovery key**. a long random value shown once at first run (up to five, rotatable while unlocked). It unwraps the master key too, so a forgotten passphrase is recoverable. Only the wrapped form is stored.
+- **Encrypted snapshot**. the on-disk database container (`dokan.db.enc`): an authenticated encryption of the SQLite image. The running database is in memory, so no plaintext database or WAL ever touches the disk.
+- **Vault gate**. the screens shown before the app starts: create the vault, show the recovery key once, unlock with the passphrase, or unlock with a recovery key.
+- **Recovery code**. legacy term for the single-use code of the pre-vault design; superseded by the **recovery key**.
 - **Device challenge**. a non-secret value the app shows when the owner has lost every recovery code and the password; the vendor signs it to authorize a reset.
 - **Reset token**. a signed, single-use, short-lived token the vendor produces from a device challenge.
 - **Reset signing key**. the vendor's key pair. The private half never ships; the public half is embedded in the build. It carries a version, and the build accepts a map of versions so old installs stay resettable.

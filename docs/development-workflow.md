@@ -113,6 +113,17 @@ in the install folder (which holds only the exe, the sidecar and the read-only
 Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 `bun run dev:desktop` as usual and the window loads the vite devUrl.
 
+### The unified vault in development (ADR-0008 §4.6)
+
+The api boots in **vault mode by default**: the first request shows the vault
+gate (create the vault, show the recovery key once, unlock). The gate is served
+by the locked sidecar itself, so `bun run dev:api` + `bun run dev:web` shows the
+real first-run flow in the browser. `DOKAN_VAULT=disabled` is the dev/e2e-only
+escape hatch that keeps the legacy plaintext database and password/login path;
+the packaged desktop shell never sets it. The desktop shell can drive the same
+manager over stdin with `DOKAN_VAULT_STDIN=1` (one JSON request, one JSON
+reply; the passphrase never touches argv or the environment).
+
 ### Commands
 
 ```bash

@@ -113,6 +113,8 @@ const resources = {
       dashboardPendingReturns: "مرتجعات قيد المراجعة",
       dashboardPendingReturnsHint: "يوجد {{count}} مرجوع قيد المراجعة لا يؤثر على الأرصدة حتى قبوله.",
       dashboardPendingReturnsAction: "مراجعة المرتجعات",
+      // a failed count is not a confirmed zero; say so instead of hiding it
+      dashboardPendingReturnsUnavailable: "تعذّر التحقق من المرتجعات قيد المراجعة. أعد المحاولة.",
       // issue #97 — getting-started checklist
       onboardingTitle: "خطواتك الأولى",
       onboardingHint: "أربع خطوات بسيطة لتشغيل متجرك.",
@@ -515,6 +517,7 @@ const resources = {
       returnsPendingCountLabel: "قيد المراجعة: {{count}}",
       returnsReviewedCountLabel: "تمت مراجعتها: {{count}}",
       returnsPendingBadgeLabel: "قيد المراجعة: {{count}}",
+      returnsPendingBadgeUnavailable: "تعذّر التحقق من المرتجعات",
       returnsCashWarning: "تنبيه: المبلغ النقدي ({{paid}} دج المحصل في الفاتورة) يتجاوز ما حُصّل فعلاً — القرار لك",
       returnsInvalidCash: "أدخل مبلغاً نقدياً صحيحاً ضمن قيمة المرجوع",      returnsStatus: "الحالة",
       returnsStatus_PENDING_REVIEW: "قيد المراجعة",

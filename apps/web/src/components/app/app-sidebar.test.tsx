@@ -62,7 +62,7 @@ afterEach(() => {
  * Every nav target gets a route so Link resolution never falls back to an
  * error; nothing else from the app graph is imported.
  */
-async function mountSidebar(collapsed: boolean, pendingReturnsCount = 0): Promise<HTMLElement> {
+async function mountSidebar(collapsed: boolean, pendingReturnsCount: number | null = 0, pendingReturnsError = false): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -73,6 +73,7 @@ async function mountSidebar(collapsed: boolean, pendingReturnsCount = 0): Promis
         activeKey="sale"
         user={{ name: "مالك", phone: null }}
         pendingReturnsCount={pendingReturnsCount}
+        pendingReturnsError={pendingReturnsError}
         onExpand={() => {}}
       />
     ),
@@ -290,5 +291,24 @@ describe("AppSidebar pending-returns badge (issue #118)", () => {
       `${i18n.t("navReturns")} — ${i18n.t("returnsPendingBadgeLabel", { count: 3 })}`,
     );
     expect(host.querySelector('[data-testid="nav-returns-badge"]')?.textContent).toBe("3");
+  });
+
+  // round-2 finding 1 — a failed read must not render as a confirmed zero
+  it("shows an unavailable badge, not silence, when the count read failed", async () => {
+    const host = await mountSidebar(false, null, true);
+    const badge = host.querySelector('[data-testid="nav-returns-badge-unavailable"]');
+    expect(badge).not.toBeNull();
+    expect(badge?.textContent).toBe("!");
+    // it is NOT the count badge, and the link announces why
+    expect(host.querySelector('[data-testid="nav-returns-badge"]')).toBeNull();
+    expect(linkFor(host, "/returns")?.getAttribute("aria-label")).toBe(
+      `${i18n.t("navReturns")} — ${i18n.t("returnsPendingBadgeUnavailable")}`,
+    );
+  });
+
+  it("shows no badge while the count is still unknown and nothing has failed", async () => {
+    const host = await mountSidebar(false, null, false);
+    expect(host.querySelector('[data-testid="nav-returns-badge"]')).toBeNull();
+    expect(host.querySelector('[data-testid="nav-returns-badge-unavailable"]')).toBeNull();
   });
 });

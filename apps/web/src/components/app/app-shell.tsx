@@ -1,12 +1,11 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
 import { logoutAndReload } from "@/lib/logout";
-import { orpc } from "@/lib/rpc";
+import { usePendingReturnsCount } from "@/lib/pending-returns";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
@@ -136,9 +135,9 @@ export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const activeKey = activeNavKey(pathname);
   const activeTitleKey = pageTitleFor(activeKey);
-  // issue #118 — one lightweight aggregate keeps the «المرتجعات» badge live
-  // for the whole session; a failed read simply shows no badge.
-  const pendingReturns = useQuery(orpc.returnsPendingCount.queryOptions());
+  // issue #118 — one shared, polled aggregate keeps the «المرتجعات» badge in
+  // step with the dashboard and a second window (round-2 findings 1 + 2).
+  const pendingReturns = usePendingReturnsCount();
 
   function toggleSidebar() {
     updateCollapsed((current) => !current);
@@ -161,7 +160,8 @@ export function AppShell() {
         collapsed={collapsed}
         activeKey={activeKey}
         user={user}
-        pendingReturnsCount={pendingReturns.data?.count ?? 0}
+        pendingReturnsCount={pendingReturns.data?.count ?? null}
+        pendingReturnsError={pendingReturns.isError}
         onExpand={() => updateCollapsed(() => false)}
       />
 

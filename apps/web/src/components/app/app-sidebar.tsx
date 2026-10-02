@@ -41,12 +41,15 @@ interface AppSidebarProps {
   collapsed: boolean;
   activeKey: string | null;
   user: ShellUser | null;
-  /** pending-review return count for the «المرتجعات» badge (issue #118) */
-  pendingReturnsCount: number;
+  /** pending-review return count for the «المرتجعات» badge (issue #118);
+   * null is "not known yet", never a confirmed zero */
+  pendingReturnsCount: number | null;
+  /** true when the count read failed; the badge must read as unknown, not zero */
+  pendingReturnsError: boolean;
   onExpand: () => void;
 }
 
-export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, onExpand }: AppSidebarProps) {
+export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, pendingReturnsError, onExpand }: AppSidebarProps) {
   const { t } = useTranslation();
   const systemHasActive = activeKey !== null && COLLAPSIBLE_GROUP_ITEMS.some((item) => item.key === activeKey);
   const [systemOpen, setSystemOpen] = useState(systemHasActive);
@@ -79,7 +82,7 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, on
       <nav className="flex-1 overflow-y-auto p-2" aria-label={t("shellMainNav")}>
         {NAV_GROUPS.map((group) =>
           collapsed ? (
-            <CollapsedGroup key={group.labelKey} activeKey={activeKey} items={group.items} pendingReturnsCount={pendingReturnsCount} />
+            <CollapsedGroup key={group.labelKey} activeKey={activeKey} items={group.items} pendingReturnsCount={pendingReturnsCount} pendingReturnsError={pendingReturnsError} />
           ) : (
             <div key={group.labelKey} className="mb-4">
               {group.collapsible ? (
@@ -96,7 +99,13 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, on
                   {systemOpen && (
                     <div className="mt-0.5 space-y-1">
                       {group.items.map((item) => (
-                        <NavLink key={item.key} item={item} activeKey={activeKey} badgeCount={item.key === "returns" ? pendingReturnsCount : 0} />
+                        <NavLink
+                          key={item.key}
+                          item={item}
+                          activeKey={activeKey}
+                          badgeCount={item.key === "returns" ? pendingReturnsCount : 0}
+                          badgeUnavailable={item.key === "returns" && pendingReturnsError}
+                        />
                       ))}
                     </div>
                   )}
@@ -108,7 +117,13 @@ export function AppSidebar({ collapsed, activeKey, user, pendingReturnsCount, on
                   </div>
                   <div className="space-y-1">
                     {group.items.map((item) => (
-                      <NavLink key={item.key} item={item} activeKey={activeKey} badgeCount={item.key === "returns" ? pendingReturnsCount : 0} />
+                      <NavLink
+                        key={item.key}
+                        item={item}
+                        activeKey={activeKey}
+                        badgeCount={item.key === "returns" ? pendingReturnsCount : 0}
+                        badgeUnavailable={item.key === "returns" && pendingReturnsError}
+                      />
                     ))}
                   </div>
                 </>
@@ -154,31 +169,45 @@ function AvatarGlyph({ user }: { user: ShellUser | null }) {
   return <span dir="ltr">{text}</span>;
 }
 
-function CollapsedGroup({ items, activeKey, pendingReturnsCount }: { items: NavItem[]; activeKey: string | null; pendingReturnsCount: number }) {
+function CollapsedGroup({ items, activeKey, pendingReturnsCount, pendingReturnsError }: { items: NavItem[]; activeKey: string | null; pendingReturnsCount: number | null; pendingReturnsError: boolean }) {
   return (
     <div className="mb-1 space-y-0.5">
       {items.map((item) => (
-        <NavLink key={item.key} item={item} activeKey={activeKey} collapsed badgeCount={item.key === "returns" ? pendingReturnsCount : 0} />
+        <NavLink
+          key={item.key}
+          item={item}
+          activeKey={activeKey}
+          collapsed
+          badgeCount={item.key === "returns" ? pendingReturnsCount : 0}
+          badgeUnavailable={item.key === "returns" && pendingReturnsError}
+        />
       ))}
     </div>
   );
 }
 
-function NavLink({ item, activeKey, collapsed, badgeCount = 0 }: { item: NavItem; activeKey: string | null; collapsed?: boolean; badgeCount?: number }) {
+function NavLink({ item, activeKey, collapsed, badgeCount = null, badgeUnavailable = false }: { item: NavItem; activeKey: string | null; collapsed?: boolean; badgeCount?: number | null; badgeUnavailable?: boolean }) {
   const { t } = useTranslation();
   const active = activeKey === item.key;
   const Icon = item.icon;
   const label = t(item.labelKey);
-  const pendingLabel = badgeCount > 0 ? t("returnsPendingBadgeLabel", { count: badgeCount }) : null;
+  // a failed count is not a confirmed zero: label and draw it as unknown,
+  // never as "nothing pending" (round-2 finding 1)
+  const badgeLabel = badgeUnavailable
+    ? t("returnsPendingBadgeUnavailable")
+    : badgeCount !== null && badgeCount > 0
+      ? t("returnsPendingBadgeLabel", { count: badgeCount })
+      : null;
+  const showBadge = badgeUnavailable || (badgeCount !== null && badgeCount > 0);
   return (
     <Link
       to={item.to}
       search={item.preserveSearch ? true : undefined}
       title={collapsed ? label : undefined}
       // `title` is a tooltip, not an accessible name: a collapsed icon-only
-      // link must carry the label itself, and a badge count must be announced
+      // link must carry the label itself, and a badge state must be announced
       // rather than hidden behind an aria-hidden number.
-      aria-label={pendingLabel === null ? (collapsed ? label : undefined) : `${label} — ${pendingLabel}`}
+      aria-label={badgeLabel === null ? (collapsed ? label : undefined) : `${label} — ${badgeLabel}`}
       aria-current={active ? "page" : undefined}
       className={cn(
         "relative flex items-center gap-3 rounded-md py-2 text-sm transition-colors select-none",
@@ -188,16 +217,17 @@ function NavLink({ item, activeKey, collapsed, badgeCount = 0 }: { item: NavItem
     >
       <Icon size={16} className={cn("shrink-0", active && "text-primary")} />
       {!collapsed && <span className="truncate">{label}</span>}
-      {badgeCount > 0 && (
+      {showBadge && (
         <span
           aria-hidden="true"
           className={cn(
-            "grid place-items-center rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground",
+            "grid place-items-center rounded-full border px-1.5 py-0.5 text-xs font-semibold",
+            badgeUnavailable ? "border-warning/40 bg-warning/10 text-warning" : "border-transparent bg-primary text-primary-foreground",
             collapsed ? "absolute -end-1 -top-1" : "ms-auto",
           )}
-          data-testid="nav-returns-badge"
+          data-testid={badgeUnavailable ? "nav-returns-badge-unavailable" : "nav-returns-badge"}
         >
-          {badgeCount}
+          {badgeUnavailable ? "!" : badgeCount}
         </span>
       )}
     </Link>

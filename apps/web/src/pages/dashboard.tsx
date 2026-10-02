@@ -13,6 +13,7 @@ import { isOnboardingComplete } from "@/components/app/onboarding-steps";
 import { PREFERENCES_QUERY_KEY } from "@/lib/preferences";
 
 import { orpc } from "../lib/rpc";
+import { usePendingReturnsCount } from "../lib/pending-returns";
 import { formatDate } from "../lib/dates";
 
 /**
@@ -51,8 +52,9 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
   const { t } = useTranslation();
   const summary = useQuery({ ...orpc.dashboardSummary.queryOptions(), refetchInterval: refreshMs });
   // issue #118 — a pending return does not move any balance until accepted, so
-  // the landing screen must explain the number the owner is about to doubt
-  const pendingReturns = useQuery({ ...orpc.returnsPendingCount.queryOptions(), refetchInterval: refreshMs });
+  // the landing screen must explain the number the owner is about to doubt. The
+  // shared hook keeps it in step with the shell badge (round-2 finding 2).
+  const pendingReturns = usePendingReturnsCount(refreshMs);
 
   // The checklist's dismissal/completion are server-side preferences (issue 97
   // follow-up): they survive a packaged restart. While they load, the panel
@@ -114,7 +116,24 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
     <section data-testid="dashboard-page">
       <h1 className="text-xl font-bold">{t("dashboardTitle")}</h1>
 
-      {pendingReturns.data !== undefined && pendingReturns.data.count > 0 && (
+      {pendingReturns.isError ? (
+        // a failed count must not read as "nothing pending" (round-2 finding 1)
+        <div
+          className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
+          role="status"
+          data-testid="dashboard-pending-returns-unavailable"
+        >
+          <p>{t("dashboardPendingReturnsUnavailable")}</p>
+          <button
+            type="button"
+            className="rounded-lg border border-warning/40 px-3 py-1 hover:bg-warning/20"
+            onClick={() => void pendingReturns.refetch()}
+            data-testid="dashboard-pending-returns-retry"
+          >
+            {t("itemsSearchRetry")}
+          </button>
+        </div>
+      ) : pendingReturns.data !== undefined && pendingReturns.data.count > 0 ? (
         <div
           className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border border-warning/30 bg-warning/10 p-3 text-sm text-warning"
           role="status"
@@ -132,7 +151,7 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
             {t("dashboardPendingReturnsAction")}
           </Link>
         </div>
-      )}
+      ) : null}
 
       {/* Getting-started checklist: shown only while the server says a step is
           open and the owner has not dismissed or completed it. It never blocks

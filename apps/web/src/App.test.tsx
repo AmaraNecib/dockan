@@ -475,6 +475,25 @@ describe("login failures name the problem (issue #100)", () => {
   });
 });
 
+describe("login normalises Arabic-Indic phone digits (issue #108)", () => {
+  it("types raw Arabic-Indic digits into the real form and signs in with the canonical username", async () => {
+    needsSetup = false;
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", status: 401 } };
+    const host = await mountAuthGate();
+
+    // the owner types the numerals their Arabic keyboard produces
+    setInputValue(inputByName(host, "username"), "٠٥٥٠١٢٣١٢٣");
+    setInputValue(inputByName(host, "password"), "any-password");
+    await submitForm(host);
+
+    // if the form stopped normalising, the attempt would be refused as an
+    // invalid phone (signInCalls 0) — exactly the #108 lockout this guards
+    expect(signInCalls).toBe(1);
+    expect(signInArgs?.username).toBe("213550123123");
+    expect(host.querySelector('[role="alert"]')?.textContent).not.toBe(i18n.t("INVALID_PHONE_NUMBER"));
+  });
+});
+
 describe("setup names the field (issue #100)", () => {
   it("setup: a three-character password is rejected in Arabic without a request", async () => {
     needsSetup = true;

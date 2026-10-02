@@ -36,8 +36,6 @@ export default defineConfig({
         DOKAN_PORT: String(API_PORT),
         DOKAN_DATA_DIR: e2eData,
         E2E_DATA_DIR: e2eData,
-        // first-time setup in both e2e specs uses this secret
-        DOKAN_BUILD_SECRET: "e2e-secret-0123456789",
       },
     },
     {

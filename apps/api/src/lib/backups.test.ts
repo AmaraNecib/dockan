@@ -80,7 +80,6 @@ beforeAll(async () => {
   const config = createAppConfig({
     DOKAN_DATA_DIR: root,
     DOKAN_DB_PATH: path.join(root, "live.db"),
-    DOKAN_AUTH_SECRET: "test-auth-secret",
   });
   conn = openConnection(config);
   store = createDrizzleStore(conn);

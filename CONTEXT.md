@@ -23,9 +23,18 @@
 - **Remaining amount / debt** (الباقي). invoice total minus what has been paid. Direction matters: unpaid *purchases* mean the shop owes the supplier; unpaid *sales* mean the customer owes the shop.
 - **Debt list**. the view grouping invoices by who owes whom: "customers owe us" and "we owe suppliers", with how much remains.
 - **Payment history**. the list of payments recorded against one invoice, shown on that invoice's screen.
-- **Admin login**. the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Reset via the build secret; no email.
+- **Admin login**. the single password-protected entry to the app, using the owner's phone number (+213…) as the login name, protecting the shop's data when the laptop is shared. Recovery is per install — a saved recovery code, or a vendor-signed reset token after out-of-band verification; no email.
 - **Activity log** (سجل). the trace of what happened in the app (sales, purchases, payments, edits), so the owner can audit past actions.
 - **Backup**. an automatic daily copy of the shop's data plus a manual export button the owner can copy to a USB stick.
+
+## Build, Access, and Data Format
+
+- **Session signing secret**. the key that signs login sessions. Generated per install on first run and stored with the shop data; never shipped in the build.
+- **Recovery code**. a single-use code the owner saves to regain access when the passphrase is forgotten. Only its hash is stored.
+- **Device challenge**. a non-secret value the app shows when the owner has lost every recovery code and the password; the vendor signs it to authorize a reset.
+- **Reset token**. a signed, single-use, short-lived token the vendor produces from a device challenge.
+- **Reset signing key**. the vendor's key pair. The private half never ships; the public half is embedded in the build. It carries a version, and the build accepts a map of versions so old installs stay resettable.
+- **Schema version**. a number stored in the database that identifies the data format; older versions migrate forward on open, newer ones are refused.
 
 ## Deferred Concepts
 

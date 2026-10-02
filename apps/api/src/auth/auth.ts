@@ -10,9 +10,13 @@ import { accounts, sessions, users, verifications } from "../db/schema";
  * Dokan's auth instance. Username-password login where the username is the
  * shop owner's normalized Algerian phone (digits, no +). No email, no OTP;
  * local-first app (ADR-0001). The username plugin's sign-up endpoint stays
- * off the UI; the single admin is provisioned by the build secret.
+ * off the UI; the single admin is provisioned by first-run setup.
+ *
+ * The session-signing secret is read from the database at boot (ADR-0008
+ * §4.2): one universal build, generated per install on first run, so copying
+ * or restoring the data folder keeps sessions valid.
  */
-export function createAuth(db: DrizzleDb, config: AppConfig) {
+export function createAuth(db: DrizzleDb, config: AppConfig, sessionSecret: string) {
   return betterAuth({
     database: drizzleAdapter(db, {
       provider: "sqlite",
@@ -22,7 +26,7 @@ export function createAuth(db: DrizzleDb, config: AppConfig) {
       schema: { user: users, session: sessions, account: accounts, verification: verifications },
     }),
     baseURL: `http://${config.host}:${config.port}`,
-    secret: config.authSecret,
+    secret: sessionSecret,
     plugins: [
       username({
         displayUsername: false,

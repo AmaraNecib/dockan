@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { drizzle, type BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 
 import type { AppConfig } from "../config";
+import { assertSchemaVersionSupported } from "../lib/schema-version";
 import * as schema from "./schema";
 
 export type Schema = typeof schema;
@@ -34,6 +35,16 @@ export function openConnection(config: AppConfig): Connection {
     // database write (notably invoice-number allocation). Wait for the writer
     // rather than turning a normal concurrent request into SQLITE_BUSY.
     sqlite.exec("PRAGMA busy_timeout = 5000;");
+    // Import/restore safety (ADR-0008 §4.5): a database written by a newer
+    // app is refused here, before any migration or write. Older formats pass
+    // and are migrated by store.setup(), which stamps the current version.
+    try {
+      assertSchemaVersionSupported(sqlite);
+    } catch (error) {
+      // do not leak the file handle on the refusal path
+      sqlite.close();
+      throw error;
+    }
     const db = drizzle(sqlite, { schema });
     return {
       db,

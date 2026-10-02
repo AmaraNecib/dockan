@@ -5,16 +5,12 @@ import { randomUUID } from "node:crypto";
 import type { AppConfig } from "../config";
 import { rankCatalog } from "../lib/catalog-search";
 import { normalizeAlgerianPhone, phoneToUsername } from "../lib/phone";
-import { constantTimeEqual } from "../lib/constant-time";
 import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { resetAdminPassword } from "../auth/admin";
-import { AppError } from "../lib/errors";
-import { createResetThrottle, type ResetThrottle } from "../lib/reset-throttle";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
@@ -39,9 +35,6 @@ type RpcDeps = {
   logger: AppLogger;
   store: StorePort;
   auth: BetterAuthInstance;
-  /** issue #52: injectable so tests can drive the lockout clock; a fresh
-   * in-memory throttle is created per router when omitted */
-  resetThrottle?: ResetThrottle;
   /** injectable so tests can pin the server day instead of reading the wall
    * clock; the real clock is used when omitted */
   now?: () => Date;
@@ -153,19 +146,12 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
 }
 
 /**
- * The merged Dokan router: ticket 02 owns auth (build-secret reset, session
- * guard), ticket 03 owns categories/items procedures. Every business procedure
- * passes requireSession; error texts are stable keys the ui translates.
+ * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
+ * categories/items procedures. Every business procedure passes requireSession;
+ * error texts are stable keys the ui translates.
  */
 export function createRpcRouter(deps: RpcDeps) {
   const os = implement(dokanContract).$context<RpcContext>();
-
-  const resetThrottle = deps.resetThrottle ?? createResetThrottle();
-  // issue #52 (debate): reset attempts serialize through this tail so the
-  // lockout gate cannot be raced — without it every request already past
-  // check() carries a full guess through a just-opened window. Reset is a
-  // rare provisioning flow; serialization costs nothing there.
-  let resetTail: Promise<unknown> = Promise.resolve();
 
   const requireSession = async (context: RpcContext) => {
     // SAFETY: getSession validates the cookie against the session store and
@@ -202,35 +188,26 @@ export function createRpcRouter(deps: RpcDeps) {
     // --- auth ----------------------------------------------------------------
     needsSetup: os.needsSetup.handler(async () => {
       const rows = await deps.db.select({ id: users.id }).from(users).limit(1);
-      return { needsSetup: rows.length === 0 };
+      if (rows.length > 0) return { needsSetup: false };
+      // Shop records without an owner are not a fresh install: provisioning
+      // refuses them, so the gate must not offer setup either (ADR-0008 §4.1).
+      return { needsSetup: await deps.store.databaseIsEmpty() };
     }),
 
     firstTimeSetup: os.firstTimeSetup.handler(async ({ input }) => {
       // Order matters. On an installation that already has an owner, every
-      // caller must get the same refusal: checking the secret first turned this
-      // public procedure into an oracle that told a right guess from a wrong
-      // one, and a right guess is enough to reset the owner's password through
-      // authResetPassword. The transaction below re-checks existence to close
-      // the race; this check only makes the refusal uniform.
+      // caller must get the same refusal. The transaction below re-checks both
+      // gates to close the race; these checks only make the refusal uniform and
+      // fail fast before the expensive password hash.
       const alreadySetup = await deps.db.select({ id: users.id }).from(users).limit(1);
       if (alreadySetup.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
-
-      // the same lockout the reset path uses, so guesses are bounded and are
-      // counted against one shared budget
-      const status = resetThrottle.check();
-      if (!status.allowed) {
-        deps.logger.warn("SETUP_LOCKED", `firstTimeSetup refused while lockout is active (retry in ~${Math.ceil(status.retryAfterMs / 1000)}s)`);
-        throw new ORPCError("TOO_MANY_REQUESTS", { message: "RESET_LOCKED" });
-      }
-
-      // Provisioning creates the first owner and closes setup to everyone else,
-      // so it is gated by the same build secret that protects a password reset.
-      if (deps.config.buildSecret === undefined) {
-        throw new ORPCError("BAD_REQUEST", { message: "BUILD_SECRET_NOT_CONFIGURED" });
-      }
-      if (!constantTimeEqual(input.secret, deps.config.buildSecret)) {
-        resetThrottle.recordFailure();
-        throw new ORPCError("FORBIDDEN", { message: "WRONG_BUILD_SECRET" });
+      // First-run provisioning creates the owner, so it is allowed only on an
+      // empty database. A database that already carries shop records but no
+      // owner (a tampered or half-restored data folder) must never hand out a
+      // new owner; reset goes through the recovery paths instead (ADR-0008
+      // §4.1). No secret gates this: the database state does.
+      if (!(await deps.store.databaseIsEmpty())) {
+        throw new ORPCError("FORBIDDEN", { message: "SETUP_DATABASE_NOT_EMPTY" });
       }
 
       const phone = normalizeAlgerianPhone(input.phoneNumber);
@@ -249,6 +226,7 @@ export function createRpcRouter(deps: RpcDeps) {
       return deps.store.withTransactionImmediate(async (tx) => {
         const existing = await deps.db.select({ id: users.id }).from(users).limit(1);
         if (existing.length > 0) throw new ORPCError("FORBIDDEN", { message: "SETUP_ALREADY_DONE" });
+        if (!(await tx.databaseIsEmpty())) throw new ORPCError("FORBIDDEN", { message: "SETUP_DATABASE_NOT_EMPTY" });
 
         const userId = randomUUID();
         await deps.db.insert(users).values({
@@ -289,39 +267,6 @@ export function createRpcRouter(deps: RpcDeps) {
         deps.logger.info("FIRST_TIME_SETUP", "owner account created", { storeName: input.storeName });
         return { ok: true as const };
       });
-    }),
-    authResetPassword: os.authResetPassword.handler(({ input }) => {
-      const attempt = resetTail.then(async () => {
-        // issue #52: bound lockout after repeated wrong-secret guesses.
-        // Checked BEFORE any work, and the clear error never reveals whether a
-        // guess was close. Only WRONG_BUILD_SECRET counts as an attempt
-        // (invalid phone / unconfigured secret are operator errors, not
-        // guessing).
-        const status = resetThrottle.check();
-        if (!status.allowed) {
-          deps.logger.warn("RESET_LOCKED", `authResetPassword refused while lockout is active (retry in ~${Math.ceil(status.retryAfterMs / 1000)}s)`);
-          throw new ORPCError("TOO_MANY_REQUESTS", { message: "RESET_LOCKED" });
-        }
-        try {
-          const result = await resetAdminPassword(
-            { db: deps.db, auth: deps.auth, store: deps.store, config: deps.config, logger: deps.logger },
-            input,
-          );
-          resetThrottle.recordSuccess();
-          return result;
-        } catch (err) {
-          // AppError carries a stable key; surface it so the ui can translate it
-          if (err instanceof AppError) {
-            if (err.code === "WRONG_BUILD_SECRET") resetThrottle.recordFailure();
-            throw new ORPCError(err.code === "WRONG_BUILD_SECRET" ? "FORBIDDEN" : "BAD_REQUEST", { message: err.code });
-          }
-          throw err;
-        }
-      });
-      // SAFETY: the tail must survive rejected attempts or one failure would
-      // poison every later enqueue with an unhandled-rejection chain
-      resetTail = attempt.catch(() => undefined);
-      return attempt;
     }),
 
     // --- categories (ticket 03) ----------------------------------------------

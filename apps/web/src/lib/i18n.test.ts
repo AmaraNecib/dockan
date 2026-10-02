@@ -44,8 +44,7 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
 
   it("keeps translating the stable oRPC keys the app already used", () => {
     expect(tError("CATEGORY_EXISTS")).toBe(i18n.t("CATEGORY_EXISTS"));
-    expect(tError("WRONG_BUILD_SECRET")).toBe(i18n.t("WRONG_BUILD_SECRET"));
-    expect(tError("RESET_LOCKED")).toBe(i18n.t("RESET_LOCKED"));
+    expect(tError("SETUP_DATABASE_NOT_EMPTY")).toBe(i18n.t("SETUP_DATABASE_NOT_EMPTY"));
   });
 
   it("falls back to raw validator sentences only when no code arrives", () => {

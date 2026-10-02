@@ -22,7 +22,6 @@ let signInThrows = false;
 let signInDelayMs = 0;
 let firstTimeSetupCalls = 0;
 let setupError: Error | null = null;
-let resetPasswordCalls = 0;
 
 // issue #97 follow-up: the shell's preference migration
 let sessionData: { user: { id: string } } | null = null;
@@ -37,10 +36,6 @@ mock.module("@/lib/rpc", () => ({
     firstTimeSetup: async () => {
       firstTimeSetupCalls += 1;
       if (setupError !== null) throw setupError;
-      return {};
-    },
-    authResetPassword: async () => {
-      resetPasswordCalls += 1;
       return {};
     },
     preferencesGet: async () => {
@@ -89,7 +84,6 @@ afterEach(() => {
   signInDelayMs = 0;
   firstTimeSetupCalls = 0;
   setupError = null;
-  resetPasswordCalls = 0;
   sessionData = null;
   sessionPending = false;
   preferenceStore = {};
@@ -147,18 +141,6 @@ async function submitForm(host: HTMLElement): Promise<void> {
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
-}
-
-async function openForgotPassword(): Promise<HTMLElement> {
-  needsSetup = false;
-  const host = await mountAuthGate();
-  const button = host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]');
-  if (button === null) throw new Error("login form has no forgot-password button");
-  await act(async () => {
-    button.click();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-  return host;
 }
 
 describe("auth phone inputs (issue #94)", () => {
@@ -238,32 +220,6 @@ describe("login failures name the problem (issue #100)", () => {
     expect(inputByName(host, "password").getAttribute("minlength")).toBe("4");
   });
 
-  it("does not re-announce the setup notice after a trip to forgot-password", async () => {
-    needsSetup = true;
-    setupError = new Error("SETUP_ALREADY_DONE");
-    const host = await mountAuthGate();
-
-    setInputValue(inputByName(host, "ownerName"), "مالك");
-    setInputValue(inputByName(host, "storeName"), "متجر");
-    setInputValue(inputByName(host, "phone"), "0550123123");
-    setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
-    await submitForm(host);
-    expect(host.querySelector('[role="alert"]')).not.toBeNull();
-
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="forgot-password"]')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    // back to login: the notice was a one-shot handoff and is spent
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('[data-testid="forgot-back"]')?.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
-    expect(host.querySelector('[role="alert"]')).toBeNull();
-  });
-
   it("a malformed phone shows the phone message and never calls sign-in", async () => {
     needsSetup = false;
     const host = await mountAuthGate();
@@ -329,7 +285,7 @@ describe("login failures name the problem (issue #100)", () => {
   });
 });
 
-describe("setup and reset name the field (issue #100)", () => {
+describe("setup names the field (issue #100)", () => {
   it("setup: a three-character password is rejected in Arabic without a request", async () => {
     needsSetup = true;
     const host = await mountAuthGate();
@@ -355,39 +311,10 @@ describe("setup and reset name the field (issue #100)", () => {
     // be over-rejected by the new pre-submit check
     setInputValue(inputByName(host, "phone"), "00213 550 123 123");
     setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
     await submitForm(host);
 
     expect(firstTimeSetupCalls).toBe(1);
     expect(host.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("reset: a malformed phone is rejected in Arabic without a request", async () => {
-    const host = await openForgotPassword();
-
-    setInputValue(inputByName(host, "secret"), "secret");
-    setInputValue(inputByName(host, "phone"), "12345");
-    setInputValue(inputByName(host, "newPassword"), "abcd");
-    await submitForm(host);
-
-    const alert = host.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
-    expect(document.activeElement).toBe(inputByName(host, "phone"));
-    expect(resetPasswordCalls).toBe(0);
-  });
-
-  it("reset: a two-character new password is rejected in Arabic without a request", async () => {
-    const host = await openForgotPassword();
-
-    setInputValue(inputByName(host, "secret"), "secret");
-    setInputValue(inputByName(host, "phone"), "0550123123");
-    setInputValue(inputByName(host, "newPassword"), "ab");
-    await submitForm(host);
-
-    const alert = host.querySelector('[role="alert"]');
-    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
-    expect(document.activeElement).toBe(inputByName(host, "newPassword"));
-    expect(resetPasswordCalls).toBe(0);
   });
 });
 
@@ -417,16 +344,17 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "storeName"), "متجر");
     setInputValue(inputByName(host, "phone"), "0550123123");
     setInputValue(inputByName(host, "password"), "abcd");
-    setInputValue(inputByName(host, "secret"), "secret");
     await submitForm(host);
 
     const alert = host.querySelector('[role="alert"]');
     expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
-    // the message says "sign in", so the form that can do it must be on screen
+    // the message says "sign in", so the form that can do it must be on screen,
+    // and the removed secret/reset entry points must not come back
     expect(host.querySelector('[data-testid="login-submit"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="setup-secret"]')).toBeNull();
+    expect(host.querySelector('[data-testid="forgot-password"]')).toBeNull();
   });
 
   it("clears a stale field error as soon as the owner corrects that field", async () => {

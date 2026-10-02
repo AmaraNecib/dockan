@@ -13,11 +13,12 @@ import {
 
 import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
-import { createAppConfig, DEV_AUTH_SECRET, MIN_AUTH_SECRET_LEN } from "./config";
+import { createAppConfig } from "./config";
 import { openConnection } from "./db/connection";
 import { ensureDailyBackup } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
+import { ensureSessionSecret } from "./lib/session-secret";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 
@@ -26,43 +27,6 @@ import { createDrizzleStore } from "./store/drizzle-store";
  * server. main.ts knows seams, not SQL (ADR-0003).
  */
 const config = createAppConfig();
-
-// Per-customer provisioning secret (PR #51 finding 2): the release pipeline
-// bakes the vendor-supplied secret into this compiled exe by replacing the
-// `process.env.DOKAN_BUILD_SECRET` expression below with a string literal
-// (`bun build --define`, see apps/desktop/scripts/sidecar.ts). In packaged
-// builds nothing sets the env var at runtime, so this fill is what makes the
-// secret available for the reset procedure; in dev it reads the shell env as
-// before. It is a comparison-only credential — never logged, never stored.
-config.buildSecret ??= process.env.DOKAN_BUILD_SECRET;
-
-// Per-customer session-signing secret (PR #51 finding 5): mirrors the build
-// secret seam exactly — the release pipeline inlines DOKAN_AUTH_SECRET with
-// the SAME `bun build --define` mechanism, replacing the expression below
-// with a string literal. Packaged builds never set the env var at runtime,
-// so this fill is what makes better-auth sign sessions with the per-customer
-// key. The dev/test sentinel (DEV_AUTH_SECRET) can never reach a packaged
-// binary: the pipeline requires >= 32 chars AND the packaged-boot guard below
-// refuses to start without it.
-config.authSecret = process.env.DOKAN_AUTH_SECRET ?? config.authSecret;
-
-// PR #51 finding 5 packaged-boot guard: the desktop shell signals "packaged"
-// by setting webDataDir/bootToken, so a packaged binary must NEVER sign
-// sessions with the shared dev sentinel — extracting it from the binary would
-// forge admin sessions fleet-wide. The release pipeline validates the secret
-// at build time; this is the runtime backstop for a misbuilt/downgraded
-// artifact.
-if (
-  (config.webDataDir !== undefined || config.bootToken !== undefined) &&
-  (config.authSecret.length < MIN_AUTH_SECRET_LEN || config.authSecret === DEV_AUTH_SECRET)
-) {
-  console.error(
-    "[dokan] refusing to boot: packaged build without a strong per-customer DOKAN_AUTH_SECRET (>= " +
-      `${MIN_AUTH_SECRET_LEN} chars) — rebuild via ` +
-      "`bun run --filter @dokan/desktop portable` with DOKAN_AUTH_SECRET set.",
-  );
-  process.exit(1);
-}
 
 // A fresh install's app-data folder does not exist yet. Nothing else creates
 // it (backup copy targets <dataDir>/backups, the logger makes <dataDir>/logs),
@@ -75,6 +39,12 @@ const conn = openConnection(config);
 const store = createDrizzleStore(conn, logger);
 
 await store.setup();
+
+// One universal build (ADR-0008 §4.2): the session-signing secret is generated
+// here on first run and stored in the database. A pre-universal database with
+// no stored secret gets one now, invalidating its old sessions exactly once;
+// no recovery credential is handed out at this moment.
+const sessionSecret = await ensureSessionSecret(store);
 
 // daily startup backup (ticket 13): one copy per Algeria-local day. A failed
 // backup is logged loudly but must not block boot — a full disk should not
@@ -92,7 +62,7 @@ try {
   logger.error("SERVER_ERROR", "daily startup backup failed", err instanceof Error ? err : new Error(String(err)));
 }
 
-const auth = createAuth(conn.db, config);
+const auth = createAuth(conn.db, config, sessionSecret);
 const rpcRouter = createRpcRouter({ db: conn.db, config, logger, store, auth });
 const deps: AppDeps = { config, logger, auth, rpcRouter };
 const app = createApp(deps);

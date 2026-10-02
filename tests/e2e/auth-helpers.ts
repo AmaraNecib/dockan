@@ -10,7 +10,6 @@ const OWNER_NAME = "مالك الاختبار";
 const STORE_NAME = "متجر الاختبار";
 const PHONE = "0550123123";
 const PASSWORD = "pass-1234";
-const SECRET = "e2e-secret-0123456789";
 
 interface SignInOptions {
   /** Route where the auth gate should appear; defaults to the dashboard. */
@@ -41,7 +40,6 @@ export async function provisionOwner(page: Page, startPath?: string): Promise<vo
     await page.getByLabel("اسم المتجر").fill(STORE_NAME);
     await page.getByLabel("رقم الهاتف").fill(PHONE);
     await page.getByLabel("كلمة السر").fill(PASSWORD);
-    await page.getByTestId("setup-secret").fill(SECRET);
     await page.getByRole("button", { name: "إنشاء الحساب" }).click();
     // setup succeeds into the login form
     await expect(loginHeading).toBeVisible();

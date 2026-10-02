@@ -20,7 +20,7 @@ let store: StorePort;
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-store-"));
   conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }),
     );
   store = createDrizzleStore(conn);
   await store.setup();
@@ -91,7 +91,7 @@ describe("setup + seed", () => {
   it("self-heals an interrupted default-category seed exactly once (greptile round)", async () => {
     const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-seed-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db") }),
     );
     const legacyStore = createDrizzleStore(legacy);
     await legacyStore.setup(); // full atomic seed + marker
@@ -125,7 +125,7 @@ describe("setup + seed", () => {
   it("keeps the defaults-only-when-empty policy: owner tables are never reseeded (greptile round)", async () => {
     const ownerDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-owner-"));
     const ownerConn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: ownerDir, DOKAN_DB_PATH: path.join(ownerDir, "owner.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: ownerDir, DOKAN_DB_PATH: path.join(ownerDir, "owner.db") }),
     );
     const ownerStore = createDrizzleStore(ownerConn);
     await ownerStore.setup();
@@ -173,7 +173,7 @@ describe("setup + seed", () => {
   it("expense seed takes the write lock BEFORE its marker/rows read", async () => {
     const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-exp-lockfirst-"));
     const seedConn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db") }),
     );
     const seedStore = createDrizzleStore(seedConn);
     await seedStore.setup();
@@ -183,7 +183,7 @@ describe("setup + seed", () => {
 
     // second connection holds the write lock for the whole attempt
     const holder = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: seedDir, DOKAN_DB_PATH: path.join(seedDir, "seed.db") }),
     );
     holder.raw.exec("BEGIN IMMEDIATE");
     holder.raw.exec("INSERT INTO settings (key, value) VALUES ('lock.probe', 'held') ON CONFLICT(key) DO UPDATE SET value = 'held'");
@@ -332,7 +332,7 @@ describe("barcodes (ticket 28)", () => {
   it("migrates a legacy items table (no barcode column) on setup", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-items-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     try {
       // the pre-ticket-28 items shape: no barcode column, plus a row to prove data survives
@@ -376,7 +376,7 @@ describe("barcodes (ticket 28)", () => {
   it("backfills sale fields when an existing invoice schema predates discounts", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     try {
       legacy.raw.exec("CREATE TABLE categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)");
@@ -409,7 +409,7 @@ describe("barcodes (ticket 28)", () => {
   it("migrates a pre-#68 returns table: adds debt_applied and marks legacy rows fully applied", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     try {
       // the pre-#68 shape: settles the debt at creation, has cash_paid_out /
@@ -460,7 +460,7 @@ describe("barcodes (ticket 28)", () => {
   it("heals an interrupted sale-column migration on the next setup (schema present, backfill not applied)", async () => {
     const interruptedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-interrupted-"));
     const interrupted = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: interruptedDir, DOKAN_DB_PATH: path.join(interruptedDir, "interrupted.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: interruptedDir, DOKAN_DB_PATH: path.join(interruptedDir, "interrupted.db") }),
     );
     try {
       // The interrupted state: the ALTERs from a previous boot committed (all
@@ -511,7 +511,7 @@ describe("barcodes (ticket 28)", () => {
   it("never rewrites legitimate zero-default sale lines in a markerless database", async () => {
     const staleDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-stale-"));
     const stale = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: staleDir, DOKAN_DB_PATH: path.join(staleDir, "stale.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: staleDir, DOKAN_DB_PATH: path.join(staleDir, "stale.db") }),
     );
     try {
       // A database upgraded from the PRE-marker implementation: the columns
@@ -590,7 +590,7 @@ describe("barcodes (ticket 28)", () => {
   it("adds cogs_exact to pre-column databases, backfills legacy rows, and marks the run", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-cogs-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     try {
       // a database created before the exact-COGS column existed: invoices +
@@ -879,7 +879,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
   it("backfills one party per distinct typed name and points the five live invoices at it", async () => {
     const backfillDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: backfillDir, DOKAN_DB_PATH: path.join(backfillDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: backfillDir, DOKAN_DB_PATH: path.join(backfillDir, "legacy.db") }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -950,7 +950,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
   it("collapses whitespace and diacritic name variants into one backfilled party", async () => {
     const variantsDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-variants-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: variantsDir, DOKAN_DB_PATH: path.join(variantsDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: variantsDir, DOKAN_DB_PATH: path.join(variantsDir, "legacy.db") }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -980,7 +980,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
   it("groups a legacy name carrying a bidi mark with its clean spelling", async () => {
     const bidiDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-bidi-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: bidiDir, DOKAN_DB_PATH: path.join(bidiDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: bidiDir, DOKAN_DB_PATH: path.join(bidiDir, "legacy.db") }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -1009,7 +1009,7 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
   it("backfill reuses an existing same-named party instead of duplicating a debtor", async () => {
     const reuseDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backfill-reuse-"));
     const conn = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: reuseDir, DOKAN_DB_PATH: path.join(reuseDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: reuseDir, DOKAN_DB_PATH: path.join(reuseDir, "legacy.db") }),
     );
     try {
       const legacy = createDrizzleStore(conn);
@@ -1405,10 +1405,10 @@ describe("transactions", () => {
     const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-invoice-sequence-"));
     const dbPath = path.join(sharedDir, "shared.db");
     const firstConnection = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath, DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath }),
     );
     const secondConnection = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath, DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: sharedDir, DOKAN_DB_PATH: dbPath }),
     );
     const firstStore = createDrizzleStore(firstConnection);
     const secondStore = createDrizzleStore(secondConnection);
@@ -1503,7 +1503,7 @@ describe("auth column migration", () => {
   it("rebuilds a ticket-01 auth table (snake columns) into the current schema", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-auth-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     // the account/session tables ticket 01 left behind: snake_case, NOT NULL
     legacy.raw.exec("CREATE TABLE account (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, provider_id TEXT NOT NULL, userId TEXT NOT NULL)");
@@ -1554,7 +1554,7 @@ describe("backup", () => {
     await store.copyDatabaseTo(dest);
     expect(fs.existsSync(dest)).toBe(true);
 
-    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest, DOKAN_BUILD_SECRET: "test-build-secret-123" }));
+    const backupConn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dest }));
     const backupStore = createDrizzleStore(backupConn);
     const cats = await backupStore.listCategories();
     expect(cats.length).toBeGreaterThanOrEqual(1);
@@ -1684,7 +1684,7 @@ describe("applyPaymentToInvoice boundary (ticket 8)", () => {
     // a SEPARATE connection on the same file has its own queue; only the
     // conditional UPDATE can stop it from acting on the stale remaining
     const conn2 = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }),
     );
     const store2 = createDrizzleStore(conn2);
     expect(await store2.withTransaction((tx) => tx.applyPaymentToInvoice(invoice.id, 300))).toBe(false);
@@ -1972,7 +1972,7 @@ describe("returns seam (cash refunds + review marks)", () => {
   it("upgrades a pre-settlement returns table: adds cash_paid_out/debt_offset and backfills legacy rows as all-cash", async () => {
     const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-legacy-"));
     const legacy = openConnection(
-      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db"), DOKAN_BUILD_SECRET: "test-build-secret-123" }),
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
     );
     // the pre-split returns table shape (no cash_paid_out/debt_offset), plus
     // the invoices rows setup() needs for the FK — then one legacy return row

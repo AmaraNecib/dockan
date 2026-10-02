@@ -38,6 +38,7 @@ import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoices, items, payments, preferences, returnLines, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { localDateTime } from "../lib/logger";
+import { stampSchemaVersion } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
 import { PartyError } from "./port";
 
@@ -822,6 +823,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         WHERE NOT EXISTS (SELECT 1 FROM stock_movements WHERE item_id = ${item.id})
       `);
     }
+
+    // ADR-0008 §4.5: every forward migration above has run; stamp the data
+    // format this build writes. An interrupted earlier boot left the version
+    // unstamped, so the next setup re-runs the (idempotent) migrations.
+    stampSchemaVersion(conn.raw);
   }
 
   /**
@@ -1723,6 +1729,26 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // same-second entries break alphabetical id tiebreaks; rowid keeps
       // insertion order, so newest written comes first within a second
       return db.select(activityCols).from(activities).orderBy(desc(activities.at), sql`rowid DESC`).limit(limit);
+    },
+    async databaseIsEmpty() {
+      // The tables a provisioned shop writes to. Seed rows (categories,
+      // expense categories, settings, sequences, migration markers) and the
+      // activity log are deliberately excluded: a startup DAILY_BACKUP
+      // activity row must not read as "the shop already has data".
+      const counts = await Promise.all([
+        db.$count(items),
+        db.$count(invoices),
+        db.$count(invoiceLines),
+        db.$count(payments),
+        db.$count(customers),
+        db.$count(suppliers),
+        db.$count(expenses),
+        db.$count(returns),
+        db.$count(returnLines),
+        db.$count(stockMovements),
+        db.$count(stockLinks),
+      ]);
+      return counts.every((count) => count === 0);
     },
     async getSetting(key: string) {
       const row = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1);

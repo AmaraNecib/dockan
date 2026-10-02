@@ -29,16 +29,6 @@ export type AppConfig = {
    * stale or modified port record can never redirect the webview. Absent in
    * dev/e2e: no token endpoint exists there. */
   bootToken: string | undefined;
-  /** MVP password-reset secret. Optional at boot: the reset procedure refuses
-   * to run when absent, so the documented api startup paths never crash. */
-  buildSecret: string | undefined;
-  /** better-auth signing secret. Dev/test default only — a packaged build
-   * must carry a baked per-customer secret (PR #51 finding 5): the release
-   * pipeline validates DOKAN_AUTH_SECRET (>= 32 chars) and inlines it with
-   * `bun build --define`, and main.ts refuses to boot a packaged binary
-   * (webDataDir/bootToken present) that would sign sessions with this
-   * shared sentinel. */
-  authSecret: string;
   version: string;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
@@ -47,15 +37,6 @@ export type AppConfig = {
     path: string;
   };
 };
-
-/** Sentinel dev/test session-signing secret (PR #51 finding 5). Never valid
- * in a packaged build: the release pipeline bakes a per-customer secret and
- * main.ts refuses to boot a packaged binary whose signing secret is this
- * shared default. Idle value only in dev (`bun run dev:api`) and unit tests. */
-export const DEV_AUTH_SECRET = "dokan-dev-auth-secret";
-
-/** Minimum acceptable length for the per-customer session-signing secret. */
-export const MIN_AUTH_SECRET_LEN = 32;
 
 /** Drivers the store can be built on today. Postgres joins when its adapter
  * lands (ADR-0003); until then, requesting it fails here, at config time. */
@@ -107,8 +88,6 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     webDataDir,
     portRecordDir,
     bootToken,
-    buildSecret: env.DOKAN_BUILD_SECRET,
-    authSecret: env.DOKAN_AUTH_SECRET ?? DEV_AUTH_SECRET,
     version: "0.1.0",
     db: {
       driver: requested,

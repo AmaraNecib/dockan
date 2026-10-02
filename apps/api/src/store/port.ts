@@ -267,6 +267,10 @@ export interface StorePort {
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
   listActivities(limit: number): Promise<Activity[]>;
+  /** true only when no shop record exists (seed rows and settings excluded).
+   * The first-run provisioning gate uses this: a non-empty database with no
+   * owner refuses to create one (ADR-0008 §4.1). */
+  databaseIsEmpty(): Promise<boolean>;
   getSetting(key: string): Promise<string | undefined>;
   setSetting(key: string, value: string): Promise<void>;
   getSettings(): Promise<Settings>;

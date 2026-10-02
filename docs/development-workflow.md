@@ -43,7 +43,7 @@ Implementation
 | `area:payments` | Payments, partial payment, remaining amounts, debt lists |
 | `area:customers` | Customers and customer debt tracking |
 | `area:suppliers` | Suppliers and supplier debt tracking |
-| `area:auth` | Admin login, session management, build-secret reset |
+| `area:auth` | Admin login, session management, recovery |
 | `area:activity` | Activity log / audit trail |
 | `area:backup` | Daily automatic backup, manual USB export |
 | `area:i18n` | Arabic-first UI strings, RTL, translations |
@@ -92,9 +92,9 @@ desktop exe ──spawn──► dokan-api.exe (bun build --compile, bundled ext
      │  env: DOKAN_DATA_DIR  = %APPDATA%/dz.dokan.app
      │       DOKAN_PORT_ROOT = %APPDATA%/dz.dokan.app/run
      │       DOKAN_WEB_DIST  = <resource>/ui   (bundled web dist)
-     │  baked: per-customer provisioning secret AND the better-auth
-     │         session-signing secret INLINED into the sidecar exe at build
-     │         time (bun --define), never in env, logs or disk state
+     │  one universal build: no secret is baked into the sidecar; the
+     │         session-signing secret is generated at first run and stored in
+     │         the database (ADR-0008)
      └─ binds 127.0.0.1:0 (kernel-assigned free port, held as a reservation)
         → hands the exact port to the child explicitly (DOKAN_PORT)
         → waits for the child to echo the one-time DOKAN_BOOT_TOKEN at
@@ -116,16 +116,13 @@ Dev mode (`tauri dev`) never spawns the sidecar: run `bun run dev:api` +
 ### Commands
 
 ```bash
-# per-customer release (required): validates + inlines both secrets, builds NSIS
-DOKAN_BUILD_SECRET='<unique-per-shop-secret>' \
-DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
-DOKAN_CUSTOMER_SLUG='shop-slug' \
+# one universal release: no secrets, one artifact per release
 bun run --filter @dokan/desktop portable
-# → apps/desktop/src-tauri/target/release/bundle/nsis/Dokan_<version>[_<slug>]_x64-setup.exe
-# fails loudly when either secret is missing or too short — never ships a default
+# → apps/desktop/src-tauri/target/release/bundle/portable/Dokan-portable/
+#   and Dokan-portable.zip
 
 # pieces separately
-bun run --filter @dokan/desktop sidecar   # validating compile → src-tauri/binaries/
+bun run --filter @dokan/desktop sidecar   # compile → src-tauri/binaries/
 bun run --filter @dokan/desktop build     # sidecar + tauri build (release)
 ```
 
@@ -138,24 +135,13 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
 - NSIS, `installMode: currentUser` (no admin prompt on a clean PC),
   `webviewInstallMode: embedBootstrapper` (WebView2 runtime installed
   automatically by the installer).
-- **Per-customer secrets** (PR #51 findings 2 & 5): the vendor picks a
-  unique BUILD_SECRET **and** a unique AUTH_SECRET per shop and passes them
-  at BUILD time — both are inlined into the compiled sidecar exe, never
-  committed, never in runtime env/logs/app-data. The documented release
-  command is:
-
-  ```bash
-  DOKAN_BUILD_SECRET='<unique-per-shop-secret (>=16 chars)>' \
-  DOKAN_AUTH_SECRET='<unique-per-shop-signing-secret (>=32 chars)>' \
-  DOKAN_CUSTOMER_SLUG='shop-slug' \          # optional: names the installer
-  bun run --filter @dokan/desktop portable
-  ```
-
-  Missing or weak secrets fail the build loudly; installers built without
-  them are test artifacts only (`cargo build`/`gates` fall back to a
-  secret-less sidecar with a loud warning and are never shipped). A packaged
-  binary that somehow boots without a strong signing secret is refused at
-  startup (the api's packaged-boot guard).
+- **One universal build** (ADR-0008): every shop gets the same installer and
+  the same portable zip; an update is a single artifact, never a per-shop
+  rebuild. No secret is passed at build time or baked into the sidecar. The
+  session-signing secret is generated at first run and stored in the portable
+  database (`settings.auth_secret`), so copying/restoring the data folder
+  preserves sessions. The build-time sidecar freshness check (API/contract
+  sources plus the binary hash) stays: a stale sidecar is a separate bug class.
 - **Verified sidecar discovery** (PR #51 finding 1): the shell binds a
   listener on `127.0.0.1:0` — the kernel assigns a free port and the socket
   reserves it while the child is spawned, so no local process can race a
@@ -164,8 +150,10 @@ icon set with `bunx tauri icon ./src-tauri/icons/dokan-master.png`.
   after BOTH the one-time token echo at `/health-token` AND the child-pid
   registry entry for that port confirm identity — a stale, tampered, decoyed
   or race-hijacked record or port can never redirect the webview.
-- First run: setup flow types the per-customer secret once to create the admin
-  account (see `apps/api/src/auth/admin.ts`).
+- **First run** (ADR-0008 §4.1): the setup flow creates the owner account on
+  an empty database; it no longer types a secret. A database with shop records
+  but no owner refuses provisioning (reset goes through the recovery paths in
+  a later change).
 - If the app is hard-killed the sidecar may linger; the next launch probes a
   free port and rewrites the port record, so discovery self-heals.
 

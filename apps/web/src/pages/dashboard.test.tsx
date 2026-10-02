@@ -363,11 +363,14 @@ describe("DashboardPage summary (issue 84)", () => {
     expect(await waitFor(() => page.error() !== null)).toBe(true);
     expect(page.error()?.getAttribute("role")).toBe("alert");
     expect(page.error()?.textContent).toContain(i18n.t("dashboardError"));
-    // The getting-started panel owns a separate read (issue #97): while that
-    // read is in flight, its skeleton can still be on screen after the summary
-    // error has painted. Wait for the page to settle, not just the error, so
-    // this reads a finished skeleton count rather than a mid-flight one (#136).
-    expect(await waitFor(() => page.skeletons().length === 0)).toBe(true);
+    // The panel's progress read only starts after the preferences read lands,
+    // and the panel shows no skeleton while it waits, so a bare skeleton count
+    // can read 0 before the progress query has even started. Wait for that read
+    // to settle (the panel only renders once its data arrives) before reading
+    // the count, so this asserts the finished page rather than a half-mounted
+    // one (issue #136, Greptile #137).
+    expect(await waitFor(() => page.panel() !== null)).toBe(true);
+    expect(page.skeletons().length).toBe(0);
     await page.unmount();
   });
 

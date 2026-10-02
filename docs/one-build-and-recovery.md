@@ -20,14 +20,18 @@ Design document for ADR-0008. This replaces the per-customer secret baking in PR
 - One build for every shop; one artifact per release.
 - Updates never change the shop's credentials.
 - Copying/restoring the portable data preserves data **and** sessions.
-- Password reset works without a per-customer build and without a readable secret on
-  the stick.
+- Password reset works without a per-customer build and without shipping signing
+  material.
 - Old installs remain resettable forever.
 
-**Non-goals (for now)**
-- Encrypting the whole portable folder. The stick is the boundary; an optional
-  passphrase vault is a later, additive feature.
+**Non-goals**
 - Multiple user accounts. The model below is owner-centric and extends cleanly.
+
+**Decided at launch (not deferred)**
+- **The portable vault.** Copying `data/` is a full takeover (§7), so the vault is not
+  an optional extra. Ship it with the universal build, or explicitly accept the
+  takeover risk. If shipped, document its own recovery model: a forgotten passphrase
+  is unrecoverable, the recovery codes live inside it, and the vendor cannot decrypt it.
 
 ## 3. Domain model
 
@@ -56,14 +60,21 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
   Public keys are not secret; embedding them does not force per-customer builds.
 - `main.ts` no longer refuses to boot on a sentinel signing secret; instead it reads
   the secret from the database (4.2).
+- **Provisioning gate.** Today `config.buildSecret` guards `firstTimeSetup` and
+  `resetAdminPassword`; removing it removes that gate. Replacement: first-run
+  provisioning (creating the owner account) is allowed **only on an empty database**;
+  a non-empty database with no owner refuses it, and reset goes through the recovery
+  paths (§4.3/§4.4). `DEV_AUTH_SECRET` and the sentinel boot guard are removed.
 
 ### 4.2 First run
 
 - On a fresh database — **or an existing database with no stored secret** (a shop
   migrating from a per-customer build) — generate a strong random **session signing
   secret** and store it in `settings` (e.g. `auth_secret`). Never regenerate it once
-  present. A migration therefore invalidates old sessions exactly once and must offer
-  a recovery code at that moment.
+  present. A migration therefore invalidates old sessions exactly once.
+- **The migration never hands out a recovery code at first boot.** After the owner logs
+  in on the migrated database, the app offers to generate a code (the normal §4.3
+  flow). Nobody who merely holds the stick gets a takeover code.
 - If the database is copied/restored, the secret comes with it → sessions survive.
 - The secret is a normal row in the portable database; the stick is the boundary
   (see §7).
@@ -83,13 +94,19 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 - Generating more: only while authenticated as the owner (re-enter the password).
   At the 5-code limit, refuse with a clear message (or let the owner delete one).
 - Never log a code; never show it again after the generation screen.
-- **Rate-limit** attempts at the recovery/reset screens (per install, with backoff),
-  and log failed attempts to the activity log. Without this, an attacker with local
-  access can guess short codes.
-- **Entropy:** codes are long random values (≥ 128 bits, e.g. 20+ base32 characters),
-  so an offline guess against a copied stick is infeasible even against Argon2id.
-- **Attempt limit:** at most 5 failed redemptions, then a lockout with backoff — the
-  unauthenticated redemption flow needs the same limit as the authenticated one.
+- **Entropy:** codes carry ≥ 128 bits, e.g. **26+ random base32 characters** (20 would
+  be only 100 bits). Group them for transcription and add a checksum.
+- **Hashing:** Argon2id; name the library and parameters in implementation (Bun's
+  `Bun.password` or the better-auth hash — pick one).
+- **Rate-limit, persisted:** attempts are limited **per install** and the counter is
+  stored in the database (the existing in-memory throttle clears on restart). Backoff
+  after 5 failures, shared across the code and token screens, failures written to the
+  activity log.
+- **Verify + consume are atomic:** a concurrent double-submit cannot redeem one code
+  twice.
+- **Invalidation:** changing the password invalidates all outstanding codes; using one
+  code does not invalidate the others. At the 5-code limit, **refuse** with a clear
+  message and let the owner delete one first.
 
 ### 4.4 Vendor fallback (challenge–response)
 
@@ -101,18 +118,32 @@ Terms to add to `CONTEXT.md` (glossary only, no implementation):
 4. The app verifies the token with the embedded public key for that version and lets
    the owner set a new password.
 
-**Key versioning.** The vendor keeps every private key, forever. A new build embeds
-the current public key version; older builds keep their own. To reset an old install,
-the vendor signs with the key version that install accepts. Rotating a key never
-breaks the ability to reset an old install.
+**Vendor verification (must-fix).** Signing a challenge is not authentication: anyone
+could submit a challenge and get a token. The vendor signs **only after verifying the
+requester out-of-band** (the registered owner's phone/record), deny by default. The
+signed payload binds `installId + nonce + keyVersion` so a token cannot be moved to
+another install or key. Use a fixed algorithm (Ed25519) with the version inside the
+payload, never selected by a header.
 
-**Key custody.** Every private-key version is backed up offline (escrow), and a
-rotation runbook is written. Losing a private key means installs that accept only
-that version can never be reset through the vendor path again.
+**Key versioning.** A build embeds a **map of the public keys it accepts**
+(`{ keyVersion → publicKey }`), not only the current one. The vendor keeps every
+private key; to reset an old install it signs with a version that install accepts.
+Rotating a key never breaks the ability to reset an old install.
+
+**Key custody.** Every private-key version is backed up offline with redundancy (e.g.
+2-of-3 escrow), and a rotation runbook is written. A lost key is recoverable by
+shipping an upgrade that accepts a new version; a version held only by un-upgraded
+installs and then lost strands them.
+
+**Legacy installs.** Pre-universal (per-customer) builds trust their baked
+`DOKAN_BUILD_SECRET`, not this scheme. Keep those build secrets until every shop has
+migrated, or provide an upgrade-first reset runbook.
 
 **Single-use challenges.** The app stores the challenge nonce it displayed and accepts
 a matching signed token **once**; a consumed nonce is rejected, so a still-valid token
-cannot be replayed. Tokens also carry a short expiry (e.g. 24h).
+cannot be replayed. Challenges expire and are cleaned up; tokens carry a short expiry
+(e.g. 24h) with a stated clock-skew allowance. The portable clock is settable, so
+expiry is a bound, not a guarantee.
 
 **Compromised keys.** If a private key is compromised, the vendor stops signing with
 that version for new builds but must keep it to reset the existing installs that trust
@@ -129,15 +160,25 @@ password changes — someone holding a pre-reset session must not keep access.
 - On open: older → apply forward `ALTER`s (the existing pattern) and stamp the new
   version; newer → refuse with a clear Arabic message; run `PRAGMA quick_check` on an
   imported file first.
-- Import is a first-class action: back up the current database, verify integrity,
-  check the version, show a preview, then **close the running SQLite connection and
-  checkpoint the WAL**, swap the file, and reopen (re-running migrations). Replacing
-  the file under a live connection is not acceptable.
+- **Import sequence (order matters):** back up the current database; `PRAGMA
+  quick_check` **and** `PRAGMA foreign_key_check`; read the version; show a preview
+  (invoice count, version direction, whether sessions survive); **checkpoint the WAL
+  while the connection is still open**, then close it; write the new file to a temp
+  path and **rename** it into place (crash-safe on a USB); **delete the stale
+  `dokan.db-wal` / `dokan.db-shm` sidecars**; then **restart the process or fully
+  re-init** the store, auth and router (they capture the connection and the signing
+  secret at boot), draining in-flight requests first. Migrations and the version stamp
+  run in one transaction; if a post-swap migration fails, restore the backup.
+- Version storage: use `PRAGMA user_version` (decided); a database with no version is
+  treated as the oldest pre-universal format.
 
-### 4.6 Optional later: portable vault
+### 4.6 Portable vault (decided at launch)
 
 A passphrase that encrypts the data folder (key derived from the passphrase, nothing
-stored) for owners who carry the stick around. Additive; not part of this change.
+stored). Because copying `data/` is a full takeover (§7), this is **launch-blocking**,
+not additive: either ship it with the universal build or explicitly accept the risk.
+If shipped, document its own recovery model — a forgotten passphrase is unrecoverable,
+the recovery codes live inside the vault, and the vendor cannot decrypt it.
 
 ## 5. Interfaces / files (indicative)
 
@@ -151,12 +192,18 @@ stored) for owners who carry the stick around. Additive; not part of this change
   baked-secret boot guard.
 - Vendor tooling (repo `tools/`): `reset-tool` — sign a challenge with a private key,
   versioned. Ships to the vendor only; the private keys are never committed.
-- Removal: `apps/desktop/scripts/secrets.ts`, the per-customer `.env*` handling,
-  `DOKAN_CUSTOMER_SLUG`, the **secret-hash** part of the sidecar stamp, and the
-  "inherited vs explicit secret" detection.
+- Removal (complete): `apps/desktop/scripts/secrets.ts`; the per-customer `.env*`
+  handling; `DOKAN_CUSTOMER_SLUG`; `config.buildSecret` / `config.authSecret` /
+  `DEV_AUTH_SECRET`; the `main.ts` sentinel boot guard and inline-secret fills;
+  `auth/admin.ts`'s build-secret checks; the `firstTimeSetup` / `resetAdminPassword`
+  handlers that require it; `playwright.config.ts`'s `DOKAN_BUILD_SECRET`; `docs/ci.md`
+  and `docs/development-workflow.md` §5 references; `release.ts` validation; the
+  related tests; the `.gitignore` entries.
 - **Keep** the build-time sidecar freshness check (cargo `rerun-if-changed` on the API
-  and contract sources) — it guards against bundling a stale sidecar, a separate
-  problem from per-customer secrets. Remove only its secret coupling.
+  and contract sources, plus the binary hash) — stale-sidecar bundling is a separate
+  bug class. Remove only its **secret** coupling (the secret-hash stamp and
+  `rerun-if-env-changed` on secret vars). The ADR should say "secret stamp", not
+  "freshness stamp".
 
 ## 6. Tests
 
@@ -166,21 +213,24 @@ stored) for owners who carry the stick around. Additive; not part of this change
 - Integration: fresh DB generates one signing secret; a copied DB keeps sessions;
   schema-version gate (older migrates, newer refuses).
 - E2E: first-run shows a recovery code; reset with a code; reset with a signed token.
+- Also: persisted rate limiting; session revocation after reset; import swap/reopen
+  with stale WAL; per-customer-DB migration; the entropy floor; legacy reset; vendor
+  issuance abuse (a token for another install/version is rejected).
 
 ## 7. Risks / open questions
 
 - **Boundary (elevated):** the data (and the session secret) sit in plaintext on the
-  stick, so anyone who copies `data/` can forge an owner session and bypass the
-  password — an escalation over "can only read the data". This makes the vault (§4.6)
-  more than optional. Decide at launch: (a) ship the passphrase vault with the
-  universal build, or (b) accept and document the escalation. Recommendation: (a).
-- **Key custody:** the vendor must keep every private key. Document an offline backup
-  and a rotation runbook.
+  stick, so anyone who copies `data/` can forge an owner session, edit the owner row,
+  or re-run first-time setup — a full takeover, not just a read. The session secret is
+  not the deciding control; the vault is. **Decided at launch** (§2): ship the vault,
+  or explicitly accept the takeover risk.
+- **Key custody:** the vendor must keep every private key, with offline redundant
+  escrow and a rotation runbook (§4.4).
 - **Code hashing:** decided — Argon2id (§4.3).
 - **Existing installs:** a shop on a per-customer build already has a `data/` folder
   with no stored session secret. On first open of an existing database the universal
-  build must **generate and store the secret if missing** (invalidating old sessions
-  once) and **offer a recovery code** at that moment. Document this migration.
+  build generates and stores the secret if missing (invalidating old sessions once)
+  and offers a recovery code **only after the owner logs in** (§4.2).
 
 ## 8. Alternatives considered
 

@@ -25,8 +25,8 @@ We decided:
   migrate forward; newer → refuse with a clear message).
 
 Consequences worth remembering: one build serves every shop and updates are a single
-artifact; the per-customer `.env` files, the sidecar freshness stamp, and the
-"inherited vs explicit secret" detection are removed; the portable data folder is the
-security boundary (a passphrase-protected vault remains a possible later option);
-and the vendor becomes the custodian of a set of signing keys that must never be
-deleted.
+artifact; the per-customer `.env` files, the **secret-hash** sidecar stamp, and the
+"inherited vs explicit secret" detection are removed (the build-time source/binary
+freshness check stays); copying the portable data folder is a full takeover, so the
+**passphrase vault is a launch decision, not a later option**; and the vendor becomes
+the custodian of a set of signing keys that must never be deleted.

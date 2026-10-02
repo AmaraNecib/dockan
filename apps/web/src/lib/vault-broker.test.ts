@@ -183,18 +183,36 @@ describe("desktop stdin broker transport (issue #141)", () => {
     installTauri();
     responder = (call) =>
       call.command === "vault_setup_warning"
-        ? { ok: true, warning: "plaintext", plaintextRemaining: ["C:/data/dokan.db"] }
+        ? { ok: true, warning: "plaintext", plaintextStatus: "remaining", plaintextRemaining: ["C:/data/dokan.db"] }
         : { ok: false, code: "VAULT_UNEXPECTED" };
-    await expect(fetchVaultSetupWarning(true)).resolves.toEqual(["C:/data/dokan.db"]);
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "remaining", paths: ["C:/data/dokan.db"] });
     expect(calls[0]?.command).toBe("vault_setup_warning");
   });
 
-  it("treats a failed warning follow-up as nothing to report, never a failed setup", async () => {
+  it("reports a confirmed clean sweep as clean", async () => {
+    installTauri();
+    responder = () => ({ ok: true, warning: "plaintext", plaintextStatus: "clean", plaintextRemaining: [] });
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "clean" });
+  });
+
+  it("maps a timed-out or broken warning pipe to UNKNOWN, never clean (round-4 finding)", async () => {
     installTauri();
     responder = () => {
-      throw new Error("the sidecar closed the broker pipe");
+      throw new Error("the sidecar did not answer in time");
     };
-    await expect(fetchVaultSetupWarning(true)).resolves.toEqual([]);
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "unknown" });
+  });
+
+  it("maps a warning reply that admits failure to UNKNOWN (round-4 finding)", async () => {
+    installTauri();
+    responder = () => ({ ok: true, warning: "plaintext", plaintextStatus: "unknown", plaintextRemaining: [] });
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "unknown" });
+  });
+
+  it("treats a reply with no verdict and no paths as UNKNOWN, never clean (round-4 finding)", async () => {
+    installTauri();
+    responder = () => ({ ok: true });
+    await expect(fetchVaultSetupWarning(true)).resolves.toEqual({ status: "unknown" });
   });
 
   it("reads the gate status from the broker first when the shell is present", async () => {

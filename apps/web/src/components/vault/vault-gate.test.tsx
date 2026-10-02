@@ -233,11 +233,44 @@ describe("VaultGate", () => {
     });
 
     await act(async () => {
-      resolveWarning?.({ ok: true, warning: "plaintext", plaintextRemaining: ["C:/data/dokan.db"] });
+      resolveWarning?.({ ok: true, warning: "plaintext", plaintextStatus: "remaining", plaintextRemaining: ["C:/data/dokan.db"] });
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
     expect(host.querySelector('[data-testid="vault-plaintext-warning"]')?.textContent).toContain("C:/data/dokan.db");
     expect(host.querySelector('[data-testid="vault-plaintext-checking"]')).toBeNull();
+    await submit(host, "vault-recovery-continue");
+    expect(unlocked).toBe(1);
+  });
+
+  it("warns the owner when the sweep outcome is unknown instead of showing the clean story (round-4 finding)", async () => {
+    // SAFETY: the global the Tauri webview injects; the test stands in for it
+    (window as { __TAURI_INTERNALS__?: FakeTauriInternals }).__TAURI_INTERNALS__ = {
+      invoke: async (command) => {
+        if (command === "vault_setup") return { ok: true, sessionToken: "setup-session", recoveryKey: "ABCD-EFGH" };
+        if (command === "vault_setup_warning") return { ok: true, warning: "plaintext", plaintextStatus: "unknown", plaintextRemaining: [] };
+        return { ok: true };
+      },
+    };
+    let unlocked = 0;
+    const host = await mount(
+      statusFor("unconfigured", { broker: true }),
+      () => {
+        unlocked += 1;
+      },
+    );
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    // the key is visible and the manual-verification warning is shown
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')?.textContent).toBe("ABCD-EFGH");
+    expect(host.querySelector('[data-testid="vault-plaintext-unknown"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="vault-plaintext-warning"]')).toBeNull();
+
+    const checkbox = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-confirm"]');
+    if (checkbox === null) throw new Error("missing recovery confirm");
+    await act(async () => {
+      checkbox.click();
+    });
     await submit(host, "vault-recovery-continue");
     expect(unlocked).toBe(1);
   });

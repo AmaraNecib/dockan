@@ -341,9 +341,15 @@ describe("desktop shell vault broker", () => {
 
     // MESSAGE 2 is the follow-up warning the owner still sees
     // SAFETY: the broker warning contract is a single JSON reply line
-    const warningReply = JSON.parse(await nextLine()) as { ok: boolean; warning?: string; plaintextRemaining?: string[] };
+    const warningReply = JSON.parse(await nextLine()) as {
+      ok: boolean;
+      warning?: string;
+      plaintextStatus?: string;
+      plaintextRemaining?: string[];
+    };
     expect(warningReply.ok).toBe(true);
     expect(warningReply.warning).toBe("plaintext");
+    expect(warningReply.plaintextStatus).toBe("remaining");
     expect(warningReply.plaintextRemaining).toEqual([stubborn]);
     send(child, "ack");
     await waitForHealth(port);

@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { tokenMatches } from "../boot-token";
 import type { AppLogger } from "../logger";
+import { classifyPlaintextCleanup } from "./cleanup-status";
 import { UnsupportedSchemaVersionError } from "../schema-version";
 import { MissingVaultDatabaseError, VaultCorruptionError } from "../../db/encrypted-connection";
 import { VaultAuthenticationError, normalizePassphrase } from "./crypto";
@@ -233,20 +234,15 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         deps.manager.finishSetupBootstrap();
         session = await deps.manager.commitSetup();
       }
-      let plaintextRemaining: string[] = [];
-      try {
-        plaintextRemaining = (await deps.onSetupCommitted?.())?.plaintextRemaining ?? [];
-      } catch (error) {
-        // the vault is committed and the recovery key must still reach the
-        // owner; plaintext cleanup is best-effort (a later unlock retries)
-        deps.logger.error(
-          "VAULT_SETUP_CLEANUP_FAILED",
-          "plaintext files could not be removed after vault setup",
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      }
-      if (plaintextRemaining.length > 0) {
-        deps.logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${plaintextRemaining.join(", ")}`);
+      // a sweep that throws reports UNKNOWN on the wire, never a clean empty
+      // list: the owner must not be told "all clear" after a failed check
+      const cleanup = await classifyPlaintextCleanup(
+        async () => (await deps.onSetupCommitted?.()) ?? { plaintextRemaining: [] },
+        (error) =>
+          deps.logger.error("VAULT_SETUP_CLEANUP_FAILED", "plaintext files could not be removed after vault setup", error),
+      );
+      if (cleanup.status === "remaining") {
+        deps.logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.remaining.join(", ")}`);
       }
       try {
         await deps.afterSetup?.();
@@ -264,7 +260,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         recoveryKey: prepared.recoveryKey,
         sessionToken: session.token,
         sessionGeneration: session.generation,
-        plaintextRemaining,
+        plaintextStatus: cleanup.status,
+        plaintextRemaining: cleanup.remaining,
       });
     } catch (error) {
       if (error instanceof VaultAlreadyConfiguredError) return errorResponse("VAULT_ALREADY_CONFIGURED", 409);

@@ -354,6 +354,8 @@ pub struct BrokerReply {
     pub session_generation: Option<u64>,
     pub recovery_key: Option<String>,
     pub plaintext_remaining: Option<Vec<String>>,
+    /// "clean" | "remaining" | "unknown" on the setup follow-up
+    pub plaintext_status: Option<String>,
     /// present on the setup follow-up ("plaintext"); absent otherwise
     pub warning: Option<String>,
     pub status: Option<serde_json::Value>,
@@ -892,6 +894,7 @@ mod tests {
             session_generation: None,
             recovery_key: None,
             plaintext_remaining: None,
+            plaintext_status: None,
             warning: None,
             status: None,
         };

@@ -1,4 +1,4 @@
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
+import { MIN_VAULT_PASSPHRASE_LENGTH, type PlaintextCleanupStatus } from "@dokan/contracts";
 import { z } from "zod";
 
 import { tError } from "./i18n";
@@ -47,8 +47,20 @@ const setupResponseSchema = z.object({
   sessionToken: z.string().min(1),
   // absent only when talking to a build older than round-7
   sessionGeneration: z.number().int().nonnegative().optional(),
+  // the sweep outcome: absent on older builds, which must read as unknown
+  plaintextStatus: z.enum(["clean", "remaining", "unknown"]).optional(),
   plaintextRemaining: z.array(z.string()).optional(),
 });
+
+/**
+ * The three outcomes of the legacy-plaintext sweep (round-4 finding). An
+ * unknown outcome must never be presented as the clean story: plaintext data
+ * may still be on disk.
+ */
+export type VaultCleanupOutcome =
+  | { status: "clean" }
+  | { status: "remaining"; paths: string[] }
+  | { status: "unknown" };
 const sessionResponseSchema = z.object({
   sessionToken: z.string().min(1),
   sessionGeneration: z.number().int().nonnegative().optional(),
@@ -249,12 +261,19 @@ export async function vaultSetup(
   passphrase: string,
   setupToken?: string,
   broker = false,
-): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[] }> {
+): Promise<{ recoveryKey: string; sessionToken: string; plaintextRemaining: string[]; plaintextStatus: PlaintextCleanupStatus }> {
   if (broker) {
     const reply = await callBroker(brokerCommands.setup, { passphrase });
     if (!reply.ok || reply.sessionToken == null || reply.recoveryKey == null) throw brokerRefusal(reply);
     adoptSession({ sessionToken: reply.sessionToken, sessionGeneration: reply.sessionGeneration ?? undefined });
-    return { recoveryKey: reply.recoveryKey, sessionToken: reply.sessionToken, plaintextRemaining: reply.plaintextRemaining ?? [] };
+    // the key reply deliberately carries no cleanup verdict: it follows on
+    // vault_setup_warning, so until then the outcome is UNKNOWN (round-4)
+    return {
+      recoveryKey: reply.recoveryKey,
+      sessionToken: reply.sessionToken,
+      plaintextRemaining: reply.plaintextRemaining ?? [],
+      plaintextStatus: "unknown",
+    };
   }
   const result = await request(
     "/api/vault/setup",
@@ -263,7 +282,13 @@ export async function vaultSetup(
     setupResponseSchema,
   );
   adoptSession(result);
-  return { recoveryKey: result.recoveryKey, sessionToken: result.sessionToken, plaintextRemaining: result.plaintextRemaining ?? [] };
+  return {
+    recoveryKey: result.recoveryKey,
+    sessionToken: result.sessionToken,
+    plaintextRemaining: result.plaintextRemaining ?? [],
+    // an older build that omits the status cannot confirm clean
+    plaintextStatus: result.plaintextStatus ?? (result.plaintextRemaining !== undefined && result.plaintextRemaining.length > 0 ? "remaining" : "unknown"),
+  };
 }
 
 /**
@@ -280,19 +305,28 @@ export async function acknowledgeVaultSetup(broker: boolean): Promise<void> {
 }
 
 /**
- * The setup follow-up (round-3 finding 1): after the key has safely reached
- * the owner, wait for the plaintext sweep to report what it could not remove.
- * The shell waits on its own longer budget; a failure or an old shell simply
- * means "nothing to warn about", never a lost setup.
+ * The setup follow-up (round-3 finding 1, round-4 finding): after the key has
+ * safely reached the owner, ask how the plaintext sweep ended. Failures — a
+ * timeout, a broken pipe, a replied error — are UNKNOWN, never "clean": the
+ * owner must be told to verify by hand instead of being reassured.
  */
-export async function fetchVaultSetupWarning(broker: boolean): Promise<string[]> {
-  if (!broker) return [];
+export async function fetchVaultSetupWarning(broker: boolean): Promise<VaultCleanupOutcome> {
+  if (!broker) return { status: "clean" };
+  let reply: BrokerReply;
   try {
-    const reply = await invokeBroker(brokerCommands.setupWarning);
-    return reply.warning === "plaintext" ? (reply.plaintextRemaining ?? []) : [];
+    reply = await invokeBroker(brokerCommands.setupWarning);
   } catch {
-    return [];
+    // timeout / dead pipe / restart: the sweep result is unknown
+    return { status: "unknown" };
   }
+  const paths = reply.plaintextRemaining ?? [];
+  if (paths.length > 0) return { status: "remaining", paths };
+  if (reply.plaintextStatus === "clean") return { status: "clean" };
+  if (reply.plaintextStatus === "remaining" || reply.plaintextStatus === "unknown") {
+    return reply.plaintextStatus === "remaining" ? { status: "remaining", paths } : { status: "unknown" };
+  }
+  // no verdict on the wire (older build): unknown, never clean
+  return { status: "unknown" };
 }
 
 /** Revoke the in-process vault session server-side (logout). */

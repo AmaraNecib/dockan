@@ -276,9 +276,12 @@ advertises `broker: true` and the gate UI uses IPC whenever it sees that flag
 (the browser keeps HTTP). A recovery-authorised reset also has a pipe command
 (`vault_reset_passphrase`) because settings needs it while the HTTP route is
 refused. The setup reply carrying the one-time recovery key is written BEFORE
-the legacy plaintext sweep, and the “what could not be removed” warning follows
-as a second framed message on its own, longer budget (`vault_setup_warning`),
-so a slow sweep can never cost the owner the key. Logout replaces the one-shot
+the legacy plaintext sweep, and the sweep verdict follows as a second framed
+message on its own, longer budget (`vault_setup_warning`): confirmed clean,
+confirmed remaining paths, or UNKNOWN when the sweep threw or the shell never
+heard back. Unknown keeps the owner warned with a manual-verification message
+and never masquerades as a clean result, so a slow sweep can neither cost the
+key nor hide plaintext data. Logout replaces the one-shot
 child with a freshly verified sibling (`vault_logout`), so the reloaded gate
 can unlock over the pipe again without an app restart, and every respawn
 repeats the reservation plus token/registry identity checks the first launch

@@ -750,9 +750,26 @@ describe("vault gate hardening (review supplement)", () => {
     });
     const setup = await setupVault(h);
     expect(setup.status).toBe(200);
-    // SAFETY: the setup contract carries the cleanup list
-    const body = await json<{ plaintextRemaining: string[] }>(setup);
+    // SAFETY: the setup contract carries the cleanup list and its status
+    const body = await json<{ plaintextStatus?: string; plaintextRemaining: string[] }>(setup);
+    expect(body.plaintextStatus).toBe("remaining");
     expect(body.plaintextRemaining).toEqual(["C:/data/dokan.db"]);
+  });
+
+  it("reports UNKNOWN when the HTTP cleanup throws instead of a clean empty list (round-4 finding)", async () => {
+    const h = harness(tempDir("dokan-vault-cleanup-unknown-"), {
+      onSetupCommitted: async () => {
+        throw new Error("cleanup exploded");
+      },
+    });
+    const setup = await setupVault(h);
+    // the committed setup still succeeds and the key is returned
+    expect(setup.status).toBe(200);
+    // SAFETY: the setup contract carries the cleanup list and its status
+    const body = await json<{ plaintextStatus?: string; plaintextRemaining?: string[]; recoveryKey?: string }>(setup);
+    expect(body.plaintextStatus).toBe("unknown");
+    expect(body.plaintextRemaining).toEqual([]);
+    expect(body.recoveryKey).toBeDefined();
   });
 
   it("revokes the in-process session on logout (finding 4)", async () => {

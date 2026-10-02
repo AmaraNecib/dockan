@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { serve } from "@hono/node-server";
-import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
+import { MIN_VAULT_PASSPHRASE_LENGTH, type PlaintextCleanupStatus, type VaultErrorCode } from "@dokan/contracts";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -14,6 +14,7 @@ import { MissingVaultDatabaseError, VaultCorruptionError, readLegacyDatabaseImag
 import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { AppLogger } from "./lib/logger";
+import { classifyPlaintextCleanup } from "./lib/vault/cleanup-status";
 import { createOverlay, type RequestHandler } from "./lib/overlay";
 import { forgetPort as forgetPortRecord, portIsReachable, publishPort } from "./lib/port-record";
 import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
@@ -315,7 +316,7 @@ function brokerStatusPayload(vault: VaultManager): VaultStatusPayload {
 type BrokerReply =
   | { ok: true; sessionToken: string; sessionGeneration?: number; recoveryKey?: string; plaintextRemaining?: string[] }
   | { ok: true; status: VaultStatusPayload }
-  | { ok: true; warning: "plaintext"; plaintextRemaining: string[] }
+  | { ok: true; warning: "plaintext"; plaintextStatus: PlaintextCleanupStatus; plaintextRemaining: string[] }
   | { ok: false; code: VaultErrorCode; retryAfterMs?: number };
 
 function writeBrokerReply(reply: BrokerReply): void {
@@ -435,22 +436,22 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           sessionGeneration: session.generation,
           recoveryKey: prepared.recoveryKey,
         });
-        let plaintextRemaining: string[] = [];
-        try {
-          const cleanup = await vault.cleanupLegacyPlaintext();
-          plaintextRemaining = cleanup.plaintextRemaining;
-          if (plaintextRemaining.length > 0) {
-            logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${plaintextRemaining.join(", ")}`);
-          }
-        } catch (error) {
-          logger.error(
-            "VAULT_SETUP_CLEANUP_FAILED",
-            "plaintext files could not be removed after vault setup",
-            error instanceof Error ? error : new Error(String(error)),
-          );
+        // the follow-up the shell waits for on its own (longer) budget; a
+        // sweep that throws reports UNKNOWN, never a clean empty warning
+        const cleanup = await classifyPlaintextCleanup(
+          () => vault.cleanupLegacyPlaintext(),
+          (error) =>
+            logger.error("VAULT_SETUP_CLEANUP_FAILED", "plaintext files could not be removed after vault setup", error),
+        );
+        if (cleanup.status === "remaining") {
+          logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.remaining.join(", ")}`);
         }
-        // the follow-up the shell waits for on its own (longer) budget
-        writeBrokerReply({ ok: true, warning: "plaintext", plaintextRemaining });
+        writeBrokerReply({
+          ok: true,
+          warning: "plaintext",
+          plaintextStatus: cleanup.status,
+          plaintextRemaining: cleanup.remaining,
+        });
         // the first daily backup needs the committed header, which now exists
         await runVaultDailyBackup();
         // wait for the owner's acknowledgement (the shell shows the key); a

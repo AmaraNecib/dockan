@@ -20,6 +20,7 @@ type RawBrokerReply = {
   sessionGeneration?: number;
   recoveryKey?: string;
   plaintextRemaining?: string[];
+  plaintextStatus?: string;
   warning?: string;
   status?: unknown;
 };
@@ -60,6 +61,7 @@ const brokerReplySchema = z.object({
   sessionGeneration: z.number().nullish(),
   recoveryKey: z.string().nullish(),
   plaintextRemaining: z.array(z.string()).nullish(),
+  plaintextStatus: z.string().nullish(),
   warning: z.string().nullish(),
   status: z.unknown().optional(),
 });

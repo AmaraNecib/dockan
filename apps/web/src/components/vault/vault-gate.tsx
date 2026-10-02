@@ -15,6 +15,7 @@ import {
   vaultSetup,
   vaultUnlock,
   vaultUnlockWithRecovery,
+  type VaultCleanupOutcome,
   type VaultStatus,
 } from "@/lib/vault-client";
 
@@ -104,8 +105,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [confirm, setConfirm] = useState("");
   const [recoveryInput, setRecoveryInput] = useState("");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
-  const [plaintextRemaining, setPlaintextRemaining] = useState<string[]>([]);
-  const [plaintextPending, setPlaintextPending] = useState(false);
+  const [cleanup, setCleanup] = useState<VaultCleanupOutcome | undefined>(undefined);
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
@@ -173,15 +173,23 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           {recoveryKey}
         </p>
         <p className="mt-3 text-sm text-destructive">{t("vaultLostBothWarning")}</p>
-        {plaintextRemaining.length > 0 && (
+        {cleanup?.status === "remaining" && (
           <p
             className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
             data-testid="vault-plaintext-warning"
           >
             {t("vaultPlaintextRemaining")}
             <span className="mt-1 block font-mono text-xs break-all" dir="ltr">
-              {plaintextRemaining.join("\n")}
+              {cleanup.paths.join("\n")}
             </span>
+          </p>
+        )}
+        {cleanup?.status === "unknown" && (
+          <p
+            className="mt-3 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+            data-testid="vault-plaintext-unknown"
+          >
+            {t("vaultPlaintextUnknown")}
           </p>
         )}
         <label className="mt-4 flex items-start gap-2 text-sm">
@@ -194,7 +202,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           />
           <span>{t("vaultRecoveryConfirm")}</span>
         </label>
-        {plaintextPending && (
+        {cleanup === undefined && (
           <p className="mt-2 text-xs text-muted-foreground" data-testid="vault-plaintext-checking">
             {t("vaultCheckingPlaintext")}
           </p>
@@ -203,8 +211,9 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           type="button"
           className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50"
           // the key is already on screen; keep the owner here until the sweep
-          // reports, so a plaintext warning can never be missed (round-3)
-          disabled={!savedConfirmed || plaintextPending}
+          // reports (or cannot be checked), so a warning can never be missed
+          // and a failed check is never mistaken for clean (round-4 finding)
+          disabled={!savedConfirmed || cleanup === undefined}
           onClick={() => {
             // release the shell's key screen; the app already serves either way
             void acknowledgeVaultSetup(status.broker);
@@ -282,17 +291,22 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               const result = await vaultSetup(passphrase, readSetupTokenFromHash(), status.broker);
               storeVaultSessionToken(result.sessionToken);
               setRecoveryKey(result.recoveryKey);
-              setPlaintextRemaining(result.plaintextRemaining);
               setScreen("recovery-show");
               if (status.broker) {
-                // the key is on screen now: the sweep warning follows on the
-                // shell's own longer budget (round-3 finding 1)
-                setPlaintextPending(true);
-                void fetchVaultSetupWarning(true)
-                  .then((remaining) => {
-                    if (remaining.length > 0) setPlaintextRemaining(remaining);
-                  })
-                  .finally(() => setPlaintextPending(false));
+                // the key is on screen now: the sweep verdict follows on the
+                // shell's own longer budget (round-3 finding 1); until it
+                // arrives the outcome is UNKNOWN, never clean (round-4)
+                setCleanup(undefined);
+                void fetchVaultSetupWarning(true).then(setCleanup);
+              } else {
+                // the HTTP setup response already carries the sweep verdict
+                setCleanup(
+                  result.plaintextRemaining.length > 0
+                    ? { status: "remaining", paths: result.plaintextRemaining }
+                    : result.plaintextStatus === "clean"
+                      ? { status: "clean" }
+                      : { status: "unknown" },
+                );
               }
             });
           }}

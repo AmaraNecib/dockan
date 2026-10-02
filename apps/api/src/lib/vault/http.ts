@@ -1,5 +1,7 @@
 import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
 import { Hono, type Context } from "hono";
+
+import type { NodeRequestEnv } from "../overlay";
 import { z } from "zod";
 
 import { tokenMatches } from "../boot-token";
@@ -13,6 +15,7 @@ import {
   VaultManager,
   VaultNotUnlockedError,
   VaultSetupInProgressError,
+  type VaultSession,
 } from "./manager";
 import { VaultFormatError } from "./format";
 import type { AppConfig } from "../../config";
@@ -107,12 +110,15 @@ function requiresLoopback(path: string): boolean {
 }
 
 function isLoopbackRequest(c: Context): boolean {
-  // SAFETY: @hono/node-server sets env.incoming to the Node IncomingMessage;
-  // app.request() (tests) has no env, and an absent address is trusted because
-  // there is no socket to observe
-  const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
+  // SAFETY: lib/overlay.ts forwards the server socket's peer env to this app;
+  // app.request() (tests) passes an explicit env
+  const env = c.env as NodeRequestEnv | undefined;
   const address = env?.incoming?.socket?.remoteAddress;
-  if (address === undefined) return true;
+  // FAIL CLOSED: an address we cannot observe is not the same as loopback. If
+  // the plumbing ever drops the peer (the round-7 guard trusted an absent
+  // address and let LAN clients send passphrases over cleartext HTTP), the
+  // credential routes refuse instead of trusting the caller.
+  if (address === undefined || address === "") return false;
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
@@ -174,7 +180,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       // pending slot occupied would make every retry answer
       // VAULT_SETUP_IN_PROGRESS until the sidecar restarts (finding 3).
       let prepared: PreparedSetup;
-      let sessionToken: string | undefined;
+      let session: VaultSession | undefined;
       try {
         prepared = await deps.manager.prepareSetup(body.data.passphrase);
       } catch (error) {
@@ -184,10 +190,10 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         // only commits when the first attempt already wrote its snapshot AND
         // the submitted passphrase matches the pending wrap (round-4 security);
         // otherwise VaultSetupInProgressError (409) or wrong-passphrase (401)
-        sessionToken = await deps.manager.resumeSetup(body.data.passphrase);
+        session = await deps.manager.resumeSetup(body.data.passphrase);
         prepared = { recoveryKey, vaultId: deps.manager.metadata().vaultId };
       }
-      if (sessionToken === undefined) {
+      if (session === undefined) {
         try {
           await deps.bootstrap({ masterKey: deps.manager.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
         } catch (error) {
@@ -205,7 +211,7 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
         // the app came up: only now may another request resume-commit the
         // pending setup (round-7 finding 1)
         deps.manager.finishSetupBootstrap();
-        sessionToken = await deps.manager.commitSetup();
+        session = await deps.manager.commitSetup();
       }
       let plaintextRemaining: string[] = [];
       try {
@@ -236,8 +242,8 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       return c.json({
         ok: true as const,
         recoveryKey: prepared.recoveryKey,
-        sessionToken,
-        sessionGeneration: deps.manager.sessionEpoch(),
+        sessionToken: session.token,
+        sessionGeneration: session.generation,
         plaintextRemaining,
       });
     } catch (error) {
@@ -294,9 +300,12 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
   app.delete("/api/vault/recovery-keys/:id", async (c) => {
     if (!sessionOk(c.req.raw)) return errorResponse("VAULT_NOT_UNLOCKED", 401);
     try {
-      const sessionToken = await deps.manager.removeRecoveryKey(c.req.param("id"));
+      const session = await deps.manager.removeRecoveryKey(c.req.param("id"));
       await refreshBackupAfterCredentialChange();
-      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
+      // return the token and the generation it was minted at TOGETHER: a
+      // rotation during the awaited refresh must never pair our (now revoked)
+      // token with a newer generation (round-8 finding 2)
+      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
     } catch (error) {
       if (error instanceof Error && error.message === "VAULT_RECOVERY_NOT_FOUND") return errorResponse("VAULT_RECOVERY_NOT_FOUND", 404);
       if (error instanceof Error && error.message === "VAULT_LAST_RECOVERY_KEY") return errorResponse("VAULT_LAST_RECOVERY_KEY", 409);
@@ -309,9 +318,9 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
     const body = changePassphraseSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
     try {
-      const sessionToken = await deps.manager.changePassphrase(body.data.currentPassphrase, body.data.newPassphrase);
+      const session = await deps.manager.changePassphrase(body.data.currentPassphrase, body.data.newPassphrase);
       await refreshBackupAfterCredentialChange();
-      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
+      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_PASSPHRASE", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -333,9 +342,9 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
       return errorResponse("VAULT_PASSPHRASE_TOO_SHORT", 400);
     }
     try {
-      const sessionToken = await deps.manager.setPassphraseFromRecovery(body.data.recoveryKey, body.data.newPassphrase);
+      const session = await deps.manager.setPassphraseFromRecovery(body.data.recoveryKey, body.data.newPassphrase);
       await refreshBackupAfterCredentialChange();
-      return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() });
+      return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation });
     } catch (error) {
       if (error instanceof VaultAuthenticationError) return errorResponse("VAULT_WRONG_RECOVERY", 401);
       if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });
@@ -350,13 +359,15 @@ export function createVaultHttpApp(deps: VaultHttpDeps): Hono {
 async function unlockResponse(
   c: { json: (body: { ok: true; sessionToken: string; sessionGeneration: number }, status: 200) => Response },
   deps: VaultHttpDeps,
-  unlock: () => Promise<string>,
+  unlock: () => Promise<VaultSession>,
   wrongCode: VaultErrorCode,
 ): Promise<Response> {
   try {
-    const sessionToken = await unlock();
+    const session = await unlock();
     await deps.bootstrap({ masterKey: deps.manager.requireMasterKey(), vaultId: deps.manager.metadata().vaultId, fresh: false });
-    return c.json({ ok: true as const, sessionToken, sessionGeneration: deps.manager.sessionEpoch() }, 200);
+    // the token and its generation travel together: a rotation during the
+    // bootstrap can never make this response claim a newer generation
+    return c.json({ ok: true as const, sessionToken: session.token, sessionGeneration: session.generation }, 200);
   } catch (error) {
     if (error instanceof VaultAuthenticationError) return errorResponse(wrongCode, 401);
     if (error instanceof VaultLockedError) return errorResponse("VAULT_LOCKED", 429, { retryAfterMs: error.retryAfterMs });

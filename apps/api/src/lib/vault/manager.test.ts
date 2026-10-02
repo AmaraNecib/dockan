@@ -7,7 +7,7 @@ import path from "node:path";
 import { AppLogger } from "../logger";
 import { readVaultBackupBundle, extractVaultBackup } from "./backup";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
-import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, VaultSetupInProgressError, unlockBackoffMs } from "./manager";
+import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, VaultSetupInProgressError, unlockBackoffMs, type VaultSession } from "./manager";
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
 const PASSPHRASE = "correct horse";
@@ -36,10 +36,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-async function createVault(vault: VaultManager): Promise<string> {
+async function createVault(vault: VaultManager): Promise<VaultSession> {
   await vault.prepareSetup(PASSPHRASE);
-  const token = await vault.commitSetup();
-  return token;
+  return await vault.commitSetup();
 }
 
 describe("VaultManager", () => {
@@ -72,9 +71,9 @@ describe("VaultManager", () => {
     vault.close();
 
     const reopened = manager();
-    const token = await reopened.unlock("correct horse");
-    expect(token.length).toBeGreaterThan(20);
-    expect(reopened.sessionMatches(token)).toBe(true);
+    const session = await reopened.unlock("correct horse");
+    expect(session.token.length).toBeGreaterThan(20);
+    expect(reopened.sessionMatches(session.token)).toBe(true);
     expect(reopened.sessionMatches("other")).toBe(false);
     expect(reopened.unlocked).toBe(true);
     reopened.close();
@@ -177,8 +176,8 @@ describe("VaultManager", () => {
     vault.close();
 
     const reopened = manager();
-    const token = await reopened.setPassphraseFromRecovery(recoveryKey, "a brand new passphrase");
-    expect(reopened.sessionMatches(token)).toBe(true);
+    const session = await reopened.setPassphraseFromRecovery(recoveryKey, "a brand new passphrase");
+    expect(reopened.sessionMatches(session.token)).toBe(true);
     reopened.close();
     await expect(manager().unlock("correct horse battery")).rejects.toThrow(VaultAuthenticationError);
     const fresh = manager();
@@ -192,9 +191,9 @@ describe("VaultManager", () => {
     const added = await vault.addRecoveryKey();
     const before = await vault.unlock("correct horse");
     const after = await vault.removeRecoveryKey(added.id);
-    expect(after).not.toBe(before);
-    expect(vault.sessionMatches(before)).toBe(false);
-    expect(vault.sessionMatches(after)).toBe(true);
+    expect(after.token).not.toBe(before.token);
+    expect(vault.sessionMatches(before.token)).toBe(false);
+    expect(vault.sessionMatches(after.token)).toBe(true);
   });
 
   it("serializes concurrent credential changes so each response carries a valid, ordered token (round-7 finding 5)", async () => {
@@ -211,8 +210,8 @@ describe("VaultManager", () => {
     expect(vault.sessionEpoch()).toBe(before + 2);
     // both rotations were minted in queue order, and exactly the newest one is
     // still accepted; its generation is what the web keeps
-    expect(changed).not.toBe(removed);
-    expect([changed, removed].filter((token) => vault.sessionMatches(token))).toHaveLength(1);
+    expect(changed.token).not.toBe(removed.token);
+    expect([changed, removed].filter((session) => vault.sessionMatches(session.token))).toHaveLength(1);
   });
   it("retries the legacy plaintext cleanup on a later unlock until it is gone (finding C11)", async () => {
     const legacyPath = path.join(dir, "dokan.db");
@@ -315,8 +314,8 @@ describe("VaultManager", () => {
     await expect(vault.resumeSetup("a totally different passphrase")).rejects.toThrow(VaultAuthenticationError);
     expect(vault.pendingRecoveryKey()).toBe(recoveryKey);
     // the original passphrase resumes and releases the token
-    const token = await vault.resumeSetup(PASSPHRASE);
-    expect(vault.sessionMatches(token)).toBe(true);
+    const session = await vault.resumeSetup(PASSPHRASE);
+    expect(vault.sessionMatches(session.token)).toBe(true);
     expect(vault.pendingRecoveryKey()).toBeUndefined();
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });

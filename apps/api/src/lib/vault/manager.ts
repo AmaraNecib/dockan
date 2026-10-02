@@ -22,6 +22,13 @@ import { VaultFormatError } from "./format";
 
 export type VaultState = "unconfigured" | "locked" | "unlocked" | "invalid";
 
+/**
+ * A minted session token together with the generation it was minted at. The
+ * pair is produced atomically so no caller can report a generation newer than
+ * the token it returns (round-8 finding 2).
+ */
+export type VaultSession = { token: string; generation: number };
+
 export type VaultStatus = {
   state: VaultState;
   /** true when a legacy plaintext `dokan.db` is waiting to be migrated */
@@ -264,12 +271,12 @@ export class VaultManager {
    * written now. After this the vault is unlocked for the session: the setup
    * flow continues straight into owner provisioning.
    */
-  async commitSetup(): Promise<string> {
+  async commitSetup(): Promise<VaultSession> {
     return this.enqueue(async () => {
       // a concurrent retry may have committed the same pending setup first;
       // that is a success, not a missing-vault error
       if (this.pendingSetup === undefined) {
-        if (this.sessionToken !== undefined) return this.sessionToken;
+        if (this.sessionToken !== undefined) return { token: this.sessionToken, generation: this.sessionGeneration };
         throw new VaultNotUnlockedError();
       }
       return this.commitPending();
@@ -284,7 +291,7 @@ export class VaultManager {
    * different passphrase and walk away with the first caller's recovery key
    * and session token (round-4 security finding).
    */
-  async resumeSetup(passphrase: string): Promise<string> {
+  async resumeSetup(passphrase: string): Promise<VaultSession> {
     this.assertAttemptAllowed();
     return this.enqueue(async () => {
       const pending = this.pendingSetup;
@@ -309,7 +316,7 @@ export class VaultManager {
     });
   }
 
-  private async commitPending(): Promise<string> {
+  private async commitPending(): Promise<VaultSession> {
     const pending = this.pendingSetup;
     if (pending === undefined) throw new VaultNotUnlockedError();
     await writeFileAtomic(this.headerPath, pending.headerText);
@@ -322,15 +329,15 @@ export class VaultManager {
     if (committedCore === undefined) throw new Error("the committed vault header could not be read back");
     this.core = committedCore;
     this.replaceMasterKey(pending.masterKey);
-    this.sessionToken = this.mintSessionToken();
+    const session = this.mintSession();
     // must not enqueue again: the caller already holds the write queue
     await this.resetFailuresInternal();
     this.logger.info("VAULT_CREATED", "vault created and unlocked", { version: pending.vaultId });
-    return this.sessionToken;
+    return session;
   }
 
-  /** Unlock with the passphrase; returns the in-process session token. */
-  async unlock(passphrase: string): Promise<string> {
+  /** Unlock with the passphrase; returns the freshly minted session. */
+  async unlock(passphrase: string): Promise<VaultSession> {
     this.assertAttemptAllowed();
     const core = this.requireCore();
     try {
@@ -346,7 +353,7 @@ export class VaultManager {
   }
 
   /** Unlock with one recovery code; other codes stay valid. */
-  async unlockRecovery(code: string): Promise<string> {
+  async unlockRecovery(code: string): Promise<VaultSession> {
     this.assertAttemptAllowed();
     const core = this.requireCore();
     try {
@@ -361,14 +368,14 @@ export class VaultManager {
     }
   }
 
-  private async finishUnlock(core: VaultCore, masterKey: Buffer, event: string): Promise<string> {
+  private async finishUnlock(core: VaultCore, masterKey: Buffer, event: string): Promise<VaultSession> {
     this.core = core;
     this.replaceMasterKey(masterKey);
-    this.sessionToken = this.mintSessionToken();
+    const session = this.mintSession();
     await this.enqueue(() => this.resetFailuresInternal());
     const meta = core.metadata();
     this.logger.info(event, "vault unlocked; the owner is signed in", { version: meta.vaultId });
-    return this.sessionToken;
+    return session;
   }
 
   private requireCore(): VaultCore {
@@ -378,9 +385,11 @@ export class VaultManager {
     return core;
   }
 
-  private mintSessionToken(): string {
+  private mintSession(): VaultSession {
     this.sessionGeneration += 1;
-    return randomBytes(32).toString("base64url");
+    const token = randomBytes(32).toString("base64url");
+    this.sessionToken = token;
+    return { token, generation: this.sessionGeneration };
   }
 
   /** Monotonic session generation; see the field comment (round-7 finding 5). */
@@ -421,7 +430,7 @@ export class VaultManager {
     return this.enqueue(() => core.addRecoveryKey(this.requireMasterKey()));
   }
 
-  async removeRecoveryKey(id: string): Promise<string> {
+  async removeRecoveryKey(id: string): Promise<VaultSession> {
     const core = this.requireCore();
     // serialize the mutation and its rotation: concurrent credential changes
     // must not interleave rotations, or a response can carry a token that a
@@ -434,12 +443,12 @@ export class VaultManager {
     });
   }
 
-  async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
+  async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<VaultSession> {
     this.assertAttemptAllowed();
     const core = this.requireCore();
-    let token: string;
+    let session: VaultSession;
     try {
-      token = await this.enqueue(async () => {
+      session = await this.enqueue(async () => {
         await core.changePassphrase(currentPassphrase, newPassphrase);
         return this.rotateSession("VAULT_PASSPHRASE_CHANGED");
       });
@@ -452,7 +461,7 @@ export class VaultManager {
     this.logger.info("VAULT_PASSPHRASE_CHANGED", "vault passphrase changed");
     // the old passphrase (and every token minted while it was valid) is refused
     // from now on; the caller keeps working on the freshly minted token
-    return token;
+    return session;
   }
 
   /**
@@ -460,7 +469,7 @@ export class VaultManager {
    * master key, which then re-wraps a new passphrase. No current passphrase is
    * needed — that is the whole point of recovery.
    */
-  async setPassphraseFromRecovery(recoveryKey: string, newPassphrase: string): Promise<string> {
+  async setPassphraseFromRecovery(recoveryKey: string, newPassphrase: string): Promise<VaultSession> {
     this.assertAttemptAllowed();
     if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
     const core = this.requireCore();
@@ -487,10 +496,10 @@ export class VaultManager {
     }
   }
 
-  private rotateSession(event: string): string {
-    this.sessionToken = this.mintSessionToken();
+  private rotateSession(event: string): VaultSession {
+    const session = this.mintSession();
     this.logger.info(event, "vault session rotated after a credential change");
-    return this.sessionToken;
+    return session;
   }
 
   /** Result of a plaintext sweep: paths that are still readable in the clear. */

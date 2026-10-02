@@ -3,7 +3,6 @@ import path from "node:path";
 
 import { serve } from "@hono/node-server";
 import { MIN_VAULT_PASSPHRASE_LENGTH, type VaultErrorCode } from "@dokan/contracts";
-import { serveStatic } from "hono/bun";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -14,8 +13,8 @@ import { openConnection, type Connection } from "./db/connection";
 import { MissingVaultDatabaseError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
 import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
-import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
+import { createOverlay, type RequestHandler } from "./lib/overlay";
 import { forgetPort as forgetPortRecord, portIsReachable, publishPort } from "./lib/port-record";
 import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
 import { UnsupportedSchemaVersionError, assertSchemaVersionSupported } from "./lib/schema-version";
@@ -41,7 +40,6 @@ import type { StorePort } from "./store/port";
  * live request handler — no restart, no second port.
  */
 
-type RequestHandler = (request: Request) => Response | Promise<Response>;
 
 const config = createAppConfig();
 
@@ -111,47 +109,19 @@ if (config.webDataDir !== undefined) {
 }
 
 /**
- * Compose the live request handler. The vault gate and the health endpoints
- * are always mounted; the app handler is present only after unlock. In
- * packaged builds the remaining paths serve the bundled UI (static files plus
- * an SPA fallback for client-routed paths). Dev/e2e never set DOKAN_WEB_DIST —
- * the vite dev server owns the frontend there.
+ * Compose the live request handler (the real composition lives in
+ * lib/overlay.ts, which keeps the peer address reachable by the vault gate's
+ * loopback guard).
  */
 function buildOverlay(api: RequestHandler | undefined): RequestHandler {
-  const overlay = new Hono();
-  overlay.use("*", async (c, next) => {
-    const url = new URL(c.req.url);
-    const pathname = url.pathname;
-    // PR #51 finding 1: the shell verifies the server on its chosen port is
-    // really its own child by asking for the one-time token it handed over
-    // via DOKAN_BOOT_TOKEN and checking the echo. Only the spawned api knows
-    // the token, so a stale or modified port record pointing at an unrelated
-    // localhost server (or a decoy that 200s everything) cannot satisfy this
-    // endpoint. The token is never logged or rendered into the UI.
-    if (pathname === "/health-token" && config.bootToken !== undefined) {
-      if (tokenMatches(url.searchParams.get("token"), config.bootToken)) {
-        return c.json({ ok: true, token: config.bootToken });
-      }
-      return c.text("not found", 404);
-    }
-    if (vaultApp !== undefined && pathname.startsWith("/api/vault/")) return vaultApp.fetch(c.req.raw);
-    if (pathname === "/health") {
-      if (api !== undefined) return api(c.req.raw);
-      return c.json({ ok: true, version: config.version, vault: vaultManager?.status().state ?? "disabled" });
-    }
-    if (pathname === "/api" || pathname.startsWith("/api/")) {
-      if (api !== undefined) return api(c.req.raw);
-      return lockedApiHandler(c.req.raw);
-    }
-    return next();
+  return createOverlay({
+    config,
+    api,
+    lockedApiHandler,
+    vaultApp,
+    vaultState: () => vaultManager?.status().state ?? "disabled",
+    webIndex,
   });
-  const index = webIndex;
-  if (config.webDataDir !== undefined && index !== undefined) {
-    const webRoot = config.webDataDir;
-    overlay.use("*", serveStatic({ root: webRoot }));
-    overlay.use("*", async (c) => c.html(index));
-  }
-  return (req) => overlay.fetch(req);
 }
 
 /** Startup daily backup: one copy per Algeria-local day, validated by format. */
@@ -396,10 +366,10 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       // the app is up; a concurrent resume would now be safe, but the broker is
       // single-request anyway
       vault.finishSetupBootstrap();
-      const sessionToken = await vault.commitSetup();
+      const session = await vault.commitSetup();
       // the recovery key reaches the shell first: cleanup and the first backup
       // are retried on later unlocks and must never delay or fail the one-time reply
-      writeBrokerReply({ ok: true, sessionToken, recoveryKey: prepared.recoveryKey });
+      writeBrokerReply({ ok: true, sessionToken: session.token, recoveryKey: prepared.recoveryKey });
       const cleanup = await vault.cleanupLegacyPlaintext();
       if (cleanup.plaintextRemaining.length > 0) {
         logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.plaintextRemaining.join(", ")}`);
@@ -412,12 +382,12 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       await readStdinLine();
       return;
     }
-    const sessionToken =
+    const session =
       request.action === "recovery"
         ? await vault.unlockRecovery(request.recoveryKey ?? "")
         : await vault.unlock(request.passphrase ?? "");
     await bootstrapVault({ masterKey: vault.requireMasterKey(), vaultId: vault.metadata().vaultId, fresh: false });
-    writeBrokerReply({ ok: true, sessionToken });
+    writeBrokerReply({ ok: true, sessionToken: session.token });
   } catch (error) {
     const failure = brokerFailure(request.action, error instanceof Error ? error : new Error(String(error)));
     writeBrokerReply(failure);
@@ -476,7 +446,7 @@ let server: ReturnType<typeof serve> | undefined;
 
 function startServer(): void {
   server = serve(
-    { fetch: (request) => activeHandler(request), port, hostname: config.host },
+    { fetch: (request, env) => activeHandler(request, env), port, hostname: config.host },
     async (info) => {
       // record the port that actually bound: for fallback/ephemeral binds this
       // differs from the configured value and must be what the proxy trusts.

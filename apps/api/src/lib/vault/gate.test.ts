@@ -14,6 +14,7 @@ import { createEncryptedConnection, readLegacyDatabaseImage } from "../../db/enc
 import { openVaultStore } from "../../db/vault-store";
 import { AppLogger } from "../../lib/logger";
 import { ensureSessionSecret } from "../../lib/session-secret";
+import { createOverlay, type NodeRequestEnv } from "../overlay";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { extractVaultBackup } from "./backup";
 import { createVaultHttpApp, type VaultCleanupResult } from "./http";
@@ -78,7 +79,13 @@ type GateHarness = {
   dir: string;
   config: AppConfig;
   manager: VaultManager;
-  gate: ReturnType<typeof createVaultHttpApp>;
+  /** gate requests default to a loopback peer unless a test passes an env */
+  gate: {
+    request: (input: Request | string | URL, init?: RequestInit, env?: NodeRequestEnv) => Response | Promise<Response>;
+    fetch: ReturnType<typeof createVaultHttpApp>["fetch"];
+  };
+  /** the raw Hono gate, for tests that drive it through the real overlay */
+  gateApp: ReturnType<typeof createVaultHttpApp>;
   /** the full app comes alive after bootstrap; gate tests use it post-unlock */
   appFor: () => ReturnType<typeof createApp>;
   /** simulate a process restart: the next unlock re-runs bootstrap */
@@ -146,7 +153,7 @@ function harness(
 
   const gateBootstrap = options.bootstrap ?? bootstrap;
 
-  const gate = createVaultHttpApp({
+  const gateApp = createVaultHttpApp({
     manager,
     config,
     logger,
@@ -166,12 +173,20 @@ function harness(
     afterSetup: options.afterSetup,
     afterCredentialChange: options.afterCredentialChange,
   });
+  // every gate test acts as a loopback client unless it passes its own env;
+  // the credential guard fails closed on an unknown peer (round-8 finding 1)
+  const gate = {
+    request: async (input: Request | string | URL, init?: RequestInit, env?: NodeRequestEnv): Promise<Response> =>
+      await gateApp.request(input, init, env ?? { incoming: { socket: { remoteAddress: "127.0.0.1" } } }),
+    fetch: gateApp.fetch.bind(gateApp),
+  };
 
   return {
     dir,
     config,
     manager,
     gate,
+    gateApp,
     appFor: () => {
       if (app === undefined) throw new Error("app not bootstrapped");
       return app;
@@ -210,6 +225,9 @@ async function json<T>(response: Response): Promise<T> {
   // SAFETY: the vault routes return JSON by contract; tests decode their known shape
   return (await response.json()) as T;
 }
+
+/** Late-bound handle so an afterCredentialChange hook can rotate mid-request. */
+type ManagerHolder = { manager?: VaultManager };
 describe("vault HTTP gate", () => {
   it("walks first run: unconfigured → setup → recovery key → owner setup → guarded RPC", async () => {
     const h = harness(tempDir("dokan-vault-gate-"));
@@ -805,31 +823,38 @@ describe("vault gate hardening (review supplement)", () => {
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
 
-  it("refuses credential routes from a non-loopback address (round-7 finding 6)", async () => {
+  it("refuses credential routes from a non-loopback peer through the REAL overlay, and fails closed on an unknown peer (round-8 finding 1)", async () => {
     const h = harness(tempDir("dokan-vault-loopback-"));
-    const remoteEnv = { incoming: { socket: { remoteAddress: "192.168.1.50" } } };
-    const remotePost = async (route: string, body: Record<string, string>): Promise<Response> =>
-      h.gate.request(route, { method: "POST", headers: jsonHeaders, body: JSON.stringify(body) }, remoteEnv);
-    for (const [route, body] of [
-      ["/api/vault/setup", { passphrase: "correct horse battery" }],
-      ["/api/vault/unlock", { passphrase: "correct horse battery" }],
-      ["/api/vault/unlock-recovery", { recoveryKey: "AAAA-AAAA" }],
-      ["/api/vault/reset-passphrase", { recoveryKey: "AAAA-AAAA", newPassphrase: "a brand new passphrase" }],
-      ["/api/vault/logout", {}],
-    ] as const) {
-      const response = await remotePost(route, body);
-      expect(response.status).toBe(403);
-      expect((await json<{ error: { code: string } }>(response)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
-    }
+    // the same overlay main.ts serves: it must forward the server socket env,
+    // not just the raw Request
+    const overlay = createOverlay({
+      config: h.config,
+      api: undefined,
+      lockedApiHandler: () => Response.json({ error: { code: "VAULT_NOT_UNLOCKED" } }, { status: 503 }),
+      vaultApp: h.gateApp,
+      vaultState: () => "unconfigured",
+      webIndex: undefined,
+    });
+    const setupRequest = (): Request =>
+      new Request("http://127.0.0.1/api/vault/setup", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ passphrase: "correct horse battery" }),
+      });
+    const remote = await overlay(setupRequest(), { incoming: { socket: { remoteAddress: "192.168.1.50" } } });
+    expect(remote.status).toBe(403);
+    expect((await json<{ error: { code: string } }>(remote)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
+    // FAIL CLOSED: a peer the overlay could not observe is not trusted either
+    const unknown = await overlay(setupRequest());
+    expect(unknown.status).toBe(403);
+    expect((await json<{ error: { code: string } }>(unknown)).error.code).toBe("VAULT_LOOPBACK_REQUIRED");
     // no refusal wrote any vault file, and status (no secret) stays reachable
     expect(fs.existsSync(path.join(h.dir, "vault", "vault.json"))).toBe(false);
-    expect((await h.gate.request("/api/vault/status", {}, remoteEnv)).status).toBe(200);
-    // loopback still reaches first-run setup
-    const local = await h.gate.request(
-      "/api/vault/setup",
-      { method: "POST", headers: jsonHeaders, body: JSON.stringify({ passphrase: "correct horse battery" }) },
-      { incoming: { socket: { remoteAddress: "127.0.0.1" } } },
+    expect((await overlay(new Request("http://127.0.0.1/api/vault/status"), { incoming: { socket: { remoteAddress: "192.168.1.50" } } })).status).toBe(
+      200,
     );
+    // loopback through the same overlay still reaches first-run setup
+    const local = await overlay(setupRequest(), { incoming: { socket: { remoteAddress: "127.0.0.1" } } });
     expect(local.status).toBe(200);
   });
 
@@ -857,6 +882,63 @@ describe("vault gate hardening (review supplement)", () => {
     expect(secondBody.sessionGeneration).toBeGreaterThan(firstBody.sessionGeneration);
     // the newest generation corresponds to the server's live token
     expect(h.manager.sessionMatches(secondBody.sessionToken)).toBe(true);
+  });
+
+  it("never reports a generation newer than the token it returns when a rotation lands during the delete refresh (round-8 finding 2)", async () => {
+    const holder: ManagerHolder = {};
+    const h = harness(tempDir("dokan-vault-rotation-gap-delete-"), {
+      afterCredentialChange: async () => {
+        // another client rotates while THIS delete response awaits the refresh
+        await holder.manager?.changePassphrase("correct horse battery", "rotated during refresh");
+      },
+    });
+    holder.manager = h.manager;
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    // add the second key directly, so the hook fires only for the delete
+    const added = await h.manager.addRecoveryKey();
+    const before = h.manager.sessionEpoch();
+
+    const removed = await h.gate.request(`/api/vault/recovery-keys/${added.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionToken },
+    });
+    expect(removed.status).toBe(200);
+    // SAFETY: the rotation contract carries a token and its generation
+    const body = await json<{ sessionToken: string; sessionGeneration: number }>(removed);
+    // the delete rotated to before+1; the interleaved change rotated to before+2
+    expect(h.manager.sessionEpoch()).toBe(before + 2);
+    // the response must carry ITS OWN generation, never the newer one
+    expect(body.sessionGeneration).toBe(before + 1);
+    expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
+  });
+
+  it("never reports a generation newer than the token it returns when a rotation lands during the reset refresh (round-8 finding 2)", async () => {
+    const holder: ManagerHolder = {};
+    const h = harness(tempDir("dokan-vault-rotation-gap-reset-"), {
+      afterCredentialChange: async () => {
+        // the reset already set "reset passphrase"; another client rotates again
+        await holder.manager?.changePassphrase("reset passphrase", "rotated during refresh");
+      },
+    });
+    holder.manager = h.manager;
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the recovery key
+    const { recoveryKey } = await json<{ recoveryKey: string }>(setup);
+    const before = h.manager.sessionEpoch();
+
+    const reset = await h.gate.request("/api/vault/reset-passphrase", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ recoveryKey, newPassphrase: "reset passphrase" }),
+    });
+    expect(reset.status).toBe(200);
+    // SAFETY: the rotation contract carries a token and its generation
+    const body = await json<{ sessionToken: string; sessionGeneration: number }>(reset);
+    expect(h.manager.sessionEpoch()).toBe(before + 2);
+    expect(body.sessionGeneration).toBe(before + 1);
+    expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
   });
 
   it("refuses a stale backup after a credential change and restores the refreshed one with the new passphrase (round-7 finding 3)", async () => {
@@ -896,8 +978,8 @@ describe("vault gate hardening (review supplement)", () => {
       logger: new AppLogger(restoreDir),
       kdf: FAST_KDF,
     });
-    const restoredToken = await restored.unlock("a brand new passphrase");
-    expect(restored.sessionMatches(restoredToken)).toBe(true);
+    const restoredSession = await restored.unlock("a brand new passphrase");
+    expect(restored.sessionMatches(restoredSession.token)).toBe(true);
     await expect(restored.unlock("correct horse battery")).rejects.toThrow(VaultAuthenticationError);
     restored.close();
   });

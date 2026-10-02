@@ -34,10 +34,13 @@ export type AppConfig = {
    * Unified vault (ADR-0008 §4.6). "on" (default) requires the encrypted
    * store: no database is opened and no app route is served until the vault
    * is unlocked. "disabled" keeps the legacy plaintext path and exists only
-   * for development and the e2e suite; the packaged desktop shell never sets
-   * it, so a shop install is always encrypted.
+   * for development and the e2e suite; a packaged build (DOKAN_WEB_DIST set)
+   * always forces "on", so an inherited environment value cannot disable the
+   * gate on a shop install.
    */
   vault: "on" | "disabled";
+  /** true when a packaged build ignored an inherited DOKAN_VAULT=disabled */
+  vaultOptOutIgnored: boolean;
   /** persistence driver selection — the store port stays fixed (ADR-0003) */
   db: {
     driver: "sqlite" | "postgres";
@@ -61,8 +64,13 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
   const bootToken = env.DOKAN_BOOT_TOKEN === undefined || env.DOKAN_BOOT_TOKEN === "" ? undefined : env.DOKAN_BOOT_TOKEN;
   // Vault opt-out is explicit and dev/e2e-only: anything other than the exact
   // string "disabled" keeps encryption on, so a mistyped or inherited value
-  // fails safe (encrypted).
-  const vault = env.DOKAN_VAULT === "disabled" ? "disabled" : "on";
+  // fails safe (encrypted). A packaged build (webDataDir set by the desktop
+  // shell) refuses the opt-out entirely: the launcher environment must never
+  // be able to skip the gate on a shop install.
+  const packagedBuild = webDataDir !== undefined;
+  const requestedVaultDisabled = env.DOKAN_VAULT === "disabled";
+  const vaultOptOutIgnored = requestedVaultDisabled && packagedBuild;
+  const vault: "on" | "disabled" = requestedVaultDisabled && !packagedBuild ? "disabled" : "on";
   const requested = env.DOKAN_DB_DRIVER ?? "sqlite";
   if (!isDriver(requested)) {
     throw new Error(
@@ -101,6 +109,7 @@ export function createAppConfig(env: NodeJS.ProcessEnv = process.env): AppConfig
     portRecordDir,
     bootToken,
     vault,
+    vaultOptOutIgnored,
     version: "0.1.0",
     db: {
       driver: requested,

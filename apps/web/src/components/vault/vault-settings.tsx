@@ -2,14 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
-
 import {
   addRecoveryKey,
   changeVaultPassphrase,
   fetchVaultStatus,
+  isVaultPassphraseLongEnough,
   listRecoveryKeys,
   removeRecoveryKey,
+  resetVaultPassphrase,
+  storeVaultSessionToken,
   VaultRequestError,
 } from "@/lib/vault-client";
 
@@ -36,10 +37,15 @@ export function VaultSettings() {
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [showRecoveryReset, setShowRecoveryReset] = useState(false);
+  const [resetRecoveryKey, setResetRecoveryKey] = useState("");
+  const [resetNewPassphrase, setResetNewPassphrase] = useState("");
 
   const changePassphrase = useMutation({
     mutationFn: () => changeVaultPassphrase(currentPassphrase, newPassphrase),
-    onSuccess: () => {
+    onSuccess: (sessionToken) => {
+      // a credential change rotates the session; keep the current window alive
+      storeVaultSessionToken(sessionToken);
       setMessage(t("vaultChanged"));
       setError(null);
       setCurrentPassphrase("");
@@ -60,9 +66,24 @@ export function VaultSettings() {
 
   const deleteKey = useMutation({
     mutationFn: (id: string) => removeRecoveryKey(id),
-    onSuccess: () => {
+    onSuccess: (sessionToken) => {
+      // deleting a key revokes sessions; adopt the freshly minted token
+      storeVaultSessionToken(sessionToken);
       setPendingDelete(null);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : t("vaultUnexpected")),
+  });
+
+  const recoveryReset = useMutation({
+    mutationFn: () => resetVaultPassphrase(resetRecoveryKey, resetNewPassphrase),
+    onSuccess: (sessionToken) => {
+      storeVaultSessionToken(sessionToken);
+      setMessage(t("vaultChanged"));
+      setError(null);
+      setShowRecoveryReset(false);
+      setResetRecoveryKey("");
+      setResetNewPassphrase("");
     },
     onError: (err) => setError(err instanceof Error ? err.message : t("vaultUnexpected")),
   });
@@ -81,7 +102,7 @@ export function VaultSettings() {
         className="mt-4 grid gap-3 rounded border bg-card p-4"
         onSubmit={(event) => {
           event.preventDefault();
-          if (newPassphrase.length < MIN_VAULT_PASSPHRASE_LENGTH) {
+          if (!isVaultPassphraseLongEnough(newPassphrase)) {
             setError(t("vaultPassphraseTooShort"));
             return;
           }
@@ -114,7 +135,7 @@ export function VaultSettings() {
             autoComplete="new-password"
             value={newPassphrase}
             onChange={(event) => setNewPassphrase(event.target.value)}
-            aria-invalid={newPassphrase.length > 0 && newPassphrase.length < MIN_VAULT_PASSPHRASE_LENGTH}
+            aria-invalid={newPassphrase.length > 0 && !isVaultPassphraseLongEnough(newPassphrase)}
             required
             data-testid="vault-new-passphrase"
           />
@@ -141,11 +162,75 @@ export function VaultSettings() {
         >
           {changePassphrase.isPending ? t("settingsSaving") : t("vaultChangePassphrase")}
         </button>
+        <button
+          type="button"
+          className="text-start text-sm text-muted-foreground underline"
+          onClick={() => setShowRecoveryReset((open) => !open)}
+          data-testid="vault-show-recovery-reset"
+        >
+          {t("vaultForgotPassphrase")}
+        </button>
       </form>
+
+      {showRecoveryReset && (
+        <form
+          className="mt-4 grid gap-3 rounded border bg-card p-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!isVaultPassphraseLongEnough(resetNewPassphrase)) {
+              setError(t("vaultPassphraseTooShort"));
+              return;
+            }
+            setMessage(null);
+            recoveryReset.mutate();
+          }}
+          data-testid="vault-recovery-reset"
+        >
+          <h3 className="font-medium">{t("vaultResetTitle")}</h3>
+          <p className="text-sm text-muted-foreground">{t("vaultResetHint")}</p>
+          <label className="grid gap-1 text-sm">
+            {t("vaultRecoveryField")}
+            <input
+              className="rounded border px-3 py-2 font-mono"
+              dir="ltr"
+              autoComplete="off"
+              value={resetRecoveryKey}
+              onChange={(event) => setResetRecoveryKey(event.target.value)}
+              required
+              data-testid="vault-reset-recovery-key"
+            />
+          </label>
+          <label className="grid gap-1 text-sm">
+            {t("vaultNewPassphrase")}
+            <input
+              type="password"
+              className="rounded border px-3 py-2"
+              autoComplete="new-password"
+              value={resetNewPassphrase}
+              onChange={(event) => setResetNewPassphrase(event.target.value)}
+              required
+              data-testid="vault-reset-new-passphrase"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
+            disabled={recoveryReset.isPending}
+            data-testid="vault-reset-submit"
+          >
+            {recoveryReset.isPending ? t("settingsSaving") : t("vaultResetSave")}
+          </button>
+        </form>
+      )}
 
       <div className="mt-4 rounded border bg-card p-4">
         <h3 className="font-medium">{t("vaultRecoveryKeysTitle")}</h3>
         <p className="mt-1 text-sm text-muted-foreground">{t("vaultRecoveryKeysHint")}</p>
+        {(keys.data?.length ?? 0) <= 1 && (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="vault-last-key-hint">
+            {t("vaultLastKeyHint")}
+          </p>
+        )}
         {keys.data !== undefined && (
           <ul className="mt-3 grid gap-2">
             {keys.data.map((key) => (
@@ -166,6 +251,8 @@ export function VaultSettings() {
                       {t("partyCancel")}
                     </button>
                   </span>
+                ) : keys.data.length <= 1 ? (
+                  <span className="text-xs text-muted-foreground">{t("vaultLastKeyHint")}</span>
                 ) : (
                   <button
                     type="button"

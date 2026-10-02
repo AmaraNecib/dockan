@@ -104,14 +104,36 @@ describe("phone normalization", () => {
 
 describe("auth seam", () => {
   it("blocks account creation over http (single-admin boundary)", async () => {
-    const res = await app.fetch(
+    // vault mode does not mount better-auth routes at all (finding C10)
+    const vaultAttempt = await app.fetch(
       new Request("http://localhost/api/auth/sign-up/email", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "213699999999", password: "x", name: "x" }),
       }),
     );
-    expect(res.status).toBe(403);
+    expect(vaultAttempt.status).toBe(404);
+
+    // the legacy plaintext build keeps the route but refuses sign-up
+    const plaintextConfig = createAppConfig({
+      DOKAN_DATA_DIR: dir,
+      DOKAN_DB_PATH: path.join(dir, "test.db"),
+      DOKAN_VAULT: "disabled",
+    });
+    const plaintextApp = createApp({
+      config: plaintextConfig,
+      logger: new AppLogger(dir),
+      auth,
+      rpcRouter: createRpcRouter({ db: conn.db, config: plaintextConfig, logger: new AppLogger(dir), store, auth }),
+    });
+    const plaintextAttempt = await plaintextApp.fetch(
+      new Request("http://localhost/api/auth/sign-up/email", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "213699999999", password: "x", name: "x" }),
+      }),
+    );
+    expect(plaintextAttempt.status).toBe(403);
   });
 
   it("signs in the provisioned owner with the phone digits", async () => {

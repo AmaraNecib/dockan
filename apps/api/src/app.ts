@@ -40,8 +40,14 @@ export function createApp(deps: AppDeps) {
 
   // better-auth handles /api/auth/* itself (sign-in, session, sign-out);
   // account creation is NOT allowed: the single admin is provisioned by
-  // first-run setup only, so the sign-up route is blocked before it can run
+  // first-run setup only, so the sign-up route is blocked before it can run.
+  // In vault mode the routes are not mounted at all (finding C10): the vault
+  // session is the only credential, and better-auth writes would bypass the
+  // encrypted store's dirty tracking and desync the snapshot.
   app.all("/api/auth/*", (c) => {
+    if (config.vault === "on") {
+      return c.json({ error: { message: "AUTH_DISABLED_IN_VAULT" } }, 404);
+    }
     if (c.req.method === "POST" && c.req.path.includes("/sign-up")) {
       return c.json({ error: { message: "SIGNUP_FORBIDDEN" } }, 403);
     }

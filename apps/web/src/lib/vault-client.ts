@@ -1,3 +1,4 @@
+import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
 import { z } from "zod";
 
 /**
@@ -173,15 +174,44 @@ export async function addRecoveryKey(): Promise<{ id: string; code: string }> {
   return request("/api/vault/recovery-keys", { method: "POST" }, true, addedKeySchema);
 }
 
-export async function removeRecoveryKey(id: string): Promise<void> {
-  await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, z.object({ ok: z.literal(true) }));
+const removedOrChangedSchema = z.object({ ok: z.literal(true), sessionToken: z.string().min(1) });
+
+/**
+ * The passphrase floor is checked on the NORMALIZED value: eight spaces trim
+ * to empty and a padded short phrase must not slip past the server either.
+ */
+export function isVaultPassphraseLongEnough(value: string): boolean {
+  return value.normalize("NFC").trim().length >= MIN_VAULT_PASSPHRASE_LENGTH;
 }
 
-export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
-  await request(
+export async function removeRecoveryKey(id: string): Promise<string> {
+  // deleting a credential rotates the session: keep the fresh token
+  const result = await request(`/api/vault/recovery-keys/${encodeURIComponent(id)}`, { method: "DELETE" }, true, removedOrChangedSchema);
+  return result.sessionToken;
+}
+
+export async function changeVaultPassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
+  // the old passphrase is refused from now on, so the server rotates the
+  // in-process token and returns the one this client must keep using
+  const result = await request(
     "/api/vault/change-passphrase",
     { method: "POST", body: JSON.stringify({ currentPassphrase, newPassphrase }) },
     true,
-    z.object({ ok: z.literal(true) }),
+    removedOrChangedSchema,
   );
+  return result.sessionToken;
+}
+
+/**
+ * Recovery-authorised reset (finding C4): the recovery key replaces the
+ * forgotten passphrase without needing the current one.
+ */
+export async function resetVaultPassphrase(recoveryKey: string, newPassphrase: string): Promise<string> {
+  const result = await request(
+    "/api/vault/reset-passphrase",
+    { method: "POST", body: JSON.stringify({ recoveryKey, newPassphrase }) },
+    false,
+    removedOrChangedSchema,
+  );
+  return result.sessionToken;
 }

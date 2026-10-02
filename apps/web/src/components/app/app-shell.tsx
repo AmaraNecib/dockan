@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { CircleHelp, LogOut, PanelLeft, ShoppingBag } from "lucide-react";
 
 import { useSession, authClient } from "@/lib/auth-client";
+import { logoutAndReload } from "@/lib/logout";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { Button } from "@/components/ui/button";
 import {
@@ -213,7 +214,7 @@ export function AppShell() {
       </div>
 
       <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
-      <LogoutDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={() => { void authClient.signOut().finally(() => window.location.reload()); }} />
+      <LogoutDialog open={logoutOpen} onOpenChange={setLogoutOpen} onConfirm={() => { void logoutAndReload(() => authClient.signOut()); }} />
     </div>
   );
 }

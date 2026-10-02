@@ -46,11 +46,13 @@ describe("recovery codes", () => {
     expect(parsed.bytes.equals(bytes)).toBe(true);
   });
 
-  it("rejects a single-character typo on the checksum", () => {
+  it("rejects a transcription typo in a KEY character (checksum catches the key, not just itself)", () => {
     const { code } = generateRecoveryCode();
     const raw = code.replace(/-/g, "");
-    const last = raw.slice(-1);
-    const typo = `${raw.slice(0, -1)}${last === "A" ? "B" : "A"}`;
+    // flip one base32 character inside the 32-char key, not the checksum
+    const index = 5;
+    const original = raw[index]!;
+    const typo = `${raw.slice(0, index)}${original === "A" ? "B" : "A"}${raw.slice(index + 1)}`;
     const parsed = parseRecoveryCode(typo);
     expect(parsed).toEqual({ ok: false, reason: "checksum" });
   });
@@ -108,5 +110,21 @@ describe("vault header", () => {
       withSix.wraps.push({ ...header().wraps[0]!, id: `recovery-${index}`, kind: "recovery" });
     }
     expect(() => parseVaultHeader(JSON.stringify(withSix))).toThrow();
+  });
+
+  it("refuses KDF parameters that only exist to stall unlock (crafted-header DoS)", () => {
+    const hugeMemory = header();
+    hugeMemory.kdf = { ...hugeMemory.kdf, memoryKiB: 1_048_576 };
+    expect(() => parseVaultHeader(JSON.stringify(hugeMemory))).toThrow();
+    const hugeTime = header();
+    hugeTime.kdf = { ...hugeTime.kdf, iterations: 64 };
+    expect(() => parseVaultHeader(JSON.stringify(hugeTime))).toThrow();
+    const hugeParallelism = header();
+    hugeParallelism.kdf = { ...hugeParallelism.kdf, parallelism: 8 };
+    expect(() => parseVaultHeader(JSON.stringify(hugeParallelism))).toThrow();
+    // the sane maximum stays accepted
+    const max = header();
+    max.kdf = { ...max.kdf, memoryKiB: 262_144, iterations: 10, parallelism: 4 };
+    expect(() => parseVaultHeader(JSON.stringify(max))).not.toThrow();
   });
 });

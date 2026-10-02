@@ -120,26 +120,36 @@ once. Wrong secrets return the Arabic error from the same vault module.
 ## Persistence and durability
 
 The runtime DB is `Database.deserialize()` of the decrypted snapshot. Persist =
-`serialize()` → AES-GCM → tmp + rename. Flush points: after every
-`withTransaction`/`withTransactionImmediate` commit; after every HTTP mutation
-through the app/RPC/vault handlers; a 2s debounce timer; `close()`; before each
-backup copy. A crash loses at most the debounce window; every committed money
-unit is flushed before its response.
+`serialize()` → AES-GCM → tmp + fsync + rename. Flush points: after every
+`withTransaction`/`withTransactionImmediate` COMMIT; after every mutating store
+call (call + snapshot write inside one queue slot, so success is only reported
+once the image is durable); `flush()` at bootstrap; `checkpoint()` on close and
+before each backup copy. Version counters mean a failed write stays dirty and
+is retried, and a snapshot write that still fails after retries is fail-stop:
+main exits (the connection's `onFatalError` hook) rather than report a
+committed unit as failed (a client retry would duplicate it). `close()` awaits
+the persist queue before releasing the handle. There is no timer flush: nothing
+is written that a committed unit did not trigger.
 
 ## Auth seam
 
-`requireSession` accepts, in order: a better-auth session (legacy/employees) →
-an `x-vault-session` header matching the in-process token minted at unlock.
-Cross-origin requests cannot set the header without a preflight, and the token
-is only ever sent to the local origin, so vault-unlocked owner access is not
-CSRF-able. The vault never changes the auth layer: employee logins will sign in
-after the vault is open and reuse the same guard.
+In vault mode `requireSession` accepts ONLY the `x-vault-session` header
+matching the in-process token minted at unlock; better-auth sessions are never
+consulted and `/api/auth/*` is not mounted at all, so a legacy password account
+cannot act as a second credential and no auth write can bypass the encrypted
+store's dirty tracking. The plaintext build keeps the better-auth path
+unchanged. Cross-origin requests cannot set the header without a preflight, and
+the token is only ever sent to the local origin, so vault-unlocked owner access
+is not CSRF-able. Employee logins are a future addition: when they arrive they
+sign in after the vault is open and reuse the same guard.
 
 ## Tests
 
-- unit: format (recovery code/checksum/header), crypto vectors round trips,
-  core (wrong/correct passphrase, recovery unlock, add/rotate/remove keys),
-  state throttle, encrypted connection round trip (`user_version` preserved).
+- unit: format (recovery code/checksum/header, KDF bounds), crypto round trips
+  + nonce uniqueness + AAD binding + tamper/truncation, core (wrong/correct
+  passphrase, recovery unlock, recovery set-passphrase, add/rotate/remove keys,
+  last-key guard, persist-failure rollback), state throttle, encrypted
+  connection round trip (`user_version` preserved, snapshot corruption class).
 - integration: HTTP gate (fresh setup → recovery shown once → unlock → RPC with
   the vault session, wrong passphrase Arabic refusal, restart stays locked,
   copies decrypt on another dir = portability, legacy db migration).

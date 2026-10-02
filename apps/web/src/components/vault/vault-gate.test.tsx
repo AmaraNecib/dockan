@@ -138,6 +138,20 @@ describe("VaultGate", () => {
     expect(unlocked).toBe(1);
   });
 
+  it("rejects a whitespace-only passphrase before any request (normalized floor)", async () => {
+    let setupCalls = 0;
+    routes.set("/api/vault/setup", () => {
+      setupCalls += 1;
+      return Response.json({ ok: true, recoveryKey: "x", sessionToken: "y" });
+    });
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    setValue(host, "vault-passphrase", "        ");
+    setValue(host, "vault-passphrase-confirm", "        ");
+    await submit(host, "vault-setup-submit");
+    expect(setupCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toContain("كلمة");
+  });
+
   it("states the unrecoverable case on the first-run screen before anything is created", async () => {
     const host = await mount(statusFor("unconfigured"), () => undefined);
     expect(host.textContent).toContain("لا يمكن استعادة بيانات المتجر");

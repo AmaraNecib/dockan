@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { MIN_VAULT_PASSPHRASE_LENGTH } from "@dokan/contracts";
-
 import {
   VaultRequestError,
   fetchVaultStatus,
+  isVaultPassphraseLongEnough,
   readSessionTokenFromHash,
   readSetupTokenFromHash,
   storeVaultSessionToken,
@@ -224,7 +223,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   }
 
   if (status.state === "unconfigured") {
-    const tooShort = passphrase.length > 0 && passphrase.length < MIN_VAULT_PASSPHRASE_LENGTH;
+    const tooShort = passphrase.length > 0 && !isVaultPassphraseLongEnough(passphrase);
     const mismatch = confirm.length > 0 && confirm !== passphrase;
     return (
       <VaultFrame>
@@ -234,7 +233,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           className="mt-4 grid gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            if (passphrase.length < MIN_VAULT_PASSPHRASE_LENGTH) {
+            if (!isVaultPassphraseLongEnough(passphrase)) {
               setError(t("vaultPassphraseTooShort"));
               return;
             }

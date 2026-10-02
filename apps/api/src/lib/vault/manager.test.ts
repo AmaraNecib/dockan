@@ -5,12 +5,13 @@ import path from "node:path";
 
 import { AppLogger } from "../logger";
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
-import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, unlockBackoffMs } from "./manager";
+import { VaultAlreadyConfiguredError, VaultLockedError, VaultManager, VaultSetupInProgressError, unlockBackoffMs } from "./manager";
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
 
 let dir: string;
 let clock: number;
+const extraDirs: string[] = [];
 
 function manager(): VaultManager {
   return new VaultManager({
@@ -28,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const extra of extraDirs.splice(0)) fs.rmSync(extra, { recursive: true, force: true });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -110,10 +112,10 @@ describe("VaultManager", () => {
     const reopened = manager();
     await expect(reopened.unlock("wrong")).rejects.toThrow(VaultAuthenticationError);
     await reopened.unlock("correct horse");
-    const events = reopened.drainPendingEvents();
+    const events = await reopened.drainPendingEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toContain("VAULT_UNLOCK_FAILED");
-    expect(reopened.drainPendingEvents()).toHaveLength(0);
+    expect(await reopened.drainPendingEvents()).toHaveLength(0);
   });
 
   it("treats an unreadable header as invalid and refuses to overwrite it", async () => {
@@ -148,5 +150,80 @@ describe("VaultManager", () => {
     expect(unlockBackoffMs(5)).toBe(30_000);
     expect(unlockBackoffMs(6)).toBe(60_000);
     expect(unlockBackoffMs(50)).toBe(15 * 60_000);
+  });
+
+  it("single-flights first-run setup and releases the slot on abort (finding A6)", async () => {
+    const vault = manager();
+    await vault.prepareSetup("correct horse battery");
+    await expect(vault.prepareSetup("correct horse battery")).rejects.toThrow(VaultSetupInProgressError);
+    vault.abortSetup();
+    await expect(vault.prepareSetup("correct horse battery")).resolves.toBeDefined();
+    await vault.commitSetup();
+  });
+
+  it("refuses short passphrases on the NORMALIZED value (finding: spaces)", async () => {
+    const vault = manager();
+    await expect(vault.prepareSetup("        ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
+    await expect(vault.prepareSetup("  short  ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
+  });
+
+  it("sets a new passphrase from a recovery key without the old one (finding C4)", async () => {
+    const vault = manager();
+    const { recoveryKey } = await vault.prepareSetup("correct horse battery");
+    await vault.commitSetup();
+    vault.close();
+
+    const reopened = manager();
+    const token = await reopened.setPassphraseFromRecovery(recoveryKey, "a brand new passphrase");
+    expect(reopened.sessionMatches(token)).toBe(true);
+    reopened.close();
+    await expect(manager().unlock("correct horse battery")).rejects.toThrow(VaultAuthenticationError);
+    const fresh = manager();
+    await fresh.unlock("a brand new passphrase");
+    expect(fresh.unlocked).toBe(true);
+  });
+
+  it("rotates the session token when a recovery key is deleted (finding A14)", async () => {
+    const vault = manager();
+    await createVault(vault);
+    const added = await vault.addRecoveryKey();
+    const before = await vault.unlock("correct horse");
+    const after = await vault.removeRecoveryKey(added.id);
+    expect(after).not.toBe(before);
+    expect(vault.sessionMatches(before)).toBe(false);
+    expect(vault.sessionMatches(after)).toBe(true);
+  });
+
+  it("retries the legacy plaintext cleanup on a later unlock until it is gone (finding C11)", async () => {
+    const legacyPath = path.join(dir, "dokan.db");
+    fs.writeFileSync(legacyPath, "SQLite format 3\u0000");
+    fs.writeFileSync(`${legacyPath}-wal`, "wal");
+    const vault = manager();
+    await createVault(vault);
+    // a committed vault makes the plaintext copy stale; cleanup removes it
+    await vault.cleanupLegacyPlaintext();
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    expect(fs.existsSync(`${legacyPath}-wal`)).toBe(false);
+    // idempotent on the next unlock
+    await vault.cleanupLegacyPlaintext();
+    // and a plaintext file without a committed vault is left alone
+    const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-vault-cleanup-"));
+    extraDirs.push(otherDir);
+    const otherLegacy = path.join(otherDir, "dokan.db");
+    fs.writeFileSync(otherLegacy, "SQLite format 3\u0000");
+    const unconfigured = new VaultManager({ dataDir: otherDir, legacyDbPath: otherLegacy, logger: new AppLogger(otherDir), kdf: FAST_KDF });
+    await unconfigured.cleanupLegacyPlaintext();
+    expect(fs.existsSync(otherLegacy)).toBe(true);
+  });
+
+  it("clamps a hostile throttle state instead of locking the owner out (finding C13)", async () => {
+    fs.mkdirSync(path.join(dir, "vault"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "vault", "state.json"),
+      JSON.stringify({ failedAttempts: 999_999, lockUntil: Date.now() + 10 * 365 * 24 * 60 * 60 * 1000, pendingEvents: [] }),
+    );
+    const vault = manager();
+    // the lock is clamped to the 15-minute maximum, not a decade
+    expect(vault.status().lockedForMs).toBeLessThanOrEqual(15 * 60_000);
   });
 });

@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createEncryptedConnection, readLegacyDatabaseImage } from "../db/encrypted-connection";
+import { createEncryptedConnection, readLegacyDatabaseImage, SnapshotPersistenceError } from "../db/encrypted-connection";
+import { openVaultStore } from "../db/vault-store";
 import { CURRENT_SCHEMA_VERSION, readSchemaVersion } from "../lib/schema-version";
 import { VaultManager } from "../lib/vault/manager";
 import { AppLogger } from "../lib/logger";
@@ -18,6 +19,7 @@ import { createDrizzleStore } from "./drizzle-store";
  */
 
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
+const PASSPHRASE = "correct horse battery";
 
 let dir: string;
 
@@ -59,6 +61,29 @@ afterEach(() => {
   }
 });
 
+type FreshVault = {
+  vault: VaultManager;
+  vaultId: string;
+  conn: ReturnType<typeof createEncryptedConnection>;
+  store: ReturnType<typeof createDrizzleStore>;
+};
+
+/** The same bootstrap path main.ts uses; no test-local store construction. */
+async function freshVault(): Promise<FreshVault> {
+  const vault = new VaultManager({ dataDir: dir, legacyDbPath: path.join(dir, "dokan.db"), logger: new AppLogger(dir), kdf: FAST_KDF });
+  const { vaultId } = await vault.prepareSetup(PASSPHRASE);
+  await vault.commitSetup();
+  const { conn, store } = openVaultStore({
+    vaultId,
+    masterKey: vault.requireMasterKey(),
+    snapshotPath: vault.snapshotPath,
+    headerPath: vault.headerPath,
+    fresh: true,
+  });
+  await store.setup();
+  return { vault, vaultId, conn, store };
+}
+
 describe("vault-mode store", () => {
   it("migrates a plaintext database, preserves the schema version, and survives a reopen", async () => {
     // 1. a phase-1 install writes plaintext (separate process fixture)
@@ -66,27 +91,28 @@ describe("vault-mode store", () => {
     const legacyPath = path.join(dir, "dokan.db");
     expect(fs.existsSync(legacyPath)).toBe(true);
 
-    // 2. first vault setup migrates the image
+    // 2. first vault setup migrates the image through the same helper main uses
     const vault = new VaultManager({
       dataDir: dir,
       legacyDbPath: legacyPath,
       logger: new AppLogger(dir),
       kdf: FAST_KDF,
     });
-    const { recoveryKey } = await vault.prepareSetup("correct horse");
+    const { vaultId, recoveryKey } = await vault.prepareSetup(PASSPHRASE);
     expect(recoveryKey).toMatch(/[A-Z2-7]/);
     const { image, schemaVersion } = readLegacyDatabaseImage(legacyPath);
     expect(schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
-    const conn = createEncryptedConnection({
-      vaultId: vault.metadata().vaultId,
+    const { conn, store } = openVaultStore({
+      vaultId,
       masterKey: vault.setupMasterKey(),
       snapshotPath: vault.snapshotPath,
+      headerPath: vault.headerPath,
+      fresh: true,
       seedBytes: image,
     });
-    const store = createDrizzleStore(conn);
     await store.setup();
     await vault.commitSetup();
-    conn.close();
+    await conn.close();
 
     // 3. the snapshot is the only database file; reopening reads the migrated data
     expect(fs.existsSync(vault.snapshotPath)).toBe(true);
@@ -97,38 +123,154 @@ describe("vault-mode store", () => {
     });
     // SAFETY: PRAGMA user_version returns exactly one integer column row
     expect(readSchemaVersion(reopened.raw)).toBe(CURRENT_SCHEMA_VERSION);
-    const reopenedStore = createDrizzleStore(reopened);
-    const categories = await reopenedStore.listCategories();
-    expect(categories.some((category) => category.name === "زينة")).toBe(true);
-    reopened.close();
+    expect((await createDrizzleStore(reopened).listCategories()).some((category) => category.name === "زينة")).toBe(true);
+    await reopened.close();
   });
 
-  it("persists store mutations into the snapshot without an explicit flush", async () => {
-    const vault = new VaultManager({
-      dataDir: dir,
-      legacyDbPath: path.join(dir, "nonexistent.db"),
-      logger: new AppLogger(dir),
-      kdf: FAST_KDF,
-    });
-    const { vaultId } = await vault.prepareSetup("correct horse");
-    const masterKey = vault.setupMasterKey();
-    const conn = createEncryptedConnection({
-      vaultId,
-      masterKey,
-      snapshotPath: vault.snapshotPath,
-    });
-    const store = createDrizzleStore(conn);
-    await store.setup();
+  it("persists store mutations into the snapshot without an explicit flush and leaves no plaintext database", async () => {
+    const { vault, conn, store } = await freshVault();
     await store.createCategory({ name: "إطارات" });
     // no close(), no flush(): the mutating-call hook must have persisted already
+    const snapshot = fs.readFileSync(conn.dbPath);
+    expect(snapshot.subarray(0, 8).toString("ascii")).toBe("DKNVAULT");
+    // the probe scans the WHOLE container for several plaintext markers, not
+    // one substring: schema names, a seeded value, and a settings key
+    for (const marker of ["hello", "categories", "CREATE TABLE", "adminUserId", "إطارات"]) {
+      expect(snapshot.includes(Buffer.from(marker))).toBe(false);
+    }
+    // and no WAL/sidecar ever appears beside the snapshot
+    expect(fs.existsSync(`${conn.dbPath}-wal`)).toBe(false);
+    expect(fs.existsSync(`${conn.dbPath}-shm`)).toBe(false);
+
     const reopened = createEncryptedConnection({
-      vaultId,
-      masterKey,
+      vaultId: vault.metadata().vaultId,
+      masterKey: vault.requireMasterKey(),
       snapshotPath: vault.snapshotPath,
     });
-    const reopenedStore = createDrizzleStore(reopened);
-    expect((await reopenedStore.listCategories()).some((category) => category.name === "إطارات")).toBe(true);
-    reopened.close();
-    conn.close();
+    expect((await createDrizzleStore(reopened).listCategories()).some((category) => category.name === "إطارات")).toBe(true);
+    await reopened.close();
+    await conn.close();
+  });
+
+  it("keeps checkpoint() out of an open store transaction (real seam, not a hand-set flag)", async () => {
+    const { vault, conn, store } = await freshVault();
+    await store.createCategory({ name: "before" });
+    const before = fs.readFileSync(conn.dbPath);
+
+    await store.withTransaction(async (tx) => {
+      await tx.createCategory({ name: "uncommitted" });
+      // the shutdown/backup checkpoint runs mid-unit: it must not capture the
+      // uncommitted row
+      conn.checkpoint();
+      expect(fs.readFileSync(conn.dbPath).equals(before)).toBe(true);
+    });
+
+    // after COMMIT the unit is durable and both rows are present
+    await conn.close();
+    const reopened = createEncryptedConnection({
+      vaultId: vault.metadata().vaultId,
+      masterKey: vault.requireMasterKey(),
+      snapshotPath: vault.snapshotPath,
+    });
+    const names = (await createDrizzleStore(reopened).listCategories()).map((category) => category.name);
+    expect(names).toContain("before");
+    expect(names).toContain("uncommitted");
+    await reopened.close();
+  });
+
+  it("fails stop (typed error + hook) when a committed direct write cannot be snapshotted", async () => {
+    const { vault, conn, store } = await freshVault();
+    const fatal: Error[] = [];
+    conn.onFatalError = (error) => fatal.push(error);
+
+    // block the snapshot write: the destination becomes a directory
+    fs.rmSync(conn.dbPath, { force: true });
+    fs.mkdirSync(conn.dbPath);
+    await expect(store.createCategory({ name: "kept" })).rejects.toThrow(SnapshotPersistenceError);
+    expect(fatal).toHaveLength(1);
+    // the SQLite row committed: it must still be there (no rollback after commit)
+    expect((await store.listCategories()).some((category) => category.name === "kept")).toBe(true);
+
+    // free the path; the next mutating call flushes the dirty image exactly once
+    fs.rmdirSync(conn.dbPath);
+    await store.createCategory({ name: "second" });
+    await conn.close();
+    const reopened = createEncryptedConnection({
+      vaultId: vault.metadata().vaultId,
+      masterKey: vault.requireMasterKey(),
+      snapshotPath: vault.snapshotPath,
+    });
+    const names = (await createDrizzleStore(reopened).listCategories()).map((category) => category.name);
+    expect(names.filter((name) => name === "kept")).toHaveLength(1);
+    expect(names).toContain("second");
+    await reopened.close();
+  });
+
+  it("never reports a committed transaction as failed without the hook firing", async () => {
+    const { vault, conn, store } = await freshVault();
+    const fatal: Error[] = [];
+    conn.onFatalError = (error) => fatal.push(error);
+    fs.rmSync(conn.dbPath, { force: true });
+    fs.mkdirSync(conn.dbPath);
+    await expect(
+      store.withTransaction(async (tx) => {
+        await tx.createCategory({ name: "committed" });
+      }),
+    ).rejects.toThrow(SnapshotPersistenceError);
+    expect(fatal).toHaveLength(1);
+    expect((await store.listCategories()).some((category) => category.name === "committed")).toBe(true);
+    fs.rmdirSync(conn.dbPath);
+    await conn.flush();
+    await conn.close();
+    const reopened = createEncryptedConnection({
+      vaultId: vault.metadata().vaultId,
+      masterKey: vault.requireMasterKey(),
+      snapshotPath: vault.snapshotPath,
+    });
+    expect((await createDrizzleStore(reopened).listCategories()).some((category) => category.name === "committed")).toBe(true);
+    await reopened.close();
+  });
+
+  it("does not release the store queue before a direct write is durable (finding: deferred snapshot)", async () => {
+    const { conn, store } = await freshVault();
+    // widen the write window so a pre-fix queue release would be observable
+    const realSerialize = conn.raw.serialize.bind(conn.raw);
+    let serializeCalls = 0;
+    conn.raw.serialize = () => {
+      serializeCalls += 1;
+      Bun.sleepSync(30);
+      return realSerialize();
+    };
+
+    const first = store.createCategory({ name: "first" });
+    let callsWhenReadDone = -1;
+    const read = store.listCategories().then((rows) => {
+      callsWhenReadDone = serializeCalls;
+      return rows;
+    });
+    await Promise.all([first, read]);
+    // with the write inside the queue slot, the read cannot start before the
+    // snapshot covering "first" was written; the old wrapper could report
+    // success while the snapshot write was still pending
+    expect(callsWhenReadDone).toBeGreaterThanOrEqual(1);
+    await conn.close();
+  });
+
+  it("close() awaits an in-flight persist before releasing the handle", async () => {
+    const { conn, store } = await freshVault();
+    const realSerialize = conn.raw.serialize.bind(conn.raw);
+    conn.raw.serialize = () => {
+      Bun.sleepSync(50);
+      return realSerialize();
+    };
+    await store.createCategory({ name: "slow" });
+    let persisted = false;
+    conn.markDirty();
+    const inFlight = conn.persistIfDirty().then(() => {
+      persisted = true;
+    });
+    await conn.close();
+    await inFlight;
+    expect(persisted).toBe(true);
   });
 });

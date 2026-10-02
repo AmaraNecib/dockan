@@ -205,8 +205,10 @@ checksum, grouped for transcription; a bad checksum fails before the KDF.
 **What is encrypted.** The database is the only shop-data file: the runtime is
 an in-memory SQLite image and every persisted byte is an encrypted snapshot
 (`dokan.db.enc`), so there is no plaintext database and no WAL on disk. Daily
-and manual backups are copies of that encrypted container and are validated by
-decrypting and `PRAGMA quick_check`ing them. `vault/vault.json` holds only
+and manual backups write a self-contained bundle (the encrypted snapshot plus
+the `vault.json` key wraps) so the file unlocks on another install; validation
+decrypts the embedded snapshot and runs `PRAGMA quick_check`. `vault/vault.json`
+holds only
 wrapped keys and format metadata; `vault/state.json` holds only the unlock
 throttle counters. Logs remain plaintext operational diagnostics and are
 engineered never to contain a secret or a wrapped key; the stick-takeover
@@ -221,8 +223,20 @@ leaves the plaintext install untouched and retryable.
 
 **Persistence.** Every committed store unit and every mutating store call
 serializes → encrypts → writes the snapshot through a temp file + fsync +
-rename; `close()` and backup copies checkpoint it synchronously. A crash loses
-at most the in-flight unit.
+rename; `close()` awaits the persist queue and checkpoints it, and backup copies
+write a **self-contained bundle** (key wraps + snapshot) so an exported backup
+unlocks on another install. A failed write stays dirty and is retried; if it
+still fails, the process fails stop (never reporting a committed unit as
+failed, which a retry would duplicate). A missing snapshot and a torn/damaged
+one are distinct Arabic refusals (`VAULT_DATABASE_MISSING`, `VAULT_CORRUPT`) with
+restore guidance, never a wrong-passphrase message. Legacy plaintext cleanup is
+retried on every unlock until the file is gone.
+
+**Recovery flow.** A forgotten passphrase is fixed from the recovery key alone:
+`POST /api/vault/reset-passphrase` unwraps the master key with the recovery code
+and re-wraps a new passphrase, no current passphrase required. The last recovery
+key cannot be deleted, and changing the passphrase or deleting a key rotates
+the in-process session token (the pre-rotation token is refused).
 
 **Gate transport.** In dev, e2e and the packaged shell the gate is same-origin
 HTTP (`/api/vault/*`) served by the locked sidecar: the desktop window opens on
@@ -236,7 +250,7 @@ provably identical.
 
 **Owner identity seam.** Unlocking mints an in-process session token returned to
 the client; the router accepts it over the `x-vault-session` header as the
-owner. The auth layer itself is unchanged, so employee logins can sign in after
+owner. The auth layer itself is unchanged for the legacy build, and employee logins can later sign in after
 the vault is open without touching the vault.
 
 **Dev/e2e escape hatch.** `DOKAN_VAULT=disabled` keeps the phase-1 plaintext

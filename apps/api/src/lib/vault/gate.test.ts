@@ -11,13 +11,13 @@ import { createApp } from "../../app";
 import { createAuth } from "../../auth/auth";
 import { createAppConfig, type AppConfig } from "../../config";
 import { createEncryptedConnection, readLegacyDatabaseImage } from "../../db/encrypted-connection";
+import { openVaultStore } from "../../db/vault-store";
 import { AppLogger } from "../../lib/logger";
 import { ensureSessionSecret } from "../../lib/session-secret";
 import { type KdfParams } from "./crypto";
 import { createVaultHttpApp } from "./http";
 import { VaultManager } from "./manager";
 import { createRpcRouter } from "../../rpc/router";
-import { createDrizzleStore } from "../../store/drizzle-store";
 import type { StorePort } from "../../store/port";
 
 /**
@@ -80,6 +80,8 @@ type GateHarness = {
   gate: ReturnType<typeof createVaultHttpApp>;
   /** the full app comes alive after bootstrap; gate tests use it post-unlock */
   appFor: () => ReturnType<typeof createApp>;
+  /** simulate a process restart: the next unlock re-runs bootstrap */
+  resetApp: () => void;
   connection: () => ReturnType<typeof createEncryptedConnection>;
   store: () => StorePort;
   linkWith: (headers: Record<string, string>) => DokanClient;
@@ -101,14 +103,17 @@ function harness(dir: string, options: { onSetupCommitted?: () => Promise<void> 
     if (store !== undefined) return;
     const legacyPath = config.db.path;
     const seedBytes = input.fresh && fs.existsSync(legacyPath) ? readLegacyDatabaseImage(legacyPath).image : undefined;
-    const connectionOptions: Parameters<typeof createEncryptedConnection>[0] = {
+    const storeInput: Parameters<typeof openVaultStore>[0] = {
       vaultId: input.vaultId,
       masterKey: input.masterKey,
       snapshotPath: manager.snapshotPath,
+      headerPath: manager.headerPath,
     };
-    if (seedBytes !== undefined) connectionOptions.seedBytes = seedBytes;
-    connection = createEncryptedConnection(connectionOptions);
-    store = createDrizzleStore(connection);
+    if (input.fresh) storeInput.fresh = true;
+    if (seedBytes !== undefined) storeInput.seedBytes = seedBytes;
+    const opened = openVaultStore(storeInput);
+    connection = opened.conn;
+    store = opened.store;
     await store.setup();
     await connection.flush();
     const ownerId = await store.getSetting("adminUserId");
@@ -156,6 +161,11 @@ function harness(dir: string, options: { onSetupCommitted?: () => Promise<void> 
     appFor: () => {
       if (app === undefined) throw new Error("app not bootstrapped");
       return app;
+    },
+    resetApp: () => {
+      store = undefined;
+      connection = undefined;
+      app = undefined;
     },
     connection: () => {
       if (connection === undefined) throw new Error("connection not bootstrapped");
@@ -403,10 +413,14 @@ describe("vault HTTP gate", () => {
 
     const removed = await h.gate.request(`/api/vault/recovery-keys/${addedBody.id}`, { method: "DELETE", headers: authHeaders });
     expect(removed.status).toBe(200);
+    // deleting a credential rotates the session token; adopt the fresh one
+    // SAFETY: the delete contract is { ok: true, sessionToken }
+    const afterRemove = await json<{ sessionToken: string }>(removed);
+    const rotatedHeaders = { "content-type": "application/json", "x-vault-session": afterRemove.sessionToken };
 
     const changed = await h.gate.request("/api/vault/change-passphrase", {
       method: "POST",
-      headers: authHeaders,
+      headers: rotatedHeaders,
       body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a brand new passphrase" }),
     });
     expect(changed.status).toBe(200);
@@ -426,3 +440,213 @@ describe("vault HTTP gate", () => {
     expect(fresh.status).toBe(200);
   });
 });
+
+describe("vault gate hardening (review supplement)", () => {
+  const jsonHeaders = { "content-type": "application/json" };
+
+  async function setupVault(h: GateHarness, passphrase = "correct horse battery") {
+    return h.gate.request("/api/vault/setup", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase }),
+    });
+  }
+
+  it("validates the NORMALIZED passphrase (finding: eight spaces is empty)", async () => {
+    const h = harness(tempDir("dokan-vault-norm-"));
+    const spaces = await setupVault(h, "        ");
+    expect(spaces.status).toBe(400);
+    // SAFETY: the error contract is { error: { code, message } }
+    expect((await json<{ error: { code: string } }>(spaces)).error.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
+    // a padded short passphrase normalizes below the floor too
+    expect((await setupVault(h, "  short  ")).status).toBe(400);
+    // and the same rule lets a real passphrase through
+    expect((await setupVault(h, "correct horse battery")).status).toBe(200);
+  });
+
+  it("keeps first-run setup single-flight (finding: concurrent setups mixing keys)", async () => {
+    const h = harness(tempDir("dokan-vault-single-flight-"));
+    const [a, b] = await Promise.all([setupVault(h), setupVault(h)]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    const winner = a.status === 200 ? a : b;
+    // SAFETY: the setup contract carries the recovery key
+    const { recoveryKey } = await json<{ recoveryKey: string }>(winner);
+    // the winner's recovery key must unlock the COMMITTED header
+    h.manager.close();
+    h.resetApp();
+    const unlock = await h.gate.request("/api/vault/unlock-recovery", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ recoveryKey }),
+    });
+    expect(unlock.status).toBe(200);
+  });
+
+  it("refuses a torn or damaged snapshot as corruption, never as a wrong passphrase", async () => {
+    const h = harness(tempDir("dokan-vault-corrupt-"));
+    await setupVault(h);
+    await h.connection().close();
+    h.manager.close();
+    h.resetApp();
+
+    const original = fs.readFileSync(h.manager.snapshotPath);
+    // truncation: the envelope tail is cut off
+    fs.writeFileSync(h.manager.snapshotPath, original.subarray(0, Math.floor(original.length / 2)));
+    const torn = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(torn.status).toBe(409);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(torn)).error.code).toBe("VAULT_CORRUPT");
+
+    // byte flip: the AEAD tag fails, still corruption because the header
+    // already authenticated the passphrase
+    const flipped = Buffer.from(original);
+    flipped[flipped.length - 1] = flipped[flipped.length - 1]! ^ 0xff;
+    fs.writeFileSync(h.manager.snapshotPath, flipped);
+    const damaged = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(damaged.status).toBe(409);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(damaged)).error.code).toBe("VAULT_CORRUPT");
+  });
+
+  it("refuses a missing snapshot instead of fabricating an empty shop", async () => {
+    const h = harness(tempDir("dokan-vault-missing-"));
+    await setupVault(h);
+    await h.connection().close();
+    h.manager.close();
+    h.resetApp();
+    fs.rmSync(h.manager.snapshotPath, { force: true });
+
+    const unlock = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(unlock.status).toBe(409);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(unlock)).error.code).toBe("VAULT_DATABASE_MISSING");
+    // the refusal must not create a replacement empty database
+    expect(fs.existsSync(h.manager.snapshotPath)).toBe(false);
+  });
+
+  it("refuses to delete the last recovery key (finding C8)", async () => {
+    const h = harness(tempDir("dokan-vault-lastkey-"));
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+    const listed = await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } });
+    // SAFETY: the list contract is { keys: Array<{ id: string }> }
+    const keys = (await json<{ keys: Array<{ id: string }> }>(listed)).keys;
+    expect(keys).toHaveLength(1);
+    const removed = await h.gate.request(`/api/vault/recovery-keys/${keys[0]!.id}`, {
+      method: "DELETE",
+      headers: { "x-vault-session": sessionToken },
+    });
+    expect(removed.status).toBe(409);
+    // SAFETY: the error contract is { error: { code } }
+    expect((await json<{ error: { code: string } }>(removed)).error.code).toBe("VAULT_LAST_RECOVERY_KEY");
+    expect(h.manager.status().recoveryKeyCount).toBe(1);
+  });
+
+  it("resets the passphrase with a recovery key, no current passphrase needed (finding C4)", async () => {
+    const h = harness(tempDir("dokan-vault-reset-"));
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the recovery key
+    const { recoveryKey } = await json<{ recoveryKey: string }>(setup);
+    h.manager.close();
+
+    const reset = await h.gate.request("/api/vault/reset-passphrase", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ recoveryKey, newPassphrase: "a brand new passphrase" }),
+    });
+    expect(reset.status).toBe(200);
+    h.manager.close();
+    const old = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "correct horse battery" }),
+    });
+    expect(old.status).toBe(401);
+    const fresh = await h.gate.request("/api/vault/unlock", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ passphrase: "a brand new passphrase" }),
+    });
+    expect(fresh.status).toBe(200);
+    h.manager.close();
+    const recovered = await h.gate.request("/api/vault/unlock-recovery", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ recoveryKey }),
+    });
+    expect(recovered.status).toBe(200);
+  });
+
+  it("throttles credential changes, returns retryAfterMs, and rotates the session (findings C13/A14)", async () => {
+    const h = harness(tempDir("dokan-vault-throttle-"));
+    const setup = await setupVault(h);
+    // SAFETY: the setup contract carries the session token
+    const { sessionToken } = await json<{ sessionToken: string }>(setup);
+
+    // a successful change rotates the token: the old one dies, the new works
+    const changed = await h.gate.request("/api/vault/change-passphrase", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-vault-session": sessionToken },
+      body: JSON.stringify({ currentPassphrase: "correct horse battery", newPassphrase: "a brand new passphrase" }),
+    });
+    expect(changed.status).toBe(200);
+    // SAFETY: the change contract carries the fresh session token
+    const rotated = (await json<{ sessionToken: string }>(changed)).sessionToken;
+    expect(rotated).not.toBe(sessionToken);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": sessionToken } })).status).toBe(401);
+    expect((await h.gate.request("/api/vault/recovery-keys", { headers: { "x-vault-session": rotated } })).status).toBe(200);
+
+    // wrong current passphrases feed the same persisted backoff
+    let lastStatus = 0;
+    let retryAfterMs = 0;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const response = await h.gate.request("/api/vault/change-passphrase", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-vault-session": rotated },
+        body: JSON.stringify({ currentPassphrase: "wrong current", newPassphrase: "another new passphrase" }),
+      });
+      lastStatus = response.status;
+      if (response.status === 429) {
+        // SAFETY: the locked error contract is { error: { retryAfterMs } }
+        retryAfterMs = (await json<{ error: { retryAfterMs?: number } }>(response)).error.retryAfterMs ?? 0;
+        break;
+      }
+    }
+    expect(lastStatus).toBe(429);
+    expect(retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it("does not mount better-auth routes in vault mode (finding C10)", async () => {
+    const h = harness(tempDir("dokan-vault-no-auth-"));
+    await setupVault(h);
+    const signIn = await h.appFor().request("/api/auth/sign-in/username", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ username: "213550123123", password: "dokan-1234" }),
+    });
+    expect(signIn.status).toBe(404);
+  });
+
+  it("hides the recovery-key inventory while locked", async () => {
+    const h = harness(tempDir("dokan-vault-status-"));
+    await setupVault(h);
+    h.manager.close();
+    const status = await json<{ recoveryKeyCount: number; state: string }>(await h.gate.request("/api/vault/status"));
+    expect(status.state).toBe("locked");
+    expect(status.recoveryKeyCount).toBe(0);
+  });
+});
+

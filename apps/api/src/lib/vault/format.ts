@@ -56,9 +56,13 @@ const headerSchema = z.object({
   createdAt: z.string().min(1).max(64),
   kdf: z.object({
     algorithm: z.literal("argon2id"),
-    memoryKiB: z.number().int().min(8).max(1_048_576),
-    iterations: z.number().int().min(1).max(64),
-    parallelism: z.number().int().min(1).max(16),
+    // sane maxima (finding: crafted-header lockout DoS): a 1 GiB / t=64 header
+    // would make every unlock attempt an unbounded CPU stall. Real vaults use
+    // the 32 MiB / t=3 defaults; these bounds leave headroom while refusing a
+    // header that can only exist to deny service.
+    memoryKiB: z.number().int().min(8).max(262_144),
+    iterations: z.number().int().min(1).max(10),
+    parallelism: z.number().int().min(1).max(4),
     keyLength: z.literal(32),
   }),
   wraps: z.array(wrapSchema).min(1).max(6),

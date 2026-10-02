@@ -15,10 +15,13 @@ const API_PORT = 4399;
 const WEB_PORT = 5174;
 const ROOT = process.cwd();
 const PASSPHRASE = "shop vault passphrase";
+const NEW_PASSPHRASE = "brand new shop passphrase";
 
 let api: ChildProcess | undefined;
 let web: ChildProcess | undefined;
 let dataDir: string;
+/** shown exactly once by the first test, used by the recovery test after a restart */
+let recoveryKey = "";
 
 test.describe.configure({ mode: "serial" });
 
@@ -121,8 +124,9 @@ test("first run: passphrase → recovery key shown once → owner setup → the 
   // the recovery key is shown once and gated on an explicit acknowledgment
   const keyElement = page.getByTestId("vault-recovery-key");
   await expect(keyElement).toBeVisible();
-  const recoveryKey = (await keyElement.innerText()).trim();
-  expect(recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+  const shownKey = (await keyElement.innerText()).trim();
+  expect(shownKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
+  recoveryKey = shownKey;
   const continueButton = page.getByTestId("vault-recovery-continue");
   await expect(continueButton).toBeDisabled();
   await page.getByTestId("vault-recovery-confirm").check();
@@ -138,7 +142,7 @@ test("first run: passphrase → recovery key shown once → owner setup → the 
   await expect(page.getByTestId("dashboard-page")).toBeVisible();
 });
 
-test("after a restart the vault is locked; a wrong passphrase fails in Arabic and the right one opens", async ({ page }) => {
+test("after a restart the vault is locked; recovery unlocks it and sets a new working passphrase", async ({ page }) => {
   // restart the API: the in-memory master key and session are gone
   await stopAndWait(api);
   api = startApi();
@@ -151,16 +155,27 @@ test("after a restart the vault is locked; a wrong passphrase fails in Arabic an
   await page.getByTestId("vault-unlock-submit").click();
   await expect(page.getByTestId("vault-error")).toHaveText("كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.");
 
-  await page.getByTestId("vault-passphrase").fill(PASSPHRASE);
-  await page.getByTestId("vault-unlock-submit").click();
+  // the recovery key opens the vault without the forgotten passphrase
+  await page.getByTestId("vault-use-recovery").click();
+  await page.getByTestId("vault-recovery-input").fill(recoveryKey);
+  await page.getByTestId("vault-recovery-submit").click();
   await expect(page.getByTestId("dashboard-page")).toBeVisible();
 
-  // the vault controls live in settings: change the passphrase, add a key
+  // ... and sets a brand-new passphrase from settings, no current one needed
   await page.getByRole("link", { name: "الإعدادات" }).click();
   await expect(page.getByTestId("vault-settings")).toBeVisible();
-  await page.getByTestId("vault-current-passphrase").fill(PASSPHRASE);
-  await page.getByTestId("vault-new-passphrase").fill("a brand new vault passphrase");
-  await page.getByTestId("vault-confirm-passphrase").fill("a brand new vault passphrase");
-  await page.getByTestId("vault-change-submit").click();
+  await page.getByTestId("vault-show-recovery-reset").click();
+  await page.getByTestId("vault-reset-recovery-key").fill(recoveryKey);
+  await page.getByTestId("vault-reset-new-passphrase").fill(NEW_PASSPHRASE);
+  await page.getByTestId("vault-reset-submit").click();
   await expect(page.getByTestId("vault-settings-saved")).toBeVisible();
+
+  // a further restart only accepts the NEW passphrase
+  await stopAndWait(api);
+  api = startApi();
+  await waitForVaultState("locked");
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
+  await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
 });

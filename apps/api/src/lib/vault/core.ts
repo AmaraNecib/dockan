@@ -122,24 +122,30 @@ export class VaultCore {
   /**
    * Add one recovery wrap (max 5). The caller must already hold the unlocked
    * master key; the new code is returned exactly once and never stored in the
-   * clear.
+   * clear. The header object is replaced only after the write succeeded, so a
+   * failed persist never leaves memory and disk divergent (finding: mutation
+   * before persist).
    */
   async addRecoveryKey(masterKey: Uint8Array): Promise<{ id: string; code: string; createdAt: string }> {
     const recoveryWraps = this.header.wraps.filter((wrap) => wrap.kind === "recovery");
     if (recoveryWraps.length >= 5) throw new Error("VAULT_RECOVERY_LIMIT");
     const { code, bytes } = generateRecoveryCode();
     const wrap = this.buildWrap(masterKey, bytes, "recovery", `0${recoveryWraps.length + 1}`);
-    this.header.wraps.push(wrap);
-    await this.persist();
+    await this.persistHeader({ ...this.header, wraps: [...this.header.wraps, wrap] });
     return { id: wrap.id, code, createdAt: wrap.createdAt };
   }
 
-  /** Remove one recovery wrap. Unknown ids are a no-op refusal. */
+  /**
+   * Remove one recovery wrap. Unknown ids are refused, and the LAST recovery
+   * key can never be deleted (finding: last-key removal): losing every
+   * recovery key silently removes the forgotten-passphrase path.
+   */
   async removeRecoveryKey(id: string): Promise<void> {
+    const recoveryWraps = this.header.wraps.filter((wrap) => wrap.kind === "recovery");
+    if (recoveryWraps.length <= 1) throw new Error("VAULT_LAST_RECOVERY_KEY");
     const next = this.header.wraps.filter((wrap) => !(wrap.kind === "recovery" && wrap.id === id));
     if (next.length === this.header.wraps.length) throw new Error("VAULT_RECOVERY_NOT_FOUND");
-    this.header.wraps = next;
-    await this.persist();
+    await this.persistHeader({ ...this.header, wraps: next });
   }
 
   /**
@@ -147,16 +153,24 @@ export class VaultCore {
    * master key; the new wrap is committed before anything else can observe it.
    */
   async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
-    if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
     const masterKey = this.unlockPassphrase(currentPassphrase);
     try {
-      const next = this.buildWrap(masterKey, normalizePassphrase(newPassphrase), "passphrase");
-      this.header.wraps = this.header.wraps.filter((wrap) => wrap.kind !== "passphrase");
-      this.header.wraps.unshift(next);
-      await this.persist();
+      await this.setPassphraseFromMasterKey(masterKey, newPassphrase);
     } finally {
       masterKey.fill(0);
     }
+  }
+
+  /**
+   * Re-wrap a new passphrase around an already-unwrapped master key (recovery
+   * path, finding C4). The master key is NOT owned by this method; the caller
+   * zeroes its copy.
+   */
+  async setPassphraseFromMasterKey(masterKey: Uint8Array, newPassphrase: string): Promise<void> {
+    if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
+    const wrap = this.buildWrap(masterKey, normalizePassphrase(newPassphrase), "passphrase");
+    const wraps = [wrap, ...this.header.wraps.filter((candidate) => candidate.kind !== "passphrase")];
+    await this.persistHeader({ ...this.header, wraps });
   }
 
   /** True when the header already carries a recovery wrap that parses (UI hint only). */
@@ -197,7 +211,8 @@ export class VaultCore {
     }
   }
 
-  private async persist(): Promise<void> {
-    await this.store.write(serializeVaultHeader(this.header));
+  private async persistHeader(next: VaultHeader): Promise<void> {
+    await this.store.write(serializeVaultHeader(next));
+    this.header = next;
   }
 }

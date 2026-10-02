@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore } from "./core";
-import { generateRecoveryCode, parseVaultHeader } from "./format";
+import { generateRecoveryCode, parseRecoveryCode, parseVaultHeader } from "./format";
 
 /** Test KDF parameters: the same code path, milliseconds instead of seconds. */
 const FAST_KDF: KdfParams = { algorithm: "argon2id", memoryKiB: 64, iterations: 1, parallelism: 1, keyLength: 32 };
@@ -128,8 +128,72 @@ describe("VaultCore", () => {
     await expect(VaultCore.create(store, "two")).rejects.toThrow();
   });
 
-  it("generates codes that parse (checksum contract)", () => {
-    const { code } = generateRecoveryCode();
-    expect(code).toBeDefined();
+  it("generates codes whose checksum verifies the key bytes (not just the checksum chars)", () => {
+    const { code, bytes } = generateRecoveryCode();
+    // the code decodes back to the same 20 bytes and its own checksum
+    const parsed = parseRecoveryCode(code);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error("expected a valid code");
+    expect(parsed.bytes.equals(bytes)).toBe(true);
+    // two codes never collide on a small sample
+    expect(generateRecoveryCode().code).not.toBe(code);
+  });
+
+  it("refuses to remove the last recovery key (finding C8)", async () => {
+    const { core, masterKey } = await freshVault();
+    const only = await core.addRecoveryKey(masterKey);
+    expect(core.recoveryCount()).toBe(1);
+    await expect(core.removeRecoveryKey(only.id)).rejects.toThrow("VAULT_LAST_RECOVERY_KEY");
+    expect(core.recoveryCount()).toBe(1);
+  });
+
+  it("sets a new passphrase from an already-unwrapped master key (finding C4)", async () => {
+    const { core, masterKey } = await freshVault();
+    const recovery = await core.addRecoveryKey(masterKey);
+    // simulate the recovery path: unwrap with the code, then re-wrap
+    const unwrapped = core.unlockRecovery(recovery.code);
+    await core.setPassphraseFromMasterKey(unwrapped, "a brand new passphrase");
+    unwrapped.fill(0);
+    expect(() => core.unlockPassphrase("correct horse")).toThrow(VaultAuthenticationError);
+    expect(core.unlockPassphrase("a brand new passphrase").equals(masterKey)).toBe(true);
+    expect(core.unlockRecovery(recovery.code).equals(masterKey)).toBe(true);
+  });
+
+  it("leaves the in-memory header untouched when a mutation persist fails (finding C9)", async () => {
+    const { store, text } = memoryStore();
+    const { masterKey } = await VaultCore.create(store, "correct horse", { kdf: FAST_KDF });
+
+    let failWrites = false;
+    const flaky: VaultHeaderStore = {
+      read: () => text(),
+      write: async (next) => {
+        if (failWrites) throw new Error("disk full");
+        await store.write(next);
+      },
+    };
+    const reopened = VaultCore.open(flaky);
+    if (reopened === undefined) throw new Error("expected a vault");
+    await reopened.addRecoveryKey(masterKey);
+    const recovery = await reopened.addRecoveryKey(masterKey);
+    const beforeMeta = reopened.metadata();
+    const recoveryWrapId = beforeMeta.wraps.find((wrap) => wrap.id === recovery.id)?.id;
+    if (recoveryWrapId === undefined) throw new Error("expected a recovery wrap");
+
+    failWrites = true;
+    await expect(reopened.addRecoveryKey(masterKey)).rejects.toThrow("disk full");
+    await expect(reopened.removeRecoveryKey(recoveryWrapId)).rejects.toThrow("disk full");
+    await expect(reopened.changePassphrase("correct horse", "a brand new passphrase")).rejects.toThrow("disk full");
+    // memory and disk still agree: no half-applied header
+    expect(reopened.metadata()).toEqual(beforeMeta);
+    expect(VaultCore.open(flaky)?.metadata()).toEqual(beforeMeta);
+    failWrites = false;
+    expect(reopened.unlockPassphrase("correct horse").equals(masterKey)).toBe(true);
+    expect(reopened.unlockRecovery(recovery.code).equals(masterKey)).toBe(true);
+  });
+
+  it("keeps short or padded passphrases out of the core (normalized floor)", async () => {
+    const { core, masterKey } = await freshVault();
+    await expect(core.setPassphraseFromMasterKey(masterKey, "        ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
+    await expect(core.changePassphrase("correct horse", "  short  ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
   });
 });

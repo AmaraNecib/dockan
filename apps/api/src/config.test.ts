@@ -124,3 +124,28 @@ describe("createAppConfig host binding", () => {
     expect(config.probeHost).toBe("127.0.0.1");
   });
 });
+describe("vault opt-out policy (finding D12)", () => {
+  it("keeps the vault on by default", () => {
+    const config = createAppConfig({});
+    expect(config.vault).toBe("on");
+    expect(config.vaultOptOutIgnored).toBe(false);
+  });
+
+  it("honours DOKAN_VAULT=disabled only outside a packaged build", () => {
+    const dev = createAppConfig({ DOKAN_VAULT: "disabled" });
+    expect(dev.vault).toBe("disabled");
+    expect(dev.vaultOptOutIgnored).toBe(false);
+  });
+
+  it("forces the vault on when DOKAN_WEB_DIST marks a packaged build", () => {
+    const packaged = createAppConfig({ DOKAN_VAULT: "disabled", DOKAN_WEB_DIST: "/opt/dokan/ui" });
+    expect(packaged.vault).toBe("on");
+    expect(packaged.vaultOptOutIgnored).toBe(true);
+  });
+
+  it("treats any other value as encryption on", () => {
+    const config = createAppConfig({ DOKAN_VAULT: "off" });
+    expect(config.vault).toBe("on");
+    expect(config.vaultOptOutIgnored).toBe(false);
+  });
+});

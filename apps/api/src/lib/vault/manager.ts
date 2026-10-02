@@ -6,9 +6,10 @@ import { z } from "zod";
 
 import { readFileIfExists, writeFileAtomic, writeFileAtomicSync } from "../atomic-file";
 import { localDateTime, type AppLogger } from "../logger";
-import { VaultAuthenticationError, tokensMatch, type KdfParams } from "./crypto";
+import { VaultAuthenticationError, normalizePassphrase, tokensMatch, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore, type VaultMetadata } from "./core";
 import { VaultFormatError } from "./format";
+import { MIN_VAULT_PASSPHRASE_LENGTH } from "./messages";
 
 /**
  * VaultManager — the install-side vault: files, the in-memory unlock state,
@@ -40,6 +41,14 @@ export class VaultAlreadyConfiguredError extends Error {
   constructor() {
     super("VAULT_ALREADY_CONFIGURED");
     this.name = "VaultAlreadyConfiguredError";
+  }
+}
+
+/** A first-run setup is already holding the pending slot; settle it first. */
+export class VaultSetupInProgressError extends Error {
+  constructor() {
+    super("VAULT_SETUP_IN_PROGRESS");
+    this.name = "VaultSetupInProgressError";
   }
 }
 
@@ -83,6 +92,7 @@ const throttleSchema = z.object({
 const FREE_ATTEMPTS = 5;
 const BASE_LOCK_MS = 30_000;
 const MAX_LOCK_MS = 15 * 60_000;
+const MAX_TRACKED_ATTEMPTS = 1_000;
 
 /** Exponential backoff after the free attempts, capped at 15 minutes. */
 export function unlockBackoffMs(failedAttempts: number): number {
@@ -176,18 +186,34 @@ export class VaultManager {
    * while creating the database leaves the install unconfigured and retryable.
    */
   async prepareSetup(passphrase: string): Promise<{ recoveryKey: string; vaultId: string }> {
-    if (this.headerExists()) throw new VaultAlreadyConfiguredError();
-    const deferred = { text: "" };
-    const store: VaultHeaderStore = {
-      read: () => undefined,
-      write: async (text) => {
-        deferred.text = text;
-      },
-    };
-    const { core, masterKey } = await VaultCore.create(store, passphrase, { kdf: this.kdf });
-    const recovery = await core.addRecoveryKey(masterKey);
-    this.pendingSetup = { core, masterKey, headerText: deferred.text, recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
-    return { recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
+    return this.enqueue(async () => {
+      if (this.headerExists()) throw new VaultAlreadyConfiguredError();
+      // single-flight: a second concurrent first-run request must never
+      // overwrite the pending header/master key, or the committed header and
+      // the key returned to the other caller would not match
+      if (this.pendingSetup !== undefined) throw new VaultSetupInProgressError();
+      if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
+        throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
+      }
+      const deferred = { text: "" };
+      const store: VaultHeaderStore = {
+        read: () => undefined,
+        write: async (text) => {
+          deferred.text = text;
+        },
+      };
+      const { core, masterKey } = await VaultCore.create(store, passphrase, { kdf: this.kdf });
+      let recovery;
+      try {
+        recovery = await core.addRecoveryKey(masterKey);
+      } catch (error) {
+        // never leak the prepared key if the first recovery wrap fails
+        masterKey.fill(0);
+        throw error;
+      }
+      this.pendingSetup = { core, masterKey, headerText: deferred.text, recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
+      return { recoveryKey: recovery.code, vaultId: core.metadata().vaultId };
+    });
   }
 
   /** The prepared master key, for building the first encrypted snapshot. */
@@ -209,16 +235,19 @@ export class VaultManager {
    * flow continues straight into owner provisioning.
    */
   async commitSetup(): Promise<string> {
-    const pending = this.pendingSetup;
-    if (pending === undefined) throw new VaultNotUnlockedError();
-    await writeFileAtomic(this.headerPath, pending.headerText);
-    this.pendingSetup = undefined;
-    this.core = pending.core;
-    this.replaceMasterKey(pending.masterKey);
-    this.sessionToken = this.mintSessionToken();
-    await this.resetFailures();
-    this.logger.info("VAULT_CREATED", "vault created and unlocked", { version: pending.vaultId });
-    return this.sessionToken;
+    return this.enqueue(async () => {
+      const pending = this.pendingSetup;
+      if (pending === undefined) throw new VaultNotUnlockedError();
+      await writeFileAtomic(this.headerPath, pending.headerText);
+      this.pendingSetup = undefined;
+      this.core = pending.core;
+      this.replaceMasterKey(pending.masterKey);
+      this.sessionToken = this.mintSessionToken();
+      // must not enqueue again: commitSetup holds the write queue already
+      await this.resetFailuresInternal();
+      this.logger.info("VAULT_CREATED", "vault created and unlocked", { version: pending.vaultId });
+      return this.sessionToken;
+    });
   }
 
   /** Unlock with the passphrase; returns the in-process session token. */
@@ -257,7 +286,7 @@ export class VaultManager {
     this.core = core;
     this.replaceMasterKey(masterKey);
     this.sessionToken = this.mintSessionToken();
-    await this.resetFailures();
+    await this.enqueue(() => this.resetFailuresInternal());
     const meta = core.metadata();
     this.logger.info(event, "vault unlocked; the owner is signed in", { version: meta.vaultId });
     return this.sessionToken;
@@ -307,23 +336,95 @@ export class VaultManager {
     return this.enqueue(() => core.addRecoveryKey(this.requireMasterKey()));
   }
 
-  async removeRecoveryKey(id: string): Promise<void> {
+  async removeRecoveryKey(id: string): Promise<string> {
     const core = this.requireCore();
     await this.enqueue(() => core.removeRecoveryKey(id));
+    // deleting a credential revokes every session minted before it: rotate the
+    // in-process token and return the fresh one for the caller's client
+    return this.rotateSession("VAULT_RECOVERY_KEY_REMOVED");
   }
 
-  async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<void> {
+  async changePassphrase(currentPassphrase: string, newPassphrase: string): Promise<string> {
+    this.assertAttemptAllowed();
     const core = this.requireCore();
-    await this.enqueue(() => core.changePassphrase(currentPassphrase, newPassphrase));
+    try {
+      await this.enqueue(() => core.changePassphrase(currentPassphrase, newPassphrase));
+    } catch (error) {
+      // a wrong current passphrase is an unlock attempt and feeds the same
+      // persisted backoff as the unlock screen
+      if (error instanceof VaultAuthenticationError) await this.recordFailure("VAULT_CHANGE_PASSPHRASE_FAILED");
+      throw error;
+    }
     this.logger.info("VAULT_PASSPHRASE_CHANGED", "vault passphrase changed");
+    // the old passphrase (and any token minted while it was valid) is refused
+    // from now on; the caller keeps working on the freshly minted token
+    return this.rotateSession("VAULT_PASSPHRASE_CHANGED");
+  }
+
+  /**
+   * Recovery-authorised passphrase reset (C4): the recovery key unwraps the
+   * master key, which then re-wraps a new passphrase. No current passphrase is
+   * needed — that is the whole point of recovery.
+   */
+  async setPassphraseFromRecovery(recoveryKey: string, newPassphrase: string): Promise<string> {
+    this.assertAttemptAllowed();
+    if (normalizePassphrase(newPassphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) throw new Error("VAULT_PASSPHRASE_TOO_SHORT");
+    const core = this.requireCore();
+    let masterKey: Buffer;
+    try {
+      masterKey = core.unlockRecovery(recoveryKey);
+    } catch (error) {
+      if (error instanceof VaultAuthenticationError) await this.recordFailure("VAULT_RECOVERY_RESET_FAILED");
+      throw error;
+    }
+    try {
+      await this.enqueue(() => core.setPassphraseFromMasterKey(masterKey, newPassphrase));
+    } finally {
+      masterKey.fill(0);
+    }
+    await this.enqueue(() => this.resetFailuresInternal());
+    this.logger.info("VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key");
+    return this.rotateSession("VAULT_PASSPHRASE_RESET");
+  }
+
+  private rotateSession(event: string): string {
+    this.sessionToken = this.mintSessionToken();
+    this.logger.info(event, "vault session rotated after a credential change");
+    return this.sessionToken;
+  }
+
+  /**
+   * Delete the migrated plaintext database if a committed vault exists. This
+   * is retried on every unlock (not only right after setup), because a failed
+   * or interrupted cleanup must never leave the plaintext copy on the stick
+   * forever. A vault is authoritative once its header is committed.
+   */
+  async cleanupLegacyPlaintext(): Promise<void> {
+    if (!this.headerExists()) return;
+    for (const suffix of ["", "-wal", "-shm"] as const) {
+      try {
+        await fs.promises.unlink(`${this.legacyDbPath}${suffix}`);
+        this.logger.warn("VAULT_LEGACY_PLAINTEXT_REMOVED", `removed stale plaintext database ${this.legacyDbPath}${suffix}`);
+      } catch (error) {
+        // SAFETY: the `"code" in error` probe establishes the NodeJS errno shape
+        if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        this.logger.error(
+          "VAULT_LEGACY_PLAINTEXT_STAYED",
+          `could not remove plaintext database ${this.legacyDbPath}${suffix}; will retry on next unlock`,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    }
   }
 
   /** Drain the queued pre-unlock failure events for the activity log. */
-  drainPendingEvents(): string[] {
-    const state = this.loadThrottle();
-    if (state.pendingEvents.length === 0) return [];
-    this.saveThrottle({ ...state, pendingEvents: [] });
-    return state.pendingEvents;
+  async drainPendingEvents(): Promise<string[]> {
+    return this.enqueue(async () => {
+      const state = this.loadThrottle();
+      if (state.pendingEvents.length === 0) return [];
+      this.saveThrottle({ ...state, pendingEvents: [] });
+      return state.pendingEvents;
+    });
   }
 
   /** Zero the in-memory secrets. Best-effort: JavaScript cannot pin memory. */
@@ -352,7 +453,15 @@ export class VaultManager {
     if (text === undefined) return { failedAttempts: 0, lockUntil: 0, pendingEvents: [] };
     try {
       const parsed = throttleSchema.safeParse(JSON.parse(text));
-      if (parsed.success) return parsed.data;
+      if (parsed.success) {
+        // clamp hostile/tampered values: a hand-edited state.json must not lock
+        // the owner out for years, and a huge counter must not overflow backoff
+        return {
+          ...parsed.data,
+          failedAttempts: Math.min(parsed.data.failedAttempts, MAX_TRACKED_ATTEMPTS),
+          lockUntil: Math.min(parsed.data.lockUntil, this.now().getTime() + MAX_LOCK_MS),
+        };
+      }
     } catch {
       // fall through to the safe default; a corrupt throttle must not brick boot
     }
@@ -376,11 +485,9 @@ export class VaultManager {
     });
   }
 
-  private async resetFailures(): Promise<void> {
-    await this.enqueue(async () => {
-      const state = this.loadThrottle();
-      if (state.failedAttempts === 0 && state.lockUntil === 0) return;
-      this.saveThrottle({ ...state, failedAttempts: 0, lockUntil: 0 });
-    });
+  private async resetFailuresInternal(): Promise<void> {
+    const state = this.loadThrottle();
+    if (state.failedAttempts === 0 && state.lockUntil === 0) return;
+    this.saveThrottle({ ...state, failedAttempts: 0, lockUntil: 0 });
   }
 }

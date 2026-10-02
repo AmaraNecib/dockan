@@ -21,6 +21,54 @@ function cleanupPartial(partial: string): void {
   }
 }
 
+/**
+ * fsync the directory entry after a rename where the platform supports it, so
+ * the rename itself is durable across power loss (the file's own fsync does
+ * not cover the directory entry). Best-effort: Windows refuses to open a
+ * directory as a file, and the rename is atomic there regardless.
+ */
+function fsyncDirectoryBestEffort(directory: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(directory, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    /* directory fsync unsupported on this platform */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
+/**
+ * Remove leftover `.name.tmp-*` siblings from a crashed writer. Only files
+ * matching this module's exact temp prefix are touched; a live writer's
+ * partial (its pid/random suffix) could in principle be cleaned by a second
+ * process, but the vault is single-writer (issue #142).
+ */
+export function cleanupStalePartials(directory: string, baseName: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  const prefix = `.${baseName}.tmp-`;
+  for (const entry of entries) {
+    if (!entry.startsWith(prefix)) continue;
+    try {
+      fs.unlinkSync(path.join(directory, entry));
+    } catch {
+      /* another process/race already removed it */
+    }
+  }
+}
+
 export function writeFileAtomicSync(filePath: string, data: Uint8Array | string): void {
   const partial = partialPathFor(filePath);
   const fd = fs.openSync(partial, "w");
@@ -32,6 +80,7 @@ export function writeFileAtomicSync(filePath: string, data: Uint8Array | string)
   }
   try {
     fs.renameSync(partial, filePath);
+    fsyncDirectoryBestEffort(path.dirname(filePath));
   } catch (error) {
     cleanupPartial(partial);
     throw error;
@@ -49,6 +98,7 @@ export async function writeFileAtomic(filePath: string, data: Uint8Array | strin
   }
   try {
     await fs.promises.rename(partial, filePath);
+    fsyncDirectoryBestEffort(path.dirname(filePath));
   } catch (error) {
     cleanupPartial(partial);
     throw error;

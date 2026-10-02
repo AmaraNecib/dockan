@@ -10,7 +10,8 @@ import { createApp, type AppDeps } from "./app";
 import { createAuth } from "./auth/auth";
 import { createAppConfig, type AppConfig } from "./config";
 import { openConnection, type Connection } from "./db/connection";
-import { createEncryptedConnection, readLegacyDatabaseImage } from "./db/encrypted-connection";
+import { MissingVaultDatabaseError, VaultCorruptionError, readLegacyDatabaseImage } from "./db/encrypted-connection";
+import { openVaultStore } from "./db/vault-store";
 import { ensureDailyBackup, type BackupFileValidator } from "./lib/backups";
 import { tokenMatches } from "./lib/boot-token";
 import { AppLogger } from "./lib/logger";
@@ -18,15 +19,14 @@ import { forgetPort as forgetPortRecord, portIsReachable, publishPort } from "./
 import { createSchemaRefusalApp, guardBootStep } from "./lib/schema-refusal";
 import { UnsupportedSchemaVersionError, assertSchemaVersionSupported } from "./lib/schema-version";
 import { ensureSessionSecret } from "./lib/session-secret";
-import { VaultAuthenticationError } from "./lib/vault/crypto";
+import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypto";
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
-import { VaultLockedError, VaultManager, VaultNotUnlockedError } from "./lib/vault/manager";
+import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError } from "./lib/vault/manager";
 import { MIN_VAULT_PASSPHRASE_LENGTH, vaultErrorMessage } from "./lib/vault/messages";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
 import type { StorePort } from "./store/port";
-
 /**
  * Boot: config, logger, the one StorePort seam, auth, rpc, the app, then the
  * server. main.ts knows seams, not SQL (ADR-0003).
@@ -156,14 +156,14 @@ async function startPlaintext(): Promise<void> {
   try {
     await guardBootStep(
       () => store.setup(),
-      (error) => {
+      async (error) => {
         // release the file before serving the page; the store never started
-        conn.close();
+        await conn.close();
         return serveSchemaRefusal(config, error);
       },
     );
   } catch (error) {
-    conn.close();
+    await conn.close();
     throw error;
   }
 
@@ -195,25 +195,34 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   const legacyPath = config.db.path;
   const seedBytes =
     input.fresh && fs.existsSync(legacyPath) ? readLegacyDatabaseImage(legacyPath).image : undefined;
-  const connectionOptions: Parameters<typeof createEncryptedConnection>[0] = {
+  const storeInput: Parameters<typeof openVaultStore>[0] = {
     vaultId: input.vaultId,
     masterKey: input.masterKey,
     snapshotPath: vault.snapshotPath,
-    // first run: an orphan snapshot from a crashed attempt is overwritten
-    fresh: input.fresh,
+    headerPath: vault.headerPath,
+    logger,
   };
-  if (seedBytes !== undefined) connectionOptions.seedBytes = seedBytes;
-  const conn = createEncryptedConnection(connectionOptions);
+  // first run: an orphan snapshot from a crashed attempt is overwritten
+  if (input.fresh) storeInput.fresh = true;
+  if (seedBytes !== undefined) storeInput.seedBytes = seedBytes;
+  const { conn, store } = openVaultStore(storeInput);
+  // A committed unit that cannot be written to its snapshot is fail-stop: the
+  // client must never get a "failed" answer for something already committed
+  // (a retry would duplicate a sale/payment). Exiting here means the client
+  // sees a connection loss, not a business refusal.
+  conn.onFatalError = (error) => {
+    logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
+    process.exit(1);
+  };
   try {
     // Refuse a newer database before any migration writes (ADR-0008 §4.5): the
     // refusal is surfaced by the unlock screen, never a half-migrated image.
     assertSchemaVersionSupported(conn.raw);
-    const store = createDrizzleStore(conn, logger);
     await store.setup();
     // the snapshot must exist before the header can commit (migration ordering)
     await conn.flush();
     // Replay the pre-unlock failures now that the shop activity log exists.
-    for (const event of vault.drainPendingEvents()) {
+    for (const event of await vault.drainPendingEvents()) {
       await store.insertActivity({ type: "VAULT_UNLOCK_FAILED", summary: event });
     }
     const sessionSecret = await ensureSessionSecret(store, logger);
@@ -239,26 +248,14 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     activeConnection = conn;
     appReady = true;
     activeHandler = buildOverlay((req) => app.fetch(req));
+    // A committed vault owns the data; a plaintext database left behind by a
+    // failed or interrupted first-run cleanup is stale and must not survive on
+    // the stick. Retry on every unlock until it is gone.
+    await vault.cleanupLegacyPlaintext();
     logger.info("SERVER_BOOT_DONE", "vault store and auth ready", { driver: "sqlite-encrypted" });
   } catch (error) {
-    conn.close();
+    await conn.close();
     throw error;
-  }
-}
-
-/**
- * Delete the migrated plaintext database (and its sidecars) after the vault
- * header has committed. Until this point the plaintext file is the only copy;
- * after it, the vault is the only copy.
- */
-async function removeLegacyPlaintextFiles(): Promise<void> {
-  for (const suffix of ["", "-wal", "-shm"] as const) {
-    try {
-      await fs.promises.unlink(`${config.db.path}${suffix}`);
-    } catch (error) {
-      // SAFETY: the `"code" in error` probe establishes the NodeJS errno shape
-      if (!(error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT")) throw error;
-    }
   }
 }
 
@@ -305,6 +302,15 @@ function brokerFailure(action: "unlock" | "recovery" | "setup", error: Error): B
   if (error instanceof VaultNotUnlockedError) {
     return { ok: false, code: "VAULT_NOT_UNLOCKED", message: vaultErrorMessage("VAULT_NOT_UNLOCKED") };
   }
+  if (error instanceof MissingVaultDatabaseError) {
+    return { ok: false, code: "VAULT_DATABASE_MISSING", message: vaultErrorMessage("VAULT_DATABASE_MISSING") };
+  }
+  if (error instanceof VaultCorruptionError) {
+    return { ok: false, code: "VAULT_CORRUPT", message: vaultErrorMessage("VAULT_CORRUPT") };
+  }
+  if (error instanceof VaultSetupInProgressError) {
+    return { ok: false, code: "VAULT_SETUP_IN_PROGRESS", message: vaultErrorMessage("VAULT_SETUP_IN_PROGRESS") };
+  }
   const fallback = action === "setup" ? "VAULT_SETUP_FAILED" : wrongCode;
   return { ok: false, code: fallback, message: vaultErrorMessage(fallback) };
 }
@@ -334,16 +340,18 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
   try {
     if (request.action === "setup") {
       const passphrase = request.passphrase ?? "";
-      if (passphrase.length < MIN_VAULT_PASSPHRASE_LENGTH) {
+      // the NORMALIZED passphrase decides: eight spaces is empty
+      if (normalizePassphrase(passphrase).length < MIN_VAULT_PASSPHRASE_LENGTH) {
         writeBrokerReply({ ok: false, code: "VAULT_PASSPHRASE_TOO_SHORT", message: vaultErrorMessage("VAULT_PASSPHRASE_TOO_SHORT") });
         process.exit(1);
       }
       const prepared = await vault.prepareSetup(passphrase);
       await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
       const sessionToken = await vault.commitSetup();
-      await removeLegacyPlaintextFiles();
-      // the recovery key is shown exactly once, before the shell navigates
+      // the recovery key reaches the shell first; cleanup is retried on every
+      // unlock anyway, so it must never delay or fail the one-time reply
       writeBrokerReply({ ok: true, sessionToken, recoveryKey: prepared.recoveryKey });
+      await vault.cleanupLegacyPlaintext();
       // wait for the owner's acknowledgement (the shell shows the key); a
       // closed pipe means the app quit on the key screen, which is safe: the
       // vault exists and the key can be regenerated after unlocking
@@ -458,7 +466,7 @@ function startServer(): void {
   // shutdown path can exit before the reconcile finishes
   server.on("close", async () => {
     await reconcileBeforeExit();
-    activeConnection?.close();
+    await activeConnection?.close();
     process.exit(0);
   });
 }
@@ -483,7 +491,7 @@ async function reconcileBeforeExit(): Promise<void> {
       "port record cleanup failed before exit",
       err instanceof Error ? err : new Error(String(err)),
     );
-    activeConnection?.close();
+    await activeConnection?.close();
     process.exit(1);
   }
 }
@@ -497,7 +505,7 @@ function beginShutdown(): void {
   // the forced path still awaits the full reconcile before exiting
   setTimeout(async () => {
     await reconcileBeforeExit();
-    activeConnection?.close();
+    await activeConnection?.close();
     process.exit(0);
   }, 3000).unref();
 }
@@ -510,22 +518,29 @@ process.on("SIGTERM", beginShutdown);
 /* ------------------------------------------------------------------ */
 
 if (config.vault === "on") {
-  vaultManager = new VaultManager({
+  if (config.vaultOptOutIgnored) {
+    logger.warn(
+      "VAULT_OPT_OUT_IGNORED",
+      "DOKAN_VAULT=disabled was ignored: a packaged build (DOKAN_WEB_DIST set) always runs the encrypted vault",
+    );
+  }
+  const manager = new VaultManager({
     dataDir: config.dataDir,
     legacyDbPath: config.db.path,
     logger,
   });
+  vaultManager = manager;
   vaultApp = createVaultHttpApp({
-    manager: vaultManager,
+    manager,
     config,
     logger,
     bootstrap: bootstrapVault,
-    onSetupCommitted: removeLegacyPlaintextFiles,
+    onSetupCommitted: () => manager.cleanupLegacyPlaintext(),
   });
   activeHandler = buildOverlay(undefined);
   startServer();
   if (process.env.DOKAN_VAULT_STDIN === "1") {
-    await runVaultBroker(vaultManager);
+    await runVaultBroker(manager);
   }
 } else {
   logger.warn(

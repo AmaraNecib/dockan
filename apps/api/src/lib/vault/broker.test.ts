@@ -101,6 +101,18 @@ afterEach(async () => {
 });
 
 describe("desktop shell vault broker", () => {
+  it("rejects a whitespace-only setup passphrase over stdin (normalized floor)", async () => {
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "        " }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const reply = JSON.parse(await nextLine()) as { ok: boolean; code?: string };
+    expect(reply.ok).toBe(false);
+    expect(reply.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
+    await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
+    expect(child?.exitCode).not.toBe(0);
+  });
+
   it("sets up over stdin, returns the recovery key once, and serves the app after the ack", async () => {
     child = spawnBroker(dir, port);
     const nextLine = lineReader(child);

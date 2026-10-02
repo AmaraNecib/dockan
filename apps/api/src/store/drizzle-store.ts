@@ -524,6 +524,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return run;
   };
 
+  /**
+   * Persist the vault image before success is reported. On ultimate failure
+   * the connection's fail-stop hook runs (production exits the process) and a
+   * typed error is rethrown: a SQLite unit that already committed must never
+   * be reported as a failed business operation, because a client retry would
+   * duplicate it. The caller must not ROLLBACK after this point.
+   */
+  const persistOrFail = async (): Promise<void> => {
+    try {
+      await conn.persistIfDirty();
+    } catch (error) {
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      logger?.error?.("SNAPSHOT_PERSIST_FAILED", "committed data could not be written to the encrypted snapshot", wrapped);
+      conn.onFatalError?.(wrapped);
+      throw wrapped;
+    }
+  };
+
   /** A store whose calls skip the queue: used inside transaction units, where
    * the unit itself already holds the queue. Never escapes withTransaction. */
   const directSeed = (raw: StorePort): StorePort =>
@@ -547,22 +565,28 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // leave persistence permanently disabled, and the catch below must only
       // run with a real open transaction
       conn.inTransaction = true;
+      let committed = false;
       try {
         const result = await fn(tx);
         conn.raw.exec("COMMIT");
+        committed = true;
         // the unit committed: vault mode must persist the image before the
         // caller sees the result (a crash after a money response must not
         // lose the money); the file-backed connection ignores this seam
         conn.inTransaction = false;
         conn.markDirty();
-        await conn.persistIfDirty();
+        await persistOrFail();
         return result;
       } catch (err) {
         conn.inTransaction = false;
-        try {
-          conn.raw.exec("ROLLBACK");
-        } catch {
-          // a failed COMMIT or the persist write already closed the unit
+        // only a unit that never committed may be rolled back; after COMMIT a
+        // failed snapshot write is fail-stop (never reported as a failed call)
+        if (!committed) {
+          try {
+            conn.raw.exec("ROLLBACK");
+          } catch {
+            // a failed BEGIN leaves no transaction to roll back
+          }
         }
         throw err;
       }
@@ -586,20 +610,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: value is the raw method this key names; binding the receiver
       // keeps this.*-style methods (settings, activities) callable without
       // changing the call signature (R resolves at each call site)
-      const wrapped = <R,>(...args: never[]): Promise<R> => {
-        // SAFETY: value is the raw method this key names (its result type is R);
-        // .bind fixes the receiver, so this.*-style methods keep working
-        const job = runSerialized(() => (value as (...a: never[]) => Promise<R>).bind(raw)(...args));
-        if (!MUTATING_METHODS.has(key)) return job;
-        // vault mode: a direct mutating store call commits its own statement(s),
-        // so the in-memory image must reach the encrypted snapshot before the
-        // caller observes success (money paths additionally flush at COMMIT)
-        conn.markDirty();
-        return job.then(async (result) => {
-          await conn.persistIfDirty();
+      const wrapped = <R,>(...args: never[]): Promise<R> =>
+        runSerialized(async () => {
+          // SAFETY: value is the raw method this key names (its result type is R);
+          // .bind fixes the receiver, so this.*-style methods keep working
+          const result = await (value as (...a: never[]) => Promise<R>).bind(raw)(...args);
+          if (!MUTATING_METHODS.has(key)) return result;
+          // A direct mutating call commits its own statement(s). Keep the call
+          // and the snapshot write inside ONE queue slot, so the next queued
+          // transaction cannot begin before the image is durable and success
+          // is only reported after the write landed.
+          conn.markDirty();
+          await persistOrFail();
           return result;
         });
-      };
       // SAFETY: wrapped implements the raw method named by key via its generic R
       return [key, wrapped as StorePort[keyof StorePort]];
     };
@@ -1877,6 +1901,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async copyDatabaseTo(destPath: string) {
       conn.checkpoint();
       await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+      // the encrypted store writes a self-contained bundle (key wraps +
+      // snapshot) so an exported backup can be unlocked on another install;
+      // the legacy file-backed database copies its plain SQLite file
+      if (conn.writeBackupTo !== undefined) {
+        await conn.writeBackupTo(destPath);
+        return;
+      }
       await fs.promises.copyFile(conn.dbPath, destPath);
     },
     dbPath() {

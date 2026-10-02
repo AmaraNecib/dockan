@@ -1,9 +1,10 @@
 /**
  * Invariants for the PR CI workflow (issue 154). The Rust capability guards
  * added in #153 only gate a merge if a job in this workflow actually runs
- * `cargo test`, so these tests assert that job exists, that its steps are real
- * commands (not comments or no-ops), and that it is not hidden behind a
- * `paths:` filter that would leave a required check pending forever.
+ * `cargo test` in the desktop crate, so these tests assert that job exists,
+ * that its steps execute the real commands (not comments or `echo` no-ops),
+ * that cargo runs in the crate directory, and that neither a `paths:` filter
+ * nor a job-level `if:` can silently stop the guards on a pull request.
  *
  * The workflow is parsed with the shared `workflow-utils` helpers, so comments
  * are stripped, block scalars are dedented and line endings are normalised the
@@ -26,12 +27,42 @@ const WORKFLOW_PATH = path.resolve(import.meta.dir, "../../../.github/workflows/
 const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/gu, "\n");
 
 const RUST_JOB = "rust";
+const CRATE_DIR = "apps/desktop/src-tauri";
 
 /** The `rust` job's steps, or a loud failure when the job was removed. */
 function rustSteps(): ReturnType<typeof parseSteps> {
   const steps = parseSteps(WORKFLOW_SOURCE, RUST_JOB);
   if (steps.length === 0) throw new Error("ci.yml has no `rust` job");
   return steps;
+}
+
+/**
+ * The argv of every shell command in a step's `run:` (comments stripped, so a
+ * `# cargo test` line is not a command). A step invokes a command only when a
+ * command line starts with that exact executable: `echo cargo test` does not,
+ * because its argv[0] is `echo`.
+ */
+function commandArgvs(run: string): string[][] {
+  return run
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)#.*$/u, "$1").trim())
+    .filter((line) => line !== "")
+    .map((line) => line.split(/\s+/u));
+}
+
+/** True when some command line in the step runs `cargo test` (extra flags allowed). */
+function invokesCargoTest(run: string): boolean {
+  return commandArgvs(run).some((argv) => argv[0] === "cargo" && argv[1] === "test");
+}
+
+/** The value of a job-level field (e.g. `if:`, `runs-on:`) or "" when absent. */
+function jobField(source: string, jobName: string, key: string): string {
+  const pattern = new RegExp(`^    ${key}:\\s*(.*)$`, "u");
+  for (const line of jobLines(source, jobName)) {
+    const match = pattern.exec(line);
+    if (match !== null) return match[1].trim();
+  }
+  return "";
 }
 
 describe("PR CI workflow", () => {
@@ -45,19 +76,25 @@ describe("PR CI workflow", () => {
     expect(stepNamed(e2e, "Run Playwright e2e").run).toBe("bun run test:e2e");
   });
 
-  it("runs cargo test in the desktop crate on every PR", () => {
+  it("actually runs cargo test in the desktop crate on every PR", () => {
     const tests = stepNamed(rustSteps(), "Rust tests");
-    // the guard from #153 lives in this crate's unit tests; if this step is
-    // gone the regression can ship again
-    expect(tests.run).toContain("cargo test");
-    // no `if:` keeps it unconditional on the PR trigger
+    // `echo cargo test` satisfies a substring check; only a command line whose
+    // argv starts with `cargo test` executes the #153 guards.
+    expect(
+      invokesCargoTest(tests.run),
+      `Rust tests must invoke cargo test, got: ${tests.run}`,
+    ).toBe(true);
+    // The crate dir matters: cargo from the repo root would not run these
+    // tests, and dropping the field would leave this assertion green without it.
+    expect(tests.workingDirectory).toBe(CRATE_DIR);
+    // no step-level `if:` keeps it unconditional on the PR trigger
     expect(tests.condition).toBe("");
   });
 
-  it("runs clippy with warnings denied", () => {
+  it("runs clippy with warnings denied in the crate dir", () => {
     const clippy = stepNamed(rustSteps(), "Rust clippy");
-    expect(clippy.run).toContain("cargo clippy");
-    expect(clippy.run).toContain("-D warnings");
+    expect(clippy.run).toBe("cargo clippy -- -D warnings");
+    expect(clippy.workingDirectory).toBe(CRATE_DIR);
     expect(clippy.condition).toBe("");
   });
 
@@ -69,6 +106,14 @@ describe("PR CI workflow", () => {
     // owner marks it required, a skipped check never satisfies branch
     // protection and the PR is stuck pending forever. No filter, no trap.
     expect(triggers).not.toContain("paths");
+  });
+
+  it("does not let a job-level if: skip the Rust job on pull requests", () => {
+    // A job-level `if:` is the other way to silently disable the guards: a
+    // condition like `github.event_name == 'push'` leaves every step assertion
+    // above green while the rust job never runs on a PR. No condition at all
+    // is the strongest form of "always runs on pull_request".
+    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {
@@ -103,7 +148,7 @@ describe("PR CI workflow", () => {
 
     const cache = stepNamed(rustSteps(), "Cache Rust build");
     expect(cache.uses.startsWith("Swatinem/rust-cache@")).toBe(true);
-    expect(cache.with.get("workspaces")).toContain("apps/desktop/src-tauri");
+    expect(cache.with.get("workspaces")).toContain(CRATE_DIR);
     expect(cache.with.get("cache-on-failure")).toBe("true");
   });
 
@@ -115,7 +160,22 @@ describe("PR CI workflow", () => {
     }
   });
 
-  it("rejects a deleted or no-op rust test step", () => {
+  it("rejects a deleted, no-op or echo cargo test step", () => {
+    const echoCargoTest = [
+      "jobs:",
+      "  rust:",
+      "    steps:",
+      "      - name: Rust tests",
+      "        working-directory: apps/desktop/src-tauri",
+      "        run: echo cargo test",
+    ].join("\n");
+    // the raw text contains the command...
+    expect(echoCargoTest).toContain("cargo test");
+    // ...but the executable is `echo`, so the assertion must not pass
+    expect(
+      invokesCargoTest(stepNamed(parseSteps(echoCargoTest, RUST_JOB), "Rust tests").run),
+    ).toBe(false);
+
     const noop = [
       "jobs:",
       "  rust:",
@@ -123,8 +183,9 @@ describe("PR CI workflow", () => {
       "      - name: Rust tests",
       "        run: echo skipped",
     ].join("\n");
-    // the step still exists, but it no longer runs the tests
-    expect(stepNamed(parseSteps(noop, RUST_JOB), "Rust tests").run).not.toContain("cargo test");
+    expect(invokesCargoTest(stepNamed(parseSteps(noop, RUST_JOB), "Rust tests").run)).toBe(
+      false,
+    );
 
     const deleted = [
       "jobs:",
@@ -137,6 +198,46 @@ describe("PR CI workflow", () => {
     expect(() => stepNamed(parseSteps(deleted, RUST_JOB), "Rust tests")).toThrow();
   });
 
+  it("rejects a rust test step whose working-directory is missing or wrong", () => {
+    const missing = [
+      "jobs:",
+      "  rust:",
+      "    steps:",
+      "      - name: Rust tests",
+      "        run: cargo test",
+    ].join("\n");
+    // removing the field leaves it empty, which is not the crate dir
+    expect(stepNamed(parseSteps(missing, RUST_JOB), "Rust tests").workingDirectory).toBe("");
+
+    const wrong = [
+      "jobs:",
+      "  rust:",
+      "    steps:",
+      "      - name: Rust tests",
+      "        working-directory: .",
+      "        run: cargo test",
+    ].join("\n");
+    expect(stepNamed(parseSteps(wrong, RUST_JOB), "Rust tests").workingDirectory).not.toBe(
+      CRATE_DIR,
+    );
+  });
+
+  it("rejects a rust job gated off pull requests by a job-level if:", () => {
+    const pushOnly = [
+      "jobs:",
+      "  rust:",
+      "    if: github.event_name == 'push'",
+      "    steps:",
+      "      - name: Rust tests",
+      "        working-directory: apps/desktop/src-tauri",
+      "        run: cargo test",
+    ].join("\n");
+    // the mutation is detected: a non-empty condition is not "" ...
+    expect(jobField(pushOnly, RUST_JOB, "if")).toBe("github.event_name == 'push'");
+    // ... and the real workflow must not have one
+    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
+  });
+
   it("does not accept a cargo test that only appears in a comment", () => {
     const commentOnly = [
       "jobs:",
@@ -144,18 +245,20 @@ describe("PR CI workflow", () => {
       "    steps:",
       "      # cargo test",
       "      - name: Rust tests",
+      "        working-directory: apps/desktop/src-tauri",
       "        run: echo not-the-test-command",
     ].join("\n");
     expect(commentOnly).toContain("cargo test");
     // ...but the parsed run command does not, so the assertion cannot pass
-    expect(stepNamed(parseSteps(commentOnly, RUST_JOB), "Rust tests").run).not.toContain(
-      "cargo test",
-    );
+    expect(
+      invokesCargoTest(stepNamed(parseSteps(commentOnly, RUST_JOB), "Rust tests").run),
+    ).toBe(false);
   });
 
   it("parses a CRLF checkout the same as LF", () => {
     const crlf = WORKFLOW_SOURCE.replace(/\n/gu, "\r\n");
     const tests = stepNamed(parseSteps(crlf, RUST_JOB), "Rust tests");
-    expect(tests.run).toContain("cargo test");
+    expect(invokesCargoTest(tests.run)).toBe(true);
+    expect(tests.workingDirectory).toBe(CRATE_DIR);
   });
 });

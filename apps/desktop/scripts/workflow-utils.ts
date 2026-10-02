@@ -15,6 +15,7 @@ export type WorkflowStep = {
   readonly run: string;
   readonly uses: string;
   readonly condition: string;
+  readonly workingDirectory: string;
   readonly with: ReadonlyMap<string, string>;
   readonly env: ReadonlyMap<string, string>;
 };
@@ -24,6 +25,7 @@ type MutableStep = {
   run: string;
   uses: string;
   condition: string;
+  workingDirectory: string;
   with: Map<string, string>;
   env: Map<string, string>;
 };
@@ -77,9 +79,10 @@ export function normaliseMap(source: ReadonlyMap<string, string>): ReadonlyMap<s
 
 /**
  * Parse the `jobs.<jobName>.steps` list into named steps with their `run`,
- * `uses`, `if` and `with` values. Only the fields a step actually declares are
- * captured, so a comment can never look like a declared step field, and every
- * captured value is normalised so block-scalar formatting does not matter.
+ * `uses`, `if`, `working-directory` and `with` values. Only the fields a step
+ * actually declares are captured, so a comment can never look like a declared
+ * step field, and every captured value is normalised so block-scalar
+ * formatting does not matter.
  */
 export function parseSteps(source: string, jobName: string): readonly WorkflowStep[] {
   const lines = stripComments(source).split("\n");
@@ -110,6 +113,7 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
       run: normaliseScalar(step.run),
       uses: step.uses,
       condition: step.condition,
+      workingDirectory: step.workingDirectory,
       with: normaliseMap(step.with),
       env: normaliseMap(step.env),
     });
@@ -126,7 +130,15 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
     const stepStart = /^      - (.*)$/u.exec(line);
     if (stepStart !== null) {
       flush();
-      current = { name: "", run: "", uses: "", condition: "", with: new Map(), env: new Map() };
+      current = {
+        name: "",
+        run: "",
+        uses: "",
+        condition: "",
+        workingDirectory: "",
+        with: new Map(),
+        env: new Map(),
+      };
       block = null;
       nested = null;
       const field = /^([\w-]+):\s*(.*)$/u.exec(stepStart[1]);
@@ -157,6 +169,7 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
       if (key === "name") current.name = value;
       else if (key === "uses") current.uses = value;
       else if (key === "if") current.condition = value;
+      else if (key === "working-directory") current.workingDirectory = value;
       else if (key === "run") {
         if (value.startsWith("|") || value.startsWith(">")) {
           block = { target: "run", key: "run", indent };

@@ -79,10 +79,34 @@ untouched; a newer DB still refuses cleanly (covered by existing tests).
 
 - **Future-dated inflow**: the correction was dated at the wall clock, so an
   existing future-dated inflow replayed after it and blended over the edit
-  (edit to 300 stored 250). `costCorrectionTime(now, movements)` dates the
-  correction at `max(now, newest movement)`; the appended row's seq/input-order
-  tiebreak keeps it last, and the recompute uses the same candidate.
+  (edit to 300 stored 250). Superseded by the round-3 ordering rule below.
 - **Neutral zero-delta styling**: the history quantity cell styled every
   non-positive delta as a destructive outflow, so a cost correction showed a
   red 0. `movementDeltaClass` returns success for inflows, destructive for
   outflows, and neutral for a zero-delta event.
+
+## Round 3 (review finding) — recording-order precedence
+
+The round-2 fix moved the correction's timestamp to `max(now, newest row)`.
+That made the correction survive a future-dated row but swallowed any purchase
+recorded afterwards whose date was earlier than that future row (a later
+purchase dated now replayed before the correction and was overridden: cost
+stayed 300 instead of blending to 250).
+
+Precedence is now **recording order**, not business date. `weightedAverageCost`
+walks the ledger by store rowid `seq` (input order for pure callers), splitting
+it into segments at each correction. Inside a segment ordinary movements replay
+in `occurredAt` order exactly as before. A correction resets the running average
+to its unit cost for the on-hand quantity, so it applies after everything
+recorded before it and before everything recorded after it. No movement's
+stored `occurredAt` is rewritten, and with no corrections the whole ledger is a
+single segment, so ordinary backdated purchases/outflows are unchanged.
+`costCorrectionTime` is gone; the correction is dated at the wall clock again.
+
+```
+10@100 ─┐
+        ├─ segment (flushed by occurredAt) ─ avg 150, qty 20
+10@200 ─┘   (dated 2999)
+correction 300 ───────────────────────────── avg 300, qty 20
+10@150 (now, recorded after) ─────────────── blend (20×300+10×150)/30 = 250
+```

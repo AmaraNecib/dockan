@@ -210,21 +210,31 @@ export function saleMovementTime(invoiceDate: string, movements: readonly Ledger
 }
 
 /**
- * Timestamp for an owner cost-correction movement (ADR-0002 / issue 144): the
- * later of the wall clock and the item's newest existing movement. A correction
- * dated at the wall clock can replay BEFORE a future-dated inflow, so the
- * inflow blends over it and the owner's entered cost never lands; dating the
- * correction at the newest movement makes it the ledger's last event. When the
- * timestamps are equal the caller appends the correction after the existing
- * rows, and the ledger tiebreak (seq for stored rows, then input order) keeps
- * it last, so the recompute sees the same order.
+ * A zero-quantity movement that rebases the running weighted average (issue
+ * 144). The COST_CORRECTION_REASON token keeps the legacy `opening` zero-delta
+ * rows ordinary no-ops.
  */
-export function costCorrectionTime(now: string, movements: readonly LedgerMovement[]): string {
-  let latest = "";
-  for (const movement of movements) {
-    if (movement.occurredAt > latest) latest = movement.occurredAt;
-  }
-  return latest > now ? latest : now;
+function isCostCorrection(movement: LedgerMovement): movement is LedgerMovement & { unitCost: number } {
+  return movement.delta === 0 && movement.unitCost !== null && movement.reason === COST_CORRECTION_REASON;
+}
+
+/**
+ * Recording order — the ledger's append order — by store rowid. A caller's
+ * appended candidate has no seq yet and is recorded last. Pure-math callers
+ * without seq fall back to input order, which is their append order. This is
+ * deliberately NOT business-date order: it is what gives a correction
+ * precedence over everything recorded after it (issue 144 round 3).
+ */
+function byRecordingOrder<T extends LedgerMovement>(movements: readonly T[]): T[] {
+  return movements
+    .map((movement, index) => ({ movement, index }))
+    .sort((a, b) => {
+      const aSeq = a.movement.seq ?? Number.POSITIVE_INFINITY;
+      const bSeq = b.movement.seq ?? Number.POSITIVE_INFINITY;
+      if (aSeq !== bSeq) return aSeq - bSeq;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.movement);
 }
 
 /** ADR-0002 weighted average after an inflow lands on top of current holdings. */
@@ -240,21 +250,29 @@ export function averageCostAfter(
 }
 
 /**
- * Recompute the ADR-0002 running weighted average from scratch by replaying
- * the full ledger chronologically: inflows blend into the running average,
- * outflows only reduce quantity. Position-independent — this is the single
+ * Recompute the ADR-0002 running weighted average from scratch: inflows blend
+ * into the running average, outflows only reduce quantity. This is the single
  * source of truth for `cost_price` after ANY write, including backdated
- * inserts, so callers never need special-case math per insertion point.
+ * inserts.
  *
- * A zero-quantity cost correction (`delta === 0`, a non-null unit cost, and
- * the COST_CORRECTION_REASON token) sets the running average to that cost
- * without changing quantity. This is the defined zero-quantity case for the
- * ADR-0002 formula `(oldQty*oldCost + qty*cost)/(oldQty+qty)`: with a zero
- * quantity the correction replaces the average instead of blending. A later
- * inflow then weights the corrected average by the on-hand quantity, so a
- * correction on an empty item cannot corrupt a later inflow; a later outflow
- * leaves the corrected average untouched. Any other zero-delta movement is a
- * no-op, so the legacy opening rows stay inert.
+ * Ordering (issue 144 rounds 2–3) is a two-level rule:
+ *
+ *  1. The ledger is walked in RECORDING order (store rowid `seq`; input order
+ *     for pure callers). Each cost correction (a zero-quantity movement with a
+ *     non-null unit cost and the COST_CORRECTION_REASON token) closes the
+ *     current segment and resets the running average to its unit cost for the
+ *     quantity on hand.
+ *  2. Inside a segment, ordinary movements replay in BUSINESS-DATE order
+ *     (`occurredAt`, then seq), exactly as before, so ordinary backdated
+ *     purchases and outflows keep their historical position and behavior.
+ *
+ * A correction therefore takes effect after everything recorded before it and
+ * before everything recorded after it, independent of business dates: a
+ * future-dated row recorded earlier cannot replay over the correction, and a
+ * purchase recorded afterwards blends FROM the corrected value even when its
+ * date precedes that future row. No movement's stored `occurredAt` is
+ * rewritten, and with no corrections the whole ledger is one segment, so the
+ * result is the historical occurredAt replay.
  */
 export function weightedAverageCost(
   movements: readonly LedgerMovement[],
@@ -262,19 +280,30 @@ export function weightedAverageCost(
 ): number {
   let quantity = 0;
   let average = 0;
-  for (const movement of ordered(movements)) {
-    if (movement.delta > 0) {
-      average = averageCostAfter(
-        average,
-        quantity,
-        movement.delta,
-        movement.unitCost ?? opts.fallbackUnitCost ?? 0,
-      );
-    } else if (movement.delta === 0 && movement.unitCost !== null && movement.reason === COST_CORRECTION_REASON) {
+  let segment: LedgerMovement[] = [];
+  const flushSegment = (): void => {
+    for (const movement of ordered(segment)) {
+      if (movement.delta > 0) {
+        average = averageCostAfter(
+          average,
+          quantity,
+          movement.delta,
+          movement.unitCost ?? opts.fallbackUnitCost ?? 0,
+        );
+      }
+      quantity += movement.delta;
+    }
+    segment = [];
+  };
+  for (const movement of byRecordingOrder(movements)) {
+    if (isCostCorrection(movement)) {
+      flushSegment();
       // explicit cost correction: set the average for the on-hand quantity
       average = movement.unitCost;
+    } else {
+      segment.push(movement);
     }
-    quantity += movement.delta;
   }
+  flushSegment();
   return average;
 }

@@ -11,7 +11,7 @@ import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON, costCorrectionTime } from "../lib/stock-ledger";
+import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
@@ -452,15 +452,18 @@ export function createRpcRouter(deps: RpcDeps) {
             let correctedCost = current.costPrice;
             if (costChanged) {
               const movements = await tx.listStockMovements(input.id);
-              // the correction must land after every existing row, including a
-              // future-dated inflow, or that inflow would blend over it and the
-              // owner's entered cost would never be stored
+              // The correction's precedence is its RECORDING order, not its
+              // timestamp (weightedAverageCost walks by seq and splits segments
+              // at each correction). It is dated at the wall clock like any
+              // other new row; a future-dated row recorded earlier still sits
+              // before it, and a purchase recorded later blends from it even if
+              // that purchase is dated before the future row.
               const candidate = {
                 kind: "MANUAL_ADJUSTMENT" as const,
                 delta: 0,
                 unitCost: nextCost,
                 reason: COST_CORRECTION_REASON,
-                occurredAt: costCorrectionTime(localDateTime(), movements),
+                occurredAt: localDateTime(),
                 seq: undefined,
               };
               await tx.insertStockMovement({

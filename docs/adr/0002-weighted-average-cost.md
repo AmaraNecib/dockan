@@ -14,10 +14,17 @@ Stock is valued at the weighted average of unit costs across purchases: buy 100 
 > `reason = "COST_CORRECTION"` token. This defines the zero-quantity case the
 > formula `(oldQty*oldCost + qty*cost)/(oldQty+qty)` leaves undefined: a
 > zero-quantity correction **sets** the running weighted average to its unit
-> cost without changing quantity. The correction is dated at the later of the
-> wall clock and the item's newest existing movement, so a future-dated inflow
-> replays before it instead of blending over it; when the timestamps tie, the
-> appended correction's rowid keeps it last. Replay then stays safe — a later inflow
+> cost without changing quantity. Replay is a two-level ordering rule
+> (issue 144 rounds 2–3): the ledger is walked in **recording order** (store
+> rowid `seq`) and split into segments at each correction; inside a segment
+> ordinary movements still replay in business-date order (`occurredAt`, then
+> `seq`). A correction therefore takes effect after everything recorded before
+> it and before everything recorded after it, regardless of business dates —
+> a future-dated row recorded earlier cannot replay over it, and a purchase
+> recorded later blends from the corrected value even when its date precedes
+> that future row. No movement's stored date is rewritten, and with no
+> corrections the ledger is one segment, so ordinary backdated
+> purchases/outflows replay exactly as before. Replay then stays safe — a later inflow
 > weights the corrected average by the on-hand quantity (weight zero when the
 > correction landed on an empty item, so it cannot corrupt that inflow), and a
 > later outflow only reduces quantity. The correction revalues the live

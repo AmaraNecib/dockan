@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import {
   StockLedgerError,
   averageCostAfter,
+  COST_CORRECTION_REASON,
   fifoOutflowCost,
   historyWithRemaining,
   projectLedger,
@@ -260,5 +261,115 @@ describe("weightedAverageCost (ADR-0002 replay)", () => {
     const movements = [m(10, 100, "2025-01-01T00:00:00"), m(10, 300, "2025-01-02T00:00:00"), m(-10, null, "2025-01-03T00:00:00")];
     // FIFO remaining-layer avg would say 300; ADR-0002 says the average is untouched
     expect(weightedAverageCost(movements)).toBe(200);
+  });
+});
+
+describe("weightedAverageCost — zero-quantity cost correction (issue 144)", () => {
+  const correction = (unitCost: number, occurredAt: string) => ({
+    kind: "MANUAL_ADJUSTMENT" as const,
+    delta: 0,
+    unitCost,
+    reason: COST_CORRECTION_REASON,
+    occurredAt,
+  });
+
+  it("sets the running average for the on-hand quantity without changing it", () => {
+    const movements = [m("PURCHASE", 10, 100, "2025-01-01T00:00:00"), correction(150, "2025-01-02T00:00:00")];
+    expect(weightedAverageCost(movements)).toBe(150);
+    expect(projectLedger(movements).stockOnHand).toBe(10);
+  });
+
+  it("blends the corrected average into a later inflow", () => {
+    // (10×150 + 10×250) / 20 = 200
+    const movements = [
+      m("PURCHASE", 10, 100, "2025-01-01T00:00:00"),
+      correction(150, "2025-01-02T00:00:00"),
+      m("PURCHASE", 10, 250, "2025-01-03T00:00:00"),
+    ];
+    expect(weightedAverageCost(movements)).toBe(200);
+  });
+
+  it("does not corrupt a later inflow when the correction lands on an empty item", () => {
+    // the corrected cost is display-only at zero stock; the next buy sets the average
+    const movements = [correction(150, "2025-01-01T00:00:00"), m("PURCHASE", 8, 250, "2025-01-02T00:00:00")];
+    expect(weightedAverageCost(movements)).toBe(250);
+  });
+
+  it("keeps the corrected average across a later outflow", () => {
+    const movements = [
+      m("PURCHASE", 10, 100, "2025-01-01T00:00:00"),
+      correction(150, "2025-01-02T00:00:00"),
+      m("SALE", -4, null, "2025-01-03T00:00:00"),
+    ];
+    expect(weightedAverageCost(movements)).toBe(150);
+  });
+
+  it("keeps a zero-delta opening row inert without the cost-correction token", () => {
+    const movements = [m("PURCHASE", 10, 100, "2025-01-01T00:00:00"), m("MANUAL_ADJUSTMENT", 0, 300, "2025-01-02T00:00:00")];
+    expect(weightedAverageCost(movements)).toBe(100);
+  });
+
+  it("lets a later correction override an earlier one (last chronological wins)", () => {
+    const movements = [correction(150, "2025-01-01T00:00:00"), correction(175, "2025-01-02T00:00:00")];
+    expect(weightedAverageCost(movements)).toBe(175);
+  });
+});
+
+describe("weightedAverageCost — recording-order precedence (issue 144 round 3)", () => {
+  const purchase = (delta: number, unitCost: number, occurredAt: string, seq: number) => ({
+    kind: "PURCHASE" as const,
+    delta,
+    unitCost,
+    occurredAt,
+    seq,
+  });
+  const sale = (delta: number, occurredAt: string, seq: number) => ({
+    kind: "SALE" as const,
+    delta,
+    unitCost: null,
+    occurredAt,
+    seq,
+  });
+  const correction = (unitCost: number, occurredAt: string, seq: number) => ({
+    kind: "MANUAL_ADJUSTMENT" as const,
+    delta: 0,
+    unitCost,
+    reason: COST_CORRECTION_REASON,
+    occurredAt,
+    seq,
+  });
+
+  it("keeps a correction after a future-dated row recorded before it", () => {
+    // recorded order: 10@100, 10@200 (dated 2999), correction 300
+    const movements = [purchase(10, 100, "2020-01-01T00:00:00", 1), purchase(10, 200, "2999-01-01T00:00:00", 2), correction(300, "2026-01-01T00:00:00", 3)];
+    expect(weightedAverageCost(movements)).toBe(300);
+  });
+
+  it("blends a purchase recorded after the correction even when it is dated before the future row", () => {
+    // recorded order: 10@100, 10@200 (2999), correction 300, 10@150 (now)
+    const movements = [
+      purchase(10, 100, "2020-01-01T00:00:00", 1),
+      purchase(10, 200, "2999-01-01T00:00:00", 2),
+      correction(300, "2026-01-01T00:00:00", 3),
+      purchase(10, 150, "2026-06-01T00:00:00", 4),
+    ];
+    expect(weightedAverageCost(movements)).toBe(250); // (20×300 + 10×150) / 30
+  });
+
+  it("still replays an ordinary backdated purchase in date order", () => {
+    // recording order differs from date order; no corrections
+    const movements = [purchase(10, 100, "2025-01-02T00:00:00", 1), purchase(5, 50, "2025-01-01T00:00:00", 2)];
+    expect(weightedAverageCost(movements)).toBe(83); // (1000 + 250) / 15
+  });
+
+  it("still replays an ordinary backdated outflow in date order", () => {
+    // a sale recorded last but dated between the two buys
+    const movements = [
+      purchase(10, 100, "2025-01-01T00:00:00", 1),
+      purchase(10, 200, "2025-01-03T00:00:00", 2),
+      sale(-5, "2025-01-02T00:00:00", 3),
+    ];
+    // date order: 10@100, sale 5 (qty 5, avg 100), 10@200 → (500 + 2000) / 15
+    expect(weightedAverageCost(movements)).toBe(167);
   });
 });

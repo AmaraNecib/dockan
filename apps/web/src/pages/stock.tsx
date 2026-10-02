@@ -206,7 +206,8 @@ function kindLabel(t: (key: string) => string, kind: string): string {
  * the correction token (`INVOICE_CORRECTION <invoiceNumber> #<lineId>`).
  * Unknown/legacy reasons (opening, pre-token Arabic corrections) render raw.
  * The api stores keys; this view owns the copy. */
-function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+export function movementReasonText(t: (key: string, vars?: Record<string, string>) => string, reason: string): string {
+  if (reason === "COST_CORRECTION") return t("historyReasonCostCorrection");
   if (reason === "RETURN_RECORDED") return t("historyReasonReturnRecorded");
   if (reason.startsWith("RETURN_REJECTED_DAMAGED")) {
     const rest = reason.slice("RETURN_REJECTED_DAMAGED".length).trim();
@@ -219,6 +220,14 @@ function movementReasonText(t: (key: string, vars?: Record<string, string>) => s
     return t("historyReasonInvoiceCorrection", { number: number ?? "", line: line ?? "" });
   }
   return reason;
+}
+
+/** Delta-cell styling: inflows are gains, outflows losses, and a zero-delta
+ * event (a cost correction) is neutral — never styled as stock removed. */
+export function movementDeltaClass(delta: number): string {
+  if (delta > 0) return "text-success";
+  if (delta < 0) return "text-destructive";
+  return "text-muted-foreground";
 }
 
 export function ItemHistoryPage() {
@@ -270,7 +279,7 @@ export function ItemHistoryPage() {
                     <span className="mr-2 text-xs text-muted-foreground">({movementReasonText(t, movement.reason)})</span>
                   )}
                 </td>
-                <td className={`p-3 ${movement.delta > 0 ? "text-success" : "text-destructive"}`}>
+                <td className={`p-3 ${movementDeltaClass(movement.delta)}`}>
                   {movement.delta > 0 ? `+${movement.delta}` : movement.delta}
                 </td>
                 <td className="p-3">{movement.unitCost ?? "—"}</td>

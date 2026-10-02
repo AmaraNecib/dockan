@@ -40,6 +40,7 @@ export const activityTypes = [
   "CATEGORY_CREATED",
   "ITEM_CREATED",
   "ITEM_UPDATED",
+  "ITEM_COST_CORRECTED",
   "PARTY_CREATED",
   "PARTY_UPDATED",
   "PARTY_DELETED",

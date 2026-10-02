@@ -13,7 +13,7 @@
 - **Profit per unit**. selling price minus cost price. Shown when creating an item and in the stock list.
 - **Stock / stock on hand** (المخزون). quantity of an item available in the shop. Increases on purchases, decreases on sales. Cannot go below zero.
 - **Low-stock threshold** (حد التنبيه). per-item number; when stock on hand drops to it, the item appears in a low-stock list so the owner reorders.
-- **Average cost**. the weighted mean cost per unit across purchases, recomputed automatically when the same item is bought at a different price. The way the app values stock when prices change between purchases.
+- **Average cost**. the weighted mean cost per unit across purchases, recomputed automatically when the same item is bought at a different price. The way the app values stock when prices change between purchases. A manual cost edit is a **cost-correction movement** on the ledger (a zero-quantity `MANUAL_ADJUSTMENT` with reason `COST_CORRECTION`), never a direct write to the item's cached cost. Replay walks the ledger in recording order and splits it at each correction, so a correction applies after everything recorded before it and before everything recorded after it; ordinary movements inside a segment still replay in business-date order, so backdated purchases and outflows are unaffected.
 - **Sale** (بيع). a customer buys one or more items. Generates a **sale invoice**, decreases stock.
 - **Purchase** (شراء). the owner buys from a supplier. Increases stock; may be paid fully, partially, or on credit.
 - **Customer** (عميل). a person who buys. Optional on a sale invoice; when present, name (and phone) print on the invoice and the customer's unpaid sales are tracked.

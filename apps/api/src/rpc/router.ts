@@ -11,7 +11,7 @@ import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost } from "../lib/stock-ledger";
+import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { createBackup } from "../lib/backups";
@@ -438,15 +438,66 @@ export function createRpcRouter(deps: RpcDeps) {
                 throw new ORPCError("BAD_REQUEST", { message: "CATEGORY_NOT_FOUND" });
               }
             }
+            const current = (await tx.getItemsByIds([input.id])).get(input.id);
+            if (current === undefined) {
+              throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            }
+            // The ledger is the single source of truth for cost: a changed cost
+            // appends a zero-quantity correction movement (ADR-0002) and the
+            // cache is recomputed from the full ledger in the same unit, so the
+            // next inflow/outflow replay reproduces the owner's edit instead of
+            // discarding it. Cost never rides updateItem's direct column write.
+            const nextCost = input.costPrice;
+            const costChanged = nextCost !== undefined && nextCost !== current.costPrice;
+            let correctedCost = current.costPrice;
+            if (costChanged) {
+              const movements = await tx.listStockMovements(input.id);
+              // The correction's precedence is its RECORDING order, not its
+              // timestamp (weightedAverageCost walks by seq and splits segments
+              // at each correction). It is dated at the wall clock like any
+              // other new row; a future-dated row recorded earlier still sits
+              // before it, and a purchase recorded later blends from it even if
+              // that purchase is dated before the future row.
+              const candidate = {
+                kind: "MANUAL_ADJUSTMENT" as const,
+                delta: 0,
+                unitCost: nextCost,
+                reason: COST_CORRECTION_REASON,
+                occurredAt: localDateTime(),
+                seq: undefined,
+              };
+              await tx.insertStockMovement({
+                itemId: input.id,
+                kind: candidate.kind,
+                delta: candidate.delta,
+                unitCost: candidate.unitCost,
+                reason: candidate.reason,
+                ref: null,
+                occurredAt: candidate.occurredAt,
+              });
+              correctedCost = weightedAverageCost([...movements, candidate], { fallbackUnitCost: current.costPrice });
+            }
             const item = await tx.updateItem(input.id, {
               ...input,
+              // cost is written through the ledger + setItemStockAndCost below
+              costPrice: undefined,
               barcode: input.barcode === null ? null : requireBarcode(input.barcode),
             });
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
+            if (costChanged) {
+              await tx.setItemStockAndCost(input.id, current.stockOnHand, correctedCost);
+            }
             await tx.insertActivity({ type: "ITEM_UPDATED", summary: `ITEM_UPDATED ${item.name}`, ref: item.id });
-            return item;
+            if (costChanged) {
+              await tx.insertActivity({
+                type: "ITEM_COST_CORRECTED",
+                summary: `ITEM_COST_CORRECTED ${correctedCost} ${item.name}`,
+                ref: item.id,
+              });
+            }
+            return costChanged ? { ...item, costPrice: correctedCost } : item;
           }),
         );
       }),

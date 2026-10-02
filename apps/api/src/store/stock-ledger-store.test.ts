@@ -7,6 +7,7 @@ import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
+import { COST_CORRECTION_REASON, weightedAverageCost } from "../lib/stock-ledger";
 
 /**
  * Ticket 27 store-seam tests: stock_movements persistence, deterministic
@@ -169,5 +170,63 @@ describe("transaction atomicity — movement + stock update", () => {
     expect(await store.countStockMovements(item.id)).toBe(movementsBefore);
     const after = (await store.listItems()).find((i) => i.id === item.id)!;
     expect(after.stockOnHand).toBe(before.stockOnHand);
+  });
+});
+
+describe("cost correction persistence (issue 144)", () => {
+  it("keeps the corrected cost and its movement across a close/reopen", async () => {
+    const persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-cost-persist-"));
+    const config = createAppConfig({ DOKAN_DATA_DIR: persistenceDir, DOKAN_DB_PATH: path.join(persistenceDir, "test.db") });
+
+    const firstConn = openConnection(config);
+    const firstStore = createDrizzleStore(firstConn);
+    await firstStore.setup();
+    const [category] = await firstStore.listCategories();
+    if (category === undefined) throw new Error("seed category missing");
+    const item = await firstStore.createItem({ name: "cost-persist", categoryId: category.id, costPrice: 100, sellingPrice: 200 });
+    await firstStore.insertStockMovement({
+      itemId: item.id,
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: 100,
+      reason: null,
+      ref: null,
+      occurredAt: "2026-01-01T00:00:00",
+    });
+    await firstStore.insertStockMovement({
+      itemId: item.id,
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 0,
+      unitCost: 300,
+      reason: COST_CORRECTION_REASON,
+      ref: null,
+      occurredAt: "2026-01-02T00:00:00",
+    });
+    const corrected = weightedAverageCost(await firstStore.listStockMovements(item.id), { fallbackUnitCost: item.costPrice });
+    expect(corrected).toBe(300);
+    await firstStore.setItemStockAndCost(item.id, 10, corrected);
+    firstConn.close();
+
+    const secondConn = openConnection(config);
+    const secondStore = createDrizzleStore(secondConn);
+    await secondStore.setup();
+    const reopened = (await secondStore.getItemsByIds([item.id])).get(item.id);
+    expect(reopened?.costPrice).toBe(300);
+    expect(reopened?.stockOnHand).toBe(10);
+    const reopenedMovements = await secondStore.listStockMovements(item.id);
+    expect(
+      reopenedMovements.some((row) => row.delta === 0 && row.unitCost === 300 && row.reason === COST_CORRECTION_REASON),
+    ).toBe(true);
+    expect(weightedAverageCost(reopenedMovements, { fallbackUnitCost: item.costPrice })).toBe(300);
+    secondConn.close();
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(persistenceDir, { recursive: true, force: true });
+        break;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
   });
 });

@@ -1,6 +1,73 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+
+/* shadcn/ui's base-nova preset used to arrive via `@import "shadcn/tailwind.css"`.
+   The `shadcn` CLI devDependency was removed to clear GHSA-vfj7-8cjw-p6xm
+   (braces, no patched release), so its Tailwind v4 variant layer is inlined
+   here. These semantic data-* variants are what let `data-open:animate-in` /
+   `data-closed:animate-out` match Base UI's `data-state`/`data-*` markers.
+   The animate utilities and accordion keyframes come from tw-animate-css
+   above; shadcn's unused scroll-fade / shimmer / no-scrollbar utilities are
+   deliberately not carried over. */
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-unchecked {
+  &:where([data-state="unchecked"]),
+  &:where([data-unchecked]:not([data-unchecked="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-selected {
+  &:where([data-selected="true"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-disabled {
+  &:where([data-disabled="true"]),
+  &:where([data-disabled]:not([data-disabled="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
+}
+
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
 
 @custom-variant dark (&:is(.dark *));
 

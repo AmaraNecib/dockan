@@ -501,57 +501,14 @@ table.print-sheet-items tbody tr:last-child td {
   padding-top: 0.625rem;
 }
 
-.print-sheet-payments-block {
-  margin-top: 1.125rem;
-}
-
-.print-sheet-payments-block h2 {
-  font-size: 0.9375rem;
-  font-weight: 700;
-  margin: 0 0 0.375rem;
-}
-
-table.print-sheet-payments {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-table.print-sheet-payments th {
-  font-size: 0.75rem;
-  font-weight: 700;
-  color: var(--paper-muted);
-  padding: 0.375rem 0.5rem;
-  text-align: start;
-  border-bottom: var(--hairline) solid var(--paper-soft);
-}
-
-table.print-sheet-payments th:nth-child(1) {
-  width: 24%;
-}
-
-table.print-sheet-payments th:nth-child(2) {
-  width: 20%;
-}
-
-table.print-sheet-payments th:nth-child(3) {
-  width: 18%;
-}
-
-table.print-sheet-payments td {
-  padding: 0.375rem 0.5rem;
-  font-size: 0.84375rem;
-  border-bottom: var(--hairline) solid var(--paper-soft);
-}
-
-table.print-sheet-payments tbody tr:last-child td {
-  border-bottom: 0;
-}
-
 /* the footer is page furniture: at the foot of every sheet, however short the
-   content above it (the sheet is a flex column, margin-top auto absorbs slack) */
+   content above it (the sheet is a flex column, margin-top auto absorbs slack).
+   Three columns keep the page counter centred no matter how wide the store name
+   or the document ref grow: the two side tracks are equal 1fr (minmax(0,…) lets
+   a long side text wrap instead of expanding its track and shifting the middle). */
 .print-sheet-foot {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   border-top: var(--hairline) solid var(--paper-soft);
   margin-top: auto;
@@ -560,9 +517,20 @@ table.print-sheet-payments tbody tr:last-child td {
   color: #666;
 }
 
+.print-sheet-foot > span:first-child {
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.print-sheet-foot > span:last-child {
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
 .print-sheet-page {
   font-weight: 700;
   color: var(--paper-ink);
+  text-align: center;
 }
 
 @media print {
@@ -613,7 +581,6 @@ table.print-sheet-payments tbody tr:last-child td {
   .print-sheet tr,
   .print-sheet-carry,
   .print-sheet-totals,
-  .print-sheet-payments-block,
   .print-sheet-foot {
     break-inside: avoid;
   }

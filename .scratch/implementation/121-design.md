@@ -29,7 +29,6 @@ interface Receipt {
   totalAmount: number;
   paidAmount: number;
   remainingAmount: number;
-  payments: ReceiptPayment[];
 }
 
 interface ReceiptPage {
@@ -37,8 +36,7 @@ interface ReceiptPage {
   lines: ReceiptLine[];
   carryIn: number;             // running net total before this sheet
   carryOut: number | null;     // running net total after this sheet; null when closing
-  closes: boolean;             // prints the totals block and starts the payment history
-  payments: ReceiptPayment[];  // closing sheet + overflow sheets
+  closes: boolean;             // prints the totals block
 }
 
 function paginateReceipt(receipt: Receipt): ReceiptPage[]
@@ -51,7 +49,7 @@ formatPrintAmount(1234567) === "1,234,567"
 ```
 
 Dates come from the shared `lib/dates.ts` formatter (#119): `formatDateTime`
-for the date-and-time meta and for payment timestamps; the return voucher uses
+for the date-and-time meta; the return voucher uses
 `formatDate` for its date-only invoice field. The meta value is
 `combineBusinessDateTime(invoiceDate, createdAt)` (new helper in dates.ts): the
 business date stays authoritative for the day — a backdated invoice keeps its
@@ -90,24 +88,21 @@ content budget is ~20 units, so 13 is safe):
 
 - page 1 furniture: items title 1 unit, carried-total block 2 units;
 - continuation furniture: carry banner 2 + carried-total 2;
-- closing block: totals 5 units (+ payment head 3 units and one unit per
-  payment row, only when the invoice has payments);
+- closing block: totals 5 units;
 - a line's weight is 1, or 2+ when its description wraps (`length / 32` chars).
 
-So a no-payment invoice fits 7 lines on its closing sheet (13−5−1) and 10 on a
-first continuation sheet; with a payment row the settled 12-line split is
-10/2. Payment rows claim the closing sheet's spare room first (their real
-UNITS, not their count — a wrapped note costs more than one row); any overflow
-continues on sheets with the full header and a repeated payment table. With no
-payments at all, the closing sheet renders no payment section.
+So an invoice fits 7 lines on its closing sheet (13−5−1) and 10 on a first
+continuation sheet; a 12-line invoice balances evenly 6/6. The payment history is
+never printed (owner decision, reversing the original "decision A"): the
+paginator reserves no room for it, so line packing does not depend on whether
+the invoice has payments.
 
 The split itself is `paginateLineSlices`: it finds the smallest sheet count the
 weights actually fit into (a sum of capacities is not enough — with uneven
 weights a prefix can be too big to leave the closing sheet inside its budget)
 and then fills each sheet with the feasible prefix closest to its even share.
 The search allows TWO sheets more than the line count: the closing sheet may
-legitimately carry only the totals/payment block with zero lines (e.g. a
-payment-heavy invoice whose one line fits on an earlier sheet), and a line
+legitimately carry only the totals block with zero lines, and a line
 heavier than the first sheet's cap but not a later one's leaves the first
 sheet empty rather than force-fitting the line and overrunning it (the
 voucher's first-continuation cap 11 vs later 12). A line heavier than every
@@ -125,13 +120,11 @@ with no carried total.
   300-vector deterministic sweep asserting the minimal sheet count and that no
   emitted sheet exceeds its cap (vectors with no placement at all are skipped
   as the documented fallback).
-- `lib/receipt.test.ts` — projection (incl. address, no notes, backdated
-  business date + recording time), pagination: one-sheet boundary (7 fit, 8
-  split), 5-line single sheet, 12-line 10/2 with a payment, three sheets at 20
-  lines, uneven weights, a payment-heavy invoice with a zero-line closing
-  sheet, wrapped payment notes, a monster note (count=0 -> 1 fallback), the
-  payment-overflow cap, carried totals, payment overflow. `assertCapacities`
-  re-derives the paginator's budget and checks every sheet.
+- `lib/receipt.test.ts` — projection (incl. address, no notes, no payments,
+  backdated business date + recording time), pagination: one-sheet boundary (7
+  fit, 8 split), 5-line single sheet, 12-line 10/2, three sheets at 20 lines,
+  uneven weights, carried totals. `assertCapacities` re-derives the paginator's
+  budget and checks every sheet.
 - `lib/return-voucher.test.ts` — the 200-line minimal sheet count (exactly
   18), a zero-line voucher, a reason + wrapped party charged to the budget,
   per-sheet capacity assertions and a wrapped description.
@@ -140,15 +133,17 @@ with no carried total.
 - `lib/print-format.test.ts` — grouped-amount format; the date shape is
   pinned by `lib/dates.test.ts` (#119).
 - `components/receipt-view.test.tsx` — rendered document: labels, dir tokens,
-  carry totals (both texts on a middle sheet), page footers, no payment
-  section when empty, all-header-per-sheet.
+  carry totals (both texts on a middle sheet), page footers (the [store | page
+  counter | ref] column structure the centring grid needs), no payment section,
+  all-header-per-sheet.
 - `tests/e2e/receipts.spec.ts` — 1-page invoice: sheet count, footer 1/1,
   formatted payment timestamp (no `T`).
 - `tests/e2e/invoice-print-a4.spec.ts` (new) — a 12-line BACKDATED sale and a
   5-line purchase seeded through the real RPC wire: 2 sheets at 10/2 and 1
   sheet respectively, all lines present, the meta date is the business day
   with the recording time, the app invoice screen shows the same value, carry
-  total + carry banner, payment row, both sheet headers, the RTL
+  total + carry banner, no payment log on the paper, both sheet headers, the
+  page counter centred on every sheet (also under a long store name), the RTL
   currency/amount bounding boxes, a long supplier name that wraps without
   overflowing the meta row or squeezing the short fields,
   `page.pdf({ preferCSSPageSize: true, displayHeaderFooter: true })` → 2 A4
@@ -167,6 +162,9 @@ with no carried total.
 - `@page` is global: the return voucher also loses the browser header/footer
   (intended) and adopts the shared sheet.
 - Invoice `notes` are no longer printed — the settled sheet has no notes field.
+- The payment history is not printed — the invoice SCREEN keeps the payments
+  log; the printed receipt carries totals only (owner decision). The paginator
+  reserves no room for it, so the line split is independent of payments.
 - The meta row lets only the counterparty (and the voucher reason) wrap; every
   other field stays on one line, so a long name cannot squeeze the invoice
   number or the date onto second lines.

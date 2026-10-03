@@ -1,19 +1,24 @@
-import type { InvoiceDetail, InvoiceKind, PaymentMethod, Settings } from "@dokan/contracts";
+import type { InvoiceDetail, InvoiceKind, Settings } from "@dokan/contracts";
 
 import { combineBusinessDateTime } from "./dates";
-import { paginateLineSlices, textRowUnits, totalUnits } from "./print-pagination";
+import { paginateLineSlices, textRowUnits } from "./print-pagination";
 
 /**
  * Receipt printing — printable receipt projection. The print flow needs one
  * flat, render-ready document: store identity + invoice header + lines + totals +
- * paid/remaining + payment history. This module is the deterministic seam
- * between the invoice detail/settings reads and the print-only view.
+ * paid/remaining. This module is the deterministic seam between the invoice
+ * detail/settings reads and the print-only view.
  *
  * Deliberately NO money math on the invoice's own figures: total / paid /
  * remaining are copied verbatim from the invoice detail (they are
  * authoritative), so the receipt can never disagree with the screen. The one
  * sum it does is the carried running total of the lines it prints, which is a
  * presentation fact, not a total.
+ *
+ * The payment history lives on the invoice SCREEN only (owner decision, later
+ * reversed from the original "decision A"): the printed invoice does not carry
+ * it, so the projection does not either and the paginator reserves no room for
+ * it.
  *
  * The settled sheet (issue #121) is paginated in JS because CSS cannot write
  * the "page X of Y" footer. `paginateReceipt` splits the lines into A4 sheets from a
@@ -25,13 +30,6 @@ export interface ReceiptLine {
   quantity: number;
   unitPrice: number;
   netTotal: number;
-}
-
-export interface ReceiptPayment {
-  paidAt: string;
-  method: PaymentMethod;
-  amount: number;
-  note: string | null;
 }
 
 export interface Receipt {
@@ -53,7 +51,6 @@ export interface Receipt {
   totalAmount: number;
   paidAmount: number;
   remainingAmount: number;
-  payments: ReceiptPayment[];
 }
 
 /**
@@ -67,13 +64,10 @@ export interface ReceiptPage {
   lines: ReceiptLine[];
   /** running net total carried INTO this sheet (0 on sheet 1) */
   carryIn: number;
-  /** running net total this sheet carries to the next; null when it closes or
-   * carries no line table (a payment-overflow sheet) */
+  /** running net total this sheet carries to the next; null when it closes */
   carryOut: number | null;
-  /** true on the sheet that prints the totals block and starts the payment history */
+  /** true on the sheet that prints the totals block */
   closes: boolean;
-  /** payment rows printed on this sheet (the closing sheet, then any overflow) */
-  payments: ReceiptPayment[];
 }
 
 /**
@@ -83,6 +77,10 @@ export interface ReceiptPage {
  * Invoice notes are deliberately NOT carried: the owner decided notes stay in
  * the database and the app screen only, never on the printed sheet (the settled
  * sheet has no notes field). Do not add `notes` back to `Receipt`.
+ *
+ * The payment history is likewise not carried: the printed invoice does not
+ * show it (the invoice SCREEN keeps the payments log). Do not add `payments`
+ * back to `Receipt`.
  */
 export function buildReceipt(invoice: InvoiceDetail, settings: Settings): Receipt {
   return {
@@ -104,12 +102,6 @@ export function buildReceipt(invoice: InvoiceDetail, settings: Settings): Receip
     totalAmount: invoice.totalAmount,
     paidAmount: invoice.paidAmount,
     remainingAmount: invoice.remainingAmount,
-    payments: invoice.payments.map((payment) => ({
-      paidAt: payment.paidAt,
-      method: payment.method,
-      amount: payment.amount,
-      note: payment.note,
-    })),
   };
 }
 
@@ -132,48 +124,21 @@ const CARRY_UNITS = 2;
 const CARRY_BANNER_UNITS = 2;
 /** the heavy rule + the five totals rows (subtotal, discount, total, paid, remaining) */
 const TOTALS_UNITS = 5;
-/** payment section heading + table head + spacing */
-const PAYMENT_HEAD_UNITS = 3;
 /** conservative characters that fit on one row before an item cell wraps */
 const LINE_DESCRIPTION_CHARS = 32;
-/** conservative characters that fit on one row before a payment note wraps */
-const PAYMENT_NOTE_CHARS = 20;
 
 /** Height weight of one item line: a long description wraps and costs another row. */
 function lineUnits(line: ReceiptLine): number {
   return textRowUnits(line.description, LINE_DESCRIPTION_CHARS);
 }
 
-/** Height weight of one payment row: a long note wraps and costs another row. */
-function paymentUnits(payment: ReceiptPayment): number {
-  return textRowUnits(payment.note ?? "", PAYMENT_NOTE_CHARS);
-}
-
 function sumNet(lines: readonly ReceiptLine[]): number {
   return lines.reduce((sum, line) => sum + line.netTotal, 0);
 }
 
-/** How many leading items fit inside `budget` units (at least one row stays whole). */
-function takeWithin(costs: readonly number[], budget: number): number {
-  let used = 0;
-  let count = 0;
-  for (const cost of costs) {
-    if (used + cost > budget) break;
-    used += cost;
-    count += 1;
-  }
-  return count;
-}
-
-/** Spare room on the sheet that carries the totals block, before lines/payments.
- * The payment-section head is only reserved when there are payments to print. */
-function closingSpare(pageIsFirst: boolean, withPayments: boolean): number {
-  return (
-    PAGE_UNITS -
-    TOTALS_UNITS -
-    (withPayments ? PAYMENT_HEAD_UNITS : 0) -
-    (pageIsFirst ? ITEMS_TITLE_UNITS : CARRY_BANNER_UNITS)
-  );
+/** Spare room on the sheet that carries the totals block, before lines. */
+function closingSpare(pageIsFirst: boolean): number {
+  return PAGE_UNITS - TOTALS_UNITS - (pageIsFirst ? ITEMS_TITLE_UNITS : CARRY_BANNER_UNITS);
 }
 
 /** Spare room on a sheet that carries the carried total instead of the totals block. */
@@ -182,31 +147,19 @@ function continuationSpare(pageIsFirst: boolean): number {
 }
 
 /**
- * Split the receipt into A4 sheets. Payment rows claim the closing sheet's
- * spare room first (they print after the totals); any overflow continues on
- * sheets with the full header and a repeated payment table. Lines are packed
- * to the minimal sheet count and distributed evenly, so a mid-range invoice
- * does not end with a one-line middle sheet.
+ * Split the receipt into A4 sheets. Lines are packed to the minimal sheet count
+ * and distributed evenly, so a mid-range invoice does not end with a one-line
+ * middle sheet. The last sheet closes with the totals; earlier sheets carry the
+ * running total off to the next.
  */
 export function paginateReceipt(receipt: Receipt): ReceiptPage[] {
   const lineCosts = receipt.lines.map(lineUnits);
-  const paymentCosts = receipt.payments.map(paymentUnits);
-  const hasPayments = receipt.payments.length > 0;
-
-  // How much line room the closing sheet keeps after its five totals rows and
-  // the payment rows that fit above the lines. The rows' real UNITS are
-  // subtracted, not their count: a wrapped note costs more than one row.
-  const closingLineRoom = (pageIsFirst: boolean): number => {
-    const spare = closingSpare(pageIsFirst, hasPayments);
-    const count = takeWithin(paymentCosts, spare);
-    return spare - totalUnits(paymentCosts.slice(0, count));
-  };
 
   // Weighted split: no sheet exceeds its budget, and the sheet count is the
   // smallest one the weights actually fit into.
   const slices = paginateLineSlices(lineCosts, {
-    firstClosing: closingLineRoom(true),
-    restClosing: closingLineRoom(false),
+    firstClosing: closingSpare(true),
+    restClosing: closingSpare(false),
     firstContinuation: continuationSpare(true),
     continuation: continuationSpare(false),
   });
@@ -227,31 +180,7 @@ export function paginateReceipt(receipt: Receipt): ReceiptPage[] {
       carryIn: carriedIn,
       carryOut: isClosing ? null : carried,
       closes: isClosing,
-      payments: [],
     });
-  }
-
-  // Payments: fill the closing sheet from the top, then one overflow sheet per
-  // full payment table.
-  const closing = pages[pages.length - 1];
-  if (closing !== undefined) {
-    const onClosing = takeWithin(paymentCosts, closingSpare(pages.length === 1, hasPayments));
-    closing.payments = receipt.payments.slice(0, onClosing);
-    let cursor = onClosing;
-    while (cursor < receipt.payments.length) {
-      let count = takeWithin(paymentCosts.slice(cursor), PAGE_UNITS - PAYMENT_HEAD_UNITS);
-      if (count === 0) count = 1; // a note longer than a whole sheet still gets a row
-      const payments = receipt.payments.slice(cursor, cursor + count);
-      cursor += count;
-      pages.push({
-        number: pages.length + 1,
-        lines: [],
-        carryIn: carried,
-        carryOut: null,
-        closes: false,
-        payments,
-      });
-    }
   }
 
   return pages;

@@ -4,13 +4,13 @@ import { chooseSelectOption } from "./select-helpers";
 
 /**
  * Receipt printing e2e: the print button on the invoice screen produces a
- * receipt document with the store identity, invoice number, lines, totals,
- * paid/remaining and payment history.
+ * receipt document with the store identity, invoice number, lines, totals and
+ * paid/remaining.
  * A sale is recorded with a partial down payment, the remaining instalment
- * is settled on the invoice screen (paid invoice, 2 payment rows), then the
- * print button opens the print-only route whose receipt document carries the
- * store identity, invoice number, lines, totals, paid/remaining and both
- * payment rows.
+ * is settled on the invoice screen (paid invoice, 2 payment rows shown on the
+ * SCREEN), then the print button opens the print-only route whose receipt
+ * document carries the store identity, invoice number, lines, totals and
+ * paid/remaining — and deliberately NOT the payment log (owner decision).
  *
  * NOTE ON THE OS DIALOG: window.print() opens the system print dialog, which
  * is headless-hostile (no OS dialog in CI). The assertion therefore targets
@@ -101,12 +101,10 @@ test("invoice print button → receipt document with identity, totals and paymen
   await expect(receipt.getByTestId("receipt-total")).toContainText("900");
   await expect(receipt.getByTestId("receipt-paid")).toContainText("900");
   await expect(receipt.getByTestId("receipt-remaining")).toContainText("0");
-  // both payments land in the receipt history, in recording order, with the
-  // app-wide date/time shape (never the raw ISO `T`)
-  await expect(receipt.getByTestId("receipt-payment")).toHaveCount(2);
-  await expect(receipt.getByTestId("receipt-payment").nth(0)).toContainText("500");
-  await expect(receipt.getByTestId("receipt-payment").nth(1)).toContainText("400");
-  await expect(receipt.getByTestId("receipt-payment").nth(0).locator("td").first()).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  // the printed invoice does NOT carry the payments log (owner decision): the
+  // screen showed both rows above, the paper shows none
+  await expect(receipt.getByTestId("receipt-payments")).toHaveCount(0);
+  await expect(receipt.getByTestId("receipt-payment")).toHaveCount(0);
 
   // 6. the toolbar offers the way back (and stays off the paper via print-hidden)
   await expect(page.getByTestId("receipt-back")).toContainText("رجوع للفاتورة");

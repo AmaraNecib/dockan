@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
+import { displayAlgerianPhone } from "@dokan/contracts";
+
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { orpc } from "../lib/rpc";
@@ -11,8 +13,9 @@ import { orpc } from "../lib/rpc";
  * future invoice view (sale checkout is ticket #30's PR) can mount it as-is.
  * Three states, never a silent blank: a skeleton while the settings load, an
  * alert + retry when the read fails, and the identity itself when it lands.
- * The phone is stored in canonical +213 form; it is left-to-right text inside
- * the RTL layout, so it gets its own dir="ltr" span.
+ * The phone is stored in canonical +213 form and displayed in the owner's local
+ * 0-prefixed form; it is left-to-right text inside the RTL layout, so it gets
+ * its own dir="ltr" span.
  */
 export function InvoiceHeader() {
   const { t } = useTranslation();
@@ -37,9 +40,9 @@ export function InvoiceHeader() {
       ) : (
         <>
           <p className="font-bold">{settings.data.storeName}</p>
-          {settings.data.storePhone && (
+          {settings.data.storePhone !== null && settings.data.storePhone !== "" && (
             <p dir="ltr" className="text-sm text-muted-foreground">
-              {settings.data.storePhone}
+              {displayAlgerianPhone(settings.data.storePhone)}
             </p>
           )}
         </>

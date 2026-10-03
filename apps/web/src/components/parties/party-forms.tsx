@@ -3,7 +3,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
-import { normalizePartyPhone } from "@dokan/contracts";
+import { displayAlgerianPhone, normalizePartyPhone } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -36,14 +36,16 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [name, setName] = useState(party?.name ?? "");
-  const [phone, setPhone] = useState(party?.phone ?? "");
+  // the field reads the owner's local 0-prefixed form; submit still normalises
+  // it back to the canonical +213 identity, so storage never changes shape
+  const [phone, setPhone] = useState(displayAlgerianPhone(party?.phone ?? ""));
   const [error, setError] = useState<string | null>(null);
 
   // A concurrent edit in another tab refetches the party. Refresh only the
   // fields the operator has not touched, so the form shows the current record
   // without clobbering work in progress (Greptile P1.2).
   const propName = party?.name ?? "";
-  const propPhone = party?.phone ?? "";
+  const propPhone = displayAlgerianPhone(party?.phone ?? "");
   const lastProp = useRef({ name: propName, phone: propPhone });
   useEffect(() => {
     const previous = lastProp.current;

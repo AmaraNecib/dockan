@@ -81,7 +81,7 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(page.getByTestId("return-voucher-page")).toBeVisible();
   const voucher = page.getByTestId("return-voucher-view");
   await expect(voucher.getByTestId("return-voucher-store")).toContainText(storeName);
-  await expect(voucher.getByTestId("return-voucher-phone")).toContainText("+213661234567");
+  await expect(voucher.getByTestId("return-voucher-phone")).toContainText("0661234567");
   await expect(voucher.getByTestId("return-voucher-number")).toContainText(returnNumber);
   await expect(voucher.getByTestId("return-voucher-invoice")).toContainText(saleNumber);
   await expect(voucher.getByTestId("return-voucher-line")).toContainText(itemName);

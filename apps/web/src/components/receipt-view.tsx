@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { formatDateTime } from "../lib/dates";
-import { paginateReceipt, type Receipt, type ReceiptPayment } from "../lib/receipt";
+import { paginateReceipt, type Receipt } from "../lib/receipt";
 import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sheet";
 
 /**
@@ -12,8 +12,11 @@ import { PrintAmount, PrintItemTable, PrintSheet, PrintTotals } from "./print-sh
  * The settled design (grilling session 2026-10-01) is one A4 sheet per page:
  * the store header repeats on every page, the footer is pinned to the foot of
  * each sheet with the "page X of Y" footer, and the totals close the last
- * sheet. The page
- * split is decided by `paginateReceipt`; this view only draws it.
+ * sheet. The page split is decided by `paginateReceipt`; this view only draws it.
+ *
+ * The payment history is deliberately absent: the invoice SCREEN shows the
+ * payments log, the printed invoice does not (owner decision, reversing the
+ * original "decision A").
  */
 export function ReceiptView({ receipt }: { receipt: Receipt }) {
   const { t } = useTranslation();
@@ -108,45 +111,8 @@ export function ReceiptView({ receipt }: { receipt: Receipt }) {
               />
             )
           )}
-
-          {page.payments.length > 0 && <ReceiptPayments payments={page.payments} />}
         </PrintSheet>
       ))}
     </div>
-  );
-}
-
-/** The payment history section (decision A: the printed invoice carries it). */
-function ReceiptPayments({ payments }: { payments: ReceiptPayment[] }) {
-  const { t } = useTranslation();
-
-  return (
-    <section className="print-sheet-payments-block" data-testid="receipt-payments">
-      <h2>{t("pmtTitle")}</h2>
-      <table className="print-sheet-payments">
-        <thead>
-          <tr>
-            <th scope="col">{t("pmtDate")}</th>
-            <th scope="col">{t("pmtAmount")}</th>
-            <th scope="col">{t("pmtMethod")}</th>
-            <th scope="col">{t("pmtNote")}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payments.map((payment, index) => (
-            <tr key={`${payment.paidAt}-${index}`} data-testid="receipt-payment">
-              <td className="print-sheet-digits">
-                {formatDateTime(payment.paidAt)}
-              </td>
-              <td>
-                <PrintAmount value={payment.amount} />
-              </td>
-              <td>{t(`pmtMethod_${payment.method}`)}</td>
-              <td className="print-sheet-note">{payment.note ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
   );
 }

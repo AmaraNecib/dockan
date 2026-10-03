@@ -37,7 +37,7 @@ describe("paginateLineSlices", () => {
 
   it("allows a zero-line closing sheet when the line fits on an earlier sheet", () => {
     // one 2-unit line whose closing room is 0: the line goes on sheet 1 and
-    // the closing sheet carries only the totals/payment block
+    // the closing sheet carries only the totals block
     const zeroClosing = { firstClosing: 0, restClosing: 1, firstContinuation: 10, continuation: 9 };
     expect(paginateLineSlices([2], zeroClosing)).toEqual([1, 1]);
   });

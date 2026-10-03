@@ -16,7 +16,8 @@ import { ReceiptView } from "./receipt-view";
  * The view is presentational (no queries, no router): with a fixed Receipt
  * fixture, the exact document that reaches the paper is asserted — the full
  * store header on every sheet, the one-line meta row, the items table, the
- * carried totals, the pinned footer with «صفحة X من Y» and the payment history.
+ * carried totals and the pinned footer with «صفحة X من Y». The payment history
+ * is deliberately absent (own decision: the screen shows it, the paper does not).
  */
 
 const receipt: Receipt = {
@@ -36,10 +37,6 @@ const receipt: Receipt = {
   totalAmount: 950,
   paidAmount: 500,
   remainingAmount: 450,
-  payments: [
-    { paidAt: "2026-08-25T10:01:00", method: "CASH", amount: 300, note: "أول دفعة" },
-    { paidAt: "2026-08-25T11:30:00", method: "BANK", amount: 200, note: null },
-  ],
 };
 
 function line(index: number): ReceiptLine {
@@ -55,10 +52,9 @@ const longReceipt: Receipt = {
   totalAmount: 1200,
   paidAmount: 500,
   remainingAmount: 700,
-  payments: [{ paidAt: "2026-08-25T10:01:00", method: "CASH", amount: 500, note: null }],
 };
 
-/** 20 unit-priced lines with no payments: three sheets, 7 / 7 / 6. */
+/** 20 unit-priced lines: three sheets, 7 / 7 / 6. */
 const threeSheetReceipt: Receipt = {
   ...receipt,
   invoiceNumber: "INV-0300",
@@ -68,7 +64,6 @@ const threeSheetReceipt: Receipt = {
   totalAmount: 2000,
   paidAmount: 0,
   remainingAmount: 2000,
-  payments: [],
 };
 
 let roots: Array<{ unmount: () => void }> = [];
@@ -105,7 +100,7 @@ describe("ReceiptView — the settled A4 sheet", () => {
   it("prints the store header, one-line meta row and invoice values", () => {
     renderReceipt();
     expect(text(host.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
-    expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+    expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("0550123123");
     expect(text(host.querySelector('[data-testid="receipt-address"]'))).toBe("شارع الاستقلال 12");
     // the date is the app-wide shape, never the raw ISO value
     // «التاريخ والوقت» promises both: the recording timestamp, day-first 24h
@@ -162,21 +157,12 @@ describe("ReceiptView — the settled A4 sheet", () => {
     expect(text(host.querySelector('[data-testid="receipt-discount"]'))).toBe("0 دج");
   });
 
-  it("prints the payment history with formatted timestamps and no raw T", () => {
+  it("never renders the payment history (owner decision: screen only, not paper)", () => {
     renderReceipt();
-    const rows = Array.from(host.querySelectorAll('[data-testid="receipt-payment"]'));
-    const cells = rows.map((row) => Array.from(row.querySelectorAll("td")).map((cell) => text(cell)));
-    expect(cells).toEqual([
-      ["25/08/2026 10:01", "300 دج", "نقداً", "أول دفعة"],
-      ["25/08/2026 11:30", "200 دج", "تحويل بنكي", "—"],
-    ]);
-    expect(text()).not.toContain("T10:01");
-  });
-
-  it("renders no payment section when the invoice has no payments", () => {
-    renderReceipt({ ...receipt, payments: [] });
     expect(host.querySelector('[data-testid="receipt-payments"]')).toBeNull();
     expect(host.querySelector('[data-testid="receipt-payment"]')).toBeNull();
+    expect(text()).not.toContain("سجل الدفعات");
+    expect(text()).not.toContain("أول دفعة");
     // the totals still close the sheet
     expect(text(host.querySelector('[data-testid="receipt-total"]'))).toBe("950 دج");
   });
@@ -186,6 +172,19 @@ describe("ReceiptView — the settled A4 sheet", () => {
     expect(text(host.querySelector('[data-testid="receipt-page-num"]'))).toBe("صفحة 1 من 1");
     expect(text(host.querySelector('[data-testid="receipt-ref"]'))).toBe("INV-0007");
     expect(host.querySelectorAll('[data-testid="receipt-sheet"]')).toHaveLength(1);
+  });
+
+  it("gives every foot the [store | page counter | ref] columns the centring grid needs", () => {
+    renderReceipt(longReceipt);
+    for (const sheet of sheets()) {
+      const children = Array.from(sheet.querySelector(".print-sheet-foot")?.children ?? []);
+      expect(children).toHaveLength(3);
+      expect(children[0]?.textContent).toBe("دكان التجربة");
+      expect(children[1]?.classList.contains("print-sheet-page")).toBe(true);
+      expect(children[1]?.textContent).toContain("صفحة");
+      expect(children[2]?.classList.contains("print-sheet-ltr")).toBe(true);
+      expect(children[2]?.textContent).toBe("INV-0100");
+    }
   });
 });
 
@@ -197,14 +196,16 @@ describe("ReceiptView — a long invoice paginates", () => {
     // full header (store + contacts + meta) on both sheets
     for (const sheet of pages) {
       expect(text(sheet.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
-      expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+      expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("0550123123");
       expect(text(sheet.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0100");
       expect(text(sheet.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
     }
+    // no payment block claims the closing sheet's spare room, so 12 lines
+    // balance evenly across the two sheets
     const firstLines = pages[0]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];
     const lastLines = pages[1]?.querySelectorAll('[data-testid="receipt-line"]') ?? [];
-    expect(firstLines).toHaveLength(10);
-    expect(lastLines).toHaveLength(2);
+    expect(firstLines).toHaveLength(6);
+    expect(lastLines).toHaveLength(6);
   });
 
   it("carries the running total off a non-closing sheet and back onto the next", () => {
@@ -213,15 +214,14 @@ describe("ReceiptView — a long invoice paginates", () => {
     // page 1: carried total only — never «مجموع هذه الصفحة»
     const carried = text(pages[0]?.querySelector('[data-testid="receipt-carried-total"]'));
     expect(carried).toContain("المجموع المنقول");
-    expect(carried).toContain("1,000 دج");
+    expect(carried).toContain("600 دج");
     expect(text(pages[0])).not.toContain("مجموع هذه الصفحة");
     expect(pages[0]?.querySelector('[data-testid="receipt-total"]')).toBeNull();
     // page 2: the banner, the closing totals and the payment history
     const carryIn = text(pages[1]?.querySelector('[data-testid="receipt-carry-in"]'));
     expect(carryIn).toContain("منقول من الصفحة السابقة");
-    expect(carryIn).toContain("1,000 دج");
+    expect(carryIn).toContain("600 دج");
     expect(text(pages[1]?.querySelector('[data-testid="receipt-subtotal"]'))).toBe("1,200 دج");
-    expect(pages[1]?.querySelectorAll('[data-testid="receipt-payment"]')).toHaveLength(1);
   });
 
   it("numbers every foot against the sheet count", () => {
@@ -281,12 +281,5 @@ describe("ReceiptView — RTL layout tokens", () => {
     for (const cell of host.querySelectorAll(".print-sheet-ltr")) {
       expect(cell.getAttribute("dir")).toBe("ltr");
     }
-  });
-
-  it("does not isolate the payment timestamp (day-first run order in RTL)", () => {
-    renderReceipt();
-    const firstDateCell = host.querySelector('[data-testid="receipt-payment"] td');
-    expect(firstDateCell?.getAttribute("dir")).toBeNull();
-    expect(firstDateCell?.className).toContain("print-sheet-digits");
   });
 });

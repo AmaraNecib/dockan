@@ -23,6 +23,21 @@ export function isValidAlgerianPhone(raw: string): boolean {
 }
 
 /**
+ * The LOCAL display form of a stored phone: the canonical +213 form reads back
+ * as the local 0-prefixed number (`+213667295778` -> `0667295778`) with no
+ * spaces or dashes. Arabic-Indic digits fold first (normalizeAlgerianPhone
+ * already does this); an already-local value comes back unchanged; anything
+ * that is not the Algerian mobile shape (a landline, a foreign number, junk) is
+ * returned verbatim so the owner never sees a blank or a mangled number.
+ * Storage stays canonical — this is display only.
+ */
+export function displayAlgerianPhone(raw: string): string {
+  const canonical = normalizeAlgerianPhone(foldArabicDigits(raw));
+  if (canonical === null) return raw;
+  return `0${canonical.slice("+213".length)}`;
+}
+
+/**
  * Bidi/zero-width controls Arabic-first UIs inject on copy/paste (WhatsApp,
  * word processors). `\s` does not match them, so they must be stripped before
  * matching or the same number becomes two identities. Includes U+061C ARABIC

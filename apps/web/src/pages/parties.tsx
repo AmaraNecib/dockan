@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyListItem, PartyRole } from "@dokan/contracts";
+import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { DeletePartyDialog, PartyFormDialog } from "@/components/parties/party-forms";
 import { filterParties } from "@/components/parties/party-match";
@@ -154,7 +155,7 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                     <TableCell>
                       <PartyNameLink role={role} row={row} />
                     </TableCell>
-                    <TableCell dir="ltr">{row.phone ?? t("partyNoPhone")}</TableCell>
+                    <TableCell dir="ltr">{row.phone === null ? t("partyNoPhone") : displayAlgerianPhone(row.phone)}</TableCell>
                     <TableCell data-testid="party-row-count">{row.stats.invoiceCount}</TableCell>
                     <TableCell data-testid="party-row-remaining">
                       <Amount value={row.stats.remainingAmount} />

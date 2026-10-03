@@ -175,6 +175,24 @@ describe("PartyForm concurrent edits (issue 120, Greptile P1.2)", () => {
     expect(saved).toEqual([{ name: "علي", mode: "updated" }]);
   });
 
+  it("shows the stored +213 phone in local form and round-trips it unchanged", async () => {
+    const host = await mount();
+    const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+    // the edit field reads the owner's local form, not the stored canonical value
+    expect(phone?.value).toBe("0555123456");
+    await submit(host);
+    // the unchanged local form normalises back to the same canonical identity,
+    // so no write is sent and the stored +213 value is preserved
+    expect(updates).toEqual([]);
+    expect(saved).toEqual([{ name: "علي", mode: "updated" }]);
+  });
+
+  it("refreshes an untouched phone to the local form when the record changes elsewhere", async () => {
+    const host = await mount();
+    await click(host, "change-phone");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]')?.value).toBe("0555999999");
+  });
+
   it("does not write when nothing changed", async () => {
     const host = await mount();
     await submit(host);

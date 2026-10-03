@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 
 import type { PartyCreate, PartyRole } from "@dokan/contracts";
-import { normalizeTextKey } from "@dokan/contracts";
+import { displayAlgerianPhone, normalizeTextKey } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -245,7 +245,7 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                   >
                     <span>{party.name}</span>
                     <span dir="ltr" className="text-xs text-muted-foreground">
-                      {party.phone ?? t("partyNoPhone")}
+                      {party.phone === null ? t("partyNoPhone") : displayAlgerianPhone(party.phone)}
                     </span>
                   </button>
                 </li>
@@ -345,7 +345,7 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                   )}
                   {phoneOwner === undefined && duplicate !== undefined && (
                     <p className="rounded border border-warning/30 bg-warning/10 p-2 text-sm" role="status" data-testid={`${testId}-duplicate`}>
-                      {t("partyDuplicateName", { name: duplicate.name, phone: duplicate.phone ?? t("partyNoPhone") })}{" "}
+                      {t("partyDuplicateName", { name: duplicate.name, phone: duplicate.phone === null ? t("partyNoPhone") : displayAlgerianPhone(duplicate.phone) })}{" "}
                       <button type="button" className="underline" onClick={() => pick(duplicate)} data-testid={`${testId}-pick-duplicate`}>
                         {t("partyPickRecord", { name: duplicate.name })}
                       </button>

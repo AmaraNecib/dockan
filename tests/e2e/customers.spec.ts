@@ -113,7 +113,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   const customerRow = page.getByTestId("party-row").filter({ hasText: customerName });
   await expect(customerRow.getByTestId("party-row-count")).toHaveText("2");
   await expect(customerRow.getByTestId("party-row-remaining")).toContainText("1500");
-  await expect(customerRow).toContainText("+213567");
+  await expect(customerRow).toContainText(customerPhone);
 
   // search narrows the table by phone too
   await page.getByTestId("parties-search").fill(customerPhone);
@@ -140,7 +140,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("party-form-phone").fill(emptyPhone);
   await page.getByTestId("party-form-save").click();
   await expect(page.getByTestId("party-detail-notice")).toContainText("تم الحفظ");
-  await expect(page.getByTestId("party-detail-phone")).toContainText(`+213${emptyPhone.slice(1)}`);
+  await expect(page.getByTestId("party-detail-phone")).toContainText(emptyPhone);
 
   // 8. the delete rule: an invoiced party keeps its delete button disabled
   await expect(page.getByTestId("party-detail-delete")).toBeDisabled();

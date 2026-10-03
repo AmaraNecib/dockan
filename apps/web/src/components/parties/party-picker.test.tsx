@@ -135,6 +135,9 @@ describe("PartyPicker (issue 120)", () => {
     await type(host, "picker", "05551234");
 
     expect(optionNames(host).some((text) => text.includes("علي علي"))).toBe(true);
+    // the option reads the owner's local form, never the stored +213 value
+    expect(optionNames(host).some((text) => text.includes("0555123456"))).toBe(true);
+    expect(optionNames(host).some((text) => text.includes("+213"))).toBe(false);
     expect(optionNames(host).some((text) => text.includes("عماره"))).toBe(false);
     await click(host, "picker-option");
     expect(selection(host)).toBe("ali|علي علي");

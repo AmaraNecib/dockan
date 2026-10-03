@@ -58,5 +58,5 @@ test("settings edit → save → invoice header reflects the store identity", as
   const header = page.getByTestId("invoice-header");
   await expect(header).toBeVisible();
   await expect(header).toContainText(storeName);
-  await expect(header).toContainText("+213661234567");
+  await expect(header).toContainText("0661234567");
 });

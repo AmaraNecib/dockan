@@ -522,8 +522,11 @@ table.print-sheet-items tbody tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+/* the ref span is an LTR run (`.print-sheet-ltr`), so `start` is its LEFT edge —
+   the sheet's outer edge. `end` would resolve to the right inside this
+   visually-left column and pull a short ref toward the centred page counter. */
 .print-sheet-foot > span:last-child {
-  text-align: end;
+  text-align: start;
   overflow-wrap: anywhere;
 }
 

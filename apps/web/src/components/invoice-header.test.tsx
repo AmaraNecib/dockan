@@ -88,7 +88,8 @@ describe("InvoiceHeader states", () => {
     renderHeader();
     await waitFor(() => text().includes("متجر الاختبار"));
     expect(text()).toContain("متجر الاختبار");
-    expect(text()).toContain("+213550123123");
+    // canonical +213550123123 stored, local form shown to the owner
+    expect(text()).toContain("0550123123");
   });
 
   it("shows an alert + retry on query failure and recovers to the identity", async () => {
@@ -107,6 +108,6 @@ describe("InvoiceHeader states", () => {
       retry!.click();
     });
     await waitFor(() => text().includes("متجر الاختبار"));
-    expect(text()).toContain("+213550123123");
+    expect(text()).toContain("0550123123");
   });
 });

@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import { displayAlgerianPhone } from "@dokan/contracts";
+
 import { formatPrintAmount } from "../lib/print-format";
 
 /**
@@ -49,7 +51,7 @@ export function PrintSheet({
               <span>—</span>
             ) : (
               <span dir="ltr" className="print-sheet-ltr" data-testid={`${testIdPrefix}-phone`}>
-                {storePhone}
+                {displayAlgerianPhone(storePhone)}
               </span>
             )}
           </span>

@@ -71,7 +71,7 @@ describe("ReturnVoucherView (printable voucher document)", () => {
     renderVoucher(voucher);
     const view = host.querySelector('[data-testid="return-voucher-view"]')!;
     expect(view.querySelector('[data-testid="return-voucher-store"]')?.textContent).toBe("متجر الكرامة");
-    expect(view.querySelector('[data-testid="return-voucher-phone"]')?.textContent).toBe("+213661234567");
+    expect(view.querySelector('[data-testid="return-voucher-phone"]')?.textContent).toBe("0661234567");
     expect(view.querySelector('[data-testid="return-voucher-number"]')?.textContent).toBe("RTN-0042");
     expect(view.querySelector('[data-testid="return-voucher-invoice"]')?.textContent).toBe("INV-0101");
     expect(view.querySelector('[data-testid="return-voucher-party"]')?.textContent).toBe("يوسف");

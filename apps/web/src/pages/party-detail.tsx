@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { Invoice, PartyDetail, PartyPayment, PartyRole } from "@dokan/contracts";
+import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
@@ -159,7 +160,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
             <div>
               <h1 className="text-xl font-bold" data-testid="party-detail-name">{detail.data.party.name}</h1>
               <p className="mt-1 text-sm text-muted-foreground" dir="ltr" data-testid="party-detail-phone">
-                {detail.data.party.phone ?? t("partyNoPhone")}
+                {detail.data.party.phone === null ? t("partyNoPhone") : displayAlgerianPhone(detail.data.party.phone)}
               </p>
             </div>
             <div className="flex gap-2">

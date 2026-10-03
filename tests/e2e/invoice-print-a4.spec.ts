@@ -17,8 +17,9 @@ import { extractPdfText, pdfMediaBoxes, pdfPageCount } from "./pdf-helpers";
  * - page 1 carries the running total «المجموع المنقول»; page 2 closes with
  *   the full totals. The payments log stays on the invoice SCREEN, never the
  *   paper (owner decision);
- * - every foot carries «صفحة X من Y» and the invoice number, and the page
- *   counter sits dead-centre on every sheet whatever the store name width;
+ * - every foot carries «صفحة X من Y» and the invoice number, the page counter
+ *   sits dead-centre on every sheet whatever the store name width, and the ref
+ *   sits flush at the foot's left edge (store name at its right edge);
  * - the currency دج is drawn LEFT of the amount in an RTL cell;
  * - `@page { size: A4; margin: 0 }` reaches the print pipeline, so the sheets
  *   start at the page origin and Chrome's URL/date header (drawn in the page
@@ -48,6 +49,34 @@ async function expectPageCounterCentred(sheet: Locator): Promise<void> {
   const sheetCentre = (sheetBox?.x ?? 0) + (sheetBox?.width ?? 0) / 2;
   const counterCentre = (counterBox?.x ?? 0) + (counterBox?.width ?? 0) / 2;
   expect(Math.abs(sheetCentre - counterCentre)).toBeLessThanOrEqual(2);
+}
+
+/**
+ * The store name and the document ref are page furniture at the sheet's outer
+ * edges. The ref is an LTR run in the visually-left track, so it must start at
+ * the foot's LEFT edge; `text-align: end` would put a short ref at the right of
+ * that track, drifting toward the centred page counter. The store name must end
+ * at the foot's RIGHT edge. Measured from the text's own client rect (the grid
+ * item stretches to fill its track, so the element box would not catch this).
+ */
+async function expectFooterEdgeAlignment(sheet: Locator): Promise<void> {
+  const edges = await sheet.locator(".print-sheet-foot").evaluate((foot) => {
+    const spans = Array.from(foot.querySelectorAll(":scope > span"));
+    const textBox = (element: Element | undefined) => {
+      if (element === undefined) return null;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const box = range.getBoundingClientRect();
+      return { left: box.left, right: box.right };
+    };
+    const footBox = foot.getBoundingClientRect();
+    return { footLeft: footBox.left, footRight: footBox.right, store: textBox(spans[0]), ref: textBox(spans[2]) };
+  });
+  expect(edges.store).not.toBeNull();
+  expect(edges.ref).not.toBeNull();
+  // ref flush to the foot's left edge, store name flush to its right edge
+  expect(Math.abs((edges.ref?.left ?? 0) - edges.footLeft)).toBeLessThanOrEqual(2);
+  expect(Math.abs((edges.store?.right ?? 0) - edges.footRight)).toBeLessThanOrEqual(2);
 }
 
 interface SeededInvoice {
@@ -166,7 +195,7 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
   // 4. every sheet carries the full header: store, contacts and the meta row
   for (const sheet of [first, last]) {
     await expect(sheet.getByTestId("receipt-store")).toHaveText("ماني للاكسسوارات اوتو");
-    await expect(sheet.getByTestId("receipt-phone")).toHaveText("+213555123456");
+    await expect(sheet.getByTestId("receipt-phone")).toHaveText("0555123456");
     await expect(sheet.getByTestId("receipt-address")).toHaveText("حي 5 جويلية، البليدة");
     await expect(sheet.getByTestId("receipt-number")).toHaveText(seeded.invoiceNumber);
     // the business date (2026-09-15) with the recording time, 24-hour
@@ -212,6 +241,8 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
   await expect(last.getByTestId("receipt-ref")).toHaveText(seeded.invoiceNumber);
   await expectPageCounterCentred(first);
   await expectPageCounterCentred(last);
+  await expectFooterEdgeAlignment(first);
+  await expectFooterEdgeAlignment(last);
 
   // 9. RTL money: the currency's right edge sits left of the amount's left edge
   const moneyCell = last.getByTestId("receipt-line").first().locator("td").nth(3);
@@ -319,6 +350,7 @@ test("invoice print: a 5-line purchase fits one sheet and labels the supplier", 
   await expect(page.getByTestId("receipt-payments")).toHaveCount(0);
   await expect(sheet.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
   await expectPageCounterCentred(sheet);
+  await expectFooterEdgeAlignment(sheet);
   // a long value wraps inside the meta row: no horizontal overflow
   const metaOverflow = await sheet.locator(".print-sheet-meta").evaluate((element) => ({
     scrollWidth: element.scrollWidth,
@@ -357,5 +389,6 @@ test("invoice print: the page counter stays centred under a long store name", as
   await expect(sheet.getByTestId("receipt-ref")).toHaveText(seeded.invoiceNumber);
   // the long store name wraps in the foot rather than shifting the counter
   await expectPageCounterCentred(sheet);
+  await expectFooterEdgeAlignment(sheet);
   expect(await sheet.getByTestId("receipt-page-num").isVisible()).toBe(true);
 });

@@ -76,7 +76,7 @@ test("invoice print button → receipt document with identity, totals and paymen
   // 5. the receipt document carries everything the paper needs
   const receipt = page.getByTestId("receipt-view");
   await expect(receipt.getByTestId("receipt-store")).toContainText(storeName);
-  await expect(receipt.getByTestId("receipt-phone")).toContainText("+213661234567");
+  await expect(receipt.getByTestId("receipt-phone")).toContainText("0661234567");
   await expect(receipt.getByTestId("receipt-number")).toContainText(number);
   // the settled sheet (#121): one A4 page, store header, colon-labelled meta row
   await expect(receipt.getByTestId("receipt-sheet")).toHaveCount(1);

@@ -100,7 +100,7 @@ describe("ReceiptView — the settled A4 sheet", () => {
   it("prints the store header, one-line meta row and invoice values", () => {
     renderReceipt();
     expect(text(host.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
-    expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+    expect(text(host.querySelector('[data-testid="receipt-phone"]'))).toBe("0550123123");
     expect(text(host.querySelector('[data-testid="receipt-address"]'))).toBe("شارع الاستقلال 12");
     // the date is the app-wide shape, never the raw ISO value
     // «التاريخ والوقت» promises both: the recording timestamp, day-first 24h
@@ -196,7 +196,7 @@ describe("ReceiptView — a long invoice paginates", () => {
     // full header (store + contacts + meta) on both sheets
     for (const sheet of pages) {
       expect(text(sheet.querySelector('[data-testid="receipt-store"]'))).toBe("دكان التجربة");
-      expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("+213550123123");
+      expect(text(sheet.querySelector('[data-testid="receipt-phone"]'))).toBe("0550123123");
       expect(text(sheet.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0100");
       expect(text(sheet.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
     }

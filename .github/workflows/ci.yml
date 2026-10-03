@@ -3,6 +3,8 @@
 #   bun run typecheck && bun run lint && bun run test
 #   bun audit
 #   bunx playwright install --with-deps chromium && bun run test:e2e
+#   bun run --filter @dokan/web build
+#   (cd apps/desktop/src-tauri && cargo test && cargo clippy -- -D warnings)
 #
 # Action refs are pinned to full commit SHAs (a mutable tag can be moved to
 # untrusted code); the trailing comment names the release each SHA is from.
@@ -101,3 +103,73 @@ jobs:
 
       - name: Run Playwright e2e
         run: bun run test:e2e
+
+  # The Rust capability/permission guards (issue 154). The desktop crate's
+  # tests include the guard added in #153: it drives the real tauri-utils
+  # URLPattern matcher over setup_navigation_url() and the resolved ACL over
+  # capabilities/default.json. A missing remote.urls entry or a missing
+  # allow-vault-broker permission silently broke the packaged app once; these
+  # tests must gate PRs instead of waiting for the manual/tag release workflow.
+  rust:
+    name: rust test, clippy
+    # windows-latest on purpose: desktop-installer.yml already proves this
+    # crate compiles and links there, and the Windows image ships stable Rust,
+    # rustup and the WebView2 runtime. A Linux runner would need the
+    # webkit2gtk/libsoup Tauri system packages installed via apt before a
+    # single test compiles, which is a slower and more fragile gate.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # build.rs compiles the api sidecar with `bun build --compile` and
+      # validates tauri.conf.json's `bundle.resources` (apps/web/dist) before
+      # cargo compiles a single test, so both Bun and the web build are
+      # preconditions of `cargo test`/`cargo clippy`, not extras.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Cache bun installs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Pin stable and pull in clippy. The repo pins no rust-toolchain.toml, so
+      # this is the single source of the Rust version for the PR gate (the
+      # release workflow uses the image's stable).
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: clippy
+
+      # rust-cache folds the runner OS/arch and the Cargo.lock hash into its
+      # own key, so a Windows cache cannot collide with another platform's.
+      # cache-on-failure keeps the dependency crates for a re-run after a red
+      # test, when they usually compiled fine.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          cache-on-failure: true
+
+      # tauri.conf.json bundles apps/web/dist as the `ui` resource; build.rs
+      # hard-fails when that path is absent, so the frontend must be built
+      # before cargo runs (the release workflow gets this from tauri's
+      # beforeBuildCommand, which does not run for a bare `cargo test`).
+      - name: Build web frontend
+        run: bun run --filter @dokan/web build
+
+      - name: Rust tests
+        working-directory: apps/desktop/src-tauri
+        run: cargo test
+
+      - name: Rust clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy -- -D warnings

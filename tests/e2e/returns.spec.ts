@@ -116,3 +116,83 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(page.getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
   await expect(page.getByTestId(`returns-actions-${returnNumber}`)).toHaveCount(0);
 });
+
+/**
+ * The settlement panel must make the debt cap legible. A 900 sale with a 200
+ * down payment leaves 700 of debt; returning the unit is worth 900, so only 700
+ * can go to debt and 200 MUST be handed back as cash. The owner has to see the
+ * 700, see the split, and be told which part the cap forced into cash — a
+ * correct settlement that looks like a mistake is a defect. Once accepted, the
+ * invoice header must reconcile: total − paid − returns = remaining.
+ */
+test("settlement names the debt cap, and the header reconciles after acceptance", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `سقف-تصنيف-${stamp}`;
+  const itemName = `سقف-منتج-${stamp}`;
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  // 1 × 900 with a 200 down payment → total 900, paid 200, remaining 700
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("200");
+  await page.getByLabel("سعر البيع (دج)").fill("900");
+  await page.getByTestId("sale-quick-stock").fill("1");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+  await page.getByTestId("sale-paid").fill("200");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  const saleNumber = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
+
+  await page.getByRole("link", { name: "الفواتير" }).click();
+  await expect(page.getByTestId("invoices-table")).toBeVisible();
+  await page.getByTestId(`invoice-open-${saleNumber}`).click();
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+
+  // the header states the debt the owner has to reason about, and there is no
+  // return credit yet — the row must not appear until a return has relieved
+  await expect(page.getByTestId("invoice-remaining")).toContainText("700");
+  await expect(page.getByTestId("invoice-returns-credit")).toHaveCount(0);
+
+  // the panel shows the remaining debt beside the return value …
+  await page.locator('[data-testid^="returns-qty-"]').fill("1");
+  await expect(page.getByTestId("returns-value")).toContainText("900");
+  await expect(page.getByTestId("returns-remaining-debt")).toContainText("700");
+
+  // … and an all-debt choice is capped at 700, so 200 is forced into cash —
+  // the split is shown and the note names both figures instead of leaving the
+  // cash figure to change silently under the owner's chosen preset
+  await chooseSelectOption(page, page.getByTestId("returns-settlement"), "كله خصم من الدين");
+  await expect(page.getByTestId("returns-debt-offset")).toContainText("700");
+  await expect(page.getByTestId("returns-cash-now")).toContainText("200");
+  const capNote = page.getByTestId("returns-debt-cap-note");
+  await expect(capNote).toBeVisible();
+  await expect(capNote).toContainText("700");
+  await expect(capNote).toContainText("200");
+
+  await page.getByTestId("returns-submit").click();
+  await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
+  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RTN-\d+/)![0]!;
+
+  // accept it, then the header reconciles: 900 − 200 − 700 = 0
+  await openSystemNav(page);
+  await page.getByRole("link", { name: "المرتجعات" }).click();
+  await expect(page.getByTestId("returns-page")).toBeVisible();
+  await page.getByTestId(`returns-accept-${returnNumber}`).click();
+  await expect(page.getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
+
+  await page.goto("/invoices");
+  await page.getByTestId(`invoice-open-${saleNumber}`).click();
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+  await expect(page.getByTestId("invoice-returns-credit")).toContainText("700");
+  await expect(page.getByTestId("invoice-remaining")).toContainText("0");
+});

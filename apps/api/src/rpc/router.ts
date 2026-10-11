@@ -819,7 +819,8 @@ export function createRpcRouter(deps: RpcDeps) {
               );
             }
             await tx.insertActivity({ type: "SALE_CREATED", summary: `SALE_CREATED ${invoiceNumber}`, ref: invoice.id });
-            return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
+            // a brand-new invoice has no returns yet, so no debt was relieved
+            return { ...invoice, lines: insertedLines, payments: insertedPayments, returnCreditAmount: 0 } satisfies InvoiceDetail;
         }
 
         if (input.discount !== undefined || input.discountType !== undefined || input.discountValue !== undefined) {
@@ -897,7 +898,8 @@ export function createRpcRouter(deps: RpcDeps) {
             );
           }
           await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
-          return { ...invoice, lines: insertedLines, payments: insertedPayments } satisfies InvoiceDetail;
+          // a brand-new invoice has no returns yet, so no debt was relieved
+          return { ...invoice, lines: insertedLines, payments: insertedPayments, returnCreditAmount: 0 } satisfies InvoiceDetail;
         });
       }),
     ),

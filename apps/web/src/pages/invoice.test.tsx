@@ -71,7 +71,7 @@ mock.module("@/lib/rpc", () => ({
 
 const { paymentAmountError, PaymentPanel, InvoicePage } = await import("./invoice");
 
-function makeInvoice(remaining: number, payments: InvoiceDetail["payments"] = []): InvoiceDetail {
+function makeInvoice(remaining: number, payments: InvoiceDetail["payments"] = [], returnCreditAmount = 0): InvoiceDetail {
   return {
     id: "00000000-0000-4000-8000-000000000001",
     invoiceNumber: "INV-0001",
@@ -84,8 +84,9 @@ function makeInvoice(remaining: number, payments: InvoiceDetail["payments"] = []
     discountValue: null,
     discountAmount: 0,
     totalAmount: 900,
-    paidAmount: 900 - remaining,
+    paidAmount: 900 - remaining - returnCreditAmount,
     remainingAmount: remaining,
+    returnCreditAmount,
     notes: null,
     createdAt: "2026-08-25T10:00:00",
     updatedAt: "2026-08-25T10:00:00",
@@ -289,5 +290,25 @@ describe("InvoicePage notes (issue #126)", () => {
   it("shows nothing for a blank note", async () => {
     await renderPage({ ...makeInvoice(900), notes: "   " });
     expect(host.querySelector('[data-testid="invoice-notes"]')).toBeNull();
+  });
+});
+
+describe("invoice header reconciliation", () => {
+  it("shows the return credit so the stored figures add up", async () => {
+    // total 900, paid 700, returns cleared 100 → remaining 100. Without the
+    // credit line the header renders 900 − 700 ≠ 100 and reads as corrupt data,
+    // even though every stored figure is right
+    await renderPage(makeInvoice(50, [], 150));
+    // distinct figures on purpose: with credit and remaining both 100, a row
+    // bound to the wrong field would still satisfy a substring match
+    expect(host.querySelector('[data-testid="invoice-total"]')?.textContent).toBe("900 دج");
+    expect(host.querySelector('[data-testid="invoice-paid"]')?.textContent).toBe("700 دج");
+    expect(host.querySelector('[data-testid="invoice-returns-credit"]')?.textContent).toBe("150 دج");
+    expect(host.querySelector('[data-testid="invoice-remaining"]')?.textContent).toBe("50 دج");
+  });
+
+  it("omits the credit line when no return cleared debt", async () => {
+    await renderPage(makeInvoice(200));
+    expect(host.querySelector('[data-testid="invoice-returns-credit"]')).toBeNull();
   });
 });

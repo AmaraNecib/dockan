@@ -1583,10 +1583,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return Number(result.changes) > 0;
     },
     async getInvoiceDetail(invoiceId: string) {
-      const [invoice, lines, paymentsRows] = await Promise.all([
+      const [invoice, lines, paymentsRows, creditRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
         db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id),
         db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
+        // the return credit the header reconciles with: `debtApplied` is
+        // already 0 for pending (#68 defers it) and rejected returns, so the
+        // sum is the money the invoice genuinely stopped owing
+        db
+          .select({ credit: sql<SqlScalar>`coalesce(sum(${returns.debtApplied}), 0)` })
+          .from(returns)
+          .where(eq(returns.invoiceId, invoiceId)),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
@@ -1601,6 +1608,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ...normalizeInvoiceLegacy(header),
         lines: normalizedLines,
         payments: paymentsRows,
+        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0),
       } satisfies InvoiceDetail;
     },
     async getInvoiceLine(lineId: string) {

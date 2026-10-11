@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
@@ -221,15 +222,6 @@ export function returnQuantityError(draft: string, remaining: number): "INVALID"
   return null;
 }
 
-/** Whole-DZD value of `quantity` returned units of a SALE line (mirror of the
- * api's refund math: a full line refunds its netTotal exactly, partials price
- * at the rounded effective unit). Used only to present the settlement split
- * before submit — the api recomputes authoritatively. */
-export function lineReturnValue(line: { quantity: number; netTotal: number }, quantity: number): number {
-  if (quantity === line.quantity) return line.netTotal;
-  return quantity * Math.round(line.netTotal / line.quantity);
-}
-
 export type ReturnSettlementPreset = "ALL_CASH" | "ALL_DEBT" | "CUSTOM";
 
 /** Validates a custom cash draft for the settlement split. */
@@ -261,17 +253,37 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
 
-  // client projection of the return value from the entered drafts (the api
-  // recomputes authoritatively; this only drives the settlement presets)
-  const valueTotal = useMemo(
-    () =>
-      returnableLines.reduce((sum, line) => {
-        const quantity = Number(drafts[line.id] ?? "");
-        if (!Number.isInteger(quantity) || quantity <= 0) return sum;
-        return sum + lineReturnValue(line, quantity);
-      }, 0),
-    [returnableLines, drafts],
-  );
+  // What earlier returns already refunded per line, in the shape
+  // `computeReturnRefund` expects. The api derives the identical map from
+  // `StorePort.returnedByLine` (every status, which is what this list holds),
+  // so the preview and the persisted refund cannot disagree on a completing
+  // return.
+  const priorByLine = useMemo(() => {
+    const map = new Map<string, { quantity: number; refundAmount: number }>();
+    for (const record of returns) {
+      for (const entry of record.lines) {
+        const current = map.get(entry.invoiceLineId) ?? { quantity: 0, refundAmount: 0 };
+        map.set(entry.invoiceLineId, {
+          quantity: current.quantity + entry.quantity,
+          refundAmount: current.refundAmount + entry.refundAmount,
+        });
+      }
+    }
+    return map;
+  }, [returns]);
+
+  // Client projection of the return value from the entered drafts. It calls the
+  // SAME `computeReturnRefund` the api prices with (packages/contracts), so the
+  // settlement shown is the settlement persisted; the api still recomputes.
+  const valueTotal = useMemo(() => {
+    const entered = returnableLines.flatMap((line) => {
+      const quantity = Number(drafts[line.id] ?? "");
+      if (!Number.isInteger(quantity) || quantity <= 0) return [];
+      return [{ invoiceLineId: line.id, quantity, netTotal: line.netTotal, lineQuantity: line.quantity }];
+    });
+    if (entered.length === 0) return 0;
+    return computeReturnRefund(entered, priorByLine).refundTotal;
+  }, [returnableLines, drafts, priorByLine]);
   const requestedCash =
     settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
   const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
@@ -279,8 +291,19 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // server will settle: requested debt is capped at the invoice's remaining
   // debt and any excess flows back to cash (all-debt beyond the debt swings
   // into cash, which must warn too)
-  const projectedDebt = Math.min(Math.max(0, valueTotal - requestedCash), invoice.remainingAmount);
-  const settledCash = Number.isFinite(requestedCash) ? valueTotal - projectedDebt : Number.NaN;
+  // The projection mirrors the api's settlement exactly (`debtOffset =
+  // min(requestedDebt, remaining)`, `cash = refund − debtOffset`). It is shown
+  // only while the custom-cash draft is a VALID whole-DZD amount: an empty or
+  // bad draft would otherwise render a NaN (or an inflated) split, and
+  // `customCashError` already blocks submitting exactly that input.
+  const requestedDebt = Math.max(0, valueTotal - requestedCash);
+  const projectionIsValid = cashIsValid && Number.isFinite(requestedDebt);
+  const projectedDebt = projectionIsValid ? Math.min(requestedDebt, invoice.remainingAmount) : 0;
+  const settledCash = projectionIsValid ? valueTotal - projectedDebt : Number.NaN;
+  // the offset asked for is bigger than the debt that is left, so that much
+  // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
+  // (mirrors the api) so an "all debt" choice never silently becomes cash
+  const debtIsCapped = projectionIsValid && requestedDebt > projectedDebt;
   // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
   const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 
@@ -397,40 +420,60 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           <div className="grid gap-2">
             {returnableLines.map((line) => {
               const remaining = remainingReturnableFor(line, returns);
+              const soldOut = remaining === 0;
               return (
-                <label key={line.id} className="grid grid-cols-[1fr_auto] items-center gap-3 text-sm">
-                  <span>
-                    {line.description}
-                    <span className="ml-2 text-muted-foreground">{t("returnsRemaining", { remaining })}</span>
-                  </span>
-                  <input
-                    className="w-24 rounded border px-2 py-1"
-                    inputMode="numeric"
-                    value={drafts[line.id] ?? ""}
-                    onChange={(event) => {
-                      setDrafts((current) => ({ ...current, [line.id]: event.target.value }));
-                      setRecorded(false);
-                    }}
-                    disabled={remaining === 0 || create.isPending}
-                    aria-label={`${t("returnQuantity")} ${line.description}`}
-                    data-testid={`returns-qty-${line.description}`}
-                  />
-                </label>
+                <div
+                  key={line.id}
+                  className="grid gap-3 rounded-lg border border-border bg-background p-3 sm:grid-cols-[1fr_auto] sm:items-center"
+                >
+                  <div className="grid gap-0.5">
+                    <span className="font-semibold">{line.description}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {soldOut ? t("returnsNothingLeft") : t("returnsRemaining", { remaining })}
+                    </span>
+                  </div>
+                  <label className="grid gap-1">
+                    <span className="text-xs font-medium text-muted-foreground">{t("returnQuantity")}</span>
+                    <span className="flex items-center gap-2">
+                      <input
+                        className="h-10 w-20 rounded-md border border-input bg-card text-center text-lg font-bold tabular-nums outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/50 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50"
+                        inputMode="numeric"
+                        placeholder="0"
+                        value={drafts[line.id] ?? ""}
+                        onChange={(event) => {
+                          setDrafts((current) => ({ ...current, [line.id]: event.target.value }));
+                          setRecorded(false);
+                        }}
+                        disabled={soldOut || create.isPending}
+                        aria-label={`${t("returnQuantity")} ${line.description}`}
+                        data-testid={`returns-qty-${line.description}`}
+                      />
+                      <span className="text-sm text-muted-foreground">{t("returnsUnitPiece")}</span>
+                    </span>
+                  </label>
+                </div>
               );
             })}
           </div>
         )}
-        <div className="grid gap-2 rounded border bg-accent p-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">{t("returnsValue")}</span>
-            <span className="font-medium" data-testid="returns-value">{valueTotal} {t("dzd")}</span>
+        <div className="grid gap-3 rounded-lg border border-border bg-background p-3">
+          <p className="text-xs font-semibold text-muted-foreground">{t("returnsSettlementSummary")}</p>
+          <div className="grid gap-1.5 text-sm">
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-muted-foreground">{t("returnsValue")}</span>
+              <span data-testid="returns-value" className="text-lg font-bold"><Amount value={valueTotal} /></span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-muted-foreground">{t("returnsRemainingDebt")}</span>
+              <span data-testid="returns-remaining-debt" className="font-medium"><Amount value={invoice.remainingAmount} /></span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-muted-foreground">{t("returnsCollected")}</span>
+              <span data-testid="returns-collected"><Amount value={invoice.paidAmount} /></span>
+            </div>
           </div>
-          <div className="flex justify-between">
-            <span className="text-muted-foreground">{t("returnsCollected")}</span>
-            <span data-testid="returns-collected">{invoice.paidAmount} {t("dzd")}</span>
-          </div>
-          <label className="grid gap-1">
-            {t("returnsSplit")}
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">{t("returnsSplit")}</span>
             <Select
               value={settlement}
               onValueChange={(value) => {
@@ -455,26 +498,37 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             </Select>
           </label>
           {settlement === "CUSTOM" && (
-            <label className="grid gap-1">
-              {t("returnsCashNow")}
+            <label className="grid gap-1 text-sm">
+              <span className="font-medium">{t("returnsCashNow")}</span>
               <input
-                className="rounded border px-2 py-1"
+                className="h-10 rounded-md border border-input bg-card px-3 tabular-nums outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40"
                 inputMode="numeric"
                 value={cashDraft}
                 onChange={(event) => {
                   setCashDraft(event.target.value);
                   setRecorded(false);
                 }}
-                placeholder={`0 – ${valueTotal}`}
+                placeholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
                 data-testid="returns-cash"
               />
             </label>
           )}
-          {Number.isFinite(settledCash) && (
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">{t("returnsCashNow")}</span>
-              <span className="font-medium" data-testid="returns-cash-now">{settledCash} {t("dzd")}</span>
+          {projectionIsValid && (
+            <div className="grid gap-1.5 border-t border-border pt-3 text-sm">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">{t("returnsDebtOffset")}</span>
+                <span data-testid="returns-debt-offset" className="text-lg font-bold text-primary"><Amount value={projectedDebt} /></span>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">{t("returnsCashToCustomer")}</span>
+                <span data-testid="returns-cash-now" className="text-lg font-bold"><Amount value={settledCash} /></span>
+              </div>
             </div>
+          )}
+          {debtIsCapped && (
+            <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-debt-cap-note">
+              {t("returnsDebtCapNote", { remaining: invoice.remainingAmount, cash: settledCash })}
+            </p>
           )}
           {projectedDebt > 0 && (
             <p className="text-xs text-muted-foreground" data-testid="returns-debt-note">
@@ -579,6 +633,9 @@ export function InvoicePage() {
           <div className="flex justify-between border-b py-1"><dt className="text-muted-foreground">{t("invoiceDateTime")}</dt><dd data-testid="invoice-date">{formatDateTime(combineBusinessDateTime(invoice.invoiceDate, invoice.createdAt))}</dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceTotal")}</dt><dd data-testid="invoice-total"><Amount value={invoice.totalAmount} /></dd></div>
           <div className="flex justify-between py-1 font-semibold"><dt>{t("invoicePaid")}</dt><dd data-testid="invoice-paid"><Amount value={invoice.paidAmount} /></dd></div>
+          {invoice.returnCreditAmount > 0 && (
+            <div className="flex justify-between py-1 font-semibold"><dt>{t("invoiceReturnsCredit")}</dt><dd data-testid="invoice-returns-credit"><Amount value={invoice.returnCreditAmount} /></dd></div>
+          )}
           <div className="flex justify-between py-1 text-lg font-bold"><dt>{t("invoiceRemaining")}</dt><dd data-testid="invoice-remaining"><Amount value={remaining} /></dd></div>
         </dl>
 

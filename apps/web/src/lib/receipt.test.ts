@@ -35,6 +35,7 @@ const invoice: InvoiceDetail = {
   totalAmount: 950,
   paidAmount: 500,
   remainingAmount: 450,
+  returnCreditAmount: 0,
   notes: "توصيل للنهار",
   createdAt: "2026-08-25T10:00:00",
   updatedAt: "2026-08-25T10:00:00",

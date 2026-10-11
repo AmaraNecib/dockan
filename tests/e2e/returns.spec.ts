@@ -113,7 +113,10 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(page.getByTestId("returns-page")).toBeVisible();
   await expect(page.getByTestId(`returns-review-${returnNumber}`)).toBeVisible();
   await page.getByTestId(`returns-accept-${returnNumber}`).click();
-  await expect(page.getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
+  // scoped to THIS return's card: every spec shares one database, so an
+  // unscoped status testid can match returns left by an earlier test and trip
+  // Playwright's strict mode
+  await expect(page.getByTestId(`returns-review-${returnNumber}`).getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
   await expect(page.getByTestId(`returns-actions-${returnNumber}`)).toHaveCount(0);
 });
 
@@ -190,7 +193,7 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await page.getByRole("link", { name: "المرتجعات" }).click();
   await expect(page.getByTestId("returns-page")).toBeVisible();
   await page.getByTestId(`returns-accept-${returnNumber}`).click();
-  await expect(page.getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
+  await expect(page.getByTestId(`returns-review-${returnNumber}`).getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
 
   await page.goto("/invoices");
   await page.getByTestId(`invoice-open-${saleNumber}`).click();

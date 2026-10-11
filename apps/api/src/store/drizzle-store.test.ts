@@ -2057,3 +2057,74 @@ describe("returns seam (cash refunds + review marks)", () => {
     expect((await store.getReturnDetail(returnId))?.reason).toBe("ملاحظة ثانية");
   });
 });
+
+describe("getInvoiceDetail return credit", () => {
+  it("sums the debt the invoice's returns actually relieved", async () => {
+    const invoice = await store.insertInvoice({
+      invoiceNumber: `INV-RC-${stamp()}`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون نقدي",
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 1_000,
+      paidAmount: 400,
+      remainingAmount: 600,
+      notes: null,
+    });
+    // an accepted return relieved 300 through the real debt-offset path …
+    const accepted = await store.insertReturn({
+      returnNumber: `RTN-RC-${stamp()}-a`,
+      invoiceId: invoice.id,
+      refundAmount: 300,
+      cashPaidOut: 0,
+      debtOffset: 300,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "ACCEPTED",
+      occurredAt: localDateTime(),
+    });
+    await store.setDebtApplied(accepted.id, 300);
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 300)).toBe(true);
+    // … and a return that relieved nothing must not inflate the credit
+    const rejected = await store.insertReturn({
+      returnNumber: `RTN-RC-${stamp()}-b`,
+      invoiceId: invoice.id,
+      refundAmount: 500,
+      cashPaidOut: 500,
+      debtOffset: 0,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "REJECTED_DAMAGED",
+      occurredAt: localDateTime(),
+    });
+    await store.setDebtApplied(rejected.id, 0);
+
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.returnCreditAmount).toBe(300);
+    // the header's missing term: total − paid − returns = remaining
+    expect(detail!.totalAmount - detail!.paidAmount - detail!.returnCreditAmount).toBe(detail!.remainingAmount);
+  });
+
+  it("reports zero credit when the invoice has no returns", async () => {
+    const invoice = await store.insertInvoice({
+      invoiceNumber: `INV-RC-${stamp()}-none`,
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: null,
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 250,
+      paidAmount: 250,
+      remainingAmount: 0,
+      notes: null,
+    });
+    expect((await store.getInvoiceDetail(invoice.id))?.returnCreditAmount).toBe(0);
+  });
+});

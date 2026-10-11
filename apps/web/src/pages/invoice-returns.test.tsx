@@ -64,7 +64,7 @@ const { returnQuantityError, remainingReturnableFor, ReturnsPanel } = await impo
 const LINE_ID = "00000000-0000-4000-8000-0000000000c1";
 const ITEM_ID = "00000000-0000-4000-8000-0000000000c2";
 
-function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, totalAmount = 900): InvoiceDetail {
+function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, totalAmount = 900, returnCreditAmount = 0): InvoiceDetail {
   return {
     id: "00000000-0000-4000-8000-0000000000b1",
     invoiceNumber: "INV-0001",
@@ -78,7 +78,8 @@ function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, total
     discountAmount: 0,
     totalAmount,
     paidAmount,
-    remainingAmount: Math.max(0, totalAmount - paidAmount),
+    remainingAmount: Math.max(0, totalAmount - paidAmount - returnCreditAmount),
+    returnCreditAmount,
     notes: null,
     createdAt: "2026-08-26T10:00:00",
     updatedAt: "2026-08-26T10:00:00",
@@ -433,5 +434,56 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine()], 0));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     expect(host.querySelector('[data-testid="returns-debt-note"]')).toBeNull();
+  });
+
+  it("shows the invoice's remaining debt, not only what was collected", () => {
+    // total 900, paid 600 → remaining 300. Showing only المحصل (600) reads as
+    // "room to offset" and is exactly what made a capped split look like a bug:
+    // the counter owner needs the 300 that actually bounds the debt portion
+    renderPanel(makeInvoice([saleLine({ netTotal: 900, quantity: 3, total: 900 })], 600));
+    expect(host.querySelector('[data-testid="returns-remaining-debt"]')?.textContent).toContain("300");
+    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toContain("600");
+  });
+
+  it("names the cash forced by the debt cap instead of letting it appear silently", async () => {
+    // invoice total 400, paid 100 → remaining 300. Returning a 500 line with
+    // "all debt" asked for: only 300 fits the debt, so 200 MUST be handed back
+    // as cash — the panel has to say so, not merely render a different number
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("300");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("200");
+    const note = host.querySelector('[data-testid="returns-debt-cap-note"]');
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("300");
+    expect(note?.textContent).toContain("200");
+  });
+
+  it("shows no cap note when the debt absorbs the whole offset", async () => {
+    // total 900, paid 0 → remaining 900 swallows the whole 500 return
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 0, 900));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("500");
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+  });
+
+  it("labels the quantity field so what to type is unmistakable", () => {
+    renderPanel(makeInvoice([saleLine()], 900));
+    const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    expect(input.getAttribute("aria-label")).toContain(i18n.t("returnQuantity"));
+    expect(input.getAttribute("aria-label")).toContain("بطارية");
+    expect(host.textContent).toContain(i18n.t("returnQuantity"));
+    expect(host.textContent).toContain(i18n.t("returnsUnitPiece"));
+  });
+
+  it("says a line has nothing left to return rather than showing a dead field", async () => {
+    // this line sold a single unit and the fixture return already took it
+    returnsData = [returnRecord()];
+    renderPanel(makeInvoice([saleLine({ quantity: 1, netTotal: 900, total: 900 })], 900));
+    await flushAsync();
+    expect(host.textContent).toContain(i18n.t("returnsNothingLeft"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.disabled).toBe(true);
   });
 });

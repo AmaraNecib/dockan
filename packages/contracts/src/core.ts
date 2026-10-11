@@ -433,6 +433,15 @@ export const debtSummarySchema = z.object({
 export const invoiceDetailSchema = invoiceSchema.extend({
   lines: z.array(invoiceLineSchema),
   payments: z.array(paymentSchema),
+  /**
+   * Debt this invoice's returns have actually relieved (the sum of the
+   * returns' `debtApplied`). It is the missing term in the invoice header's
+   * arithmetic: once a return has cleared part of the debt, `totalAmount −
+   * paidAmount ≠ remainingAmount`, because that difference was settled with
+   * returned goods rather than with money. Surfacing it keeps the three
+   * stored figures reconcilable instead of looking like corrupt data.
+   */
+  returnCreditAmount: dinarsSchema,
 });
 
 // ---------------------------------------------------------------------------

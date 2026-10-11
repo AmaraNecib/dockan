@@ -452,6 +452,9 @@ const resources = {
       invoiceLinesTitle: "أسطر الفاتورة",
       invoiceTotal: "الإجمالي",
       invoicePaid: "المدفوع",
+      // the term that makes the header add up once returns have cleared debt:
+      // total − paid − returns = remaining (they are otherwise irreconcilable)
+      invoiceReturnsCredit: "خصم المرتجعات",
       invoiceRemaining: "المتبقي",
       // issue #126 — notes live on the invoice detail screen, never the print
       invoiceNotes: "ملاحظات",
@@ -496,6 +499,8 @@ const resources = {
       returnsRecordTitle: "تسجيل مرجوع",
       returnsReason: "سبب المرجوع (اختياري)",
       returnQuantity: "كمية المرجوع",
+      returnsUnitPiece: "قطعة",
+      returnsNothingLeft: "لا يوجد متبقٍ للإرجاع",
       returnsRemaining: "(المتبقي: {{remaining}})",
       returnsSave: "تسجيل المرجوع",
       returnsSaved: "تم تسجيل المرجوع",
@@ -503,8 +508,15 @@ const resources = {
       returnsRefund: "الاسترداد",
       returnsRefundUnit: "سعر الاسترداد للوحدة",
       returnsPayoutMethod: "طريقة الدفع",
+      returnsSettlementSummary: "ملخص التسوية",
       returnsValue: "قيمة المرجوع",
       returnsCollected: "المحصل في الفاتورة",
+      // the debt still owed — the number the split is actually capped by. The
+      // form used to show only المحصل (collected), which reads as "room to
+      // offset" and made the capped split look like a bug.
+      returnsRemainingDebt: "المتبقي في الفاتورة",
+      returnsCashToCustomer: "نقداً للزبون",
+      returnsDebtCapNote: "المتبقي في الفاتورة {{remaining}} دج فقط، فيُخصم هذا المقدار ويُردّ الباقي ({{excess}} دج) نقداً.",
       returnsSplit: "طريقة التسوية",
       returnsSplitAllCash: "كله نقداً",
       returnsSplitAllDebt: "كله خصم من الدين",

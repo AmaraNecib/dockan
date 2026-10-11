@@ -516,7 +516,10 @@ const resources = {
       // offset" and made the capped split look like a bug.
       returnsRemainingDebt: "المتبقي في الفاتورة",
       returnsCashToCustomer: "نقداً للزبون",
-      returnsDebtCapNote: "المتبقي في الفاتورة {{remaining}} دج فقط، فيُخصم هذا المقدار ويُردّ الباقي ({{excess}} دج) نقداً.",
+      // «cash» is the TOTAL handed back, not the excess over the owner's typed
+      // amount — it must equal the «نقداً للزبون» row directly above, or the
+      // note contradicts the figure it explains.
+      returnsDebtCapNote: "المتبقي في الفاتورة {{remaining}} دج فقط، فيُخصم هذا المقدار كاملاً ويُردّ للزبون {{cash}} دج نقداً.",
       returnsSplit: "طريقة التسوية",
       returnsSplitAllCash: "كله نقداً",
       returnsSplitAllDebt: "كله خصم من الدين",

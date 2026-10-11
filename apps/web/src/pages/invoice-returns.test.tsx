@@ -364,8 +364,8 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // paidAmount 0: the default all-cash settlement for a 3600 return warns
     renderPanel(makeInvoice([saleLine()], 0));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
-    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("3600");
-    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toContain("0");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("3600 دج");
+    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toBe("0 دج");
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="returns-cash-warning"]')?.textContent).toContain("القرار لك");
   });
@@ -441,8 +441,8 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // "room to offset" and is exactly what made a capped split look like a bug:
     // the counter owner needs the 300 that actually bounds the debt portion
     renderPanel(makeInvoice([saleLine({ netTotal: 900, quantity: 3, total: 900 })], 600));
-    expect(host.querySelector('[data-testid="returns-remaining-debt"]')?.textContent).toContain("300");
-    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toContain("600");
+    expect(host.querySelector('[data-testid="returns-remaining-debt"]')?.textContent).toBe("300 دج");
+    expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toBe("600 دج");
   });
 
   it("names the cash forced by the debt cap instead of letting it appear silently", async () => {
@@ -452,12 +452,13 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     await pickSettlement(i18n.t("returnsSplitAllDebt"));
-    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("300");
-    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("200");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("300 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
     const note = host.querySelector('[data-testid="returns-debt-cap-note"]');
     expect(note).toBeTruthy();
-    expect(note?.textContent).toContain("300");
-    expect(note?.textContent).toContain("200");
+    // pins WHICH figure is which — a swapped i18n interpolation still contains
+    // both numbers, so assert their order (remaining first, then the cash)
+    expect((note?.textContent ?? "").match(/\d+/g)).toEqual(["300", "200"]);
   });
 
   it("shows no cap note when the debt absorbs the whole offset", async () => {
@@ -465,8 +466,83 @@ describe("ReturnsPanel (new-return form + history)", () => {
     renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 0, 900));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     await pickSettlement(i18n.t("returnsSplitAllDebt"));
-    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("500");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("500 دج");
     expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+  });
+
+  it("renders a zero debt offset, all cash, when nothing is owed", async () => {
+    // remaining 0: the return cannot touch the debt at all, so the whole value
+    // is cash — and the note must still read sensibly with remaining 0
+    renderPanel(makeInvoice([saleLine({ netTotal: 900, quantity: 3, total: 900 })], 900, 900));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("0 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("300 دج");
+    expect((host.querySelector('[data-testid="returns-debt-cap-note"]')?.textContent ?? "").match(/\d+/g)).toEqual(["0", "300"]);
+  });
+
+  it("treats a return worth exactly the debt as not capped", async () => {
+    // remaining 500, return 500: equality is the only case separating the cap's
+    // `>` from a `>=` regression, and no other test sits on it
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 0, 500));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("500 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("0 دج");
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+  });
+
+  it("renders the custom split the owner typed", async () => {
+    // value 500, remaining 900, cash 200 → the other 300 goes to the debt
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 0, 900));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!, "200");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("300 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+  });
+
+  it("shows the forced-cash floor as the custom cash placeholder", async () => {
+    // value 500 with only 300 of debt → anything under 200 must become cash,
+    // so the example range in the field starts there
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 200, 500));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.getAttribute("placeholder")).toBe("200 – 500");
+  });
+
+  it("hides the split instead of rendering NaN or a negative for a bad cash draft", async () => {
+    // only submit is blocked by customCashError, so the projection must refuse
+    // to draw a figure the api would never accept
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 0, 900));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    const cash = host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!;
+    typeInto(cash, "abc");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')).toBeNull();
+    expect(host.querySelector('[data-testid="returns-cash-now"]')).toBeNull();
+    typeInto(cash, "-5");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')).toBeNull();
+    expect(host.querySelector('[data-testid="returns-cash-now"]')).toBeNull();
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+  });
+
+  it("prices the completing return at the exact remainder, not qty × unit price", async () => {
+    // net 101 over 3 units: an earlier return of 1 unit already refunded 34, so
+    // bringing back the last 2 must preview 67 (101 − 34), never 2 × 34 = 68.
+    // The api's sequence-aware computeReturnRefund is now the ONE implementation
+    // both sides call, so the figure promised is the figure persisted.
+    returnsData = [
+      returnRecord({
+        status: "ACCEPTED",
+        lines: [{ ...returnRecord().lines[0]!, quantity: 1, refundUnitPrice: 34, refundAmount: 34 }],
+      }),
+    ];
+    renderPanel(makeInvoice([saleLine({ netTotal: 101, quantity: 3, total: 101 })], 0));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("67 دج");
   });
 
   it("labels the quantity field so what to type is unmistakable", () => {

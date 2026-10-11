@@ -298,11 +298,13 @@ describe("invoice header reconciliation", () => {
     // total 900, paid 700, returns cleared 100 → remaining 100. Without the
     // credit line the header renders 900 − 700 ≠ 100 and reads as corrupt data,
     // even though every stored figure is right
-    await renderPage(makeInvoice(100, [], 100));
-    expect(host.querySelector('[data-testid="invoice-total"]')?.textContent).toContain("900");
-    expect(host.querySelector('[data-testid="invoice-paid"]')?.textContent).toContain("700");
-    expect(host.querySelector('[data-testid="invoice-returns-credit"]')?.textContent).toContain("100");
-    expect(host.querySelector('[data-testid="invoice-remaining"]')?.textContent).toContain("100");
+    await renderPage(makeInvoice(50, [], 150));
+    // distinct figures on purpose: with credit and remaining both 100, a row
+    // bound to the wrong field would still satisfy a substring match
+    expect(host.querySelector('[data-testid="invoice-total"]')?.textContent).toBe("900 دج");
+    expect(host.querySelector('[data-testid="invoice-paid"]')?.textContent).toBe("700 دج");
+    expect(host.querySelector('[data-testid="invoice-returns-credit"]')?.textContent).toBe("150 دج");
+    expect(host.querySelector('[data-testid="invoice-remaining"]')?.textContent).toBe("50 دج");
   });
 
   it("omits the credit line when no return cleared debt", async () => {

@@ -39,9 +39,21 @@ No new procedure, no input change, no migration.
 existing `Promise.all`; `debtApplied` already encodes "actually relieved" (0 for
 pending per #68 and for rejected returns), so no status filter is needed.
 
-**Web** — no new module. `ReturnsPanel` gains two derived values
-(`requestedDebt`, `debtIsCapped`/`debtCapExcess`) mirroring the api's settlement
-exactly; the header gains one conditional row.
+**Shared math** (`packages/contracts/src/return-refund.ts`) — moved out of the api:
+`refundUnitPriceFor`, `lineRefundAmount`, `computeReturnRefund` and their types.
+The api file re-exports them so existing callers/tests keep their import path.
+
+The panel now calls the SAME `computeReturnRefund` the api prices with, feeding
+it a `prior` map built from the returns list (every status, matching
+`StorePort.returnedByLine`). A client-side restatement previously drifted on the
+COMPLETING return — net 101 over 3 units refunds 34 then 67, never
+34 + 34 = 68 — so the owner was promised 1 DZD more cash than the server would
+settle. One implementation, two callers, nothing left to drift.
+
+**Web** — no new module. `ReturnsPanel` derives `priorByLine`, `valueTotal`
+(via `computeReturnRefund`), `requestedDebt`, `projectionIsValid`,
+`projectedDebt`, `settledCash`, `debtIsCapped`; the header gains one
+conditional row. Money figures render through `Amount` for LTR isolation.
 
 **New i18n keys:** `invoiceReturnsCredit`, `returnsRemainingDebt`,
 `returnsCashToCustomer`, `returnsDebtCapNote`, `returnsSettlementSummary`,
@@ -74,12 +86,67 @@ the invoice header shows `خصم المرتجعات 700` and remaining 0.
 - **Contract widening.** `returnCreditAmount` is required, so every
   `InvoiceDetail` literal must supply it (2 router sites, 1 store, 3 test
   fixtures). Compile-time only; the typechecker enumerates them.
-- **Mirror drift.** The panel's projected split restates the api's arithmetic.
-  It is presentation-only (the api recomputes and remains authoritative), and
-  the store test pins the invariant.
+- **Mirror drift — resolved, was a risk.** The first revision restated the api's
+  arithmetic client-side; review proved it drifted on the completing return.
+  The math now lives in `packages/contracts` and both sides call it, so there is
+  no second implementation left to drift. Pinned by a 101/3 preview test.
+- **Legacy pre-#68 rows — verified absent, documented.** The header term sums
+  `returns.debtApplied`, which is 0 for a return whose debt was relieved at
+  creation by a pre-#68 build. Verified against the owner's live vault: 0
+  ACCEPTED rows with `debtApplied = 0`, 0 with `debtApplied < debtOffset`, 0
+  non-accepted rows with `debtApplied > 0`, and 0 invoices where
+  `remaining ≠ total − paid − ΣdebtApplied`. This vault is a fresh install, so
+  the case is unreachable here; a backfill would be needed if data predating #68
+  ever appears (deferred follow-up).
 - **Rejected-return asymmetry is untouched.** `cashPaidOut` is immediate while
   debt relief waits for acceptance (#68). Not changed here; needs an owner
   decision, flagged in the PR.
+- **Pending-return promise.** Two pending returns can each promise the whole
+  debt; only the first acceptance relieves it. Pre-existing api behaviour, and
+  `returnsDebtAppliesOnAccept` already tells the owner relief is deferred, but
+  the residual is written down rather than silently accepted.
+
+## Review round 1 — dispositions (HEAD 2a47436e → fixes at the commit below)
+
+Seven read-only lanes (debate critic + defender, test-audit 3 lenses,
+code-review Standards + Spec) plus Greptile 4/5.
+
+**Fixed**
+
+1. Cap note showed the excess over the typed cash while the cash row showed the
+   total → two figures for one amount (Greptile P2 #1). Note now names
+   `settledCash`, and the test pins parameter ORDER.
+2. Preview was not sequence-aware (Greptile P2 #2, critic #2, standards #3) →
+   shared `computeReturnRefund`; 101/3 test added.
+3. e2e `toContainText("0")` also matched "700" — the assertion could not fail
+   for the bug it targeted (test-quality, blocker) → `toHaveText(/^0\b/)` etc.
+4. The split rendered for an invalid custom draft → `NaN`/negative figures on
+   screen (edge-hunter, critic #9, spec note) → gated on `projectionIsValid`.
+5. Store test could not tell `sum(debtApplied)` from `sum(debtOffset)`, did not
+   aggregate, and did not prove invoice isolation (test-quality, coverage,
+   edge-hunter) → PENDING row with a non-zero promise, a second accepted
+   return, and a cross-invoice case added.
+6. Header fixture had credit = remaining = 100, so a row bound to the wrong
+   field passed (test-quality) → distinct 150/50 + exact `toBe` assertions.
+7. Panel money figures bypassed `Amount` (standards #1) → routed through it.
+8. Boundaries added: zero debt, return exactly equal to the debt, the custom
+   split's rendered arithmetic, and the field's forced-cash floor.
+9. Arabic literal in an `invoice.tsx` code comment broke the locale-neutral
+   guard → rewritten.
+
+**Dismissed (with reason)**
+
+- Critic #8 scope sprawl in the quantity restyle: the restyle is the owner's
+  explicit request, not incidental.
+- Critic #10 minus sign on the credit row: the label is
+  `خصم المرتجعات` (returns deduction); the value is unsigned by contract.
+- Critic #5 clamped-remaining fixtures: `applyPaymentToInvoice` refuses
+  overpayment and returns cap at remaining, so the clamp is defensive only.
+
+**Deferred (owner decision)**
+
+- Rejected-return cash asymmetry, and a rejected return keeping `cashPaidOut`
+  while `debtApplied` stays 0. Documented in the PR body.
 
 ## Deviation log
 

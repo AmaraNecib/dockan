@@ -160,20 +160,22 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
 
   // the header states the debt the owner has to reason about, and there is no
   // return credit yet — the row must not appear until a return has relieved
-  await expect(page.getByTestId("invoice-remaining")).toContainText("700");
+  // debt. `toHaveText` (not `toContainText`) so "700" cannot satisfy an
+  // assertion about "0", and "700" cannot match "1700".
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^700\b/);
   await expect(page.getByTestId("invoice-returns-credit")).toHaveCount(0);
 
   // the panel shows the remaining debt beside the return value …
   await page.locator('[data-testid^="returns-qty-"]').fill("1");
   await expect(page.getByTestId("returns-value")).toContainText("900");
-  await expect(page.getByTestId("returns-remaining-debt")).toContainText("700");
+  await expect(page.getByTestId("returns-remaining-debt")).toHaveText(/^700\b/);
 
   // … and an all-debt choice is capped at 700, so 200 is forced into cash —
   // the split is shown and the note names both figures instead of leaving the
   // cash figure to change silently under the owner's chosen preset
   await chooseSelectOption(page, page.getByTestId("returns-settlement"), "كله خصم من الدين");
-  await expect(page.getByTestId("returns-debt-offset")).toContainText("700");
-  await expect(page.getByTestId("returns-cash-now")).toContainText("200");
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^700\b/);
+  await expect(page.getByTestId("returns-cash-now")).toHaveText(/^200\b/);
   const capNote = page.getByTestId("returns-debt-cap-note");
   await expect(capNote).toBeVisible();
   await expect(capNote).toContainText("700");
@@ -193,6 +195,6 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await page.goto("/invoices");
   await page.getByTestId(`invoice-open-${saleNumber}`).click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
-  await expect(page.getByTestId("invoice-returns-credit")).toContainText("700");
-  await expect(page.getByTestId("invoice-remaining")).toContainText("0");
+  await expect(page.getByTestId("invoice-returns-credit")).toHaveText(/^700\b/);
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^0\b/);
 });

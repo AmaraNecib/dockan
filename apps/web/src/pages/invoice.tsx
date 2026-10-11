@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
@@ -221,15 +222,6 @@ export function returnQuantityError(draft: string, remaining: number): "INVALID"
   return null;
 }
 
-/** Whole-DZD value of `quantity` returned units of a SALE line (mirror of the
- * api's refund math: a full line refunds its netTotal exactly, partials price
- * at the rounded effective unit). Used only to present the settlement split
- * before submit — the api recomputes authoritatively. */
-export function lineReturnValue(line: { quantity: number; netTotal: number }, quantity: number): number {
-  if (quantity === line.quantity) return line.netTotal;
-  return quantity * Math.round(line.netTotal / line.quantity);
-}
-
 export type ReturnSettlementPreset = "ALL_CASH" | "ALL_DEBT" | "CUSTOM";
 
 /** Validates a custom cash draft for the settlement split. */
@@ -261,17 +253,37 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
 
-  // client projection of the return value from the entered drafts (the api
-  // recomputes authoritatively; this only drives the settlement presets)
-  const valueTotal = useMemo(
-    () =>
-      returnableLines.reduce((sum, line) => {
-        const quantity = Number(drafts[line.id] ?? "");
-        if (!Number.isInteger(quantity) || quantity <= 0) return sum;
-        return sum + lineReturnValue(line, quantity);
-      }, 0),
-    [returnableLines, drafts],
-  );
+  // What earlier returns already refunded per line, in the shape
+  // `computeReturnRefund` expects. The api derives the identical map from
+  // `StorePort.returnedByLine` (every status, which is what this list holds),
+  // so the preview and the persisted refund cannot disagree on a completing
+  // return.
+  const priorByLine = useMemo(() => {
+    const map = new Map<string, { quantity: number; refundAmount: number }>();
+    for (const record of returns) {
+      for (const entry of record.lines) {
+        const current = map.get(entry.invoiceLineId) ?? { quantity: 0, refundAmount: 0 };
+        map.set(entry.invoiceLineId, {
+          quantity: current.quantity + entry.quantity,
+          refundAmount: current.refundAmount + entry.refundAmount,
+        });
+      }
+    }
+    return map;
+  }, [returns]);
+
+  // Client projection of the return value from the entered drafts. It calls the
+  // SAME `computeReturnRefund` the api prices with (packages/contracts), so the
+  // settlement shown is the settlement persisted; the api still recomputes.
+  const valueTotal = useMemo(() => {
+    const entered = returnableLines.flatMap((line) => {
+      const quantity = Number(drafts[line.id] ?? "");
+      if (!Number.isInteger(quantity) || quantity <= 0) return [];
+      return [{ invoiceLineId: line.id, quantity, netTotal: line.netTotal, lineQuantity: line.quantity }];
+    });
+    if (entered.length === 0) return 0;
+    return computeReturnRefund(entered, priorByLine).refundTotal;
+  }, [returnableLines, drafts, priorByLine]);
   const requestedCash =
     settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
   const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
@@ -279,15 +291,19 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // server will settle: requested debt is capped at the invoice's remaining
   // debt and any excess flows back to cash (all-debt beyond the debt swings
   // into cash, which must warn too)
-  // what the owner asked to offset, before the invoice's own debt caps it
+  // The projection mirrors the api's settlement exactly (`debtOffset =
+  // min(requestedDebt, remaining)`, `cash = refund − debtOffset`). It is shown
+  // only while the custom-cash draft is a VALID whole-DZD amount: an empty or
+  // bad draft would otherwise render a NaN (or an inflated) split, and
+  // `customCashError` already blocks submitting exactly that input.
   const requestedDebt = Math.max(0, valueTotal - requestedCash);
-  const projectedDebt = Math.min(requestedDebt, invoice.remainingAmount);
-  const settledCash = Number.isFinite(requestedCash) ? valueTotal - projectedDebt : Number.NaN;
+  const projectionIsValid = cashIsValid && Number.isFinite(requestedDebt);
+  const projectedDebt = projectionIsValid ? Math.min(requestedDebt, invoice.remainingAmount) : 0;
+  const settledCash = projectionIsValid ? valueTotal - projectedDebt : Number.NaN;
   // the offset asked for is bigger than the debt that is left, so that much
   // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
   // (mirrors the api) so an "all debt" choice never silently becomes cash
-  const debtIsCapped = requestedDebt > projectedDebt;
-  const debtCapExcess = requestedDebt - projectedDebt;
+  const debtIsCapped = projectionIsValid && requestedDebt > projectedDebt;
   // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
   const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 
@@ -445,15 +461,15 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           <div className="grid gap-1.5 text-sm">
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-muted-foreground">{t("returnsValue")}</span>
-              <span className="text-lg font-bold tabular-nums" data-testid="returns-value">{valueTotal} {t("dzd")}</span>
+              <span data-testid="returns-value" className="text-lg font-bold"><Amount value={valueTotal} /></span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-muted-foreground">{t("returnsRemainingDebt")}</span>
-              <span className="font-medium tabular-nums" data-testid="returns-remaining-debt">{invoice.remainingAmount} {t("dzd")}</span>
+              <span data-testid="returns-remaining-debt" className="font-medium"><Amount value={invoice.remainingAmount} /></span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-muted-foreground">{t("returnsCollected")}</span>
-              <span className="tabular-nums" data-testid="returns-collected">{invoice.paidAmount} {t("dzd")}</span>
+              <span data-testid="returns-collected"><Amount value={invoice.paidAmount} /></span>
             </div>
           </div>
           <label className="grid gap-1 text-sm">
@@ -497,21 +513,21 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               />
             </label>
           )}
-          <div className="grid gap-1.5 border-t border-border pt-3 text-sm">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="text-muted-foreground">{t("returnsDebtOffset")}</span>
-              <span className="text-lg font-bold tabular-nums text-primary" data-testid="returns-debt-offset">{projectedDebt} {t("dzd")}</span>
-            </div>
-            {Number.isFinite(settledCash) && (
+          {projectionIsValid && (
+            <div className="grid gap-1.5 border-t border-border pt-3 text-sm">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">{t("returnsDebtOffset")}</span>
+                <span data-testid="returns-debt-offset" className="text-lg font-bold text-primary"><Amount value={projectedDebt} /></span>
+              </div>
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-muted-foreground">{t("returnsCashToCustomer")}</span>
-                <span className="text-lg font-bold tabular-nums" data-testid="returns-cash-now">{settledCash} {t("dzd")}</span>
+                <span data-testid="returns-cash-now" className="text-lg font-bold"><Amount value={settledCash} /></span>
               </div>
-            )}
-          </div>
+            </div>
+          )}
           {debtIsCapped && (
             <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-debt-cap-note">
-              {t("returnsDebtCapNote", { remaining: invoice.remainingAmount, excess: debtCapExcess })}
+              {t("returnsDebtCapNote", { remaining: invoice.remainingAmount, cash: settledCash })}
             </p>
           )}
           {projectedDebt > 0 && (

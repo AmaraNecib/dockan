@@ -6,6 +6,7 @@ import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
+import { PasswordInput } from "./components/ui/password-input";
 import { readVaultSessionToken } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
@@ -478,7 +479,7 @@ function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey
         {!vaultMode && (
           <label className="mt-3 grid gap-1 text-sm">
             {t("password")}
-            <input ref={passwordRef} type="password" minLength={MIN_PASSWORD_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} />
+            <PasswordInput ref={passwordRef} minLength={MIN_PASSWORD_LENGTH} name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="new-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "setup-error" : undefined} data-testid="setup-password" />
           </label>
         )}
 
@@ -559,7 +560,7 @@ function LoginPage({ notice, onNoticeConsumed }: { notice: MessageKey | null; on
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("password")}
-          <input ref={passwordRef} type="password" minLength={MIN_PASSWORD_LENGTH} className="rounded border border-input bg-background px-3 py-2" name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} />
+          <PasswordInput ref={passwordRef} minLength={MIN_PASSWORD_LENGTH} name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} data-testid="login-password" />
         </label>
 
         <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />

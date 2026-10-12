@@ -27,6 +27,8 @@ const resources = {
       loginHeading: "تسجيل الدخول",
       username: "رقم الهاتف",
       password: "كلمة السر",
+      showPassword: "إظهار كلمة المرور",
+      hidePassword: "إخفاء كلمة المرور",
       login: "دخول",
       logout: "خروج",
       home: "تم تسجيل الدخول بنجاح",

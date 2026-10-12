@@ -338,4 +338,57 @@ describe("VaultGate", () => {
     const host = await mount(statusFor("unconfigured"), () => undefined);
     expect(host.textContent).toContain("لا يمكن استعادة بيانات المتجر");
   });
+
+  it("renders both setup passphrase fields with an identical app-controlled reveal (issue #167)", async () => {
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    const first = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    const confirm = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase-confirm"]');
+    const firstToggle = host.querySelector<HTMLButtonElement>('[data-testid="vault-passphrase-toggle"]');
+    const confirmToggle = host.querySelector<HTMLButtonElement>('[data-testid="vault-passphrase-confirm-toggle"]');
+
+    expect(first).not.toBeNull();
+    expect(confirm).not.toBeNull();
+    expect(firstToggle).not.toBeNull();
+    expect(confirmToggle).not.toBeNull();
+
+    // same component, no per-field class: the two fields cannot mirror in RTL.
+    // happy-dom has no layout, so class parity is the unit proxy here and the
+    // Playwright spec measures the actual box geometry.
+    expect(first?.className).toBe(confirm?.className);
+    expect(firstToggle?.className).toBe(confirmToggle?.className);
+    // pin the reserved inline-end gutter, so dropping the class cannot pass as
+    // "identical" when both fields lost it
+    expect(first?.className).toContain("pe-10");
+    expect(firstToggle?.type).toBe("button");
+    expect(confirmToggle?.type).toBe("button");
+    expect(first?.type).toBe("password");
+    expect(confirm?.type).toBe("password");
+
+    // each field owns its own reveal state: revealing one must not reveal the
+    // other (a shared state would defeat the confirm check)
+    const firstToggleButton = firstToggle;
+    if (firstToggleButton === null) throw new Error("missing first toggle");
+    act(() => firstToggleButton.click());
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]')?.type).toBe("text");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase-confirm"]')?.type).toBe("password");
+    expect(host.querySelector('[data-testid="vault-passphrase-confirm-toggle"]')?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps the setup eye after a double toggle and still submits (issue #167)", async () => {
+    routes.set("/api/vault/setup", () => Response.json({ ok: true, recoveryKey: "ABCD-EFGH", sessionToken: "s" }));
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="vault-passphrase-toggle"]');
+    if (toggle === null) throw new Error("missing passphrase toggle");
+
+    act(() => toggle.click());
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]')?.type).toBe("text");
+    act(() => toggle.click());
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]')?.type).toBe("password");
+    expect(host.querySelector('[data-testid="vault-passphrase-toggle"]')).not.toBeNull();
+
+    setValue(host, "vault-passphrase", "correct horse battery");
+    setValue(host, "vault-passphrase-confirm", "correct horse battery");
+    await submit(host, "vault-setup-submit");
+    expect(host.querySelector('[data-testid="vault-recovery-key"]')).not.toBeNull();
+  });
 });

@@ -44,3 +44,33 @@ Applying the component's "default = full reference" to a payment field flips the
 old "blank = full credit" semantics to "full paid". It is what #162 specifies,
 but it changes who is recorded as owing money; flag it explicitly rather than
 letting the component's default decide silently.
+
+## Round 2 (#171) — the Greptile findings the first review missed
+
+**Blank is not invalid (🔴 Major).** A parser that returns `null` for both `""`
+and `"abc"` conflates the legitimate "unpaid / zero cash" choice with an error.
+Consumers must distinguish them explicitly (`draft.trim() !== "" && parse() ===
+null`); otherwise an invalid percentage silently takes the blank path and the
+invoice is saved unpaid. One shared predicate (`percentageDraftInvalid`) used by
+every consumer beats four inline checks.
+
+**A submit guard must outlive `isPending` (🔴 Major).** `mutation.isPending`
+clears when the last awaited call resolves, *before* the follow-up refresh
+settles. Hold a `submitting` flag across the whole body AND check it inside
+`submit()` (a raw form submit bypasses a disabled button), and include the
+halted/error state in that guard too — the error path's fire-and-forget refresh
+would otherwise let a second raw submit replan from stale rows and re-send money.
+
+**A percentage-based amount must follow its reference to zero (🟠 Subtle).** The
+"preserve a typed draft" rule is for *amount* sources. When the reference falls
+to zero (a 100% discount, all lines removed), a percentage-source draft must
+recompute to 0 or the stale positive amount reaches the api and is rejected.
+
+**Guard tests must assert the save happened (🟠 Subtle).** `expect(lastInput
+?.initialPaid).toBeUndefined()` passes vacuously when a guard blocked the save
+and left `lastInput` null. Assert `expect(lastInput).not.toBeNull()` first, or
+the test proves nothing.
+
+**Verify the reviewer's own fix.** A "block the disabled-button bypass" test must
+dispatch a raw form `submit`, not a `click` on a disabled button, and must cover
+the error/halted path — the first round only proved the success path.

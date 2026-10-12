@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceDetail, Item } from "@dokan/contracts";
@@ -10,6 +10,7 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -39,6 +40,9 @@ export function PurchasePage() {
   const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
+  // #162 — the initial payment is a share of the cart total (amount ⇄ percentage)
+  const [paidPercentage, setPaidPercentage] = useState("");
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedInvoice, setSavedInvoice] = useState<InvoiceDetail | null>(null);
 
@@ -73,6 +77,8 @@ export function PurchasePage() {
         setSupplier({ id: null, name: "", needsChoice: false });
         setNotes("");
         setPaidNow("");
+        setPaidPercentage("");
+        paidSource.current = null;
         void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
       },
       onError: (err) => setError(tError(err.message)),
@@ -80,6 +86,35 @@ export function PurchasePage() {
   );
 
   const total = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
+
+  // #162 — keep the pair linked as the cart total changes (same rule as sale)
+  useEffect(() => {
+    if (total === 0) {
+      // a percentage-based payment falls to zero with the total; a typed amount
+      // survives; an untouched pair follows the empty cart
+      if (paidSource.current === "percentage") {
+        setPaidNow("0");
+        return;
+      }
+      if (paidSource.current === null) {
+        setPaidNow("");
+        setPaidPercentage("");
+      }
+      return;
+    }
+    if (paidSource.current === null) {
+      setPaidNow(String(total));
+      setPaidPercentage("100");
+      return;
+    }
+    if (paidSource.current === "percentage") {
+      const percentage = parseWholePercentage(paidPercentage);
+      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(paidNow);
+    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
+  }, [total, paidNow, paidPercentage]);
 
   function submit() {
     setError(null);
@@ -93,13 +128,30 @@ export function PurchasePage() {
       setError(t("partyChooseExisting"));
       return;
     }
+    const paid = paidNow === "" ? undefined : Number(paidNow);
+    // an invalid percentage draft clears the amount, which would otherwise take
+    // the intentional "unpaid" path and save silently
+    if (percentageDraftInvalid(paidPercentage)) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
+    if (paid !== undefined && (!Number.isSafeInteger(paid) || paid < 0)) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
+    if (paid !== undefined && paid > total) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
     void createInvoice.mutate({
       kind: "PURCHASE",
       // the picker keeps the picked record's id; a typed-only name stays null
       counterpartyId: supplier.id === null ? undefined : supplier.id,
       counterpartyName: supplier.name.trim() === "" ? undefined : supplier.name.trim(),
       notes: notes.trim() === "" ? undefined : notes.trim(),
-      initialPaid: paidNow === "" ? undefined : Number(paidNow),
+      // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
+      // percentage that rounds to 0) means "nothing paid now"
+      initialPaid: paid === 0 ? undefined : paid,
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: line.quantity, unitPrice: line.unitCost })),
     });
   }
@@ -197,10 +249,21 @@ export function PurchasePage() {
                 {t("purchasesNotes")}
                 <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} />
               </label>
-              <label className="grid gap-1 text-sm font-medium">
-                {t("purchasesPaidNow")}
-                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="initialPaid" autoComplete="off" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} inputMode="numeric" data-testid="purchase-paid" />
-              </label>
+              <AmountPercentageInput
+                referenceTotal={total > 0 ? total : null}
+                value={{ amount: paidNow, percentage: paidPercentage }}
+                onChange={(next, edited) => {
+                  paidSource.current = edited;
+                  setPaidNow(next.amount);
+                  setPaidPercentage(next.percentage);
+                }}
+                amountLabel={t("purchasesPaidNow")}
+                amountTestId="purchase-paid"
+                percentageTestId="purchase-paid-percentage"
+                referenceTestId="purchase-paid-reference"
+                percentageInvalid={percentageDraftInvalid(paidPercentage)}
+                disabled={createInvoice.isPending}
+              />
             </div>
           </div>
 

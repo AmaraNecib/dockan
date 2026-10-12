@@ -6,6 +6,7 @@ import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -127,6 +128,14 @@ export function SalePage() {
   const [discountType, setDiscountType] = useState<DiscountType>("");
   const [discountValue, setDiscountValue] = useState("");
   const [paidNow, setPaidNow] = useState("");
+  // #162 — the initial payment is a share of the cart total; amount and
+  // percentage mirror each other. The full total is the default until the
+  // owner edits either field.
+  const [paidPercentage, setPaidPercentage] = useState("");
+  // which field the owner edits is the source of truth when the cart total
+  // later changes: a percentage rescales the amount, an amount re-derives the
+  // percentage. `null` = untouched, so the pair follows the full total.
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
    * kept whole so the card reads the authoritative number, remaining and party */
@@ -210,6 +219,8 @@ export function SalePage() {
         setDiscountType("");
         setDiscountValue("");
         setPaidNow("");
+        setPaidPercentage("");
+        paidSource.current = null;
         setError(null);
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
@@ -261,6 +272,40 @@ export function SalePage() {
   const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
   const total = subtotal - discountAmount;
 
+  // #162 — keep the pair linked as the cart total changes: untouched follows
+  // the full total, an edited percentage rescales the amount, an edited amount
+  // keeps the amount and re-derives the percentage. Recomputing from the same
+  // values is a no-op, so the effect stays convergent.
+  useEffect(() => {
+    if (total === 0) {
+      // a percentage-based payment must fall to zero when a discount zeroes the
+      // total, or the old positive amount is sent and the api rejects it
+      if (paidSource.current === "percentage") {
+        setPaidNow("0");
+        return;
+      }
+      // an amount typed while the cart was still empty (no reference yet) is
+      // the owner's to keep; an untouched pair follows the empty cart
+      if (paidSource.current === null) {
+        setPaidNow("");
+        setPaidPercentage("");
+      }
+      return;
+    }
+    if (paidSource.current === null) {
+      setPaidNow(String(total));
+      setPaidPercentage("100");
+      return;
+    }
+    if (paidSource.current === "percentage") {
+      const percentage = parseWholePercentage(paidPercentage);
+      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(paidNow);
+    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
+  }, [total, paidNow, paidPercentage]);
+
   // Live debt preview for the pending sale — see `saleDebt` for the invariant.
   const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
   const liveNotice: SaleDebt = { valid: paidInputValid, debt: totalDebt };
@@ -287,7 +332,18 @@ export function SalePage() {
       return;
     }
     const paid = paidNow === "" ? undefined : Number(paidNow);
+    // an invalid percentage draft clears the amount, which would otherwise take
+    // the intentional "unpaid" path and save silently
+    if (percentageDraftInvalid(paidPercentage)) {
+      setError(t("saleInvalidPaid"));
+      return;
+    }
     if (paid !== undefined && (!Number.isInteger(paid) || paid < 0)) {
+      setError(t("saleInvalidPaid"));
+      return;
+    }
+    // an over-total amount is refused here, not by the api round-trip
+    if (paid !== undefined && paid > total) {
       setError(t("saleInvalidPaid"));
       return;
     }
@@ -440,19 +496,21 @@ export function SalePage() {
             disabled={createInvoice.isPending}
             testId="sale-customer"
           />
-          <label className="grid gap-1 text-sm font-medium">
-            {t("salePaid")}
-            <input
-              className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
-              name="initialPaid"
-              autoComplete="off"
-              inputMode="numeric"
-              value={paidNow}
-              onChange={(event) => setPaidNow(event.target.value)}
-              disabled={createInvoice.isPending}
-              data-testid="sale-paid"
-            />
-          </label>
+          <AmountPercentageInput
+            referenceTotal={total > 0 ? total : null}
+            value={{ amount: paidNow, percentage: paidPercentage }}
+            onChange={(next, edited) => {
+              paidSource.current = edited;
+              setPaidNow(next.amount);
+              setPaidPercentage(next.percentage);
+            }}
+            amountLabel={t("salePaid")}
+            amountTestId="sale-paid"
+            percentageTestId="sale-paid-percentage"
+            referenceTestId="sale-paid-reference"
+            percentageInvalid={percentageDraftInvalid(paidPercentage)}
+            disabled={createInvoice.isPending}
+          />
         </div>
 
         <div className="rounded border border-border bg-card">

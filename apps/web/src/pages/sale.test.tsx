@@ -357,6 +357,9 @@ describe("SalePage commit states (greptile round-2)", () => {
   it("words a pending remainder as unattributed until a customer is named", async () => {
     const host = await mountSale();
     await scan("111");
+    // #162: the payment now defaults to the full total, so set a zero draft to
+    // keep the whole remainder unpaid for this wording test
+    await act(async () => setInput(host, "sale-paid", "0"));
 
     let notice = host.querySelector('[data-testid="sale-debt-notice"]');
     expect(notice).not.toBeNull();
@@ -371,6 +374,93 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(notice?.textContent).toContain("للزبون");
     expect(notice?.textContent).not.toContain("غير منسوب");
     expect(notice?.textContent).toContain("تقديري");
+  });
+
+  it("defaults the initial payment to the full cart total and links the percentage (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("100");
+    expect(host.querySelector('[data-testid="sale-paid-reference"]')?.textContent).toContain("1000");
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+  });
+
+  it("rescales a percentage payment when the cart total changes (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    // a second line doubles the total; the 50% source rescales the amount
+    await scan("112");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
+  });
+
+  it("keeps an edited amount and re-derives the percentage when the total changes (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-paid", "400"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("40");
+    await scan("112");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("400");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("20");
+  });
+
+  it("keeps a payment typed before the first line and links it once the cart has a total (#162)", async () => {
+    const host = await mountSale();
+    // no reference yet: a single amount field, and the typed draft must survive
+    await act(async () => setInput(host, "sale-paid", "500"));
+    await scan("111"); // total 1000
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("50");
+  });
+
+  it("refuses an invalid percentage instead of saving it as unpaid (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid-percentage", "12.5"));
+    // the derived amount is cleared, but the invalid percentage is flagged and
+    // must block the save rather than take the intentional "unpaid" path
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="sale-error"]')).not.toBeNull();
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("recomputes a percentage payment to zero when a discount zeroes the total (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await chooseOption(trigger, "نسبة مئوية");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+    expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("0");
+    // 50% of a zero total is zero, not the stale 500 the api would reject
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("0");
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    // non-vacuous: the save must have gone through (a blocked save would also
+    // leave `lastInvoiceInput` null and read as `initialPaid: undefined`)
+    expect(lastInvoiceInput).not.toBeNull();
+    expect(lastInvoiceInput?.initialPaid).toBeUndefined();
+  });
+
+  it("refuses an amount above the cart total before sending (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid", "2000"));
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="sale-error"]')).not.toBeNull();
+    expect(lastInvoiceInput).toBeNull();
   });
 
   it("shows the saving label while pending, then the server remaining (not cart math) as the debt", async () => {

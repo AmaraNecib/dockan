@@ -24,7 +24,9 @@ let invoiceReturns: ReturnDetail[] = [];
 
 // The page renders router Links and (through ReturnsPanel) useParams; mirror the
 // seam the other page tests use so InvoicePage is testable without a router.
-mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "00000000-0000-4000-8000-000000000001" }));
+// `routeParams` is mutable so a test can move the route to another invoice.
+const routeParams = { invoiceId: "00000000-0000-4000-8000-000000000001" };
+mock.module("@tanstack/react-router", () => routerMock(routeParams));
 
 // The page module imports the rpc client at module scope; stub the whole
 // seam so the panel is testable without a network. The mock mirrors the real
@@ -33,7 +35,7 @@ mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "00000000-00
 mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesGet: {
-      queryOptions: () => ({ queryKey: ["invoicesGet"], queryFn: async () => invoiceDetail }),
+      queryOptions: ({ input }: { input: { id: string } }) => ({ queryKey: ["invoicesGet", input], queryFn: async () => invoiceDetail }),
       queryKey: ({ input }: { input: { id: string } }) => ["invoicesGet", input],
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
@@ -101,6 +103,7 @@ beforeEach(() => {
   lastPayInput = null;
   invoiceDetail = undefined;
   invoiceReturns = [];
+  routeParams.invoiceId = "00000000-0000-4000-8000-000000000001";
 });
 
 afterEach(() => {
@@ -215,6 +218,16 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(host.querySelector('[data-testid="pmt-history"]')).toBeNull();
   });
 
+  it("links the instalment amount to the invoice remaining (#162)", () => {
+    renderPanel(makeInvoice(600));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("600");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value).toBe("100");
+    // the reference is shown next to the fields so «50%» is unambiguous
+    expect(host.querySelector('[data-testid="pmt-reference"]')?.textContent).toContain("600");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("300");
+  });
+
   it("renders every history row in the invoice's order with amount and method", () => {
     renderPanel(
       makeInvoice(400, [
@@ -322,6 +335,132 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(host.querySelector('[data-testid="pmt-unavailable"]')?.textContent).toContain("مسدّدة بالكامل");
     expect(host.querySelector('[data-testid="pmt-submit"]')).toBeNull();
     expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+  });
+});
+
+describe("PaymentPanel reference-change relink (#171)", () => {
+  const amount = () => host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value;
+  const percentage = () => host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value;
+
+  /** renders once, then re-renders the SAME component with a new invoice */
+  function renderControlled(initial: InvoiceDetail) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderWith = (invoice: InvoiceDetail) =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <PaymentPanel invoice={invoice} />
+        </QueryClientProvider>,
+      );
+    act(() => renderWith(initial));
+    return renderWith;
+  }
+
+  it("follows the new remaining under an untouched pair", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    expect(amount()).toBe("600");
+    expect(percentage()).toBe("100");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("900");
+    expect(percentage()).toBe("100");
+  });
+
+  it("keeps an edited amount as the source and re-derives the percentage", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    expect(percentage()).toBe("50");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("300");
+    expect(percentage()).toBe("33");
+  });
+
+  it("keeps an edited percentage as the source and rescales the amount", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(amount()).toBe("300");
+    act(() => renderWith(makeInvoice(900)));
+    expect(percentage()).toBe("50");
+    expect(amount()).toBe("450");
+  });
+
+  it("zeroes a percentage-based draft when the remaining falls to zero", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(amount()).toBe("300");
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("0");
+  });
+
+  it("clears an untouched pair when the remaining falls to zero", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("");
+    // no reference left: the percentage field is gone
+    expect(host.querySelector('[data-testid="pmt-percentage"]')).toBeNull();
+  });
+
+  it("keeps an edited amount when the remaining falls to zero (blocked, not silently zeroed)", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("300");
+    // the amount field is flagged and the form is disabled, so it cannot be sent
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.getAttribute("aria-invalid")).toBe("true");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+    expect(host.querySelector('[data-testid="pmt-submit"]')).toBeNull();
+  });
+
+  it("keeps an invalid percentage flagged across a reference change", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "12.5");
+    expect(amount()).toBe("");
+    expect(percentage()).toBe("12.5");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+  });
+});
+
+describe("InvoicePage invoice switch (#171)", () => {
+  it("reseeds the payment panel when the route moves to a cached different invoice", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderPage = () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <InvoicePage />
+        </QueryClientProvider>,
+      );
+    const waitForPanel = async () => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (host.querySelector('[data-testid="pmt-amount"]') !== null) return;
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        });
+      }
+      throw new Error("payment panel did not settle");
+    };
+
+    invoiceDetail = makeInvoice(600);
+    await act(async () => renderPage());
+    await waitForPanel();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("300");
+
+    // a CACHED different invoice: the page renders it without a pending phase,
+    // so only the panel's key can reseed the draft
+    const invoiceB = { ...makeInvoice(900), id: "00000000-0000-4000-8000-000000000002" };
+    client.setQueryData(["invoicesGet", { id: invoiceB.id }], invoiceB);
+    invoiceDetail = invoiceB;
+    routeParams.invoiceId = invoiceB.id;
+    await act(async () => renderPage());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value).toBe("100");
   });
 });
 

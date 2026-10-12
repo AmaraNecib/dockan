@@ -437,6 +437,61 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeNull();
   });
 
+  it("links the custom cash split to the return value (#162)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    // the split opens at the full return value (100%) and shows the reference
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.value).toBe("100");
+    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("900");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("450");
+  });
+
+  it("relinks the custom cash split when the return value changes (#171)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const qty = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    typeInto(qty, "1"); // value 900
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("450");
+    // double the return: 50% of 1800 must be 900, never the stale 450
+    typeInto(qty, "2");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.value).toBe("50");
+    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("1800 دج");
+  });
+
+  it("recomputes the custom cash to zero when the return value falls to zero (#171)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const qty = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    typeInto(qty, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("450");
+    // clearing the line zeroes the return: 50% of 0 is 0, not a stale 450
+    typeInto(qty, "0");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("0");
+    // no reference left: the percentage field and its reference line are gone
+    expect(host.querySelector('[data-testid="returns-reference"]')).toBeNull();
+  });
+
+  it("refuses an invalid custom cash percentage instead of recording zero cash (#171)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "12.5");
+    // the amount is cleared and the field is flagged invalid
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    // the projection refuses to draw a split it would never send
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')).toBeNull();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("نقدياً");
+    expect(lastCreateInput).toBeNull();
+  });
+
   it("sends the custom cash portion when the owner splits the settlement", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");

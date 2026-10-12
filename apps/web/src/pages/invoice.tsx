@@ -7,6 +7,7 @@ import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -40,13 +41,26 @@ export function paymentAmountError(amount: string, remaining: number): "INVALID"
 }
 
 /**
+ * The instalment's initial draft: the full remaining at 100%, or an empty pair
+ * on a settled invoice (there is no reference left to take a share of).
+ */
+function seedPaid(remaining: number): AmountPercentageValue {
+  return remaining > 0 ? { amount: String(remaining), percentage: "100" } : { amount: "", percentage: "" };
+}
+
+/**
  * Router-free payment panel (same shape as purchase's LinkProposalPanel):
  * full history + record-payment form, unit-testable without a router.
  */
 export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [amount, setAmount] = useState("");
+  // #162 — the instalment is a share of this invoice's remaining, so both the
+  // amount and the percentage are offered; the default is the full remaining.
+  const [paid, setPaid] = useState<AmountPercentageValue>(() => seedPaid(invoice.remainingAmount));
+  // #171 — the edited field stays the source when the remaining changes
+  // underneath the form (a return accepted, a payment recorded elsewhere)
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +96,8 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
       onSuccess: (_updated, variables) => {
-        setAmount("");
+        paidSource.current = null;
+        setPaid(seedPaid(_updated.remainingAmount));
         setNote("");
         setError(null);
         setSavedPayment({ amount: variables.amount, method: variables.method ?? "CASH" });
@@ -105,20 +120,43 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   );
 
   const remaining = invoice.remainingAmount;
-  const remainingMessage = paymentAmountError(amount, remaining);
+  // #171 — relink when the remaining changes underneath the form: an untouched
+  // pair follows the new remaining, an edited amount stays the source, an edited
+  // percentage rescales. A percentage-based draft falls to zero with the
+  // reference. (ReturnsPanel already does this for the return value.)
+  useEffect(() => {
+    setPaid((current) => {
+      if (remaining === 0) {
+        if (paidSource.current === "percentage") return { amount: "0", percentage: current.percentage };
+        if (paidSource.current === null) return { amount: "", percentage: "" };
+        return current;
+      }
+      if (paidSource.current === null) return { amount: String(remaining), percentage: "100" };
+      if (paidSource.current === "percentage") {
+        const percentage = parseWholePercentage(current.percentage);
+        return percentage === null ? current : { amount: String(amountFromPercentage(remaining, percentage)), percentage: current.percentage };
+      }
+      const amount = parseWholeAmount(current.amount);
+      return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(remaining, amount)) };
+    });
+  }, [remaining]);
+  const remainingMessage = paymentAmountError(paid.amount, remaining);
+  // #171 — the invalid percentage is guarded explicitly, not left to the
+  // incidental invariant that an invalid draft also empties the amount
+  const percentageInvalid = percentageDraftInvalid(paid.percentage);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setSavedPayment(null);
-    if (remainingMessage !== null) {
+    if (remainingMessage !== null || percentageInvalid) {
       // same boundary as the api: an instalment never exceeds what is owed
       setError(remainingMessage === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining }) : t("pmtInvalidAmount"));
       return;
     }
     void pay.mutate({
       invoiceId: invoice.id,
-      amount: Number(amount),
+      amount: Number(paid.amount),
       method,
       note: note.trim() === "" ? undefined : note.trim(),
     });
@@ -170,21 +208,24 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         </SuccessCard>
       ) : (
       <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
-        <div className="grid grid-cols-3 gap-3">
-          <label className="grid gap-1 text-sm">
-            {t("pmtAmountLabel")}
-            <input
-              className={inputClass}
-              inputMode="numeric"
-              value={amount}
-              onChange={(event) => {
-                setAmount(event.target.value);
-                setSavedPayment(null);
-              }}
-              disabled={remaining === 0}
-              data-testid="pmt-amount"
-            />
-          </label>
+        <AmountPercentageInput
+          referenceTotal={remaining}
+          value={paid}
+          onChange={(next, edited) => {
+            paidSource.current = edited;
+            setPaid(next);
+            setSavedPayment(null);
+          }}
+          amountLabel={t("pmtAmountLabel")}
+          referenceLabel={t("amountReferenceLabel")}
+          amountTestId="pmt-amount"
+          percentageTestId="pmt-percentage"
+          referenceTestId="pmt-reference"
+          amountInvalid={remainingMessage !== null}
+          percentageInvalid={percentageInvalid}
+          disabled={remaining === 0}
+        />
+        <div className="grid grid-cols-2 gap-3">
           <label className="grid gap-1 text-sm">
             {t("pmtMethod")}
             <Select
@@ -229,7 +270,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           <button
             type="submit"
             className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
-            disabled={pay.isPending}
+            disabled={pay.isPending || percentageInvalid}
             data-testid="pmt-submit"
           >
             {t("pmtRecord")}
@@ -291,6 +332,11 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [reason, setReason] = useState("");
   const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
   const [cashDraft, setCashDraft] = useState("");
+  // #162 — the custom cash split is a share of the computed return value, so
+  // the amount and the percentage follow each other; the full value is 100%.
+  const [cashPercentage, setCashPercentage] = useState("");
+  // the edited field stays the source when the return value changes
+  const cashSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** the just-recorded return whose completion card is shown */
   const [savedReturn, setSavedReturn] = useState<ReturnDetail | null>(null);
@@ -359,9 +405,42 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     if (entered.length === 0) return 0;
     return computeReturnRefund(entered, priorByLine).refundTotal;
   }, [returnableLines, drafts, priorByLine]);
+  // #162 — relink the custom cash split when the return value changes: the
+  // edited field is the source, so 50% of a 900 return becomes 50% of the new
+  // value instead of a stale amount. A percentage-based split falls to zero
+  // when the return value does.
+  useEffect(() => {
+    if (valueTotal === 0) {
+      if (cashSource.current === "percentage") {
+        setCashDraft("0");
+        return;
+      }
+      if (cashSource.current === null) {
+        setCashDraft("");
+        setCashPercentage("");
+      }
+      return;
+    }
+    if (cashSource.current === null) {
+      setCashDraft(String(valueTotal));
+      setCashPercentage("100");
+      return;
+    }
+    if (cashSource.current === "percentage") {
+      const percentage = parseWholePercentage(cashPercentage);
+      if (percentage !== null) setCashDraft(String(amountFromPercentage(valueTotal, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(cashDraft);
+    setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
+  }, [valueTotal, cashDraft, cashPercentage]);
   const requestedCash =
     settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
-  const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
+  // an invalid percentage draft clears the derived amount, and an empty amount
+  // is the legitimate "all debt" choice — so it must be rejected explicitly or
+  // "12.5%" would silently be recorded as zero cash
+  const cashPercentageInvalid = settlement === "CUSTOM" && percentageDraftInvalid(cashPercentage);
+  const cashIsValid = settlement !== "CUSTOM" || (customCashError(cashDraft, valueTotal) === null && !cashPercentageInvalid);
   // mirror the api's settlement so the warning tracks the ACTUAL cash the
   // server will settle: requested debt is capped at the invoice's remaining
   // debt and any excess flows back to cash (all-debt beyond the debt swings
@@ -388,6 +467,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setDrafts({});
         setReason("");
         setCashDraft("");
+        setCashPercentage("");
+        cashSource.current = null;
         setSettlement("ALL_CASH");
         setError(null);
         setSavedReturn(record);
@@ -576,7 +657,15 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               value={settlement}
               onValueChange={(value) => {
                 // SAFETY: the select renders only the three preset options
-                setSettlement((value ?? "ALL_CASH") as ReturnSettlementPreset);
+                const next = (value ?? "ALL_CASH") as ReturnSettlementPreset;
+                setSettlement(next);
+                // the custom split opens at the full return value (100%): the
+                // owner lowers either side to push the rest onto the debt
+                if (next === "CUSTOM") {
+                  cashSource.current = null;
+                  setCashDraft(String(valueTotal));
+                  setCashPercentage("100");
+                }
                 setSavedReturn(null);
               }}
               items={[
@@ -596,20 +685,25 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             </Select>
           </label>
           {settlement === "CUSTOM" && (
-            <label className="grid gap-1 text-sm">
-              <span className="font-medium">{t("returnsCashNow")}</span>
-              <input
-                className="h-10 rounded-md border border-input bg-card px-3 tabular-nums outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40"
-                inputMode="numeric"
-                value={cashDraft}
-                onChange={(event) => {
-                  setCashDraft(event.target.value);
+            <div className="grid gap-1 text-sm">
+              <AmountPercentageInput
+                referenceTotal={valueTotal}
+                value={{ amount: cashDraft, percentage: cashPercentage }}
+                onChange={(next, edited) => {
+                  cashSource.current = edited;
+                  setCashDraft(next.amount);
+                  setCashPercentage(next.percentage);
                   setSavedReturn(null);
                 }}
-                placeholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
-                data-testid="returns-cash"
+                amountLabel={t("returnsCashNow")}
+                referenceLabel={t("amountReferenceLabel")}
+                amountTestId="returns-cash"
+                percentageTestId="returns-percentage"
+                referenceTestId="returns-reference"
+                percentageInvalid={cashPercentageInvalid}
+                amountPlaceholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
               />
-            </label>
+            </div>
           )}
           {projectionIsValid && (
             <div className="grid gap-1.5 border-t border-border pt-3 text-sm">
@@ -766,7 +860,9 @@ export function InvoicePage() {
         )}
       </div>
 
-      <PaymentPanel invoice={invoice} />
+      {/* the key reseeds the pair when the route moves to a different invoice;
+          a same-invoice refetch keeps the instance and relinks instead */}
+      <PaymentPanel key={invoice.id} invoice={invoice} />
 
       <ReturnsPanel invoice={invoice} />
     </section>

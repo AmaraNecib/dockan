@@ -6,6 +6,8 @@ import { useTranslation } from "react-i18next";
 import type { Invoice, PartyDetail, PartyPayment, PartyRole } from "@dokan/contracts";
 import { displayAlgerianPhone } from "@dokan/contracts";
 
+import { CustomerSettlePanel } from "@/components/parties/customer-settle-panel";
+import { unpaidInvoices, unpaidTotal } from "@/components/parties/party-settle";
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -112,6 +114,18 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const [tab, setTab] = useState<DetailTab>("invoices");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // #164 (customer half) — the invoices tab opens on what is still owed, with
+  // an in-page settle action. Supplier-account behaviour is #161.
+  const customerScope = role === "customer";
+  const [unpaidOnly, setUnpaidOnly] = useState(true);
+  const [settleOpen, setSettleOpen] = useState(false);
+  const allInvoices = detail.data?.invoices ?? [];
+  const unpaid = unpaidInvoices(allInvoices);
+  const showUnpaidOnly = customerScope && unpaidOnly;
+  const visibleInvoices = showUnpaidOnly ? unpaid : allInvoices;
+  // the settle cap and the distribution both walk the invoice rows, so the
+  // reference is their sum too — never a second, potentially divergent stat
+  const unpaidAmount = unpaidTotal(allInvoices);
 
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");
 
@@ -214,8 +228,42 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
           </div>
 
           <div role="tabpanel" id="party-panel-invoices" aria-labelledby="party-tab-invoices" hidden={tab !== "invoices"} className="mt-4" data-testid="party-panel-invoices">
-            {detail.data.invoices.length === 0 ? (
-              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-invoices-empty">{t("partyInvoicesEmpty")}</p>
+            {customerScope && (
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={unpaidOnly}
+                    onChange={(event) => setUnpaidOnly(event.target.checked)}
+                    data-testid="party-unpaid-filter"
+                  />
+                  {t("partyUnpaidOnly")}
+                </label>
+                <span className="text-sm text-muted-foreground" data-testid="party-unpaid-total">
+                  {t("partyUnpaidTotal")}: <Amount value={unpaidAmount} />
+                </span>
+              </div>
+            )}
+            {customerScope && unpaid.length > 0 && !settleOpen && (
+              <div className="mb-3 flex justify-end">
+                <Button onClick={() => { setSettleOpen(true); setNotice(null); }} data-testid="party-settle">{t("partySettle")}</Button>
+              </div>
+            )}
+            {customerScope && settleOpen && (
+              <div className="mb-4">
+                <CustomerSettlePanel
+                  partyId={partyId}
+                  invoices={detail.data.invoices}
+                  unpaid={unpaidAmount}
+                  onDone={() => { setSettleOpen(false); setNotice(t("partySettleRecorded")); }}
+                  onCancel={() => setSettleOpen(false)}
+                />
+              </div>
+            )}
+            {visibleInvoices.length === 0 ? (
+              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-invoices-empty">
+                {showUnpaidOnly ? t("partyNoUnpaid") : t("partyInvoicesEmpty")}
+              </p>
             ) : (
               <table className="w-full text-sm" data-testid="party-invoices">
                 <thead>
@@ -229,7 +277,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.data.invoices.map((invoice) => (
+                  {visibleInvoices.map((invoice) => (
                     <PartyInvoiceRow key={invoice.id} invoice={invoice} />
                   ))}
                 </tbody>

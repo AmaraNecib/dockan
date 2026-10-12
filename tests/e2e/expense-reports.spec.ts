@@ -240,6 +240,10 @@ test("create a new expense category from the expenses screen and record against 
   await page.getByTestId("expense-amount").fill(amount);
   await page.getByTestId("expense-save").click();
   await expect(page.getByTestId("expense-saved")).toContainText("تم تسجيل المصروف");
-  const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: amount });
-  await expect(row).toContainText(categoryName);
+  // Select by the unique stamped category, never by the amount: Playwright
+  // concatenates a row's cells without separators, so a numeric amount can match
+  // a substring spanning another row's note stamp and amount (e.g. the note
+  // ending "…5312" plus "5000" renders "…5312500", which contains "1250").
+  const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: categoryName });
+  await expect(row).toContainText(amount);
 });

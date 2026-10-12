@@ -35,6 +35,9 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   await expect(page.getByTestId("sale-total")).toContainText("900");
+  // #162: the payment now defaults to the full total, so zero it to record no
+  // down payment and leave the invoice fully unpaid
+  await page.getByTestId("sale-paid").fill("0");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>

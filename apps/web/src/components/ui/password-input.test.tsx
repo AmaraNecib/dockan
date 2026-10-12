@@ -103,7 +103,7 @@ describe("PasswordInput (#167)", () => {
   it("forwards the ref and the native input props to the input element", () => {
     // SAFETY: the ref starts empty; React fills it with the rendered input element
     const ref = { current: null as HTMLInputElement | null };
-    const { host } = render(
+    const { host, root } = render(
       <PasswordInput
         ref={ref}
         data-testid="password"
@@ -123,6 +123,28 @@ describe("PasswordInput (#167)", () => {
     expect(input.getAttribute("autocomplete")).toBe("current-password");
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(input.value).toBe("secret");
+
+    // the object-ref path must clear on detach, like React does for a ref it
+    // owns: a stale node would let the toggle focus a dead field
+    unmountRoot(root);
+    expect(ref.current).toBeNull();
+  });
+
+  it("calls a void callback ref with null on detach", () => {
+    const calls: Array<HTMLInputElement | null> = [];
+    const ref = (node: HTMLInputElement | null): void => {
+      calls.push(node);
+    };
+    const { root } = render(<PasswordInput ref={ref} data-testid="password" value="" onChange={() => undefined} />);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toBeNull();
+
+    unmountRoot(root);
+
+    // a callback that returned no cleanup keeps the legacy null-notification
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toBeNull();
   });
 
   it("keeps the same input node and its text through a reveal and hide round trip", () => {
@@ -155,7 +177,7 @@ describe("PasswordInput (#167)", () => {
     expect(document.activeElement).toBe(inputOf(host));
   });
 
-  it("runs a callback ref's cleanup on unmount and drops the detached node", () => {
+  it("runs a callback ref's cleanup on unmount", () => {
     const attachedNodes: HTMLInputElement[] = [];
     let cleanups = 0;
     const ref = (node: HTMLInputElement | null): (() => void) | undefined => {
@@ -172,8 +194,8 @@ describe("PasswordInput (#167)", () => {
 
     unmountRoot(root);
 
-    // the detach path runs the callback ref's cleanup and nulls the internal
-    // focus ref in the same branch, so a toggle can never focus a dead field
+    // the cleanup runs from the same detach branch that nulls the internal
+    // focus ref, exactly once
     expect(cleanups).toBe(1);
     expect(attachedNodes[0]?.isConnected).toBe(false);
   });

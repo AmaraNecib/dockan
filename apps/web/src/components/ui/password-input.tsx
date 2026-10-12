@@ -28,23 +28,28 @@ export function PasswordInput({ className, disabled, ref, "data-testid": testId,
   // (App focuses the field to point at a validation error) gets the same node.
   const attachInput = useCallback(
     (node: HTMLInputElement | null) => {
+      // clear the focus node first, so a detached field can never be focused
       inputRef.current = node;
-      if (node === null) {
-        // detached: undo whatever the caller's callback ref set up, and drop
-        // the node so the toggle can never focus a detached field
-        detachRef.current?.();
-        detachRef.current = undefined;
-        return;
-      }
       if (ref === undefined || ref === null) return;
       // React hands a component either a ref object or a ref callback
       if ("current" in ref) {
         ref.current = node;
         return;
       }
+      if (node === null) {
+        // Detached. A callback that returned a cleanup expects that cleanup;
+        // one that returned nothing expects the legacy null call. React skips
+        // the null call for us because this wrapper always returns undefined.
+        if (detachRef.current === undefined) ref(null);
+        else {
+          detachRef.current();
+          detachRef.current = undefined;
+        }
+        return;
+      }
       // React 19 callback refs may return a cleanup function. Hold it and run
       // it from the detach path above; returning it here would make React skip
-      // that path and leak the cleanup.
+      // that path and leave inputRef pointing at the removed node.
       // SAFETY: React types a callback ref's return as void | (() => void);
       // void and undefined are the same "no cleanup" value at runtime
       detachRef.current = ref(node) as (() => void) | undefined;

@@ -74,7 +74,8 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     const target = first ?? paidOffRef.current;
     if (target === null || target === undefined) return;
     target.focus();
-    // keep the flag set when nothing took focus, so a later render can retry
+    // consume the flag only once focus actually moved; a failed move leaves it
+    // set for the next saved-state transition
     if (document.activeElement === target) restoreFocusPending.current = false;
   }, [savedPayment]);
 
@@ -312,7 +313,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
     if (first === undefined) return;
     first.focus();
-    // keep the flag set when nothing took focus, so a later render can retry
+    // consume the flag only once focus actually moved
     if (document.activeElement === first) restoreFocusPending.current = false;
   }, [savedReturn]);
 

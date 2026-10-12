@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -108,6 +108,59 @@ test.afterAll(async () => {
   await stopAndWait(web);
   await stopAndWait(api);
   fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("the passphrase fields share one app-controlled reveal, pinned to the left edge", async ({ page }) => {
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await expect(page.getByRole("heading", { name: "إنشاء الخزنة" })).toBeVisible();
+
+  const first = page.getByTestId("vault-passphrase");
+  const confirm = page.getByTestId("vault-passphrase-confirm");
+  const firstToggle = page.getByTestId("vault-passphrase-toggle");
+  const confirmToggle = page.getByTestId("vault-passphrase-confirm-toggle");
+
+  await expect(first).toHaveAttribute("type", "password");
+  await expect(confirm).toHaveAttribute("type", "password");
+  await expect(firstToggle).toBeVisible();
+  await expect(confirmToggle).toBeVisible();
+  // the input text runs RTL: dots start at the right edge
+  await expect(first).toHaveCSS("direction", "rtl");
+  await expect(confirm).toHaveCSS("direction", "rtl");
+
+  // the eye sits on the same side of both fields, and that side is the left
+  // edge. The reported bug was the confirm field mirroring the first one.
+  const eyeOffsetFromLeft = async (field: Locator, toggle: Locator): Promise<number> => {
+    const fieldBox = await field.boundingBox();
+    const toggleBox = await toggle.boundingBox();
+    if (fieldBox === null || toggleBox === null) throw new Error("missing field bounding box");
+    expect(toggleBox.x).toBeGreaterThanOrEqual(fieldBox.x);
+    expect(toggleBox.x + toggleBox.width).toBeLessThanOrEqual(fieldBox.x + fieldBox.width + 1);
+    return Math.round(toggleBox.x - fieldBox.x);
+  };
+  const firstOffset = await eyeOffsetFromLeft(first, firstToggle);
+  const confirmOffset = await eyeOffsetFromLeft(confirm, confirmToggle);
+  expect(firstOffset).toBe(confirmOffset);
+  const confirmBox = await confirm.boundingBox();
+  if (confirmBox === null) throw new Error("missing confirm box");
+  expect(firstOffset).toBeLessThan(confirmBox.width / 2);
+
+  // the eye is painted from theme tokens, so it repaints for dark mode
+  const lightEye = await firstToggle.evaluate((element) => getComputedStyle(element).color);
+  await page.evaluate(() => document.documentElement.classList.add("dark"));
+  const darkEye = await firstToggle.evaluate((element) => getComputedStyle(element).color);
+  expect(darkEye).not.toBe(lightEye);
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
+
+  // the toggle survives repeated use and further typing
+  await firstToggle.click();
+  await expect(first).toHaveAttribute("type", "text");
+  await first.fill("typed while revealed");
+  await firstToggle.click();
+  await expect(first).toHaveAttribute("type", "password");
+  await expect(firstToggle).toBeVisible();
+  await first.fill("still togglable");
+  await expect(first).toHaveAttribute("type", "password");
+  await expect(firstToggle).toBeVisible();
 });
 
 test("first run: passphrase → recovery key shown once → owner setup → the app opens", async ({ page }) => {

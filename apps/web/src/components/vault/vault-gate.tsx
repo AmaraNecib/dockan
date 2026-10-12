@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   VaultRequestError,
   acknowledgeVaultSetup,
@@ -314,10 +315,8 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           <p className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{t("vaultLostBothWarning")}</p>
           <label className="grid gap-1 text-sm">
             {t("vaultPassphrase")}
-            <input
+            <PasswordInput
               ref={passphraseRef}
-              type="password"
-              className="rounded border border-input bg-background px-3 py-2"
               autoComplete="new-password"
               value={passphrase}
               onChange={(event) => setPassphrase(event.target.value)}
@@ -328,9 +327,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           </label>
           <label className="grid gap-1 text-sm">
             {t("vaultPassphraseConfirm")}
-            <input
-              type="password"
-              className="rounded border border-input bg-background px-3 py-2"
+            <PasswordInput
               autoComplete="new-password"
               value={confirm}
               onChange={(event) => setConfirm(event.target.value)}
@@ -366,10 +363,8 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
       >
         <label className="grid gap-1 text-sm">
           {t("vaultPassphrase")}
-          <input
+          <PasswordInput
             ref={passphraseRef}
-            type="password"
-            className="rounded border border-input bg-background px-3 py-2"
             autoComplete="current-password"
             value={passphrase}
             onChange={(event) => setPassphrase(event.target.value)}

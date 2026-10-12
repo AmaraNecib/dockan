@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   addRecoveryKey,
   changeVaultPassphrase,
@@ -118,9 +119,7 @@ export function VaultSettings() {
         <h3 className="font-medium">{t("vaultChangePassphrase")}</h3>
         <label className="grid gap-1 text-sm">
           {t("vaultCurrentPassphrase")}
-          <input
-            type="password"
-            className="rounded border px-3 py-2"
+          <PasswordInput
             autoComplete="current-password"
             value={currentPassphrase}
             onChange={(event) => setCurrentPassphrase(event.target.value)}
@@ -130,9 +129,7 @@ export function VaultSettings() {
         </label>
         <label className="grid gap-1 text-sm">
           {t("vaultNewPassphrase")}
-          <input
-            type="password"
-            className="rounded border px-3 py-2"
+          <PasswordInput
             autoComplete="new-password"
             value={newPassphrase}
             onChange={(event) => setNewPassphrase(event.target.value)}
@@ -143,9 +140,7 @@ export function VaultSettings() {
         </label>
         <label className="grid gap-1 text-sm">
           {t("vaultPassphraseConfirm")}
-          <input
-            type="password"
-            className="rounded border px-3 py-2"
+          <PasswordInput
             autoComplete="new-password"
             value={confirmPassphrase}
             onChange={(event) => setConfirmPassphrase(event.target.value)}
@@ -203,9 +198,7 @@ export function VaultSettings() {
           </label>
           <label className="grid gap-1 text-sm">
             {t("vaultNewPassphrase")}
-            <input
-              type="password"
-              className="rounded border px-3 py-2"
+            <PasswordInput
               autoComplete="new-password"
               value={resetNewPassphrase}
               onChange={(event) => setResetNewPassphrase(event.target.value)}

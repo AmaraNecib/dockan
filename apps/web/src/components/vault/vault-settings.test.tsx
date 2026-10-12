@@ -163,4 +163,29 @@ describe("VaultSettings", () => {
     // the reset is pre-auth: no vault session header is sent
     expect(seenHeaders?.get("x-vault-session")).toBeNull();
   });
+
+  it("gives every password field its own app-controlled reveal toggle (issue #167)", async () => {
+    const host = await mount();
+    for (const testId of ["vault-current-passphrase", "vault-new-passphrase", "vault-confirm-passphrase"]) {
+      const input = (): HTMLInputElement | null => host.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
+      const toggle = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}-toggle"]`);
+      expect(input()?.type).toBe("password");
+      expect(toggle?.type).toBe("button");
+
+      await click(host, `${testId}-toggle`);
+      expect(input()?.type).toBe("text");
+      await click(host, `${testId}-toggle`);
+      expect(input()?.type).toBe("password");
+      expect(host.querySelector(`[data-testid="${testId}-toggle"]`)).not.toBeNull();
+    }
+
+    // the recovery-reset form's new passphrase is a password field too, so it
+    // must not be left without a reveal control by the global native-reveal
+    // suppression in index.css
+    await click(host, "vault-show-recovery-reset");
+    const resetToggle = host.querySelector<HTMLButtonElement>('[data-testid="vault-reset-new-passphrase-toggle"]');
+    expect(resetToggle?.type).toBe("button");
+    await click(host, "vault-reset-new-passphrase-toggle");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-reset-new-passphrase"]')?.type).toBe("text");
+  });
 });

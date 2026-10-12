@@ -655,3 +655,9 @@ table.print-sheet-items tbody tr:last-child td {
     break-inside: avoid;
   }
 }
+
+/* The app renders its own password reveal button (PasswordInput); hide the
+   Chromium/WebView2 native control so a field never shows two eyes (issue #167). */
+input[type="password"]::-ms-reveal {
+  display: none;
+}

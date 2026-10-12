@@ -360,6 +360,40 @@ describe("auth phone inputs (issue #94)", () => {
   });
 });
 
+describe("password reveal eye (issue #167)", () => {
+  it("login: the password field has an app-controlled toggle that flips its type", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    const toggle = (): HTMLButtonElement | null => host.querySelector<HTMLButtonElement>('[data-testid="login-password-toggle"]');
+    expect(inputByName(host, "password").type).toBe("password");
+    expect(toggle()?.type).toBe("button");
+
+    await act(async () => {
+      toggle()?.click();
+    });
+    expect(inputByName(host, "password").type).toBe("text");
+    await act(async () => {
+      toggle()?.click();
+    });
+    expect(inputByName(host, "password").type).toBe("password");
+    // the reported bug: the eye must still be there after one round trip
+    expect(toggle()).not.toBeNull();
+  });
+
+  it("first run: the password field has an app-controlled toggle", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="setup-password-toggle"]');
+    expect(toggle?.type).toBe("button");
+    await act(async () => {
+      toggle?.click();
+    });
+    expect(host.querySelector<HTMLInputElement>('[data-testid="setup-password"]')?.type).toBe("text");
+  });
+});
+
 describe("login failures name the problem (issue #100)", () => {
   it("a rejected password shows the credentials message, not the generic one", async () => {
     needsSetup = false;

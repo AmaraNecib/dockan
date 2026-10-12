@@ -2,6 +2,16 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/**
+ * Issue #160 — the token classes every raw native `<input>` shares with the
+ * themed `<Input>`. A bare `rounded border px-3 py-2` had no `border-input`,
+ * no `bg-background` and no focus ring, so on the dark surface the field was
+ * near-invisible. `cn(inputClass, "…size/layout…")` keeps a raw input themed
+ * while the call site supplies only its size/layout extras.
+ */
+export const inputClass =
+  "rounded border border-input bg-background px-3 py-2 outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30"
+
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (
     <input

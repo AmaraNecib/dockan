@@ -6,6 +6,8 @@ import type { ExpenseCategory, ReportRangePreset } from "@dokan/contracts";
 import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
+import { cn } from "@/lib/utils";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
@@ -227,7 +229,7 @@ export function ExpensesPage() {
         {t("expenseCategoryName")}
         <input
           ref={nameRef}
-          className="rounded border px-3 py-2"
+          className={inputClass}
           name="expenseCategoryName"
           autoComplete="off"
           value={newCategoryName}
@@ -314,18 +316,18 @@ export function ExpensesPage() {
           <span className="text-destructive" aria-hidden="true"> *</span>
           <span className="sr-only"> ({t("expenseRequired")})</span>
         </span>
-        <input className="rounded border px-3 py-2" inputMode="numeric" disabled={disabled} value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
+        <input className={inputClass} inputMode="numeric" disabled={disabled} value={amount} onChange={(event) => setAmount(event.target.value)} data-testid="expense-amount" />
       </label>
       <label className="grid gap-1">
         {t("expenseNote")}
-        <input className="rounded border px-3 py-2" disabled={disabled} value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
+        <input className={inputClass} disabled={disabled} value={note} onChange={(event) => setNote(event.target.value)} data-testid="expense-note" />
       </label>
       <div className="grid gap-1">
         <label htmlFor="expense-occurred-at">{t("expenseOccurredAt")}</label>
         <div className="flex gap-2">
           <input
             id="expense-occurred-at"
-            className="w-full rounded border px-3 py-2"
+            className={cn(inputClass, "w-full")}
             name="expenseOccurredAt"
             autoComplete="off"
             placeholder={t("expenseDateHint")}
@@ -481,11 +483,11 @@ export function ExpensesPage() {
             <div className="grid grid-cols-2 gap-3">
               <label className="grid gap-1">
                 {t("expensesCustomFrom")}
-                <input type="datetime-local" className="rounded border px-3 py-2" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="expense-custom-from" />
+                <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="expense-custom-from" />
               </label>
               <label className="grid gap-1">
                 {t("expensesCustomTo")}
-                <input type="datetime-local" className="rounded border px-3 py-2" value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="expense-custom-to" />
+                <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="expense-custom-to" />
               </label>
             </div>
           )}

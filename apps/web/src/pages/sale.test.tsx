@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
 import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
+import { routerMock } from "../tests/router-mock";
 
 // React 19 act() requires the environment flag to be set explicitly.
 // SAFETY: only this flag is written; globalThis keeps every other property.
@@ -15,6 +16,7 @@ import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for use
 
 /** Invoice subset the mocked invoicesCreate resolves with (see InvoiceDetail). */
 interface InvoiceResponse {
+  id: string;
   invoiceNumber: string;
   remainingAmount: number;
   counterpartyName: string | null;
@@ -70,6 +72,10 @@ let unknownScanCode: string | null = null;
 /** holds the category list open so the quick-add can open before it arrives */
 let categoriesGate: Promise<void> | null = null;
 let releaseCategoriesGate: (() => void) | null = null;
+
+// The page renders the completion card's router Links; one shared stub keeps
+// SalePage testable without a router mount.
+mock.module("@tanstack/react-router", routerMock);
 
 // The page pulls its data/mutations through orpc.*; mock the rpc module so the
 // pure helpers and the rendered commit states are driven by fixtures.
@@ -390,7 +396,7 @@ describe("SalePage commit states (greptile round-2)", () => {
 
     expect(resolveInvoice).not.toBeNull();
     await act(async () => {
-      resolveInvoice?.({ invoiceNumber: "INV-77", remainingAmount: 650, counterpartyName: "أمين" });
+      resolveInvoice?.({ id: "inv-77", invoiceNumber: "INV-77", remainingAmount: 650, counterpartyName: "أمين" });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const savedDebt = host.querySelector('[data-testid="sale-saved-debt"]');
@@ -399,6 +405,36 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(savedDebt?.textContent).not.toContain("600");
     expect(savedDebt?.textContent).toContain("للزبون");
     expect(savedDebt?.textContent).not.toContain("تقديري");
+    // the card opens the invoice by the id the server returned, not the number
+    expect(host.querySelector('[data-testid="sale-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
+    expect(host.querySelector('[data-testid="sale-print"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
+  });
+
+  it("shows no detail line and no debt notice on a paid-in-full sale (issue #159)", async () => {
+    const host = await mountSale();
+    await scan("555");
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await act(async () => {
+      resolveInvoice?.({ id: "inv-55", invoiceNumber: "INV-55", remainingAmount: 0, counterpartyName: null });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const card = host.querySelector('[data-testid="sale-saved"]')!;
+    expect(card.querySelector('[data-testid="sale-saved-number"]')).not.toBeNull();
+    // a zero remaining must not render an empty secondary paragraph
+    expect(card.querySelector('[data-testid="sale-saved-debt"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="sale-saved"] p')).toHaveLength(1);
+  });
+
+  it("themes the sale line quantity input for dark mode (issue #160)", async () => {
+    const host = await mountSale();
+    await scan("666");
+    const quantity = host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+    expect(quantity.className).toContain("border-input");
+    expect(quantity.className).toContain("bg-background");
+    expect(quantity.className).toContain("focus-visible:ring-ring/40");
+    expect(quantity.className).toContain("dark:bg-input/30");
   });
 
   it("surfaces an unattributed remainder in the confirmation when the sale has no customer", async () => {
@@ -409,7 +445,7 @@ describe("SalePage commit states (greptile round-2)", () => {
       saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {
-      resolveInvoice?.({ invoiceNumber: "INV-88", remainingAmount: 1000, counterpartyName: null });
+      resolveInvoice?.({ id: "inv-88", invoiceNumber: "INV-88", remainingAmount: 1000, counterpartyName: null });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const savedDebt = host.querySelector('[data-testid="sale-saved-debt"]');

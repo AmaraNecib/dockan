@@ -11,6 +11,8 @@ import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslatio
 
 import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
+import { routerMock } from "../tests/router-mock";
+
 /** which procedure the mocked seam should fail on, or null for success */
 let failInvoicesPay = false;
 /** last mutation input, for asserting what the panel actually sends */
@@ -22,13 +24,7 @@ let invoiceReturns: ReturnDetail[] = [];
 
 // The page renders router Links and (through ReturnsPanel) useParams; mirror the
 // seam the other page tests use so InvoicePage is testable without a router.
-mock.module("@tanstack/react-router", () => ({
-  Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
-    const { children, params, to, ...rest } = props;
-    return <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>;
-  },
-  useParams: () => ({ invoiceId: "00000000-0000-4000-8000-000000000001" }),
-}));
+mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "00000000-0000-4000-8000-000000000001" }));
 
 // The page module imports the rpc client at module scope; stub the whole
 // seam so the panel is testable without a network. The mock mirrors the real
@@ -254,6 +250,62 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     const done = host.querySelector('[data-testid="pmt-done"]');
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل الدفعة");
+    // the submitted control unmounted with the form: focus lands on the card
+    expect(document.activeElement).toBe(done);
+    // the detail line shows the recorded amount in «دج» (never "DA")
+    const detail = host.querySelector('[data-testid="pmt-saved-detail"]');
+    expect(detail?.textContent).toContain("600");
+    expect(detail?.textContent).toContain("دج");
+    expect(detail?.textContent).not.toContain("DA");
+    // the card replaces the form and offers the invoice (issue #159)
+    expect(host.querySelector('[data-testid="pmt-form"]')).toBeNull();
+    expect(host.querySelector('[data-testid="pmt-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=00000000-0000-4000-8000-000000000001");
+
+    act(() => {
+      host.querySelector<HTMLButtonElement>('[data-testid="pmt-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="pmt-form"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="pmt-done"]')).toBeNull();
+    // the restored form takes focus so a keyboard user keeps typing (issue #169 finding 2)
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-amount"]'));
+  });
+
+  it("moves focus to the paid-off message when the cleared balance leaves no enabled field (issue #169 round 2)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderWith = (invoice: InvoiceDetail) =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <PaymentPanel invoice={invoice} />
+        </QueryClientProvider>,
+      );
+    act(() => renderWith(makeInvoice(600)));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "600");
+    submitForm(host.querySelector<HTMLFormElement>("form")!);
+    await flushAsync();
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-done"]'));
+
+    // the detail read refetched: the balance is now zero, so every field is disabled
+    act(() => renderWith(makeInvoice(0)));
+    act(() => {
+      host.querySelector<HTMLButtonElement>('[data-testid="pmt-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="pmt-form"]')).not.toBeNull();
+    // no input can take focus: the paid-off message is the fallback
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-unavailable"]'));
+  });
+
+  it("keeps the payment fields visible in both themes (issue #160)", () => {
+    renderPanel(makeInvoice(600));
+    for (const id of ["pmt-amount", "pmt-note"]) {
+      const field = host.querySelector<HTMLInputElement>(`[data-testid="${id}"]`)!;
+      expect(field.className).toContain("border-input");
+      expect(field.className).toContain("bg-background");
+      expect(field.className).toContain("focus-visible:ring-ring/40");
+      expect(field.className).toContain("dark:bg-input/30");
+    }
   });
 
   it("shows the server PAYMENT_EXCEEDS_REMAINING translation when a stale remaining is refused", async () => {

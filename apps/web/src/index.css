@@ -661,3 +661,16 @@ table.print-sheet-items tbody tr:last-child td {
 input[type="password"]::-ms-reveal {
   display: none;
 }
+
+/* issue #166 — a `dir="ltr"` run that sits on a table CELL cannot keep the
+   cell's RTL alignment: `direction: ltr` alone flips `text-align: start` to
+   the LEFT edge, so the digits stay ordered correctly but the cell no longer
+   lines up under its right-aligned RTL header. `text-align: right` pins it to
+   the header edge; `unicode-bidi: isolate` keeps the number from reordering
+   its RTL neighbours. Inline `<span dir="ltr">` runs (e.g. <Amount>) are NOT
+   affected and are left alone. */
+.cell-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: right;
+}

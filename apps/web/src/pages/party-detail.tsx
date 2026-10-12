@@ -37,7 +37,7 @@ function PartyInvoiceRow({ invoice }: { invoice: Invoice }) {
   const { t } = useTranslation();
   return (
     <tr data-testid="party-invoice-row">
-      <td className="p-2" dir="ltr">
+      <td className="p-2 cell-ltr">
         <Link to="/invoices/$invoiceId" params={{ invoiceId: invoice.id }} className="underline-offset-4 hover:underline">
           {invoice.invoiceNumber}
         </Link>
@@ -58,7 +58,7 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
     <tr data-testid="party-payment-row">
       {/* day-first with 24-hour time per issue #119 */}
       <td className="p-2">{formatDateTime(payment.paidAt)}</td>
-      <td className="p-2" dir="ltr">
+      <td className="p-2 cell-ltr">
         <Link to="/invoices/$invoiceId" params={{ invoiceId: payment.invoiceId }} className="underline-offset-4 hover:underline">
           {payment.invoiceNumber}
         </Link>

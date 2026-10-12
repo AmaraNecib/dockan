@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { cn } from "@/lib/utils";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -37,7 +39,7 @@ export function CategoriesPage() {
         }}
       >
         <input
-          className="flex-1 rounded border px-3 py-2"
+          className={cn(inputClass, "flex-1")}
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("categoriesNewName")}

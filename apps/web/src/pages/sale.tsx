@@ -1,13 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ScanBarcode, X } from "lucide-react";
 
-import type { InvoiceCreate, Item } from "@dokan/contracts";
+import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { cn } from "@/lib/utils";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -124,9 +128,9 @@ export function SalePage() {
   const [discountValue, setDiscountValue] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [savedNumber, setSavedNumber] = useState<string | null>(null);
-  const [savedDebt, setSavedDebt] = useState<number | null>(null);
-  const [savedCustomer, setSavedCustomer] = useState<string | null>(null);
+  /** the saved sale whose completion card is shown; the server's response is
+   * kept whole so the card reads the authoritative number, remaining and party */
+  const [savedSale, setSavedSale] = useState<InvoiceDetail | null>(null);
   // Pre-save notice frozen at submit time: the pending request already carries
   // these values, so in-flight edits must not contradict it.
   const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);
@@ -197,12 +201,10 @@ export function SalePage() {
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
         commitRef.current = false;
-        setSavedNumber(invoice.invoiceNumber);
-        // Confirmation uses the invoice the server actually wrote: its
-        // remaining amount is authoritative, unlike cart-price math which can
-        // drift from current item prices.
-        setSavedDebt(invoice.remainingAmount);
-        setSavedCustomer(invoice.counterpartyName);
+        // The confirmation card opens the invoice the server actually wrote;
+        // its id and remaining amount are authoritative, unlike cart-price math
+        // which can drift from current item prices.
+        setSavedSale(invoice);
         setLines([]);
         setCustomer({ id: null, name: "", needsChoice: false });
         setDiscountType("");
@@ -270,7 +272,7 @@ export function SalePage() {
   // unpaid remainder is unattributed and the Debts screen (grouped by party)
   // cannot show it.
   const hasCustomer = customer.name.trim() !== "";
-  const hasSavedCustomer = savedCustomer !== null && savedCustomer.trim() !== "";
+  const hasSavedCustomer = savedSale !== null && savedSale.counterpartyName !== null && savedSale.counterpartyName.trim() !== "";
 
   function submit() {
     setError(null);
@@ -396,14 +398,30 @@ export function SalePage() {
     }
   }
 
-  if (savedNumber !== null) {
+  if (savedSale !== null) {
     return (
       <section data-testid="sale-saved" className="grid gap-4">
         <h1 className="text-xl font-bold">{t("saleTitle")}</h1>
-        <div className="rounded border bg-card p-5">
-          <p className="font-semibold text-success" data-testid="sale-saved-number">{t("saleSaved", { number: savedNumber })}{savedDebt !== null && savedDebt > 0 && <span data-testid="sale-saved-debt">{" "}{hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedDebt} /> {hasSavedCustomer && t("saleDebtCustomer")}</span>}</p>
-          <button type="button" className="mt-4 rounded-lg border px-3 py-2" onClick={() => setSavedNumber(null)} data-testid="sale-new">{t("saleNew")}</button>
-        </div>
+        <SuccessCard
+          title={<span data-testid="sale-saved-number">{t("saleSaved", { number: savedSale.invoiceNumber })}</span>}
+          detail={
+            savedSale.remainingAmount > 0 ? (
+              <span data-testid="sale-saved-debt">
+                {hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedSale.remainingAmount} suffix={t("dzd")} />{" "}
+                {hasSavedCustomer && t("saleDebtCustomer")}
+              </span>
+            ) : undefined
+          }
+        >
+          <Button asChild>
+            <Link to="/invoices/$invoiceId" params={{ invoiceId: savedSale.id }} data-testid="sale-open-invoice">{t("savedViewInvoice")}</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/invoices/$invoiceId/print" params={{ invoiceId: savedSale.id }} data-testid="sale-print">{t("savedPrint")}</Link>
+          </Button>
+          <SuccessCardSpacer />
+          <Button variant="ghost" onClick={() => setSavedSale(null)} data-testid="sale-new">{t("saleNew")}</Button>
+        </SuccessCard>
       </section>
     );
   }
@@ -505,7 +523,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className="w-16 rounded border px-2 py-1" name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toOverrideType(value ?? ""); if (next === line.overrideType) return; setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: next, overrideValue: "" } : entry)); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className="w-20 rounded border px-2 py-1" inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const next = lines.filter((_, i) => i !== index); setLines(next); if (next.length === 0) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toOverrideType(value ?? ""); if (next === line.overrideType) return; setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: next, overrideValue: "" } : entry)); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const next = lines.filter((_, i) => i !== index); setLines(next); if (next.length === 0) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>

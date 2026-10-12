@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { tError } from "../lib/i18n";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { formatDate } from "../lib/dates";
 
@@ -87,11 +88,11 @@ export function ReportsPage() {
           <div className="grid grid-cols-2 gap-3">
             <label className="grid gap-1">
               {t("expensesCustomFrom")}
-              <input type="datetime-local" className="rounded border px-3 py-2" value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="report-custom-from" />
+              <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="report-custom-from" />
             </label>
             <label className="grid gap-1">
               {t("expensesCustomTo")}
-              <input type="datetime-local" className="rounded border px-3 py-2" value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="report-custom-to" />
+              <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="report-custom-to" />
             </label>
           </div>
         )}

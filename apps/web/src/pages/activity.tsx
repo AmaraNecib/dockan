@@ -131,7 +131,7 @@ export function ActivityLogPage() {
                 </td>
                 <td className="p-3">{activitySummaryText(t, entry.summary)}</td>
                 {/* Entity refs are compact; backup refs display their safe local filename. */}
-                <td className="p-3 font-mono text-xs text-muted-foreground" dir="ltr" data-testid="activity-ref">
+                <td className="p-3 cell-ltr font-mono text-xs text-muted-foreground" data-testid="activity-ref">
                   {entry.ref ? formatActivityReference(entry.type, entry.ref) : "—"}
                 </td>
               </tr>

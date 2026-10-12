@@ -1,18 +1,22 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
+import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
+import { debtOffsetDisplay } from "../lib/return-voucher";
 
 /**
  * Ticket 8 — invoice detail (/invoices/$invoiceId). Shows the header, the
@@ -46,15 +50,42 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [recorded, setRecorded] = useState(false);
+  /** the just-recorded instalment whose completion card is shown */
+  const [savedPayment, setSavedPayment] = useState<{ amount: number; method: PaymentMethod } | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // The card is focusable so the form->card transition can move focus there
+  // instead of losing it with the submitting control (issue #169 round 2).
+  const cardRef = useRef<HTMLDivElement>(null);
+  // The paid-off state has no enabled field; its message is the focus fallback.
+  const paidOffRef = useRef<HTMLParagraphElement>(null);
+  // Set while the completion card is shown; on the card->form transition the
+  // button that held focus unmounts, so focus moves to the restored form's
+  // first enabled field (issue #169).
+  const restoreFocusPending = useRef(false);
+
+  useEffect(() => {
+    if (savedPayment !== null) {
+      restoreFocusPending.current = true;
+      cardRef.current?.focus();
+      return;
+    }
+    if (!restoreFocusPending.current) return;
+    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
+    const target = first ?? paidOffRef.current;
+    if (target === null || target === undefined) return;
+    target.focus();
+    // consume the flag only once focus actually moved; a failed move leaves it
+    // set for the next saved-state transition
+    if (document.activeElement === target) restoreFocusPending.current = false;
+  }, [savedPayment]);
 
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (_updated, variables) => {
         setAmount("");
         setNote("");
         setError(null);
-        setRecorded(true);
+        setSavedPayment({ amount: variables.amount, method: variables.method ?? "CASH" });
         // the detail read refetches with its exact key (proven mechanism);
         // the list/activity invalidations use prefix keys as best effort — if
         // a filter variant does not match, the list still refetches on remount
@@ -65,7 +96,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         ]);
       },
       onError: (err) => {
-        setRecorded(false);
+        setSavedPayment(null);
         // a stale tab can still reach the api: the server re-checks the
         // boundary inside the transaction and returns the exact key
         setError(tError(err.message));
@@ -79,7 +110,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    setRecorded(false);
+    setSavedPayment(null);
     if (remainingMessage !== null) {
       // same boundary as the api: an instalment never exceeds what is owed
       setError(remainingMessage === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining }) : t("pmtInvalidAmount"));
@@ -121,17 +152,34 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         </table>
       )}
 
-      <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
+      {savedPayment !== null ? (
+        <SuccessCard
+          testId="pmt-done"
+          className="mt-4"
+          containerRef={cardRef}
+          title={t("pmtRecorded")}
+          detail={
+            <span data-testid="pmt-saved-detail"><Amount value={savedPayment.amount} suffix={t("dzd")} /> — {t(`pmtMethod_${savedPayment.method}`)}</span>
+          }
+        >
+          <Button asChild>
+            <Link to="/invoices/$invoiceId" params={{ invoiceId: invoice.id }} data-testid="pmt-open-invoice">{t("savedViewInvoice")}</Link>
+          </Button>
+          <SuccessCardSpacer />
+          <Button variant="ghost" onClick={() => setSavedPayment(null)} data-testid="pmt-new">{t("pmtNew")}</Button>
+        </SuccessCard>
+      ) : (
+      <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
         <div className="grid grid-cols-3 gap-3">
           <label className="grid gap-1 text-sm">
             {t("pmtAmountLabel")}
             <input
-              className="rounded border px-3 py-2"
+              className={inputClass}
               inputMode="numeric"
               value={amount}
               onChange={(event) => {
                 setAmount(event.target.value);
-                setRecorded(false);
+                setSavedPayment(null);
               }}
               disabled={remaining === 0}
               data-testid="pmt-amount"
@@ -144,7 +192,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
               onValueChange={(value) => {
                 // SAFETY: the select renders only the CASH / BANK options, so the value is a PaymentMethod
                 setMethod((value ?? "CASH") as PaymentMethod);
-                setRecorded(false);
+                setSavedPayment(null);
               }}
               disabled={remaining === 0}
               items={[
@@ -164,11 +212,11 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           <label className="grid gap-1 text-sm">
             {t("pmtNoteLabel")}
             <input
-              className="rounded border px-3 py-2"
+              className={inputClass}
               value={note}
               onChange={(event) => {
                 setNote(event.target.value);
-                setRecorded(false);
+                setSavedPayment(null);
               }}
               disabled={remaining === 0}
               data-testid="pmt-note"
@@ -176,7 +224,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           </label>
         </div>
         {remaining === 0 ? (
-          <p className="text-sm text-success" data-testid="pmt-unavailable">{t("pmtUnavailable")}</p>
+          <p ref={paidOffRef} tabIndex={-1} className="text-sm text-success" data-testid="pmt-unavailable">{t("pmtUnavailable")}</p>
         ) : (
           <button
             type="submit"
@@ -188,8 +236,8 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           </button>
         )}
         {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="pmt-error">{error}</p>}
-        {recorded && <p role="status" className="text-sm text-success" data-testid="pmt-done">{t("pmtRecorded")}</p>}
       </form>
+      )}
     </div>
   );
 }
@@ -244,7 +292,34 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
   const [cashDraft, setCashDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [recorded, setRecorded] = useState(false);
+  /** the just-recorded return whose completion card is shown */
+  const [savedReturn, setSavedReturn] = useState<ReturnDetail | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // The card is focusable so the form->card transition can move focus there
+  // instead of losing it with the submitting control (issue #169 round 2).
+  const cardRef = useRef<HTMLDivElement>(null);
+  // Set while the completion card is shown; on the card->form transition the
+  // button that held focus unmounts, so focus moves to the restored form's
+  // first enabled field (issue #169).
+  const restoreFocusPending = useRef(false);
+
+  useEffect(() => {
+    if (savedReturn !== null) {
+      restoreFocusPending.current = true;
+      cardRef.current?.focus();
+      return;
+    }
+    if (!restoreFocusPending.current) return;
+    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
+    if (first === undefined) return;
+    first.focus();
+    // consume the flag only once focus actually moved
+    if (document.activeElement === first) restoreFocusPending.current = false;
+  }, [savedReturn]);
+
+  // The saved return is PENDING_REVIEW: its debt deduction only lands on
+  // acceptance, so the card must not claim the promise as applied (#169).
+  const savedReturnDebt = savedReturn === null ? null : debtOffsetDisplay(savedReturn.status, savedReturn.debtOffset, savedReturn.debtApplied);
 
   const returns = returnsQuery.data?.items ?? [];
   // issue #118 — a pending return does not move the balance until accepted;
@@ -309,13 +384,13 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
 
   const create = useMutation(
     orpc.returnsCreate.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (record) => {
         setDrafts({});
         setReason("");
         setCashDraft("");
         setSettlement("ALL_CASH");
         setError(null);
-        setRecorded(true);
+        setSavedReturn(record);
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: { invoiceId: invoice.id } }) }),
           // the shell badge and dashboard notice read this aggregate (issue #118)
@@ -325,7 +400,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         ]);
       },
       onError: (err) => {
-        setRecorded(false);
+        setSavedReturn(null);
         setError(tError(err.message));
       },
     }),
@@ -334,7 +409,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    setRecorded(false);
+    setSavedReturn(null);
     const entered = returnableLines.filter((line) => (drafts[line.id] ?? "").trim() !== "");
     if (entered.length === 0) {
       setError(t("returnsNoLines"));
@@ -393,7 +468,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           <tbody>
             {[...pendingReturns, ...reviewedReturns].map((record) => (
               <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
-                <td className="p-2" dir="ltr">{record.returnNumber}</td>
+                <td className="p-2 cell-ltr">{record.returnNumber}</td>
                 <td className="p-2 font-medium">{record.refundAmount} {t("dzd")}</td>
                 <td className="p-2" data-testid={`returns-status-${record.status}`}>{t(`returnsStatus_${record.status}`)}</td>
                 <td className="p-2">
@@ -412,7 +487,30 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         </table>
       )}
 
-      <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
+      {savedReturn !== null ? (
+        <SuccessCard
+          testId="returns-done"
+          className="mt-4"
+          containerRef={cardRef}
+          title={<span data-testid="returns-done-number">{t("returnsSavedNumber", { number: savedReturn.returnNumber })}</span>}
+          detail={
+            <span data-testid="returns-done-detail">
+              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} suffix={t("dzd")} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} suffix={t("dzd")} />
+              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} suffix={t("dzd")} /></>)}
+            </span>
+          }
+        >
+          <Button asChild>
+            <Link to="/invoices/$invoiceId/returns/$returnId/print" params={{ invoiceId: invoice.id, returnId: savedReturn.id }} data-testid="returns-open-voucher">{t("returnVoucher")}</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/invoices/$invoiceId" params={{ invoiceId: invoice.id }} data-testid="returns-open-invoice">{t("savedViewInvoice")}</Link>
+          </Button>
+          <SuccessCardSpacer />
+          <Button variant="ghost" onClick={() => setSavedReturn(null)} data-testid="returns-new">{t("returnsNew")}</Button>
+        </SuccessCard>
+      ) : (
+      <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
         <h3 className="text-sm font-semibold">{t("returnsRecordTitle")}</h3>
         {returnableLines.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="returns-no-lines">{t("returnsNoLines")}</p>
@@ -442,7 +540,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                         value={drafts[line.id] ?? ""}
                         onChange={(event) => {
                           setDrafts((current) => ({ ...current, [line.id]: event.target.value }));
-                          setRecorded(false);
+                          setSavedReturn(null);
                         }}
                         disabled={soldOut || create.isPending}
                         aria-label={`${t("returnQuantity")} ${line.description}`}
@@ -479,7 +577,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               onValueChange={(value) => {
                 // SAFETY: the select renders only the three preset options
                 setSettlement((value ?? "ALL_CASH") as ReturnSettlementPreset);
-                setRecorded(false);
+                setSavedReturn(null);
               }}
               items={[
                 { value: "ALL_CASH", label: t("returnsSplitAllCash") },
@@ -506,7 +604,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                 value={cashDraft}
                 onChange={(event) => {
                   setCashDraft(event.target.value);
-                  setRecorded(false);
+                  setSavedReturn(null);
                 }}
                 placeholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
                 data-testid="returns-cash"
@@ -544,11 +642,11 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         <label className="grid gap-1 text-sm">
           {t("returnsReason")}
           <input
-            className="rounded border px-3 py-2"
+            className={inputClass}
             value={reason}
             onChange={(event) => {
               setReason(event.target.value);
-              setRecorded(false);
+              setSavedReturn(null);
             }}
             data-testid="returns-reason"
           />
@@ -562,8 +660,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           {t("returnsSave")}
         </button>
         {error && <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="returns-error">{error}</p>}
-        {recorded && <p role="status" className="text-sm text-success" data-testid="returns-done">{t("returnsSaved")}</p>}
       </form>
+      )}
     </div>
   );
 }

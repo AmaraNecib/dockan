@@ -9,6 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
+import { cn } from "@/lib/utils";
+import { inputClass } from "@/components/ui/input";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { normalizeBarcode } from "@dokan/contracts";
@@ -240,7 +242,7 @@ function CatalogSearch() {
   return (
     <div className="mt-4 rounded border bg-card p-3">
       <input
-        className="w-full rounded border px-3 py-2"
+        className={cn(inputClass, "w-full")}
         placeholder={t("itemsSearchPlaceholder")}
         aria-label={t("itemsSearchPlaceholder")}
         value={query}
@@ -468,7 +470,7 @@ function ItemForm({
       <h2 className="font-semibold">{t("itemsNewTitle")}</h2>
       <label className="grid gap-1">
         {t("itemsName")}
-        <input ref={nameRef} className="rounded border px-3 py-2" name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
+        <input ref={nameRef} className={inputClass} name="itemName" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} required data-testid="item-name" />
       </label>
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1">
@@ -495,7 +497,7 @@ function ItemForm({
           {t("itemsBarcode")}
           <input
             dir="ltr"
-            className="rounded border px-3 py-2 font-mono"
+            className={cn(inputClass, "font-mono")}
             name="itemBarcode"
             autoComplete="off"
             spellCheck={false}
@@ -508,15 +510,15 @@ function ItemForm({
       <div className="grid grid-cols-3 gap-3">
         <label className="grid gap-1">
           {t("itemsCost")}
-          <input className="rounded border px-3 py-2" name="itemCost" autoComplete="off" value={cost} onChange={(e) => setCost(e.target.value)} inputMode="numeric" required data-testid="item-cost" />
+          <input className={inputClass} name="itemCost" autoComplete="off" value={cost} onChange={(e) => setCost(e.target.value)} inputMode="numeric" required data-testid="item-cost" />
         </label>
         <label className="grid gap-1">
           {t("itemsSell")}
-          <input className="rounded border px-3 py-2" name="itemSell" autoComplete="off" value={sell} onChange={(e) => setSell(e.target.value)} inputMode="numeric" required data-testid="item-sell" />
+          <input className={inputClass} name="itemSell" autoComplete="off" value={sell} onChange={(e) => setSell(e.target.value)} inputMode="numeric" required data-testid="item-sell" />
         </label>
         <label className="grid gap-1">
           {t("itemsThreshold")}
-          <input className="rounded border px-3 py-2" name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" />
+          <input className={inputClass} name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" />
         </label>
       </div>
       <label className="grid gap-1">
@@ -531,7 +533,7 @@ function ItemForm({
         </span>
         <input
           ref={initialStockRef}
-          className="rounded border px-3 py-2"
+          className={inputClass}
           name="itemInitialStock"
           autoComplete="off"
           value={initialStock}
@@ -812,7 +814,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
                   {editing ? (
                     <input
                       ref={nameInputRef}
-                      className="w-full rounded border px-2 py-1"
+                      className={cn(inputClass, "w-full px-2 py-1")}
                       name="editName"
                       autoComplete="off"
                       value={draft.name}
@@ -861,7 +863,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
                 <td className="p-3">
                   {editing ? (
                     <input
-                      className="w-24 rounded border px-2 py-1"
+                      className={cn(inputClass, "w-24 px-2 py-1")}
                       name="editCost"
                       autoComplete="off"
                       value={draft.cost}
@@ -879,7 +881,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
                 <td className="p-3">
                   {editing ? (
                     <input
-                      className="w-24 rounded border px-2 py-1"
+                      className={cn(inputClass, "w-24 px-2 py-1")}
                       name="editSell"
                       autoComplete="off"
                       value={draft.sell}
@@ -909,7 +911,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
                 <td className="p-3">
                   {editing ? (
                     <input
-                      className="w-20 rounded border px-2 py-1"
+                      className={cn(inputClass, "w-20 px-2 py-1")}
                       name="editThreshold"
                       autoComplete="off"
                       value={draft.threshold}

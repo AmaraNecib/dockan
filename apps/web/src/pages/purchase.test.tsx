@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 import { chooseOption } from "../tests/select-driver";
+import { routerMock } from "../tests/router-mock";
 
 interface ProposalFixture {
   invoiceId: string;
@@ -40,6 +41,18 @@ let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 /** the picker's loaded supplier list and the last invoice input (issue 120) */
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
 let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string } | null = null;
+/** the invoice shape the completion card reads, so a test can override it */
+interface PurchaseInvoiceResult {
+  id: string;
+  invoiceNumber: string;
+  remainingAmount: number;
+  counterpartyName: string | null;
+}
+let purchaseInvoiceResult: PurchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
+
+// The page renders the completion card's router Links; one shared stub keeps
+// PurchasePage testable without a router mount.
+mock.module("@tanstack/react-router", routerMock);
 
 // The panel resolves proposal + link through orpc.*.queryOptions/mutationOptions;
 // mock the rpc module so tests drive fixtures without a network seam.
@@ -78,7 +91,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: PanelMutationOptions) => ({
         mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string }) => {
           lastPurchaseInput = input;
-          return { id: "inv-1", invoiceNumber: "INV-1" };
+          return purchaseInvoiceResult;
         },
         ...opts,
       }),
@@ -354,5 +367,110 @@ describe("PurchasePage party picker (issue 120)", () => {
     await act(async () => root.unmount());
     container.remove();
     queryClient.clear();
+  });
+});
+
+describe("PurchasePage completion card (issue #159)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    document.body.innerHTML = "";
+    purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+  });
+
+  /** quick-add one item as a purchase line (the category comes from the mock) */
+  async function addQuickLine(container: HTMLElement, name: string) {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const quickForm = container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]')!;
+    const setValue = (input: HTMLInputElement, value: string) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(async () => {
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, name);
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, "1");
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, "100");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await act(async () => {
+      quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  it("opens the saved purchase by id, keeps the proposal panel below, and restores the form", async () => {
+    purchaseInvoiceResult = { id: "inv-77", invoiceNumber: "INV-77", remainingAmount: 12000, counterpartyName: "مورد" };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    await addQuickLine(container, "منتج");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(container.querySelector('[data-testid="purchase-saved-number"]')?.textContent).toContain("INV-77");
+    expect(container.querySelector('[data-testid="purchase-saved-debt"]')?.textContent).toContain("12000");
+    // the actions open the saved invoice by its id, never its number
+    expect(container.querySelector('[data-testid="purchase-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
+    expect(container.querySelector('[data-testid="purchase-print"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
+
+    // the proposal panel follows the completion card in the DOM
+    const markup = container.innerHTML;
+    expect(container.querySelector('[data-testid="link-proposal"]')).not.toBeNull();
+    expect(markup.indexOf('data-testid="link-proposal"')).toBeGreaterThan(markup.indexOf('data-testid="purchase-saved-number"'));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-new"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('[data-testid="purchase-form"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="purchase-saved"]')).toBeNull();
+
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("themes the purchase line quantity and cost inputs for dark mode (issue #160)", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await addQuickLine(container, "منتج");
+    for (const selector of ['input[aria-label*="الكمية"]', 'input[aria-label*="تكلفة"]']) {
+      const field = container.querySelector<HTMLInputElement>(selector)!;
+      expect(field.className).toContain("border-input");
+      expect(field.className).toContain("bg-background");
+      expect(field.className).toContain("focus-visible:ring-ring/40");
+      expect(field.className).toContain("dark:bg-input/30");
+    }
+    await act(async () => root.unmount());
+    container.remove();
   });
 });

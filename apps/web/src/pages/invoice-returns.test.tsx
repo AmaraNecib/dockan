@@ -359,17 +359,31 @@ describe("ReturnsPanel (new-return form + history)", () => {
     });
     expect(host.querySelector('[data-testid="returns-form"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="returns-done"]')).toBeNull();
+    // the restored form takes focus (issue #169 finding 2)
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="returns-qty-بطارية"]'));
   });
 
-  it("renders the debt portion of an all-debt return in the completion detail (issue #159)", async () => {
-    createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 0 });
+  it("shows a pending return's debt as awaiting acceptance, not already deducted (issue #169 finding 1)", async () => {
+    createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 0, status: "PENDING_REVIEW" });
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     const detail = host.querySelector('[data-testid="returns-done-detail"]');
-    expect(detail?.textContent).toContain("خُصم من الدَّين");
+    expect(detail?.textContent).toContain("عند القبول");
     expect(detail?.textContent).toContain("900");
+    expect(detail?.textContent).not.toContain("مطبّق");
+  });
+
+  it("shows the applied debt once the return is accepted (issue #169 finding 1)", async () => {
+    createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 700, status: "ACCEPTED" });
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    const detail = host.querySelector('[data-testid="returns-done-detail"]');
+    expect(detail?.textContent).toContain("مطبّق");
+    expect(detail?.textContent).toContain("700");
   });
 
   it("keeps the return fields visible in both themes (issue #160)", async () => {

@@ -264,6 +264,8 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     });
     expect(host.querySelector('[data-testid="pmt-form"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="pmt-done"]')).toBeNull();
+    // the restored form takes focus so a keyboard user keeps typing (issue #169 finding 2)
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-amount"]'));
   });
 
   it("keeps the payment fields visible in both themes (issue #160)", () => {

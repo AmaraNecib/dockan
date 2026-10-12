@@ -1,6 +1,6 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { computeReturnRefund } from "@dokan/contracts";
@@ -16,6 +16,7 @@ import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
 import { combineBusinessDateTime, formatDateTime } from "../lib/dates";
+import { debtOffsetDisplay } from "../lib/return-voucher";
 
 /**
  * Ticket 8 — invoice detail (/invoices/$invoiceId). Shows the header, the
@@ -51,6 +52,22 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [error, setError] = useState<string | null>(null);
   /** the just-recorded instalment whose completion card is shown */
   const [savedPayment, setSavedPayment] = useState<{ amount: number; method: PaymentMethod } | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // Set while the completion card is shown; on the card->form transition the
+  // button that held focus unmounts, so focus moves to the restored form's
+  // first enabled field (issue #169).
+  const restoreFocusPending = useRef(false);
+
+  useEffect(() => {
+    if (savedPayment !== null) {
+      restoreFocusPending.current = true;
+      return;
+    }
+    if (!restoreFocusPending.current) return;
+    restoreFocusPending.current = false;
+    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
+    first?.focus();
+  }, [savedPayment]);
 
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
@@ -141,7 +158,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           <Button variant="ghost" onClick={() => setSavedPayment(null)} data-testid="pmt-new">{t("pmtNew")}</Button>
         </SuccessCard>
       ) : (
-      <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
+      <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
         <div className="grid grid-cols-3 gap-3">
           <label className="grid gap-1 text-sm">
             {t("pmtAmountLabel")}
@@ -266,6 +283,26 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [error, setError] = useState<string | null>(null);
   /** the just-recorded return whose completion card is shown */
   const [savedReturn, setSavedReturn] = useState<ReturnDetail | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  // Set while the completion card is shown; on the card->form transition the
+  // button that held focus unmounts, so focus moves to the restored form's
+  // first enabled field (issue #169).
+  const restoreFocusPending = useRef(false);
+
+  useEffect(() => {
+    if (savedReturn !== null) {
+      restoreFocusPending.current = true;
+      return;
+    }
+    if (!restoreFocusPending.current) return;
+    restoreFocusPending.current = false;
+    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
+    first?.focus();
+  }, [savedReturn]);
+
+  // The saved return is PENDING_REVIEW: its debt deduction only lands on
+  // acceptance, so the card must not claim the promise as applied (#169).
+  const savedReturnDebt = savedReturn === null ? null : debtOffsetDisplay(savedReturn.status, savedReturn.debtOffset, savedReturn.debtApplied);
 
   const returns = returnsQuery.data?.items ?? [];
   // issue #118 — a pending return does not move the balance until accepted;
@@ -440,7 +477,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           title={<span data-testid="returns-done-number">{t("returnsSavedNumber", { number: savedReturn.returnNumber })}</span>}
           detail={
             <span data-testid="returns-done-detail">
-              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} suffix={t("dzd")} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} suffix={t("dzd")} /> · {t("returnsSavedDebt")} <Amount value={savedReturn.debtOffset} suffix={t("dzd")} />
+              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} suffix={t("dzd")} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} suffix={t("dzd")} />
+              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} suffix={t("dzd")} /></>)}
             </span>
           }
         >
@@ -454,7 +492,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           <Button variant="ghost" onClick={() => setSavedReturn(null)} data-testid="returns-new">{t("returnsNew")}</Button>
         </SuccessCard>
       ) : (
-      <form className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
+      <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="returns-form">
         <h3 className="text-sm font-semibold">{t("returnsRecordTitle")}</h3>
         {returnableLines.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="returns-no-lines">{t("returnsNoLines")}</p>

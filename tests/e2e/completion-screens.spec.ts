@@ -31,6 +31,8 @@ test("completion card opens the saved sale and the saved return's voucher", asyn
   await page.getByTestId("sale-quick-stock").fill("3");
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+  // two units so two separate one-unit returns are possible on this invoice
+  await page.getByTestId("sale-lines").locator("input").first().fill("2");
   await page.getByTestId("sale-save").click();
 
   // the completion card carries the saved number and opens THAT invoice
@@ -40,13 +42,27 @@ test("completion card opens the saved sale and the saved return's voucher", asyn
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-number")).toContainText(saleNumber);
 
-  // a one-unit return: the card replaces the form and opens its voucher
+  // first return: the card replaces the form and opens that return's voucher
   await page.locator('[data-testid^="returns-qty-"]').fill("1");
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
   await expect(page.getByTestId("returns-form")).toHaveCount(0);
+  const firstReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RTN-\d+/)![0]!;
   await page.getByTestId("returns-open-voucher").click();
   await expect(page.getByTestId("return-voucher-page")).toBeVisible();
-  await expect(page.getByTestId("return-voucher-number")).toContainText("RTN-");
+  await expect(page.getByTestId("return-voucher-number")).toContainText(firstReturn);
   await expect(page.getByTestId("return-voucher-invoice")).toContainText(saleNumber);
+
+  // a second return on the same invoice: the card must open the SECOND one,
+  // so a wrong-id lookup cannot pass (issue #169 finding 3)
+  await page.getByTestId("return-voucher-back").click();
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+  await page.locator('[data-testid^="returns-qty-"]').fill("1");
+  await page.getByTestId("returns-submit").click();
+  await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
+  const secondReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RTN-\d+/)![0]!;
+  expect(secondReturn).not.toBe(firstReturn);
+  await page.getByTestId("returns-open-voucher").click();
+  await expect(page.getByTestId("return-voucher-page")).toBeVisible();
+  await expect(page.getByTestId("return-voucher-number")).toContainText(secondReturn);
 });

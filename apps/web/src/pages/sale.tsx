@@ -6,7 +6,7 @@ import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -278,9 +278,14 @@ export function SalePage() {
   // values is a no-op, so the effect stays convergent.
   useEffect(() => {
     if (total === 0) {
-      // only an untouched pair follows the empty cart: a draft the owner typed
-      // while the cart was still empty (the reference has no percentage yet)
-      // must survive the first line being added
+      // a percentage-based payment must fall to zero when a discount zeroes the
+      // total, or the old positive amount is sent and the api rejects it
+      if (paidSource.current === "percentage") {
+        setPaidNow("0");
+        return;
+      }
+      // an amount typed while the cart was still empty (no reference yet) is
+      // the owner's to keep; an untouched pair follows the empty cart
       if (paidSource.current === null) {
         setPaidNow("");
         setPaidPercentage("");
@@ -327,7 +332,18 @@ export function SalePage() {
       return;
     }
     const paid = paidNow === "" ? undefined : Number(paidNow);
+    // an invalid percentage draft clears the amount, which would otherwise take
+    // the intentional "unpaid" path and save silently
+    if (percentageDraftInvalid(paidPercentage)) {
+      setError(t("saleInvalidPaid"));
+      return;
+    }
     if (paid !== undefined && (!Number.isInteger(paid) || paid < 0)) {
+      setError(t("saleInvalidPaid"));
+      return;
+    }
+    // an over-total amount is refused here, not by the api round-trip
+    if (paid !== undefined && paid > total) {
       setError(t("saleInvalidPaid"));
       return;
     }
@@ -492,6 +508,7 @@ export function SalePage() {
             amountTestId="sale-paid"
             percentageTestId="sale-paid-percentage"
             referenceTestId="sale-paid-reference"
+            percentageInvalid={percentageDraftInvalid(paidPercentage)}
             disabled={createInvoice.isPending}
           />
         </div>

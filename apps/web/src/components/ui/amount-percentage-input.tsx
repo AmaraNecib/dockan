@@ -54,6 +54,17 @@ export function parseWholePercentage(draft: string): number | null {
   return value;
 }
 
+/**
+ * True when a non-empty percentage draft is not a whole 0..100 percent (e.g.
+ * "12.5", "abc"). Callers must reject this BEFORE saving: the component clears
+ * the derived amount for such a draft, and an empty amount is the legitimate
+ * "unpaid / zero cash" choice — so an invalid percentage would otherwise be
+ * silently recorded as that choice.
+ */
+export function percentageDraftInvalid(draft: string): boolean {
+  return draft.trim() !== "" && parseWholePercentage(draft) === null;
+}
+
 /** The link when the owner edits the amount: percentage follows. */
 export function amountEdited(referenceTotal: number | null | undefined, amountDraft: string): AmountPercentageValue {
   if (!hasReference(referenceTotal)) return { amount: amountDraft, percentage: "" };
@@ -98,6 +109,8 @@ export interface AmountPercentageInputProps {
   disabled?: boolean;
   /** the amount field's own invalidity (e.g. over the remaining) */
   amountInvalid?: boolean;
+  /** the percentage field's own invalidity (a non-empty non-whole-percent draft) */
+  percentageInvalid?: boolean;
 }
 
 export function AmountPercentageInput({
@@ -113,6 +126,7 @@ export function AmountPercentageInput({
   amountPlaceholder,
   disabled = false,
   amountInvalid = false,
+  percentageInvalid = false,
 }: AmountPercentageInputProps) {
   const { t } = useTranslation();
   const idPrefix = useId();
@@ -144,6 +158,7 @@ export function AmountPercentageInput({
               id={`${idPrefix}-percentage`}
               className={inputClass}
               inputMode="numeric"
+              aria-invalid={percentageInvalid || undefined}
               aria-describedby={referenceId}
               value={value.percentage}
               disabled={disabled}

@@ -7,7 +7,7 @@ import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -306,6 +306,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // #162 — the custom cash split is a share of the computed return value, so
   // the amount and the percentage follow each other; the full value is 100%.
   const [cashPercentage, setCashPercentage] = useState("");
+  // the edited field stays the source when the return value changes
+  const cashSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** the just-recorded return whose completion card is shown */
   const [savedReturn, setSavedReturn] = useState<ReturnDetail | null>(null);
@@ -374,9 +376,42 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     if (entered.length === 0) return 0;
     return computeReturnRefund(entered, priorByLine).refundTotal;
   }, [returnableLines, drafts, priorByLine]);
+  // #162 — relink the custom cash split when the return value changes: the
+  // edited field is the source, so 50% of a 900 return becomes 50% of the new
+  // value instead of a stale amount. A percentage-based split falls to zero
+  // when the return value does.
+  useEffect(() => {
+    if (valueTotal === 0) {
+      if (cashSource.current === "percentage") {
+        setCashDraft("0");
+        return;
+      }
+      if (cashSource.current === null) {
+        setCashDraft("");
+        setCashPercentage("");
+      }
+      return;
+    }
+    if (cashSource.current === null) {
+      setCashDraft(String(valueTotal));
+      setCashPercentage("100");
+      return;
+    }
+    if (cashSource.current === "percentage") {
+      const percentage = parseWholePercentage(cashPercentage);
+      if (percentage !== null) setCashDraft(String(amountFromPercentage(valueTotal, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(cashDraft);
+    setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
+  }, [valueTotal, cashDraft, cashPercentage]);
   const requestedCash =
     settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
-  const cashIsValid = settlement !== "CUSTOM" || customCashError(cashDraft, valueTotal) === null;
+  // an invalid percentage draft clears the derived amount, and an empty amount
+  // is the legitimate "all debt" choice — so it must be rejected explicitly or
+  // "12.5%" would silently be recorded as zero cash
+  const cashPercentageInvalid = settlement === "CUSTOM" && percentageDraftInvalid(cashPercentage);
+  const cashIsValid = settlement !== "CUSTOM" || (customCashError(cashDraft, valueTotal) === null && !cashPercentageInvalid);
   // mirror the api's settlement so the warning tracks the ACTUAL cash the
   // server will settle: requested debt is capped at the invoice's remaining
   // debt and any excess flows back to cash (all-debt beyond the debt swings
@@ -404,6 +439,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setReason("");
         setCashDraft("");
         setCashPercentage("");
+        cashSource.current = null;
         setSettlement("ALL_CASH");
         setError(null);
         setSavedReturn(record);
@@ -597,6 +633,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                 // the custom split opens at the full return value (100%): the
                 // owner lowers either side to push the rest onto the debt
                 if (next === "CUSTOM") {
+                  cashSource.current = null;
                   setCashDraft(String(valueTotal));
                   setCashPercentage("100");
                 }
@@ -623,7 +660,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               <AmountPercentageInput
                 referenceTotal={valueTotal}
                 value={{ amount: cashDraft, percentage: cashPercentage }}
-                onChange={(next) => {
+                onChange={(next, edited) => {
+                  cashSource.current = edited;
                   setCashDraft(next.amount);
                   setCashPercentage(next.percentage);
                   setSavedReturn(null);
@@ -633,6 +671,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                 amountTestId="returns-cash"
                 percentageTestId="returns-percentage"
                 referenceTestId="returns-reference"
+                percentageInvalid={cashPercentageInvalid}
                 amountPlaceholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
               />
             </div>

@@ -14,6 +14,7 @@ import {
   hasReference,
   parseWholeAmount,
   parseWholePercentage,
+  percentageDraftInvalid,
   percentageEdited,
   percentageFromAmount,
   type AmountPercentageValue,
@@ -109,19 +110,32 @@ describe("amount/percentage linked math (#162)", () => {
     expect(percentageEdited(30_000, "150")).toEqual({ amount: "30000", percentage: "100" });
     expect(percentageEdited(9_999, "1000")).toEqual({ amount: "9999", percentage: "100" });
   });
+
+  it("flags a non-empty invalid percentage draft so callers cannot treat it as blank", () => {
+    expect(percentageDraftInvalid("12.5")).toBe(true);
+    expect(percentageDraftInvalid("abc")).toBe(true);
+    expect(percentageDraftInvalid("-1")).toBe(true);
+    expect(percentageDraftInvalid("150")).toBe(true);
+    expect(percentageDraftInvalid("50")).toBe(false);
+    expect(percentageDraftInvalid("100")).toBe(false);
+    // blank is the legitimate "unpaid / zero cash" choice, not an error
+    expect(percentageDraftInvalid("")).toBe(false);
+    expect(percentageDraftInvalid("   ")).toBe(false);
+  });
 });
 
-function Harness({ referenceTotal, initial }: { referenceTotal?: number | null; initial: AmountPercentageValue }) {
+function Harness({ referenceTotal, initial, percentageInvalid }: { referenceTotal?: number | null; initial: AmountPercentageValue; percentageInvalid?: boolean }) {
   const [value, setValue] = useState(initial);
   return (
     <AmountPercentageInput
       referenceTotal={referenceTotal}
       value={value}
-      onChange={setValue}
+      onChange={(next) => setValue(next)}
       amountLabel="المبلغ (دج)"
       amountTestId="amount"
       percentageTestId="percentage"
       referenceTestId="reference"
+      percentageInvalid={percentageInvalid}
     />
   );
 }
@@ -168,5 +182,12 @@ describe("AmountPercentageInput rendered (#162)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="amount"]')).not.toBeNull();
     expect(host.querySelector<HTMLInputElement>('[data-testid="percentage"]')).toBeNull();
     expect(host.querySelector('[data-testid="reference"]')).toBeNull();
+  });
+
+  it("marks the percentage field invalid when the caller reports it (#171)", () => {
+    const host = renderHarness(<Harness referenceTotal={30_000} initial={{ amount: "", percentage: "12.5" }} percentageInvalid />);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    // the amount field keeps its own flag
+    expect(host.querySelector<HTMLInputElement>('[data-testid="amount"]')?.getAttribute("aria-invalid")).toBeNull();
   });
 });

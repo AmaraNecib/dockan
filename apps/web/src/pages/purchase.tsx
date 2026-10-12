@@ -10,7 +10,7 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -90,7 +90,12 @@ export function PurchasePage() {
   // #162 — keep the pair linked as the cart total changes (same rule as sale)
   useEffect(() => {
     if (total === 0) {
-      // only an untouched pair follows the empty cart; a typed draft survives
+      // a percentage-based payment falls to zero with the total; a typed amount
+      // survives; an untouched pair follows the empty cart
+      if (paidSource.current === "percentage") {
+        setPaidNow("0");
+        return;
+      }
       if (paidSource.current === null) {
         setPaidNow("");
         setPaidPercentage("");
@@ -124,7 +129,17 @@ export function PurchasePage() {
       return;
     }
     const paid = paidNow === "" ? undefined : Number(paidNow);
+    // an invalid percentage draft clears the amount, which would otherwise take
+    // the intentional "unpaid" path and save silently
+    if (percentageDraftInvalid(paidPercentage)) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
     if (paid !== undefined && (!Number.isSafeInteger(paid) || paid < 0)) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
+    if (paid !== undefined && paid > total) {
       setError(t("purchasesInvalidPaid"));
       return;
     }
@@ -134,7 +149,9 @@ export function PurchasePage() {
       counterpartyId: supplier.id === null ? undefined : supplier.id,
       counterpartyName: supplier.name.trim() === "" ? undefined : supplier.name.trim(),
       notes: notes.trim() === "" ? undefined : notes.trim(),
-      initialPaid: paid,
+      // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
+      // percentage that rounds to 0) means "nothing paid now"
+      initialPaid: paid === 0 ? undefined : paid,
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: line.quantity, unitPrice: line.unitCost })),
     });
   }
@@ -244,6 +261,7 @@ export function PurchasePage() {
                 amountTestId="purchase-paid"
                 percentageTestId="purchase-paid-percentage"
                 referenceTestId="purchase-paid-reference"
+                percentageInvalid={percentageDraftInvalid(paidPercentage)}
                 disabled={createInvoice.isPending}
               />
             </div>

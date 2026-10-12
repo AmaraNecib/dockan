@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, parseWholeAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, parseWholeAmount, percentageDraftInvalid, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -46,18 +46,28 @@ export function CustomerSettlePanel({
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [error, setError] = useState<string | null>(null);
   const [halted, setHalted] = useState(false);
+  // held across the WHOLE loop AND the refresh: `pay.isPending` ends when the
+  // last per-invoice payment resolves, which is before `refresh()` settles, so
+  // without this a second confirm during a slow refresh would re-plan from the
+  // stale balances and record the same money again
+  const [submitting, setSubmitting] = useState(false);
   const pay = useMutation(orpc.invoicesPay.mutationOptions());
 
   const amountError = settleAmountError(value.amount, unpaid);
+  const percentageInvalid = percentageDraftInvalid(value.percentage);
   // validation is LIVE, not submit-time: an over-owed or garbage amount disables
   // confirm and says why, so the preview can never promise a payment the api
   // will refuse
   const amountErrorText =
-    amountError === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining: unpaid }) : amountError === "INVALID" && value.amount.trim() !== "" ? t("partySettleAmountRequired") : null;
+    amountError === "EXCEEDS"
+      ? t("pmtExceedsRemaining", { remaining: unpaid })
+      : ((amountError === "INVALID" && value.amount.trim() !== "") || percentageInvalid)
+        ? t("partySettleAmountRequired")
+        : null;
   const amount = parseWholeAmount(value.amount);
   const plan = amount !== null && amount > 0 ? distributePayment(invoices, Math.min(amount, unpaid)) : [];
   const distributed = plan.reduce((sum, line) => sum + line.applied, 0);
-  const blocked = pay.isPending || halted || amountError !== null;
+  const blocked = submitting || pay.isPending || halted || amountError !== null || percentageInvalid;
 
   function refresh() {
     return Promise.all([
@@ -69,13 +79,17 @@ export function CustomerSettlePanel({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    // the guard is checked INSIDE submit (not only on the disabled button) so a
+    // form submit during the refresh window is a no-op
+    if (submitting || pay.isPending) return;
     setError(null);
-    if (amountError !== null) return;
+    if (amountError !== null || percentageInvalid) return;
     const targets = plan.filter((line) => line.applied > 0);
     if (targets.length === 0) {
       setError(t("partySettleNoDistribution"));
       return;
     }
+    setSubmitting(true);
     try {
       // one atomic payment per invoice: the api re-checks the boundary inside
       // each write unit, so a stale remaining can never be overpaid
@@ -91,6 +105,8 @@ export function CustomerSettlePanel({
       setError(tError(err instanceof Error ? err.message : undefined));
       setHalted(true);
       void refresh();
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -107,6 +123,7 @@ export function CustomerSettlePanel({
         percentageTestId="party-settle-percentage"
         referenceTestId="party-settle-reference"
         amountInvalid={amountError !== null}
+        percentageInvalid={percentageInvalid}
         disabled={pay.isPending}
       />
       <label className="grid gap-1 text-sm">

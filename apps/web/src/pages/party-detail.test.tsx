@@ -20,6 +20,10 @@ let payInputs: Array<{ invoiceId: string; amount: number; method?: string }> = [
 /** when > 0, the Nth invoicesPay call rejects (mid-loop failure) */
 let failPayAt = 0;
 let payCalls = 0;
+/** a gate held over the customersGet REFETCH, to widen the post-payment window */
+let detailCalls = 0;
+let detailGate: Promise<void> | null = null;
+let releaseDetailGate: (() => void) | null = null;
 let partyDetail: PartyDetail;
 
 function invoice(over: Partial<Invoice> & Pick<Invoice, "id" | "invoiceDate" | "remainingAmount">): Invoice {
@@ -65,7 +69,14 @@ mock.module("@tanstack/react-router", () => routerMock({ partyId: PARTY_ID }));
 mock.module("@/lib/rpc", () => ({
   orpc: {
     customersGet: {
-      queryOptions: () => ({ queryKey: ["customersGet", PARTY_ID], queryFn: async () => partyDetail }),
+      queryOptions: () => ({
+        queryKey: ["customersGet", PARTY_ID],
+        queryFn: async () => {
+          detailCalls += 1;
+          if (detailCalls > 1 && detailGate !== null) await detailGate;
+          return partyDetail;
+        },
+      }),
       queryKey: ({ input }: { input: { id: string } }) => ["customersGet", input.id],
     },
     suppliersGet: {
@@ -105,6 +116,9 @@ beforeEach(() => {
   payInputs = [];
   failPayAt = 0;
   payCalls = 0;
+  detailCalls = 0;
+  detailGate = null;
+  releaseDetailGate = null;
 });
 
 afterEach(() => {
@@ -257,6 +271,43 @@ describe("customer settle in place (#164)", () => {
     click("party-settle-confirm");
     await flushAsync();
     expect(payInputs).toHaveLength(2);
+  });
+
+  it("holds the submit guard across the refresh so a double-activate records one payment (#171)", async () => {
+    partyDetail = makeDetail([invoice({ id: "only", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })]);
+    // hold the customersGet refetch that runs after the payment, so the panel
+    // stays in the window where `pay.isPending` has already ended
+    detailGate = new Promise((resolve) => {
+      releaseDetailGate = resolve;
+    });
+    await renderCustomer();
+    click("party-settle");
+    typeInto("party-settle-amount", "200");
+    const form = host.querySelector<HTMLFormElement>('[data-testid="party-settle-panel"]')!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(payInputs).toHaveLength(1);
+    // wait until the gated refresh is actually in flight
+    for (let attempt = 0; attempt < 50 && detailCalls < 2; attempt++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+    expect(detailCalls).toBeGreaterThanOrEqual(2);
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled).toBe(true);
+    // a raw form submit bypasses the disabled button and must still be a no-op
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(payInputs).toHaveLength(1);
+    await act(async () => {
+      releaseDetailGate?.();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(payInputs).toHaveLength(1);
   });
 
   it("refuses an amount above what is owed and sends nothing", async () => {

@@ -40,7 +40,7 @@ let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
 let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 /** the picker's loaded supplier list and the last invoice input (issue 120) */
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
-let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string } | null = null;
+let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number } | null = null;
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -89,7 +89,7 @@ mock.module("@/lib/rpc", () => ({
     invoicesCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
-        mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string }) => {
+        mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number }) => {
           lastPurchaseInput = input;
           return purchaseInvoiceResult;
         },
@@ -470,6 +470,166 @@ describe("PurchasePage completion card (issue #159)", () => {
       expect(field.className).toContain("focus-visible:ring-ring/40");
       expect(field.className).toContain("dark:bg-input/30");
     }
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+/**
+ * #162/#171 — the purchase initial payment is a linked amount/percentage pair:
+ * it defaults to the full cart total, follows cart edits, rejects an invalid
+ * percentage, and omits a zero `initialPaid` (the api requires a positive one).
+ */
+describe("PurchasePage amount/percentage payment (#162/#171)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    document.body.innerHTML = "";
+    lastPurchaseInput = null;
+    purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+  });
+
+  const setValue = (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  async function mountPurchase() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    return { container, root };
+  }
+
+  /** quick-add one purchase line with the given quantity and unit cost */
+  async function addQuickLine(container: HTMLElement, qty: string, cost: string) {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const quickForm = container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]')!;
+    await act(async () => {
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, "منتج");
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, qty);
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await act(async () => {
+      quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  async function save(container: HTMLElement) {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  const amount = (container: HTMLElement) => container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')?.value;
+  const percentage = (container: HTMLElement) => container.querySelector<HTMLInputElement>('[data-testid="purchase-paid-percentage"]')?.value;
+  const typePercentage = async (container: HTMLElement, value: string) => {
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid-percentage"]')!, value));
+  };
+
+  it("defaults to the full total and links the percentage (#162)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    expect(amount(container)).toBe("100");
+    expect(percentage(container)).toBe("100");
+    await typePercentage(container, "50");
+    expect(amount(container)).toBe("50");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("relinks the pair when the cart total changes (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    await typePercentage(container, "50");
+    expect(amount(container)).toBe("50");
+    // the same item re-added at a larger quantity raises the total to 200
+    await addQuickLine(container, "2", "100");
+    expect(percentage(container)).toBe("50");
+    expect(amount(container)).toBe("100");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("preserves an amount typed before the first line (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')!, "40"));
+    await addQuickLine(container, "1", "100");
+    expect(amount(container)).toBe("40");
+    expect(percentage(container)).toBe("40");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("resets the pair before the next purchase (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')!, "40"));
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-new"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(amount(container)).toBe("");
+    // no reference on an empty cart: the percentage field is gone
+    expect(percentage(container)).toBeUndefined();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("omits initialPaid for 0% and for a percentage that rounds to zero (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    await typePercentage(container, "0");
+    expect(amount(container)).toBe("0");
+    await save(container);
+    expect(lastPurchaseInput?.initialPaid).toBeUndefined();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-new"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // a tiny total: 1% of 1 rounds to 0 DZD and must still be omitted
+    await addQuickLine(container, "1", "1");
+    await typePercentage(container, "1");
+    expect(amount(container)).toBe("0");
+    await save(container);
+    expect(lastPurchaseInput?.initialPaid).toBeUndefined();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("refuses an invalid percentage instead of saving it as unpaid (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    await typePercentage(container, "12.5");
+    expect(amount(container)).toBe("");
+    expect(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+    expect(lastPurchaseInput).toBeNull();
     await act(async () => root.unmount());
     container.remove();
   });

@@ -416,6 +416,39 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("50");
   });
 
+  it("refuses an invalid percentage instead of saving it as unpaid (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid-percentage", "12.5"));
+    // the derived amount is cleared, but the invalid percentage is flagged and
+    // must block the save rather than take the intentional "unpaid" path
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="sale-error"]')).not.toBeNull();
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("recomputes a percentage payment to zero when a discount zeroes the total (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await chooseOption(trigger, "نسبة مئوية");
+    await act(async () => setInput(host, "sale-discount-value", "100"));
+    expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("0");
+    // 50% of a zero total is zero, not the stale 500 the api would reject
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("0");
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastInvoiceInput?.initialPaid).toBeUndefined();
+  });
+
   it("shows the saving label while pending, then the server remaining (not cart math) as the debt", async () => {
     const host = await mountSale();
     await scan("222");

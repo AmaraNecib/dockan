@@ -106,6 +106,7 @@ mock.module("@/lib/rpc", () => ({
 }));
 
 const { PartyDetailPage } = await import("./party-detail");
+const { CustomerSettlePanel } = await import("@/components/parties/customer-settle-panel");
 
 let host = document.createElement("div");
 let roots: Array<{ unmount: () => void }> = [];
@@ -365,5 +366,66 @@ describe("customer settle in place (#164)", () => {
     expect(host.querySelector('[data-testid="party-detail-name"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="party-unpaid-filter"]')).toBeNull();
     expect(host.querySelector('[data-testid="party-settle"]')).toBeNull();
+  });
+});
+
+/**
+ * #171 — the settle panel must relink when its reference (the unpaid total)
+ * changes underneath it, with the edited field staying the source.
+ */
+describe("CustomerSettlePanel reference-change relink (#171)", () => {
+  const invoices = [invoice({ id: "only", invoiceDate: "2026-09-01", remainingAmount: 2_000, totalAmount: 2_000 })];
+
+  const amount = () => host.querySelector<HTMLInputElement>('[data-testid="party-settle-amount"]')?.value;
+  const percentage = () => host.querySelector<HTMLInputElement>('[data-testid="party-settle-percentage"]')?.value;
+
+  /** renders once, then re-renders the SAME panel with a new unpaid total */
+  function renderSettle(unpaid: number) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderWith = (next: number) =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <CustomerSettlePanel partyId={PARTY_ID} invoices={invoices} unpaid={next} onDone={() => undefined} onCancel={() => undefined} />
+        </QueryClientProvider>,
+      );
+    act(() => renderWith(unpaid));
+    return renderWith;
+  }
+
+  it("follows the new unpaid total under an untouched pair", () => {
+    const renderWith = renderSettle(1_000);
+    expect(amount()).toBe("1000");
+    expect(percentage()).toBe("100");
+    act(() => renderWith(1_500));
+    expect(amount()).toBe("1500");
+    expect(percentage()).toBe("100");
+  });
+
+  it("keeps an edited amount as the source and re-derives the percentage", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-amount", "400");
+    expect(percentage()).toBe("40");
+    act(() => renderWith(1_500));
+    expect(amount()).toBe("400");
+    expect(percentage()).toBe("27");
+  });
+
+  it("keeps an edited percentage as the source and rescales the amount", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-percentage", "50");
+    expect(amount()).toBe("500");
+    act(() => renderWith(2_000));
+    expect(percentage()).toBe("50");
+    expect(amount()).toBe("1000");
+  });
+
+  it("zeroes a percentage-based draft when the unpaid total falls to zero", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-percentage", "50");
+    expect(amount()).toBe("500");
+    act(() => renderWith(0));
+    expect(amount()).toBe("0");
   });
 });

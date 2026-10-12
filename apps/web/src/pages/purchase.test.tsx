@@ -41,6 +41,10 @@ let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 /** the picker's loaded supplier list and the last invoice input (issue 120) */
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
 let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number } | null = null;
+/** clears the recorder without narrowing the module variable at the call site */
+function clearPurchaseRecorder() {
+  lastPurchaseInput = null;
+}
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -617,6 +621,8 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
     await addQuickLine(container, "1", "1");
     await typePercentage(container, "1");
     expect(amount(container)).toBe("0");
+    // clear the recorder so the second save must send its OWN request
+    clearPurchaseRecorder();
     await save(container);
     expect(lastPurchaseInput).not.toBeNull();
     expect(lastPurchaseInput?.initialPaid).toBeUndefined();

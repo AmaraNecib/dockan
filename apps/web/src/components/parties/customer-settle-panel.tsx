@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, parseWholeAmount, percentageDraftInvalid, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -43,6 +43,9 @@ export function CustomerSettlePanel({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [value, setValue] = useState<AmountPercentageValue>(() => (unpaid > 0 ? { amount: String(unpaid), percentage: "100" } : { amount: "", percentage: "" }));
+  // #171 — the edited field stays the source when the unpaid total changes
+  // underneath the panel (the customer detail refetches while it is open)
+  const valueSource = useRef<"amount" | "percentage" | null>(null);
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [error, setError] = useState<string | null>(null);
   const [halted, setHalted] = useState(false);
@@ -52,6 +55,26 @@ export function CustomerSettlePanel({
   // stale balances and record the same money again
   const [submitting, setSubmitting] = useState(false);
   const pay = useMutation(orpc.invoicesPay.mutationOptions());
+
+  // #171 — relink when the unpaid total changes: an untouched pair follows the
+  // new total, an edited amount stays the source, an edited percentage rescales;
+  // a percentage-based draft falls to zero with the reference.
+  useEffect(() => {
+    setValue((current) => {
+      if (unpaid === 0) {
+        if (valueSource.current === "percentage") return { amount: "0", percentage: current.percentage };
+        if (valueSource.current === null) return { amount: "", percentage: "" };
+        return current;
+      }
+      if (valueSource.current === null) return { amount: String(unpaid), percentage: "100" };
+      if (valueSource.current === "percentage") {
+        const percentage = parseWholePercentage(current.percentage);
+        return percentage === null ? current : { amount: String(amountFromPercentage(unpaid, percentage)), percentage: current.percentage };
+      }
+      const amount = parseWholeAmount(current.amount);
+      return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(unpaid, amount)) };
+    });
+  }, [unpaid]);
 
   const amountError = settleAmountError(value.amount, unpaid);
   const percentageInvalid = percentageDraftInvalid(value.percentage);
@@ -117,7 +140,10 @@ export function CustomerSettlePanel({
       <AmountPercentageInput
         referenceTotal={unpaid}
         value={value}
-        onChange={setValue}
+        onChange={(next, edited) => {
+          valueSource.current = edited;
+          setValue(next);
+        }}
         amountLabel={t("pmtAmountLabel")}
         referenceLabel={t("partySettleReference")}
         amountTestId="party-settle-amount"

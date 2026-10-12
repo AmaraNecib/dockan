@@ -58,6 +58,9 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   // #162 — the instalment is a share of this invoice's remaining, so both the
   // amount and the percentage are offered; the default is the full remaining.
   const [paid, setPaid] = useState<AmountPercentageValue>(() => seedPaid(invoice.remainingAmount));
+  // #171 — the edited field stays the source when the remaining changes
+  // underneath the form (a return accepted, a payment recorded elsewhere)
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +96,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
       onSuccess: (_updated, variables) => {
+        paidSource.current = null;
         setPaid(seedPaid(_updated.remainingAmount));
         setNote("");
         setError(null);
@@ -116,6 +120,26 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   );
 
   const remaining = invoice.remainingAmount;
+  // #171 — relink when the remaining changes underneath the form: an untouched
+  // pair follows the new remaining, an edited amount stays the source, an edited
+  // percentage rescales. A percentage-based draft falls to zero with the
+  // reference. (ReturnsPanel already does this for the return value.)
+  useEffect(() => {
+    setPaid((current) => {
+      if (remaining === 0) {
+        if (paidSource.current === "percentage") return { amount: "0", percentage: current.percentage };
+        if (paidSource.current === null) return { amount: "", percentage: "" };
+        return current;
+      }
+      if (paidSource.current === null) return { amount: String(remaining), percentage: "100" };
+      if (paidSource.current === "percentage") {
+        const percentage = parseWholePercentage(current.percentage);
+        return percentage === null ? current : { amount: String(amountFromPercentage(remaining, percentage)), percentage: current.percentage };
+      }
+      const amount = parseWholeAmount(current.amount);
+      return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(remaining, amount)) };
+    });
+  }, [remaining]);
   const remainingMessage = paymentAmountError(paid.amount, remaining);
 
   function submit(event: React.FormEvent) {
@@ -184,7 +208,8 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         <AmountPercentageInput
           referenceTotal={remaining}
           value={paid}
-          onChange={(next) => {
+          onChange={(next, edited) => {
+            paidSource.current = edited;
             setPaid(next);
             setSavedPayment(null);
           }}

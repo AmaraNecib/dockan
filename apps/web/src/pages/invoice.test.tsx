@@ -335,6 +335,61 @@ describe("PaymentPanel (invoice payment form + history)", () => {
   });
 });
 
+describe("PaymentPanel reference-change relink (#171)", () => {
+  const amount = () => host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value;
+  const percentage = () => host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value;
+
+  /** renders once, then re-renders the SAME component with a new invoice */
+  function renderControlled(initial: InvoiceDetail) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderWith = (invoice: InvoiceDetail) =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <PaymentPanel invoice={invoice} />
+        </QueryClientProvider>,
+      );
+    act(() => renderWith(initial));
+    return renderWith;
+  }
+
+  it("follows the new remaining under an untouched pair", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    expect(amount()).toBe("600");
+    expect(percentage()).toBe("100");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("900");
+    expect(percentage()).toBe("100");
+  });
+
+  it("keeps an edited amount as the source and re-derives the percentage", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    expect(percentage()).toBe("50");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("300");
+    expect(percentage()).toBe("33");
+  });
+
+  it("keeps an edited percentage as the source and rescales the amount", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(amount()).toBe("300");
+    act(() => renderWith(makeInvoice(900)));
+    expect(percentage()).toBe("50");
+    expect(amount()).toBe("450");
+  });
+
+  it("zeroes a percentage-based draft when the remaining falls to zero", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(amount()).toBe("300");
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("0");
+  });
+});
+
 describe("InvoicePage notes (issue #126)", () => {
   it("shows the notes section with the stored text when present", async () => {
     await renderPage({ ...makeInvoice(900), notes: "الاتصال قبل التسليم" });

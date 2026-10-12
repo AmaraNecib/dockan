@@ -9,7 +9,7 @@ import { createRoot } from "react-dom/client";
 import "@/lib/i18n";
 import { PasswordInput } from "./password-input";
 
-let mountedRoots: Array<{ unmount: () => void }> = [];
+let mountedRoots: Array<ReturnType<typeof createRoot>> = [];
 
 function render(ui: ReactElement) {
   const host = document.createElement("div");
@@ -17,7 +17,13 @@ function render(ui: ReactElement) {
   const root = createRoot(host);
   mountedRoots.push(root);
   act(() => root.render(ui));
-  return { host };
+  return { host, root };
+}
+
+/** Unmount inside a test without leaking the root into the afterEach teardown. */
+function unmountRoot(root: ReturnType<typeof createRoot>): void {
+  act(() => root.unmount());
+  mountedRoots = mountedRoots.filter((mounted) => mounted !== root);
 }
 
 afterEach(() => {
@@ -138,13 +144,38 @@ describe("PasswordInput (#167)", () => {
 
   it("returns focus to the input after a toggle", () => {
     const { host } = render(<PasswordInput data-testid="password" value="" onChange={() => undefined} />);
-    const input = inputOf(host);
-    input.focus();
-    expect(document.activeElement).toBe(input);
+    const toggle = toggleOf(host);
+    // focus the toggle first: a programmatic click does not move focus, so an
+    // assertion without this setup would pass even if the hand-back were gone
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
 
-    click(toggleOf(host));
+    click(toggle);
 
     expect(document.activeElement).toBe(inputOf(host));
+  });
+
+  it("runs a callback ref's cleanup on unmount and drops the detached node", () => {
+    const attachedNodes: HTMLInputElement[] = [];
+    let cleanups = 0;
+    const ref = (node: HTMLInputElement | null): (() => void) | undefined => {
+      if (node === null) return undefined;
+      attachedNodes.push(node);
+      return () => {
+        cleanups += 1;
+      };
+    };
+
+    const { root } = render(<PasswordInput ref={ref} data-testid="password" value="" onChange={() => undefined} />);
+    expect(attachedNodes).toHaveLength(1);
+    expect(cleanups).toBe(0);
+
+    unmountRoot(root);
+
+    // the detach path runs the callback ref's cleanup and nulls the internal
+    // focus ref in the same branch, so a toggle can never focus a dead field
+    expect(cleanups).toBe(1);
+    expect(attachedNodes[0]?.isConnected).toBe(false);
   });
 
   it("disables the toggle together with the field", () => {

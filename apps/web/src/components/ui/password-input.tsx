@@ -21,6 +21,7 @@ export function PasswordInput({ className, disabled, ref, "data-testid": testId,
   const { t } = useTranslation();
   const [revealed, setRevealed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const detachRef = useRef<(() => void) | undefined>(undefined);
   const ToggleIcon = revealed ? EyeOffIcon : EyeIcon;
 
   // One node reference serves the toggle's focus hand-back; the caller's ref
@@ -28,10 +29,25 @@ export function PasswordInput({ className, disabled, ref, "data-testid": testId,
   const attachInput = useCallback(
     (node: HTMLInputElement | null) => {
       inputRef.current = node;
+      if (node === null) {
+        // detached: undo whatever the caller's callback ref set up, and drop
+        // the node so the toggle can never focus a detached field
+        detachRef.current?.();
+        detachRef.current = undefined;
+        return;
+      }
       if (ref === undefined || ref === null) return;
       // React hands a component either a ref object or a ref callback
-      if ("current" in ref) ref.current = node;
-      else ref(node);
+      if ("current" in ref) {
+        ref.current = node;
+        return;
+      }
+      // React 19 callback refs may return a cleanup function. Hold it and run
+      // it from the detach path above; returning it here would make React skip
+      // that path and leak the cleanup.
+      // SAFETY: React types a callback ref's return as void | (() => void);
+      // void and undefined are the same "no cleanup" value at runtime
+      detachRef.current = ref(node) as (() => void) | undefined;
     },
     [ref],
   );

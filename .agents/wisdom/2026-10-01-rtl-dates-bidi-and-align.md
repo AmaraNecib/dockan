@@ -34,3 +34,29 @@ time at x≈1346, space at x≈1376, date at x≈1380 (date rightmost) — and
 parsing, no `Intl`/`toLocale*`, invalid input returned unchanged. See
 `2026-08-25-real-clock-fixtures-and-time-format-traps.md` for why locale-driven display
 formatters are untestable across machines.
+
+## A cell that needs LTR isolation: `.cell-ltr`, never `dir="ltr"` (#166)
+
+**Date:** 2026-10-12 · **Ticket:** 166 · **Area:** `apps/web` table cells + `index.css`
+
+The #119 fix removed `dir="ltr"` from date cells, but invoice numbers, phones,
+references and printed quantities still need an LTR run *and* must stay under their
+right-aligned RTL header. `dir="ltr"` on the cell cannot do both: it flips
+`text-align: start` to the left edge to order the digits, which is the misalignment.
+
+**Always**: for a `<td>`/`<TableCell>`, use the shared utility, not the attribute:
+
+```css
+.cell-ltr { direction: ltr; unicode-bidi: isolate; text-align: right; }
+```
+
+It is appended to `index.css` (unlayered, so it beats Tailwind's layered `text-start`).
+Inline `<span dir="ltr">` runs (e.g. `<Amount>`) are still correct — a span does not
+carry the cell's alignment.
+
+**Always**: keep a source guard, not just a rendered test. `apps/web/src/lib/cell-ltr.test.ts`
+scans every non-test `.tsx` for a cell carrying `dir="ltr"` (any quote spelling) and
+pins the utility's CSS and per-file counts. A `<td dir="ltr">` regresses silently in
+unit tests because happy-dom has no layout. The scan's `[^>]*?` cannot see past a `>`
+inside a JSX attribute, so a cell with an inline arrow-function prop plus `dir="ltr"`
+escapes it — do not reintroduce one.

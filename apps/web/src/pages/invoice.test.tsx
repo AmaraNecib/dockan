@@ -250,6 +250,8 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     const done = host.querySelector('[data-testid="pmt-done"]');
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل الدفعة");
+    // the submitted control unmounted with the form: focus lands on the card
+    expect(document.activeElement).toBe(done);
     // the detail line shows the recorded amount in «دج» (never "DA")
     const detail = host.querySelector('[data-testid="pmt-saved-detail"]');
     expect(detail?.textContent).toContain("600");
@@ -266,6 +268,33 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(host.querySelector('[data-testid="pmt-done"]')).toBeNull();
     // the restored form takes focus so a keyboard user keeps typing (issue #169 finding 2)
     expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-amount"]'));
+  });
+
+  it("moves focus to the paid-off message when the cleared balance leaves no enabled field (issue #169 round 2)", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderWith = (invoice: InvoiceDetail) =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <PaymentPanel invoice={invoice} />
+        </QueryClientProvider>,
+      );
+    act(() => renderWith(makeInvoice(600)));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "600");
+    submitForm(host.querySelector<HTMLFormElement>("form")!);
+    await flushAsync();
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-done"]'));
+
+    // the detail read refetched: the balance is now zero, so every field is disabled
+    act(() => renderWith(makeInvoice(0)));
+    act(() => {
+      host.querySelector<HTMLButtonElement>('[data-testid="pmt-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="pmt-form"]')).not.toBeNull();
+    // no input can take focus: the paid-off message is the fallback
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-unavailable"]'));
   });
 
   it("keeps the payment fields visible in both themes (issue #160)", () => {

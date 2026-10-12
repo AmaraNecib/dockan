@@ -340,6 +340,8 @@ describe("ReturnsPanel (new-return form + history)", () => {
     const done = host.querySelector('[data-testid="returns-done"]');
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل المرجوع");
+    // the submitted control unmounted with the form: focus lands on the card
+    expect(document.activeElement).toBe(done);
     expect(done?.textContent).toContain("RTN-0001");
     // the detail line renders the «دج» token (never "DA")
     const detail = host.querySelector('[data-testid="returns-done-detail"]');

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import { Check } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -16,24 +16,33 @@ import { cn } from "@/lib/utils";
  * `role="status"` keeps the save announcement in the same assistive-tech live
  * region the old inline `<p role="status">` provided; callers keep their flow
  * test id on the card root.
+ *
+ * The root is programmatically focusable (`tabIndex={-1}`) so a caller can move
+ * keyboard focus onto the card when the form that held it unmounts on save
+ * (issue #169 round 2); it stays out of the tab order.
  */
 export function SuccessCard({
   title,
   detail,
   testId,
   className,
+  containerRef,
   children,
 }: {
   title: ReactNode;
   detail?: ReactNode;
   testId?: string;
   className?: string;
+  /** ref to the focusable card root, for the panel's post-save focus move */
+  containerRef?: Ref<HTMLDivElement>;
   children: ReactNode;
 }) {
   return (
     <div
+      ref={containerRef}
       data-testid={testId}
       role="status"
+      tabIndex={-1}
       className={cn("rounded-lg border border-success/40 bg-success/10 p-4", className)}
     >
       <div className="flex items-start gap-3">

@@ -141,12 +141,15 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     });
   }, [remaining]);
   const remainingMessage = paymentAmountError(paid.amount, remaining);
+  // #171 — the invalid percentage is guarded explicitly, not left to the
+  // incidental invariant that an invalid draft also empties the amount
+  const percentageInvalid = percentageDraftInvalid(paid.percentage);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
     setSavedPayment(null);
-    if (remainingMessage !== null) {
+    if (remainingMessage !== null || percentageInvalid) {
       // same boundary as the api: an instalment never exceeds what is owed
       setError(remainingMessage === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining }) : t("pmtInvalidAmount"));
       return;
@@ -219,7 +222,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           percentageTestId="pmt-percentage"
           referenceTestId="pmt-reference"
           amountInvalid={remainingMessage !== null}
-          percentageInvalid={percentageDraftInvalid(paid.percentage)}
+          percentageInvalid={percentageInvalid}
           disabled={remaining === 0}
         />
         <div className="grid grid-cols-2 gap-3">
@@ -267,7 +270,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           <button
             type="submit"
             className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
-            disabled={pay.isPending}
+            disabled={pay.isPending || percentageInvalid}
             data-testid="pmt-submit"
           >
             {t("pmtRecord")}

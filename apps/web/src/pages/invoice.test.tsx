@@ -24,7 +24,9 @@ let invoiceReturns: ReturnDetail[] = [];
 
 // The page renders router Links and (through ReturnsPanel) useParams; mirror the
 // seam the other page tests use so InvoicePage is testable without a router.
-mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "00000000-0000-4000-8000-000000000001" }));
+// `routeParams` is mutable so a test can move the route to another invoice.
+const routeParams = { invoiceId: "00000000-0000-4000-8000-000000000001" };
+mock.module("@tanstack/react-router", () => routerMock(routeParams));
 
 // The page module imports the rpc client at module scope; stub the whole
 // seam so the panel is testable without a network. The mock mirrors the real
@@ -33,7 +35,7 @@ mock.module("@tanstack/react-router", () => routerMock({ invoiceId: "00000000-00
 mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesGet: {
-      queryOptions: () => ({ queryKey: ["invoicesGet"], queryFn: async () => invoiceDetail }),
+      queryOptions: ({ input }: { input: { id: string } }) => ({ queryKey: ["invoicesGet", input], queryFn: async () => invoiceDetail }),
       queryKey: ({ input }: { input: { id: string } }) => ["invoicesGet", input],
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
@@ -101,6 +103,7 @@ beforeEach(() => {
   lastPayInput = null;
   invoiceDetail = undefined;
   invoiceReturns = [];
+  routeParams.invoiceId = "00000000-0000-4000-8000-000000000001";
 });
 
 afterEach(() => {
@@ -404,15 +407,60 @@ describe("PaymentPanel reference-change relink (#171)", () => {
     expect(amount()).toBe("300");
     // the amount field is flagged and the form is disabled, so it cannot be sent
     expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.getAttribute("aria-invalid")).toBe("true");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.disabled).toBe(true);
+    expect(host.querySelector('[data-testid="pmt-submit"]')).toBeNull();
   });
 
   it("keeps an invalid percentage flagged across a reference change", () => {
     const renderWith = renderControlled(makeInvoice(600));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "12.5");
     expect(amount()).toBe("");
+    expect(percentage()).toBe("12.5");
     act(() => renderWith(makeInvoice(900)));
     expect(amount()).toBe("");
     expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+  });
+});
+
+describe("InvoicePage invoice switch (#171)", () => {
+  it("reseeds the payment panel when the route moves to a cached different invoice", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    const renderPage = () =>
+      root.render(
+        <QueryClientProvider client={client}>
+          <InvoicePage />
+        </QueryClientProvider>,
+      );
+    const waitForPanel = async () => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (host.querySelector('[data-testid="pmt-amount"]') !== null) return;
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        });
+      }
+      throw new Error("payment panel did not settle");
+    };
+
+    invoiceDetail = makeInvoice(600);
+    await act(async () => renderPage());
+    await waitForPanel();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("300");
+
+    // a CACHED different invoice: the page renders it without a pending phase,
+    // so only the panel's key can reseed the draft
+    const invoiceB = { ...makeInvoice(900), id: "00000000-0000-4000-8000-000000000002" };
+    client.setQueryData(["invoicesGet", { id: invoiceB.id }], invoiceB);
+    invoiceDetail = invoiceB;
+    routeParams.invoiceId = invoiceB.id;
+    await act(async () => renderPage());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value).toBe("100");
   });
 });
 

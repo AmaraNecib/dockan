@@ -441,6 +441,17 @@ describe("CustomerSettlePanel reference-change relink (#171)", () => {
     typeInto("party-settle-amount", "400");
     act(() => renderWith(0));
     expect(amount()).toBe("400");
+    // over the (now zero) reference: confirm is blocked
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled).toBe(true);
+  });
+
+  it("keeps an invalid percentage flagged across a reference change", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-percentage", "12.5");
+    expect(amount()).toBe("");
+    act(() => renderWith(2_000));
+    expect(amount()).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="party-settle-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("relinks a percentage draft through a zero and back up", () => {

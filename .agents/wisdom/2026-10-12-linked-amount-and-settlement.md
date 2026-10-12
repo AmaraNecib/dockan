@@ -74,3 +74,25 @@ the test proves nothing.
 **Verify the reviewer's own fix.** A "block the disabled-button bypass" test must
 dispatch a raw form `submit`, not a `click` on a disabled button, and must cover
 the error/halted path — the first round only proved the success path.
+
+## Round 3 (#171) — relink per entity, and guard the explicit state
+
+**A reference-keyed relink is not enough; key the panel to the entity (🟠 Subtle).**
+An effect keyed on the reference handles a same-entity change (a return accepted,
+a payment elsewhere). But when the route moves to a *different* invoice/customer
+the component instance can persist — especially when the target query is already
+cached, so no pending/unmount phase resets it — and the old draft is then
+relinked against the new entity. `key={entity.id}` on the panel reseeds per
+entity while the effect keeps same-entity changes linked. Test it with a *cached*
+target, or the pending unmount hides the bug.
+
+**Guard the explicit invalid state, not an incidental invariant (🟡 Cosmetic).**
+`PaymentPanel` relied on "an invalid percentage also empties the amount, so the
+amount boundary rejects it". That is true today but couples two modules. The
+sibling settle panel guarded `percentageInvalid` explicitly; make every consumer
+do the same (guard + disabled), so a change to the link function cannot make an
+invalid draft submittable.
+
+**"Blocked, not sent" tests must assert the block (🟡 Cosmetic).** Asserting only
+the field value (or `aria-invalid`) leaves the "cannot be sent" claim unproven;
+assert the submit is disabled/absent or that no request was recorded.

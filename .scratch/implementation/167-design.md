@@ -106,8 +106,11 @@ the unit proxy and the Playwright box measurement is the real geometry check.
 - **Toggle steals field focus — resolved.** Clicking the native control kept the
   caret in the field, so the toggle hands focus back to the input. A disabled
   field also disables its toggle.
-- **Visual drift.** The component keeps the existing field classes rather than
-  adopting `ui/Input`, so the change is layout-neutral. The only added pixels
-  are the reserved `pe-10` gutter on the inline end.
+- **Visual drift.** The component uses the vault-gate/App field classes
+  (`border-input bg-background`, logical padding) rather than adopting
+  `ui/Input`, so the setup/login fields are unchanged apart from the reserved
+  `pe-10` gutter on the inline end. The four `vault-settings` fields previously
+  used a bare `rounded border px-3 py-2`; they now match the other fields, which
+  is the cross-field consistency the brief asks for (not merely layout-neutral).
 - **Shared CSS file.** `index.css` is shared with lanes #159/#160; the rule is
   appended once at the end, touching nothing else.

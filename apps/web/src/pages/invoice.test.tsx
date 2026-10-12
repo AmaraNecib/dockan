@@ -388,6 +388,32 @@ describe("PaymentPanel reference-change relink (#171)", () => {
     act(() => renderWith(makeInvoice(0)));
     expect(amount()).toBe("0");
   });
+
+  it("clears an untouched pair when the remaining falls to zero", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("");
+    // no reference left: the percentage field is gone
+    expect(host.querySelector('[data-testid="pmt-percentage"]')).toBeNull();
+  });
+
+  it("keeps an edited amount when the remaining falls to zero (blocked, not silently zeroed)", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "300");
+    act(() => renderWith(makeInvoice(0)));
+    expect(amount()).toBe("300");
+    // the amount field is flagged and the form is disabled, so it cannot be sent
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("keeps an invalid percentage flagged across a reference change", () => {
+    const renderWith = renderControlled(makeInvoice(600));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "12.5");
+    expect(amount()).toBe("");
+    act(() => renderWith(makeInvoice(900)));
+    expect(amount()).toBe("");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+  });
 });
 
 describe("InvoicePage notes (issue #126)", () => {

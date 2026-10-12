@@ -428,4 +428,29 @@ describe("CustomerSettlePanel reference-change relink (#171)", () => {
     act(() => renderWith(0));
     expect(amount()).toBe("0");
   });
+
+  it("clears an untouched pair when the unpaid total falls to zero", () => {
+    const renderWith = renderSettle(1_000);
+    act(() => renderWith(0));
+    expect(amount()).toBe("");
+    expect(host.querySelector('[data-testid="party-settle-percentage"]')).toBeNull();
+  });
+
+  it("keeps an edited amount when the unpaid total falls to zero", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-amount", "400");
+    act(() => renderWith(0));
+    expect(amount()).toBe("400");
+  });
+
+  it("relinks a percentage draft through a zero and back up", () => {
+    const renderWith = renderSettle(1_000);
+    typeInto("party-settle-percentage", "50");
+    expect(amount()).toBe("500");
+    act(() => renderWith(0));
+    expect(amount()).toBe("0");
+    act(() => renderWith(2_000));
+    expect(percentage()).toBe("50");
+    expect(amount()).toBe("1000");
+  });
 });

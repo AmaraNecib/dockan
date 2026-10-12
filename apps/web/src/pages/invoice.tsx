@@ -219,6 +219,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           percentageTestId="pmt-percentage"
           referenceTestId="pmt-reference"
           amountInvalid={remainingMessage !== null}
+          percentageInvalid={percentageDraftInvalid(paid.percentage)}
           disabled={remaining === 0}
         />
         <div className="grid grid-cols-2 gap-3">
@@ -856,7 +857,9 @@ export function InvoicePage() {
         )}
       </div>
 
-      <PaymentPanel invoice={invoice} />
+      {/* the key reseeds the pair when the route moves to a different invoice;
+          a same-invoice refetch keeps the instance and relinks instead */}
+      <PaymentPanel key={invoice.id} invoice={invoice} />
 
       <ReturnsPanel invoice={invoice} />
     </section>

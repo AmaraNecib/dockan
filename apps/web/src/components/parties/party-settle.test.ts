@@ -82,6 +82,18 @@ describe("distribution ordering (#164)", () => {
     expect(distributePayment(invoices, 30).map((line) => line.invoice.id)).toEqual(["a", "b", "c"]);
   });
 
+  it("breaks a same-date, same-second tie by the invoice number sequence", () => {
+    // createdAt has second precision, so two invoices created in the same
+    // second would otherwise fall to a random UUID: the number is the real
+    // creation order (and must compare numerically, not lexically)
+    const sameSecond = "2026-09-01T12:00:00";
+    const invoices = [
+      invoice({ id: "z", invoiceNumber: "INV-0010", invoiceDate: "2026-09-01", remainingAmount: 10, createdAt: sameSecond }),
+      invoice({ id: "y", invoiceNumber: "INV-0009", invoiceDate: "2026-09-01", remainingAmount: 10, createdAt: sameSecond }),
+    ];
+    expect(distributePayment(invoices, 20).map((line) => line.invoice.id)).toEqual(["y", "z"]);
+  });
+
   it("treats a zero/negative/non-finite amount as nothing applied", () => {
     const invoices = [invoice({ id: "a", invoiceDate: "2026-09-01", remainingAmount: 100 })];
     expect(distributePayment(invoices, 0)).toEqual([{ invoice: invoices[0]!, applied: 0 }]);

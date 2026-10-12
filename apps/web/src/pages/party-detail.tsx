@@ -7,7 +7,7 @@ import type { Invoice, PartyDetail, PartyPayment, PartyRole } from "@dokan/contr
 import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { CustomerSettlePanel } from "@/components/parties/customer-settle-panel";
-import { unpaidInvoices } from "@/components/parties/party-settle";
+import { unpaidInvoices, unpaidTotal } from "@/components/parties/party-settle";
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -123,7 +123,9 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const unpaid = unpaidInvoices(allInvoices);
   const showUnpaidOnly = customerScope && unpaidOnly;
   const visibleInvoices = showUnpaidOnly ? unpaid : allInvoices;
-  const unpaidAmount = detail.data?.stats.remainingAmount ?? 0;
+  // the settle cap and the distribution both walk the invoice rows, so the
+  // reference is their sum too — never a second, potentially divergent stat
+  const unpaidAmount = unpaidTotal(allInvoices);
 
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");
 

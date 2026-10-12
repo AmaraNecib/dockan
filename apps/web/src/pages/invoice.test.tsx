@@ -215,6 +215,16 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(host.querySelector('[data-testid="pmt-history"]')).toBeNull();
   });
 
+  it("links the instalment amount to the invoice remaining (#162)", () => {
+    renderPanel(makeInvoice(600));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("600");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')?.value).toBe("100");
+    // the reference is shown next to the fields so «50%» is unambiguous
+    expect(host.querySelector('[data-testid="pmt-reference"]')?.textContent).toContain("600");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.value).toBe("300");
+  });
+
   it("renders every history row in the invoice's order with amount and method", () => {
     renderPanel(
       makeInvoice(400, [

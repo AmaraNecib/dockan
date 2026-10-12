@@ -10,7 +10,7 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -42,7 +42,7 @@ export function PurchasePage() {
   const [paidNow, setPaidNow] = useState("");
   // #162 — the initial payment is a share of the cart total (amount ⇄ percentage)
   const [paidPercentage, setPaidPercentage] = useState("");
-  const paidTouched = useRef(false);
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedInvoice, setSavedInvoice] = useState<InvoiceDetail | null>(null);
 
@@ -78,7 +78,7 @@ export function PurchasePage() {
         setNotes("");
         setPaidNow("");
         setPaidPercentage("");
-        paidTouched.current = false;
+        paidSource.current = null;
         void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
       },
       onError: (err) => setError(tError(err.message)),
@@ -87,12 +87,29 @@ export function PurchasePage() {
 
   const total = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
 
-  // #162 — the initial payment defaults to the full total (100%) until edited
+  // #162 — keep the pair linked as the cart total changes (same rule as sale)
   useEffect(() => {
-    if (paidTouched.current) return;
-    setPaidNow(total === 0 ? "" : String(total));
-    setPaidPercentage(total === 0 ? "" : "100");
-  }, [total]);
+    if (total === 0) {
+      // only an untouched pair follows the empty cart; a typed draft survives
+      if (paidSource.current === null) {
+        setPaidNow("");
+        setPaidPercentage("");
+      }
+      return;
+    }
+    if (paidSource.current === null) {
+      setPaidNow(String(total));
+      setPaidPercentage("100");
+      return;
+    }
+    if (paidSource.current === "percentage") {
+      const percentage = parseWholePercentage(paidPercentage);
+      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(paidNow);
+    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
+  }, [total, paidNow, paidPercentage]);
 
   function submit() {
     setError(null);
@@ -106,13 +123,18 @@ export function PurchasePage() {
       setError(t("partyChooseExisting"));
       return;
     }
+    const paid = paidNow === "" ? undefined : Number(paidNow);
+    if (paid !== undefined && (!Number.isSafeInteger(paid) || paid < 0)) {
+      setError(t("purchasesInvalidPaid"));
+      return;
+    }
     void createInvoice.mutate({
       kind: "PURCHASE",
       // the picker keeps the picked record's id; a typed-only name stays null
       counterpartyId: supplier.id === null ? undefined : supplier.id,
       counterpartyName: supplier.name.trim() === "" ? undefined : supplier.name.trim(),
       notes: notes.trim() === "" ? undefined : notes.trim(),
-      initialPaid: paidNow === "" ? undefined : Number(paidNow),
+      initialPaid: paid,
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: line.quantity, unitPrice: line.unitCost })),
     });
   }
@@ -213,8 +235,8 @@ export function PurchasePage() {
               <AmountPercentageInput
                 referenceTotal={total > 0 ? total : null}
                 value={{ amount: paidNow, percentage: paidPercentage }}
-                onChange={(next) => {
-                  paidTouched.current = true;
+                onChange={(next, edited) => {
+                  paidSource.current = edited;
                   setPaidNow(next.amount);
                   setPaidPercentage(next.percentage);
                 }}

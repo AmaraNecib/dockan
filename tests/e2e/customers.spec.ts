@@ -279,7 +279,7 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   // the older invoice's remaining dropped from 2000 to 500
   await expect(page.getByTestId("party-unpaid-total")).toContainText("1500");
   await page.getByTestId("party-invoice-row").filter({ hasText: olderInvoice }).getByRole("link").click();
-  await expect(page.getByTestId("invoice-remaining")).toContainText("500");
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^500\s*دج$/);
 });
 
 /**

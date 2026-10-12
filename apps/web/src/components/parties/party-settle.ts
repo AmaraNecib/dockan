@@ -1,5 +1,7 @@
 import type { Invoice } from "@dokan/contracts";
 
+import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
+
 /**
  * #164 (customer half) — the pure half of the in-page settlement: which
  * invoices are still owed, the unpaid total, and how a payment spreads over
@@ -25,7 +27,10 @@ export interface DistributionLine {
 
 /**
  * Spread `amount` over the unpaid invoices, **oldest first** (invoice date,
- * then creation, then id — all deterministic). Each invoice takes at most its
+ * then creation, then the invoice number's numeric sequence, then id — all
+ * deterministic). The number is the tie-break that actually reflects creation
+ * order when two invoices share a date and second (createdAt has second
+ * precision, and the id is a random UUID). Each invoice takes at most its
  * remaining, so the payment can never exceed what is owed; the tail of an
  * oversized amount is simply left undistributed (`sum(applied) <= amount`).
  * The preview and the persisted per-invoice payments both read this one plan.
@@ -34,6 +39,8 @@ export function distributePayment(invoices: readonly Invoice[], amount: number):
   const ordered = [...unpaidInvoices(invoices)].sort((a, b) => {
     if (a.invoiceDate !== b.invoiceDate) return a.invoiceDate < b.invoiceDate ? -1 : 1;
     if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+    const sequence = invoiceSequence(a.invoiceNumber) - invoiceSequence(b.invoiceNumber);
+    if (sequence !== 0) return sequence;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   let left = Number.isFinite(amount) && amount > 0 ? Math.floor(amount) : 0;
@@ -44,12 +51,17 @@ export function distributePayment(invoices: readonly Invoice[], amount: number):
   });
 }
 
-/** The settle amount's boundary: digits-only whole DZD, 1..max. */
+/** The trailing number of an INV-%04d number; a non-numeric number sorts as 0. */
+function invoiceSequence(invoiceNumber: string): number {
+  const digits = /(\d+)\s*$/u.exec(invoiceNumber);
+  return digits === null ? 0 : Number(digits[1]);
+}
+
+/** The settle amount's boundary: digits-only whole DZD, 1..max. Shares the
+ * component's parser so the two money guards cannot drift. */
 export function settleAmountError(draft: string, max: number): "INVALID" | "EXCEEDS" | null {
-  const trimmed = draft.trim();
-  if (!/^\d+$/u.test(trimmed)) return "INVALID";
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value <= 0) return "INVALID";
+  const value = parseWholeAmount(draft);
+  if (value === null || value <= 0) return "INVALID";
   if (value > max) return "EXCEEDS";
   return null;
 }

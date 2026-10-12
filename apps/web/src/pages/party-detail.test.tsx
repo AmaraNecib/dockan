@@ -11,10 +11,15 @@ import "../lib/i18n";
 
 import type { Invoice, PartyDetail } from "@dokan/contracts";
 
+import { routerMock } from "../tests/router-mock";
+
 const PARTY_ID = "00000000-0000-4000-8000-0000000000aa";
 
 /** every invoicesPay input the settle panel sent, in call order */
-let payInputs: Array<{ invoiceId: string; amount: number }> = [];
+let payInputs: Array<{ invoiceId: string; amount: number; method?: string }> = [];
+/** when > 0, the Nth invoicesPay call rejects (mid-loop failure) */
+let failPayAt = 0;
+let payCalls = 0;
 let partyDetail: PartyDetail;
 
 function invoice(over: Partial<Invoice> & Pick<Invoice, "id" | "invoiceDate" | "remainingAmount">): Invoice {
@@ -55,13 +60,7 @@ function makeDetail(invoices: Invoice[]): PartyDetail {
 }
 
 // The page mounts the router Link and reads the partyId from the route.
-mock.module("@tanstack/react-router", () => ({
-  Link: ({ children, to, params, ...rest }: { children?: React.ReactNode; to?: string; params?: Record<string, string>; "data-testid"?: string }) => (
-    <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>
-  ),
-  useParams: () => ({ partyId: PARTY_ID }),
-  useNavigate: () => () => undefined,
-}));
+mock.module("@tanstack/react-router", () => routerMock({ partyId: PARTY_ID }));
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -78,7 +77,9 @@ mock.module("@/lib/rpc", () => ({
         mutationKey: ["invoicesPay"],
         ...options,
         mutationFn: async (input: { invoiceId: string; amount: number; method?: string }) => {
-          payInputs.push({ invoiceId: input.invoiceId, amount: input.amount });
+          payInputs.push({ invoiceId: input.invoiceId, amount: input.amount, method: input.method });
+          payCalls += 1;
+          if (failPayAt > 0 && payCalls === failPayAt) throw new Error("PAYMENT_EXCEEDS_REMAINING");
           return {};
         },
       }),
@@ -102,10 +103,12 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.appendChild(host);
   payInputs = [];
+  failPayAt = 0;
+  payCalls = 0;
 });
 
 afterEach(() => {
-  for (const root of roots) root.unmount();
+  for (const root of roots) act(() => root.unmount());
   roots = [];
   host.remove();
 });
@@ -230,10 +233,30 @@ describe("customer settle in place (#164)", () => {
     click("party-settle-confirm");
     await flushAsync();
     expect(payInputs).toEqual([
-      { invoiceId: "old", amount: 30_000 },
-      { invoiceId: "new", amount: 10_000 },
+      { invoiceId: "old", amount: 30_000, method: "CASH" },
+      { invoiceId: "new", amount: 10_000, method: "CASH" },
     ]);
     expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم توزيع الدفعة");
+  });
+
+  it("halts after a mid-loop failure so a second confirm cannot resend money", async () => {
+    failPayAt = 2;
+    await renderCustomer();
+    click("party-settle");
+    typeInto("party-settle-amount", "40000");
+    click("party-settle-confirm");
+    await flushAsync();
+    // both were attempted; the second is the one that failed
+    expect(payInputs).toEqual([
+      { invoiceId: "old", amount: 30_000, method: "CASH" },
+      { invoiceId: "new", amount: 10_000, method: "CASH" },
+    ]);
+    expect(host.querySelector('[data-testid="party-settle-error"]')?.textContent).toContain("يتجاوز");
+    expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
+    // the halted panel refuses a second confirm: nothing more is sent
+    click("party-settle-confirm");
+    await flushAsync();
+    expect(payInputs).toHaveLength(2);
   });
 
   it("refuses an amount above what is owed and sends nothing", async () => {
@@ -264,6 +287,8 @@ describe("customer settle in place (#164)", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       });
     }
+    // never pass vacuously: the page must have rendered before the negatives
+    expect(host.querySelector('[data-testid="party-detail-name"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="party-unpaid-filter"]')).toBeNull();
     expect(host.querySelector('[data-testid="party-settle"]')).toBeNull();
   });

@@ -86,7 +86,8 @@ export interface AmountPercentageInputProps {
   /** the share base. null/absent → the percentage field is not rendered. */
   referenceTotal?: number | null;
   value: AmountPercentageValue;
-  onChange: (next: AmountPercentageValue) => void;
+  /** the linked pair, plus which field the owner just edited (the source of truth) */
+  onChange: (next: AmountPercentageValue, edited: "amount" | "percentage") => void;
   amountLabel: string;
   percentageLabel?: string;
   referenceLabel?: string;
@@ -116,6 +117,7 @@ export function AmountPercentageInput({
   const { t } = useTranslation();
   const idPrefix = useId();
   const showPercentage = hasReference(referenceTotal);
+  const referenceId = `${idPrefix}-reference`;
 
   return (
     <div className="grid gap-2" data-testid="amount-percentage-input">
@@ -127,10 +129,11 @@ export function AmountPercentageInput({
             className={inputClass}
             inputMode="numeric"
             aria-invalid={amountInvalid || undefined}
+            aria-describedby={showPercentage ? referenceId : undefined}
             value={value.amount}
             placeholder={amountPlaceholder}
             disabled={disabled}
-            onChange={(event) => onChange(amountEdited(referenceTotal, event.target.value))}
+            onChange={(event) => onChange(amountEdited(referenceTotal, event.target.value), "amount")}
             data-testid={amountTestId}
           />
         </label>
@@ -141,16 +144,17 @@ export function AmountPercentageInput({
               id={`${idPrefix}-percentage`}
               className={inputClass}
               inputMode="numeric"
+              aria-describedby={referenceId}
               value={value.percentage}
               disabled={disabled}
-              onChange={(event) => onChange(percentageEdited(referenceTotal, event.target.value))}
+              onChange={(event) => onChange(percentageEdited(referenceTotal, event.target.value), "percentage")}
               data-testid={percentageTestId}
             />
           </label>
         )}
       </div>
       {showPercentage && (
-        <p className="text-xs text-muted-foreground" data-testid={referenceTestId}>
+        <p id={referenceId} className="text-xs text-muted-foreground" data-testid={referenceTestId}>
           {referenceLabel ?? t("amountReferenceLabel")}: <Amount value={referenceTotal} />
         </p>
       )}

@@ -376,6 +376,46 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(notice?.textContent).toContain("تقديري");
   });
 
+  it("defaults the initial payment to the full cart total and links the percentage (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("100");
+    expect(host.querySelector('[data-testid="sale-paid-reference"]')?.textContent).toContain("1000");
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+  });
+
+  it("rescales a percentage payment when the cart total changes (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    // a second line doubles the total; the 50% source rescales the amount
+    await scan("112");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
+  });
+
+  it("keeps an edited amount and re-derives the percentage when the total changes (#162)", async () => {
+    const host = await mountSale();
+    await scan("111");
+    await act(async () => setInput(host, "sale-paid", "400"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("40");
+    await scan("112");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("400");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("20");
+  });
+
+  it("keeps a payment typed before the first line and links it once the cart has a total (#162)", async () => {
+    const host = await mountSale();
+    // no reference yet: a single amount field, and the typed draft must survive
+    await act(async () => setInput(host, "sale-paid", "500"));
+    await scan("111"); // total 1000
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("50");
+  });
+
   it("shows the saving label while pending, then the server remaining (not cart math) as the debt", async () => {
     const host = await mountSale();
     await scan("222");

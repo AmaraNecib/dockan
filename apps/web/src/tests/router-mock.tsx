@@ -24,5 +24,8 @@ export function routerMock(params: Record<string, string> = {}) {
       return <a href={`${to ?? ""}?${new URLSearchParams(linkParams ?? {}).toString()}`} {...rest}>{children}</a>;
     },
     useParams: () => params,
+    // PartyDetailPage navigates on delete; the stub keeps every page test from
+    // needing to know about the router just to mount
+    useNavigate: () => () => undefined,
   };
 }

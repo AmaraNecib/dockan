@@ -6,7 +6,7 @@ import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -132,7 +132,10 @@ export function SalePage() {
   // percentage mirror each other. The full total is the default until the
   // owner edits either field.
   const [paidPercentage, setPaidPercentage] = useState("");
-  const paidTouched = useRef(false);
+  // which field the owner edits is the source of truth when the cart total
+  // later changes: a percentage rescales the amount, an amount re-derives the
+  // percentage. `null` = untouched, so the pair follows the full total.
+  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
    * kept whole so the card reads the authoritative number, remaining and party */
@@ -217,7 +220,7 @@ export function SalePage() {
         setDiscountValue("");
         setPaidNow("");
         setPaidPercentage("");
-        paidTouched.current = false;
+        paidSource.current = null;
         setError(null);
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
@@ -269,13 +272,34 @@ export function SalePage() {
   const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
   const total = subtotal - discountAmount;
 
-  // #162 — the initial payment defaults to the full total (100%) until the
-  // owner edits it; a later cart edit must not overwrite their number.
+  // #162 — keep the pair linked as the cart total changes: untouched follows
+  // the full total, an edited percentage rescales the amount, an edited amount
+  // keeps the amount and re-derives the percentage. Recomputing from the same
+  // values is a no-op, so the effect stays convergent.
   useEffect(() => {
-    if (paidTouched.current) return;
-    setPaidNow(total === 0 ? "" : String(total));
-    setPaidPercentage(total === 0 ? "" : "100");
-  }, [total]);
+    if (total === 0) {
+      // only an untouched pair follows the empty cart: a draft the owner typed
+      // while the cart was still empty (the reference has no percentage yet)
+      // must survive the first line being added
+      if (paidSource.current === null) {
+        setPaidNow("");
+        setPaidPercentage("");
+      }
+      return;
+    }
+    if (paidSource.current === null) {
+      setPaidNow(String(total));
+      setPaidPercentage("100");
+      return;
+    }
+    if (paidSource.current === "percentage") {
+      const percentage = parseWholePercentage(paidPercentage);
+      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
+      return;
+    }
+    const amount = parseWholeAmount(paidNow);
+    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
+  }, [total, paidNow, paidPercentage]);
 
   // Live debt preview for the pending sale — see `saleDebt` for the invariant.
   const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
@@ -459,8 +483,8 @@ export function SalePage() {
           <AmountPercentageInput
             referenceTotal={total > 0 ? total : null}
             value={{ amount: paidNow, percentage: paidPercentage }}
-            onChange={(next) => {
-              paidTouched.current = true;
+            onChange={(next, edited) => {
+              paidSource.current = edited;
               setPaidNow(next.amount);
               setPaidPercentage(next.percentage);
             }}

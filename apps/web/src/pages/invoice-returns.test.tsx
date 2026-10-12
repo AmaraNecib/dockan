@@ -437,6 +437,18 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeNull();
   });
 
+  it("links the custom cash split to the return value (#162)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    // the split opens at the full return value (100%) and shows the reference
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.value).toBe("100");
+    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("900");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("450");
+  });
+
   it("sends the custom cash portion when the owner splits the settlement", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");

@@ -41,6 +41,14 @@ export function paymentAmountError(amount: string, remaining: number): "INVALID"
 }
 
 /**
+ * The instalment's initial draft: the full remaining at 100%, or an empty pair
+ * on a settled invoice (there is no reference left to take a share of).
+ */
+function seedPaid(remaining: number): AmountPercentageValue {
+  return remaining > 0 ? { amount: String(remaining), percentage: "100" } : { amount: "", percentage: "" };
+}
+
+/**
  * Router-free payment panel (same shape as purchase's LinkProposalPanel):
  * full history + record-payment form, unit-testable without a router.
  */
@@ -49,7 +57,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const queryClient = useQueryClient();
   // #162 — the instalment is a share of this invoice's remaining, so both the
   // amount and the percentage are offered; the default is the full remaining.
-  const [paid, setPaid] = useState<AmountPercentageValue>(() => ({ amount: String(invoice.remainingAmount), percentage: "100" }));
+  const [paid, setPaid] = useState<AmountPercentageValue>(() => seedPaid(invoice.remainingAmount));
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +93,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
       onSuccess: (_updated, variables) => {
-        setPaid({ amount: String(_updated.remainingAmount), percentage: "100" });
+        setPaid(seedPaid(_updated.remainingAmount));
         setNote("");
         setError(null);
         setSavedPayment({ amount: variables.amount, method: variables.method ?? "CASH" });

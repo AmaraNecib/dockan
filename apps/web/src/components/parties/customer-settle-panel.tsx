@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import type { Invoice } from "@dokan/contracts";
+import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput, parseWholeAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { formatDate } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
@@ -20,6 +21,11 @@ import { distributePayment, settleAmountError } from "./party-settle";
  * owner confirms. Every line goes through the existing per-invoice
  * `invoicesPay`, so the money boundary (never above a remaining) is the api's,
  * not a second implementation here.
+ *
+ * The per-invoice payments are individually atomic but the batch is not, so a
+ * mid-loop failure HALTS the panel: it refetches everything and refuses a
+ * second confirm until the owner reopens it, which replans from the settled
+ * rows instead of re-sending money already taken.
  */
 export function CustomerSettlePanel({
   partyId,
@@ -37,25 +43,34 @@ export function CustomerSettlePanel({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [value, setValue] = useState<AmountPercentageValue>(() => (unpaid > 0 ? { amount: String(unpaid), percentage: "100" } : { amount: "", percentage: "" }));
+  const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [error, setError] = useState<string | null>(null);
+  const [halted, setHalted] = useState(false);
   const pay = useMutation(orpc.invoicesPay.mutationOptions());
 
   const amountError = settleAmountError(value.amount, unpaid);
+  // validation is LIVE, not submit-time: an over-owed or garbage amount disables
+  // confirm and says why, so the preview can never promise a payment the api
+  // will refuse
+  const amountErrorText =
+    amountError === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining: unpaid }) : amountError === "INVALID" && value.amount.trim() !== "" ? t("partySettleAmountRequired") : null;
   const amount = parseWholeAmount(value.amount);
   const plan = amount !== null && amount > 0 ? distributePayment(invoices, Math.min(amount, unpaid)) : [];
   const distributed = plan.reduce((sum, line) => sum + line.applied, 0);
+  const blocked = pay.isPending || halted || amountError !== null;
+
+  function refresh() {
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: orpc.customersGet.queryKey({ input: { id: partyId } }) }),
+      queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
+      queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+    ]);
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    if (amountError === "INVALID") {
-      setError(t("partySettleAmountRequired"));
-      return;
-    }
-    if (amountError === "EXCEEDS") {
-      setError(t("pmtExceedsRemaining", { remaining: unpaid }));
-      return;
-    }
+    if (amountError !== null) return;
     const targets = plan.filter((line) => line.applied > 0);
     if (targets.length === 0) {
       setError(t("partySettleNoDistribution"));
@@ -65,20 +80,17 @@ export function CustomerSettlePanel({
       // one atomic payment per invoice: the api re-checks the boundary inside
       // each write unit, so a stale remaining can never be overpaid
       for (const line of targets) {
-        await pay.mutateAsync({ invoiceId: line.invoice.id, amount: line.applied, method: "CASH" });
+        await pay.mutateAsync({ invoiceId: line.invoice.id, amount: line.applied, method });
       }
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: orpc.customersGet.queryKey({ input: { id: partyId } }) }),
-        queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
-        queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
-      ]);
-      setValue({ amount: "", percentage: "" });
+      await refresh();
       onDone();
     } catch (err) {
-      // a failure mid-loop may have settled the earlier invoices already;
-      // refresh so the preview reflects what is actually left
+      // a failure mid-loop may have settled the earlier invoices already:
+      // refetch everything and refuse a second confirm, or the next submit
+      // would replan from stale rows and re-send money already taken
       setError(tError(err instanceof Error ? err.message : undefined));
-      void queryClient.invalidateQueries({ queryKey: orpc.customersGet.queryKey({ input: { id: partyId } }) });
+      setHalted(true);
+      void refresh();
     }
   }
 
@@ -97,6 +109,29 @@ export function CustomerSettlePanel({
         amountInvalid={amountError !== null}
         disabled={pay.isPending}
       />
+      <label className="grid gap-1 text-sm">
+        {t("pmtMethod")}
+        <Select
+          value={method}
+          onValueChange={(next) => {
+            // SAFETY: the select renders only the CASH / BANK options, so the value is a PaymentMethod
+            setMethod((next ?? "CASH") as PaymentMethod);
+          }}
+          disabled={pay.isPending}
+          items={[
+            { value: "CASH", label: t("pmtMethod_CASH") },
+            { value: "BANK", label: t("pmtMethod_BANK") },
+          ]}
+        >
+          <SelectTrigger className="w-full" data-testid="party-settle-method">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="CASH">{t("pmtMethod_CASH")}</SelectItem>
+            <SelectItem value="BANK">{t("pmtMethod_BANK")}</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
 
       <div className="grid gap-1 border-t border-border pt-3">
         <p className="text-sm font-medium">{t("partySettleDistribution")}</p>
@@ -126,16 +161,19 @@ export function CustomerSettlePanel({
         )}
         <div className="flex items-baseline justify-between gap-3 text-sm">
           <span className="text-muted-foreground">{t("partySettleRemainingAfter")}</span>
-          <span className="text-lg font-bold" data-testid="party-settle-remaining"><Amount value={Math.max(0, unpaid - distributed)} /></span>
+          <span aria-live="polite" className="text-lg font-bold" data-testid="party-settle-remaining"><Amount value={Math.max(0, unpaid - distributed)} /></span>
         </div>
       </div>
 
-      {error !== null && (
-        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="party-settle-error">{error}</p>
+      {(amountErrorText ?? error) !== null && (
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="party-settle-error">
+          {amountErrorText ?? error}
+        </p>
       )}
+      {halted && <p className="text-xs text-warning" data-testid="party-settle-halted">{t("partySettleHalted")}</p>}
 
       <div className="flex gap-2">
-        <Button type="submit" disabled={pay.isPending || amountError === "INVALID"} data-testid="party-settle-confirm">
+        <Button type="submit" disabled={blocked} data-testid="party-settle-confirm">
           {t("pmtRecord")}
         </Button>
         <Button type="button" variant="outline" onClick={onCancel} disabled={pay.isPending} data-testid="party-settle-cancel">

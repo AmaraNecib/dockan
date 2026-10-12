@@ -446,7 +446,21 @@ describe("SalePage commit states (greptile round-2)", () => {
     await act(async () => {
       saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    // non-vacuous: the save must have gone through (a blocked save would also
+    // leave `lastInvoiceInput` null and read as `initialPaid: undefined`)
+    expect(lastInvoiceInput).not.toBeNull();
     expect(lastInvoiceInput?.initialPaid).toBeUndefined();
+  });
+
+  it("refuses an amount above the cart total before sending (#171)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    await act(async () => setInput(host, "sale-paid", "2000"));
+    await act(async () => {
+      saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="sale-error"]')).not.toBeNull();
+    expect(lastInvoiceInput).toBeNull();
   });
 
   it("shows the saving label while pending, then the server remaining (not cart math) as the debt", async () => {

@@ -270,6 +270,9 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   // 50% of 3000 = 1500, applied to the oldest invoice first
   await page.getByTestId("party-settle").click();
   await expect(page.getByTestId("party-settle-amount")).toHaveValue("3000");
+  // an invalid percentage is refused, not recorded as an unpaid/zero split
+  await page.getByTestId("party-settle-percentage").fill("12.5");
+  await expect(page.getByTestId("party-settle-confirm")).toBeDisabled();
   await page.getByTestId("party-settle-percentage").fill("50");
   await expect(page.getByTestId("party-settle-amount")).toHaveValue("1500");
   await expect(page.getByTestId("party-settle-line").first()).toContainText(olderInvoice);

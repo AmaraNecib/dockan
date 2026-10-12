@@ -460,7 +460,21 @@ describe("ReturnsPanel (new-return form + history)", () => {
     typeInto(qty, "2");
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("900");
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.value).toBe("50");
-    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("1800");
+    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("1800 دج");
+  });
+
+  it("recomputes the custom cash to zero when the return value falls to zero (#171)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const qty = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    typeInto(qty, "1");
+    await pickSettlement(i18n.t("returnsSplitCustom"));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')!, "50");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("450");
+    // clearing the line zeroes the return: 50% of 0 is 0, not a stale 450
+    typeInto(qty, "0");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("0");
+    // no reference left: the percentage field and its reference line are gone
+    expect(host.querySelector('[data-testid="returns-reference"]')).toBeNull();
   });
 
   it("refuses an invalid custom cash percentage instead of recording zero cash (#171)", async () => {

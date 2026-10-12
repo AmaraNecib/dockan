@@ -605,6 +605,8 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
     await typePercentage(container, "0");
     expect(amount(container)).toBe("0");
     await save(container);
+    // non-vacuous: a blocked save would also leave `lastPurchaseInput` null
+    expect(lastPurchaseInput).not.toBeNull();
     expect(lastPurchaseInput?.initialPaid).toBeUndefined();
 
     await act(async () => {
@@ -616,7 +618,19 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
     await typePercentage(container, "1");
     expect(amount(container)).toBe("0");
     await save(container);
+    expect(lastPurchaseInput).not.toBeNull();
     expect(lastPurchaseInput?.initialPaid).toBeUndefined();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("refuses an amount above the cart total before sending (#171)", async () => {
+    const { container, root } = await mountPurchase();
+    await addQuickLine(container, "1", "100");
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')!, "200"));
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+    expect(lastPurchaseInput).toBeNull();
     await act(async () => root.unmount());
     container.remove();
   });

@@ -80,8 +80,9 @@ export function CustomerSettlePanel({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     // the guard is checked INSIDE submit (not only on the disabled button) so a
-    // form submit during the refresh window is a no-op
-    if (submitting || pay.isPending) return;
+    // form submit during the refresh window is a no-op; `halted` also blocks the
+    // raw-submit bypass after a partial failure
+    if (submitting || halted || pay.isPending) return;
     setError(null);
     if (amountError !== null || percentageInvalid) return;
     const targets = plan.filter((line) => line.applied > 0);
@@ -124,7 +125,7 @@ export function CustomerSettlePanel({
         referenceTestId="party-settle-reference"
         amountInvalid={amountError !== null}
         percentageInvalid={percentageInvalid}
-        disabled={pay.isPending}
+        disabled={pay.isPending || submitting}
       />
       <label className="grid gap-1 text-sm">
         {t("pmtMethod")}
@@ -134,7 +135,7 @@ export function CustomerSettlePanel({
             // SAFETY: the select renders only the CASH / BANK options, so the value is a PaymentMethod
             setMethod((next ?? "CASH") as PaymentMethod);
           }}
-          disabled={pay.isPending}
+          disabled={pay.isPending || submitting}
           items={[
             { value: "CASH", label: t("pmtMethod_CASH") },
             { value: "BANK", label: t("pmtMethod_BANK") },
@@ -193,7 +194,7 @@ export function CustomerSettlePanel({
         <Button type="submit" disabled={blocked} data-testid="party-settle-confirm">
           {t("pmtRecord")}
         </Button>
-        <Button type="button" variant="outline" onClick={onCancel} disabled={pay.isPending} data-testid="party-settle-cancel">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={pay.isPending || submitting} data-testid="party-settle-cancel">
           {t("partyCancel")}
         </Button>
       </div>

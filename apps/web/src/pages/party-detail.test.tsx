@@ -267,10 +267,33 @@ describe("customer settle in place (#164)", () => {
     ]);
     expect(host.querySelector('[data-testid="party-settle-error"]')?.textContent).toContain("يتجاوز");
     expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
-    // the halted panel refuses a second confirm: nothing more is sent
+    // the halted panel refuses a second confirm: nothing more is sent. A raw
+    // form submit bypasses the disabled button, so the guard must block it too.
+    const form = host.querySelector<HTMLFormElement>('[data-testid="party-settle-panel"]')!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
     click("party-settle-confirm");
     await flushAsync();
     expect(payInputs).toHaveLength(2);
+  });
+
+  it("refuses an invalid settle percentage and records nothing (#171)", async () => {
+    partyDetail = makeDetail([invoice({ id: "only", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })]);
+    await renderCustomer();
+    click("party-settle");
+    typeInto("party-settle-percentage", "12.5");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="party-settle-percentage"]')?.getAttribute("aria-invalid")).toBe("true");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled).toBe(true);
+    // the error is live, not only on submit
+    expect(host.querySelector('[data-testid="party-settle-error"]')?.textContent).toBeTruthy();
+    const form = host.querySelector<HTMLFormElement>('[data-testid="party-settle-panel"]')!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(payInputs).toEqual([]);
   });
 
   it("holds the submit guard across the refresh so a double-activate records one payment (#171)", async () => {

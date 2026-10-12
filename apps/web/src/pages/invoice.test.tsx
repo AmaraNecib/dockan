@@ -254,6 +254,26 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     const done = host.querySelector('[data-testid="pmt-done"]');
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل الدفعة");
+    // the card replaces the form and offers the invoice (issue #159)
+    expect(host.querySelector('[data-testid="pmt-form"]')).toBeNull();
+    expect(host.querySelector('[data-testid="pmt-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=00000000-0000-4000-8000-000000000001");
+
+    act(() => {
+      host.querySelector<HTMLButtonElement>('[data-testid="pmt-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="pmt-form"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="pmt-done"]')).toBeNull();
+  });
+
+  it("keeps the payment fields visible in both themes (issue #160)", () => {
+    renderPanel(makeInvoice(600));
+    for (const id of ["pmt-amount", "pmt-note"]) {
+      const field = host.querySelector<HTMLInputElement>(`[data-testid="${id}"]`)!;
+      expect(field.className).toContain("border-input");
+      expect(field.className).toContain("bg-background");
+      expect(field.className).toContain("focus-visible:ring-ring/40");
+      expect(field.className).toContain("dark:bg-input/30");
+    }
   });
 
   it("shows the server PAYMENT_EXCEEDS_REMAINING translation when a stale remaining is refused", async () => {

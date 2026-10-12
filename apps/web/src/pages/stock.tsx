@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
 import { formatDateTime } from "../lib/dates";
@@ -144,7 +145,7 @@ export function StockForm() {
         <label className="grid gap-1">
           {t("stockQuantity")}
           <input
-            className="rounded border px-3 py-2"
+            className={inputClass}
             name="stockDelta"
             autoComplete="off"
             value={delta}
@@ -157,7 +158,7 @@ export function StockForm() {
         <label className="grid gap-1">
           {t("stockUnitCost")}
           <input
-            className="rounded border px-3 py-2"
+            className={inputClass}
             name="stockUnitCost"
             autoComplete="off"
             value={unitCost}
@@ -176,7 +177,7 @@ export function StockForm() {
       </div>
       <label className="grid gap-1">
         {t("stockReason")}
-        <input className="rounded border px-3 py-2" name="stockReason" autoComplete="off" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <input className={inputClass} name="stockReason" autoComplete="off" value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
       {error && (
         <p className="text-sm text-destructive" role="alert" data-testid="stock-error">

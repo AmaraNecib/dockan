@@ -155,7 +155,7 @@ export function PartiesPage({ role }: { role: PartyRole }) {
                     <TableCell>
                       <PartyNameLink role={role} row={row} />
                     </TableCell>
-                    <TableCell dir="ltr">{row.phone === null ? t("partyNoPhone") : displayAlgerianPhone(row.phone)}</TableCell>
+                    <TableCell className="cell-ltr">{row.phone === null ? t("partyNoPhone") : displayAlgerianPhone(row.phone)}</TableCell>
                     <TableCell data-testid="party-row-count">{row.stats.invoiceCount}</TableCell>
                     <TableCell data-testid="party-row-remaining">
                       <Amount value={row.stats.remainingAmount} />

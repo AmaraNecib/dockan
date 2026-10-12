@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import type { CatalogMatch, Item } from "@dokan/contracts";
 
+import { cn } from "@/lib/utils";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "@/lib/rpc";
 import { useModalDialog } from "@/lib/use-modal-dialog";
 
@@ -106,7 +108,7 @@ export function ItemPickerDialog({
           aria-controls="picker-results"
           aria-expanded={debounced.length > 0}
           aria-activedescendant={visibleActiveIndex !== null ? `picker-option-${matches[visibleActiveIndex]!.item.id}` : undefined}
-          className="w-full rounded border px-4 py-3 text-base"
+          className={cn(inputClass, "w-full px-4 py-3 text-base")}
           placeholder={t("itemsSearchPlaceholder")}
           value={query}
           onChange={(e) => {

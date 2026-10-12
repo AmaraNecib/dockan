@@ -64,6 +64,8 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await page.getByTestId("pmt-submit").click();
   await expect(page.getByTestId("pmt-done")).toBeVisible();
   await expect(page.getByTestId("invoice-remaining")).toContainText("600");
+  // the completion card replaced the form (issue #159); "دفعة أخرى" brings it back
+  await page.getByTestId("pmt-new").click();
   const history = page.getByTestId("pmt-history").locator("tbody tr");
   await expect(history).toHaveCount(1);
   await expect(history.first()).toContainText("300");
@@ -82,7 +84,10 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   // 6. settling instalment: 600 → remaining 0, history in recording order
   await page.getByTestId("pmt-amount").fill("600");
   await page.getByTestId("pmt-submit").click();
+  await expect(page.getByTestId("pmt-done")).toBeVisible();
   await expect(page.getByTestId("invoice-remaining")).toContainText("0");
+  // restore the paid-off form to prove it locks the fields
+  await page.getByTestId("pmt-new").click();
   await expect(page.getByTestId("pmt-unavailable")).toBeVisible();
   await expect(history).toHaveCount(2);
   await expect(history.nth(0)).toContainText("300");

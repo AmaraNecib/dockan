@@ -41,6 +41,16 @@ let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
 let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string } | null = null;
 
+// The page renders the completion card's router Links; mirror the seam the
+// other page tests use so PurchasePage is testable without a router mount.
+mock.module("@tanstack/react-router", () => ({
+  Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
+    const { children, params, to, ...rest } = props;
+    return <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>;
+  },
+  useParams: () => ({}),
+}));
+
 // The panel resolves proposal + link through orpc.*.queryOptions/mutationOptions;
 // mock the rpc module so tests drive fixtures without a network seam.
 mock.module("@/lib/rpc", () => ({
@@ -78,7 +88,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: PanelMutationOptions) => ({
         mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string }) => {
           lastPurchaseInput = input;
-          return { id: "inv-1", invoiceNumber: "INV-1" };
+          return { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
         },
         ...opts,
       }),

@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { VaultSettings } from "../components/vault/vault-settings";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 
@@ -91,7 +92,7 @@ export function SettingsPage() {
           <label className="grid gap-1">
             {t("settingsStoreName")}
             <input
-              className="rounded border px-3 py-2"
+              className={inputClass}
               name="storeName"
               autoComplete="organization"
               value={storeName}
@@ -103,7 +104,7 @@ export function SettingsPage() {
           <label className="grid gap-1">
             {t("settingsStorePhone")}
             <input
-              className="rounded border px-3 py-2"
+              className={inputClass}
               type="tel"
               name="storePhone"
               value={storePhone}
@@ -118,7 +119,7 @@ export function SettingsPage() {
           <label className="grid gap-1">
             {t("settingsStoreAddress")}
             <input
-              className="rounded border px-3 py-2"
+              className={inputClass}
               name="storeAddress"
               autoComplete="street-address"
               value={storeAddress}

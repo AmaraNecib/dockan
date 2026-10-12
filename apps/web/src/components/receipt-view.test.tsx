@@ -279,7 +279,11 @@ describe("ReceiptView — RTL layout tokens", () => {
   it("isolates every printed amount left-to-right", () => {
     renderReceipt();
     for (const cell of host.querySelectorAll(".print-sheet-ltr")) {
-      expect(cell.getAttribute("dir")).toBe("ltr");
+      // the standalone runs carry dir="ltr"; a table CELL uses `.cell-ltr`
+      // instead (issue #166), which sets direction/isolate in CSS and keeps
+      // the cell aligned under its RTL header.
+      const isolated = cell.getAttribute("dir") === "ltr" || cell.classList.contains("cell-ltr");
+      expect(isolated).toBe(true);
     }
   });
 });

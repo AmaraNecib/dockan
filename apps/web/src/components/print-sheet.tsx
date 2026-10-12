@@ -148,7 +148,7 @@ export function PrintItemTable<T extends PrintItemRow>({
         {lines.map((line, index) => (
           <tr key={`${line.description}-${index}`} data-testid={rowTestId}>
             <td>{line.description}</td>
-            <td dir="ltr" className="print-sheet-ltr">
+            <td className="cell-ltr print-sheet-ltr">
               {line.quantity}
             </td>
             <td className="print-sheet-money">

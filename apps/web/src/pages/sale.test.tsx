@@ -15,6 +15,7 @@ import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for use
 
 /** Invoice subset the mocked invoicesCreate resolves with (see InvoiceDetail). */
 interface InvoiceResponse {
+  id: string;
   invoiceNumber: string;
   remainingAmount: number;
   counterpartyName: string | null;
@@ -70,6 +71,16 @@ let unknownScanCode: string | null = null;
 /** holds the category list open so the quick-add can open before it arrives */
 let categoriesGate: Promise<void> | null = null;
 let releaseCategoriesGate: (() => void) | null = null;
+
+// The page renders the completion card's router Links; mirror the seam the
+// other page tests use so SalePage is testable without a router mount.
+mock.module("@tanstack/react-router", () => ({
+  Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
+    const { children, params, to, ...rest } = props;
+    return <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>;
+  },
+  useParams: () => ({}),
+}));
 
 // The page pulls its data/mutations through orpc.*; mock the rpc module so the
 // pure helpers and the rendered commit states are driven by fixtures.
@@ -390,7 +401,7 @@ describe("SalePage commit states (greptile round-2)", () => {
 
     expect(resolveInvoice).not.toBeNull();
     await act(async () => {
-      resolveInvoice?.({ invoiceNumber: "INV-77", remainingAmount: 650, counterpartyName: "أمين" });
+      resolveInvoice?.({ id: "inv-77", invoiceNumber: "INV-77", remainingAmount: 650, counterpartyName: "أمين" });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const savedDebt = host.querySelector('[data-testid="sale-saved-debt"]');
@@ -409,7 +420,7 @@ describe("SalePage commit states (greptile round-2)", () => {
       saveButton(host).dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await act(async () => {
-      resolveInvoice?.({ invoiceNumber: "INV-88", remainingAmount: 1000, counterpartyName: null });
+      resolveInvoice?.({ id: "inv-88", invoiceNumber: "INV-88", remainingAmount: 1000, counterpartyName: null });
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     const savedDebt = host.querySelector('[data-testid="sale-saved-debt"]');

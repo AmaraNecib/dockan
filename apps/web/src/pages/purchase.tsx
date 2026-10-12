@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,7 +12,10 @@ import { PartyPicker, type PartySelection } from "@/components/parties/party-pic
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
 
 import { tError } from "../lib/i18n";
@@ -36,7 +40,7 @@ export function PurchasePage() {
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [savedInvoice, setSavedInvoice] = useState<{ id: string; invoiceNumber: string } | null>(null);
+  const [savedInvoice, setSavedInvoice] = useState<{ id: string; invoiceNumber: string; remainingAmount: number; counterpartyName: string | null } | null>(null);
 
   // quick-add mini-form state: item fields + the line it lands as
   const [quickOpen, setQuickOpen] = useState(false);
@@ -64,7 +68,7 @@ export function PurchasePage() {
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
-        setSavedInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber });
+        setSavedInvoice(invoice);
         setLines([]);
         setSupplier({ id: null, name: "", needsChoice: false });
         setNotes("");
@@ -148,15 +152,32 @@ export function PurchasePage() {
       <h1 className="text-xl font-bold">{t("purchasesTitle")}</h1>
 
       {savedInvoice && (
-        <div className="mt-4 rounded border bg-card p-4" data-testid="purchase-saved">
-          <InvoiceHeader />
-          <p className="mt-2 font-semibold text-success" data-testid="purchase-saved-number">
-            {t("purchasesSaved", { number: savedInvoice.invoiceNumber })}
-          </p>
+        <div className="mt-4 grid gap-4" data-testid="purchase-saved">
+          <div className="rounded border bg-card p-4">
+            <InvoiceHeader />
+            <SuccessCard
+              className="mt-3"
+              title={<span data-testid="purchase-saved-number">{t("purchasesSaved", { number: savedInvoice.invoiceNumber })}</span>}
+              detail={
+                savedInvoice.remainingAmount > 0 ? (
+                  <span data-testid="purchase-saved-debt">
+                    {savedInvoice.counterpartyName === null || savedInvoice.counterpartyName.trim() === "" ? t("purchasesSavedUnattributed") : t("purchasesSavedRemaining")}{" "}
+                    <Amount value={savedInvoice.remainingAmount} suffix={t("dzd")} />
+                  </span>
+                ) : undefined
+              }
+            >
+              <Button asChild>
+                <Link to="/invoices/$invoiceId" params={{ invoiceId: savedInvoice.id }} data-testid="purchase-open-invoice">{t("savedViewInvoice")}</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/invoices/$invoiceId/print" params={{ invoiceId: savedInvoice.id }} data-testid="purchase-print">{t("savedPrint")}</Link>
+              </Button>
+              <SuccessCardSpacer />
+              <Button variant="ghost" onClick={() => setSavedInvoice(null)} data-testid="purchase-new">{t("purchasesNewInvoice")}</Button>
+            </SuccessCard>
+          </div>
           <LinkProposalPanel invoiceId={savedInvoice.id} />
-          <button type="button" className="mt-3 rounded border px-3 py-1 text-sm" onClick={() => setSavedInvoice(null)}>
-            {t("purchasesNewInvoice")}
-          </button>
         </div>
       )}
 
@@ -296,7 +317,7 @@ export function PurchasePage() {
                         <td className="p-2">{line.item.name}</td>
                         <td className="p-2">
                           <input
-                            className="w-16 rounded border px-2 py-1"
+                            className={cn(inputClass, "w-16 px-2 py-1")}
                             name={`quantity-${line.item.id}`}
                             autoComplete="off"
                             inputMode="numeric"
@@ -312,7 +333,7 @@ export function PurchasePage() {
                         </td>
                         <td className="p-2">
                           <input
-                            className="w-20 rounded border px-2 py-1"
+                            className={cn(inputClass, "w-20 px-2 py-1")}
                             name={`unitCost-${line.item.id}`}
                             autoComplete="off"
                             inputMode="numeric"

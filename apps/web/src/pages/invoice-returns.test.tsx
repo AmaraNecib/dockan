@@ -45,13 +45,13 @@ mock.module("@/lib/rpc", () => ({
       queryKey: () => ["returnsPendingCount"],
     },
     returnsCreate: {
-      mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
+      mutationOptions: (options?: { onSuccess?: (record: ReturnDetail) => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["returnsCreate"],
         ...options,
         mutationFn: async (input: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string }) => {
           lastCreateInput = input;
           if (failReturnsCreate) throw new Error("RETURN_EXCEEDS_RETURNABLE");
-          return { items: [] };
+          return returnRecord();
         },
       }),
     },
@@ -342,6 +342,28 @@ describe("ReturnsPanel (new-return form + history)", () => {
     const done = host.querySelector('[data-testid="returns-done"]');
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل المرجوع");
+    expect(done?.textContent).toContain("RTN-0001");
+    // the card offers the saved return's voucher (id, not number) and replaces
+    // the form until the owner asks for another return (issue #159)
+    expect(host.querySelector('[data-testid="returns-form"]')).toBeNull();
+    const voucher = host.querySelector<HTMLAnchorElement>('[data-testid="returns-open-voucher"]');
+    expect(voucher?.getAttribute("href")).toContain("/invoices/$invoiceId/returns/$returnId/print");
+    expect(voucher?.getAttribute("href")).toContain("returnId=00000000-0000-4000-8000-0000000000d1");
+
+    act(() => {
+      host.querySelector<HTMLButtonElement>('[data-testid="returns-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="returns-form"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="returns-done"]')).toBeNull();
+  });
+
+  it("keeps the return and payment fields visible in both themes (issue #160)", () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const reason = host.querySelector<HTMLInputElement>('[data-testid="returns-reason"]')!;
+    expect(reason.className).toContain("border-input");
+    expect(reason.className).toContain("bg-background");
+    expect(reason.className).toContain("focus-visible:ring-ring/40");
+    expect(reason.className).toContain("dark:bg-input/30");
   });
 
   it("shows the server refusal translation when the api rejects a stale cap", async () => {

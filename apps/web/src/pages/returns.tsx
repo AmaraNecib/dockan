@@ -7,6 +7,8 @@ import type { ReturnDetail } from "@dokan/contracts";
 
 import { debtOffsetDisplay } from "../lib/return-voucher";
 import { tError } from "../lib/i18n";
+import { cn } from "@/lib/utils";
+import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 
 /**
@@ -86,7 +88,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
           {record.status === "PENDING_REVIEW" && (
             <div className="mt-3 grid gap-2 border-t pt-3" data-testid={`returns-actions-${record.returnNumber}`}>
               <input
-                className="rounded border px-3 py-1 text-sm"
+                className={cn(inputClass, "py-1 text-sm")}
                 placeholder={t("returnsRejectReason")}
                 value={rejectReasons[record.id] ?? ""}
                 onChange={(event) => setRejectReasons((current) => ({ ...current, [record.id]: event.target.value }))}

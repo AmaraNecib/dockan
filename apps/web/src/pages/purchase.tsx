@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { Item } from "@dokan/contracts";
+import type { InvoiceDetail, Item } from "@dokan/contracts";
 import { PackagePlus, X } from "lucide-react";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
@@ -40,7 +40,7 @@ export function PurchasePage() {
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [savedInvoice, setSavedInvoice] = useState<{ id: string; invoiceNumber: string; remainingAmount: number; counterpartyName: string | null } | null>(null);
+  const [savedInvoice, setSavedInvoice] = useState<InvoiceDetail | null>(null);
 
   // quick-add mini-form state: item fields + the line it lands as
   const [quickOpen, setQuickOpen] = useState(false);

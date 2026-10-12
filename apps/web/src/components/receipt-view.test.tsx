@@ -285,5 +285,8 @@ describe("ReceiptView — RTL layout tokens", () => {
       const isolated = cell.getAttribute("dir") === "ltr" || cell.classList.contains("cell-ltr");
       expect(isolated).toBe(true);
     }
+    // the quantity cell specifically must use the shared utility, whose CSS is
+    // pinned by cell-ltr.test.ts (class-only here is not enough on its own)
+    expect(host.querySelector("td.print-sheet-ltr")?.classList.contains("cell-ltr")).toBe(true);
   });
 });

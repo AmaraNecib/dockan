@@ -42,25 +42,30 @@ describe("SuccessCard (shared completion card, issue #159)", () => {
   });
 
   it("omits the detail line entirely when there is no secondary text", () => {
-    const host = render(
-      <SuccessCard title="تم الحفظ">
-        <button type="button">عرض</button>
-      </SuccessCard>,
-    );
-    // title + action row only: no empty secondary paragraph
-    expect(host.querySelectorAll("p")).toHaveLength(1);
+    for (const detail of [undefined, null, "", false]) {
+      document.body.innerHTML = "";
+      const host = render(
+        <SuccessCard title="تم الحفظ" detail={detail}>
+          <button type="button">عرض</button>
+        </SuccessCard>,
+      );
+      // title + action row only: no empty secondary paragraph
+      expect(host.querySelectorAll("p")).toHaveLength(1);
+    }
   });
 
   it("uses only success theme tokens, no raw colours", () => {
     const host = render(
-      <SuccessCard testId="saved" title="تم الحفظ">
+      <SuccessCard testId="saved" title="تم الحفظ" detail="تفصيل">
         <button type="button">عرض</button>
       </SuccessCard>,
     );
-    const className = host.querySelector('[data-testid="saved"]')!.className;
-    expect(className).toContain("border-success/40");
-    expect(className).toContain("bg-success/10");
-    expect(className).not.toMatch(/#[0-9a-f]{3,8}|rgb\(|oklch\(/i);
+    const card = host.querySelector('[data-testid="saved"]')!;
+    expect(card.className).toContain("border-success/40");
+    expect(card.className).toContain("bg-success/10");
+    // the whole subtree, not just the root: no raw colour literal anywhere
+    // (named Tailwind palette utilities are caught by shadcn/no-raw-colors)
+    expect(card.outerHTML).not.toMatch(/#[0-9a-f]{3,8}|rgb\(|oklch\(/i);
   });
 
   it("keeps the action row in order and pushes the trailing action with the spacer", () => {

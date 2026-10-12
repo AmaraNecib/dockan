@@ -45,7 +45,7 @@ export function SuccessCard({
         </span>
         <div className="min-w-0">
           <p className="font-semibold">{title}</p>
-          {detail !== undefined && <p className="mt-1 text-sm text-muted-foreground">{detail}</p>}
+          {hasDetail(detail) && <p className="mt-1 text-sm text-muted-foreground">{detail}</p>}
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-dashed border-success/40 pt-3">
@@ -58,4 +58,11 @@ export function SuccessCard({
 /** Pushes the trailing action to the far edge of the RTL action row. */
 export function SuccessCardSpacer() {
   return <span aria-hidden="true" className="flex-1" />;
+}
+
+/** A detail line is shown only when it actually carries content: `null`,
+ * `undefined`, `false` and the empty string must not render an empty styled
+ * paragraph (the callers gate on server amounts that can be zero). */
+function hasDetail(detail: ReactNode): boolean {
+  return detail !== undefined && detail !== null && detail !== false && detail !== "";
 }

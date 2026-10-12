@@ -33,8 +33,9 @@ function walkTsx(dir: string): string[] {
   return files;
 }
 
-// a cell opening tag carrying dir="ltr" (order-independent, multi-line safe)
-const CELL_WITH_LTR = /<(?:td|th|TableCell|TableHead)\b[^>]*?\bdir="ltr"/gs;
+// a cell opening tag carrying dir="ltr" (any quote/JSX-expression spelling,
+// order-independent, multi-line safe)
+const CELL_WITH_LTR = /<(?:td|th|TableCell|TableHead)\b[^>]*?\bdir=(?:"ltr"|'ltr'|\{\s*["']ltr["']\s*\})/gs;
 
 describe(".cell-ltr utility (issue #166)", () => {
   it("is defined in index.css and pins the digit run to the header edge", () => {
@@ -58,15 +59,19 @@ describe(".cell-ltr utility (issue #166)", () => {
   });
 
   it("applies the utility to every audited cell (invoice, phone, ref, return, print)", () => {
-    for (const relative of [
-      "pages/party-detail.tsx",
-      "pages/invoice.tsx",
-      "pages/parties.tsx",
-      "pages/activity.tsx",
-      "components/print-sheet.tsx",
-    ]) {
+    // exact per-file counts: a dropped class on one of party-detail's two cells
+    // must fail, not be masked by the other
+    const expected = {
+      "pages/party-detail.tsx": 2,
+      "pages/invoice.tsx": 1,
+      "pages/parties.tsx": 1,
+      "pages/activity.tsx": 1,
+      "components/print-sheet.tsx": 1,
+    };
+    for (const [relative, count] of Object.entries(expected)) {
       const source = readFileSync(join(srcRoot, relative), "utf8");
-      expect(source).toContain("cell-ltr");
+      const found = source.match(/cell-ltr/g)?.length ?? 0;
+      expect({ file: relative, found }).toEqual({ file: relative, found: count });
     }
   });
 });

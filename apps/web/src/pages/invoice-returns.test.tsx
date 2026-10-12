@@ -11,21 +11,18 @@ import i18n from "../lib/i18n"; // initializes i18next (ar) for useTranslation; 
 
 import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
+import { routerMock } from "../tests/router-mock";
+
 /** returnsList payload the panel should serve, or an error flag / payload for create */
 let returnsData: ReturnDetail[] = [];
 let failReturnsCreate = false;
+/** what the mocked returnsCreate resolves with; a test can override it */
+let createdReturn: ReturnDetail | null = null;
 let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string; cashPaidOut?: number } | null = null;
 
-// The page module imports the rpc client and the router Link at module scope;
-// stub the whole seam + Link (rendered as a plain anchor) so the panel is
-// testable without a network or a router mount.
-mock.module("@tanstack/react-router", () => ({
-  Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
-    const { children, params, to, ...rest } = props;
-    return <a href={`${to ?? ""}?${new URLSearchParams(params ?? {}).toString()}`} {...rest}>{children}</a>;
-  },
-  useParams: () => ({}),
-}));
+// The page module imports the router Link at module scope; use the shared stub
+// so the panel is testable without a network or a router mount.
+mock.module("@tanstack/react-router", routerMock);
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -51,7 +48,7 @@ mock.module("@/lib/rpc", () => ({
         mutationFn: async (input: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string }) => {
           lastCreateInput = input;
           if (failReturnsCreate) throw new Error("RETURN_EXCEEDS_RETURNABLE");
-          return returnRecord();
+          return createdReturn ?? returnRecord();
         },
       }),
     },
@@ -148,6 +145,7 @@ beforeEach(() => {
   document.body.appendChild(host);
   returnsData = [];
   failReturnsCreate = false;
+  createdReturn = null;
   lastCreateInput = null;
 });
 
@@ -343,12 +341,18 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(done?.getAttribute("role")).toBe("status");
     expect(done?.textContent).toContain("تم تسجيل المرجوع");
     expect(done?.textContent).toContain("RTN-0001");
-    // the card offers the saved return's voucher (id, not number) and replaces
-    // the form until the owner asks for another return (issue #159)
+    // the detail line renders the «دج» token (never "DA")
+    const detail = host.querySelector('[data-testid="returns-done-detail"]');
+    expect(detail?.textContent).toContain("900");
+    expect(detail?.textContent).toContain("دج");
+    expect(detail?.textContent).not.toContain("DA");
+    // the card offers the saved return's voucher (id, not number) and the
+    // invoice, and replaces the form until the owner asks for another return
     expect(host.querySelector('[data-testid="returns-form"]')).toBeNull();
     const voucher = host.querySelector<HTMLAnchorElement>('[data-testid="returns-open-voucher"]');
     expect(voucher?.getAttribute("href")).toContain("/invoices/$invoiceId/returns/$returnId/print");
     expect(voucher?.getAttribute("href")).toContain("returnId=00000000-0000-4000-8000-0000000000d1");
+    expect(host.querySelector('[data-testid="returns-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=00000000-0000-4000-8000-0000000000b1");
 
     act(() => {
       host.querySelector<HTMLButtonElement>('[data-testid="returns-new"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -357,13 +361,32 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-done"]')).toBeNull();
   });
 
-  it("keeps the return and payment fields visible in both themes (issue #160)", () => {
+  it("renders the debt portion of an all-debt return in the completion detail (issue #159)", async () => {
+    createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 0 });
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    const detail = host.querySelector('[data-testid="returns-done-detail"]');
+    expect(detail?.textContent).toContain("خُصم من الدَّين");
+    expect(detail?.textContent).toContain("900");
+  });
+
+  it("keeps the return fields visible in both themes (issue #160)", async () => {
     renderPanel(makeInvoice([saleLine()]));
     const reason = host.querySelector<HTMLInputElement>('[data-testid="returns-reason"]')!;
     expect(reason.className).toContain("border-input");
     expect(reason.className).toContain("bg-background");
     expect(reason.className).toContain("focus-visible:ring-ring/40");
     expect(reason.className).toContain("dark:bg-input/30");
+    // the quantity and custom-cash fields keep the token edge/focus ring too
+    const quantity = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    expect(quantity.className).toContain("border-input");
+    expect(quantity.className).toContain("focus-visible:ring-ring/40");
+    await pickSettlement("تقسيم مخصص");
+    const cash = host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')!;
+    expect(cash.className).toContain("border-input");
+    expect(cash.className).toContain("focus-visible:ring-ring/40");
   });
 
   it("shows the server refusal translation when the api rejects a stale cap", async () => {

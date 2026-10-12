@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ScanBarcode, X } from "lucide-react";
 
-import type { InvoiceCreate, Item } from "@dokan/contracts";
+import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -128,8 +128,9 @@ export function SalePage() {
   const [discountValue, setDiscountValue] = useState("");
   const [paidNow, setPaidNow] = useState("");
   const [error, setError] = useState<string | null>(null);
-  /** the saved sale whose completion card is shown; id comes from the server */
-  const [savedSale, setSavedSale] = useState<{ id: string; invoiceNumber: string; remainingAmount: number; counterpartyName: string | null } | null>(null);
+  /** the saved sale whose completion card is shown; the server's response is
+   * kept whole so the card reads the authoritative number, remaining and party */
+  const [savedSale, setSavedSale] = useState<InvoiceDetail | null>(null);
   // Pre-save notice frozen at submit time: the pending request already carries
   // these values, so in-flight edits must not contradict it.
   const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);

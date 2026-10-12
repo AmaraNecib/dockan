@@ -20,6 +20,7 @@
 - **Supplier** (مورّد). the person the owner buys from; the target of unpaid purchases.
 - **Invoice / receipt** (فاتورة). the document for a sale or a purchase: invoice number (auto-suggested, editable), lines, total, paid amount, remaining amount.
 - **Payment** (دفعة). money paid against an invoice. An invoice can have several payments (first payment, later payment); never more than the total (no overpayment).
+- **Amount-or-percentage input** (مبلغ أو نسبة). wherever an amount is a share of a known reference (a return value, the remaining on an invoice, a year of rent), the owner may type either the amount or a percentage of the reference; each updates the other, and 100% is the default. Used only where a reference total exists.
 - **Remaining amount / debt** (الباقي). invoice total minus what has been paid. Direction matters: unpaid *purchases* mean the shop owes the supplier; unpaid *sales* mean the customer owes the shop.
 - **Debt list**. the view grouping invoices by who owes whom: "customers owe us" and "we owe suppliers", with how much remains.
 - **Payment history**. the list of payments recorded against one invoice, shown on that invoice's screen.

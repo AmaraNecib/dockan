@@ -357,6 +357,9 @@ describe("SalePage commit states (greptile round-2)", () => {
   it("words a pending remainder as unattributed until a customer is named", async () => {
     const host = await mountSale();
     await scan("111");
+    // #162: the payment now defaults to the full total, so set a zero draft to
+    // keep the whole remainder unpaid for this wording test
+    await act(async () => setInput(host, "sale-paid", "0"));
 
     let notice = host.querySelector('[data-testid="sale-debt-notice"]');
     expect(notice).not.toBeNull();

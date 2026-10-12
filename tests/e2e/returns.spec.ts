@@ -42,6 +42,9 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   expect(await page.getByTestId("sale-total").textContent()).toContain("900"); // 1 × 900
+  // #162: zero the default full payment so the sale carries the full 900 debt
+  // the all-cash return then warns about
+  await page.getByTestId("sale-paid").fill("0");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>

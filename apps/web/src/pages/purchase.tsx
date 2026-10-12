@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceDetail, Item } from "@dokan/contracts";
@@ -10,6 +10,7 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
+import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
@@ -39,6 +40,9 @@ export function PurchasePage() {
   const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [notes, setNotes] = useState("");
   const [paidNow, setPaidNow] = useState("");
+  // #162 — the initial payment is a share of the cart total (amount ⇄ percentage)
+  const [paidPercentage, setPaidPercentage] = useState("");
+  const paidTouched = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [savedInvoice, setSavedInvoice] = useState<InvoiceDetail | null>(null);
 
@@ -73,6 +77,8 @@ export function PurchasePage() {
         setSupplier({ id: null, name: "", needsChoice: false });
         setNotes("");
         setPaidNow("");
+        setPaidPercentage("");
+        paidTouched.current = false;
         void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
       },
       onError: (err) => setError(tError(err.message)),
@@ -80,6 +86,13 @@ export function PurchasePage() {
   );
 
   const total = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
+
+  // #162 — the initial payment defaults to the full total (100%) until edited
+  useEffect(() => {
+    if (paidTouched.current) return;
+    setPaidNow(total === 0 ? "" : String(total));
+    setPaidPercentage(total === 0 ? "" : "100");
+  }, [total]);
 
   function submit() {
     setError(null);
@@ -197,10 +210,20 @@ export function PurchasePage() {
                 {t("purchasesNotes")}
                 <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} />
               </label>
-              <label className="grid gap-1 text-sm font-medium">
-                {t("purchasesPaidNow")}
-                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="initialPaid" autoComplete="off" value={paidNow} onChange={(e) => setPaidNow(e.target.value)} inputMode="numeric" data-testid="purchase-paid" />
-              </label>
+              <AmountPercentageInput
+                referenceTotal={total > 0 ? total : null}
+                value={{ amount: paidNow, percentage: paidPercentage }}
+                onChange={(next) => {
+                  paidTouched.current = true;
+                  setPaidNow(next.amount);
+                  setPaidPercentage(next.percentage);
+                }}
+                amountLabel={t("purchasesPaidNow")}
+                amountTestId="purchase-paid"
+                percentageTestId="purchase-paid-percentage"
+                referenceTestId="purchase-paid-reference"
+                disabled={createInvoice.isPending}
+              />
             </div>
           </div>
 

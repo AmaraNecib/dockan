@@ -128,7 +128,13 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("party-stat-partyStatsTotalSales")).toContainText("3000");
   await expect(page.getByTestId("party-stat-partyStatsPaid")).toContainText("1500");
   await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1500");
+  // #164: the tab opens on the unpaid invoices only, and the toggle reveals all
+  await expect(page.getByTestId("party-unpaid-filter")).toBeChecked();
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("1500");
+  await page.getByTestId("party-unpaid-filter").uncheck();
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);
+  await page.getByTestId("party-unpaid-filter").check();
 
   await page.getByTestId("party-tab-payments").click();
   await expect(page.getByTestId("party-payment-row")).toHaveCount(2);
@@ -178,6 +184,102 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("party-stat-partyStatsTotalPurchases")).toContainText("2000");
   await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1200");
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
+});
+
+/**
+ * #162/#164 — settle a customer's debt from the detail page: the percentage
+ * drives the amount, the preview spreads the payment oldest first, and the
+ * chosen invoice's remaining actually drops.
+ */
+test("customer settle in place: a percentage payment spread over unpaid invoices", async ({ page }) => {
+  // two full sale flows plus settlement is more than the default 30s budget
+  test.setTimeout(90_000);
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `تسوية-تصنيف-${stamp}`;
+  const itemName = `تسوية-منتج-${stamp}`;
+  const customerName = `تسوية-زبون-${stamp}`;
+  cleanupPartyNames = [customerName];
+
+  // seed: a category + one item (cost 400, sell 1000)
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/items");
+  await openItemsTab(page, "add");
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByTestId("item-name").fill(itemName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("item-save").click();
+  await openItemsTab(page, "products");
+  await expect(page.getByRole("row", { name: new RegExp(itemName) })).toBeVisible();
+
+  // stock the item with a fully-paid purchase (the default payment is the full
+  // total, so no supplier debt is left behind)
+  await page.getByRole("link", { name: "المشتريات" }).click();
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+  await page.getByTestId("purchase-open-picker").click();
+  await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
+  await page.getByTestId("picker-dialog").getByRole("button", { name: new RegExp(itemName) }).first().click();
+  await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("5");
+  await page.getByTestId("purchase-save").click();
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+
+  // first sale (2 units) on credit: the OLDER invoice
+  await page.getByRole("link", { name: "المبيعات" }).click();
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-customer").fill(customerName);
+  await page.getByTestId("sale-customer-create").click();
+  await page.getByTestId("sale-customer-create-save").click();
+  await expect(page.getByTestId("sale-customer")).toHaveValue(customerName);
+  await page.getByTestId("sale-open-picker").click();
+  await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
+  await page.getByTestId("picker-dialog").getByRole("button", { name: new RegExp(itemName) }).first().click();
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill("2");
+  await page.getByTestId("sale-paid").fill("0");
+  await page.getByTestId("sale-save").click();
+  const firstText = (await page.getByTestId("sale-saved-number").textContent()) ?? "";
+  const olderInvoice = /INV-\d+/.exec(firstText)?.[0] ?? "";
+  expect(olderInvoice).not.toBe("");
+  await page.getByTestId("sale-new").click();
+
+  // second sale (1 unit) on credit: the NEWER invoice
+  await page.getByTestId("sale-customer").fill(customerName);
+  await expect(page.getByTestId("sale-customer-option").first()).toContainText(customerName);
+  await page.getByTestId("sale-customer-option").first().click();
+  await page.getByTestId("sale-open-picker").click();
+  await page.getByTestId("picker-dialog").getByPlaceholder("ابحث بالاسم أو الباركود…").fill(itemName);
+  await page.getByTestId("picker-dialog").getByRole("button", { name: new RegExp(itemName) }).first().click();
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill("1");
+  await page.getByTestId("sale-paid").fill("0");
+  await page.getByTestId("sale-save").click();
+  await page.getByTestId("sale-new").click();
+
+  // the customer page opens on the 3000 still owed
+  await page.getByRole("link", { name: "الزبائن", exact: true }).first().click();
+  const row = page.getByTestId("party-row").filter({ hasText: customerName });
+  await row.getByTestId("party-row-link").click();
+  await expect(page.getByTestId("party-detail-customer")).toBeVisible();
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("3000");
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);
+
+  // 50% of 3000 = 1500, applied to the oldest invoice first
+  await page.getByTestId("party-settle").click();
+  await expect(page.getByTestId("party-settle-amount")).toHaveValue("3000");
+  await page.getByTestId("party-settle-percentage").fill("50");
+  await expect(page.getByTestId("party-settle-amount")).toHaveValue("1500");
+  await expect(page.getByTestId("party-settle-line").first()).toContainText(olderInvoice);
+  await page.getByTestId("party-settle-confirm").click();
+  await expect(page.getByTestId("party-detail-notice")).toContainText("تم توزيع الدفعة");
+
+  // the older invoice's remaining dropped from 2000 to 500
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("1500");
+  await page.getByTestId("party-invoice-row").filter({ hasText: olderInvoice }).getByRole("link").click();
+  await expect(page.getByTestId("invoice-remaining")).toContainText("500");
 });
 
 /**

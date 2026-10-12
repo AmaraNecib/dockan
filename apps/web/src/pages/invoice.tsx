@@ -7,6 +7,7 @@ import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { AmountPercentageInput, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -46,7 +47,9 @@ export function paymentAmountError(amount: string, remaining: number): "INVALID"
 export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [amount, setAmount] = useState("");
+  // #162 — the instalment is a share of this invoice's remaining, so both the
+  // amount and the percentage are offered; the default is the full remaining.
+  const [paid, setPaid] = useState<AmountPercentageValue>(() => ({ amount: String(invoice.remainingAmount), percentage: "100" }));
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +85,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pay = useMutation(
     orpc.invoicesPay.mutationOptions({
       onSuccess: (_updated, variables) => {
-        setAmount("");
+        setPaid({ amount: String(_updated.remainingAmount), percentage: "100" });
         setNote("");
         setError(null);
         setSavedPayment({ amount: variables.amount, method: variables.method ?? "CASH" });
@@ -105,7 +108,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   );
 
   const remaining = invoice.remainingAmount;
-  const remainingMessage = paymentAmountError(amount, remaining);
+  const remainingMessage = paymentAmountError(paid.amount, remaining);
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -118,7 +121,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     }
     void pay.mutate({
       invoiceId: invoice.id,
-      amount: Number(amount),
+      amount: Number(paid.amount),
       method,
       note: note.trim() === "" ? undefined : note.trim(),
     });
@@ -170,21 +173,22 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         </SuccessCard>
       ) : (
       <form ref={formRef} className="mt-4 grid gap-3" onSubmit={submit} data-testid="pmt-form">
-        <div className="grid grid-cols-3 gap-3">
-          <label className="grid gap-1 text-sm">
-            {t("pmtAmountLabel")}
-            <input
-              className={inputClass}
-              inputMode="numeric"
-              value={amount}
-              onChange={(event) => {
-                setAmount(event.target.value);
-                setSavedPayment(null);
-              }}
-              disabled={remaining === 0}
-              data-testid="pmt-amount"
-            />
-          </label>
+        <AmountPercentageInput
+          referenceTotal={remaining}
+          value={paid}
+          onChange={(next) => {
+            setPaid(next);
+            setSavedPayment(null);
+          }}
+          amountLabel={t("pmtAmountLabel")}
+          referenceLabel={t("amountReferenceLabel")}
+          amountTestId="pmt-amount"
+          percentageTestId="pmt-percentage"
+          referenceTestId="pmt-reference"
+          amountInvalid={remainingMessage !== null}
+          disabled={remaining === 0}
+        />
+        <div className="grid grid-cols-2 gap-3">
           <label className="grid gap-1 text-sm">
             {t("pmtMethod")}
             <Select
@@ -291,6 +295,9 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const [reason, setReason] = useState("");
   const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
   const [cashDraft, setCashDraft] = useState("");
+  // #162 — the custom cash split is a share of the computed return value, so
+  // the amount and the percentage follow each other; the full value is 100%.
+  const [cashPercentage, setCashPercentage] = useState("");
   const [error, setError] = useState<string | null>(null);
   /** the just-recorded return whose completion card is shown */
   const [savedReturn, setSavedReturn] = useState<ReturnDetail | null>(null);
@@ -388,6 +395,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setDrafts({});
         setReason("");
         setCashDraft("");
+        setCashPercentage("");
         setSettlement("ALL_CASH");
         setError(null);
         setSavedReturn(record);
@@ -576,7 +584,14 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               value={settlement}
               onValueChange={(value) => {
                 // SAFETY: the select renders only the three preset options
-                setSettlement((value ?? "ALL_CASH") as ReturnSettlementPreset);
+                const next = (value ?? "ALL_CASH") as ReturnSettlementPreset;
+                setSettlement(next);
+                // the custom split opens at the full return value (100%): the
+                // owner lowers either side to push the rest onto the debt
+                if (next === "CUSTOM") {
+                  setCashDraft(String(valueTotal));
+                  setCashPercentage("100");
+                }
                 setSavedReturn(null);
               }}
               items={[
@@ -596,20 +611,23 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             </Select>
           </label>
           {settlement === "CUSTOM" && (
-            <label className="grid gap-1 text-sm">
-              <span className="font-medium">{t("returnsCashNow")}</span>
-              <input
-                className="h-10 rounded-md border border-input bg-card px-3 tabular-nums outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40"
-                inputMode="numeric"
-                value={cashDraft}
-                onChange={(event) => {
-                  setCashDraft(event.target.value);
+            <div className="grid gap-1 text-sm">
+              <AmountPercentageInput
+                referenceTotal={valueTotal}
+                value={{ amount: cashDraft, percentage: cashPercentage }}
+                onChange={(next) => {
+                  setCashDraft(next.amount);
+                  setCashPercentage(next.percentage);
                   setSavedReturn(null);
                 }}
-                placeholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
-                data-testid="returns-cash"
+                amountLabel={t("returnsCashNow")}
+                referenceLabel={t("amountReferenceLabel")}
+                amountTestId="returns-cash"
+                percentageTestId="returns-percentage"
+                referenceTestId="returns-reference"
+                amountPlaceholder={`${Math.max(0, valueTotal - invoice.remainingAmount)} – ${valueTotal}`}
               />
-            </label>
+            </div>
           )}
           {projectionIsValid && (
             <div className="grid gap-1.5 border-t border-border pt-3 text-sm">

@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import type { SupplierAdjustmentDirection } from "@dokan/contracts";
+import { normalizeTextKey, type SupplierAdjustmentDirection } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { tError } from "@/lib/i18n";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
@@ -21,6 +22,15 @@ type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
 /** The direction Selects render only these two values, so any string they hand
  * back is narrowed here instead of asserting it. */
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
+
+/** The existing supplier a typed new name folds to (the same normalization the
+ * server uses), or undefined when the name is genuinely new. */
+function matchByNormalizedName<T extends { name: string }>(suppliers: readonly T[], newName: string): T | undefined {
+  const trimmed = newName.trim();
+  if (trimmed === "") return undefined;
+  const key = normalizeTextKey(trimmed);
+  return suppliers.find((supplier) => normalizeTextKey(supplier.name) === key);
+}
 
 /**
  * #176 — the bulk «رصيد افتتاحي» screen. One row per supplier (name + current
@@ -91,11 +101,46 @@ export function SupplierOpeningBalancePage() {
     });
   }
 
+  /** The typed new-name row resolved for saving: the existing supplier it now
+   * folds to (with the amount and direction preserved), or undefined when the
+   * name is genuinely new. */
+  function resolveNewNameRow(): { supplierId: string; direction: SupplierAdjustmentDirection; amount: number } | undefined {
+    const match = matchByNormalizedName(suppliers, newName);
+    if (match === undefined) return undefined;
+    const amount = parseGroupedAmount(newAmount);
+    if (amount === null || amount <= 0) return undefined;
+    return { supplierId: match.id, direction: newDirection, amount };
+  }
+
+  // Greptile round 2 — the confirmation is client-derived from a possibly stale
+  // list. When the typed new name now matches an existing supplier (a concurrent
+  // create landed after this page loaded), move the draft onto that supplier's
+  // row so the confirmed save sends it under the existing id instead of dropping
+  // the row once the refreshed list turns it into a duplicate.
+  useEffect(() => {
+    if (!confirming) return;
+    const match = matchByNormalizedName(suppliers, newName);
+    if (match === undefined || parseGroupedAmount(newAmount) === null) return;
+    setRow(match.id, { direction: newDirection, amount: newAmount });
+    setNewName("");
+    setNewAmount("");
+  }, [confirming, suppliers, newName, newAmount, newDirection]);
+
   async function save(confirmExisting: boolean) {
-    if (occurredAt === null || blockedReason !== null) return;
+    if (occurredAt === null) return;
+    // the duplicate-name block is resolved by adopting the matching existing
+    // row; the row cap and invalid existing rows still stop the save
+    const resolved = resolveNewNameRow();
+    if (blockedReason !== null && !(resolved !== undefined && !overLimit && invalidExisting.length === 0)) return;
     setError(null);
     setSubmitting(true);
     try {
+      if (resolved !== undefined) {
+        // keep the UI in step: the draft moves onto the existing supplier's row
+        setRow(resolved.supplierId, { direction: newDirection, amount: newAmount });
+        setNewName("");
+        setNewAmount("");
+      }
       const result = await bulk.mutateAsync({
         occurredAt,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
@@ -106,7 +151,11 @@ export function SupplierOpeningBalancePage() {
             amount: row.state.amount,
             confirmExisting: confirmExisting || undefined,
           })),
-          ...(newRow.status === "filled" ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }] : []),
+          ...(resolved !== undefined
+            ? [{ supplierId: resolved.supplierId, direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
+            : newRow.status === "filled"
+              ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }]
+              : []),
         ],
       });
       await Promise.all([

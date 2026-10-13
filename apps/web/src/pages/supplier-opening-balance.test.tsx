@@ -119,6 +119,33 @@ function clickOn(testId: string) {
   act(() => el.click());
 }
 
+/** Open the inline new-supplier direction Select and commit the labelled option. */
+async function pickNewDirection(label: string) {
+  const trigger = host.querySelector<HTMLElement>('[data-testid="opening-balance-new-direction"]');
+  if (trigger === null) throw new Error("missing opening-balance-new-direction");
+  act(() => {
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  const optionText = (element: HTMLElement) => (element.textContent ?? "").trim();
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((element) => optionText(element) === label);
+    if (option !== undefined) {
+      act(() => {
+        // Base UI items arm mouse selection on pointerdown, then commit on click.
+        option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+        option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
+      });
+      return;
+    }
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  throw new Error(`option ${label} did not appear`);
+}
+
 describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("writes one row per filled amount plus an inline new supplier", async () => {
     render();
@@ -297,5 +324,47 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).toContain(JSON.stringify([["activitiesList"]]));
     expect(keys).toContain(JSON.stringify([["invoicesList"]]));
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
+  });
+
+  it("moves a typed name that raced into existence onto its existing row when confirmed (Greptile round 2)", async () => {
+    rejectUnconfirmed = true;
+    render();
+    await settle();
+
+    const name = "مورد ظهر للتو";
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, name);
+    await pickNewDirection("يسالنا");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "640");
+
+    // the first save reaches the server with the typed name as a new supplier
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(captured).toBeNull();
+
+    // the concurrent create lands: the refreshed list now shows the typed supplier
+    // with account history, so the typed name is a duplicate
+    suppliers = [
+      ...BASE_SUPPLIERS,
+      { id: "s-race", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
+    ];
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+    });
+    await settle();
+
+    // the draft moved onto the existing supplier's row, preserving amount + direction
+    const movedAmount = host.querySelectorAll('[data-testid="opening-balance-row"]')[3]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+    expect(movedAmount).toBe("640");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("");
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+
+    // the confirmed save posts under the existing id, not a silent no-op
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-race", direction: "THEY_OWE", amount: 640, confirmExisting: true });
   });
 });

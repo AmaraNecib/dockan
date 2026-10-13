@@ -170,9 +170,9 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
  * #177 — a typed store refusal from the guarded adjustment path maps to a
  * stable ORPC error. The router still runs its invoice OWNERSHIP checks
  * (purchase + belongs to the supplier) before the store call; the store checks
- * the duplicate signature BEFORE the remaining-amount offset, so an exact
- * linked resend is reported as a duplicate. These mappings cover the store's
- * backstop.
+ * the duplicate key or signature (#181) BEFORE the remaining-amount offset, so
+ * an exact linked resend is reported as a duplicate. These mappings cover the
+ * store's backstop.
  */
 const ADJUSTMENT_REFUSAL = {
   DUPLICATE: { status: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" },
@@ -934,8 +934,9 @@ export function createRpcRouter(deps: RpcDeps) {
     // #176/#177 — a manual adjustment: append-only, account-only unless the
     // owner links a purchase invoice, in which case it reduces THAT invoice's
     // remaining with the same conditional UPDATE returns use. One BEGIN
-    // IMMEDIATE unit; the guarded store path refuses a duplicate signature and
-    // keeps the entry and the reduction together (never check-then-act).
+    // IMMEDIATE unit; the guarded store path refuses a duplicate key or
+    // signature (#181) and keeps the entry and the reduction together (never
+    // check-then-act).
     suppliersAdjust: os.suppliersAdjust.handler(
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
@@ -969,6 +970,9 @@ export function createRpcRouter(deps: RpcDeps) {
               // when the caller omitted the date the server stamped it, so a
               // retry cannot be told apart by time: the store matches any time
               serverStamped: input.occurredAt === undefined,
+              // #181 — an explicit client key is the primary dedup identity;
+              // the #177 signature arm stays in force
+              idempotencyKey: input.idempotencyKey ?? null,
             });
           } catch (error) {
             if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);

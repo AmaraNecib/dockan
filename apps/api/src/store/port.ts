@@ -165,17 +165,27 @@ export type SupplierAdjustmentInsert = {
    * #177 — true when the router stamped `occurredAt` because the caller omitted
    * it. A retry then cannot be told apart by time, so the duplicate signature
    * ignores `occurredAt` (same supplier/direction/amount/reason/invoiceId at any
-   * time is a duplicate). A caller that wants two genuinely distinct identical
-   * adjustments must send its own `occurredAt`.
+   * time is a duplicate). A caller that wants a genuinely distinct entry must
+   * change the signature (direction/amount/reason/invoiceId, or a *different*
+   * explicit `occurredAt`) and, when it sends a key, also a new key.
    */
   serverStamped?: boolean;
+  /**
+   * #181 — an explicit client idempotency key. When present it is the primary
+   * dedup key (scoped to the supplier): a row with the same key is the same
+   * logical request whatever its other fields. The #177 signature stays in force
+   * as a backstop, so the key can only add refusals. When absent the signature
+   * alone decides.
+   */
+  idempotencyKey?: string | null;
 };
 
-/** The #177 idempotency key of a manual adjustment, shared by the guarded write
- * and the opening-balance confirmation so the two can never disagree. */
+/** The idempotency key of a manual adjustment (#177 signature, or the #181
+ * explicit client key), shared by the guarded write, the duplicate guard, and
+ * the opening-balance confirmation so they can never disagree. */
 export type SupplierAdjustmentSignature = Pick<
   SupplierAdjustmentInsert,
-  "supplierId" | "direction" | "amount" | "reason" | "occurredAt" | "invoiceId" | "serverStamped"
+  "supplierId" | "direction" | "amount" | "reason" | "occurredAt" | "invoiceId" | "serverStamped" | "idempotencyKey"
 >;
 
 /** Typed refusal from the #177 supplier-adjustment guard. The router maps these
@@ -310,19 +320,22 @@ export interface StorePort {
   /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
    * (non-null invoiceId) is REFUSED here — it must go through
    * `insertSupplierAdjustment`, which applies the invoice reduction in the same
-   * unit. */
+   * unit. An account-only ADJUSTMENT is still keyed with the #181 dedup key, so a
+   * repeated one is refused by the partial unique index (there is no separate
+   * in-process guard on this raw seam). */
   insertSupplierEntry(entry: SupplierEntryInsert): Promise<SupplierAccountEntry>;
   /**
    * #177 — the single guarded write path for a manual adjustment (تسوية). It
-   * refuses a duplicate submission (same supplier, direction, amount, reason,
-   * occurredAt), refuses a linked entry signed the wrong way or one the invoice
+   * refuses a duplicate submission (the #181 explicit `idempotencyKey` is the
+   * primary identity when the caller sent one, and the #177 signature stays a
+   * backstop), refuses a linked entry signed the wrong way or one the invoice
    * cannot cover, and applies the linked invoice's reduction in the same unit as
-   * the entry. Call inside a `withTransactionImmediate` unit so the entry and
-   * the invoice's remaining can never diverge. Account-only (null invoiceId)
-   * never touches an invoice. */
+   * the entry. Call inside a `withTransactionImmediate` unit so the entry and the
+   * invoice's remaining can never diverge. Account-only (null invoiceId) never
+   * touches an invoice. */
   insertSupplierAdjustment(input: SupplierAdjustmentInsert): Promise<SupplierAccountEntry>;
-  /** True when an ADJUSTMENT with this #177 signature already exists. Exposed so
-   * the bulk opening-balance confirmation can tell an exact resend from a
+  /** True when an ADJUSTMENT with this key or signature already exists. Exposed
+   * so the bulk opening-balance confirmation can tell an exact resend from a
    * genuinely new entry without duplicating the key. */
   hasSupplierAdjustment(input: SupplierAdjustmentSignature): Promise<boolean>;
   /** every entry of one supplier, newest first, invoice number joined */

@@ -15,8 +15,16 @@ import type { Database } from "bun:sqlite";
  * build accepts the version-2 shape but signs an adjustment with no branch of
  * its own — it would read a «نسالوه» adjustment as a decrement — so a
  * version-2 build MUST refuse this format (ADR-0008 §4.5).
+ *
+ * Version 4 (issue 181): the `supplier_account_entries.dedup_key` column and
+ * its partial unique index — the DB backstop for the #177 adjustment dedup, plus
+ * the explicit client idempotency key. A version-3 build does not know the
+ * column, so it writes every new ADJUSTMENT with a NULL `dedup_key`; those rows
+ * would escape the new dedup until the next v4 boot's self-healing backfill
+ * re-keys them. A version-3 build MUST therefore refuse the version-4 database
+ * (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 /**
  * A database written by a newer app. The older build cannot know what the

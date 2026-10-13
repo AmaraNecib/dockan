@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDate, localDateTime } from "../lib/logger";
-import { deriveInvoicePaid, supplierBalance } from "../lib/supplier-ledger";
+import { adjustmentDedupKey, deriveInvoicePaid, supplierBalance } from "../lib/supplier-ledger";
 import { backfillSupplierAccounts, createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 
@@ -442,5 +442,169 @@ describe("supplier account store", () => {
       await tx.insertSupplierAdjustment({ ...base, reason: "تصحيح" });
     });
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
+  it("dedupes on an explicit idempotency key when the retry changes the timestamp (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد مفتاح");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "دين قديم", invoiceId: null, idempotencyKey: "retry-1" };
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" });
+    });
+    // the whole point of the key: a fresh timestamp is still the same request
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T09:30:00" });
+      }),
+    ).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("keeps the signature backstop in force for a keyed request (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد مفتاح وتوقيع");
+    const occurredAt = "2026-10-13T12:00:00";
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "دين قديم", occurredAt, invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment(base);
+    });
+    // a fresh key with the same signature is still an identical repeat: the key
+    // must not weaken the #177 signature rule
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment({ ...base, idempotencyKey: "another-key" });
+      }),
+    ).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("lets a different key carry a genuinely different request (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد مفاتيح مختلفة");
+    const occurredAt = "2026-10-13T12:00:00";
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, reason: null, occurredAt, invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ ...base, amount: 100, idempotencyKey: "key-a" });
+      await tx.insertSupplierAdjustment({ ...base, amount: 200, idempotencyKey: "key-b" });
+    });
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
+  it("stores the canonical dedup key on the row and the partial unique index on it (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد مفتاح مخزّن");
+    const occurredAt = "2026-10-13T12:00:00";
+    const signatureEntry = await store.withTransactionImmediate(async (tx) =>
+      tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt, invoiceId: null }),
+    );
+    const keyedEntry = await store.withTransactionImmediate(async (tx) =>
+      tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 50, reason: null, occurredAt, invoiceId: null, idempotencyKey: "stored-key" }),
+    );
+    // SAFETY: the SELECT names dedup_key, so each row has that nullable column
+    const stored = conn.raw
+      .query("SELECT id, dedup_key AS dedupKey FROM supplier_account_entries WHERE id IN (?, ?)")
+      .all(signatureEntry.id, keyedEntry.id) as Array<{ id: string; dedupKey: string | null }>;
+    const byId = new Map(stored.map((row) => [row.id, row.dedupKey]));
+    expect(byId.get(signatureEntry.id)).toBe(adjustmentDedupKey({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt, invoiceId: null }));
+    expect(byId.get(keyedEntry.id)).toBe(adjustmentDedupKey({ supplierId: supplier.id, direction: "THEY_OWE", amount: 50, reason: null, occurredAt, invoiceId: null, idempotencyKey: "stored-key" }));
+    // SAFETY: PRAGMA index_list returns one object per index with these fields
+    const indexes = conn.raw.query("PRAGMA index_list(supplier_account_entries)").all() as Array<{ name: string; unique: number; partial: number }>;
+    expect(indexes.find((index) => index.name === "idx_supplier_entries_dedup")).toMatchObject({ unique: 1, partial: 1 });
+  });
+
+  it("keys an account-only adjustment written through the raw entry seam (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد خام مفتاح");
+    const entry = { supplierId: supplier.id, kind: "ADJUSTMENT" as const, direction: "WE_OWE" as const, amount: 100, invoiceId: null, occurredAt: "2026-10-13T12:00:00" };
+    const first = await store.insertSupplierEntry(entry);
+    // the raw seam now carries the canonical key, so the DB index dedupes it too
+    await expect(store.insertSupplierEntry(entry)).rejects.toThrow(/DUPLICATE/);
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(first.id) as { dedupKey: string | null };
+    // the raw seam has no server-stamped flag, so it uses the time-inclusive key
+    expect(row.dedupKey).toBe(adjustmentDedupKey({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt: "2026-10-13T12:00:00", invoiceId: null }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("stores the timestamp-free key for a server-stamped adjustment (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد ختم مفتاح");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 100, reason: null, invoiceId: null, serverStamped: true };
+    const stored = await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(stored.id) as { dedupKey: string | null };
+    // the stamped key drops the timestamp, so a fresh server clock is the same key
+    expect(row.dedupKey).toBe(adjustmentDedupKey({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T12:00:00" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("refuses an unkeyed retry of a keyed request when the signature matches (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد إسقاط المفتاح");
+    const occurredAt = "2026-10-13T12:00:00";
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 300, reason: "دين قديم", occurredAt, invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, idempotencyKey: "first" }));
+    // the retry dropped the key but kept the signature, so the #177 arm refuses it
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment(base))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("refuses an identical adjustment that only changes ref (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد تغيير المرجع");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-A" }));
+    // ref is in neither the signature nor the key, so it cannot release an entry
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-B" }))).rejects.toThrow(/DUPLICATE/);
+    const entries = (await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT");
+    expect(entries).toHaveLength(1);
+    // the first write is the one that landed
+    expect(entries[0]?.ref).toBe("REF-A");
+  });
+
+  it("treats a server-stamped request as time-insensitive against a stored explicit row (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد طابع مقابل صريح");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 250, reason: "رصيد", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // the incoming request is server-stamped, so its signature drops the time and
+    // matches the explicit row at a different stored time
+    await expect(
+      store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2099-01-01T00:00:00", serverStamped: true })),
+    ).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("accepts a changed direction as a distinct adjustment (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد اتجاه مفتاح");
+    const base = { supplierId: supplier.id, amount: 300, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, direction: "WE_OWE" }));
+    // direction is a signature dimension, so the opposite direction is a new entry
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, direction: "THEY_OWE" }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
+  it("refuses a fresh key while the signature is unchanged, and allows one with a changed signature (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد مفتاح جديد وتوقيع");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 400, idempotencyKey: "k1" }));
+    // a new key alone is not enough: the signature arm still matches
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 400, idempotencyKey: "k2" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    // a new key AND a changed signature is a genuinely distinct entry
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 401, idempotencyKey: "k2" }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
+  it("dedupes a linked adjustment by its key and never reduces the invoice twice (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد رابط مفتاح");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 200, reason: "خصم", invoiceId: invoice.id, idempotencyKey: "linked-1" };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // a keyed retry with a changed timestamp is refused before applyDebtOffset runs
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T12:00:00" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("leaves dedup_key null for a non-adjustment entry (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد بلا مفتاح");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const entry = await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 100, invoiceId: invoice.id, occurredAt: "2026-10-13T12:00:00" });
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(entry.id) as { dedupKey: string | null };
+    expect(row.dedupKey).toBeNull();
   });
 });

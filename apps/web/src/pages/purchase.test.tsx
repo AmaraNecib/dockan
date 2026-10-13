@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 import { chooseOption } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
@@ -822,8 +822,8 @@ describe("PurchasePage quantity draft (#146)", () => {
     // the quantity is the real problem; the payment-vs-zero-total check must not
     // shadow it. Without the fix the page says «purchasesInvalidPaid» here.
     const message = container.querySelector('[data-testid="purchase-error"]')?.textContent ?? "";
-    expect(message).toContain("أدخل كمية صحيحة");
-    expect(message).not.toContain("أدخل مبلغاً مدفوعاً");
+    expect(message).toContain(i18n.t("purchasesInvalidQuantity"));
+    expect(message).not.toContain(i18n.t("purchasesInvalidPaid"));
     expect(lastPurchaseInput).toBeNull();
     await act(async () => root.unmount());
     container.remove();

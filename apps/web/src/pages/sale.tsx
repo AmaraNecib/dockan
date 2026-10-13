@@ -251,11 +251,12 @@ export function SalePage() {
       setError(t("partyChooseExisting"));
       return;
     }
-    // ORDER: the line drafts are checked BEFORE the payment. An unusable
-    // quantity (or price override) drops the total, so a payment typed against
-    // the old total would fail the amount-vs-total check and show
-    // `saleInvalidPaid`, masking the real problem. The order is pinned by the
-    // quantity-draft tests — do not swap it.
+    // ORDER: blame the raw drafts before the values derived from them. A cleared
+    // quantity drops the total to zero, so a payment typed against the old total
+    // would fail the amount-vs-total check and show «saleInvalidPaid», masking
+    // the real problem. An over-100% discount does the same: it is capped at the
+    // subtotal, so it also zeroes the total. Lines, then the discount, then the
+    // payment — the order is pinned by the draft-ordering tests. Do not swap it.
     const lineError = firstLineError(lines, (line) => {
       if (saleOverrideInvalid(line)) return t("saleInvalidOverride");
       if (quantityDraftInvalid(line.quantityDraft)) return t("saleInvalidQuantity");
@@ -265,13 +266,8 @@ export function SalePage() {
       setError(lineError);
       return;
     }
-    // runs the shared percentage/amount/over-total checks and maps a zero draft
-    // to «nothing paid now» (the api requires a positive initialPaid)
-    const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
-    if (!paid.ok) {
-      setError(t("saleInvalidPaid"));
-      return;
-    }
+    // the discount also feeds `total`, so it is validated before the payment it
+    // can zero: an over-100% percentage caps at the subtotal
     if (discountType !== "") {
       const parsedDiscount = Number(discountValue);
       const invalidAmount = discountType === "AMOUNT" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0);
@@ -280,6 +276,13 @@ export function SalePage() {
         setError(t("saleInvalidDiscount"));
         return;
       }
+    }
+    // runs the shared percentage/amount/over-total checks and maps a zero draft
+    // to «nothing paid now» (the api requires a positive initialPaid)
+    const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
+    if (!paid.ok) {
+      setError(t("saleInvalidPaid"));
+      return;
     }
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {

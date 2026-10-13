@@ -312,6 +312,17 @@ the identical order and the same failure**, verified with a red page test before
 the fix; it is reordered the same way. Both sites carry an `ORDER:` comment and a
 page test that fails if the two blocks are swapped.
 
+**Finding 1b — the same mask for sale's discount (found by the round-2 debate
+critic).** The reorder above fixed the quantity arm but left sale's discount
+validation *after* the payment. The discount is a second input to `total`
+(`draftTotals` subtracts `discountAmountFor`), and an over-100% percentage is
+capped at the subtotal, so `150` also drops `total` to zero while a typed amount
+survives — the page blamed `saleInvalidPaid` for a bad discount. Verified red
+with a page test before the fix (`sale.test.tsx`, «blames the unusable discount,
+not the payment…»), then reordered to lines → discount → payment. The rule is
+now stated in full: every raw draft is validated before the value derived from
+it. The `ORDER:` comments say this and three ordering tests pin it.
+
 **Finding 2 — duplicated policy comment.** The comment block above
 `QuickAddSpec` was committed twice verbatim. The second copy is removed, leaving
 the one directly above the type where it reads correctly.

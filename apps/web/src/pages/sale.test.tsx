@@ -1138,6 +1138,32 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     expect(lastInvoiceInput).toBeNull();
   });
 
+  it("blames the unusable discount, not the payment, when a typed payment survives an over-100% discount (greptile round 2)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    // a typed payment pins the pair's source to "amount", so it survives the
+    // total collapsing to zero
+    await act(async () => setInput(host, "sale-paid", "500"));
+    expect(totalAmount(host)).toBe(1000);
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount type");
+    await chooseOption(trigger, "نسبة مئوية");
+    // the capped discount zeroes the total while the typed amount survives
+    await act(async () => setInput(host, "sale-discount-value", "150"));
+    expect(totalAmount(host)).toBe(0);
+
+    await act(async () => {
+      saveButton(host).click();
+    });
+    // the discount is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «saleInvalidPaid» here.
+    const message = host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+    expect(message).toContain(i18n.t("saleInvalidDiscount"));
+    expect(message).not.toContain(i18n.t("saleInvalidPaid"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
   it("pins a discounted cart total through the shared totals path", async () => {
     const host = await mountSale();
     await scan("111"); // 1 x 1000

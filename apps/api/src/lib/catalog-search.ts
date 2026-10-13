@@ -1,4 +1,4 @@
-import { FUZZY_MATCH_MIN_SCORE, foldArabic, fuzzySearchScore, normalizeTextKey, type Category, type CatalogMatch, type CatalogMatchKind, type Item } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabic, fuzzySearchScore, normalizeTextKey, type Category, type CatalogMatch, type CatalogMatchKind, type Item } from "@dokan/contracts";
 
 export const DEFAULT_CATALOG_LIMIT = 20;
 
@@ -66,10 +66,10 @@ export function rankCatalog(
     if (barcode !== null && barcode === upper) tier = "EXACT";
     else if (barcode !== null && barcode.startsWith(upper)) tier = "BARCODE_PREFIX";
     else if (barcode !== null && barcode.includes(upper)) tier = "BARCODE_CONTAINS";
-    else if (searchKey !== "" && foldArabic(item.name).includes(searchKey)) tier = "NAME";
+    else if (searchKey !== "" && arabicIncludes(item.name, rawQuery)) tier = "NAME";
     else {
       const category = categoryById.get(item.categoryId);
-      if (category !== undefined && searchKey !== "" && foldArabic(category.name).includes(searchKey)) tier = "CATEGORY";
+      if (category !== undefined && searchKey !== "" && arabicIncludes(category.name, rawQuery)) tier = "CATEGORY";
     }
     if (tier === null) continue;
     matchedIds.add(item.id);

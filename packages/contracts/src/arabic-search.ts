@@ -36,9 +36,19 @@ const MIN_ARTICLE_STEM = 2;
  * like «الي» into a single letter that matches almost any name.
  *
  * NOT an identity key. Identity matching keeps `normalizeTextKey` (ADR-0007).
+ *
+ * A short article-prefixed query keeps its «ال» (the stem guard), so this key
+ * alone cannot find an article-prefixed name; use `arabicIncludes`, which also
+ * tries the article-preserved form.
  */
 export function foldArabic(raw: string): string {
-  const folded = raw
+  return dropArticles(foldLetters(raw));
+}
+
+/** Everything the fold does before the definite-article drop. Kept separate so
+ * `foldArabicVariants` can expose the same text with «ال» still in place. */
+function foldLetters(raw: string): string {
+  return raw
     .normalize("NFC")
     .toLowerCase()
     // bidi/zero-width controls pasted from Arabic-first UIs; `\s` does not
@@ -49,6 +59,10 @@ export function foldArabic(raw: string): string {
     // a typed space finds a stored hyphen: «زيت-محرك» and «زيت محرك» share one key
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+}
+
+/** Drop a leading «ال» from each word that leaves at least a two-letter stem. */
+function dropArticles(folded: string): string {
   return folded
     .split(" ")
     .map((word) =>
@@ -57,6 +71,35 @@ export function foldArabic(raw: string): string {
         : word,
     )
     .join(" ");
+}
+
+/**
+ * Both search keys for one text: `[article-folded, article-preserved]`.
+ * Matching needs both because the stem guard is asymmetric between a short
+ * query and a long name: «الب» keeps its «ال» while «البطارية» drops it, so the
+ * article-preserved pair is what lets the query find the name.
+ */
+export function foldArabicVariants(raw: string): [string, string] {
+  const preserved = foldLetters(raw);
+  return [dropArticles(preserved), preserved];
+}
+
+/**
+ * True when `query` matches `text` under the search fold. Tries the
+ * article-folded and article-preserved form of each side, so «اليوز» finds
+ * «ليوز» (folded pair) and «الب» finds «البطارية» (preserved pair) without
+ * weakening the short-word stem guard.
+ *
+ * Search only; identity matching keeps `normalizeTextKey` (ADR-0007).
+ */
+export function arabicIncludes(text: string, query: string): boolean {
+  const queries = new Set(foldArabicVariants(query).filter((key) => key !== ""));
+  if (queries.size === 0) return false;
+  const texts = foldArabicVariants(text);
+  for (const key of queries) {
+    if (texts.some((target) => target.includes(key))) return true;
+  }
+  return false;
 }
 
 /**

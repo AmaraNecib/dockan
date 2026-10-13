@@ -141,6 +141,22 @@ describe("rankCatalog", () => {
     expect(rankCatalog(items, [], "بطارية").matches.map((m) => m.item.id)).toEqual(["i-art", "i-plain"]);
   });
 
+  it("finds an article-prefixed name from a short article-prefixed query", () => {
+    // the stem guard keeps «ال» on the short query while the name drops it, so
+    // only the article-preserved pair matches (regression: this used to hide)
+    const items = [item("i-art", "البطارية")];
+    expect(rankCatalog(items, [], "الب").matches.map((m) => m.item.id)).toEqual(["i-art"]);
+    expect(rankCatalog(items, [], "اله").matches).toHaveLength(0);
+  });
+
+  it("finds an article-prefixed category from a short article-prefixed query", () => {
+    const categories = [category("cat-art", "البطاريات")];
+    const items = [item("i-in-cat", "مولد كهربائي", { categoryId: "cat-art" })];
+    const result = rankCatalog(items, categories, "الب");
+    expect(result.matches.map((m) => m.item.id)).toEqual(["i-in-cat"]);
+    expect(result.matches[0]?.matchedBy).toBe("CATEGORY");
+  });
+
   it("ranks strict matches before the typo fallback", () => {
     const items = [item("i-fuzzy", "بطلرية"), item("i-strict", "بطارية 60 أمبير")];
     const result = rankCatalog(items, [], "بطارية");

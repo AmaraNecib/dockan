@@ -29,6 +29,16 @@ fold is therefore a **separate** function; identity is untouched.
  * least two letters after it. `foldArabic("اليوز") === "يوز"`. */
 export function foldArabic(raw: string): string;
 
+/** Both search keys for one text: `[article-folded, article-preserved]`. The
+ * stem guard is asymmetric between a short query («الب» keeps «ال») and a long
+ * name («البطارية» drops it), so matching needs both. */
+export function foldArabicVariants(raw: string): [string, string];
+
+/** True when the query matches the text under the search fold: tries the
+ * article-folded and article-preserved form of each side. «اليوز» finds
+ * «ليوز» (folded), «الب» finds «البطارية» (preserved). Search-only. */
+export function arabicIncludes(text: string, query: string): boolean;
+
 /** Minimum similarity for a typo-fallback match; the fallback requires a
  * score strictly above it. */
 export const FUZZY_MATCH_MIN_SCORE: number; // 0.8
@@ -49,14 +59,20 @@ words for no required case. Punctuation and separators become word breaks, so
 
 **`normalizeTextKey` is not touched.** It stays the identity key.
 
+The short-word guard stays: «ال» + one letter is not folded away, because a
+single-letter key would match almost any name. Matching therefore tries the
+article-preserved form too (`arabicIncludes`) so «الب» still finds «البطارية»;
+dropping the article unconditionally is not the fix.
+
 ## Where the search fold is applied
 
 1. **Catalog** — `apps/api/src/lib/catalog-search.ts` (`rankCatalog`):
-   name and category matching switch from `normalizeTextKey` to `foldArabic`.
+   name and category matching switch from `normalizeTextKey` to
+   `arabicIncludes` (article-folded + article-preserved).
    Barcode matching is unchanged (`normalizeTextKey(query).toUpperCase()`).
 2. **Party list + picker** — `apps/web/src/components/parties/party-match.ts`
-   (`filterParties`): name matching switches to `foldArabic`. Phone matching is
-   unchanged.
+   (`filterParties`): name matching switches to `arabicIncludes`. Phone
+   matching is unchanged.
    The picker's exact-name `needsChoice` check and `duplicateNameParty` /
    `phoneMatchParty` keep `normalizeTextKey` (identity, ADR-0007).
 3. **Expenses / activity** — no text search exists today (expenses filter by
@@ -125,6 +141,11 @@ record stays absent**; also assert `احمد` finds `أحمد`, `مصطفي` fin
   the fuzzy pass never runs ahead of strict matches, never runs for
   phone-shaped queries, and requires a score strictly above the 0.8 floor
   (excluding insert/delete relatives such as `محمد`/`محمود`).
+- **Short article-prefixed query (Greptile round 1).** The stem guard is
+  asymmetric: «الب» keeps «ال» while «البطارية» drops it, so a single folded key
+  hid the match. `arabicIncludes` now also tries the article-preserved form on
+  both sides; the guard itself is unchanged, so «ال» + one letter still does not
+  become a one-letter key. Pinned by unit and Playwright tests.
 - **Coverage of the fuzzy pass.** The `>`-floor decision was driven by the
   indistinguishable-name case; no test can prove every possible related name is
   excluded, so `بطلرية`/`بطارية` is pinned as the positive case and

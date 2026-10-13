@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { FUZZY_MATCH_MIN_SCORE, foldArabic, fuzzySearchScore } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabic, foldArabicVariants, fuzzySearchScore } from "@dokan/contracts";
 
 /** The search fold is a search-only key: it never feeds identity matching. */
 describe("foldArabic", () => {
@@ -49,6 +49,40 @@ describe("foldArabic", () => {
     expect(foldArabic("ليوز-زبون")).toBe("ليوز زبون");
     expect(foldArabic("ليوز-زبون")).toBe(foldArabic("ليوز زبون"));
     expect(foldArabic("زيت/محرك 5W30")).toBe("زيت محرك 5w30");
+  });
+});
+
+/**
+ * The stem guard is asymmetric between a short query and a long name: «الب»
+ * keeps its article while «البطارية» drops it. `arabicIncludes` tries the
+ * article-preserved form on both sides so the query still finds the name.
+ */
+describe("arabicIncludes", () => {
+  it("finds an article-prefixed name from a short article-prefixed query", () => {
+    expect(arabicIncludes("البطارية", "الب")).toBe(true);
+    expect(arabicIncludes("الهاتف الثابت", "اله")).toBe(true);
+    // the article-folded pair is otherwise one-sided: the name drops «ال»,
+    // the short query keeps it, so the plain fold cannot match
+    expect(foldArabic("الب")).toBe("الب");
+    expect(foldArabic("البطارية")).toBe("بطاريه");
+  });
+
+  it("still finds the article-dropped pair", () => {
+    expect(arabicIncludes("ليوز", "اليوز")).toBe(true);
+    expect(arabicIncludes("البطارية", "بطارية")).toBe(true);
+  });
+
+  it("returns both keys from foldArabicVariants", () => {
+    expect(foldArabicVariants("البطارية")).toEqual(["بطاريه", "البطاريه"]);
+    expect(foldArabicVariants("الب")).toEqual(["الب", "الب"]);
+  });
+
+  it("keeps unrelated and near-miss words out", () => {
+    expect(arabicIncludes("مفتاح", "الب")).toBe(false);
+    expect(arabicIncludes("زيوت", "زيت")).toBe(false);
+    expect(arabicIncludes("محمود", "محمد")).toBe(false);
+    expect(arabicIncludes("البطارية", "---")).toBe(false);
+    expect(arabicIncludes("البطارية", "")).toBe(false);
   });
 });
 

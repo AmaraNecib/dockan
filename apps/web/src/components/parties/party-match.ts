@@ -1,4 +1,4 @@
-import { FUZZY_MATCH_MIN_SCORE, foldArabic, foldArabicDigits, fuzzySearchScore, normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabicDigits, fuzzySearchScore, normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
 
 /**
  * The picker only reads identity and phone; a full Party (or a list row)
@@ -23,22 +23,23 @@ function phoneSearchKey(raw: string | null | undefined): string | null {
 
 /**
  * Filter the party list by one query: a name substring (#165 folds alef/ya
- * variants and the definite article via `foldArabic`) or a phone substring
- * compared on national digits, so a typed `0550…` finds a stored `+213550…`.
- * When the strict pass finds nothing, a typo-tolerance fallback ranks
- * edit-distance/subsequence name hits. An empty query shows the whole list.
+ * variants and the definite article via `arabicIncludes`, which also keeps an
+ * article-preserved match so a short «الب» finds «البطارية») or a phone
+ * substring compared on national digits, so a typed `0550…` finds a stored
+ * `+213550…`. When the strict pass finds nothing, a typo-tolerance fallback
+ * ranks edit-distance/subsequence name hits. An empty query shows the whole
+ * list.
  *
- * Name matching uses `foldArabic`; the picker's identity decisions
+ * Name matching uses the search fold; the picker's identity decisions
  * (`duplicateNameParty`, the exact-name `needsChoice` check) stay on
  * `normalizeTextKey` (ADR-0007).
  */
 export function filterParties<T extends PartyLike>(parties: readonly T[], query: string): T[] {
   const trimmed = query.trim();
   if (trimmed === "") return [...parties];
-  const nameKey = foldArabic(trimmed);
   const phoneKey = phoneSearchKey(trimmed);
   const strict = parties.filter((party) => {
-    if (nameKey !== "" && foldArabic(party.name).includes(nameKey)) return true;
+    if (arabicIncludes(party.name, trimmed)) return true;
     const stored = phoneSearchKey(party.phone);
     return phoneKey !== null && stored !== null && stored.includes(phoneKey);
   });

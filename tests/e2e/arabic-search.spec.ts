@@ -19,8 +19,10 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   const ahmedItem = `أحمد-${stamp}`;
   const mustafaItem = `مصطفى-${stamp}`;
   const batteryItem = `بطاريه-${stamp}`;
+  const articleItem = `البطاريه-${stamp}`;
   const unrelatedItem = `مفتاح-${stamp}`;
   const lyousParty = `ليوز-زبون-${stamp}`;
+  const articleParty = `الهاتف-${stamp}`;
   const unrelatedParty = `مفتاح-زبون-${stamp}`;
 
   // 1. seed a category + four items; three differ in spelling from their query
@@ -30,7 +32,7 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
 
   await page.goto("/items");
-  for (const name of [lyousItem, ahmedItem, mustafaItem, batteryItem, unrelatedItem]) {
+  for (const name of [lyousItem, ahmedItem, mustafaItem, batteryItem, articleItem, unrelatedItem]) {
     await openItemsTab(page, "add");
     await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
     await page.getByTestId("item-name").fill(name);
@@ -57,10 +59,16 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   await search.fill("بطلرية");
   await expect(page.getByTestId("search-results")).toContainText(batteryItem);
 
+  // 3c. a short article-prefixed query still finds the article-prefixed name
+  //     (Greptile round 1: the stem guard used to hide it)
+  await search.fill("الب");
+  await expect(page.getByTestId("search-results")).toContainText(articleItem);
+  await expect(page.getByTestId("search-results")).not.toContainText(unrelatedItem);
+
   // 4. the customers list uses the same fold: «اليوز» finds «ليوز…» only
   await page.getByRole("link", { name: "الزبائن", exact: true }).first().click();
   await expect(page.getByTestId("parties-page-customer")).toBeVisible();
-  for (const name of [lyousParty, unrelatedParty]) {
+  for (const name of [lyousParty, articleParty, unrelatedParty]) {
     await page.getByTestId("party-new").click();
     await page.getByTestId("party-form-name").fill(name);
     await page.getByTestId("party-form-save").click();
@@ -69,6 +77,11 @@ test("arabic search folds alef/ya and the definite article in items and parties"
 
   await page.getByTestId("parties-search").fill("اليوز");
   await expect(page.getByTestId("party-row").filter({ hasText: lyousParty })).toBeVisible();
+  await expect(page.getByTestId("party-row").filter({ hasText: unrelatedParty })).toHaveCount(0);
+
+  // a short article-prefixed query still finds the article-prefixed party
+  await page.getByTestId("parties-search").fill("اله");
+  await expect(page.getByTestId("party-row").filter({ hasText: articleParty })).toBeVisible();
   await expect(page.getByTestId("party-row").filter({ hasText: unrelatedParty })).toHaveCount(0);
 
   // typed exactly as stored, the same row is still the only match

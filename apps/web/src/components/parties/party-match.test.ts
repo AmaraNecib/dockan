@@ -162,4 +162,10 @@ describe("arabic search fold (#165)", () => {
     expect(filterParties(list, "ليوز زبون").map((p) => p.id)).toEqual(["hyphen"]);
     expect(filterParties(list, "اليوز").map((p) => p.id)).toEqual(["hyphen"]);
   });
+
+  it("finds an article-prefixed name from a short article-prefixed query", () => {
+    // regression from Greptile round 1: «الب» used to hide «البطارية»
+    expect(filterParties([party({ id: "battery", name: "البطارية" })], "الب").map((p) => p.id)).toEqual(["battery"]);
+    expect(filterParties([party({ id: "phone", name: "الهاتف الثابت" })], "اله").map((p) => p.id)).toEqual(["phone"]);
+  });
 });

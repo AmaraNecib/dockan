@@ -929,11 +929,11 @@ export function createRpcRouter(deps: RpcDeps) {
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
             }
-            // the remaining is clamped at >= 0 and a link may not exceed it:
-            // the excess is REFUSED, never silently moved to credit
-            if (input.amount > detail.remainingAmount) {
-              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_EXCEEDS_REMAINING" });
-            }
+            // NOTE (Greptile round 1): the remaining check deliberately lives in
+            // the store, AFTER its duplicate check. Running it here would report
+            // an exact resend as ADJUSTMENT_EXCEEDS_REMAINING once the first
+            // request had reduced the invoice. The store's conditional offset
+            // still refuses a genuinely oversized link (EXCEEDS_REMAINING).
           }
           try {
             await tx.insertSupplierAdjustment({
@@ -975,6 +975,14 @@ export function createRpcRouter(deps: RpcDeps) {
             if (newNames.has(key)) throw new ORPCError("CONFLICT", { message: "DUPLICATE_OPENING_BALANCE_ROW" });
             newNames.add(key);
           }
+          // #177 (Greptile round 1, finding 1) — a lost-response resend of a
+          // batch that used newSupplierName must resolve to the supplier the
+          // first attempt created. Otherwise createParty mints a second id and
+          // the signature dedup runs under it, double-posting the same balance.
+          const supplierByName = new Map<string, { id: string; name: string }>();
+          for (const party of await tx.listParties("supplier")) {
+            supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name });
+          }
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {
@@ -987,8 +995,16 @@ export function createRpcRouter(deps: RpcDeps) {
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
               // SAFETY: the contract superRefine guarantees newSupplierName here
-              const party = await tx.createParty("supplier", { name: row.newSupplierName! });
-              plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+              const requested = supplierByName.get(normalizeTextKey(row.newSupplierName!));
+              if (requested !== undefined) {
+                // the name already exists (a resend, or a typed name the picker
+                // would have matched): reuse it so the dedup can see prior rows
+                plan.push({ supplierId: requested.id, name: requested.name, direction: row.direction, amount: row.amount });
+              } else {
+                const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+                supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name });
+                plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+              }
             }
           }
           // #177/#180 (debate finding 4) — reject a duplicate row inside the

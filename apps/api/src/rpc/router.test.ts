@@ -1862,6 +1862,51 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersList()).items.some((row) => row.name.includes("اسم مكرر"))).toBe(false);
   });
 
+  it("does not double-post a new-supplier opening balance when the response is lost (Greptile round 1)", async () => {
+    const name = `مورد إعادة إرسال-${Date.now()}`;
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 900 }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+
+    // the response is lost; the client resends the exact batch. The name must
+    // resolve to the supplier the first attempt created, so the signature dedup
+    // sees the prior entry instead of minting a second supplier and double-posting.
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    const matches = (await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === name);
+    expect(matches).toHaveLength(1);
+    expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(900);
+  });
+
+  it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد إعادة رابط", 5);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(200);
+
+    // the invoice now has 200 left, but the exact resend is a duplicate, not an
+    // amount that newly exceeds the remaining
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(200);
+  });
+
+  it("reports a full-settlement linked resend as a duplicate (Greptile round 1)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد إعادة تسوية كامل", 5);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 500, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(0);
+
+    // a zeroed invoice must still report the resend as a duplicate
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(0);
+  });
+
   it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);

@@ -110,6 +110,8 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
 
   await page.goto("/debts");
   await expect(page.getByTestId("debts-group-weowe-credit")).toContainText("رصيد لنا عند الموردين");
-  // the amount renders as a positive figure under the credit label
+  // the amount renders as a positive figure under the credit label: the
+  // currency suffix alone would also pass for a negative value
   await expect(page.getByTestId("debts-group-weowe-total")).toContainText("دج");
+  await expect(page.getByTestId("debts-group-weowe-total")).not.toContainText("-");
 });

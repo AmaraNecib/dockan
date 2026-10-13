@@ -33,7 +33,14 @@ export async function expectRpcOk(response: Promise<Response>, procedure: string
  */
 export async function actAndAck(page: Page, procedure: string, action: () => Promise<void>): Promise<Response> {
   const ack = waitForRpc(page, procedure);
-  await action();
+  try {
+    await action();
+  } catch (error) {
+    // the action failed before its request could be matched; swallow the armed
+    // wait so its teardown rejection cannot mask the real failure
+    void ack.catch(() => undefined);
+    throw error;
+  }
   return expectRpcOk(ack, procedure);
 }
 

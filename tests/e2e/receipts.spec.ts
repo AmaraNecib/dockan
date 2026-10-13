@@ -59,9 +59,10 @@ test("invoice print button → receipt document with identity, totals and paymen
   const saved = await rpcOutput<{ invoiceNumber: string }>(
     await actAndAck(page, "invoicesCreate", () => page.getByTestId("sale-save").click()),
   );
-  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  // the contract guarantees the server-issued number's INV-<digits> shape
   const number = saved.invoiceNumber;
   expect(number).toMatch(/^INV-\d+$/);
+  // and the card renders that exact server-issued number
   await expect(page.getByTestId("sale-saved-number")).toContainText(number);
 
   // 3. open the invoice detail, settle the remaining 400 → fully paid

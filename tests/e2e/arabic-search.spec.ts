@@ -54,26 +54,28 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   /** This spec's own result row; another spec's catalog can never satisfy or
    * break an assertion meant for the stamped item (issue 179). */
   const resultRow = (name: string) => results.getByText(name, { exact: true });
+  /** Fill the search box and await the server read it triggers. */
+  const searchFor = (query: string) => actAndAck(page, "catalogSearch", () => search.fill(query));
 
-  await actAndAck(page, "catalogSearch", () => search.fill("اليوز"));
+  await searchFor("اليوز");
   await expect(resultRow(lyousItem)).toBeVisible();
   await expect(resultRow(unrelatedItem)).toHaveCount(0);
 
   // 3. «احمد» finds «أحمد»; «مصطفي» finds «مصطفى»
-  await actAndAck(page, "catalogSearch", () => search.fill("احمد"));
+  await searchFor("احمد");
   await expect(resultRow(ahmedItem)).toBeVisible();
-  await actAndAck(page, "catalogSearch", () => search.fill("مصطفي"));
+  await searchFor("مصطفي");
   await expect(resultRow(mustafaItem)).toBeVisible();
 
   // 3b. typo tolerance is only a fallback: a one-letter slip still finds it
-  await actAndAck(page, "catalogSearch", () => search.fill("بطلرية"));
+  await searchFor("بطلرية");
   await expect(resultRow(batteryItem)).toBeVisible();
 
   // 3c. a short article-prefixed query still finds the article-prefixed name
   //     (Greptile round 1: the stem guard used to hide it). `batteryItem` is a
   //     fuzzy hit of the previous query and NOT a hit of «الب», so its absence
   //     proves the list belongs to the new query and not a stale render.
-  await actAndAck(page, "catalogSearch", () => search.fill("الب"));
+  await searchFor("الب");
   await expect(resultRow(articleItem)).toBeVisible();
   await expect(resultRow(batteryItem)).toHaveCount(0);
   await expect(resultRow(unrelatedItem)).toHaveCount(0);

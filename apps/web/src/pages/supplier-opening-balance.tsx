@@ -137,8 +137,9 @@ export function SupplierOpeningBalancePage() {
     if (nameFocused || amountFocused) return;
     const resolved = resolveNewName();
     if (resolved === undefined) return;
-    // never clobber an amount the owner already entered on that row
-    if ((drafts[resolved.supplierId]?.amount ?? "").trim() !== "") return;
+    // the matching supplier already has its own row: leave the inline draft for
+    // submit to flag as a conflict, never post a second row for one supplier
+    if (openingRowStatus(drafts[resolved.supplierId]).status === "filled") return;
     setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
     setNewName("");
     setNewAmount("");
@@ -147,6 +148,10 @@ export function SupplierOpeningBalancePage() {
   async function save(confirmExisting: boolean) {
     if (occurredAt === null || blockedReason !== null) return;
     const resolved = resolveNewName();
+    if (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId)) {
+      setError(t("supplierOpeningRowHasAmount"));
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -199,12 +204,16 @@ export function SupplierOpeningBalancePage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting || bulk.isPending || dateInvalid) return;
+    if (blockedReason !== null) {
+      setError(blockedReason);
+      return;
+    }
     // a typed name that folds to an existing supplier is a row even while the
     // inline row still shows it (a focused duplicate name never blurs before an
     // Enter submit)
     const resolved = resolveNewName();
-    if (blockedReason !== null && resolved === undefined) {
-      setError(blockedReason);
+    if (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId)) {
+      setError(t("supplierOpeningRowHasAmount"));
       return;
     }
     const effectiveTotal = totalRows + (resolved !== undefined && !newFilled ? 1 : 0);

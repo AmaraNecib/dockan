@@ -907,6 +907,7 @@ const resources = {
       supplierOpeningLink: "رصيد افتتاحي",
       supplierOpeningBack: "رجوع إلى الموردين",
       supplierOpeningRowInvalid: "أدخل مبلغاً صحيحاً أكبر من صفر",
+      supplierOpeningRowHasAmount: "هذا المورّد له مبلغ في صفّه؛ عدّل الصفّ بدل إضافة صفّ آخر",
       supplierOpeningNewIncomplete: "أكمل اسم المورّد الجديد ومبلغه",
       supplierOpeningFixRows: "صحّح الصفوف المعلّمة قبل الحفظ",
       supplierOpeningTooManyRows: "لا يمكن حفظ أكثر من {{max}} صفاً في المرة الواحدة",

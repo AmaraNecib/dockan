@@ -490,7 +490,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-1", direction: "WE_OWE", amount: 500, confirmExisting: true });
   });
 
-  it("does not clobber an amount already entered on the matching supplier's row (Greptile round 2)", async () => {
+  it("blocks a typed name whose supplier already has a filled row instead of double-posting (Greptile round 2)", async () => {
     render();
     await settle();
     const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
@@ -499,8 +499,48 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
 
-    // the row keeps the owner's earlier 700; the new-name draft is left intact
+    // the row keeps the owner's earlier 700; the inline draft is left for the
+    // conflict guard to flag rather than clobbering or double-posting
     expect(rowAmount()).toBe("700");
     expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("300");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    // nothing is sent: one opening balance per supplier, never two entries
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+  });
+
+  it("resolves duplicate folded names to the entry-carrying supplier, like the server (Greptile round 2)", async () => {
+    const name = "مورد ازدواج";
+    // two suppliers fold to one normalizeTextKey; the server prefers the one
+    // that already carries entries, then the lowest id
+    suppliers = [
+      { id: "s-empty-twin", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
+      { id: "s-carrying-twin", name: name.replace(" ", "  "), phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
+    ];
+    render();
+    await settle();
+    const rows = () => host.querySelectorAll('[data-testid="opening-balance-row"]');
+    const rowAmount = (index: number) => rows()[index]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, name);
+    await act(async () => {
+      nameInput.blur();
+      amountInput.focus();
+    });
+    setInput(amountInput, "500");
+    await act(async () => {
+      amountInput.blur();
+    });
+
+    expect(rowAmount(1)).toBe("500");
+    expect(rowAmount(0)).toBe("");
   });
 });

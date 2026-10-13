@@ -1,4 +1,4 @@
-import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabic, foldArabicDigits, fuzzySearchScore, normalizePartyPhone, type Party } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabicDigits, foldArabicVariants, fuzzySearchScore, normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
 
 /**
  * The picker only reads identity and phone; a full Party (or a list row)
@@ -32,7 +32,8 @@ function phoneSearchKey(raw: string | null | undefined): string | null {
  *
  * Name matching uses the search fold; the picker's exact-name `needsChoice`
  * check stays on `normalizeTextKey` (ADR-0007). The duplicate-name warning
- * folds the same way (#130), so a variant spelling still warns.
+ * (#130) uses the letters-only half of the same fold, so a variant spelling
+ * still warns while a leading «ال» stays a real difference.
  */
 export function filterParties<T extends PartyLike>(parties: readonly T[], query: string): T[] {
   const trimmed = query.trim();
@@ -61,25 +62,51 @@ export function partyQueryLooksLikePhone(query: string): boolean {
 }
 
 /**
- * A likely-same party whose folded name matches the candidate's but whose phone
- * differs; the picker warns before it creates a second debtor (#130).
+ * The key the picker's duplicate warning matches on (#130): the #165 letter fold
+ * with the definite article KEPT — `foldArabicVariants(...)[1]`, i.e. the
+ * letters-only half. Alef forms (`ا أ إ آ`) and ya/alef maqsura (`ي ى`) collide,
+ * so «على علي» and «علي علي» are one key; «السعيد» and «سعيد» stay two, because
+ * a leading «ال» is a real recorded difference in Algerian family names.
  *
- * Matching reuses the #165 search fold, so alef forms (`ا أ إ آ`) and ya/alef
- * maqsura (`ي ى`) spellings of one name collide: «على علي» warns against
- * «علي علي». It is exact folded equality, never edit distance, and it is a
- * WARNING only — the owner can still create the record deliberately. Identity
- * (storage, the store's unique phone, `needsChoice`) keeps `normalizeTextKey`
- * (ADR-0007); folding identity would merge two people's balances.
+ * Deliberately narrower than the search key `foldArabic`, which also drops «ال».
+ * NOT an identity key: identity keeps `normalizeTextKey` (ADR-0007).
+ */
+const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
+
+/**
+ * A likely-same party the picker warns about before it creates a second debtor
+ * (#130): the names fold to one key and the two records cannot be a single
+ * identity. It is exact folded equality, never edit distance, and a WARNING
+ * only — the owner can still create the record deliberately.
  *
- * A same-folded-name party with the SAME phone is the same identity —
- * `phoneMatchParty` covers that case, because the store refuses a duplicate
- * phone.
+ * Not a duplicate when the two records ARE one identity:
+ * - the same phone (the store refuses a second owner; `phoneMatchParty` already
+ *   offers that record), or
+ * - the same spelling with no phone on either side — a walk-in re-typing her own
+ *   name, which the picker's `needsChoice` gate already refuses.
+ *
+ * The identical spelling is preferred over an earlier variant of the name, so
+ * the warning (and its one-click pick) points at the record the owner typed.
+ *
+ * Identity (storage, the store's unique phone, `needsChoice`) keeps
+ * `normalizeTextKey` (ADR-0007); folding identity would merge two people's
+ * balances.
  */
 export function duplicateNameParty(name: string, phone: string | null, parties: readonly PartyLike[]): PartyLike | undefined {
-  const nameKey = foldArabic(name);
-  if (nameKey === "") return undefined;
+  const foldedKey = nameVariantKey(name);
+  if (foldedKey === "") return undefined;
+  const strictKey = normalizeTextKey(name);
   const canonical = normalizePartyPhone(phone);
-  return parties.find((party) => foldArabic(party.name) === nameKey && normalizePartyPhone(party.phone) !== canonical);
+  const likelyDuplicate = (party: PartyLike): boolean => {
+    if (nameVariantKey(party.name) !== foldedKey) return false;
+    const storedPhone = normalizePartyPhone(party.phone);
+    if (canonical !== null && storedPhone === canonical) return false;
+    const samePhonelessSpelling = canonical === null && storedPhone === null && normalizeTextKey(party.name) === strictKey;
+    return !samePhonelessSpelling;
+  };
+  return (
+    parties.find((party) => normalizeTextKey(party.name) === strictKey && likelyDuplicate(party)) ?? parties.find(likelyDuplicate)
+  );
 }
 
 /** The party that already owns a present phone (identity when present). */

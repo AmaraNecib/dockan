@@ -126,6 +126,31 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("على علي", "+213555123456", [ali])).toBeUndefined();
   });
 
+  it("warns for a variant spelling even when neither side has a phone", () => {
+    // the common walk-in: no phone on either side. A variant spelling is still
+    // a likely second debtor — only the IDENTICAL phoneless spelling is the
+    // picker's `needsChoice` case.
+    const walkIn = party({ id: "walk-in", name: "علي علي", phone: null });
+    expect(duplicateNameParty("على علي", null, [walkIn])?.id).toBe("walk-in");
+    expect(duplicateNameParty("علي علي", null, [walkIn])).toBeUndefined();
+  });
+
+  it("prefers the exactly spelled record over an earlier variant of the name", () => {
+    const variant = party({ id: "variant", name: "احمد", phone: "+213555000111" });
+    const exact = party({ id: "exact", name: "أحمد", phone: "+213555000222" });
+    // the warning must name the record the owner typed, in either list order,
+    // because its button picks that record for her
+    expect(duplicateNameParty("أحمد", "0555999999", [variant, exact])?.id).toBe("exact");
+    expect(duplicateNameParty("أحمد", "0555999999", [exact, variant])?.id).toBe("exact");
+  });
+
+  it("keeps a leading «ال» significant (letters-only fold, not the search key)", () => {
+    // the search fold drops «ال»; the warning must not, or two recorded family
+    // names — «السعيد» and «سعيد» — would be flagged as one person
+    expect(duplicateNameParty("سعيد", null, [party({ id: "elsaid", name: "السعيد", phone: "+213555000555" })])).toBeUndefined();
+    expect(duplicateNameParty("الحمد", null, [party({ id: "hamd", name: "حمد", phone: "+213555000666" })])).toBeUndefined();
+  });
+
   it("never warns for a candidate that folds to nothing", () => {
     expect(duplicateNameParty("   ", null, LIST)).toBeUndefined();
     expect(duplicateNameParty("---", null, LIST)).toBeUndefined();

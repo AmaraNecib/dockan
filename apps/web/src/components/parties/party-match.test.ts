@@ -102,6 +102,9 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("مصطفي", null, variants)?.id).toBe("mostafa-maqsura");
     // the reused fold also covers the ta-marbuta pair «عمارة»/«عماره»
     expect(duplicateNameParty("عمارة", null, variants)?.id).toBe("omar-ta");
+    // ...and tashkeel, as the strict key already did before #130
+    const MOHAMED = party({ id: "mohamed", name: "محمد", phone: "+213555000777" });
+    expect(duplicateNameParty("مُحَمَّد", null, [MOHAMED])?.id).toBe("mohamed");
     // the stored spelling is reported, whatever the candidate's was
     expect(duplicateNameParty("أحمد بنين", "0555000999", variants)?.id).toBe("ahmed-hamza");
   });
@@ -154,6 +157,10 @@ describe("duplicateNameParty", () => {
   it("never warns for a candidate that folds to nothing", () => {
     expect(duplicateNameParty("   ", null, LIST)).toBeUndefined();
     expect(duplicateNameParty("---", null, LIST)).toBeUndefined();
+    // harakat alone carry no letters: no key, so no warning
+    expect(duplicateNameParty("ًّْ", null, LIST)).toBeUndefined();
+    // ...and a stored party with no usable name never matches one either
+    expect(duplicateNameParty("عماره", null, [party({ id: "blank", name: "---" })])).toBeUndefined();
   });
 });
 

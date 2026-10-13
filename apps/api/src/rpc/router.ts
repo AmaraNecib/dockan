@@ -168,8 +168,11 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
 
 /**
  * #177 — a typed store refusal from the guarded adjustment path maps to a
- * stable ORPC error. The router's friendly pre-checks (invoice ownership,
- * amount vs remaining) still run first; these cover the store's backstop.
+ * stable ORPC error. The router still runs its invoice OWNERSHIP checks
+ * (purchase + belongs to the supplier) before the store call; the store checks
+ * the duplicate signature BEFORE the remaining-amount offset, so an exact
+ * linked resend is reported as a duplicate. These mappings cover the store's
+ * backstop.
  */
 const ADJUSTMENT_REFUSAL = {
   DUPLICATE: { status: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" },
@@ -981,21 +984,26 @@ export function createRpcRouter(deps: RpcDeps) {
           // the signature dedup runs under it, double-posting the same balance.
           // Built lazily: an all-existing-supplier batch needs no name lookup,
           // and listParties carries per-party aggregates.
+          type NamedCandidate = { id: string; name: string; entries: number };
           const wantsNewNames = input.rows.some((row) => row.newSupplierName !== undefined);
-          const supplierByName = new Map<string, { id: string; name: string; entries: number }>();
+          const suppliersByName = new Map<string, NamedCandidate[]>();
           if (wantsNewNames) {
             for (const party of await tx.listParties("supplier")) {
               const key = normalizeTextKey(party.name);
-              const entries = party.accountEntryCount ?? 0;
-              const current = supplierByName.get(key);
-              // two suppliers can fold to one name (legacy corruption): prefer the
-              // one that already carries entries, then the lowest id, so a resend
-              // resolves to the same row the first attempt used
-              if (current === undefined || entries > current.entries || (entries === current.entries && party.id < current.id)) {
-                supplierByName.set(key, { id: party.id, name: party.name, entries });
-              }
+              const candidates = suppliersByName.get(key) ?? [];
+              candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
+              suppliersByName.set(key, candidates);
             }
           }
+          // the entry-count/lowest-id tie-break, used only when no candidate
+          // already holds the row's signature
+          const pickByName = (key: string): NamedCandidate | undefined => {
+            const candidates = suppliersByName.get(key);
+            if (candidates === undefined || candidates.length === 0) return undefined;
+            return candidates.reduce((best, candidate) =>
+              candidate.entries > best.entries || (candidate.entries === best.entries && candidate.id < best.id) ? candidate : best,
+            );
+          };
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {
@@ -1012,21 +1020,35 @@ export function createRpcRouter(deps: RpcDeps) {
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
               // SAFETY: the contract superRefine guarantees newSupplierName here
-              const requested = supplierByName.get(normalizeTextKey(row.newSupplierName!));
+              const key = normalizeTextKey(row.newSupplierName!);
+              const candidates = suppliersByName.get(key);
+              let requested: NamedCandidate | undefined;
+              let isResend = false;
+              if (candidates !== undefined) {
+                // #177 round 3 (finding 2) — a retry must stay on the account that
+                // already holds the signature. Checking only the entry-count
+                // winner can pick a different folded-match that has since gained
+                // more entries, miss the prior row, and post again.
+                for (const candidate of candidates) {
+                  if (await tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null })) {
+                    requested = candidate;
+                    isResend = true;
+                    break;
+                  }
+                }
+              }
+              if (requested === undefined) requested = pickByName(key);
               if (requested !== undefined) {
-                // the name already exists (a resend, or a typed name the picker
-                // would have matched). Apply the same confirmation gate as the
-                // supplierId path, EXCEPT for an exact resend: the guarded write
-                // below reports that as a duplicate rather than an unconfirmed add.
-                if (row.confirmExisting !== true) {
+                // the same confirmation gate as the supplierId path, EXCEPT for an
+                // exact resend: the guarded write below reports that as a duplicate
+                if (!isResend && row.confirmExisting !== true) {
                   const existing = await tx.listSupplierEntries(requested.id);
-                  const isResend = await tx.hasSupplierAdjustment({ supplierId: requested.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null });
-                  if (existing.length > 0 && !isResend) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+                  if (existing.length > 0) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
                 }
                 plan.push({ supplierId: requested.id, name: requested.name, direction: row.direction, amount: row.amount });
               } else {
                 const party = await tx.createParty("supplier", { name: row.newSupplierName! });
-                supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name, entries: 0 });
+                suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);
                 plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
               }
             }

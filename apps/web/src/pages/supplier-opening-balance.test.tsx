@@ -24,6 +24,9 @@ let captured: { rows: CapturedRow[] } | null = null;
 /** when true, the first unconfirmed save is refused as if the cached entry
  * count were stale */
 let rejectUnconfirmed = false;
+/** when true, the next save is refused even when confirmed (a stale confirmed
+ * attempt) */
+let rejectOnce = false;
 const BASE_SUPPLIERS = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
@@ -42,6 +45,10 @@ mock.module("@/lib/rpc", () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
           if (rejectUnconfirmed && !input.rows.every((row) => row.confirmExisting === true)) {
+            throw new Error("OPENING_BALANCE_EXISTS");
+          }
+          if (rejectOnce) {
+            rejectOnce = false;
             throw new Error("OPENING_BALANCE_EXISTS");
           }
           captured = input;
@@ -65,6 +72,7 @@ let queryClient: QueryClient | null = null;
 beforeEach(() => {
   captured = null;
   rejectUnconfirmed = false;
+  rejectOnce = false;
   suppliers = BASE_SUPPLIERS;
   queryClient = null;
   host = document.createElement("div");
@@ -543,4 +551,110 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(rowAmount(1)).toBe("500");
     expect(rowAmount(0)).toBe("");
   });
+
+  it("forwards confirmExisting on a named row in a mixed confirmed batch (Greptile round 3)", async () => {
+    rejectUnconfirmed = true;
+    render();
+    await settle();
+
+    // s-1 already has entries, so the batch needs confirmation; the second row is
+    // a typed name the client does not know the server already has
+    typeIntoRow(0, "800");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد ظهر مرتين");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    // the named row must carry confirmExisting too, or the server refuses and
+    // nothing in the mixed batch ever saves
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-1", amount: 800, confirmExisting: true });
+    expect(captured?.rows[1]).toMatchObject({ newSupplierName: "مورد ظهر مرتين", amount: 400, confirmExisting: true });
+  });
+
+  it("refreshes suppliers after a confirmed refusal too (Greptile round 3)", async () => {
+    rejectOnce = true;
+    render();
+    await settle();
+    typeIntoRow(0, "800");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    const spy = spyOn(queryClient!, "invalidateQueries");
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+
+    // a refusal on the already-confirmed path must still refresh the list so the
+    // page can recover instead of repeating the same refusal forever
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["suppliersList"]));
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+  });
+
+  it("does not overwrite an invalid target draft when adopting a typed name (Greptile round 3)", async () => {
+    render();
+    await settle();
+    typeIntoRow(0, "1 000,00");
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    // the invalid row keeps its text and its error; the inline draft stays for the
+    // conflict guard rather than silently clobbering the bad value
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("1 000,00");
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("500");
+  });
+
+  it("counts a resolved typed name toward the batch limit and blocks before the server (Greptile round 3)", async () => {
+    suppliers = Array.from({ length: 201 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      phone: null,
+      createdAt: "2026-01-01T10:00:00",
+      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    // fill the first 200 rows, leaving the 201st empty
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(201);
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      inputs.forEach((input, index) => {
+        if (index >= 200) return;
+        setter?.call(input, "1");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    });
+
+    // the typed name matches the 201st supplier; keep the amount focused so the
+    // adoption effect cannot mask the resolved-row count
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد 200");
+    await act(async () => {
+      amountInput.focus();
+    });
+    setInput(amountInput, "5");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+
+    // 200 filled + the resolved row is over the cap: the page blocks, never sends
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
+    expect(captured).toBeNull();
+  }, 60_000);
 });

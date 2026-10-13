@@ -96,7 +96,11 @@ export function SupplierOpeningBalancePage() {
         ? t("supplierOpeningRowInvalid")
         : null;
 
-  const totalRows = filledExisting.length + (newFilled ? 1 : 0);
+  // a typed name that folds to a supplier without its own row is still a row: it
+  // counts toward the batch cap even before the adoption effect moves it
+  const resolvedNewRow = resolveNewName();
+  const resolvedRowIsExtra = resolvedNewRow !== undefined && !newFilled && !filledExisting.some((row) => row.supplier.id === resolvedNewRow.supplierId);
+  const totalRows = filledExisting.length + (newFilled ? 1 : 0) + (resolvedRowIsExtra ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows
   const blockedReason = overLimit
@@ -137,9 +141,11 @@ export function SupplierOpeningBalancePage() {
     if (nameFocused || amountFocused) return;
     const resolved = resolveNewName();
     if (resolved === undefined) return;
-    // the matching supplier already has its own row: leave the inline draft for
-    // submit to flag as a conflict, never post a second row for one supplier
-    if (openingRowStatus(drafts[resolved.supplierId]).status === "filled") return;
+    // only an untouched target row is safe to adopt into: a filled row would
+    // double-post, and a nonempty INVALID draft (e.g. "1 000,00") must keep its
+    // error instead of being silently overwritten. The inline draft is left for
+    // submit/save to flag as a conflict.
+    if (openingRowStatus(drafts[resolved.supplierId]).status !== "untouched") return;
     setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
     setNewName("");
     setNewAmount("");
@@ -175,7 +181,7 @@ export function SupplierOpeningBalancePage() {
           ...(resolved !== undefined
             ? [{ supplierId: resolved.supplierId, direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
             : newRow.status === "filled"
-              ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }]
+              ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount, confirmExisting: confirmExisting || undefined }]
               : []),
         ],
       });
@@ -190,10 +196,12 @@ export function SupplierOpeningBalancePage() {
       setSaved({ created: result.created, accounts: result.accounts });
       setConfirming(false);
     } catch (err) {
-      // the confirmation is client-derived from a possibly stale list; when the
-      // server refuses an unconfirmed existing account, surface the dialog so
-      // the owner can still proceed instead of hitting a dead end
-      if (!confirmExisting && err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
+      // the confirmation is client-derived from a possibly stale list: an
+      // OPENING_BALANCE_EXISTS refusal refreshes so the page can move a named row
+      // onto the supplier that appeared on the server, and keeps the dialog open
+      // so the owner can confirm. Do this on the CONFIRMED path too, or a named
+      // row the client has not seen yet repeats the refusal forever.
+      if (err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
         setConfirming(true);
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
       }
@@ -221,7 +229,7 @@ export function SupplierOpeningBalancePage() {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }
-    const effectiveTotal = totalRows + (resolved !== undefined && !newFilled ? 1 : 0);
+    const effectiveTotal = totalRows;
     if (effectiveTotal === 0) {
       setError(t("supplierOpeningNothing"));
       return;

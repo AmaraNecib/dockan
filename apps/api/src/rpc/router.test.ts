@@ -1936,6 +1936,33 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: carrying.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 
+  it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {
+    const name = `مورد مطابق-${Date.now()}`;
+    const a = await client.suppliersCreate({ name });
+    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+
+    // the first attempt posts to the tie-break winner (both 0 entries -> lowest id)
+    const payload = { occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 700 }] };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+    const originalId = first.accounts[0]!.supplierId;
+
+    // the OTHER folded-match gains more entries, so the entry-count tie-break
+    // alone would now pick it and miss the entry on the original
+    const otherId = originalId === a.id ? b.id : a.id;
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 50 });
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 60 });
+
+    // the client's confirmed retry must resolve to the original account and
+    // report the duplicate, never post a second 700 to the other supplier
+    await expect(
+      client.suppliersOpeningBalances({ ...payload, rows: [{ ...payload.rows[0]!, confirmExisting: true }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    expect((await client.suppliersGet({ id: originalId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+    expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
+  });
+
   it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {
     const { supplier, invoice } = await setupSupplier("مورد إعادة رابط", 5);
     const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };

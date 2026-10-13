@@ -490,7 +490,7 @@ export const partyListOutputSchema = z.object({ items: z.array(partyListItemSche
  * opening-balance screen folds typed names against this list; only `{ id, name }`
  * ever crosses the wire.
  */
-export const partyNameSchema = z.object({ id: idSchema, name: z.string() });
+export const partyNameSchema = partySchema.pick({ id: true, name: true });
 export const partyNamesOutputSchema = z.object({ items: z.array(partyNameSchema) });
 
 /**

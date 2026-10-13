@@ -1147,6 +1147,30 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  it("blocks the confirm-save when the account summary fails after the dialog opens (#183)", async () => {
+    render();
+    await settle();
+    // s-1 carries entries, so filling its row opens the confirmation dialog
+    typeIntoRow(0, "100");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // a later refetch of the account summary fails while the dialog is open
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
+    await settle();
+
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+  });
+
   it("folds a typed name onto an existing supplier from the names-only list (#183)", async () => {
     render();
     await settle();

@@ -284,6 +284,12 @@ export function SupplierOpeningBalancePage() {
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
     if (occurredAt === null) return;
+    // a failed read must block the dialog path too: the counts the dialog was
+    // derived from may no longer be the ones on screen (see `listFailed`)
+    if (listFailed) {
+      setError(tError(listError?.message));
+      return;
+    }
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
@@ -673,7 +679,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

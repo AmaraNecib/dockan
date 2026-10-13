@@ -17,6 +17,7 @@ type Summary = {
   invoiceCount: number;
   oldestInvoiceDate: string | null;
   latestInvoiceDate: string | null;
+  accountBalance: number | null;
 };
 
 type Invoice = {
@@ -57,6 +58,13 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
+    // #161 — the expanded supplier row reads its account movements
+    suppliersGet: {
+      queryOptions: ({ input }: { input: { id: string } }) => ({
+        queryKey: ["suppliersGet", input],
+        queryFn: async () => ({ account: null }),
+      }),
+    },
   },
   rpcClient: {},
 }));
@@ -71,6 +79,7 @@ const summary = (over: Partial<Summary> = {}): Summary => ({
   invoiceCount: 1,
   oldestInvoiceDate: "2026-08-01",
   latestInvoiceDate: "2026-08-01",
+  accountBalance: null,
   ...over,
 });
 

@@ -428,6 +428,11 @@ export const debtSummarySchema = z.object({
   invoiceCount: z.number().int().min(0),
   oldestInvoiceDate: localDateSchema.nullable(),
   latestInvoiceDate: localDateSchema.nullable(),
+  /** supplier rows only (issue 161): the signed account balance, positive when
+   * the shop owes the supplier and negative when the shop is ahead. Null for a
+   * customer (customers keep invoice-based debt) and for typed-only rows with
+   * no supplier account. */
+  accountBalance: z.number().int().nullable(),
 });
 
 export const invoiceDetailSchema = invoiceSchema.extend({
@@ -471,6 +476,51 @@ export const partyListOutputSchema = z.object({ items: z.array(partyListItemSche
  * never renders a raw invoiceId. */
 export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string().min(1) });
 
+// ---------------------------------------------------------------------------
+// Supplier account (issue 161): one signed ledger per supplier (ADR-0009)
+// ---------------------------------------------------------------------------
+
+/** A supplier account entry. Purchase = +charge, payment = −paid,
+ * purchase return = −returned value, account refund = +cash received to close a
+ * credit. */
+export const supplierEntryKinds = ["PURCHASE", "PAYMENT", "RETURN", "REFUND"] as const;
+export const supplierEntryKindSchema = z.enum(supplierEntryKinds);
+
+/** How a supplier payment is distributed. OLDEST = spread over unpaid invoices
+ * oldest-first; INVOICE = a named invoice; CREDIT = leave the whole amount as
+ * an advance (credit). */
+export const supplierPayTargetSchema = z.object({
+  kind: z.enum(["OLDEST", "INVOICE", "CREDIT"]),
+  /** required when kind = INVOICE, forbidden otherwise */
+  invoiceId: idSchema.optional(),
+});
+
+export const supplierAccountEntrySchema = z.object({
+  id: idSchema,
+  supplierId: idSchema,
+  kind: supplierEntryKindSchema,
+  /** always positive; the kind's sign is applied when summing */
+  amount: z.number().int().positive(),
+  /** the invoice this entry names, when it reduces/charges one */
+  invoiceId: idSchema.nullable(),
+  /** joined at the store seam so the UI never renders a raw invoiceId */
+  invoiceNumber: z.string().nullable(),
+  method: paymentMethodSchema.nullable(),
+  note: z.string().nullable(),
+  /** voucher/return reference, when the entry came from a return */
+  ref: z.string().nullable(),
+  occurredAt: localDateTimeSchema,
+  createdAt: localDateTimeSchema,
+});
+
+/** The supplier's signed balance and every account entry (newest first).
+ * `balance` is a signed whole-DZD integer: positive = the shop owes the
+ * supplier, negative = the shop is ahead (credit). */
+export const supplierAccountSchema = z.object({
+  balance: z.number().int(),
+  entries: z.array(supplierAccountEntrySchema),
+});
+
 export const partyDetailOutputSchema = z.object({
   party: partySchema,
   stats: partyStatsSchema,
@@ -478,6 +528,9 @@ export const partyDetailOutputSchema = z.object({
   invoices: z.array(invoiceSchema),
   /** every payment on those invoices, newest first */
   payments: z.array(partyPaymentSchema),
+  /** the signed supplier account; null for a customer (customers keep
+   * invoice-based debt) */
+  account: supplierAccountSchema.nullable(),
 });
 
 export const partyDeleteOutputSchema = z.object({ deleted: z.boolean() });
@@ -548,6 +601,55 @@ export const returnSchema = z.object({
 
 export const returnDetailSchema = returnSchema.extend({
   lines: z.array(returnLineSchema),
+});
+
+/** One returned purchase line (invoice-linked snaps the original line, a
+ * free-standing return names the item and its current average cost). */
+export const supplierReturnLineSchema = z.object({
+  id: idSchema,
+  returnId: idSchema,
+  invoiceLineId: idSchema.nullable(),
+  itemId: idSchema.nullable(),
+  description: z.string(),
+  quantity: z.number().int().positive(),
+  unitCost: dinarsSchema,
+  amount: dinarsSchema,
+});
+
+/** A purchase return (issue 161). Auto-accepted: there is no review state, so
+ * the only status is the recorded fact. The signed account entry it produced
+ * lives in `supplier_account_entries` with `ref = returnNumber`. */
+export const supplierReturnSchema = z.object({
+  id: idSchema,
+  returnNumber: z.string().min(1),
+  supplierId: idSchema,
+  /** the supplier's current name, joined at the store seam so the voucher and
+   * the global history can identify who holds the goods/credit */
+  supplierName: z.string().nullable(),
+  invoiceId: idSchema.nullable(),
+  invoiceNumber: z.string().nullable(),
+  /** INVOICE_LINKED snapshots original purchase lines; FREE_STANDING names an item */
+  kind: z.enum(["INVOICE_LINKED", "FREE_STANDING"]),
+  /** whole DZD returned */
+  amount: dinarsSchema,
+  /** portion that reduced an invoice's remaining debt */
+  debtReduction: dinarsSchema,
+  /** portion left as supplier credit */
+  credit: dinarsSchema,
+  /** cash received from the supplier at return time */
+  cashBack: dinarsSchema,
+  reason: z.string().max(500).nullable(),
+  occurredAt: localDateTimeSchema,
+  createdAt: localDateTimeSchema,
+  lines: z.array(supplierReturnLineSchema),
+});
+
+export const supplierReturnsListInputSchema = z.object({
+  supplierId: idSchema.optional(),
+});
+
+export const supplierReturnsListOutputSchema = z.object({
+  items: z.array(supplierReturnSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -782,6 +884,73 @@ export const invoiceCreateInputSchema = z
 
 export const invoicePayInputSchema = z.object({
   invoiceId: idSchema,
+  amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+  method: paymentMethodSchema.optional(),
+  note: z.string().nullable().optional(),
+});
+
+// --- supplier account inputs (issue 161) -----------------------------------
+
+export const supplierPayInputSchema = z
+  .object({
+    supplierId: idSchema,
+    amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+    method: paymentMethodSchema.optional(),
+    note: z.string().nullable().optional(),
+    /** oldest-first default; a specific invoice, or a pure credit advance */
+    target: supplierPayTargetSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const target = value.target;
+    if (target?.kind === "INVOICE" && target.invoiceId === undefined) {
+      ctx.addIssue({ code: "custom", message: "an invoice target needs an invoiceId", path: ["target", "invoiceId"] });
+    }
+    if (target !== undefined && target.kind !== "INVOICE" && target.invoiceId !== undefined) {
+      ctx.addIssue({ code: "custom", message: "invoiceId is only valid with an INVOICE target", path: ["target", "invoiceId"] });
+    }
+  });
+
+/** One returned purchase line; returned quantity is capped at bought minus
+ * already returned on the api. */
+export const supplierReturnLineInputSchema = z.object({
+  invoiceLineId: idSchema,
+  quantity: z.number().int().positive().max(1_000_000),
+});
+
+/** A purchase return: either invoice-linked (`lines` + `invoiceId`) or
+ * free-standing (`itemId` + `quantity` + `amount`). Auto-accepted — no review
+ * state. `cashBack` records cash received to close the resulting credit. */
+export const supplierReturnInputSchema = z
+  .object({
+    supplierId: idSchema,
+    invoiceId: idSchema.optional(),
+    lines: z.array(supplierReturnLineInputSchema).min(1).max(200).optional(),
+    itemId: idSchema.optional(),
+    quantity: z.number().int().positive().max(1_000_000).optional(),
+    amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount").optional(),
+    reason: z.string().trim().max(500).nullable().optional(),
+    /** cash received from the supplier now, to close the resulting credit */
+    cashBack: dinarsSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const invoiceLinked = value.invoiceId !== undefined || value.lines !== undefined;
+    const freeStanding = value.itemId !== undefined || value.quantity !== undefined || value.amount !== undefined;
+    if (invoiceLinked && freeStanding) {
+      ctx.addIssue({ code: "custom", message: "a purchase return is either invoice-linked or free-standing, not both" });
+      return;
+    }
+    if (invoiceLinked) {
+      if (value.invoiceId === undefined) ctx.addIssue({ code: "custom", message: "invoice-linked returns need an invoiceId", path: ["invoiceId"] });
+      if (value.lines === undefined) ctx.addIssue({ code: "custom", message: "invoice-linked returns need lines", path: ["lines"] });
+      return;
+    }
+    if (value.itemId === undefined) ctx.addIssue({ code: "custom", message: "free-standing returns need an itemId", path: ["itemId"] });
+    if (value.quantity === undefined) ctx.addIssue({ code: "custom", message: "free-standing returns need a quantity", path: ["quantity"] });
+    if (value.amount === undefined) ctx.addIssue({ code: "custom", message: "free-standing returns need an amount", path: ["amount"] });
+  });
+
+export const supplierRefundInputSchema = z.object({
+  supplierId: idSchema,
   amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
   method: paymentMethodSchema.optional(),
   note: z.string().nullable().optional(),
@@ -1102,6 +1271,13 @@ export type ReturnMark = z.infer<typeof returnMarkSchema>;
 export type ReturnStatus = z.infer<typeof returnStatusSchema>;
 export type ReturnLine = z.infer<typeof returnLineSchema>;
 export type ReturnDetail = z.infer<typeof returnDetailSchema>;
+export type SupplierEntryKind = z.infer<typeof supplierEntryKindSchema>;
+export type SupplierAccountEntry = z.infer<typeof supplierAccountEntrySchema>;
+export type SupplierAccount = z.infer<typeof supplierAccountSchema>;
+export type SupplierPayTarget = z.infer<typeof supplierPayTargetSchema>;
+export type SupplierReturnLine = z.infer<typeof supplierReturnLineSchema>;
+export type SupplierReturnRecord = z.infer<typeof supplierReturnSchema>;
+export type SupplierReturnsListFilters = z.infer<typeof supplierReturnsListInputSchema>;
 export type ReturnsPendingCount = z.infer<typeof returnsPendingCountOutputSchema>;
 export type Payment = z.infer<typeof paymentSchema>;
 export type Activity = z.infer<typeof activitySchema>;
@@ -1133,6 +1309,10 @@ export type PartyUpdate = z.infer<typeof partyPatchSchema>;
 export type PartyUpdateInput = z.infer<typeof partyUpdateInputSchema>;
 export type InvoiceCreate = z.infer<typeof invoiceCreateInputSchema>;
 export type InvoicePay = z.infer<typeof invoicePayInputSchema>;
+export type SupplierPay = z.infer<typeof supplierPayInputSchema>;
+export type SupplierReturn = z.infer<typeof supplierReturnInputSchema>;
+export type SupplierReturnLineInput = z.infer<typeof supplierReturnLineInputSchema>;
+export type SupplierRefund = z.infer<typeof supplierRefundInputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
 export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;

@@ -62,7 +62,7 @@ describe(".cell-ltr utility (issue #166)", () => {
     // exact per-file counts: a dropped class on one of party-detail's two cells
     // must fail, not be masked by the other
     const expected = {
-      "pages/party-detail.tsx": 2,
+      "pages/party-detail.tsx": 3,
       "pages/invoice.tsx": 1,
       "pages/parties.tsx": 1,
       "pages/activity.tsx": 1,

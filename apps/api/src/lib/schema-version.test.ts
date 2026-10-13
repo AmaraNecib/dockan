@@ -133,6 +133,27 @@ describe("the version gate", () => {
     }
   });
 
+  it("refuses the supplier-account format with a build that only supports version 1 (issue 161)", () => {
+    // ADR-0009: the signed supplier account is a forward format change. A
+    // version-1 build must refuse version-2 data, or it would record purchases
+    // and payments with no supplier entries and silently corrupt the balance.
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(2);
+    const dir = tempDir();
+    const dbPath = path.join(dir, "supplier-v2.db");
+    const seed = new Database(dbPath, { create: true });
+    seed.exec("PRAGMA user_version = 2");
+    seed.close();
+
+    const handle = new Database(dbPath, { create: true });
+    try {
+      expect(() => assertSchemaVersionSupported(handle, 1)).toThrow(UnsupportedSchemaVersionError);
+      // the current build accepts it (and migrates/stamps forward)
+      expect(assertSchemaVersionSupported(handle)).toBe(2);
+    } finally {
+      handle.close();
+    }
+  });
+
   it("refuses a newer database before any write, leaves it untouched and closes the handle", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "newer-open.db");

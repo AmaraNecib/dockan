@@ -117,6 +117,7 @@ const detail = (over: Partial<PartyDetail> = {}): PartyDetail => ({
   stats: EMPTY_STATS,
   invoices: [],
   payments: [],
+  account: null,
   ...over,
 });
 

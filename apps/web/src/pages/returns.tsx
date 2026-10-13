@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import type { ReturnDetail } from "@dokan/contracts";
+import type { ReturnDetail, SupplierReturnRecord } from "@dokan/contracts";
 
 import { debtOffsetDisplay } from "../lib/return-voucher";
 import { tError } from "../lib/i18n";
@@ -138,6 +138,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
 export function ReturnsPage() {
   const { t } = useTranslation();
   const query = useQuery(orpc.returnsList.queryOptions({ input: {} }));
+  const [tab, setTab] = useState<"customers" | "suppliers">("customers");
   if (query.isPending) {
     return <p className="text-sm text-muted-foreground" data-testid="returns-loading">{t("expensesLoading")}</p>;
   }
@@ -156,7 +157,92 @@ export function ReturnsPage() {
   return (
     <section className="grid gap-4" data-testid="returns-page">
       <h1 className="text-xl font-bold">{t("returnsTitle")}</h1>
-      <ReturnsReviewList returns={[...pending, ...reviewed]} />
+      <div role="tablist" aria-label={t("returnsTitle")} className="flex gap-1 border-b border-border">
+        <button
+          type="button"
+          role="tab"
+          id="returns-tab-customers"
+          aria-selected={tab === "customers"}
+          aria-controls="returns-panel-customers"
+          onClick={() => setTab("customers")}
+          data-testid="returns-tab-customers"
+          className={tab === "customers" ? "-mb-px rounded-t border-b-2 border-primary px-3 py-2 text-sm font-medium" : "-mb-px rounded-t border-b-2 border-transparent px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"}
+        >
+          {t("returnsTabCustomers")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="returns-tab-suppliers"
+          aria-selected={tab === "suppliers"}
+          aria-controls="returns-panel-suppliers"
+          onClick={() => setTab("suppliers")}
+          data-testid="returns-tab-suppliers"
+          className={tab === "suppliers" ? "-mb-px rounded-t border-b-2 border-primary px-3 py-2 text-sm font-medium" : "-mb-px rounded-t border-b-2 border-transparent px-3 py-2 text-sm font-medium text-muted-foreground hover:text-foreground"}
+        >
+          {t("returnsTabSuppliers")}
+        </button>
+      </div>
+      <div role="tabpanel" id="returns-panel-customers" aria-labelledby="returns-tab-customers" hidden={tab !== "customers"}>
+        <ReturnsReviewList returns={[...pending, ...reviewed]} />
+      </div>
+      <div role="tabpanel" id="returns-panel-suppliers" aria-labelledby="returns-tab-suppliers" hidden={tab !== "suppliers"}>
+        <SupplierReturnsList />
+      </div>
     </section>
+  );
+}
+
+/**
+ * #161 — the supplier purchase-return history. Plain list: a purchase return
+ * is auto-accepted, so there is no accept/reject action. Each row links to the
+ * on-demand voucher.
+ */
+export function SupplierReturnsList() {
+  const { t } = useTranslation();
+  const query = useQuery(orpc.suppliersReturnsList.queryOptions({ input: {} }));
+  if (query.isPending) {
+    return <p className="text-sm text-muted-foreground" data-testid="supplier-returns-loading">{t("expensesLoading")}</p>;
+  }
+  if (query.isError || query.data === undefined) {
+    const message = query.error instanceof Error ? query.error.message : undefined;
+    return <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-returns-error">{tError(message)}</p>;
+  }
+  if (query.data.items.length === 0) {
+    return <p className="text-sm text-muted-foreground" data-testid="supplier-returns-empty">{t("supplierReturnsEmpty")}</p>;
+  }
+  return (
+    <div className="grid gap-3" data-testid="supplier-returns-list">
+      {query.data.items.map((record: SupplierReturnRecord) => (
+        <article key={record.id} className="rounded border bg-card p-4" data-testid={`supplier-return-${record.returnNumber}`}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p dir="ltr" className="font-semibold">{record.returnNumber}</p>
+              <p className="text-sm text-muted-foreground" data-testid="supplier-return-supplier">
+                {t("supplierReturnSupplier")}: {record.supplierName ?? record.supplierId}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {t("returnsRefundTotal")}: {record.amount} {t("dzd")}
+                {record.invoiceNumber !== null && <> — {t("supplierReturnInvoiceLink")}: <span dir="ltr">{record.invoiceNumber}</span></>}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("supplierReturnDebtReduction")}: {record.debtReduction} {t("dzd")} — {t("supplierReturnCredit")}: {record.credit} {t("dzd")}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}
+              </p>
+            </div>
+            <Link
+              to="/suppliers/$partyId/returns/$returnId/print"
+              params={{ partyId: record.supplierId, returnId: record.id }}
+              className="text-sm text-foreground underline"
+              data-testid={`supplier-return-print-${record.returnNumber}`}
+            >
+              {t("supplierReturnVoucher")}
+            </Link>
+          </div>
+        </article>
+      ))}
+    </div>
   );
 }

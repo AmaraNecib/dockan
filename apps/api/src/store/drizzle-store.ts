@@ -26,20 +26,25 @@ import type {
   PartyStats,
   PartyUpdate,
   Payment,
+  PaymentMethod,
   ReturnDetail,
   ReturnMark,
   Settings,
   SettingsUpdate,
   StockMovement,
   Supplier,
+  SupplierAccountEntry,
+  SupplierEntryKind,
+  SupplierReturnRecord,
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
+import { supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError } from "./port";
 
 const now = () => localDateTime();
@@ -314,6 +319,65 @@ const toExpense = (r: typeof expenses.$inferSelect): Expense =>
 const toStockLink = (r: typeof stockLinks.$inferSelect): StockLink =>
   ({ id: r.id, invoiceId: r.invoiceId, movementId: r.movementId, quantity: r.quantity, createdAt: r.createdAt }) satisfies StockLink;
 
+/** A supplier account entry joined to its invoice number (nullable). */
+type SupplierEntryRow = {
+  id: string;
+  supplierId: string;
+  kind: SupplierEntryKind;
+  amount: number;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  method: PaymentMethod | null;
+  note: string | null;
+  ref: string | null;
+  occurredAt: string;
+  createdAt: string;
+};
+const toSupplierEntry = (r: SupplierEntryRow): SupplierAccountEntry => ({
+  id: r.id,
+  supplierId: r.supplierId,
+  kind: r.kind,
+  amount: r.amount,
+  invoiceId: r.invoiceId,
+  invoiceNumber: r.invoiceNumber,
+  method: r.method,
+  note: r.note,
+  ref: r.ref,
+  occurredAt: r.occurredAt,
+  createdAt: r.createdAt,
+});
+
+const toSupplierReturnLine = (r: typeof supplierReturnLines.$inferSelect): SupplierReturnRecord["lines"][number] => ({
+  id: r.id,
+  returnId: r.returnId,
+  invoiceLineId: r.invoiceLineId,
+  itemId: r.itemId,
+  description: r.description,
+  quantity: r.quantity,
+  unitCost: r.unitCost,
+  amount: r.amount,
+});
+
+const toSupplierReturn = (
+  r: typeof supplierReturns.$inferSelect & { invoice_number: string | null; supplier_name: string | null },
+): SupplierReturnRecord => ({
+  id: r.id,
+  returnNumber: r.returnNumber,
+  supplierId: r.supplierId,
+  supplierName: r.supplier_name,
+  invoiceId: r.invoiceId,
+  invoiceNumber: r.invoice_number,
+  kind: r.kind,
+  amount: r.amount,
+  debtReduction: r.debtReduction,
+  credit: r.credit,
+  cashBack: r.cashBack,
+  reason: r.reason,
+  occurredAt: r.occurredAt,
+  createdAt: r.createdAt,
+  lines: [],
+});
+
 /**
  * Seed the default expense categories atomically with a durable marker, and
  * SELF-HEAL partial seeds left by a boot interrupted mid-seed (the pre-fix
@@ -451,6 +515,56 @@ export const backfillCounterparties = (conn: Connection): void => {
   }
 };
 
+const SUPPLIER_ACCOUNT_MARKER = "migration.supplierAccountV1";
+
+/**
+ * One-time backfill of supplier accounts for existing PURCHASE invoices
+ * (develop fixtures / upgraded installs, issue 161). Creates a PURCHASE charge
+ * for every id-backed purchase invoice and one PAYMENT entry for its already-
+ * paid amount, so the signed balance agrees with the invoice debt the app
+ * already showed (the `paid_amount` cache, not a sum of payment rows — a legacy
+ * invoice could carry a paid amount without a matching row). Customer SALE
+ * invoices are untouched. Marker-gated AND `NOT EXISTS`-guarded, so a lost
+ * marker can never double-charge a supplier. Runs inside one transaction, so an
+ * interrupted boot re-runs the pair instead of silently skipping it. Ids are
+ * real UUIDs because the account contract validates them on the way out.
+ */
+export const backfillSupplierAccounts = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: settings.key is the primary key; this literal SELECT yields one
+    // string column per row, so the cast names what the driver already returns.
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(SUPPLIER_ACCOUNT_MARKER) as Array<{ value: string }>;
+    if (marker.length > 0) {
+      conn.raw.exec("COMMIT");
+      return;
+    }
+    // SAFETY: the SELECT aliases exactly these columns from invoices, whose
+    // types are fixed by db/schema.ts. total_amount > 0 keeps the ledger's
+    // CHECK(amount > 0) from aborting boot on a legacy zero-total purchase;
+    // the EXISTS keeps an orphaned counterparty_id (pre-#120 data) from
+    // violating the suppliers(id) foreign key; the NOT EXISTS is the second
+    // idempotency guard behind the marker.
+    const invoiceRows = conn.raw
+      .query("SELECT id, counterparty_id AS supplierId, total_amount AS totalAmount, paid_amount AS paidAmount, created_at AS createdAt FROM invoices WHERE kind = 'PURCHASE' AND counterparty_id IS NOT NULL AND total_amount > 0 AND EXISTS (SELECT 1 FROM suppliers s WHERE s.id = invoices.counterparty_id) AND NOT EXISTS (SELECT 1 FROM supplier_account_entries e WHERE e.invoice_id = invoices.id AND e.kind = 'PURCHASE')")
+      .all() as Array<{ id: string; supplierId: string; totalAmount: number; paidAmount: number; createdAt: string }>;
+    const insertEntry = conn.raw.query(
+      "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, invoice_id, method, note, ref, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+    );
+    for (const invoice of invoiceRows) {
+      insertEntry.run(id(), invoice.supplierId, "PURCHASE", invoice.totalAmount, invoice.id, null, null, invoice.createdAt, invoice.createdAt);
+      if (invoice.paidAmount > 0) {
+        insertEntry.run(id(), invoice.supplierId, "PAYMENT", invoice.paidAmount, invoice.id, null, null, invoice.createdAt, invoice.createdAt);
+      }
+    }
+    conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(SUPPLIER_ACCOUNT_MARKER);
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
+
 type DebtSummaryRow = {
   kind: unknown;
   counterparty_id: unknown;
@@ -459,6 +573,7 @@ type DebtSummaryRow = {
   invoice_count: unknown;
   oldest_date: unknown;
   latest_date: unknown;
+  account_balance: unknown;
 };
 
 /**
@@ -494,6 +609,10 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "insertPayment",
   "applyPaymentToInvoice",
   "setInvoicePaidAmounts",
+  "insertSupplierEntry",
+  "allocateSupplierReturnNumber",
+  "insertSupplierReturn",
+  "insertSupplierReturnLine",
   "recordOnboardingCompletion",
   "insertActivity",
   "setSetting",
@@ -860,6 +979,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // Deliberately fail-loud like every other migration in this file: a failed
     // identity backfill must not boot into name-grouped debts silently.
     backfillCounterparties(conn);
+    // issue 161: give existing id-backed purchase invoices a signed supplier
+    // account (charge + one payment entry per existing payment row). Runs after
+    // the counterparty backfill so typed-name purchases now have a supplier id.
+    backfillSupplierAccounts(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
     // an existing database cannot both initialize a competing counter. The
@@ -883,6 +1006,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ELSE 0
       END) FROM returns), 0) + 1
       WHERE NOT EXISTS (SELECT 1 FROM return_number_sequence WHERE id = 1)
+    `);
+
+    // Same conditional seed for the supplier-return number sequence (PRT-%04d).
+    await db.run(sql`
+      INSERT INTO supplier_return_number_sequence (id, next_number)
+      SELECT 1, COALESCE((SELECT MAX(CASE
+        WHEN return_number GLOB 'PRT-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+        ELSE 0
+      END) FROM supplier_returns), 0) + 1
+      WHERE NOT EXISTS (SELECT 1 FROM supplier_return_number_sequence WHERE id = 1)
     `);
 
     const categoriesCount = await db.$count(categories);
@@ -949,6 +1082,29 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
     const rows = await db.select(supplierCols).from(suppliers).where(eq(suppliers.id, partyId)).limit(1);
     return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
+  };
+
+  /** One supplier's account entries, newest first, invoice number joined. */
+  const listEntries = async (supplierId: string): Promise<SupplierAccountEntry[]> => {
+    const rows = await db
+      .select({
+        id: supplierAccountEntries.id,
+        supplierId: supplierAccountEntries.supplierId,
+        kind: supplierAccountEntries.kind,
+        amount: supplierAccountEntries.amount,
+        invoiceId: supplierAccountEntries.invoiceId,
+        invoiceNumber: invoices.invoiceNumber,
+        method: supplierAccountEntries.method,
+        note: supplierAccountEntries.note,
+        ref: supplierAccountEntries.ref,
+        occurredAt: supplierAccountEntries.occurredAt,
+        createdAt: supplierAccountEntries.createdAt,
+      })
+      .from(supplierAccountEntries)
+      .leftJoin(invoices, eq(invoices.id, supplierAccountEntries.invoiceId))
+      .where(eq(supplierAccountEntries.supplierId, supplierId))
+      .orderBy(desc(supplierAccountEntries.occurredAt), sql`supplier_account_entries.rowid DESC`);
+    return rows.map(toSupplierEntry);
   };
 
   const store: StorePort = {
@@ -1224,11 +1380,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (exists.length === 0) return "NOT_FOUND";
       // The rule is enforced by ONE conditional DELETE, so it holds at the
       // statement level even if a future caller forgets the transaction
-      // wrapper; the existence read above only classifies NOT_FOUND.
+      // wrapper; the existence read above only classifies NOT_FOUND. A supplier
+      // with account entries or purchase returns is also refused: the ledger
+      // FKs would otherwise surface a raw constraint error (issue 161).
       // SAFETY: the table name comes from a closed literal map (never input).
+      const supplierGuard =
+        role === "supplier"
+          ? " AND NOT EXISTS (SELECT 1 FROM supplier_account_entries WHERE supplier_id = ?) AND NOT EXISTS (SELECT 1 FROM supplier_returns WHERE supplier_id = ?)"
+          : "";
       const deleted = conn.raw
-        .query(`DELETE FROM ${PARTY_TABLES[role]} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM invoices WHERE counterparty_id = ?)`)
-        .run(partyId, partyId);
+        .query(`DELETE FROM ${PARTY_TABLES[role]} WHERE id = ? AND NOT EXISTS (SELECT 1 FROM invoices WHERE counterparty_id = ?)${supplierGuard}`)
+        .run(...(role === "supplier" ? [partyId, partyId, partyId, partyId] : [partyId, partyId]));
       return Number(deleted.changes) > 0 ? "DELETED" : "HAS_INVOICES";
     },
     async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
@@ -1260,11 +1422,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         }),
         { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
       );
+      // Suppliers also carry their signed account (issue 161); customers keep
+      // invoice-based debt so their account stays null.
+      const entries = role === "supplier" ? await listEntries(partyId) : [];
       return {
         party,
         stats: safePartyStats(stats),
         invoices: detailInvoices,
         payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
+        account: role === "supplier" ? { balance: supplierBalance(entries), entries } : null,
       } satisfies PartyDetail;
     },
 
@@ -1464,6 +1630,164 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       }
       return headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[];
     },
+    // --- supplier account (issue 161) ----------------------------------------
+    async insertSupplierEntry(entry: SupplierEntryInsert) {
+      const row = firstRowOf(
+        await db
+          .insert(supplierAccountEntries)
+          .values({
+            id: id(),
+            supplierId: entry.supplierId,
+            kind: entry.kind,
+            amount: entry.amount,
+            invoiceId: entry.invoiceId,
+            method: entry.method ?? null,
+            note: entry.note ?? null,
+            ref: entry.ref ?? null,
+            occurredAt: entry.occurredAt,
+            createdAt: now(),
+          })
+          .returning(),
+      );
+      // returning() has no joined invoice number; the caller only needs the id
+      return { ...toSupplierEntry({ ...row, invoiceNumber: null }) };
+    },
+    listSupplierEntries(supplierId: string) {
+      return listEntries(supplierId);
+    },
+    async listOutstandingPurchaseInvoices(supplierId: string) {
+      const rows = await db
+        .select(invoiceCols)
+        .from(invoices)
+        .where(and(eq(invoices.counterpartyId, supplierId), eq(invoices.kind, "PURCHASE"), sql`${invoices.remainingAmount} > 0`))
+        .orderBy(invoices.invoiceDate, invoices.createdAt, sql`invoices.rowid`);
+      return rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) }) satisfies Invoice);
+    },
+    async allocateSupplierReturnNumber() {
+      // SAFETY: fixed SQL identifiers and no user input; SQLite serializes the
+      // UPDATE across connections, and the MAX() keeps manually inserted PRT-*
+      // rows from moving the sequence backwards.
+      const rows = conn.raw
+        .query(`
+          UPDATE supplier_return_number_sequence
+          SET next_number = MAX(
+            next_number,
+            COALESCE((SELECT MAX(CASE
+              WHEN return_number GLOB 'PRT-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+              ELSE 0
+            END) FROM supplier_returns), 0) + 1
+          ) + 1
+          WHERE id = 1
+          RETURNING printf('PRT-%04d', next_number - 1) AS return_number
+        `)
+        .all() as Array<{ return_number: string }>;
+      return firstRowOf(rows).return_number;
+    },
+    async insertSupplierReturn(input: SupplierReturnInsert) {
+      const row = firstRowOf(
+        await db
+          .insert(supplierReturns)
+          .values({
+            id: id(),
+            returnNumber: input.returnNumber,
+            supplierId: input.supplierId,
+            invoiceId: input.invoiceId,
+            kind: input.kind,
+            amount: input.amount,
+            debtReduction: input.debtReduction,
+            credit: input.credit,
+            cashBack: input.cashBack,
+            reason: input.reason,
+            occurredAt: input.occurredAt,
+            createdAt: now(),
+          })
+          .returning({ id: supplierReturns.id }),
+      );
+      return { id: row.id };
+    },
+    async insertSupplierReturnLine(line: SupplierReturnLineInsert) {
+      await db
+        .insert(supplierReturnLines)
+        .values({
+          id: id(),
+          returnId: line.returnId,
+          invoiceLineId: line.invoiceLineId,
+          itemId: line.itemId,
+          description: line.description,
+          quantity: line.quantity,
+          unitCost: line.unitCost,
+          amount: line.amount,
+        })
+        .run();
+    },
+    async listSupplierReturns(filters: { supplierId?: string }) {
+      const where = filters.supplierId === undefined ? undefined : eq(supplierReturns.supplierId, filters.supplierId);
+      const headers = await db
+        .select({
+          id: supplierReturns.id,
+          returnNumber: supplierReturns.returnNumber,
+          supplierId: supplierReturns.supplierId,
+          supplier_name: suppliers.name,
+          invoiceId: supplierReturns.invoiceId,
+          invoice_number: invoices.invoiceNumber,
+          kind: supplierReturns.kind,
+          amount: supplierReturns.amount,
+          debtReduction: supplierReturns.debtReduction,
+          credit: supplierReturns.credit,
+          cashBack: supplierReturns.cashBack,
+          reason: supplierReturns.reason,
+          occurredAt: supplierReturns.occurredAt,
+          createdAt: supplierReturns.createdAt,
+        })
+        .from(supplierReturns)
+        .leftJoin(invoices, eq(invoices.id, supplierReturns.invoiceId))
+        .leftJoin(suppliers, eq(suppliers.id, supplierReturns.supplierId))
+        .where(where)
+        .orderBy(desc(supplierReturns.createdAt), sql`supplier_returns.rowid DESC`);
+      const lineRows =
+        headers.length === 0
+          ? []
+          : await db
+              .select()
+              .from(supplierReturnLines)
+              .where(inArray(supplierReturnLines.returnId, headers.map((header) => header.id)))
+              .orderBy(supplierReturnLines.id);
+      const linesByReturn = new Map<string, SupplierReturnRecord["lines"]>();
+      for (const row of lineRows) {
+        const list = linesByReturn.get(row.returnId) ?? [];
+        list.push(toSupplierReturnLine(row));
+        linesByReturn.set(row.returnId, list);
+      }
+      return headers.map((header) => ({ ...toSupplierReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies SupplierReturnRecord[];
+    },
+    async getSupplierReturn(returnId: string) {
+      const rows = await db
+        .select({
+          id: supplierReturns.id,
+          returnNumber: supplierReturns.returnNumber,
+          supplierId: supplierReturns.supplierId,
+          supplier_name: suppliers.name,
+          invoiceId: supplierReturns.invoiceId,
+          invoice_number: invoices.invoiceNumber,
+          kind: supplierReturns.kind,
+          amount: supplierReturns.amount,
+          debtReduction: supplierReturns.debtReduction,
+          credit: supplierReturns.credit,
+          cashBack: supplierReturns.cashBack,
+          reason: supplierReturns.reason,
+          occurredAt: supplierReturns.occurredAt,
+          createdAt: supplierReturns.createdAt,
+        })
+        .from(supplierReturns)
+        .leftJoin(invoices, eq(invoices.id, supplierReturns.invoiceId))
+        .leftJoin(suppliers, eq(suppliers.id, supplierReturns.supplierId))
+        .where(eq(supplierReturns.id, returnId))
+        .limit(1);
+      const header = rows[0];
+      if (header === undefined) return undefined;
+      const lineRows = await db.select().from(supplierReturnLines).where(eq(supplierReturnLines.returnId, returnId)).orderBy(supplierReturnLines.id);
+      return { ...toSupplierReturn(header), lines: lineRows.map((row) => toSupplierReturnLine(row)) } satisfies SupplierReturnRecord;
+    },
     /** One COUNT for the shell badge and dashboard notice (issue 118): the
      * pending mark lives only in `returns.status`, so a SQL aggregate is the
      * authoritative source and never a filtered client list. */
@@ -1498,6 +1822,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       for (const row of rows) {
         totals.set(row.invoiceLineId, { quantity: Number(row.quantity ?? 0), refundAmount: Number(row.refundAmount ?? 0) });
       }
+      return totals;
+    },
+    async returnedByPurchaseLine(invoiceId: string) {
+      // SAFETY: fixed columns; one row per original purchase line with its
+      // summed already-returned quantity (the supplier-return cap key).
+      const rows = (await db.all(sql`
+        SELECT srl.invoice_line_id AS invoiceLineId, SUM(srl.quantity) AS quantity
+        FROM supplier_return_lines srl
+        JOIN supplier_returns sr ON sr.id = srl.return_id
+        WHERE sr.invoice_id = ${invoiceId}
+        GROUP BY srl.invoice_line_id
+      `)) as Array<{ invoiceLineId: string; quantity: number | null }>;
+      const totals = new Map<string, number>();
+      for (const row of rows) totals.set(row.invoiceLineId, Number(row.quantity ?? 0));
       return totals;
     },
     /** same conditional-write guard as applyPaymentToInvoice for the debt side:
@@ -1583,7 +1921,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return Number(result.changes) > 0;
     },
     async getInvoiceDetail(invoiceId: string) {
-      const [invoice, lines, paymentsRows, creditRows] = await Promise.all([
+      const [invoice, lines, paymentsRows, creditRows, supplierCreditRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
         db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id),
         db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
@@ -1594,6 +1932,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .select({ credit: sql<SqlScalar>`coalesce(sum(${returns.debtApplied}), 0)` })
           .from(returns)
           .where(eq(returns.invoiceId, invoiceId)),
+        // supplier purchase returns reduce a PURCHASE invoice's debt the same
+        // way; without this the printed header would not add up after a
+        // return (total − paid − remaining = returnCreditAmount)
+        db
+          .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierReturns.debtReduction}), 0)` })
+          .from(supplierReturns)
+          .where(eq(supplierReturns.invoiceId, invoiceId)),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
@@ -1608,7 +1953,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ...normalizeInvoiceLegacy(header),
         lines: normalizedLines,
         payments: paymentsRows,
-        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0),
+        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0) + safeWhole(supplierCreditRows[0]?.credit ?? 0),
       } satisfies InvoiceDetail;
     },
     async getInvoiceLine(lineId: string) {
@@ -1677,14 +2022,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                SUM(invoices.remaining_amount) AS remaining_total,
                COUNT(*) AS invoice_count,
                MIN(invoices.invoice_date) AS oldest_date,
-               MAX(invoices.invoice_date) AS latest_date
+               MAX(invoices.invoice_date) AS latest_date,
+               CASE WHEN invoices.kind = 'PURCHASE' AND invoices.counterparty_id IS NOT NULL
+                 THEN COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+                                FROM supplier_account_entries e WHERE e.supplier_id = invoices.counterparty_id), 0)
+                 ELSE NULL END AS account_balance
         FROM invoices
         LEFT JOIN customers ON invoices.counterparty_id = customers.id
         LEFT JOIN suppliers ON invoices.counterparty_id = suppliers.id
         WHERE invoices.remaining_amount > 0 AND (invoices.counterparty_id IS NOT NULL OR invoices.counterparty_name IS NOT NULL)
         GROUP BY invoices.kind, COALESCE(invoices.counterparty_id, invoices.counterparty_name)
         ORDER BY remaining_total DESC`)) as DebtSummaryRow[];
-      return aggregated.map((r) => {
+      const summaries = aggregated.map((r) => {
         const kind =
           r.kind === "SALE"
             ? ("SALE" as const)
@@ -1702,8 +2051,41 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           invoiceCount: Number(r.invoice_count),
           oldestInvoiceDate: r.oldest_date == null ? null : String(r.oldest_date),
           latestInvoiceDate: r.latest_date == null ? null : String(r.latest_date),
+          accountBalance: r.account_balance == null ? null : Number(r.account_balance),
         } satisfies DebtSummary;
       });
+      // A supplier whose invoices are all settled but whose account still holds
+      // a credit (or a positive balance with no unpaid invoice) has no row in
+      // the invoice aggregate; add it from the signed ledger so /debts shows the
+      // net balance the ADR promises.
+      // SAFETY: the SELECT aliases exactly these columns; the counts and the
+      // balance are SQLite INTEGERs, the id/name/date columns TEXT.
+      const creditOnly = (await db.all(sql`
+        SELECT s.id AS counterparty_id, s.name AS counterparty_name,
+               COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+                         FROM supplier_account_entries e WHERE e.supplier_id = s.id), 0) AS account_balance,
+               (SELECT COUNT(*) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS invoice_count,
+               (SELECT MIN(i.invoice_date) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS oldest_date,
+               (SELECT MAX(i.invoice_date) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS latest_date
+        FROM suppliers s
+        WHERE EXISTS (SELECT 1 FROM supplier_account_entries e WHERE e.supplier_id = s.id)
+          AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE' AND i.remaining_amount > 0)
+          AND COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+                        FROM supplier_account_entries e WHERE e.supplier_id = s.id), 0) <> 0
+      `)) as Array<{ counterparty_id: unknown; counterparty_name: unknown; account_balance: unknown; invoice_count: unknown; oldest_date: unknown; latest_date: unknown }>;
+      for (const row of creditOnly) {
+        summaries.push({
+          counterpartyId: String(row.counterparty_id),
+          counterpartyName: row.counterparty_name == null ? null : String(row.counterparty_name),
+          kind: "PURCHASE",
+          remainingTotal: 0,
+          invoiceCount: Number(row.invoice_count),
+          oldestInvoiceDate: row.oldest_date == null ? null : String(row.oldest_date),
+          latestInvoiceDate: row.latest_date == null ? null : String(row.latest_date),
+          accountBalance: Number(row.account_balance),
+        } satisfies DebtSummary);
+      }
+      return summaries;
     },
     async dashboardSummary(day: string): Promise<DashboardAggregates> {
       // One aggregate read for the landing screen (issue 84). The day's sales
@@ -1861,6 +2243,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         db.$count(returnLines),
         db.$count(stockMovements),
         db.$count(stockLinks),
+        db.$count(supplierAccountEntries),
+        db.$count(supplierReturns),
+        db.$count(supplierReturnLines),
       ]);
       if (counts.some((count) => count > 0)) return false;
 

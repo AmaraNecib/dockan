@@ -14,6 +14,7 @@ import { InvoicesPage } from "./pages/invoices";
 import { InvoicePage } from "./pages/invoice";
 import { ReceiptPrintPage } from "./pages/receipt-print";
 import { ReturnVoucherPrintPage } from "./pages/return-print";
+import { SupplierReturnPrintPage } from "./pages/supplier-return-print";
 import { ReturnsPage } from "./pages/returns";
 import { SettingsPage } from "./pages/settings";
 import { DebtsPage } from "./pages/debts";
@@ -96,6 +97,11 @@ const returnVoucherPrintRoute = createRoute({
   component: ReturnVoucherPrintPage,
 });
 const returnsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/returns", component: ReturnsPage });
+const supplierReturnVoucherRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/suppliers/$partyId/returns/$returnId/print",
+  component: SupplierReturnPrintPage,
+});
 const expensesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/expenses", component: ExpensesPage });
 const reportsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/reports", component: ReportsPage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsPage });
@@ -120,6 +126,7 @@ export const routeTree = rootRoute.addChildren([
   invoicePrintRoute,
   returnVoucherPrintRoute,
   returnsRoute,
+  supplierReturnVoucherRoute,
   expensesRoute,
   reportsRoute,
   settingsRoute,

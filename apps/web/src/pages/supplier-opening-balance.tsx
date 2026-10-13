@@ -126,7 +126,11 @@ export function SupplierOpeningBalancePage() {
   // account for a now-outdated row: close it, drop the snapshot, and invalidate
   // any in-flight submit for the old fields
   const lastResolveKeyRef = useRef(resolveKey);
+  // the live lookup key, for a late continuation to compare against the key it was
+  // started for (a ref, so it is current after the edit's render)
+  const resolveKeyRef = useRef(resolveKey);
   useEffect(() => {
+    resolveKeyRef.current = resolveKey;
     if (lastResolveKeyRef.current === resolveKey) return;
     lastResolveKeyRef.current = resolveKey;
     invalidateAttempt();
@@ -225,9 +229,12 @@ export function SupplierOpeningBalancePage() {
       setError(t("supplierOpeningNothing"));
       return;
     }
-    // the attempt this write belongs to: a leave or a lookup-field edit bumps
-    // `attemptRef`, and any state a late continuation would set is then skipped
-    const saveAttempt = attemptRef.current;
+    // the lookup key this write was started for: a refusal only re-aligns the
+    // dialog when the typed fields still match it. A row edit during the write
+    // must NOT skip the refresh (that would leave the dialog naming a stale
+    // account and loop on refusals), but a typed-field edit must (the effect has
+    // already closed the dialog for fields this write no longer represents).
+    const saveResolveKey = resolveKey;
     setError(null);
     setSubmitting(true);
     try {
@@ -280,11 +287,11 @@ export function SupplierOpeningBalancePage() {
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
         try {
           const destination = await resolveTypedDestination();
-          if (!mountedRef.current || saveAttempt !== attemptRef.current) return;
+          if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey) return;
           rememberResolution(destination);
           setConfirming(true);
         } catch (resolveError) {
-          if (mountedRef.current && saveAttempt === attemptRef.current) setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
+          if (mountedRef.current && resolveKeyRef.current === saveResolveKey) setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
         }
       }
     } finally {

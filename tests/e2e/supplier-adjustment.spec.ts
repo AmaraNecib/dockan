@@ -263,6 +263,38 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
 });
 
 /**
+ * The browser Back button is a router-driven unmount with no page-level click
+ * handler; the unmount cleanup alone must invalidate the in-flight lookup.
+ */
+test("browser back while the name lookup is pending writes nothing (issue 184 review round 1)", async ({ page }) => {
+  await signIn(page);
+  const name = `مورد رجوع-متصفح-${Date.now()}`;
+
+  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  let wrote = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) wrote = true;
+  });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(name);
+  await page.getByTestId("opening-balance-new-amount").fill("500");
+
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  await page.getByTestId("opening-balance-save").click();
+
+  await page.goBack(); // router-driven unmount, no page onClick
+  await lookup;
+  await page.unroute("**/api/rpc/suppliersResolveName");
+  await expect.poll(() => wrote, { timeout: 2000 }).toBe(false);
+});
+
+/**
  * Review round 1, finding 2: editing the typed name to a different supplier
  * while the confirmation is open must clear the stale destination, so filling
  * the previously-confirmed supplier's row is a valid batch, not a conflict.

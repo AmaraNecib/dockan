@@ -154,17 +154,34 @@ different supplier B while the confirmation was open, the duplicate check still
 compared against A and disabled both save buttons.
 
 **Fix:** the snapshot is now `typedResolution = { key, supplier }`. `resolveKey` is
-the serialized lookup tuple `(name, direction, amount, occurredAt, reason)`; the
-destination is only used when `typedResolution.key === resolveKey`. A `useEffect`
-on `resolveKey` change additionally **closes the confirmation**, clears the
-snapshot, and bumps `attemptRef` (so a submit started for the old fields cannot
-land), and the next submit re-resolves the edited row.
+`JSON.stringify` of the lookup tuple `(name, direction, amount, occurredAt, reason)`;
+the destination is only used when `typedResolution.key === resolveKey`. A
+`useEffect` on `resolveKey` change additionally **closes the confirmation**,
+clears the snapshot, and bumps `attemptRef` (so a submit started for the old fields
+cannot land), `confirmStale` hides the dialog for the intervening commit, and the
+next submit re-resolves the edited row.
+
+### Follow-ups from the delta reviews (same round)
+
+- **Any batch edit invalidates an in-flight submit**: `invalidateAttempt()` runs
+  synchronously in `setRow` and every typed-field `onChange`, so a row filled or
+  cleared while the lookup runs cannot be silently dropped from a stale closure.
+- **Every leave control invalidates**: `leave()` bumps and closes the dialog; the
+  back `<Link>` has `onClick={invalidateAttempt}`; the unmount cleanup bumps too.
+- **A refusal re-aligns even after a row edit during the write.** `save` guards the
+  recovery re-resolve with the live lookup key (`resolveKeyRef`), not the attempt
+  id: a *row* edit must still refresh the dialog, only a *typed-field* edit skips it.
+- **The confirm button cannot post an empty batch** after the last row is cleared.
 
 ### Added tests
 
-- web: cancelling a held lookup writes nothing (mock resolve gate); editing the
-  name to another supplier then filling the old row's row leaves the save enabled
-  and writes both accounts.
-- e2e: a route-delayed `suppliersResolveName` + Cancel asserts no
-  `suppliersOpeningBalances` request follows and the name never materializes; the
-  field-edit flow asserts the dialog closes, the batch saves, and both balances land.
+- web (9): cancel during a held lookup writes nothing; unmount during a held lookup
+  writes nothing; an existing row edit mid-lookup abandons the stale submit and the
+  corrected batch then saves; a typed-field edit mid-lookup abandons it; the dialog
+  re-aligns after a refusal that landed after a row edit during the write; an empty
+  batch cannot be confirmed; the typed-name-moved flow still saves both accounts;
+  positive `resolveCalls`/`mutationCalls` controls pin that the lookup ran and no
+  write was attempted.
+- e2e (4): route-delayed lookup + Cancel, + back link, + browser back each assert no
+  `suppliersOpeningBalances` request follows; the field-edit flow asserts the dialog
+  closes, the batch saves, and both balances land.

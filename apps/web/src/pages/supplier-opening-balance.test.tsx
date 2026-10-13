@@ -55,6 +55,9 @@ let rejectTargetChanged = false;
  * cancel while the lookup is still pending (review round 1 finding 1) */
 let resolveHold: Promise<void> | null = null;
 let releaseResolveHold: (() => void) | null = null;
+/** when set, an opening-balance write parks until released (review round 1 follow-up) */
+let mutationHold: Promise<void> | null = null;
+let releaseMutationHold: (() => void) | null = null;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -67,6 +70,7 @@ mock.module("@/lib/rpc", () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
           mutationCalls += 1;
+          if (mutationHold !== null) await mutationHold;
           if (rejectTargetChanged) {
             rejectTargetChanged = false;
             if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
@@ -119,6 +123,8 @@ beforeEach(() => {
   rejectTargetChanged = false;
   resolveHold = null;
   releaseResolveHold = null;
+  mutationHold = null;
+  releaseMutationHold = null;
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
   racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
@@ -602,6 +608,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured).toBeNull();
     expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
   });
 
   it("abandons a pending save when an existing row changes before the lookup answers (review round 1 finding 1 follow-up)", async () => {
@@ -662,6 +669,45 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     expect(captured).toBeNull();
     expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
+  });
+
+  it("re-aligns the dialog after a refusal even when a row edit landed during the write (review round 1 follow-up)", async () => {
+    const typed = "مورد انزاح كتابة";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey(typed), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    mutationHold = new Promise((resolve) => {
+      releaseMutationHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const names = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(names()).toContain("مورد له حركات");
+
+    // the confirmed write parks; a row edit lands while it is in flight
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      typeIntoRow(1, "250");
+    });
+    await act(async () => {
+      releaseMutationHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+
+    // the refusal still re-aligns the dialog to the moved account, never a stale one
+    expect(captured).toBeNull();
+    expect(names()).toContain("مورد بديل");
+    expect(names()).not.toContain("مورد له حركات");
   });
 
   it("refuses to confirm an empty batch after the last confirmed row is cleared (review round 1 finding 2 follow-up)", async () => {

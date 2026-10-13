@@ -123,4 +123,13 @@ describe("settle amount boundary (#164)", () => {
     expect(settleAmountError("1e3", 1_500)).toBe("INVALID");
     expect(settleAmountError("abc", 1_500)).toBe("INVALID");
   });
+
+  it("reads a grouped amount with the shared parser (#180)", () => {
+    expect(settleAmountError("1 000", 1_500)).toBeNull();
+    expect(settleAmountError("1,000", 1_500)).toBeNull();
+    expect(settleAmountError("٢٥٠", 1_500)).toBeNull();
+    // a decimal/malformed grouping is invalid, never a different number
+    expect(settleAmountError("1 000,00", 1_500)).toBe("INVALID");
+    expect(settleAmountError("1,5", 1_500)).toBe("INVALID");
+  });
 });

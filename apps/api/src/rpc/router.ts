@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, normalizeTextKey, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -960,6 +960,16 @@ export function createRpcRouter(deps: RpcDeps) {
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+          // #177 (debate finding 8) — two rows naming the same new supplier would
+          // create two parties and double-post; refuse the duplicate name before
+          // any createParty write
+          const newNames = new Set<string>();
+          for (const row of input.rows) {
+            if (row.newSupplierName === undefined) continue;
+            const key = normalizeTextKey(row.newSupplierName);
+            if (newNames.has(key)) throw new ORPCError("CONFLICT", { message: "DUPLICATE_OPENING_BALANCE_ROW" });
+            newNames.add(key);
+          }
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {

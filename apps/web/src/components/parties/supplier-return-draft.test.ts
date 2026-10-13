@@ -45,4 +45,11 @@ describe("parseCashBackDraft", () => {
     expect(parseCashBackDraft("-5")).toBeNull();
     expect(parseCashBackDraft("abc")).toBeNull();
   });
+
+  it("reads a grouped cash-back draft with the shared parser (#180)", () => {
+    expect(parseCashBackDraft("1 000")).toBe(1000);
+    expect(parseCashBackDraft("1,000")).toBe(1000);
+    expect(parseCashBackDraft("1 000,00")).toBeNull();
+    expect(parseCashBackDraft("1,5")).toBeNull();
+  });
 });

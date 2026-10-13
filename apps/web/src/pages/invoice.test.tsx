@@ -72,7 +72,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { paymentAmountError, PaymentPanel, InvoicePage } = await import("./invoice");
+const { paymentAmountError, customCashError, PaymentPanel, InvoicePage } = await import("./invoice");
 
 function makeInvoice(remaining: number, payments: InvoiceDetail["payments"] = [], returnCreditAmount = 0): InvoiceDetail {
   return {
@@ -213,6 +213,23 @@ describe("paymentAmountError (invoice instalment boundary)", () => {
     expect(paymentAmountError("12.", 800)).toBe("INVALID");
     expect(paymentAmountError(" 12 ", 800)).toBeNull(); // trimmed digits are fine
     expect(paymentAmountError("9007199254740993", 800)).toBe("INVALID"); // > MAX_SAFE_INTEGER
+  });
+
+  it("reads a grouped amount with the shared parser (#180)", () => {
+    expect(paymentAmountError("1 000", 1_500)).toBeNull();
+    expect(paymentAmountError("1,000", 1_500)).toBeNull();
+    expect(paymentAmountError("1 000,00", 1_500)).toBe("INVALID");
+    expect(paymentAmountError("1,5", 1_500)).toBe("INVALID");
+  });
+});
+
+describe("customCashError (return settlement split)", () => {
+  it("reads a grouped custom-cash draft with the shared parser (#180)", () => {
+    expect(customCashError("1 000", 5_000)).toBeNull();
+    expect(customCashError("1,000", 5_000)).toBeNull();
+    expect(customCashError("6 000", 5_000)).toBe("EXCEEDS");
+    expect(customCashError("1 000,00", 5_000)).toBe("INVALID");
+    expect(customCashError("1,5", 5_000)).toBe("INVALID");
   });
 });
 

@@ -185,9 +185,11 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(captured).toMatchObject({ supplierId: "sup-1", direction: "THEY_OWE", amount: 1000 });
   });
 
-  it("rejects a decimal-grouped amount instead of guessing 100x (#180)", () => {
+  it("rejects a decimal-grouped amount instead of guessing 100x (#180)", async () => {
     render();
-    typeInto("supplier-adjust-amount", "1 000,00");
+    await act(async () => {
+      typeInto("supplier-adjust-amount", "1 000,00");
+    });
     expect(host.querySelector('[data-testid="supplier-adjust-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
     expect(captured).toBeNull();

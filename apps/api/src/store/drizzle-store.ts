@@ -2168,13 +2168,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // no pagination keys = an internal full read (tests, aggregates); a
       // concrete limit/offset comes from resolvePagination at the router
       if (filters.limit === undefined && filters.offset === undefined) {
-        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt));
+        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt), sql`invoices.rowid DESC`);
         return { items: rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: rows.length };
       }
       const { limit, offset } = resolvePagination(filters);
       const [total, itemsRows] = await Promise.all([
         db.$count(invoices, where),
-        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(limit).offset(offset),
+        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt), sql`invoices.rowid DESC`).limit(limit).offset(offset),
       ]);
       return {
         items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),

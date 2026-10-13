@@ -8,44 +8,23 @@ import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, isOpen
  * reader and its row silently dropped, so the batch saved one amount short.
  * These readers make the row state explicit so the page can block instead.
  *
- * #180 — the reader itself is the shared `parseGroupedAmount` (tested in
- * amount-parse.test.ts); these tests pin that the bulk rows and the single
- * money inputs agree on the same tricky strings.
+ * #180 — the parser table itself lives in amount-parse.test.ts; this file pins
+ * that the bulk row readers WIRE to that shared parser (the same number the
+ * single-entry money inputs get).
  */
 describe("bulk amount reader (shared parseGroupedAmount)", () => {
-  it("accepts plain digits and valid thousands grouping", () => {
-    expect(parseGroupedAmount("1000")).toBe(1000);
-    expect(parseGroupedAmount("1,000")).toBe(1000);
-    expect(parseGroupedAmount("25 000")).toBe(25000);
-    expect(parseGroupedAmount("1 000 000")).toBe(1_000_000);
-    expect(parseGroupedAmount("1,000,000")).toBe(1_000_000);
-    expect(parseGroupedAmount("٢٥٬٠٠٠")).toBe(25000);
-    expect(parseGroupedAmount("۱۲۳")).toBe(123);
-  });
-
-  it("rejects a decimal or a malformed separator instead of deleting it", () => {
-    expect(parseGroupedAmount("")).toBeNull();
-    expect(parseGroupedAmount("   ")).toBeNull();
-    expect(parseGroupedAmount("abc")).toBeNull();
-    expect(parseGroupedAmount("1.5")).toBeNull();
-    // the reported 100x bug: a decimal tail must not be deleted into another number
-    expect(parseGroupedAmount("1 000,00")).toBeNull();
-    expect(parseGroupedAmount("1,5")).toBeNull();
-    // malformed grouping (wrong group width, leading/trailing separator)
-    expect(parseGroupedAmount("1 00")).toBeNull();
-    expect(parseGroupedAmount("1,0000")).toBeNull();
-    expect(parseGroupedAmount("1000,000")).toBeNull();
-    expect(parseGroupedAmount(",1000")).toBeNull();
-    expect(parseGroupedAmount("1,00,0")).toBeNull();
-    expect(parseGroupedAmount("1٬00")).toBeNull();
-  });
-
   it("fills a bulk row with exactly the number the single-entry reader returns", () => {
-    // grouping means the same number in the bulk rows and the تسوية panel
     for (const draft of ["1,000", "1 000", "٢٥٬٠٠٠", "1000000"]) {
       const parsed = parseGroupedAmount(draft);
       expect(parsed).not.toBeNull();
       expect(openingRowStatus({ amount: draft })).toEqual({ status: "filled", amount: parsed! });
+    }
+  });
+
+  it("blocks the same malformed drafts the single-entry reader rejects", () => {
+    for (const draft of ["1 000,00", "1,5", "1 00", "abc"]) {
+      expect(parseGroupedAmount(draft)).toBeNull();
+      expect(openingRowStatus({ amount: draft })).toEqual({ status: "invalid" });
     }
   });
 });

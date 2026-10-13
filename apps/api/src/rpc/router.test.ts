@@ -1796,6 +1796,72 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: supplier.id })).account?.entries ?? []).toHaveLength(0);
   });
 
+  it("serialises two identical concurrent submissions so only one posts (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تزامن تسوية", 10);
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 450, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" };
+    const results = await Promise.allSettled([client.suppliersAdjust(payload), client.suppliersAdjust(payload)]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1450);
+  });
+
+  it("keeps remaining >= 0 when two linked adjustments race (issue 177)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تزامن رابط", 5);
+    const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+    const results = await Promise.allSettled([
+      client.suppliersAdjust({ ...base, reason: "خصم أ" }),
+      client.suppliersAdjust({ ...base, reason: "خصم ب" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(200);
+    expect(detail.remainingAmount).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not double-post an identical bulk opening-balance batch (issue 177)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد دفعي مكرر" });
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: supplier.id, direction: "WE_OWE" as const, amount: 700, confirmExisting: true }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("posts one row per distinct supplier in a bulk batch (issue 177)", async () => {
+    const a = await client.suppliersCreate({ name: "مورد دفعي أ" });
+    const b = await client.suppliersCreate({ name: "مورد دفعي ب" });
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [
+        { supplierId: a.id, direction: "WE_OWE", amount: 500 },
+        { supplierId: b.id, direction: "WE_OWE", amount: 500 },
+      ],
+    });
+    expect(result.created).toBe(2);
+  });
+
+  it("refuses two rows naming the same new supplier before creating a party (issue 177)", async () => {
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [
+          { newSupplierName: "مورد اسم مكرر", direction: "WE_OWE", amount: 100 },
+          { newSupplierName: "مورد  اسم مكرر", direction: "WE_OWE", amount: 100 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_OPENING_BALANCE_ROW" });
+    // the folded-whitespace duplicate never created a party
+    expect((await client.suppliersList()).items.some((row) => row.name.includes("اسم مكرر"))).toBe(false);
+  });
+
   it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
@@ -2479,15 +2545,13 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
 
   it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
-    // paginate past the default 10 so a busy shared test database cannot hide
-    // this invoice behind same-second ties (issue 163 pagination)
-    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
-    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(true);
-    expect((await client.invoicesList({ status: "UNPAID", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
-    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
-    expect((await client.invoicesList({ status: "PAID", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
   it("rejects amounts beyond the safe-integer money range at the schema", async () => {

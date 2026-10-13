@@ -232,6 +232,23 @@ describe("DebtsPage (ticket 9)", () => {
     await ui.unmount();
   });
 
+  it("keeps the plain total when a supplier group nets to exactly zero (#180)", async () => {
+    weOwe = [
+      summary({ kind: "PURCHASE", counterpartyId: "sup-a", counterpartyName: "مورد أ", remainingTotal: 0, invoiceCount: 1, accountBalance: -1500 }),
+      summary({ kind: "PURCHASE", counterpartyId: "sup-b", counterpartyName: "مورد ب", remainingTotal: 0, invoiceCount: 1, accountBalance: 1500 }),
+    ];
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
+    expect(loaded).toBe(true);
+
+    // zero is not a credit: the plain total branch renders the absolute value
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("0");
+    expect(ui.text()).not.toContain("رصيد لنا عند الموردين");
+
+    await ui.unmount();
+  });
+
   it("shows an empty state per group when nobody owes anything", async () => {
     owedToUs = [];
     weOwe = [];

@@ -54,4 +54,14 @@ describe("parseGroupedAmount", () => {
     expect(parseWholePercentage("1 000")).toBeNull();
     expect(parseWholePercentage("1,000")).toBeNull();
   });
+
+  it("rejects overflow and mixed-script malformed grouping", () => {
+    // beyond Number.MAX_SAFE_INTEGER: parseWholeAmount's guard rejects it
+    expect(parseGroupedAmount("99999999999999999999")).toBeNull();
+    // mixed Latin + Arabic thousands separator with a bad group width
+    expect(parseGroupedAmount("1٬00")).toBeNull();
+    expect(parseGroupedAmount("١٬٠٠")).toBeNull();
+    // a valid mixed-script grouped amount still parses
+    expect(parseGroupedAmount("1٬000")).toBe(1000);
+  });
 });

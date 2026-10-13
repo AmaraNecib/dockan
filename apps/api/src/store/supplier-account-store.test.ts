@@ -368,4 +368,33 @@ describe("supplier account store", () => {
     });
     expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
   });
+
+  it("refuses a linked نسالوه adjustment and an over-remaining linked one at the store backstop (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد خلفي");
+    const invoice = await makePurchase(supplier.id, 1000);
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt: now(), invoiceId: invoice.id });
+      }),
+    ).rejects.toThrow(/LINKED_DIRECTION/);
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 1001, reason: null, occurredAt: now(), invoiceId: invoice.id });
+      }),
+    ).rejects.toThrow(/EXCEEDS_REMAINING/);
+    // neither attempt moved the invoice or wrote an entry
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(1000);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+  });
+
+  it("accepts the same amount with a different reason as a distinct adjustment (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد أسباب");
+    const occurredAt = "2026-10-13T12:00:00";
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 200, occurredAt, invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ ...base, reason: "دين قديم" });
+      await tx.insertSupplierAdjustment({ ...base, reason: "تصحيح" });
+    });
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
 });

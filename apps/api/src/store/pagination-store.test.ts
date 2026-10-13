@@ -305,4 +305,14 @@ describe("party-detail tab pagination (issue 174)", () => {
     expect(supplierDetail?.account?.entries).toHaveLength(12);
     expect(supplierDetail?.account?.balance).toBe(1200);
   });
+
+  it("returns an empty page for a party with no rows and never crosses roles", async () => {
+    const customer = await store.createParty("customer", { name: "زبون بلا فواتير" });
+    expect(await store.partyInvoices("customer", customer.id, { unpaidOnly: true }, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
+    expect(await store.partyPayments("customer", customer.id, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
+    const supplier = await store.createParty("supplier", { name: "مورد بلا حركات" });
+    expect(await store.supplierEntries(supplier.id, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
+    // the role picks the invoice kind: a supplier read of a customer id is empty
+    expect((await store.partyInvoices("supplier", customer.id, {}, { limit: 10, offset: 0 })).total).toBe(0);
+  });
 });

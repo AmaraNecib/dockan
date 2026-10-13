@@ -1736,6 +1736,8 @@ describe("party-detail tab pagination (issue 174)", () => {
 
     await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: 0 })).rejects.toThrow(/Input validation failed/);
     await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: MAX_PAGE_SIZE + 1 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, offset: -1 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: 1.5 })).rejects.toThrow(/Input validation failed/);
   });
 
   it("pages a supplier's account entries while the detail account stays whole", async () => {
@@ -1756,6 +1758,41 @@ describe("party-detail tab pagination (issue 174)", () => {
     expect(detail.account?.entries).toHaveLength(12);
     expect(detail.account?.balance).toBe(1200);
     await expect(client.suppliersDelete({ id: supplier.id })).rejects.toThrow(/PARTY_HAS_INVOICES/);
+  });
+
+  it("settles a supplier across more than one page without truncating the distribution (issue 174)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد ترقيم التسوية" });
+    const item = await makeItemWithStock("صنف ترقيم التسوية", 1);
+    for (let i = 0; i < 12; i++) {
+      await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
+    }
+    // the tab pages, but the money read carries every invoice the OLDEST-first
+    // allocation walks; if pagination had leaked into that read, this would
+    // leave unpaid remainders behind
+    expect((await client.suppliersGet({ id: supplier.id })).invoices).toHaveLength(12);
+    const paid = await client.suppliersPay({ supplierId: supplier.id, amount: 1_200, target: { kind: "OLDEST" } });
+    expect(paid.balance).toBe(0);
+    const all = await client.partyInvoices({ role: "supplier", id: supplier.id, limit: 100, offset: 0 });
+    expect(all.total).toBe(12);
+    expect(all.items.every((invoice) => invoice.remainingAmount === 0)).toBe(true);
+  });
+
+  it("returns an empty page for an unknown party and never crosses roles", async () => {
+    const ghost = "00000000-0000-4000-8000-0000000000ff";
+    expect(await client.partyInvoices({ role: "customer", id: ghost })).toEqual({ items: [], total: 0 });
+    expect(await client.partyPayments({ role: "customer", id: ghost })).toEqual({ items: [], total: 0 });
+    expect(await client.supplierEntries({ id: ghost })).toEqual({ items: [], total: 0 });
+
+    const customer = await client.customersCreate({ name: "زبون ترقيم الأدوار" });
+    const item = await makeItemWithStock("صنف ترقيم الأدوار", 1);
+    await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, counterpartyName: customer.name, lines: [{ itemId: item.id, quantity: 1 }] });
+    // a customer id under the supplier role scans purchase invoices: none
+    expect(await client.partyInvoices({ role: "supplier", id: customer.id })).toEqual({ items: [], total: 0 });
+    expect(await client.supplierEntries({ id: customer.id })).toEqual({ items: [], total: 0 });
+
+    const empty = await client.suppliersCreate({ name: "مورد ترقيم فارغ" });
+    expect(await client.supplierEntries({ id: empty.id })).toEqual({ items: [], total: 0 });
+    expect((await client.partyInvoices({ role: "supplier", id: empty.id })).total).toBe(0);
   });
 });
 

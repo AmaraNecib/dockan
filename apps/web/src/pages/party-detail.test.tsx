@@ -100,9 +100,13 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     partyPayments: {
-      queryOptions: () => ({
-        queryKey: [["partyPayments"], PARTY_ID],
-        queryFn: async () => ({ items: partyDetail.payments, total: partyDetail.payments.length }),
+      queryOptions: (options?: { input?: { limit?: number; offset?: number } }) => ({
+        queryKey: [["partyPayments"], PARTY_ID, options?.input],
+        queryFn: async () => {
+          const limit = options?.input?.limit ?? 10;
+          const offset = options?.input?.offset ?? 0;
+          return { items: partyDetail.payments.slice(offset, offset + limit), total: partyDetail.payments.length };
+        },
       }),
     },
     supplierEntries: {
@@ -266,6 +270,27 @@ describe("customer detail unpaid view (#164)", () => {
     await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 10);
     expect(host.querySelector('[data-testid="party-invoices-pager-page-1"]')?.getAttribute("aria-current")).toBe("page");
   });
+
+  it("pages the customer payments tab (#174)", async () => {
+    partyDetail = makeDetail([]);
+    partyDetail.payments = Array.from({ length: 12 }, (_, index) => ({
+      id: `pay-${index}`,
+      invoiceId: "inv",
+      invoiceNumber: `INV-${index}`,
+      amount: 100,
+      method: "CASH" as const,
+      note: null,
+      paidAt: "2026-09-01T10:00:00",
+      createdAt: "2026-09-01T10:00:00",
+    }));
+    await renderCustomer();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-payment-row"]').length === 10);
+    expect(host.querySelector('[data-testid="party-payments-pager"]')).not.toBeNull();
+    click("party-payments-pager-page-2");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-payment-row"]').length === 2);
+    expect(host.querySelector('[data-testid="party-payments-pager-page-2"]')?.getAttribute("aria-current")).toBe("page");
+  });
 });
 
 describe("customer settle in place (#164)", () => {
@@ -322,6 +347,24 @@ describe("customer settle in place (#164)", () => {
     // be a silent no-op)
     await waitFor(() => invoiceTabCalls > tabCallsBefore);
     expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم توزيع الدفعة");
+  });
+
+  it("distributes a settle over every invoice, not just the visible page (#174)", async () => {
+    // twelve unpaid invoices span two pages (default page size 10), but the
+    // settle reference and plan must walk the FULL partyDetail set
+    partyDetail = makeDetail(
+      Array.from({ length: 12 }, (_, index) =>
+        invoice({ id: `bulk-${index}`, invoiceNumber: `INV-1${String(index).padStart(3, "0")}`, invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 }),
+      ),
+    );
+    await renderCustomer();
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 10);
+    click("party-settle");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="party-settle-amount"]')?.value).toBe("12000");
+    click("party-settle-confirm");
+    await flushAsync();
+    expect(payInputs).toHaveLength(12);
+    expect(payInputs.reduce((sum, entry) => sum + entry.amount, 0)).toBe(12_000);
   });
 
   it("halts after a mid-loop failure so a second confirm cannot resend money", async () => {

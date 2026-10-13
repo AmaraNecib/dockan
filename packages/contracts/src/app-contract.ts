@@ -44,6 +44,7 @@ import {
   partyInvoicesInputSchema,
   partyInvoicesOutputSchema,
   partyListOutputSchema,
+  partyNamesOutputSchema,
   partyPaymentsInputSchema,
   partyPaymentsOutputSchema,
   partySchema,
@@ -74,6 +75,7 @@ import {
   stockAddManualInputSchema,
   stockMovementSchema,
   supplierAccountSchema,
+  supplierAccountSummariesOutputSchema,
   supplierAdjustInputSchema,
   supplierEntriesInputSchema,
   supplierEntriesOutputSchema,
@@ -127,6 +129,12 @@ export const dokanContract = {
   customersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),
   customersDelete: oc.input(z.object({ id: z.string().uuid() })).output(partyDeleteOutputSchema),
   suppliersList: oc.output(partyListOutputSchema),
+  /** #183 — names-only supplier identities for the opening-balance conflict
+   * check; no invoice aggregates, no phone */
+  suppliersListNames: oc.output(partyNamesOutputSchema),
+  /** #183 — the opening-balance screen's signed account summary per supplier
+   * (balance + entry count), read without the invoice join */
+  suppliersAccountSummaries: oc.output(supplierAccountSummariesOutputSchema),
   suppliersGet: oc.input(z.object({ id: z.string().uuid() })).output(partyDetailOutputSchema),
   suppliersCreate: oc.input(partyCreateInputSchema).output(partySchema),
   suppliersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),

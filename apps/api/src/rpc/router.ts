@@ -668,6 +668,11 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
     suppliersList: os.suppliersList.handler(guarded(async () => ({ items: await deps.store.listParties("supplier") }))),
+    // #183 — the opening-balance screen's two lean reads: names only (for the
+    // name-fold conflict check) and the signed account summary (for the balance
+    // table), so it no longer pulls full party rows just to compare names.
+    suppliersListNames: os.suppliersListNames.handler(guarded(async () => ({ items: await deps.store.listPartyNames("supplier") }))),
+    suppliersAccountSummaries: os.suppliersAccountSummaries.handler(guarded(async () => ({ items: await deps.store.listSupplierAccountSummaries() }))),
     suppliersGet: os.suppliersGet.handler(
       guardedInput(async ({ id }) => {
         const detail = await deps.store.partyDetail("supplier", id);

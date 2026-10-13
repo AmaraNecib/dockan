@@ -20,6 +20,7 @@ import type {
   PartyCreate,
   PartyDetail,
   PartyListItem,
+  PartyName,
   PartyPayment,
   PartyRole,
   PartyUpdate,
@@ -34,13 +35,14 @@ import type {
   StockMovement,
   Supplier,
   SupplierAccountEntry,
+  SupplierAccountSummary,
   SupplierAdjustmentDirection,
   SupplierEntryKind,
   SupplierReturnLine,
   SupplierReturnRecord,
 } from "@dokan/contracts";
 
-export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, SupplierAccountEntry, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind };
+export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, SupplierAccountEntry, SupplierAccountSummary, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind, PartyName };
 
 /**
  * One raw SALE invoice line fact the profit report sums. Read via a JOIN of
@@ -294,6 +296,21 @@ export interface StorePort {
    */
   /** list + one aggregate per party (invoice count / total / paid / remaining) */
   listParties(role: PartyRole): Promise<PartyListItem[]>;
+  /**
+   * #183 — names-only party identity for name-conflict checks. Deliberately not
+   * `listParties`: the check folds two names and nothing else, so it must not pay
+   * for the list seam's invoice join, phone, or timestamps. Ordered by name, the
+   * same order `listParties` uses.
+   */
+  listPartyNames(role: PartyRole): Promise<PartyName[]>;
+  /**
+   * #183 — the bulk opening-balance screen's supplier projection: the signed
+   * account balance and entry count per supplier, read from
+   * `supplier_account_entries` alone (no invoice join). Only suppliers that carry
+   * an entry appear; the caller defaults a missing id to 0/0. Uses the same sign
+   * expression as `listParties`/`supplierBalance`, so the two cannot disagree.
+   */
+  listSupplierAccountSummaries(): Promise<SupplierAccountSummary[]>;
   getParty(role: PartyRole, partyId: string): Promise<Party | undefined>;
   /** phone uniqueness when present; throws PartyError("PHONE_EXISTS") */
   createParty(role: PartyRole, input: PartyCreate): Promise<Party>;

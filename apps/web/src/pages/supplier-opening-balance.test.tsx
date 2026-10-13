@@ -38,9 +38,9 @@ let resolveByKey = new Map<string, ResolvedSupplier>();
  * the name, so the next resolve answers with this destination */
 let racedAfterRefusal: { key: string; supplier: ResolvedSupplier } | null = null;
 const BASE_SUPPLIERS = [
-  { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
-  { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
-  { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
+  { id: "s-1", name: "مورد له حركات", accountBalance: 5000, accountEntryCount: 3 },
+  { id: "s-2", name: "مورد بلا حركات", accountBalance: 0, accountEntryCount: 0 },
+  { id: "s-3", name: "مورد رصيد سالب", accountBalance: -300, accountEntryCount: 1 },
 ];
 let suppliers = BASE_SUPPLIERS;
 /** when true, the next resolve rejects (a failed read) */
@@ -59,11 +59,24 @@ let releaseResolveHold: (() => void) | null = null;
 let mutationHold: Promise<void> | null = null;
 let releaseMutationHold: (() => void) | null = null;
 
+// #183 — the page reads two lean seams: names-only (the conflict-check list)
+// and the supplier account summary (the balance/entry columns). The mock mirrors
+// the server: the summary omits suppliers with no entry, and the page defaults
+// a missing id to 0/0.
 mock.module("@/lib/rpc", () => ({
   orpc: {
-    suppliersList: {
-      queryOptions: () => ({ queryKey: ["suppliersList"], queryFn: async () => ({ items: suppliers }) }),
-      queryKey: () => ["suppliersList"],
+    suppliersListNames: {
+      queryOptions: () => ({ queryKey: ["suppliersListNames"], queryFn: async () => ({ items: suppliers.map(({ id, name }) => ({ id, name })) }) }),
+      queryKey: () => ["suppliersListNames"],
+    },
+    suppliersAccountSummaries: {
+      queryOptions: () => ({
+        queryKey: ["suppliersAccountSummaries"],
+        queryFn: async () => ({
+          items: suppliers.filter((supplier) => supplier.accountEntryCount > 0).map(({ id, accountBalance, accountEntryCount }) => ({ id, accountBalance, accountEntryCount })),
+        }),
+      }),
+      queryKey: () => ["suppliersAccountSummaries"],
     },
     suppliersOpeningBalances: {
       mutationOptions: () => ({
@@ -152,9 +165,10 @@ function render() {
   });
 }
 
-/** Flush the suppliersList query so the rows exist before the test reads them. */
+/** Flush the two supplier reads so the rows exist before the test reads them. */
 async function settle() {
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -369,7 +383,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the refusal refreshes the counts: the supplier really does have history
     suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
     await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+      await Promise.all([
+        queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] }),
+        queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] }),
+      ]);
     });
     await settle();
 
@@ -437,9 +454,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     suppliers = Array.from({ length: 200 }, (_value, index) => ({
       id: `bulk-${index}`,
       name: `مورد ${index}`,
-      phone: null,
-      createdAt: "2026-01-01T10:00:00",
-      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
       accountBalance: 0,
       accountEntryCount: 0,
     }));
@@ -1100,6 +1114,26 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  it("folds a typed name onto an existing supplier from the names-only list (#183)", async () => {
+    render();
+    await settle();
+    // "مورد  رصيد سالب" (double space) folds to s-3's "مورد رصيد سالب"
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  رصيد سالب");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "250");
+
+    // s-3 already carries an entry, so the fold is detected and the dialog asks
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد  رصيد سالب", amount: 250, confirmExisting: true });
+  });
+
   it("does not cut off an owner still typing a new name that starts like an existing one (round 5)", async () => {
     render();
     await settle();
@@ -1237,7 +1271,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // a refusal on the already-confirmed path must still refresh the list so the
     // page can recover instead of repeating the same refusal forever
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
-    expect(keys).toContain(JSON.stringify(["suppliersList"]));
+    expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
   });
 
@@ -1245,9 +1279,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     suppliers = Array.from({ length: 201 }, (_value, index) => ({
       id: `bulk-${index}`,
       name: `مورد ${index}`,
-      phone: null,
-      createdAt: "2026-01-01T10:00:00",
-      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
       accountBalance: 0,
       accountEntryCount: 0,
     }));

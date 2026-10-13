@@ -1,0 +1,259 @@
+import { describe, expect, it } from "bun:test";
+import type { Item, StockMovement } from "@dokan/contracts";
+
+import { recordStockMovement, StockItemMissingError, type StockPostingTx } from "./stock-posting";
+import { StockLedgerError } from "./stock-ledger";
+
+/**
+ * Direct unit tests for the movement-posting seam. A tiny in-memory
+ * `StockPostingTx` keeps the module's interface under test without sqlite: the
+ * fake records rows and cache writes exactly like the store, and the pure math
+ * is the real `stock-ledger` code.
+ */
+
+type Row = StockMovement & { seq: number };
+
+function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
+  const itemId = opts.itemId ?? "i1";
+  // SAFETY: the module under test only reads `id` and `costPrice`; this fake is
+  // a stand-in for the persisted row, never sent across the store boundary.
+  const item = { id: itemId, costPrice: opts.costPrice ?? 100 } as Item;
+  const movements: Row[] = [];
+  const cache = { stockOnHand: 0, costPrice: item.costPrice };
+  let seq = 0;
+  const tx: StockPostingTx = {
+    async getItemsByIds(ids) {
+      const found = new Map<string, Item>();
+      if (ids.includes(itemId)) found.set(itemId, item);
+      return found;
+    },
+    async listStockMovements(id) {
+      // mirror the store: occurred_at, then insertion order (rowid/seq)
+      return movements
+        .filter((m) => m.itemId === id)
+        .sort((a, b) => (a.occurredAt === b.occurredAt ? a.seq - b.seq : a.occurredAt < b.occurredAt ? -1 : 1));
+    },
+    async insertStockMovement(input) {
+      const row: Row = {
+        id: `m${++seq}`,
+        itemId: input.itemId,
+        kind: input.kind,
+        delta: input.delta,
+        unitCost: input.unitCost ?? null,
+        reason: input.reason ?? null,
+        ref: input.ref ?? null,
+        returnMark: input.returnMark ?? null,
+        occurredAt: input.occurredAt,
+        createdAt: input.occurredAt,
+        seq,
+      };
+      movements.push(row);
+      return row;
+    },
+    async setItemStockAndCost(_id, stockOnHand, costPrice) {
+      cache.stockOnHand = stockOnHand;
+      cache.costPrice = costPrice;
+    },
+  };
+  return { tx, itemId, movements, cache, item };
+}
+
+describe("recordStockMovement", () => {
+  it("blends the ADR-0002 weighted average on inflow and writes the cache", async () => {
+    const { tx, cache } = fakeTx({ costPrice: 500 });
+    const first = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: 500,
+      occurredAt: "2020-01-01T10:00:00",
+    });
+    expect(first.movement.unitCost).toBe(500);
+    expect(first.stockOnHand).toBe(10);
+    expect(first.costPrice).toBe(500);
+    expect(first.outflowCost).toBeNull();
+
+    const second = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: 700,
+      occurredAt: "2020-01-01T11:00:00",
+    });
+    expect(second.stockOnHand).toBe(20);
+    expect(second.costPrice).toBe(600); // (10×500 + 10×700) / 20
+    expect(cache).toEqual({ stockOnHand: 20, costPrice: 600 });
+  });
+
+  it("defaults an inflow's unit cost to the item's cached cost", async () => {
+    const { tx } = fakeTx({ costPrice: 200 });
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 4,
+      occurredAt: "2020-01-01T10:00:00",
+    });
+    expect(posted.movement.unitCost).toBe(200);
+    expect(posted.costPrice).toBe(200);
+  });
+
+  it("blends a legacy null-cost inflow at the item's cached cost (uniform fallback)", async () => {
+    const { tx, movements } = fakeTx({ costPrice: 100 });
+    // a legacy inflow with no stored unit cost: the seam replays it at the
+    // item's cached cost. Base stockAddManual omitted the fallback and blended
+    // it at 0, so this is the second deliberate unification (the outflow rule
+    // is the first).
+    movements.push({
+      id: "legacy",
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: null,
+      reason: null,
+      ref: null,
+      returnMark: null,
+      occurredAt: "2020-01-01T00:00:00",
+      createdAt: "2020-01-01T00:00:00",
+      seq: 0,
+    });
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 10,
+      unitCost: 300,
+      occurredAt: "2020-01-02T00:00:00",
+    });
+    expect(posted.costPrice).toBe(200); // (10×100 + 10×300) / 20
+  });
+
+  it("keeps the average on a pure outflow, stores no unit cost, and snapshots FIFO", async () => {
+    const { tx } = fakeTx({ costPrice: 500 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 500, occurredAt: "2020-01-01T10:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 700, occurredAt: "2020-01-01T11:00:00" });
+
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "MANUAL_ADJUSTMENT",
+      delta: -6,
+      occurredAt: "2020-01-02T10:00:00",
+    });
+    expect(posted.stockOnHand).toBe(14);
+    expect(posted.costPrice).toBe(600); // outflow never moves the average
+    expect(posted.movement.unitCost).toBeNull();
+    expect(posted.outflowCost).toEqual({ totalCost: 3000, unitCost: 500 }); // 6 oldest @500
+  });
+
+  it("stamps the SALE FIFO snapshot and exact cogsExact from the same read", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-01-01T10:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 200, occurredAt: "2020-01-01T11:00:00" });
+
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "SALE",
+      delta: -6,
+      occurredAt: "2020-01-02T10:00:00",
+    });
+    // 5@100 + 1@200 = 700 exact; rounded per-unit 117 (ADR-0005)
+    expect(posted.outflowCost).toEqual({ totalCost: 700, unitCost: 117 });
+    expect(posted.stockOnHand).toBe(4);
+    expect(posted.costPrice).toBe(150); // live average untouched by the sale
+    expect(posted.movement.kind).toBe("SALE");
+    expect(posted.movement.unitCost).toBeNull();
+  });
+
+  it("rejects an oversell before writing anything", async () => {
+    const { tx, movements, cache } = fakeTx({ costPrice: 100 });
+    await expect(
+      recordStockMovement(tx, { itemId: "i1", kind: "SALE", delta: -5, occurredAt: "2020-01-01T10:00:00" }),
+    ).rejects.toBeInstanceOf(StockLedgerError);
+    expect(movements).toHaveLength(0);
+    expect(cache).toEqual({ stockOnHand: 0, costPrice: 100 });
+  });
+
+  it("clamps a backdated SALE to the newest inflow and rejects an unclamped date", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-06-01T00:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 3, unitCost: 200, occurredAt: "2020-06-05T00:00:00" });
+
+    // the same 6-unit sale dated Jun 3 without a bound would oversell Jun 1
+    const other = fakeTx();
+    await recordStockMovement(other.tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 100, occurredAt: "2020-06-01T00:00:00" });
+    await recordStockMovement(other.tx, { itemId: "i1", kind: "PURCHASE", delta: 3, unitCost: 200, occurredAt: "2020-06-05T00:00:00" });
+    await expect(
+      recordStockMovement(other.tx, { itemId: "i1", kind: "SALE", delta: -6, occurredAt: "2020-06-03T00:00:00" }),
+    ).rejects.toBeInstanceOf(StockLedgerError);
+
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "SALE",
+      delta: -6,
+      backdateTo: "2020-06-03",
+    });
+    expect(posted.movement.occurredAt).toBe("2020-06-05T00:00:00"); // newest inflow
+    expect(posted.stockOnHand).toBe(2);
+  });
+
+  it("throws a typed missing-item error and writes nothing", async () => {
+    const { tx, movements } = fakeTx();
+    await expect(
+      recordStockMovement(tx, { itemId: "absent", kind: "PURCHASE", delta: 1, occurredAt: "2020-01-01T10:00:00" }),
+    ).rejects.toBeInstanceOf(StockItemMissingError);
+    expect(movements).toHaveLength(0);
+  });
+
+  it("sets the running average on a zero-delta cost correction", async () => {
+    const { tx, cache } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T10:00:00" });
+
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "MANUAL_ADJUSTMENT",
+      delta: 0,
+      unitCost: 250,
+      reason: "COST_CORRECTION",
+      occurredAt: "2020-01-02T10:00:00",
+    });
+    expect(posted.movement.delta).toBe(0);
+    expect(posted.movement.unitCost).toBe(250);
+    expect(posted.stockOnHand).toBe(10);
+    expect(posted.costPrice).toBe(250);
+    expect(cache).toEqual({ stockOnHand: 10, costPrice: 250 });
+  });
+
+  it("replays the full ledger on a BACKDATED outflow (issue 143 outflow rule)", async () => {
+    const { tx, cache } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-02T10:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 300, occurredAt: "2020-01-03T10:00:00" });
+    expect(cache.costPrice).toBe(200);
+
+    // the old stockAddManual branch preserved the cached 200; replay is the
+    // ADR-0005 value: 5@100 (10 − 5 backdated) + 10@300 → 233
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "MANUAL_ADJUSTMENT",
+      delta: -5,
+      occurredAt: "2020-01-02T12:00:00",
+    });
+    expect(posted.stockOnHand).toBe(15);
+    expect(posted.costPrice).toBe(233);
+  });
+
+  it("preserves inflow-first ordering when a correction pair is posted as two calls", async () => {
+    const { tx } = fakeTx({ costPrice: 100 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T10:00:00" });
+
+    const stamp = "2020-01-02T10:00:00";
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 300, occurredAt: stamp, reason: "INVOICE_CORRECTION #l1" });
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "MANUAL_ADJUSTMENT",
+      delta: -10,
+      occurredAt: stamp,
+      reason: "INVOICE_CORRECTION #l1",
+    });
+    // +10@100 → 100; +10@300 → (1000+3000)/20 = 200; −10 → 10 units @200
+    expect(posted.stockOnHand).toBe(10);
+    expect(posted.costPrice).toBe(200);
+  });
+});

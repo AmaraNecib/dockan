@@ -4141,3 +4141,179 @@ describe("items cost correction (issue 144)", () => {
     expect(row.costPrice).toBe(250); // (20×300 + 10×150) / 30
   });
 });
+
+/**
+ * Issue 143 — one parity test per stock-write call site. Each pins the exact
+ * movement row(s) and the `stockOnHand` / `costPrice` golden values the
+ * extracted seam must keep producing. The pre-existing suites are the wider
+ * behavior contract; these make the seam's per-site output explicit.
+ */
+describe("movement posting seam parity (issue 143)", () => {
+  async function makeItem(name: string, costPrice: number, sellingPrice = costPrice * 2) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({ name, categoryId: categories.items[0]!.id, costPrice, sellingPrice, lowStockThreshold: 0 });
+  }
+
+  it("stockAddManual: inflow blends, outflow replays without moving the average", async () => {
+    const item = await makeItem(`seam-adjust-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE", occurredAt: "2020-01-01T00:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 300, kind: "PURCHASE", occurredAt: "2020-01-02T00:00:00" });
+
+    const posted = await client.stockAddManual({ itemId: item.id, delta: -6, occurredAt: "2020-01-03T00:00:00" });
+    expect(posted).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: -6, unitCost: null, ref: null });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(14);
+    expect(history.movements.map((m) => m.stockAfter)).toEqual([10, 20, 14]);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(200);
+  });
+
+  it("stockAddManual: a backdated outflow replays the full ledger (issue 143 outflow rule)", async () => {
+    const item = await makeItem(`seam-outflow-rule-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE", occurredAt: "2020-01-02T10:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 300, kind: "PURCHASE", occurredAt: "2020-01-03T10:00:00" });
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(200);
+
+    // replay in business-date order: 5@100 after the backdated outflow + 10@300 → 233
+    await client.stockAddManual({ itemId: item.id, delta: -5, occurredAt: "2020-01-02T12:00:00" });
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(15);
+    expect(row.costPrice).toBe(233);
+  });
+
+  it("invoicesCreate SALE: FIFO snapshot and exact cogs land on the line and the seam row", async () => {
+    const item = await makeItem(`seam-sale-${Date.now()}`, 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 6 }] });
+    expect(sale.lines[0]).toMatchObject({ costAtSale: 117, cogsExact: 700, quantity: 6 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((m) => m.kind === "SALE" && m.ref === sale.id)).toMatchObject({ delta: -6, unitCost: null });
+    expect(history.stockOnHand).toBe(4);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(150);
+  });
+
+  it("invoicesCreate SALE: each line's FIFO read sees the prior line's movement", async () => {
+    const item = await makeItem(`seam-sale-lines-${Date.now()}`, 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 200, kind: "PURCHASE" });
+
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [
+        { itemId: item.id, quantity: 3 },
+        { itemId: item.id, quantity: 4 },
+      ],
+    });
+    // line 1 consumes 3@100; line 2 consumes the remaining 2@100 + 2@200
+    expect(sale.lines.map((line) => line.cogsExact)).toEqual([300, 600]);
+    expect(sale.lines.map((line) => line.costAtSale)).toEqual([100, 150]);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(3);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(150);
+  });
+
+  it("invoicesCreate PURCHASE: the line cost is the inflow cost and the cache replays", async () => {
+    const item = await makeItem(`seam-purchase-${Date.now()}`, 100);
+    const invoice = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 4, unitPrice: 250 }] });
+    expect(invoice.lines[0]).toMatchObject({ unitPrice: 250, costAtSale: 250, cogsExact: 1000 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]).toMatchObject({ kind: "PURCHASE", delta: 4, unitCost: 250, ref: invoice.id });
+    expect(history.stockOnHand).toBe(4);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(250);
+  });
+
+  it("returnsCreate: a PENDING SALE return joins the layers at the current average", async () => {
+    const item = await makeItem(`seam-return-${Date.now()}`, 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }] });
+
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((m) => m.returnMark === "PENDING")).toMatchObject({
+      kind: "SALE",
+      delta: 2,
+      unitCost: 100,
+      reason: "RETURN_RECORDED",
+      ref: created.id,
+    });
+    expect(history.stockOnHand).toBe(2);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
+  });
+
+  it("returnsReject: scrapping allocates across the return's lines and zeroes the stock", async () => {
+    const item = await makeItem(`seam-reject-${Date.now()}`, 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }, { itemId: item.id, quantity: 2 }] });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: [
+        { invoiceLineId: sale.lines[0]!.id, quantity: 1 },
+        { invoiceLineId: sale.lines[1]!.id, quantity: 2 },
+      ],
+    });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(3);
+
+    await client.returnsReject({ returnId: created.id, reason: "تلف" });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(0);
+    const scraps = history.movements.filter((m) => m.kind === "MANUAL_ADJUSTMENT" && m.delta < 0);
+    expect(scraps.reduce((sum, m) => sum + m.delta, 0)).toBe(-3);
+    expect(scraps.every((m) => m.ref === created.id && (m.reason ?? "").includes("RETURN_REJECTED_DAMAGED"))).toBe(true);
+    // one scrap row per return line, keyed by the line id. The store's return
+    // line order is not guaranteed, so compare line-id → scrapped quantity
+    // rather than the positional order of the rows.
+    const scrapByLine = new Map(scraps.map((m) => [m.reason?.split("#").at(-1), Math.abs(m.delta)]));
+    expect(scrapByLine).toEqual(new Map(created.lines.map((line) => [line.id, line.quantity])));
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
+  });
+
+  it("purchasesCorrectLine: the inflow-first pair lands and replays to the ADR average", async () => {
+    const item = await makeItem(`seam-correct-${Date.now()}`, 100);
+    const invoice = await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }] });
+    await client.stockAddManual({ itemId: item.id, delta: -4 }); // settled outflow keeps its basis
+
+    await client.purchasesCorrectLine({ lineId: invoice.lines[0]!.id, quantity: 10, unitCost: 300 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    const correctionRows = history.movements.filter((m) => (m.reason ?? "").startsWith("INVOICE_CORRECTION"));
+    expect(correctionRows.map((m) => m.kind)).toEqual(["PURCHASE", "MANUAL_ADJUSTMENT"]);
+    expect(correctionRows[0]!.occurredAt).toBe(correctionRows[1]!.occurredAt);
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
+    expect(row.stockOnHand).toBe(6);
+    expect(row.costPrice).toBe(225); // (100×6 + 300×10) / 16
+  });
+
+  it("suppliersReturn: an outflow reduces stock and keeps the average", async () => {
+    const category = await client.categoriesCreate({ name: `seam-supplier-cat-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({ name: `seam-supplier-item-${Date.now()}`, categoryId: category.id, costPrice: 100, sellingPrice: 200, stockOnHand: 5 });
+    const supplier = await client.suppliersCreate({ name: `مورد-تدفق-${Date.now()}` });
+
+    await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 2, amount: 200 });
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.find((m) => m.reason === "SUPPLIER_RETURN")).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: -2, unitCost: null });
+    expect(history.stockOnHand).toBe(3);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
+  });
+
+  it("itemsCreateWithStock: the opening movement and the cache agree", async () => {
+    const category = await client.categoriesCreate({ name: `seam-opening-cat-${Date.now()}` });
+    const item = await client.itemsCreateWithStock({ name: `seam-opening-item-${Date.now()}`, categoryId: category.id, costPrice: 400, sellingPrice: 800, stockOnHand: 12 });
+    expect(item.stockOnHand).toBe(12);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements[0]).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 12, unitCost: 400, reason: "opening" });
+    expect(history.stockOnHand).toBe(12);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(400);
+  });
+
+  it("itemsUpdate: a cost edit is a zero-delta correction row and resyncs the cache", async () => {
+    const item = await makeItem(`seam-cost-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100, kind: "PURCHASE" });
+
+    const edited = await client.itemsUpdate({ id: item.id, costPrice: 250 });
+    expect(edited?.costPrice).toBe(250);
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.movements.at(-1)).toMatchObject({ kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: "COST_CORRECTION" });
+    expect(history.stockOnHand).toBe(10);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(250);
+  });
+});

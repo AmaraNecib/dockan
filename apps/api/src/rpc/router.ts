@@ -11,7 +11,8 @@ import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { itemStockProjection, recordStockMovement, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
@@ -190,6 +191,26 @@ const adjustmentRefusal = (error: SupplierAdjustmentError) => {
   const refusal = ADJUSTMENT_REFUSAL[error.code];
   return new ORPCError(refusal.status, { message: refusal.message });
 };
+
+/**
+ * Issue 143: one mapper from the movement-posting module's typed refusals to
+ * stable ORPC errors, so every stock write shares one home for the ledger's
+ * STOCK_NEGATIVE and the module's missing-item refusal instead of five inline
+ * try/catch blocks. Anything else is a real bug and rethrows.
+ */
+async function postStock(tx: StorePort, spec: StockMovementSpec) {
+  try {
+    return await recordStockMovement(tx, spec);
+  } catch (error) {
+    if (error instanceof StockItemMissingError) {
+      throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
+    }
+    if (error instanceof StockLedgerError) {
+      throw new ORPCError("BAD_REQUEST", { message: error.code });
+    }
+    throw error;
+  }
+}
 
 /** One supplier that folds to a given normalized name, for the opening-balance
  * resolver (a name can match more than one row after legacy duplicate creation). */
@@ -425,7 +446,7 @@ export function createRpcRouter(deps: RpcDeps) {
       }),
     ),
     // unknown-scan "create with stock": item + initial stock in one unit,
-    // through the same setItemStockAndCost seam the invoice flows will use
+    // through the same movement-posting seam the invoice flows use
     itemsCreateWithStock: os.itemsCreateWithStock.handler(
       guardedInput(async (input) => {
         const categories = await deps.store.listCategories();
@@ -438,7 +459,7 @@ export function createRpcRouter(deps: RpcDeps) {
             const item = await tx.createItem({ ...input, barcode });
             // Initial stock is a real ledger fact, not only a cache update;
             // otherwise a subsequent sale would see an empty FIFO history.
-            await tx.insertStockMovement({
+            await postStock(tx, {
               itemId: item.id,
               kind: "MANUAL_ADJUSTMENT",
               delta: input.stockOnHand,
@@ -447,7 +468,6 @@ export function createRpcRouter(deps: RpcDeps) {
               ref: null,
               occurredAt: item.createdAt,
             });
-            await tx.setItemStockAndCost(item.id, input.stockOnHand, input.costPrice);
             await tx.insertActivity({
               type: "ITEM_CREATED",
               summary: `ITEM_CREATED_WITH_STOCK ${input.stockOnHand} ${input.name}`,
@@ -483,44 +503,33 @@ export function createRpcRouter(deps: RpcDeps) {
             const costChanged = nextCost !== undefined && nextCost !== current.costPrice;
             let correctedCost = current.costPrice;
             if (costChanged) {
-              const movements = await tx.listStockMovements(input.id);
               // The correction's precedence is its RECORDING order, not its
-              // timestamp (weightedAverageCost walks by seq and splits segments
+              // timestamp (the seam's replay walks by seq and splits segments
               // at each correction). It is dated at the wall clock like any
               // other new row; a future-dated row recorded earlier still sits
               // before it, and a purchase recorded later blends from it even if
               // that purchase is dated before the future row.
-              const candidate = {
-                kind: "MANUAL_ADJUSTMENT" as const,
+              const posted = await postStock(tx, {
+                itemId: input.id,
+                kind: "MANUAL_ADJUSTMENT",
                 delta: 0,
                 unitCost: nextCost,
                 reason: COST_CORRECTION_REASON,
-                occurredAt: localDateTime(),
-                seq: undefined,
-              };
-              await tx.insertStockMovement({
-                itemId: input.id,
-                kind: candidate.kind,
-                delta: candidate.delta,
-                unitCost: candidate.unitCost,
-                reason: candidate.reason,
                 ref: null,
-                occurredAt: candidate.occurredAt,
               });
-              correctedCost = weightedAverageCost([...movements, candidate], { fallbackUnitCost: current.costPrice });
+              correctedCost = posted.costPrice;
             }
             const item = await tx.updateItem(input.id, {
               ...input,
-              // cost is written through the ledger + setItemStockAndCost below
+              // cost is written through the ledger correction + seam above
               costPrice: undefined,
               barcode: input.barcode === null ? null : requireBarcode(input.barcode),
             });
             if (item === undefined) {
               throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
             }
-            if (costChanged) {
-              await tx.setItemStockAndCost(input.id, current.stockOnHand, correctedCost);
-            }
+            // the seam already wrote the cache inside this transaction; the
+            // activity rows below complete the unit
             await tx.insertActivity({ type: "ITEM_UPDATED", summary: `ITEM_UPDATED ${item.name}`, ref: item.id });
             if (costChanged) {
               await tx.insertActivity({
@@ -555,50 +564,22 @@ export function createRpcRouter(deps: RpcDeps) {
           if (item === undefined) {
             throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
           }
-          // inflows default to the item's current cost; outflows carry no
-          // unit cost — storing one would be a misleading "fact"
-          const unitCost = input.delta > 0 ? (input.unitCost ?? item.costPrice) : null;
-
-          // validate the WHOLE projected history incl. the candidate row —
-          // negative stock is rejected before anything is written
-          const existing = await tx.listStockMovements(item.id);
-          const candidate = {
+          // The seam owns the whole sequence: it defaults an inflow's cost to
+          // the item's current one, keeps outflows costless, validates the
+          // WHOLE projected history incl. the candidate row before any write,
+          // inserts the movement, and replays the ADR-0002 average into the
+          // cache. No per-call-site special-casing.
+          const posted = await postStock(tx, {
+            itemId: item.id,
             kind: input.kind,
             delta: input.delta,
-            unitCost,
-            occurredAt: input.occurredAt ?? localDateTime(),
-            seq: undefined,
-          };
-          let stockAfter: number;
-          try {
-            stockAfter = projectLedger([...existing, candidate]).stockOnHand;
-          } catch (err) {
-            if (err instanceof StockLedgerError) {
-              throw new ORPCError("BAD_REQUEST", { message: err.code });
-            }
-            throw err;
-          }
-
-          const movement = await tx.insertStockMovement({
-            itemId: item.id,
-            kind: candidate.kind,
-            delta: input.delta,
-            unitCost,
+            unitCost: input.unitCost,
             reason: input.reason ?? null,
             ref: null,
-            occurredAt: candidate.occurredAt,
+            occurredAt: input.occurredAt,
           });
-
-          // keep the fast path in sync. cost_price is the ADR-0002 running
-          // weighted average, so after ANY write — including a backdated one
-          // — we recompute it by replaying the full ledger chronologically
-          // (inflows blend, outflows only reduce quantity). No special-casing
-          // per insertion position; the model stays uniform.
-          const newCost =
-            input.delta > 0 ? weightedAverageCost([...existing, candidate]) : item.costPrice;
-          await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `STOCK_ADJUSTED ${item.name}`, ref: item.id });
-          return movement;
+          return posted.movement;
         });
       }),
     ),
@@ -615,7 +596,8 @@ export function createRpcRouter(deps: RpcDeps) {
         const projected = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
         const { limit, offset } = resolvePagination(input);
         const rows = projected.slice(offset, offset + limit);
-        const { stockOnHand } = projectLedger(movements, { fallbackUnitCost: item.costPrice });
+        // the last running balance IS stock on hand (same delta sum)
+        const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
         return { movements: rows, total: movements.length, stockOnHand };
       }),
     ),
@@ -869,18 +851,14 @@ export function createRpcRouter(deps: RpcDeps) {
             });
             const item = (await tx.getItemsByIds([line.itemId])).get(line.itemId);
             if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
-            const existing = await tx.listStockMovements(item.id);
-            const candidate = { kind: "MANUAL_ADJUSTMENT" as const, delta: -line.quantity, unitCost: null, occurredAt, seq: undefined };
-            let stockAfter: number;
-            try {
-              stockAfter = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
-            } catch (err) {
-              if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
-              throw err;
-            }
-            await tx.insertStockMovement({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -line.quantity, unitCost: null, reason: "SUPPLIER_RETURN", ref: returnId, occurredAt });
-            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
-            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+            await postStock(tx, {
+              itemId: item.id,
+              kind: "MANUAL_ADJUSTMENT",
+              delta: -line.quantity,
+              reason: "SUPPLIER_RETURN",
+              ref: returnId,
+              occurredAt,
+            });
           }
 
           // the signed entries: the debt-reducing part names the invoice, the
@@ -1209,26 +1187,22 @@ export function createRpcRouter(deps: RpcDeps) {
               // this unit, and the map is immutable while it runs.
               const item = itemsById.get(line.itemId)!;
               const calculated = totals.lines[index]!;
-              const existing = await tx.listStockMovements(item.id);
-              const occurredAt = backdated ? saleMovementTime(invoiceDate, existing) : localDateTime();
-              const candidate = {
-                kind: "SALE" as const,
+              // The seam owns the FIFO snapshot for the SALE, validation, the
+              // movement insert and the cache resync; an explicit invoice date
+              // bounds the movement time inside it. The line stamps costAtSale
+              // / cogsExact from that same read.
+              const posted = await postStock(tx, {
+                itemId: item.id,
+                kind: "SALE",
                 delta: -line.quantity,
-                unitCost: null,
-                occurredAt,
-                seq: undefined,
-              };
-              let costAtSale: number;
-              let cogsExact: number;
-              try {
-                const cost = fifoOutflowCost(existing, line.quantity, { fallbackUnitCost: item.costPrice });
-                costAtSale = cost.unitCost;
-                cogsExact = cost.totalCost;
-                projectLedger([...existing, candidate]);
-              } catch (err) {
-                if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
-                throw err;
-              }
+                ref: invoice.id,
+                backdateTo: backdated ? invoiceDate : undefined,
+              });
+              // SAFETY: a SALE delta is -line.quantity with line.quantity > 0,
+              // so the module always returns the FIFO snapshot here.
+              const outflow = posted.outflowCost;
+              if (outflow === null) throw new Error("SALE movement returned no outflow cost");
+              const { unitCost: costAtSale, totalCost: cogsExact } = outflow;
               const inserted = await tx.insertInvoiceLine({
                 invoiceId: invoice.id,
                 itemId: item.id,
@@ -1243,18 +1217,6 @@ export function createRpcRouter(deps: RpcDeps) {
                 netTotal: calculated.netTotal,
               });
               insertedLines.push(inserted);
-              await tx.insertStockMovement({
-                itemId: item.id,
-                kind: "SALE",
-                delta: -line.quantity,
-                unitCost: null,
-                reason: null,
-                ref: invoice.id,
-                occurredAt,
-              });
-              const projected = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice });
-              const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
-              await tx.setItemStockAndCost(item.id, projected.stockOnHand, newCost);
             }
             const insertedPayments: InvoiceDetail["payments"] = [];
             if (paidAmount > 0) {
@@ -1322,18 +1284,13 @@ export function createRpcRouter(deps: RpcDeps) {
               netTotal: line.quantity * unitCost,
             });
             insertedLines.push(inserted);
-            const existing = await tx.listStockMovements(line.itemId);
-            const candidate = { kind: "PURCHASE" as const, delta: line.quantity, unitCost, occurredAt: localDateTime(), seq: undefined };
-            let stockAfter: number;
-            try {
-              stockAfter = projectLedger([...existing, candidate]).stockOnHand;
-            } catch (err) {
-              if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
-              throw err;
-            }
-            await tx.insertStockMovement({ itemId: line.itemId, kind: "PURCHASE", delta: line.quantity, unitCost, reason: null, ref: invoice.id, occurredAt: candidate.occurredAt });
-            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
-            await tx.setItemStockAndCost(line.itemId, stockAfter, newCost);
+            await postStock(tx, {
+              itemId: line.itemId,
+              kind: "PURCHASE",
+              delta: line.quantity,
+              unitCost,
+              ref: invoice.id,
+            });
           }
           const insertedPayments: InvoiceDetail["payments"] = [];
           if (paidAmount > 0) {
@@ -1572,19 +1529,10 @@ export function createRpcRouter(deps: RpcDeps) {
             // Returned units join the FIFO layers straight away at the item's
             // current weighted average — "pure cost into the basis", no
             // special valuation (ADR-0002/0005 unchanged). One movement per
-            // line, marked PENDING for the owner's review.
-            const existing = await tx.listStockMovements(item.id);
-            const candidate = {
-              kind: "SALE" as const,
-              delta: lineRefund.quantity,
-              unitCost: item.costPrice,
-              occurredAt,
-              seq: undefined,
-            };
-            // an inflow can never dip stock, but the whole-history projection
-            // still fails loudly on corrupt history before any write
-            const stockAfter = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
-            await tx.insertStockMovement({
+            // line, marked PENDING for the owner's review. An inflow can never
+            // dip stock, but the seam still projects the whole history so a
+            // corrupt ledger fails loudly before any write.
+            await postStock(tx, {
               itemId: item.id,
               kind: "SALE",
               delta: lineRefund.quantity,
@@ -1597,8 +1545,6 @@ export function createRpcRouter(deps: RpcDeps) {
               returnMark: "PENDING",
               occurredAt,
             });
-            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
-            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           }
           // #68: the debt portion is NOT settled while the return is pending —
           // the voucher records the owner's chosen split, but the invoice keeps
@@ -1715,43 +1661,30 @@ export function createRpcRouter(deps: RpcDeps) {
             }
             const linesOfItem = existing.lines.filter((line) => line.itemId === itemId);
             const returnedQty = linesOfItem.reduce((sum, line) => sum + line.quantity, 0);
-            const movements = await tx.listStockMovements(item.id);
-            const projection = projectLedger(movements, { fallbackUnitCost: item.costPrice });
+            const projection = await itemStockProjection(tx, item.id, { fallbackUnitCost: item.costPrice });
             // clamp: never remove more than is actually in stock (some returned
             // units may already have been resold between create and review)
             const removalBudget = Math.min(returnedQty, projection.stockOnHand);
             if (removalBudget <= 0) continue;
-            const candidate = {
-              kind: "MANUAL_ADJUSTMENT" as const,
-              delta: -removalBudget,
-              unitCost: null,
-              occurredAt,
-              seq: undefined,
-            };
-            // SAFETY: the clamp guarantees the reversal never drives stock
-            // negative; the whole-history projection still fails loudly on
-            // corrupt history before anything is written.
-            const stockAfter = projectLedger([...movements, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
             // allocate the scrapped units across this item's return lines,
             // first-come-first-served; each line's movement carries its id as
-            // the reason suffix for exact report attribution
+            // the reason suffix for exact report attribution. One movement per
+            // line through the seam: outflows never move the average, so the
+            // final cache matches a single aggregate replay.
             let remaining = removalBudget;
             for (const line of linesOfItem) {
               const take = Math.min(line.quantity, remaining);
               if (take <= 0) continue;
-              await tx.insertStockMovement({
+              await postStock(tx, {
                 itemId: item.id,
                 kind: "MANUAL_ADJUSTMENT",
                 delta: -take,
-                unitCost: null,
                 reason: `${reasonKey} #${line.id}`,
                 ref: existing.id,
                 occurredAt,
               });
               remaining -= take;
             }
-            const newCost = weightedAverageCost([...movements, candidate], { fallbackUnitCost: item.costPrice });
-            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
           await tx.insertActivity({
@@ -1889,59 +1822,32 @@ export function createRpcRouter(deps: RpcDeps) {
           const effectiveOriginal = line.quantity + priorNet;
           const reason = `${CORRECTION_REASON_PREFIX} ${detail.invoiceNumber} ${suffix}`;
           // One timestamp keeps the replacement and reversal in the same
-          // ledger instant. The corrected inflow is inserted first, and the
-          // store's rowid seq tie-breaker preserves that inflow-first order.
+          // ledger instant. The corrected inflow is posted first, so the
+          // store's rowid seq tie-breaker preserves that inflow-first order —
+          // in validation and in the stored rows. Reversal-first would drive
+          // the projection below zero whenever any invoiced unit was already
+          // sold (even for pure cost fixes) and would poison every future
+          // replay. Inflow-first fails exactly when the corrected quantity
+          // drops below what was already sold; the failed unit rolls back, so
+          // nothing is written.
           const correctionOccurredAt = localDateTime();
-          const reversal = {
-            kind: "MANUAL_ADJUSTMENT" as const,
-            delta: -effectiveOriginal,
-            unitCost: null,
-            occurredAt: correctionOccurredAt,
-            seq: undefined,
-          };
-          const corrected = {
-            kind: "PURCHASE" as const,
+          await postStock(tx, {
+            itemId: item.id,
+            kind: "PURCHASE",
             delta: input.quantity,
             unitCost: input.unitCost,
+            reason,
+            ref: detail.id,
             occurredAt: correctionOccurredAt,
-            seq: undefined,
-          };
-          // SAFETY: the corrected INFLOW must precede the reversal OUTFLOW — in
-          // the validation below AND in the stored rows. Reversal-first would
-          // drive the projection below zero whenever any invoiced unit was
-          // already sold (even for pure cost fixes) and would poison every
-          // future replay of the stored ledger. Inflow-first fails exactly
-          // when the corrected quantity drops below what was already sold.
-          try {
-            projectLedger([...existing, corrected, reversal]);
-          } catch (err) {
-            if (err instanceof StockLedgerError) {
-              throw new ORPCError("BAD_REQUEST", { message: err.code });
-            }
-            throw err;
-          }
-          await tx.insertStockMovement({
+          });
+          await postStock(tx, {
             itemId: item.id,
-            kind: corrected.kind,
-            delta: corrected.delta,
-            unitCost: corrected.unitCost,
+            kind: "MANUAL_ADJUSTMENT",
+            delta: -effectiveOriginal,
             reason,
             ref: detail.id,
-            occurredAt: corrected.occurredAt,
+            occurredAt: correctionOccurredAt,
           });
-          await tx.insertStockMovement({
-            itemId: item.id,
-            kind: reversal.kind,
-            delta: reversal.delta,
-            unitCost: null,
-            reason,
-            ref: detail.id,
-            occurredAt: reversal.occurredAt,
-          });
-          const all = [...existing, corrected, reversal];
-          const stockAfter = projectLedger(all).stockOnHand;
-          const newCost = weightedAverageCost(all, { fallbackUnitCost: item.costPrice });
-          await tx.setItemStockAndCost(item.id, stockAfter, newCost);
           await tx.insertActivity({ type: "STOCK_ADJUSTED", summary: `PURCHASE_CORRECTED ${item.name}`, ref: item.id });
           const refreshed = await tx.getInvoiceDetail(detail.id);
           // SAFETY: the invoice was just read inside this handler; it cannot vanish mid-transaction

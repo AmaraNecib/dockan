@@ -47,6 +47,8 @@ let suppliers = BASE_SUPPLIERS;
 let resolveFails = false;
 /** count of resolve calls, to assert a no-op path never asks the server */
 let resolveCalls = 0;
+/** count of opening-balance writes the mock was asked to perform, whatever branch */
+let mutationCalls = 0;
 /** when true, the next save is refused as a stale named destination */
 let rejectTargetChanged = false;
 /** when set, the resolve waits on this promise before answering, so a test can
@@ -64,6 +66,7 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
+          mutationCalls += 1;
           if (rejectTargetChanged) {
             rejectTargetChanged = false;
             if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
@@ -112,6 +115,7 @@ beforeEach(() => {
   rejectOnce = false;
   resolveFails = false;
   resolveCalls = 0;
+  mutationCalls = 0;
   rejectTargetChanged = false;
   resolveHold = null;
   releaseResolveHold = null;
@@ -570,10 +574,37 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
     expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
     expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
+    // the lookup did run; only its result was ignored
+    expect(resolveCalls).toBe(1);
   });
 
-  it("abandons a pending save when an existing row changes before the lookup answers (review round 1 F1)", async () => {
+  it("does not write when the page unmounts while the lookup is pending (review round 1 finding 1)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إغلاق تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // leave by unmounting (browser back / a route change) rather than the button
+    act(() => root!.unmount());
+    root = null;
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("abandons a pending save when an existing row changes before the lookup answers (review round 1 finding 1 follow-up)", async () => {
     resolveHold = new Promise((resolve) => {
       releaseResolveHold = resolve;
     });
@@ -597,6 +628,61 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
     expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+
+    // the owner can recover: the corrected batch saves in full
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "s-2")).toMatchObject({ amount: 500 });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد جديد تماما")).toMatchObject({ amount: 300 });
+  });
+
+  it("abandons a pending save when a typed lookup field changes before the lookup answers (review round 1 finding 2 follow-up)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد ميدان تماما");
+    setInput(amountInput, "300");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the owner changes the amount while the lookup for the old amount runs
+    setInput(amountInput, "450");
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("refuses to confirm an empty batch after the last confirmed row is cleared (review round 1 finding 2 follow-up)", async () => {
+    render();
+    await settle();
+    typeIntoRow(0, "800"); // s-1 has entries -> the dialog opens
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // clear the only filled row: the dialog no longer names an account
+    await act(async () => {
+      typeIntoRow(0, "");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
   });
 
   it("lets a valid batch save after the typed name moves to another supplier (review round 1 finding 2)", async () => {

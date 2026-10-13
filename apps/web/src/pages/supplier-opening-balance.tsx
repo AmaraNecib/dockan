@@ -96,18 +96,16 @@ export function SupplierOpeningBalancePage() {
   const typedNameKey = newName.trim() === "" ? null : normalizeTextKey(newName);
   const typedAmount = parseGroupedAmount(newAmount);
   const typedRowReady = typedNameKey !== null && typedAmount !== null && typedAmount > 0;
-  // #184 — the resolution input: the same row signature the server resolves
-  // against, so the answer names the account the write will actually touch.
-  const resolveInput =
-    typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
-      ? { name: newName.trim(), direction: newDirection, amount: typedAmount, occurredAt, reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim() }
-      : null;
-  // the typed row's lookup fields, serialized: any change invalidates the cached
-  // destination and closes the confirmation (review round 1 finding 2)
-  const resolveKey =
-    typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
-      ? JSON.stringify([newName.trim(), newDirection, typedAmount, occurredAt, reasonDraft.trim()])
-      : null;
+  // #184 — the resolution input and the key that tags its answer, derived once so
+  // they cannot disagree. The key is the row signature the server resolves
+  // against, so a change to any of the five fields invalidates the snapshot.
+  const typedLookup = useMemo(() => {
+    if (typedNameKey === null || typedAmount === null || typedAmount <= 0 || occurredAt === null) return null;
+    const input = { name: newName.trim(), direction: newDirection, amount: typedAmount, occurredAt, reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim() };
+    return { input, key: JSON.stringify([input.name, input.direction, input.amount, input.occurredAt, input.reason ?? null]) };
+  }, [typedNameKey, typedAmount, newDirection, newName, occurredAt, reasonDraft]);
+  const resolveInput = typedLookup?.input ?? null;
+  const resolveKey = typedLookup?.key ?? null;
   // the destination snapshot is only used while it belongs to the CURRENT lookup
   // fields, so a stale snapshot can never block a valid edited batch
   const typedDestination = typedResolution !== null && typedResolution.key === resolveKey ? typedResolution.supplier : null;
@@ -131,7 +129,7 @@ export function SupplierOpeningBalancePage() {
   useEffect(() => {
     if (lastResolveKeyRef.current === resolveKey) return;
     lastResolveKeyRef.current = resolveKey;
-    attemptRef.current += 1;
+    invalidateAttempt();
     setConfirming(false);
     setTypedResolution(null);
   }, [resolveKey]);
@@ -143,7 +141,7 @@ export function SupplierOpeningBalancePage() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      attemptRef.current += 1;
+      invalidateAttempt();
     };
   }, []);
 
@@ -182,11 +180,12 @@ export function SupplierOpeningBalancePage() {
     setTypedResolution(resolveKey === null ? null : { key: resolveKey, supplier });
   }
 
-  /** Leave the screen: invalidate any in-flight attempt first so its late resolve
-   * cannot write (review round 1 finding 1). Cancel is never blocked — a hung
-   * lookup must not trap the owner. */
+  /** Leave the screen: invalidate any in-flight attempt and drop the confirmation
+   * before navigating, so a late resolve cannot write (review round 1 finding 1).
+   * Cancel is never blocked — a hung lookup must not trap the owner. */
   function leave() {
-    attemptRef.current += 1;
+    invalidateAttempt();
+    closeConfirm();
     void navigate({ to: "/suppliers" });
   }
 
@@ -218,6 +217,12 @@ export function SupplierOpeningBalancePage() {
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
+      return;
+    }
+    // a dialog can outlive the rows it named (the owner clears them): never post
+    // an empty batch from the confirm button
+    if (totalRows === 0) {
+      setError(t("supplierOpeningNothing"));
       return;
     }
     // the attempt this write belongs to: a leave or a lookup-field edit bumps
@@ -344,7 +349,7 @@ export function SupplierOpeningBalancePage() {
 
   return (
     <section data-testid="opening-balance-page">
-      <Link to="/suppliers" className="text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="opening-balance-back">
+      <Link to="/suppliers" onClick={invalidateAttempt} className="text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="opening-balance-back">
         {t("supplierOpeningBack")}
       </Link>
       <h1 className="mt-3 text-xl font-bold">{t("supplierOpeningTitle")}</h1>

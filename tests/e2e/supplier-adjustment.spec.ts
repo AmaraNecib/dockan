@@ -209,6 +209,10 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
   await page.getByTestId("opening-balance-new-name").fill(name);
   await page.getByTestId("opening-balance-new-amount").fill("500");
+
+  // arm the lookup acknowledgement BEFORE the click so the assertion is causally
+  // ordered rather than a wall-clock wait
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
   await page.getByTestId("opening-balance-save").click();
 
   // leave while the lookup is still running
@@ -216,13 +220,46 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 
   // let the held lookup answer: the abandoned attempt must not write
-  await page.waitForTimeout(2000);
+  await lookup;
   await page.unroute("**/api/rpc/suppliersResolveName");
   expect(wrote).toBe(false);
 
   // and the name never materialized
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-table")).not.toContainText(name);
+});
+
+/**
+ * The back link is a second leave control; it invalidates the in-flight attempt
+ * via its click handler rather than relying on the deferred unmount commit.
+ */
+test("leaving via the back link while the lookup is pending writes nothing (issue 184 review round 1)", async ({ page }) => {
+  await signIn(page);
+  const name = `مورد رجوع-${Date.now()}`;
+
+  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  let wrote = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) wrote = true;
+  });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(name);
+  await page.getByTestId("opening-balance-new-amount").fill("500");
+
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  await page.getByTestId("opening-balance-save").click();
+  await page.getByTestId("opening-balance-back").click();
+  await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
+
+  await lookup;
+  await page.unroute("**/api/rpc/suppliersResolveName");
+  expect(wrote).toBe(false);
 });
 
 /**

@@ -135,6 +135,8 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     itemsList: { queryKey: () => ["items"] },
+    // invalidated after a save; the page must not throw on the refresh path
+    itemsAll: { queryKey: () => ["itemsAll"] },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
     // PartyPicker (issue 120): no records in these fixtures; the picker still
     // mounts its list query and create mutations.

@@ -3,8 +3,10 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Pager } from "@/components/ui/pager";
 
 import { orpc } from "../lib/rpc";
+import { usePagination } from "../hooks/use-pagination";
 import { formatDateTime } from "../lib/dates";
 
 /** Keep entity references compact, but retain a useful backup filename.
@@ -93,7 +95,8 @@ export function activitySummaryText(t: TFunction, summary: string): string {
 
 export function ActivityLogPage() {
   const { t } = useTranslation();
-  const activities = useQuery(orpc.activitiesList.queryOptions({ input: { limit: 100 } }));
+  const pager = usePagination();
+  const activities = useQuery(orpc.activitiesList.queryOptions({ input: { ...pager.pagination } }));
 
   return (
     <section>
@@ -112,9 +115,10 @@ export function ActivityLogPage() {
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
-      ) : activities.data.items.length === 0 ? (
+      ) : activities.data.total === 0 ? (
         <p className="mt-4 rounded border bg-card p-4 text-muted-foreground">{t("activityEmpty")}</p>
       ) : (
+        <>
         <table className="mt-4 w-full rounded border bg-card" data-testid="activity-table">
           <thead>
             <tr className="border-b text-right text-sm text-muted-foreground">
@@ -142,6 +146,15 @@ export function ActivityLogPage() {
             ))}
           </tbody>
         </table>
+        <Pager
+          total={activities.data.total}
+          pageSize={pager.pageSize}
+          offset={pager.offset}
+          onOffsetChange={pager.setOffset}
+          onPageSizeChange={pager.setPageSize}
+          testId="activity-pager"
+        />
+        </>
       )}
     </section>
   );

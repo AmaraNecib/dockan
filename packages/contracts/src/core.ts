@@ -644,13 +644,46 @@ export const supplierReturnSchema = z.object({
   lines: z.array(supplierReturnLineSchema),
 });
 
-export const supplierReturnsListInputSchema = z.object({
+// ---------------------------------------------------------------------------
+// Pagination (issue 163): one shape for every flat, growing list.
+// ---------------------------------------------------------------------------
+
+/** Rows per page when the client sends no `limit`. */
+export const DEFAULT_PAGE_SIZE = 10;
+/** The page-size presets the shared pager offers, in rows. */
+export const PAGE_SIZE_PRESETS = [20, 25, 50, 100] as const;
+/** Ceiling for a manual page size: one request can never ask for the whole
+ * table, and the number stays well inside SQLite's integer range. */
+export const MAX_PAGE_SIZE = 500;
+
+/** List pagination input: rows per page and rows to skip. Both optional;
+ * `resolvePagination` applies the server defaults. */
+export const paginationInputSchema = z.object({
+  limit: z.number().int().min(1).max(MAX_PAGE_SIZE).optional(),
+  offset: z.number().int().min(0).optional(),
+});
+export type PaginationInput = z.infer<typeof paginationInputSchema>;
+
+/** The one list envelope: a page of rows plus the unfiltered total. */
+export function pagedOutputSchema<T extends z.ZodType>(item: T) {
+  return z.object({ items: z.array(item), total: z.number().int().min(0) });
+}
+
+/** Apply the server's pagination defaults. The router resolves once so every
+ * store read receives concrete numbers, never `undefined` semantics. */
+export function resolvePagination(input: PaginationInput | undefined) {
+  return { limit: input?.limit ?? DEFAULT_PAGE_SIZE, offset: input?.offset ?? 0 };
+}
+
+export const supplierReturnsListInputSchema = paginationInputSchema.extend({
   supplierId: idSchema.optional(),
 });
 
-export const supplierReturnsListOutputSchema = z.object({
-  items: z.array(supplierReturnSchema),
-});
+export const supplierReturnsListOutputSchema = pagedOutputSchema(supplierReturnSchema);
+
+/** Read one purchase-return voucher by id. The print page must never scan a
+ * paginated list for the requested row (issue #163 review). */
+export const supplierReturnGetInputSchema = z.object({ returnId: idSchema });
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -977,10 +1010,16 @@ export const returnsCreateInputSchema = z.object({
   cashPaidOut: dinarsSchema.optional(),
 });
 
-export const returnsListInputSchema = z.object({
+export const returnsListInputSchema = paginationInputSchema.extend({
   /** optional scope: only this invoice's returns */
   invoiceId: idSchema.optional(),
 });
+
+/** Complete return history for one invoice. The review panel's form needs every
+ * prior return to compute the remaining returnable quantity and the refund
+ * preview, so this read is deliberately unpaginated while `returnsList` (the
+ * review screen) pages. */
+export const returnsForInvoiceInputSchema = z.object({ invoiceId: idSchema });
 
 export const returnsReviewInputSchema = z.object({
   returnId: idSchema,
@@ -992,7 +1031,7 @@ export const returnsGetInputSchema = z.object({
   returnId: idSchema,
 });
 
-export const invoiceListInputSchema = z.object({
+export const invoiceListInputSchema = paginationInputSchema.extend({
   kind: invoiceKindSchema.optional(),
   /** UNPAID | PARTIAL | PAID — derived from remainingAmount */
   status: z.enum(["UNPAID", "PARTIAL", "PAID"]).optional(),
@@ -1000,9 +1039,7 @@ export const invoiceListInputSchema = z.object({
   toDate: localDateSchema.optional(),
 });
 
-export const activityListInputSchema = z.object({
-  limit: z.number().int().min(1).max(200).optional(),
-});
+export const activityListInputSchema = paginationInputSchema;
 
 export const logsTailInputSchema = z.object({
   lines: z.number().int().min(1).max(500).optional(),
@@ -1041,7 +1078,7 @@ export const expenseCreateInputSchema = z.object({
   occurredAt: localDateTimeSchema.optional(),
 });
 
-export const expenseListInputSchema = z.object({
+export const expenseListInputSchema = paginationInputSchema.extend({
   /** empty/absent = all categories (a record never escapes every filter) */
   categoryIds: z.array(idSchema).max(100).optional(),
   /** window preset, resolved in Algeria local time at the api (same math as
@@ -1063,9 +1100,7 @@ export const expenseListInputSchema = z.object({
   sortDir: z.enum(["asc", "desc"]).optional(),
 });
 
-export const expenseListOutputSchema = z.object({
-  items: z.array(expenseSchema),
-});
+export const expenseListOutputSchema = pagedOutputSchema(expenseSchema);
 
 // --- purchase intake (ticket 29) -------------------------------------------
 
@@ -1119,14 +1154,11 @@ export const entityListOutputSchema = z.object({
   items: z.array(z.unknown()),
 });
 
-export const invoiceListOutputSchema = z.object({
-  items: z.array(invoiceSchema),
-  totalCount: z.number().int().min(0),
-});
+export const invoiceListOutputSchema = pagedOutputSchema(invoiceSchema);
 
-export const returnsListOutputSchema = z.object({
-  items: z.array(returnDetailSchema),
-});
+export const returnsListOutputSchema = pagedOutputSchema(returnDetailSchema);
+
+export const returnsForInvoiceOutputSchema = z.object({ items: z.array(returnDetailSchema) });
 
 /**
  * Lightweight pending-return count (issue 118) for the shell badge and the
@@ -1137,8 +1169,14 @@ export const returnsPendingCountOutputSchema = z.object({
   count: z.number().int().min(0),
 });
 
+export const itemHistoryInputSchema = z.object({
+  itemId: idSchema,
+}).merge(paginationInputSchema);
+
 export const itemHistoryOutputSchema = z.object({
   movements: z.array(stockMovementWithBalanceSchema),
+  /** number of movements in the whole ledger, not just this page */
+  total: z.number().int().min(0),
   stockOnHand: z.number().int().min(0),
 });
 
@@ -1225,11 +1263,13 @@ export const lowStockOutputSchema = z.object({
 /** item rows as returned by listItems: the owning category's display name
  * comes pre-joined so the UI never renders the raw categoryId (issue 67). */
 export const itemListItemSchema = itemSchema.extend({ categoryName: z.string().nullable() });
-export const itemListOutputSchema = z.object({ items: z.array(itemListItemSchema) });
+export const itemListInputSchema = paginationInputSchema;
+export const itemListOutputSchema = pagedOutputSchema(itemListItemSchema);
+/** Unpaginated item read for pickers/selects: a dropdown needs the whole
+ * catalog, not a page. Kept separate so `itemsList` can paginate freely. */
+export const itemListAllOutputSchema = z.object({ items: z.array(itemListItemSchema) });
 
-export const activityListOutputSchema = z.object({
-  items: z.array(activitySchema),
-});
+export const activityListOutputSchema = pagedOutputSchema(activitySchema);
 
 export const logsTailOutputSchema = z.object({
   file: z.string(),
@@ -1314,6 +1354,8 @@ export type SupplierReturn = z.infer<typeof supplierReturnInputSchema>;
 export type SupplierReturnLineInput = z.infer<typeof supplierReturnLineInputSchema>;
 export type SupplierRefund = z.infer<typeof supplierRefundInputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
+export type ItemListInput = z.infer<typeof itemListInputSchema>;
+export type ItemHistoryInput = z.infer<typeof itemHistoryInputSchema>;
 export type ActivityListFilters = z.infer<typeof activityListInputSchema>;
 export type SettingsUpdate = z.infer<typeof settingsUpdateInputSchema>;
 export type PurchaseAllocation = z.infer<typeof purchaseAllocationSchema>;

@@ -18,6 +18,7 @@ import type {
   ItemCreate,
   ItemUpdate,
   OnboardingProgress,
+  PaginationInput,
   Party,
   PartyCreate,
   PartyDetail,
@@ -37,7 +38,7 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -1120,12 +1121,28 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
 
     // --- items ---------------------------------------------------------------
-    async listItems() {
-      return db
+    async listItems(pagination) {
+      const query = db
         .select({ ...itemCols, categoryName: categories.name })
         .from(items)
         .leftJoin(categories, eq(items.categoryId, categories.id))
         .orderBy(items.name);
+      if (pagination === undefined) {
+        const rows = await query;
+        return { items: rows, total: rows.length };
+      }
+      const { limit, offset } = resolvePagination(pagination);
+      const [total, rows] = await Promise.all([
+        db.$count(items),
+        db
+          .select({ ...itemCols, categoryName: categories.name })
+          .from(items)
+          .leftJoin(categories, eq(items.categoryId, categories.id))
+          .orderBy(items.name)
+          .limit(limit)
+          .offset(offset),
+      ]);
+      return { items: rows, total };
     },
     async listLowStockItems() {
       return db.select(itemCols).from(items).where(sql`${items.stockOnHand} <= ${items.lowStockThreshold}`).orderBy(items.stockOnHand, items.name);
@@ -1589,11 +1606,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .orderBy(returnLines.id);
       return { ...header, lines: lineRows.map((row) => toReturnLine(row)) } satisfies ReturnDetail;
     },
-    async listReturns(filters: { invoiceId?: string }) {
+    async listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput) {
       const conds: SQL[] = [];
       if (filters.invoiceId !== undefined) conds.push(eq(returns.invoiceId, filters.invoiceId));
       const where = conds.length ? and(...conds) : undefined;
-      const headers = await db
+      const rowsQuery = db
         .select({
           id: returns.id,
           returnNumber: returns.returnNumber,
@@ -1615,9 +1632,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .from(returns)
         .innerJoin(invoices, eq(invoices.id, returns.invoiceId))
         .where(where)
-        // newest first; NO row cap — a pending return must stay reachable for
-        // review forever (a fixed limit could strand an unreviewed mark)
-        .orderBy(desc(returns.createdAt), sql`returns.rowid DESC`);
+        // pending review first, then newest. The review screen shows pending
+        // rows ahead of reviewed ones; with server paging that order must be
+        // part of the query, or a pending return could hide on a later page.
+        // A paginated read slices in SQL, and `total` keeps the whole filtered
+        // count so every return stays reachable.
+        .orderBy(sql`CASE WHEN ${returns.status} = 'PENDING_REVIEW' THEN 0 ELSE 1 END`, desc(returns.createdAt), sql`returns.rowid DESC`);
+      const headers =
+        pagination === undefined
+          ? await rowsQuery
+          : await rowsQuery.limit(resolvePagination(pagination).limit).offset(resolvePagination(pagination).offset);
+      const total = pagination === undefined ? headers.length : await db.$count(returns, where);
       const lineRows =
         headers.length === 0
           ? []
@@ -1628,7 +1653,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         list.push(toReturnLine(row));
         linesByReturn.set(row.returnId, list);
       }
-      return headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[];
+      return { items: headers.map((header) => ({ ...toReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies ReturnDetail[], total };
     },
     // --- supplier account (issue 161) ----------------------------------------
     async insertSupplierEntry(entry: SupplierEntryInsert) {
@@ -1720,9 +1745,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         })
         .run();
     },
-    async listSupplierReturns(filters: { supplierId?: string }) {
+    async listSupplierReturns(filters: { supplierId?: string }, pagination?: PaginationInput) {
       const where = filters.supplierId === undefined ? undefined : eq(supplierReturns.supplierId, filters.supplierId);
-      const headers = await db
+      const rowsQuery = db
         .select({
           id: supplierReturns.id,
           returnNumber: supplierReturns.returnNumber,
@@ -1744,6 +1769,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .leftJoin(suppliers, eq(suppliers.id, supplierReturns.supplierId))
         .where(where)
         .orderBy(desc(supplierReturns.createdAt), sql`supplier_returns.rowid DESC`);
+      const headers =
+        pagination === undefined
+          ? await rowsQuery
+          : await rowsQuery.limit(resolvePagination(pagination).limit).offset(resolvePagination(pagination).offset);
+      const total = pagination === undefined ? headers.length : await db.$count(supplierReturns, where);
       const lineRows =
         headers.length === 0
           ? []
@@ -1758,7 +1788,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         list.push(toSupplierReturnLine(row));
         linesByReturn.set(row.returnId, list);
       }
-      return headers.map((header) => ({ ...toSupplierReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies SupplierReturnRecord[];
+      return { items: headers.map((header) => ({ ...toSupplierReturn(header), lines: linesByReturn.get(header.id) ?? [] })) satisfies SupplierReturnRecord[], total };
     },
     async getSupplierReturn(returnId: string) {
       const rows = await db
@@ -1972,13 +2002,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (filters.toDate) conds.push(sql`${invoices.invoiceDate} <= ${filters.toDate}`);
       const where = conds.length ? and(...conds) : undefined;
 
-      const [totalCount, itemsRows] = await Promise.all([
+      // no pagination keys = an internal full read (tests, aggregates); a
+      // concrete limit/offset comes from resolvePagination at the router
+      if (filters.limit === undefined && filters.offset === undefined) {
+        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt));
+        return { items: rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: rows.length };
+      }
+      const { limit, offset } = resolvePagination(filters);
+      const [total, itemsRows] = await Promise.all([
         db.$count(invoices, where),
-        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(200),
+        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(limit).offset(offset),
       ]);
       return {
         items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),
-        totalCount,
+        total,
       };
     },
     async setInvoicePaidAmounts(invoiceId: string, paidAmount: number, remainingAmount: number) {
@@ -2221,10 +2258,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       };
       await db.insert(activities).values(value).run();
     },
-    async listActivities(limit: number) {
+    async listActivities(pagination?: PaginationInput) {
       // same-second entries break alphabetical id tiebreaks; rowid keeps
       // insertion order, so newest written comes first within a second
-      return db.select(activityCols).from(activities).orderBy(desc(activities.at), sql`rowid DESC`).limit(limit);
+      const rowsQuery = db.select(activityCols).from(activities).orderBy(desc(activities.at), sql`rowid DESC`);
+      if (pagination === undefined) {
+        const items = await rowsQuery;
+        return { items, total: items.length };
+      }
+      const { limit, offset } = resolvePagination(pagination);
+      const [items, total] = await Promise.all([
+        rowsQuery.limit(limit).offset(offset),
+        db.$count(activities),
+      ]);
+      return { items, total };
     },
     async databaseIsEmpty() {
       // The tables a provisioned shop writes to. Seed rows (categories,

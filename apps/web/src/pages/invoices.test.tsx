@@ -30,7 +30,7 @@ type Row = {
 };
 
 /** every request the page made, in order, so apply-then-clear is provable */
-let requests: Array<{ kind?: string; status?: string }> = [];
+let requests: Array<{ kind?: string; status?: string; limit?: number; offset?: number }> = [];
 
 const allInvoices: Row[] = [
   { id: "inv-1", invoiceNumber: "INV-0001", kind: "SALE", status: "UNPAID", counterpartyName: "زبون", invoiceDate: "2026-08-01", totalAmount: 1000, remainingAmount: 1000 },
@@ -51,7 +51,7 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     invoicesList: {
       // SAFETY: mirror the real tanstack-query utils signature ({ input })
-      queryOptions: ({ input }: { input: { kind?: "SALE" | "PURCHASE"; status?: Status } }) => ({
+      queryOptions: ({ input }: { input: { kind?: "SALE" | "PURCHASE"; status?: Status; limit?: number; offset?: number } }) => ({
         queryKey: ["invoicesList", input],
         queryFn: async () => {
           requests.push(input);
@@ -60,7 +60,7 @@ mock.module("@/lib/rpc", () => ({
               (input.kind === undefined || row.kind === input.kind) &&
               (input.status === undefined || row.status === input.status),
           );
-          return { items, totalCount: items.length };
+          return { items, total: items.length };
         },
       }),
     },
@@ -146,7 +146,7 @@ describe("InvoicesPage filters", () => {
 
     // unfiltered: both rows, and the first request carries no filter at all
     expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
-    expect(requests[0]).toEqual({ kind: undefined, status: undefined });
+    expect(requests[0]).toEqual({ kind: undefined, status: undefined, limit: 10, offset: 0 });
 
     // apply: the request narrows and the list follows
     await choose("invoices-kind-filter", i18n.t("invoicesFilterSale"));

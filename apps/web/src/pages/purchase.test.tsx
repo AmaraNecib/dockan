@@ -76,6 +76,8 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     itemsList: { queryKey: () => ["items"] },
+    // invalidated after a save; the page must not throw on the refresh path
+    itemsAll: { queryKey: () => ["itemsAll"] },
     catalogSearch: {
       queryOptions: () => ({
         queryKey: ["catalogSearch"],

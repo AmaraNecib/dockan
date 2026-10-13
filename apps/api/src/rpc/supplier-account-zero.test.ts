@@ -94,7 +94,7 @@ describe("supplier-backed free purchase (issue 161 finding 2)", () => {
     expect(invoice.totalAmount).toBe(0);
     expect(invoice.remainingAmount).toBe(0);
     // the goods landed: stock intake survives the free invoice
-    const items = await client.itemsList();
+    const items = await client.itemsAll();
     expect(items.items.find((row) => row.id === item.id)?.stockOnHand).toBe(3);
 
     // no supplier charge was opened (a zero entry would have rolled it back)

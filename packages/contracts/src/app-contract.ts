@@ -26,6 +26,9 @@ import {
   invoicePayInputSchema,
   itemCreateInputSchema,
   itemCreateWithStockInputSchema,
+  itemHistoryInputSchema,
+  itemListAllOutputSchema,
+  itemListInputSchema,
   itemListOutputSchema,
   itemSchema,
   itemUpdateInputSchema,
@@ -55,6 +58,8 @@ import {
   firstTimeSetupOutputSchema,
   returnDetailSchema,
   returnsCreateInputSchema,
+  returnsForInvoiceInputSchema,
+  returnsForInvoiceOutputSchema,
   returnsGetInputSchema,
   returnsListInputSchema,
   returnsListOutputSchema,
@@ -67,7 +72,9 @@ import {
   supplierAccountSchema,
   supplierPayInputSchema,
   supplierRefundInputSchema,
+  supplierReturnGetInputSchema,
   supplierReturnInputSchema,
+  supplierReturnSchema,
   supplierReturnsListInputSchema,
   supplierReturnsListOutputSchema,
 } from "./core";
@@ -88,7 +95,9 @@ export const dokanContract = {
   categoriesCreate: oc.input(categoryCreateInputSchema).output(categorySchema),
 
   // --- items ---------------------------------------------------------------
-  itemsList: oc.output(itemListOutputSchema),
+  itemsList: oc.input(itemListInputSchema).output(itemListOutputSchema),
+  /** whole catalog for pickers/selects; never paginated (see itemListAllOutputSchema) */
+  itemsAll: oc.output(itemListAllOutputSchema),
   itemsCreate: oc.input(itemCreateInputSchema).output(itemSchema),
   itemsCreateWithStock: oc.input(itemCreateWithStockInputSchema).output(itemSchema),
   itemsUpdate: oc.input(itemUpdateInputSchema).output(itemSchema),
@@ -98,7 +107,7 @@ export const dokanContract = {
   catalogSearch: oc.input(catalogSearchInputSchema).output(catalogSearchOutputSchema),
   // --- stock ledger (ticket 27) --------------------------------------------
   stockAddManual: oc.input(stockAddManualInputSchema).output(stockMovementSchema),
-  itemsHistory: oc.input(z.object({ itemId: z.string().uuid() })).output(itemHistoryOutputSchema),
+  itemsHistory: oc.input(itemHistoryInputSchema).output(itemHistoryOutputSchema),
 
   // --- parties (customer / supplier share one code path; issue 120) --------
   customersList: oc.output(partyListOutputSchema),
@@ -120,6 +129,8 @@ export const dokanContract = {
   suppliersRefund: oc.input(supplierRefundInputSchema).output(supplierAccountSchema),
   /** supplier purchase-return history (plain list, no review state) */
   suppliersReturnsList: oc.input(supplierReturnsListInputSchema).output(supplierReturnsListOutputSchema),
+  /** one purchase-return voucher by id; the print page never scans a page */
+  suppliersReturnGet: oc.input(supplierReturnGetInputSchema).output(supplierReturnSchema),
 
   // --- invoices ------------------------------------------------------------
   invoicesCreate: oc.input(invoiceCreateInputSchema).output(invoiceDetailSchema),
@@ -133,6 +144,9 @@ export const dokanContract = {
   returnsCreate: oc.input(returnsCreateInputSchema).output(returnDetailSchema),
   /** all returns, optionally scoped to one invoice (review page + invoice panel) */
   returnsList: oc.input(returnsListInputSchema).output(returnsListOutputSchema),
+  /** complete (unpaginated) return history for one invoice: the review panel's
+   * form derives the remaining returnable quantity from every prior return */
+  returnsForInvoice: oc.input(returnsForInvoiceInputSchema).output(returnsForInvoiceOutputSchema),
   /** pending-review count for the sidebar badge and dashboard notice (issue 118) */
   returnsPendingCount: oc.output(returnsPendingCountOutputSchema),
   /** owner confirms the returned goods: consumes the pending stock mark */

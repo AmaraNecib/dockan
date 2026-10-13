@@ -43,6 +43,11 @@ mock.module("@/lib/rpc", () => ({
     settingsGet: {
       queryOptions: () => ({ queryKey: ["settingsGet"], queryFn: async () => ({ storeName: "متجر", storePhone: null }) }),
     },
+    returnsForInvoice: {
+      // the panel's form read: complete per-invoice history (issue #163 review)
+      queryOptions: () => ({ queryKey: ["returnsForInvoice"], queryFn: async () => ({ items: invoiceReturns }) }),
+      queryKey: () => ["returnsForInvoice"],
+    },
     returnsList: {
       queryOptions: () => ({ queryKey: ["returnsList"], queryFn: async () => ({ items: invoiceReturns }) }),
       queryKey: () => ["returnsList"],

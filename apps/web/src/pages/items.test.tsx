@@ -114,10 +114,22 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => {
           // the stale-cache test holds this open to make the window observable
           if (itemsGate !== null) await itemsGate;
-          return { items: items.map((item) => ({ ...item })) };
+          return { items: items.map((item) => ({ ...item })), total: items.length };
         },
       }),
       queryKey: () => ["items"],
+    },
+    itemsAll: {
+      queryOptions: () => ({
+        queryKey: ["itemsAll"],
+        queryFn: async () => {
+          // the stock form prefills from this read; the stale-cost tests gate it
+          // exactly like the table read so the in-flight window is observable
+          if (itemsGate !== null) await itemsGate;
+          return { items: items.map((item) => ({ ...item })) };
+        },
+      }),
+      queryKey: () => ["itemsAll"],
     },
     itemsLowStock: { queryKey: () => ["itemsLowStock"] },
     dashboardSummary: { queryKey: () => ["dashboardSummary"] },
@@ -866,7 +878,7 @@ describe("stock form prefill", () => {
     // untouched field: a corrected cost elsewhere refreshes the prefill
     firstFixtureItem().costPrice = 150;
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await queryClient.invalidateQueries({ queryKey: ["itemsAll"] });
       await settle();
     });
     await waitFor(() => inputByTestId("stock-unit-cost").value === "150");
@@ -875,7 +887,7 @@ describe("stock form prefill", () => {
     setInput("stock-unit-cost", "999");
     firstFixtureItem().costPrice = 175;
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ["items"] });
+      await queryClient.invalidateQueries({ queryKey: ["itemsAll"] });
       await settle();
     });
     expect(inputByTestId("stock-unit-cost").value).toBe("999");

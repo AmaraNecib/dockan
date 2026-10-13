@@ -7,7 +7,9 @@ import type { InvoiceKind } from "@dokan/contracts";
 
 import { orpc } from "../lib/rpc";
 import { formatDate } from "../lib/dates";
+import { usePagination } from "../hooks/use-pagination";
 import { Amount } from "@/components/ui/amount";
+import { Pager } from "@/components/ui/pager";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -23,12 +25,14 @@ export function InvoicesPage() {
   const { t } = useTranslation();
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
+  const pager = usePagination();
 
   const list = useQuery(
     orpc.invoicesList.queryOptions({
       input: {
         kind: kind === "" ? undefined : kind,
         status: status === "" ? undefined : status,
+        ...pager.pagination,
       },
     }),
   );
@@ -45,6 +49,8 @@ export function InvoicesPage() {
             onValueChange={(value) => {
               // SAFETY: the select renders only "" / SALE / PURCHASE options, so the value is in KindFilter
               setKind((value ?? "") as KindFilter);
+              // a filter change invalidates the old offset: back to page 1
+              pager.reset();
             }}
             items={[
               { value: "", label: t("invoicesFilterAll") },
@@ -69,6 +75,7 @@ export function InvoicesPage() {
             onValueChange={(value) => {
               // SAFETY: the select renders only "" / UNPAID / PARTIAL / PAID options, so the value is in StatusFilter
               setStatus((value ?? "") as StatusFilter);
+              pager.reset();
             }}
             items={[
               { value: "", label: t("invoicesStatusAll") },
@@ -100,9 +107,10 @@ export function InvoicesPage() {
         <p role="alert" className="mt-4 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="invoices-error">
           {t("activityError")}
         </p>
-      ) : list.data.items.length === 0 ? (
+      ) : list.data.total === 0 ? (
         <p className="mt-4 text-sm text-muted-foreground" data-testid="invoices-empty">{t("invoicesEmpty")}</p>
       ) : (
+        <>
         <table className="mt-4 w-full" data-testid="invoices-table">
           <thead>
             <tr className="border-b text-right text-sm text-muted-foreground">
@@ -138,6 +146,15 @@ export function InvoicesPage() {
             ))}
           </tbody>
         </table>
+        <Pager
+          total={list.data.total}
+          pageSize={pager.pageSize}
+          offset={pager.offset}
+          onOffsetChange={pager.setOffset}
+          onPageSizeChange={pager.setPageSize}
+          testId="invoices-pager"
+        />
+        </>
       )}
     </section>
   );

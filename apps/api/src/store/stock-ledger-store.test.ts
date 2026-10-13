@@ -148,7 +148,7 @@ describe("opening-balance backfill", () => {
 describe("transaction atomicity — movement + stock update", () => {
   it("rolls both back when the unit throws", async () => {
     const item = await makeItem("tx-item");
-    const before = (await store.listItems()).find((i) => i.id === item.id)!;
+    const before = (await store.listItems()).items.find((i) => i.id === item.id)!;
     const movementsBefore = await store.countStockMovements(item.id);
 
     await expect(
@@ -168,7 +168,7 @@ describe("transaction atomicity — movement + stock update", () => {
     ).rejects.toThrow("boom");
 
     expect(await store.countStockMovements(item.id)).toBe(movementsBefore);
-    const after = (await store.listItems()).find((i) => i.id === item.id)!;
+    const after = (await store.listItems()).items.find((i) => i.id === item.id)!;
     expect(after.stockOnHand).toBe(before.stockOnHand);
   });
 });

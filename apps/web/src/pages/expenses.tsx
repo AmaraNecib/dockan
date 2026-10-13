@@ -7,8 +7,10 @@ import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
 import { cn } from "@/lib/utils";
+import { Pager } from "@/components/ui/pager";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
+import { usePagination } from "../hooks/use-pagination";
 import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -82,6 +84,7 @@ export function ExpensesPage() {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<"occurredAt" | "amount">("occurredAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const pager = usePagination();
 
   const createExpense = useMutation(
     orpc.expensesCreate.mutationOptions({
@@ -111,11 +114,13 @@ export function ExpensesPage() {
         categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
         sortBy,
         sortDir,
+        ...pager.pagination,
       },
     }),
   );
 
   const toggleCategory = (id: string) => {
+    pager.reset();
     setSelectedCategoryIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -429,7 +434,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={preset}
-                onValueChange={(value) => setPreset(toPreset(value ?? ""))}
+                onValueChange={(value) => { setPreset(toPreset(value ?? "")); pager.reset(); }}
                 items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
               >
                 <SelectTrigger className="w-full" data-testid="expense-range-preset">
@@ -444,7 +449,7 @@ export function ExpensesPage() {
               {t("expensesSortBy")}
               <Select
                 value={sortBy}
-                onValueChange={(value) => setSortBy(value === "amount" ? "amount" : "occurredAt")}
+                onValueChange={(value) => { setSortBy(value === "amount" ? "amount" : "occurredAt"); pager.reset(); }}
                 items={[
                   { value: "occurredAt", label: t("expensesSortByDate") },
                   { value: "amount", label: t("expensesSortByAmount") },
@@ -463,7 +468,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={sortDir}
-                onValueChange={(value) => setSortDir(value === "asc" ? "asc" : "desc")}
+                onValueChange={(value) => { setSortDir(value === "asc" ? "asc" : "desc"); pager.reset(); }}
                 items={[
                   { value: "desc", label: t("expensesSortDesc") },
                   { value: "asc", label: t("expensesSortAsc") },
@@ -483,11 +488,11 @@ export function ExpensesPage() {
             <div className="grid grid-cols-2 gap-3">
               <label className="grid gap-1">
                 {t("expensesCustomFrom")}
-                <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="expense-custom-from" />
+                <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => { setCustomFrom(event.target.value); pager.reset(); }} data-testid="expense-custom-from" />
               </label>
               <label className="grid gap-1">
                 {t("expensesCustomTo")}
-                <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="expense-custom-to" />
+                <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => { setCustomTo(event.target.value); pager.reset(); }} data-testid="expense-custom-to" />
               </label>
             </div>
           )}
@@ -495,7 +500,7 @@ export function ExpensesPage() {
             <button
               type="button"
               className={`rounded-full border px-3 py-1 text-sm ${selectedCategoryIds.size === 0 ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
-              onClick={() => setSelectedCategoryIds(new Set())}
+              onClick={() => { setSelectedCategoryIds(new Set()); pager.reset(); }}
               data-testid="expense-filter-all"
             >
               {t("expensesAllCategories")}
@@ -519,9 +524,10 @@ export function ExpensesPage() {
 
         {history.isPending ? (
           <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
-        ) : history.data === undefined || history.data.items.length === 0 ? (
+        ) : history.data === undefined || history.data.total === 0 ? (
           <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-empty">{t("expensesEmpty")}</p>
         ) : (
+          <>
           <table className="w-full rounded border bg-card" data-testid="expense-history">
             <thead>
               <tr className="border-b text-right text-sm text-muted-foreground">
@@ -549,6 +555,15 @@ export function ExpensesPage() {
               })}
             </tbody>
           </table>
+          <Pager
+            total={history.data.total}
+            pageSize={pager.pageSize}
+            offset={pager.offset}
+            onOffsetChange={pager.setOffset}
+            onPageSizeChange={pager.setPageSize}
+            testId="expenses-pager"
+          />
+          </>
         )}
       </div>
     </section>

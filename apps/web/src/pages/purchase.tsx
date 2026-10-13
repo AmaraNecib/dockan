@@ -79,7 +79,7 @@ export function PurchasePage() {
         setPaidNow("");
         setPaidPercentage("");
         paidSource.current = null;
-        void queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() });
+        void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
       },
       onError: (err) => setError(tError(err.message)),
     }),

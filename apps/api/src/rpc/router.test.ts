@@ -187,7 +187,7 @@ describe("items", () => {
   it("lists items ordered by name", async () => {
     const categories = await client.categoriesList();
     const catId = categories.items[0]!.id;
-    const list = await client.itemsList();
+    const list = await client.itemsAll();
     const names = list.items.map((i) => i.name);
     if (names.length > 1) {
       const sorted = [...names].sort((a, b) => a.localeCompare(b, "ar"));
@@ -204,7 +204,7 @@ describe("items", () => {
       costPrice: 100,
       sellingPrice: 150,
     });
-    const listed = await client.itemsList();
+    const listed = await client.itemsAll();
     const row = listed.items.find((i) => i.id === created.id)!;
     expect(row.categoryName).toBe("قطع غيار");
     expect(row.categoryId).toBe(category.id);
@@ -299,7 +299,7 @@ describe("catalog search + barcodes (ticket 28)", () => {
       stockOnHand: 12,
     });
     expect(item.stockOnHand).toBe(12);
-    const listed = await client.itemsList();
+    const listed = await client.itemsAll();
     expect(listed.items.find((i) => i.id === item.id)?.stockOnHand).toBe(12);
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements).toHaveLength(1);
@@ -372,7 +372,7 @@ describe("stock ledger (ticket 27)", () => {
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 500 });
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 700 });
 
-    const list = await client.itemsList();
+    const list = await client.itemsAll();
     const blended = list.items.find((i) => i.id === item.id)!;
     expect(blended.stockOnHand).toBe(20);
     expect(blended.costPrice).toBe(600); // ADR-0002 weighted average
@@ -381,7 +381,7 @@ describe("stock ledger (ticket 27)", () => {
     await client.stockAddManual({ itemId: item.id, delta: -6 });
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.movements.at(-1)!.stockAfter).toBe(14);
-    const afterSale = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const afterSale = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(afterSale.costPrice).toBe(600);
     // outflow rows carry no unit cost — a meaningless fact otherwise
     expect(history.movements.at(-1)!.unitCost).toBeNull();
@@ -398,6 +398,7 @@ describe("stock ledger (ticket 27)", () => {
     expect(rejected).toBe(true);
     expect(await client.itemsHistory({ itemId: item.id })).toEqual({
       movements: [],
+      total: 0,
       stockOnHand: 0,
     });
   });
@@ -417,7 +418,7 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 100 });
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 200 });
     // chronological inflow blends the ADR-0002 average
-    let row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    let row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.costPrice).toBe(150);
 
     // now insert an inflow BACKDATED before both existing movements
@@ -434,7 +435,7 @@ describe("stock ledger — backdated inflows (greptile P1)", () => {
     expect(history.stockOnHand).toBe(25);
 
     // layers after insertion: 5@50, 10@100, 10@200 → value 3250 / qty 25 → 130
-    row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(25);
     expect(row.costPrice).toBe(130);
 
@@ -457,7 +458,7 @@ describe("backups (ticket 13)", () => {
 
     // the audit entry lands after the copy succeeds (checked through the
     // store directly: activitiesList is ticket #12's seam, still a stub)
-    const activities = await store.listActivities(10);
+    const activities = (await store.listActivities({ limit: 10 })).items;
     const backupEntry = activities.find((a) => a.type === "BACKUP_CREATED");
     expect(backupEntry).toBeDefined();
     expect(backupEntry!.ref).toBe(result.path);
@@ -508,7 +509,7 @@ describe("activity log (ticket 12)", () => {
 
     // out-of-range limits are rejected by zod before touching the store
     await expect(client.activitiesList({ limit: 0 })).rejects.toThrow();
-    await expect(client.activitiesList({ limit: 201 })).rejects.toThrow();
+    await expect(client.activitiesList({ limit: 501 })).rejects.toThrow();
   });
 });
 
@@ -593,7 +594,7 @@ describe("settings (ticket 10)", () => {
   it("rolls the identity write back when the audit insert fails (atomicity)", async () => {
     // baseline identity that a failed attempt must NOT clobber
     await client.settingsUpdate({ storeName: "متجر ذرّي", storePhone: "0550123123" });
-    const auditBefore = (await store.listActivities(100)).filter((a) => a.type === "SETTINGS_UPDATED").length;
+    const auditBefore = (await store.listActivities({ limit: 100 })).items.filter((a) => a.type === "SETTINGS_UPDATED").length;
 
     // store whose transaction-unit audit write throws: updateSettings goes
     // through the real tx and INSERTs, then insertActivity rejects -> the
@@ -639,7 +640,7 @@ describe("settings (ticket 10)", () => {
 
     // identity unchanged AND no phantom audit row appeared
     expect(await client.settingsGet()).toEqual({ storeName: "متجر ذرّي", storePhone: "+213550123123", storeAddress: null });
-    const auditAfter = (await store.listActivities(100)).filter((a) => a.type === "SETTINGS_UPDATED").length;
+    const auditAfter = (await store.listActivities({ limit: 100 })).items.filter((a) => a.type === "SETTINGS_UPDATED").length;
     expect(auditAfter).toBe(auditBefore);
   });
 });
@@ -725,7 +726,7 @@ describe("purchase intake (ticket 29)", () => {
     expect(historyB.stockOnHand).toBe(10);
 
     // cached fast path follows the replay
-    const listed = (await client.itemsList()).items;
+    const listed = (await client.itemsAll()).items;
     expect(listed.find((i) => i.id === a.id)!.stockOnHand).toBe(5);
     expect(listed.find((i) => i.id === b.id)!.costPrice).toBe(300);
 
@@ -754,7 +755,7 @@ describe("purchase intake (ticket 29)", () => {
     await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 4, unitPrice: 250 }] });
     await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 350, kind: "PURCHASE" });
     // (4×250 + 4×350) / 8 = 300
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(8);
     expect(row.costPrice).toBe(300);
   });
@@ -776,7 +777,7 @@ describe("purchase intake (ticket 29)", () => {
       code = (err as Error).message;
     }
     expect(code).toContain("PURCHASE_REQUIRES_INFLOW");
-    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], stockOnHand: 0 });
+    expect(await client.itemsHistory({ itemId: item.id })).toEqual({ movements: [], total: 0, stockOnHand: 0 });
   });
 
   it("proposes FIFO availability, links partially, and reports the unmatched share without minting stock", async () => {
@@ -885,7 +886,7 @@ describe("purchase intake (ticket 29)", () => {
     // quantity, so N corrections land exactly on the last corrected value
     expect(history.stockOnHand).toBe(9);
     expect(history.movements).toHaveLength(5);
-    const listed = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const listed = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(listed.stockOnHand).toBe(9);
     // ADR-0002 replay: 10@100 → avg 100; +6@200 → 2200/16 = 137.5;
     // reversal drops running qty to 6; +9@150 → (137.5×6 + 1350)/15 = 145
@@ -956,7 +957,7 @@ describe("purchase intake (ticket 29)", () => {
     // replay: +10@100, −4 sold, then correction pair (+10@300 before the −10
     // reversal) leaves 6 units whose average follows ADR-0002:
     // (100×6 + 300×10) / 16 = 225
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(6);
     expect(row.costPrice).toBe(225);
   });
@@ -1011,7 +1012,7 @@ describe("purchase intake (ticket 29)", () => {
     await client.purchasesCorrectLine({ lineId: line.id, quantity: 7, unitCost: 150 });
 
     // 7, not 2: a stale prefix matcher would reverse the full original 10.
-    const listed = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const listed = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(listed.stockOnHand).toBe(7);
     // The new correction rows carry the locale-neutral token, never Arabic.
     const newReasons = (await client.itemsHistory({ itemId: item.id })).movements.slice(-2).map((movement) => movement.reason);
@@ -1064,7 +1065,7 @@ describe("sale checkout (ticket 30)", () => {
     expect(saleActivity).toBeDefined();
     expect(saleActivity!.ref).toBe(invoice.id);
     expect(saleActivity!.summary).toContain(invoice.invoiceNumber);
-    expect((await client.itemsList()).items.find((row) => row.id === stocked.id)?.stockOnHand).toBe(2);
+    expect((await client.itemsAll()).items.find((row) => row.id === stocked.id)?.stockOnHand).toBe(2);
     expect((await client.itemsHistory({ itemId: stocked.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
 
@@ -1128,7 +1129,7 @@ describe("sale checkout (ticket 30)", () => {
     ).rejects.toThrow(/STOCK_NEGATIVE/);
     const after = await client.itemsHistory({ itemId: item.id });
     expect(after).toEqual(before);
-    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(1);
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(1);
 
     const zero = await client.invoicesCreate({
       kind: "SALE",
@@ -1174,14 +1175,14 @@ describe("sale checkout (ticket 30)", () => {
     await client.stockAddManual({ itemId: first.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
     const firstBefore = await client.itemsHistory({ itemId: first.id });
     const secondBefore = await client.itemsHistory({ itemId: second.id });
-    const invoicesBefore = (await client.invoicesList({ kind: "SALE" })).totalCount;
+    const invoicesBefore = (await client.invoicesList({ kind: "SALE" })).total;
     await expect(
       client.invoicesCreate({ kind: "SALE", lines: [{ itemId: first.id, quantity: 1 }, { itemId: second.id, quantity: 1 }] }),
     ).rejects.toThrow(/STOCK_NEGATIVE/);
     expect(await client.itemsHistory({ itemId: first.id })).toEqual(firstBefore);
     expect(await client.itemsHistory({ itemId: second.id })).toEqual(secondBefore);
-    expect((await client.invoicesList({ kind: "SALE" })).totalCount).toBe(invoicesBefore);
-    expect((await client.itemsList()).items.find((row) => row.id === first.id)?.stockOnHand).toBe(1);
+    expect((await client.invoicesList({ kind: "SALE" })).total).toBe(invoicesBefore);
+    expect((await client.itemsAll()).items.find((row) => row.id === first.id)?.stockOnHand).toBe(1);
   });
 
   it("snapshots FIFO cost across layers and reconciles stock after checkout", async () => {
@@ -1192,7 +1193,7 @@ describe("sale checkout (ticket 30)", () => {
     expect(invoice.lines[0]!.costAtSale).toBe(117);
     const history = await client.itemsHistory({ itemId: item.id });
     expect(history.stockOnHand).toBe(4);
-    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(history.stockOnHand);
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(history.stockOnHand);
     expect(history.movements.filter((movement) => movement.kind === "SALE")).toHaveLength(1);
   });
 
@@ -1204,7 +1205,7 @@ describe("sale checkout (ticket 30)", () => {
     expect(first.lines[0]!.costAtSale).toBe(117);
     const second = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
     expect(second.lines[0]!.costAtSale).toBe(200);
-    const listed = (await client.itemsList()).items.find((row) => row.id === item.id)!;
+    const listed = (await client.itemsAll()).items.find((row) => row.id === item.id)!;
     expect(listed.stockOnHand).toBe(2);
     // outflows never move the weighted average (ADR-0002), even though the
     // second sale's FIFO snapshot differs from it
@@ -1221,6 +1222,24 @@ describe("sale checkout (ticket 30)", () => {
     expect(invoice.lines.map((line) => line.costAtSale)).toEqual([100, 133]);
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(3);
     expect((await client.itemsHistory({ itemId: item.id })).movements.filter((movement) => movement.kind === "SALE")).toHaveLength(2);
+  });
+
+  it("pages the ledger without losing the cumulative stockAfter (issue 163)", async () => {
+    const item = await makeSaleItem("بيع-ترقيم-السجل", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    const full = await client.itemsHistory({ itemId: item.id });
+    expect(full.total).toBe(full.movements.length);
+    expect(full.total).toBe(2);
+
+    const secondPage = await client.itemsHistory({ itemId: item.id, limit: 1, offset: 1 });
+    expect(secondPage.movements).toHaveLength(1);
+    expect(secondPage.total).toBe(full.total);
+    // the page's own delta is 3, but the balance shown must be cumulative (8):
+    // slicing before projection would restart the running total
+    expect(secondPage.movements[0]!.stockAfter).toBe(full.movements[1]!.stockAfter);
+    expect(secondPage.movements[0]!.stockAfter).toBe(8);
+    expect(secondPage.stockOnHand).toBe(full.stockOnHand);
   });
 
   it("validates the initial payment against the discounted total", async () => {
@@ -1467,7 +1486,7 @@ describe("debts screen (ticket 9)", () => {
     const purchase = await client.debtsByParty({ kind: "PURCHASE", counterpartyId: null, counterpartyName: "مورد مستحق" });
     expect(purchase.items).toHaveLength(1);
     expect(purchase.items[0]).toMatchObject({ remainingAmount: 800 });
-    expect(purchase.totalCount).toBe(1);
+    expect(purchase.total).toBe(1);
 
     // a party we owe nothing is an empty drill-down, not an error
     const paidOff = await client.debtsByParty({ kind: "SALE", counterpartyId: null, counterpartyName: "زبون دائن لا شيء عليه" });
@@ -1755,6 +1774,26 @@ describe("expenses (ticket 31)", () => {
     expect(amounts(byAmountDesc.items)).toEqual([900, 100, 50]);
   });
 
+  it("pages expenses after the sort, keeping the total stable (issue 163)", async () => {
+    const { items: categories } = await client.expenseCategoriesList();
+    const op = categories.find((row) => !row.isOwnerWithdrawal)!;
+    // a dedicated far-past window keeps this test its own slice of the store
+    const window = { categoryIds: [op.id], from: "2020-03-01T00:00:00", to: "2020-03-31T23:59:59" };
+    await client.expensesCreate({ categoryId: op.id, amount: 50, occurredAt: "2020-03-01T12:00:00" });
+    await client.expensesCreate({ categoryId: op.id, amount: 900, occurredAt: "2020-03-20T12:00:00" });
+    await client.expensesCreate({ categoryId: op.id, amount: 100, occurredAt: "2020-03-10T12:00:00" });
+    const amounts = (rows: readonly { amount: number }[]) => rows.map((row) => row.amount);
+
+    const first = await client.expensesList({ ...window, sortBy: "amount", sortDir: "asc", limit: 2, offset: 0 });
+    expect(amounts(first.items)).toEqual([50, 100]);
+    expect(first.total).toBe(3);
+    // the second page continues the SORTED order (a slice before the sort
+    // would repeat rows), and total never shrinks to the page size
+    const second = await client.expensesList({ ...window, sortBy: "amount", sortDir: "asc", limit: 2, offset: 2 });
+    expect(amounts(second.items)).toEqual([900]);
+    expect(second.total).toBe(3);
+  });
+
   it("rejects an inverted custom window with INVALID_RANGE", async () => {
     await expect(client.expensesList({ from: "2026-03-01T00:00:00", to: "2026-02-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
     await expect(client.reportsProfit({ preset: "CUSTOM", customFrom: "2026-03-01T00:00:00", customTo: "2026-02-01T00:00:00" })).rejects.toThrow(/INVALID_RANGE/);
@@ -1922,17 +1961,17 @@ describe("from-only windows clamp to now (half-open bounds)", () => {
 
     // from-only (+ category filter ANDs with the window): the window is
     // [from, now] — the future row must not leak in
-    const fromOnly = await client.expensesList({ from: "2020-01-01T00:00:00", categoryIds: [op.id] });
+    const fromOnly = await client.expensesList({ from: "2020-01-01T00:00:00", categoryIds: [op.id], limit: 500 });
     expect(ids(fromOnly.items)).toContain(past.id);
     expect(ids(fromOnly.items)).not.toContain(future.id);
 
     // custom pair without a preset, single lower bound: same half-open filler
-    const pairOnly = await client.expensesList({ customFrom: "2020-01-01T00:00:00" });
+    const pairOnly = await client.expensesList({ customFrom: "2020-01-01T00:00:00", limit: 500 });
     expect(ids(pairOnly.items)).toContain(past.id);
     expect(ids(pairOnly.items)).not.toContain(future.id);
 
     // bare to-only stays open-ended from the beginning of records (unchanged)
-    const toOnly = await client.expensesList({ to: "2099-12-31T23:59:59" });
+    const toOnly = await client.expensesList({ to: "2099-12-31T23:59:59", limit: 500 });
     expect(ids(toOnly.items)).toContain(past.id);
     expect(ids(toOnly.items)).toContain(future.id);
 
@@ -2139,7 +2178,7 @@ describe("invoice payments (ticket 8)", () => {
 
   it("rolls the payment back when the audit insert fails (atomicity)", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-ذرية");
-    const paymentsBefore = (await store.listActivities(100)).filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
+    const paymentsBefore = (await store.listActivities({ limit: 100 })).items.filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
 
     const invoiceStore: StorePort = {
       ...store,
@@ -2190,7 +2229,7 @@ describe("invoice payments (ticket 8)", () => {
     expect(reread.paidAmount).toBe(0);
     expect(reread.remainingAmount).toBe(800);
     expect(reread.payments).toHaveLength(0);
-    const paymentsAfter = (await store.listActivities(100)).filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
+    const paymentsAfter = (await store.listActivities({ limit: 100 })).items.filter((a) => a.type === "PAYMENT_RECORDED" && a.ref === invoice.id).length;
     expect(paymentsAfter).toBe(paymentsBefore);
   });
 
@@ -2333,7 +2372,7 @@ describe("returns & refunds", () => {
     const returnMovement = history.movements.find((movement) => movement.returnMark === "PENDING");
     expect(returnMovement).toBeDefined();
     expect(returnMovement).toMatchObject({ kind: "SALE", delta: 2, unitCost: 100, reason: "RETURN_RECORDED", ref: created.id });
-    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.stockOnHand).toBe(2);
     expect((await client.activitiesList({})).items.some((entry) => entry.type === "RETURN_RECORDED" && entry.ref === created.id)).toBe(true);
 
     // a second return cannot exceed what is left (2 of 2 already returned)
@@ -2359,6 +2398,49 @@ describe("returns & refunds", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
   });
 
+  it("returnsForInvoice serves the complete history while returnsList pages (issue #163 review)", async () => {
+    const item = await makeReturnItem("مرجوع-ترقيم-الكل", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 15, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 15 }] });
+    const lineId = sale.lines[0]!.id;
+    for (let i = 0; i < 11; i++) {
+      await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    }
+
+    const page = await client.returnsList({ invoiceId: sale.id, limit: 10, offset: 0 });
+    expect(page.items).toHaveLength(10);
+    expect(page.total).toBe(11);
+
+    // the invoice panel's form read must not truncate: every prior return is
+    // visible so the remaining quantity and the refund preview are correct
+    const full = await client.returnsForInvoice({ invoiceId: sale.id });
+    expect(full.items).toHaveLength(11);
+    expect(full.items.reduce((sum, record) => sum + record.lines.reduce((lineSum, line) => lineSum + line.quantity, 0), 0)).toBe(11);
+  });
+
+  it("reads one supplier voucher by id even past the list's first page (issue #163 review)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد ترقيم مرتجع" });
+    const category = await client.categoriesCreate({ name: "تصنيف ترقيم مرتجع" });
+    const item = await client.itemsCreateWithStock({ name: "صنف ترقيم مرتجع", categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 20 });
+    for (let i = 0; i < 11; i++) {
+      await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 100 });
+    }
+
+    const firstPage = await client.suppliersReturnsList({ supplierId: supplier.id, limit: 10, offset: 0 });
+    expect(firstPage.items).toHaveLength(10);
+    expect(firstPage.total).toBe(11);
+    const secondPage = await client.suppliersReturnsList({ supplierId: supplier.id, limit: 10, offset: 10 });
+    expect(secondPage.items).toHaveLength(1);
+    const oldest = secondPage.items[0]!;
+    expect(firstPage.items.some((row) => row.id === oldest.id)).toBe(false);
+
+    // the voucher print page's by-id read resolves the oldest voucher directly
+    const voucher = await client.suppliersReturnGet({ returnId: oldest.id });
+    expect(voucher.id).toBe(oldest.id);
+    expect(voucher.returnNumber).toBe(oldest.returnNumber);
+    expect(voucher.lines).toHaveLength(1);
+  });
+
   it("returned units join normal FIFO cost layers — a later sale consumes oldest layers first and replay stays valid", async () => {
     const item = await makeReturnItem("مرجوع-ففو", 100, 300);
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });
@@ -2376,7 +2458,7 @@ describe("returns & refunds", () => {
     expect(laterSale.lines[0]?.costAtSale).toBe(200);
     // outflows never move the ADR-0002 average — the return inflow at the
     // current average leaves it untouched too
-    expect((await client.itemsList()).items.find((row) => row.id === item.id)?.costPrice).toBe(150);
+    expect((await client.itemsAll()).items.find((row) => row.id === item.id)?.costPrice).toBe(150);
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(5);
   });
 
@@ -3110,12 +3192,13 @@ describe("dashboard summary (issue 84)", () => {
 
     expect(summary.recentInvoices?.[0]?.invoiceNumber).toBe(created.invoiceNumber);
 
-    const daySales = await client.invoicesList({ kind: "SALE", fromDate: day, toDate: day });
-    // listInvoices caps at 200 rows; beyond that the sum below would under-count
-    expect(daySales.totalCount).toBe(daySales.items.length);
+    const daySales = await client.invoicesList({ kind: "SALE", fromDate: day, toDate: day, limit: 500 });
+    // the day's sum must see every row: `total` is the filter count, and the
+    // page request carries the max so the sum below never under-counts
+    expect(daySales.total).toBe(daySales.items.length);
     const expectedSalesTotal = daySales.items.reduce((sum, invoice) => sum + invoice.totalAmount, 0);
     expect(summary.salesTotal).toBe(expectedSalesTotal);
-    expect(summary.salesCount).toBe(daySales.totalCount);
+    expect(summary.salesCount).toBe(daySales.total);
     // on a healthy store these sections must be populated, not degraded: null
     // means the read failed, so comparing the count alone would let an
     // unexpectedly broken response pass
@@ -3279,7 +3362,7 @@ describe("items cost correction (issue 144)", () => {
 
     // a later purchase replays the full ledger: (10×300 + 10×200) / 20 = 250
     await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 10, unitPrice: 200 }] });
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(20);
     expect(row.costPrice).toBe(250);
   });
@@ -3291,7 +3374,7 @@ describe("items cost correction (issue 144)", () => {
 
     // a sale replays the ledger; without the movement the edit would revert to 100
     await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 2 }] });
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(8);
     expect(row.costPrice).toBe(300);
   });
@@ -3314,7 +3397,7 @@ describe("items cost correction (issue 144)", () => {
 
     // the next inflow ignores the zero-quantity correction and takes the buy cost
     await client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 8, unitPrice: 250 }] });
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(8);
     expect(row.costPrice).toBe(250);
   });
@@ -3326,7 +3409,7 @@ describe("items cost correction (issue 144)", () => {
 
     // +5 @ 100: (10×300 + 5×100) / 15 = 233.33 → 233
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100 });
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(15);
     expect(row.costPrice).toBe(233);
   });
@@ -3359,7 +3442,7 @@ describe("items cost correction (issue 144)", () => {
     ]);
     for (const result of results) expect(result.status).toBe("fulfilled");
 
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     const movements = (await client.itemsHistory({ itemId: item.id })).movements;
     expect(row.stockOnHand).toBe(20);
     expect(movements.filter((m) => m.reason === "COST_CORRECTION")).toHaveLength(1);
@@ -3384,7 +3467,7 @@ describe("items cost correction (issue 144)", () => {
     // a purchase recorded AFTER the edit blends from 300 even though it is
     // dated before the future-dated row (recording order beats business date)
     await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 150, kind: "PURCHASE" });
-    const row = (await client.itemsList()).items.find((i) => i.id === item.id)!;
+    const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(30);
     expect(row.costPrice).toBe(250); // (20×300 + 10×150) / 30
   });

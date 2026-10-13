@@ -49,14 +49,11 @@ import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 
-/** bun:sqlite surfaces a partial unique-index violation as this text (some
- * drivers expose the SQLite code instead of embedding it in the message). */
-const isUniqueViolation = (error: Error): boolean => {
-  if (error.message.includes("UNIQUE constraint failed")) return true;
-  // SAFETY: read-only probe of a driver-specific optional field; the value is
-  // only compared to a literal and never used as another type
-  return (error as Error & { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE";
-};
+/** bun:sqlite surfaces the adjustment partial unique-index violation as
+ * `UNIQUE constraint failed: supplier_account_entries.dedup_key`. Scoped to
+ * that index name so a primary-key or future unique-constraint collision is NOT
+ * mislabeled as a duplicate adjustment. */
+const isUniqueViolation = (error: Error): boolean => error.message.includes("supplier_account_entries.dedup_key");
 
 /** The typed refusal for a dedup-key collision, or null when the error is not
  * one. Shared by the guarded path and the raw seam so their mapping cannot drift. */
@@ -895,38 +892,50 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   /**
    * Issue 181: the version-3 shape predates `supplier_account_entries.dedup_key`.
    * CREATE TABLE IF NOT EXISTS cannot add it, so ALTER when missing (the barcode
-   * pattern). The ALTER and the backfill are ONE write-locked unit: a boot
-   * interrupted between them rolls back, so the next setup re-runs the pair
-   * instead of seeing the column and silently skipping the backfill.
+   * pattern). The probe and the ALTER run inside ONE write-locked unit, so two
+   * processes booting the same file cannot both see "column missing" and the
+   * loser cannot abort on "duplicate column name".
    *
-   * Backfill: every existing ADJUSTMENT row gets the time-inclusive #177
-   * signature key. The old shape did not store whether a row was server-stamped,
-   * so the conservative (most specific) key is used. A key already taken by an
-   * earlier row is left NULL: a pre-#177 duplicate cannot be re-keyed without
-   * failing the new unique index, and the guard's column fallback still matches
-   * it. Fresh databases get the column from SCHEMA_DDL and skip this entirely.
+   * The backfill is SELF-HEALING, like the cogs_exact repair: on every boot it
+   * keys any ADJUSTMENT row that still has no `dedup_key`. That closes the crash
+   * window where the ALTER committed but `stampSchemaVersionLocked` did not, so
+   * `user_version` stayed 3 and a v3 build could have written NULL-keyed rows
+   * that would otherwise escape the new index forever. The key is the
+   * time-inclusive #177 signature (the old shape did not store whether a row was
+   * server-stamped, so the most specific key is chosen). A key already taken is
+   * left NULL — a pre-#177 duplicate cannot be re-keyed without failing the
+   * unique index, and the guard's signature arm still matches it. Fresh
+   * databases have no table yet and get the column from SCHEMA_DDL instead.
    */
   const ensureSupplierAdjustmentDedupKeyColumn = (): void => {
-    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
-    const rows = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
-    if (rows.length === 0 || rows.some((row) => row.name === "dedup_key")) return;
     conn.raw.exec("BEGIN IMMEDIATE");
     try {
-      conn.raw.exec("ALTER TABLE supplier_account_entries ADD COLUMN dedup_key TEXT");
-      // SAFETY: the SELECT names each column, so every row has exactly those
-      // fields with the supplier-ledger types (reason is the nullable note).
-      const adjustments = conn.raw
-        .query(
-          "SELECT id, supplier_id AS supplierId, direction, amount, note AS reason, invoice_id AS invoiceId, occurred_at AS occurredAt FROM supplier_account_entries WHERE kind = 'ADJUSTMENT' ORDER BY rowid",
-        )
-        .all() as Array<{ id: string; supplierId: string; direction: "WE_OWE" | "THEY_OWE"; amount: number; reason: string | null; invoiceId: string | null; occurredAt: string }>;
-      const used = new Set<string>();
-      const update = conn.raw.query("UPDATE supplier_account_entries SET dedup_key = ? WHERE id = ?");
-      for (const row of adjustments) {
-        const key = adjustmentDedupKey({ ...row, serverStamped: false });
-        if (used.has(key)) continue; // a legacy duplicate stays unkeyed (index-exempt)
-        used.add(key);
-        update.run(key, row.id);
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const rows = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
+      const tableExists = rows.length > 0;
+      if (tableExists && !rows.some((row) => row.name === "dedup_key")) {
+        conn.raw.exec("ALTER TABLE supplier_account_entries ADD COLUMN dedup_key TEXT");
+      }
+      if (tableExists) {
+        // SAFETY: the SELECT names dedup_key, so each row has that nullable column
+        const keyed = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE dedup_key IS NOT NULL").all() as Array<{ dedupKey: string }>;
+        const used = new Set(keyed.map((row) => row.dedupKey));
+        // SAFETY: the SELECT names each column, so every row has exactly those
+        // fields with the supplier-ledger types (reason is the nullable note).
+        const unkeyed = conn.raw
+          .query(
+            "SELECT id, supplier_id AS supplierId, direction, amount, note AS reason, invoice_id AS invoiceId, occurred_at AS occurredAt FROM supplier_account_entries WHERE kind = 'ADJUSTMENT' AND dedup_key IS NULL ORDER BY rowid",
+          )
+          .all() as Array<{ id: string; supplierId: string; direction: "WE_OWE" | "THEY_OWE"; amount: number; reason: string | null; invoiceId: string | null; occurredAt: string }>;
+        if (unkeyed.length > 0) {
+          const update = conn.raw.query("UPDATE supplier_account_entries SET dedup_key = ? WHERE id = ? AND dedup_key IS NULL");
+          for (const row of unkeyed) {
+            const key = adjustmentDedupKey({ ...row, serverStamped: false });
+            if (used.has(key)) continue; // a legacy duplicate stays unkeyed (index-exempt)
+            used.add(key);
+            update.run(key, row.id);
+          }
+        }
       }
       conn.raw.exec("COMMIT");
     } catch (error) {
@@ -1320,8 +1329,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       eq(supplierAccountEntries.kind, "ADJUSTMENT"),
       eq(supplierAccountEntries.direction, input.direction),
       eq(supplierAccountEntries.amount, input.amount),
-      input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
-      input.invoiceId === null ? isNull(supplierAccountEntries.invoiceId) : eq(supplierAccountEntries.invoiceId, input.invoiceId),
+      input.reason == null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
+      input.invoiceId == null ? isNull(supplierAccountEntries.invoiceId) : eq(supplierAccountEntries.invoiceId, input.invoiceId),
     ];
     // a server-stamped timestamp cannot tell a retry apart, so match any time;
     // a caller-supplied one is part of the idempotency signature
@@ -2023,7 +2032,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         );
       } catch (error) {
         // the partial unique index is the DB backstop for a writer that raced
-        // the guard above; report it as the same typed refusal the guard throws
+        // the guard above; report it as the same typed refusal the guard throws.
+        // The caller MUST let this DUPLICATE roll the whole unit back (including
+        // any applyDebtOffset above) — never treat it as "already applied".
         if (error instanceof Error) throw duplicateKeyRefusal(error) ?? error;
         throw error;
       }

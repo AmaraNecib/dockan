@@ -1063,10 +1063,11 @@ export const supplierAdjustInputSchema = z
     /** the purchase invoice this adjustment discounts, when the owner links one */
     invoiceId: idSchema.optional(),
     /**
-     * #181 — an explicit client idempotency key. When present it is the whole
-     * dedup key (scoped to the supplier), so a retry that changes `occurredAt`
-     * or any other field is still the same logical request and is refused.
-     * When absent the request falls back to the #177 signature guard.
+     * #181 — an explicit client idempotency key. When present it is the primary
+     * dedup key (scoped to the supplier): a retry that changes `occurredAt` or
+     * any other field but keeps the key is the same logical request and is
+     * refused. The #177 signature guard stays in force as a backstop, so the key
+     * can only add refusals. When absent the signature alone decides.
      */
     idempotencyKey: z.string().trim().min(1).max(200).optional(),
   })

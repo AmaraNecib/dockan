@@ -19,10 +19,12 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
 - **When no key is sent** the #177 signature remains the key, unchanged, so the
   server-stamped-timestamp rule still protects omitted-date retries.
 - The key is **additive to** the signature, never a replacement: a duplicate is
-  refused when *either* matches. The key cannot weaken the #177 money-safe rule
-  that an identical repeat is refused; the escape hatch for a genuinely-wanted
-  identical entry stays "separate the signature by reason/date/ref", not a
-  weakened guard.
+  refused when *either* matches. For a request that keeps its shape the key can
+  never weaken the #177 money-safe rule that an identical repeat is refused. A
+  caller that drops the key *and* changes the timestamp between attempts is
+  re-shaping its request, not retrying it, and is outside the contract. The
+  escape hatch for a genuinely-wanted identical entry stays "separate the
+  signature by reason/date/ref", not a weakened guard.
 - The key is written by the one guarded write path and enforced by a partial
   unique index, so a second process that races the identical request loses at
   the database, and the unique violation is mapped back to the same stable

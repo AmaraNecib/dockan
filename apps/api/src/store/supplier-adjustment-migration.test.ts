@@ -11,18 +11,23 @@ import { adjustmentDedupKey } from "../lib/supplier-ledger";
 import { createDrizzleStore } from "./drizzle-store";
 
 /**
- * Issue 176 — the BLOCKING v2 → v3 migration test.
+ * Issue 176 (+ 181) — the BLOCKING supplier-adjustment migration tests.
  *
  * The manual adjustment (تسوية) is additive: a new `ADJUSTMENT` kind plus a
- * `supplier_account_entries.direction` column. An older (version-2) build has
+ * `supplier_account_entries.direction` column (v3), and then a `dedup_key`
+ * column + partial unique index (v4, issue 181). An older (version-2) build has
  * no ADJUSTMENT branch in its sign SQL, so it would read a «نسالوه» adjustment
- * as a decrement and show a wrong balance. The sequence this test proves:
+ * as a decrement and show a wrong balance; a version-3 build has no `dedup_key`
+ * and would write rows that escape the new dedup. The first sequence proves:
  *
  *   1. a version-2 database (no direction column) opens with the new build;
- *   2. the forward migration adds the column, PRESERVES every existing row, and
- *      stamps version 3;
+ *   2. the forward migration adds both columns, PRESERVES every existing row, and
+ *      stamps the current version (4);
  *   3. an older build refuses the merged database;
- *   4. re-opening is idempotent — no error, version 3, no duplicated rows.
+ *   4. re-opening is idempotent — no error, version 4, no duplicated rows.
+ *
+ * The second describe proves the v3 -> v4 `dedup_key` migration in the same
+ * shape (backfill, legacy-duplicate exemption, index, version refusal, re-open).
  */
 let cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -150,6 +155,26 @@ function seedVersion3Database(dbPath: string): void {
   db.close();
 }
 
+/**
+ * A half-migrated version-3 database: the `dedup_key` column exists (the v4
+ * ALTER committed) but every key is NULL and `user_version` is still 3 (the
+ * stamp never happened), and a downgraded writer added a NULL-keyed row.
+ */
+function seedHalfMigratedDatabase(dbPath: string): void {
+  const db = new Database(dbPath, { create: true });
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("CREATE TABLE suppliers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, created_at TEXT NOT NULL)");
+  db.exec(
+    "CREATE TABLE supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT, method TEXT, note TEXT, ref TEXT, dedup_key TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))",
+  );
+  db.query("INSERT INTO suppliers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run("sup-1", "مورد نصف ترحيل", "2026-01-01T10:00:00");
+  db.query(
+    "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES ('entry-1', 'sup-1', 'ADJUSTMENT', 800, 'WE_OWE', NULL, NULL, 'رصيد افتتاحي', NULL, NULL, '2026-01-02T10:00:00', '2026-01-02T10:00:00')",
+  ).run();
+  db.exec("PRAGMA user_version = 3");
+  db.close();
+}
+
 describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => {
   it("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently", async () => {
     const dir = tempDir();
@@ -218,7 +243,7 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     ).toThrow(/UNIQUE constraint failed/);
 
     // 5. an older build cannot read this format: it has no dedup_key and would
-    //    insert the duplicate the index now forbids
+    //    write NULL-keyed adjustments that escape the new dedup
     expect(() => assertSchemaVersionSupported(conn.raw, 3)).toThrow(UnsupportedSchemaVersionError);
     await conn.close();
 
@@ -230,5 +255,32 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     // SAFETY: the SELECT names id/dedup_key, so each row has those columns
     const after = again.raw.query("SELECT id, dedup_key AS dedupKey FROM supplier_account_entries ORDER BY rowid").all() as Array<{ id: string; dedupKey: string | null }>;
     expect(after).toEqual(rows.map((row) => ({ id: row.id, dedupKey: row.dedupKey })));
+  });
+
+  it("self-heals a half-migrated database: column present, keys null, version 3 (issue 181)", async () => {
+    // models the crash window where the v4 ALTER committed but the version
+    // stamp did not, and a v3 build then wrote NULL-keyed adjustments
+    const dir = tempDir();
+    const dbPath = path.join(dir, "half.db");
+    seedHalfMigratedDatabase(dbPath);
+
+    const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
+    await createDrizzleStore(conn).setup();
+
+    expect(readSchemaVersion(conn.raw)).toBe(4);
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = 'entry-1'").get() as { dedupKey: string | null };
+    // the self-healing backfill keyed the row instead of skipping it forever
+    expect(row.dedupKey).toBe(
+      adjustmentDedupKey({
+        supplierId: "sup-1",
+        direction: "WE_OWE",
+        amount: 800,
+        reason: "رصيد افتتاحي",
+        occurredAt: "2026-01-02T10:00:00",
+        invoiceId: null,
+        serverStamped: false,
+      }),
+    );
   });
 });

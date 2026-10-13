@@ -37,7 +37,7 @@ export type AdjustmentDedupInput = {
   invoiceId: string | null;
   /** #177 — the caller omitted occurredAt; the server stamped it */
   serverStamped?: boolean;
-  /** #181 — an explicit client idempotency key; when present it wins */
+  /** #181 — an explicit client key; when present it is the primary identity */
   idempotencyKey?: string | null;
 };
 
@@ -71,14 +71,22 @@ the key is refused.
 
 The #177 signature stays in force as an independent backstop: a duplicate is
 refused when **either** the key or the signature matches. The key can therefore
-never weaken the existing guard — a buggy client that mints a fresh key on each
-retry still hits the signature, and an identical repeat is still refused (the
-brief's money-safe rule). The key is scoped by `supplierId`, matching the
+never weaken the existing guard *for a request that keeps its shape*: a buggy
+client that mints a fresh key on a retry still hits the signature as long as the
+timestamp is unchanged, and an identical repeat is still refused (the brief's
+money-safe rule). The key is scoped by `supplierId`, matching the
 supplier-scoped signature.
 
 When the key is absent the signature alone decides, exactly as #177 defined it.
 `serverStamped` still drops `occurredAt` from the signature, so an omitted-date
 retry (fresh server clock) is still caught.
+
+**Boundary.** The union is exact while a retry resends the same shape. A caller
+that drops the key *and* changes the timestamp (or mints a fresh key *and* a
+fresh timestamp) between attempts sends two different requests by every key the
+store holds; that is outside the idempotency-key contract (a retry resends the
+request, it does not re-shape it). The in-store guard still serializes writers,
+so the index backstop remains the same-shape cross-process net.
 
 ### D3 — guard and index share the key
 

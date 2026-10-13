@@ -532,4 +532,34 @@ describe("supplier account store", () => {
     await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T12:00:00" }))).rejects.toThrow(/DUPLICATE/);
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
+
+  it("refuses an unkeyed retry of a keyed request when the signature matches (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد إسقاط المفتاح");
+    const occurredAt = "2026-10-13T12:00:00";
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 300, reason: "دين قديم", occurredAt, invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, idempotencyKey: "first" }));
+    // the retry dropped the key but kept the signature, so the #177 arm refuses it
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment(base))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("dedupes a linked adjustment by its key and never reduces the invoice twice (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد رابط مفتاح");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 200, reason: "خصم", invoiceId: invoice.id, idempotencyKey: "linked-1" };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // a keyed retry with a changed timestamp is refused before applyDebtOffset runs
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T12:00:00" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("leaves dedup_key null for a non-adjustment entry (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد بلا مفتاح");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const entry = await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 100, invoiceId: invoice.id, occurredAt: "2026-10-13T12:00:00" });
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(entry.id) as { dedupKey: string | null };
+    expect(row.dedupKey).toBeNull();
+  });
 });

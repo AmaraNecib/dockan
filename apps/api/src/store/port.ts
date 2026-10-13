@@ -170,10 +170,11 @@ export type SupplierAdjustmentInsert = {
    */
   serverStamped?: boolean;
   /**
-   * #181 — an explicit client idempotency key. When present it IS the dedup key
-   * (scoped to the supplier): the whole signature is ignored, so a retry that
-   * changes `occurredAt` or any other field is still refused. When absent the
-   * #177 signature is the key.
+   * #181 — an explicit client idempotency key. When present it is the primary
+   * dedup key (scoped to the supplier): a row with the same key is the same
+   * logical request whatever its other fields. The #177 signature stays in force
+   * as a backstop, so the key can only add refusals. When absent the signature
+   * alone decides.
    */
   idempotencyKey?: string | null;
 };
@@ -318,16 +319,19 @@ export interface StorePort {
   /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
    * (non-null invoiceId) is REFUSED here — it must go through
    * `insertSupplierAdjustment`, which applies the invoice reduction in the same
-   * unit. */
+   * unit. An account-only ADJUSTMENT is still keyed with the #181 dedup key, so a
+   * repeated one is refused by the partial unique index (there is no separate
+   * in-process guard on this raw seam). */
   insertSupplierEntry(entry: SupplierEntryInsert): Promise<SupplierAccountEntry>;
   /**
    * #177 — the single guarded write path for a manual adjustment (تسوية). It
-   * refuses a duplicate submission (the #181 explicit `idempotencyKey` when the
-   * caller sent one, otherwise the #177 signature), refuses a linked entry
-   * signed the wrong way or one the invoice cannot cover, and applies the linked
-   * invoice's reduction in the same unit as the entry. Call inside a
-   * `withTransactionImmediate` unit so the entry and the invoice's remaining can
-   * never diverge. Account-only (null invoiceId) never touches an invoice. */
+   * refuses a duplicate submission (the #181 explicit `idempotencyKey` is the
+   * primary identity when the caller sent one, and the #177 signature stays a
+   * backstop), refuses a linked entry signed the wrong way or one the invoice
+   * cannot cover, and applies the linked invoice's reduction in the same unit as
+   * the entry. Call inside a `withTransactionImmediate` unit so the entry and the
+   * invoice's remaining can never diverge. Account-only (null invoiceId) never
+   * touches an invoice. */
   insertSupplierAdjustment(input: SupplierAdjustmentInsert): Promise<SupplierAccountEntry>;
   /** True when an ADJUSTMENT with this key or signature already exists. Exposed
    * so the bulk opening-balance confirmation can tell an exact resend from a

@@ -1796,14 +1796,15 @@ describe("party-detail tab pagination (issue 174)", () => {
   });
 });
 
+async function setupSupplier(name: string, units = 10) {
+  const category = await client.categoriesCreate({ name: `تصنيف ${name}` });
+  const item = await client.itemsCreateWithStock({ name: `صنف ${name}`, categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 1 });
+  const supplier = await client.suppliersCreate({ name });
+  const invoice = await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: units, unitPrice: 100 }] });
+  return { supplier, invoice };
+}
+
 describe("supplier adjustments (issue 176)", () => {
-  async function setupSupplier(name: string, units: number) {
-    const category = await client.categoriesCreate({ name: `تصنيف ${name}` });
-    const item = await client.itemsCreateWithStock({ name: `صنف ${name}`, categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 1 });
-    const supplier = await client.suppliersCreate({ name });
-    const invoice = await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: units, unitPrice: 100 }] });
-    return { supplier, invoice };
-  }
 
   it("records an account-only adjustment: the balance moves and no invoice is touched", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية رصيد", 10);
@@ -2232,14 +2233,6 @@ describe("supplier adjustments (issue 176)", () => {
 });
 
 describe("supplier adjustment idempotency key (issue 181)", () => {
-  async function setupSupplier(name: string) {
-    const category = await client.categoriesCreate({ name: `تصنيف ${name}` });
-    const item = await client.itemsCreateWithStock({ name: `صنف ${name}`, categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 1 });
-    const supplier = await client.suppliersCreate({ name });
-    const invoice = await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 10, unitPrice: 100 }] });
-    return { supplier, invoice };
-  }
-
   it("refuses a keyed retry whose timestamp changed (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح تغيّر الوقت");
     const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد افتتاحي", idempotencyKey: "retry-gap-1" };
@@ -2257,12 +2250,14 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
 
   it("treats the key as the request identity even when other fields change (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح تغيّر المبلغ");
-    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: "دين قديم", idempotencyKey: "same-request", occurredAt: "2026-10-13T12:00:00" });
+    const first = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: "دين قديم", idempotencyKey: "same-request", occurredAt: "2026-10-13T12:00:00" });
+    expect(first.balance).toBe(1100);
     await expect(
       client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", idempotencyKey: "same-request", occurredAt: "2026-10-13T12:00:00" }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1100);
   });
 
   it("does not let the key weaken the signature guard (issue 181)", async () => {
@@ -2273,7 +2268,9 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     await expect(
       client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 300, reason: "دين قديم", occurredAt, idempotencyKey: "fresh-key" }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
-    expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1300);
   });
 
   it("scopes the key to the supplier account (issue 181)", async () => {
@@ -2283,13 +2280,22 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     // the same key on a different account is a different request
     const second = await client.suppliersAdjust({ supplierId: b.supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "shared", occurredAt: "2026-10-13T12:00:00" });
     expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(second.balance).toBe(1100);
+    expect((await client.suppliersGet({ id: a.supplier.id })).account?.balance).toBe(1100);
   });
 
-  it("rejects a blank or oversized idempotency key at the contract (issue 181)", async () => {
+  it("rejects a blank or oversized idempotency key at the contract and accepts the 200-char boundary (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح غير صالح");
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "   " })).rejects.toThrow(/Input validation failed/);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "x".repeat(201) })).rejects.toThrow(/Input validation failed/);
-    expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT") ?? []).toHaveLength(0);
+    const boundary = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "x".repeat(200), occurredAt: "2026-10-13T12:00:00" });
+    expect(boundary.balance).toBe(1100);
+    // the contract trims, so a padded identical key is the same request
+    await expect(
+      client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "   " + "x".repeat(200) + "   ", occurredAt: "2026-10-13T12:00:00" }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 });
 

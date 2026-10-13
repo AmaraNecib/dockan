@@ -516,7 +516,20 @@ describe("supplier account store", () => {
     await expect(store.insertSupplierEntry(entry)).rejects.toThrow(/DUPLICATE/);
     // SAFETY: the SELECT names dedup_key, so the row has that nullable column
     const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(first.id) as { dedupKey: string | null };
-    expect(row.dedupKey).not.toBeNull();
+    // the raw seam has no server-stamped flag, so it uses the time-inclusive key
+    expect(row.dedupKey).toBe(adjustmentDedupKey({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt: "2026-10-13T12:00:00", invoiceId: null }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("stores the timestamp-free key for a server-stamped adjustment (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد ختم مفتاح");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 100, reason: null, invoiceId: null, serverStamped: true };
+    const stored = await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(stored.id) as { dedupKey: string | null };
+    // the stamped key drops the timestamp, so a fresh server clock is the same key
+    expect(row.dedupKey).toBe(adjustmentDedupKey({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-14T12:00:00" }))).rejects.toThrow(/DUPLICATE/);
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 });

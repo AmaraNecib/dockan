@@ -184,6 +184,20 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     expect(rows.find((row) => row.id === "entry-3")?.dedupKey).toBeNull();
     expect(rows.find((row) => row.id === "entry-4")?.dedupKey).not.toBeNull();
 
+    // the guard still finds a new identical request even when the duplicate is
+    // unkeyed (the #177 signature arm), so the upgrade loses no dedup
+    const store = createDrizzleStore(conn);
+    expect(
+      await store.hasSupplierAdjustment({
+        supplierId: "sup-1",
+        direction: "WE_OWE",
+        amount: 800,
+        reason: "رصيد افتتاحي",
+        occurredAt: "2026-01-02T10:00:00",
+        invoiceId: null,
+      }),
+    ).toBe(true);
+
     // 3. the partial unique index exists on the key column
     // SAFETY: PRAGMA index_list returns one object per index with these fields
     const indexes = conn.raw.query("PRAGMA index_list(supplier_account_entries)").all() as Array<{ name: string; unique: number; partial: number }>;

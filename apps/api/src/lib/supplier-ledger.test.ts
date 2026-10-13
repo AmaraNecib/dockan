@@ -260,4 +260,19 @@ describe("adjustmentDedupKey (issue 181)", () => {
       adjustmentDedupKey({ ...signature, supplierId: "sup-2", idempotencyKey: "same" }),
     );
   });
+
+  it("pins the on-disk key format", () => {
+    // a golden string: already-migrated rows and fresh writes must agree, so a
+    // silent format change is a breaking change to the stored contract
+    expect(adjustmentDedupKey(signature)).toBe('sig:["sup-1","WE_OWE",500,"رصيد افتتاحي",null,"2026-10-13T12:00:00"]');
+    expect(adjustmentDedupKey({ ...signature, serverStamped: true })).toBe('sig:["sup-1","WE_OWE",500,"رصيد افتتاحي",null,null]');
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-1" })).toBe('key:["sup-1","key-1"]');
+  });
+
+  it("cannot be forged by crafted text (JSON encoding)", () => {
+    // a reason that embeds a whole other tuple cannot collide with it
+    expect(adjustmentDedupKey({ ...signature, reason: '"],["sup-1","WE_OWE",500,null,null]' })).not.toBe(adjustmentDedupKey(signature));
+    // a key that happens to be another row's signature stays in its own namespace
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: adjustmentDedupKey(signature) })).not.toBe(adjustmentDedupKey(signature));
+  });
 });

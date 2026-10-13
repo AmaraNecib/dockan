@@ -1,7 +1,8 @@
 # Debate evidence — #184, server-resolved opening-balance destination
 
 - Base: `origin/develop` @ `da44b502d39c79a1368e9848542d9a25fac301fc`
-- Reviewed head: `bb37a1b` (critic + defender), final head `a422880`
+- Reviewed head: `bb37a1b` (critic + defender); final code head `a422880`
+- Evidence head: `4ad6529` (code head `a422880` + the non-reviewable evidence/wisdom commits)
 - Tier: **High-assurance** (money path — which supplier account receives the amount)
 - Roles: `oracle` (harsh critic) + `reviewer` (charitable defender), parallel.
 

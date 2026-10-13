@@ -1,7 +1,8 @@
 # Code-review evidence — #184 (two axes)
 
 - Base: `da44b502d39c79a1368e9848542d9a25fac301fc`
-- Reviewed head: `0860f3d`; final head `a422880`
+- Reviewed head: `0860f3d`; final code head `a422880`
+- Evidence head: `4ad6529` (code head `a422880` + non-reviewable evidence/wisdom commits)
 - Tier: **High-assurance**
 - Roles: Standards (`reviewer`) + Spec (`oracle`), parallel.
 

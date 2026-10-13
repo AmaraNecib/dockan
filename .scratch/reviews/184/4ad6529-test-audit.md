@@ -1,7 +1,8 @@
 # Test-audit evidence — #184
 
 - Base: `da44b502d39c79a1368e9848542d9a25fac301fc`
-- Audited head: `dbcbef3`; findings closed by `0860f3d` and `a422880` (final head).
+- Audited head: `dbcbef3`; findings closed by `0860f3d` and `a422880` (final code head)
+- Evidence head: `4ad6529` (code head `a422880` + non-reviewable evidence/wisdom commits)
 - Tier: **High-assurance**.
 - Agents: edge-case hunter + coverage analyst (`reviewer`) and quality reviewer
   (`oracle`), parallel.

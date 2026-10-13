@@ -135,4 +135,44 @@ describe("DateField (#123)", () => {
     // SAFETY: the now control is the field's own button
     expect((ui.query("date-now") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("keeps a refusal across an unmount/remount (a preset switch)", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mounted.push(root);
+
+    function Harness() {
+      const [value, setValue] = useState("");
+      const [shown, setShown] = useState(true);
+      return (
+        <div>
+          <button type="button" data-testid="toggle" onClick={() => setShown((current) => !current)} />
+          {shown && <DateField value={value} onValueChange={setValue} testId="date" />}
+        </div>
+      );
+    }
+
+    act(() => root.render(<Harness />));
+    const query = (testid: string) => container.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+
+    // SAFETY: the testid addresses the field's own text input
+    typeInto(query("date") as HTMLInputElement, "31/02/2026 00:00");
+    // SAFETY: the same field input is still mounted
+    blur(query("date") as HTMLInputElement);
+    expect(query("date-error")).not.toBeNull();
+
+    // the field unmounts (the preset left CUSTOM); the parent still holds the text
+    act(() => query("toggle")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(query("date")).toBeNull();
+
+    // and remounts: the unreadable value derives its refusal again, not clean
+    act(() => query("toggle")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    // SAFETY: the remounted field renders the same testid on its text input
+    const remounted = query("date") as HTMLInputElement;
+    expect(remounted.value).toBe("31/02/2026 00:00");
+    expect(remounted.getAttribute("aria-invalid")).toBe("true");
+    expect(remounted.getAttribute("aria-describedby")).toBe("date-error");
+    expect(query("date-error")?.textContent).toContain(i18n.t("expenseDateInvalid"));
+  });
 });

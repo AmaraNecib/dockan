@@ -124,6 +124,23 @@ export function ExpensesPage() {
     });
   };
 
+  /**
+   * Fold a typed range-bound edit into its state and reset the list only when
+   * the *applied* moment actually moved. A half-typed or impossible value keeps
+   * the previous bound (editDateBound), so an unconditional reset would jump a
+   * later history page back to page one for a filter that never changed
+   * (Greptile round 1, finding 2).
+   */
+  function applyBoundEdit(
+    previous: DateBound,
+    text: string,
+    setBound: (next: DateBound) => void,
+  ): void {
+    const next = editDateBound(previous, text);
+    setBound(next);
+    if (next.bound !== previous.bound) pager.reset();
+  }
+
   // what the owner can record against: whatever the server sent, plus a
   // category created here that the refetch has not confirmed yet
   const categoryOptions = [...(categories.data?.items ?? [])];
@@ -468,16 +485,13 @@ export function ExpensesPage() {
             </label>
           </div>
           {preset === "CUSTOM" && (
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="grid gap-1">
                 <label htmlFor="expense-custom-from">{t("expensesCustomFrom")}</label>
                 <DateField
                   id="expense-custom-from"
                   value={customFrom.text}
-                  onValueChange={(text) => {
-                    setCustomFrom((previous) => editDateBound(previous, text));
-                    pager.reset();
-                  }}
+                  onValueChange={(text) => applyBoundEdit(customFrom, text, setCustomFrom)}
                   testId="expense-custom-from"
                 />
               </div>
@@ -486,10 +500,7 @@ export function ExpensesPage() {
                 <DateField
                   id="expense-custom-to"
                   value={customTo.text}
-                  onValueChange={(text) => {
-                    setCustomTo((previous) => editDateBound(previous, text));
-                    pager.reset();
-                  }}
+                  onValueChange={(text) => applyBoundEdit(customTo, text, setCustomTo)}
                   testId="expense-custom-to"
                 />
               </div>

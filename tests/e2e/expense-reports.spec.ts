@@ -125,6 +125,15 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(page.getByTestId("expense-custom-from-error")).toContainText("01/10/2026 00:34");
   await expect(customFrom).toHaveAttribute("aria-invalid", "true");
 
+  // switching the preset away and back remounts the field: the refused value
+  // and its warning must survive rather than come back clean (Greptile round 1)
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "الشهر الحالي");
+  await expect(customFrom).toHaveCount(0);
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await expect(customFrom).toHaveValue("31/02/2020 00:00");
+  await expect(page.getByTestId("expense-custom-from-error")).toContainText("01/10/2026 00:34");
+  await expect(customFrom).toHaveAttribute("aria-invalid", "true");
+
   // «الآن» restores a live, valid bound and clears the refusal
   await page.getByTestId("expense-custom-from-now").click();
   await expect(customFrom).toHaveValue(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
@@ -282,4 +291,38 @@ test("create a new expense category from the expenses screen and record against 
   // ending "…5312" plus "5000" renders "…5312500", which contains "1250").
   const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: categoryName });
   await expect(row).toContainText(amount);
+});
+
+test("custom range controls stack and stay inside their column on a narrow window", async ({ page }) => {
+  await ensureAuthed(page);
+  await page.setViewportSize({ width: 420, height: 800 });
+  await page.goto("/expenses");
+  await expect(page.getByTestId("expenses-page")).toBeVisible();
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+
+  const from = page.getByTestId("expense-custom-from");
+  const to = page.getByTestId("expense-custom-to");
+  const fromBox = await from.boundingBox();
+  const toBox = await to.boundingBox();
+  expect(fromBox).not.toBeNull();
+  expect(toBox).not.toBeNull();
+  // narrow width: the two bounds stack instead of sharing a fixed pair of columns
+  expect(toBox!.y).toBeGreaterThan(fromBox!.y + fromBox!.height / 2);
+
+  // and the input + «الآن» row never spills past its own column: the input must
+  // shrink (min-w-0) rather than push the non-shrinking button out
+  const spill = await from.evaluate((el) => {
+    const row = el.closest("div.flex");
+    const column = row?.parentElement;
+    if (row === null || column === null) return null;
+    const columnRect = column.getBoundingClientRect();
+    const children = Array.from(row.children).map((child) => child.getBoundingClientRect());
+    return {
+      left: Math.min(...children.map((rect) => rect.left)) - columnRect.left,
+      right: Math.max(...children.map((rect) => rect.right)) - columnRect.right,
+    };
+  });
+  expect(spill).not.toBeNull();
+  expect(spill!.left).toBeGreaterThanOrEqual(-1);
+  expect(spill!.right).toBeLessThanOrEqual(1);
 });

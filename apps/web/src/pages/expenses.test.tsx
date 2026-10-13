@@ -38,6 +38,16 @@ interface ExpenseResponse {
   createdAt: string;
 }
 
+/** One row of the history list envelope the page paginates. */
+interface ExpenseRow {
+  id: string;
+  categoryId: string;
+  amount: number;
+  note: string | null;
+  occurredAt: string;
+  createdAt: string;
+}
+
 interface ExpenseMutationOptions {
   onSuccess?: (expense: ExpenseResponse) => void;
   onError?: (error: { message?: string }) => void;
@@ -67,6 +77,9 @@ interface ListInput {
 }
 
 let lastListInput: ListInput | null = null;
+/** the history envelope the list query resolves: enough rows to page through */
+let listItems: ExpenseRow[] = [];
+let listTotal = 0;
 
 const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseCategory => ({
   id,
@@ -121,7 +134,7 @@ mock.module("@/lib/rpc", () => ({
         lastListInput = input ?? null;
         return {
           queryKey: ["expenses", input],
-          queryFn: async () => ({ items: [] }),
+          queryFn: async () => ({ items: listItems, total: listTotal }),
         };
       },
     },
@@ -204,6 +217,11 @@ async function mountPage(queryClient: QueryClient) {
     },
   };
 }
+
+beforeEach(() => {
+  listItems = [];
+  listTotal = 0;
+});
 
 describe("ExpensesPage — create a category inline (issue #99)", () => {
   let queryClient: QueryClient;
@@ -969,6 +987,80 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
     expect(await ui.waitFor(() => lastListInput?.customTo === parseDateTimeText(value))).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps a later history page when a refused bound edit is not applied", async () => {
+    // enough rows that the pager offers more than one page at any page size
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // apply a real window, then move off the first page
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    // a refused edit keeps the applied bound, so the offset must not jump to 0
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    await act(async () => {
+      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")).not.toBeNull();
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    // a real bound change is still a filter change: it must reset to page one
+    await ui.type("expense-custom-from", "02/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
+    expect(lastListInput?.offset).toBe(0);
+
+    await ui.unmount();
+  });
+
+  it("keeps the refusal visible when the preset is switched away and back", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    await act(async () => {
+      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")).not.toBeNull();
+
+    // leave CUSTOM: the field unmounts, but the page keeps the text and bound
+    await openSelect(ui.query("expense-range-preset")!);
+    const otherPreset = await findOption(i18n.t("rangePreset_CURRENT_MONTH"));
+    expect(otherPreset).not.toBeNull();
+    await activateOption(otherPreset!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") === null)).toBe(true);
+
+    // back to CUSTOM: the same unreadable value must still refuse itself
+    await openSelect(ui.query("expense-range-preset")!);
+    const customPreset = await findOption(i18n.t("rangePreset_CUSTOM"));
+    expect(customPreset).not.toBeNull();
+    await activateOption(customPreset!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") !== null)).toBe(true);
+
+    const remounted = ui.query<HTMLInputElement>("expense-custom-from")!;
+    expect(remounted.value).toBe("31/02/2020 00:00");
+    expect(remounted.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
+    // the window never moved: the refusal is not a silent widening
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
 
     await ui.unmount();
   });

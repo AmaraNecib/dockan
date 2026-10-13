@@ -265,4 +265,25 @@ describe("supplier account store", () => {
     expect(row?.accountBalance).toBe(supplierBalance(entries));
     expect(row?.accountBalance).toBe(1250);
   });
+
+  it("reports a credit balance as a negative signed value in the party list (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد رصيد سالب");
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, occurredAt: now() });
+
+    const row = (await store.listParties("supplier")).find((party) => party.id === supplier.id);
+    expect(row?.accountBalance).toBe(-300);
+    expect(row?.accountEntryCount).toBe(1);
+
+    // the debts summary agrees with the same sign on the THEY_OWE branch
+    const summary = (await store.debtSummaries()).find((entry) => entry.counterpartyId === supplier.id && entry.kind === "PURCHASE");
+    expect(summary?.accountBalance).toBe(-300);
+  });
+
+  it("refuses to persist an ADJUSTMENT with no direction (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد بلا اتجاه");
+    await expect(
+      store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", amount: 100, invoiceId: null, occurredAt: now() }),
+    ).rejects.toThrow(/direction/);
+    expect(await store.listSupplierEntries(supplier.id)).toHaveLength(0);
+  });
 });

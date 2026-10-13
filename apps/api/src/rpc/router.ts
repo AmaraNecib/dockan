@@ -934,7 +934,7 @@ export function createRpcRouter(deps: RpcDeps) {
               occurredAt,
             });
           }
-          await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
+          await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
           return { balance: supplierBalance(entries), entries };
         }),
@@ -975,7 +975,7 @@ export function createRpcRouter(deps: RpcDeps) {
               ref: "OPENING_BALANCE",
               occurredAt: input.occurredAt,
             });
-            await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.amount} ${row.name}`, ref: row.supplierId });
+            await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];
           for (const row of plan) {

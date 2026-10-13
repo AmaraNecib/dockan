@@ -135,4 +135,11 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     typeInto("supplier-adjust-amount", "500");
     expect(host.querySelector('[data-testid="supplier-adjust-preview-remaining"]')?.textContent).toContain("4500");
   });
+
+  it("offers no link when there is no open purchase invoice", () => {
+    render([]);
+    clickOn("supplier-adjust-link");
+    expect(host.querySelector('[data-testid="supplier-adjust-no-invoices"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
+  });
 });

@@ -867,7 +867,6 @@ const resources = {
       supplierAdjustPresetOldDebt: "دين قديم",
       supplierAdjustPresetDiscount: "خصم",
       supplierAdjustLinkInvoice: "تخصّ فاتورة؟",
-      supplierAdjustNoInvoice: "بدون ربط",
       supplierAdjustInvoiceRemaining: "باقي الفاتورة",
       supplierAdjustPreview: "الرصيد بعد الحفظ",
       supplierAdjustPreviewNote: "لا تتغيّر أي فاتورة.",
@@ -901,6 +900,7 @@ const resources = {
       supplierOpeningLink: "رصيد افتتاحي",
       supplierOpeningBack: "رجوع إلى الموردين",
       supplierOpeningAmountRequired: "أدخل مبلغاً صحيحاً أكبر من صفر",
+      supplierOpeningNameExists: "هذا الاسم موجود في الجدول؛ اكتب المبلغ في صفّه بدل إنشاء مورّد جديد",
     },
   },
 } as const;

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { SupplierAdjustmentDirection } from "@dokan/contracts";
+import { normalizeTextKey } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
 import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
@@ -42,13 +43,20 @@ export function SupplierOpeningBalancePage() {
   const [newAmount, setNewAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<{ created: number; accounts: Array<{ name: string; balance: number }> } | null>(null);
+  const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
 
   const suppliers = list.data?.items ?? [];
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
+  // typing the exact name of an existing supplier would create a SECOND account
+  // for the same person (ADR-0007 allows duplicate names, so the server cannot
+  // refuse), and that silently splits the opening balance; block it here and
+  // point the owner at the existing row
+  const newNameTrimmed = newName.trim();
+  const newNameMatchesExisting =
+    newNameTrimmed !== "" && suppliers.some((supplier) => normalizeTextKey(supplier.name) === normalizeTextKey(newNameTrimmed));
 
   const filledExisting = useMemo(
     () =>
@@ -62,7 +70,7 @@ export function SupplierOpeningBalancePage() {
     [suppliers, drafts],
   );
   const newAmountValue = parseWholeAmount(newAmount);
-  const newFilled = newName.trim() !== "" && newAmountValue !== null && newAmountValue > 0;
+  const newFilled = newNameTrimmed !== "" && !newNameMatchesExisting && newAmountValue !== null && newAmountValue > 0;
   const totalRows = filledExisting.length + (newFilled ? 1 : 0);
   // the confirmation only concerns rows whose supplier already has entries
   const needsConfirmation = filledExisting.some((entry) => (entry.supplier.accountEntryCount ?? 0) > 0);
@@ -99,6 +107,13 @@ export function SupplierOpeningBalancePage() {
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
     } catch (err) {
+      // the confirmation is client-derived from a possibly stale list; when the
+      // server refuses an unconfirmed existing account, surface the dialog so
+      // the owner can still proceed instead of hitting a dead end
+      if (!confirmExisting && err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
+        setConfirming(true);
+        await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
+      }
       setError(tError(err instanceof Error ? err.message : undefined));
     } finally {
       setSubmitting(false);
@@ -133,7 +148,7 @@ export function SupplierOpeningBalancePage() {
           <p className="font-semibold text-success" role="status">{t("supplierOpeningSaved")}</p>
           <ul className="mt-2 grid gap-1 text-sm">
             {saved.accounts.map((account) => (
-              <li key={account.name} className="flex items-center justify-between gap-3">
+              <li key={account.supplierId} className="flex items-center justify-between gap-3">
                 <span>{account.name}</span>
                 <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance >= 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>
               </li>
@@ -198,7 +213,14 @@ export function SupplierOpeningBalancePage() {
                         {supplier.name}
                         {hasEntries && <span className="ml-2 text-xs text-warning" data-testid="opening-balance-existing">{t("supplierOpeningExistingWarn")}</span>}
                       </td>
-                      <td className="p-2" data-testid="opening-balance-current"><Amount value={Math.abs(supplier.accountBalance ?? 0)} /></td>
+                      <td className="p-2" data-testid="opening-balance-current">
+                        <Amount value={Math.abs(supplier.accountBalance ?? 0)} />{" "}
+                        {supplier.accountBalance !== null && supplier.accountBalance !== undefined && supplier.accountBalance !== 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {supplier.accountBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}
+                          </span>
+                        )}
+                      </td>
                       <td className="p-2">
                         <Select value={draft.direction} onValueChange={(next) => setRow(supplier.id, { direction: asDirection(next) })}>
                           <SelectTrigger className="w-28" data-testid="opening-balance-direction">
@@ -232,8 +254,12 @@ export function SupplierOpeningBalancePage() {
                       onChange={(event) => setNewName(event.target.value)}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
+                      aria-invalid={newNameMatchesExisting}
                       data-testid="opening-balance-new-name"
                     />
+                    {newNameMatchesExisting && (
+                      <p className="mt-1 text-xs text-destructive" role="alert" data-testid="opening-balance-name-exists">{t("supplierOpeningNameExists")}</p>
+                    )}
                   </td>
                   <td className="p-2 text-muted-foreground">—</td>
                   <td className="p-2">

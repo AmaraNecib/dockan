@@ -24,6 +24,7 @@ let captured: { rows: CapturedRow[] } | null = null;
 const suppliers = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
+  { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
 ];
 
 mock.module("@/lib/rpc", () => ({
@@ -143,5 +144,22 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     clickOn("opening-balance-save");
     expect(captured).toBeNull();
     expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("لم تُدخل");
+  });
+
+  it("renders a credit current balance with its direction and blocks a duplicate inline name", async () => {
+    render();
+    await settle();
+
+    const rows = host.querySelectorAll('[data-testid="opening-balance-row"]');
+    const creditCell = rows[2]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
+    expect(creditCell).toContain("300");
+    expect(creditCell).toContain("يسالنا");
+
+    // typing an existing supplier's name must not create a second account
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    expect(host.querySelector('[data-testid="opening-balance-name-exists"]')).not.toBeNull();
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
   });
 });

@@ -1684,6 +1684,8 @@ describe("supplier adjustments (issue 176)", () => {
       amount: 800,
       invoiceId: null,
       note: "رصيد افتتاحي",
+      // the backdatable date is persisted as the owner entered it
+      occurredAt: "2026-10-13T12:00:00",
     });
 
     const decreased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح" });
@@ -1734,6 +1736,20 @@ describe("supplier adjustments (issue 176)", () => {
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
   });
 
+  it("zeroes an invoice when the linked adjustment equals its remaining", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية كامل", 50);
+
+    const account = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 5000, reason: "خصم", invoiceId: invoice.id });
+    expect(account.balance).toBe(0);
+
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(0);
+    expect(detail.returnCreditAmount).toBe(5000);
+    // a settled invoice is no longer offered for linking
+    const outstanding = await store.listOutstandingPurchaseInvoices(supplier.id);
+    expect(outstanding.map((row) => row.id)).not.toContain(invoice.id);
+  });
+
   it("writes one opening balance per filled row and confirms a supplier that already has entries", async () => {
     const existing = await client.suppliersCreate({ name: "مورد رصيد قائم" });
     const fresh = await client.suppliersCreate({ name: "مورد بلا حركات" });
@@ -1765,6 +1781,21 @@ describe("supplier adjustments (issue 176)", () => {
     expect(created).toBeDefined();
     expect(created?.accountBalance).toBe(5000);
     expect(created?.accountEntryCount).toBe(1);
+  });
+
+  it("rolls the whole batch back when one row names an unknown supplier", async () => {
+    const fresh = await client.suppliersCreate({ name: "مورد دفعة صالحة" });
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [
+          { supplierId: fresh.id, direction: "WE_OWE", amount: 100 },
+          { supplierId: "00000000-0000-4000-8000-000000000000", direction: "WE_OWE", amount: 200 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // nothing half-saved, even for the valid first row
+    expect((await client.suppliersGet({ id: fresh.id })).account?.entries ?? []).toHaveLength(0);
   });
 });
 

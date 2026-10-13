@@ -59,6 +59,18 @@ import { PartyError } from "./port";
 const supplierSignedAmountSql = (alias: string): string =>
   `CASE WHEN ${alias}.kind IN ('PURCHASE','REFUND') OR (${alias}.kind = 'ADJUSTMENT' AND ${alias}.direction = 'WE_OWE') THEN ${alias}.amount ELSE -${alias}.amount END`;
 
+/** An ADJUSTMENT's sign comes from its direction, so the store refuses to write
+ * one without it (issue 176). The SQL sign expression signs a null direction as
+ * negative while `supplierEntrySign` throws; validating here keeps every
+ * persistence path on the same side of that line (the ALTER migration cannot
+ * add a table-level CHECK, so this is the boundary the fresh DDL CHECK
+ * complements). */
+const assertAdjustmentDirection = (kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null | undefined): void => {
+  if (kind === "ADJUSTMENT" && direction !== "WE_OWE" && direction !== "THEY_OWE") {
+    throw new Error("a supplier adjustment entry needs a direction");
+  }
+};
+
 const now = () => localDateTime();
 const id = () => randomUUID();
 
@@ -152,7 +164,7 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
   phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
   createdAt: String(r.createdAt),
   stats: safePartyStats(r),
-  accountBalance: r.accountBalance === null || r.accountBalance === undefined ? null : safeWhole(r.accountBalance),
+  accountBalance: r.accountBalance === null || r.accountBalance === undefined ? null : safeSignedWhole(r.accountBalance),
   accountEntryCount: r.accountEntryCount === null || r.accountEntryCount === undefined ? null : safeWhole(r.accountEntryCount),
 });
 
@@ -166,6 +178,19 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
 const safeWhole = (value: SqlScalar): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(parsed))) : 0;
+};
+
+/**
+ * Coerce a SIGNED aggregate (the supplier account balance) without the
+ * non-negativity clamp `safeWhole` applies. A negative balance is a legitimate
+ * credit («يسالنا»), so clamping it to 0 would make the list disagree with the
+ * supplier detail and /debts (issue 176). Only the safe-integer ceiling and
+ * non-finite values are guarded. */
+const safeSignedWhole = (value: SqlScalar): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const truncated = Math.trunc(parsed);
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(-Number.MAX_SAFE_INTEGER, truncated));
 };
 
 type SqlPartyStats = { invoiceCount: SqlScalar; totalAmount: SqlScalar; paidAmount: SqlScalar; remainingAmount: SqlScalar };
@@ -1703,6 +1728,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
     // --- supplier account (issue 161) ----------------------------------------
     async insertSupplierEntry(entry: SupplierEntryInsert) {
+      assertAdjustmentDirection(entry.kind, entry.direction);
       const row = firstRowOf(
         await db
           .insert(supplierAccountEntries)
@@ -2022,7 +2048,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         db
           .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierAccountEntries.amount}), 0)` })
           .from(supplierAccountEntries)
-          .where(and(eq(supplierAccountEntries.invoiceId, invoiceId), eq(supplierAccountEntries.kind, "ADJUSTMENT"))),
+          .where(and(eq(supplierAccountEntries.invoiceId, invoiceId), eq(supplierAccountEntries.kind, "ADJUSTMENT"), eq(supplierAccountEntries.direction, "THEY_OWE"))),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;

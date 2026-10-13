@@ -121,19 +121,24 @@ export function PurchasePage() {
       setError(t("partyChooseExisting"));
       return;
     }
+    // #146: the quantity field is the shared draft now, so an unusable draft is
+    // refused instead of silently keeping a stale quantity (the old
+    // `Number(event.target.value)` handler dropped the keystroke).
+    //
+    // ORDER: this must stay BEFORE the payment check. A cleared quantity drops
+    // the total to zero, so a payment typed against the old total would fail the
+    // amount-vs-total check and show `purchasesInvalidPaid`, masking the real
+    // problem. The order is pinned by the quantity-draft tests — do not swap it.
+    const lineError = firstLineError(lines, (line) => (quantityDraftInvalid(line.quantityDraft) ? t("purchasesInvalidQuantity") : null));
+    if (lineError !== null) {
+      setError(lineError);
+      return;
+    }
     // runs the shared percentage/amount/over-total checks and maps a zero draft
     // to «nothing paid now» (the api requires a positive initialPaid)
     const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
     if (!paid.ok) {
       setError(t("purchasesInvalidPaid"));
-      return;
-    }
-    // #146: the quantity field is the shared draft now, so an unusable draft is
-    // refused instead of silently keeping a stale quantity (the old
-    // `Number(event.target.value)` handler dropped the keystroke)
-    const lineError = firstLineError(lines, (line) => (quantityDraftInvalid(line.quantityDraft) ? t("purchasesInvalidQuantity") : null));
-    if (lineError !== null) {
-      setError(lineError);
       return;
     }
     void createInvoice.mutate({

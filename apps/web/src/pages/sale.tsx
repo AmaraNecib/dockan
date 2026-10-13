@@ -251,6 +251,20 @@ export function SalePage() {
       setError(t("partyChooseExisting"));
       return;
     }
+    // ORDER: the line drafts are checked BEFORE the payment. An unusable
+    // quantity (or price override) drops the total, so a payment typed against
+    // the old total would fail the amount-vs-total check and show
+    // `saleInvalidPaid`, masking the real problem. The order is pinned by the
+    // quantity-draft tests — do not swap it.
+    const lineError = firstLineError(lines, (line) => {
+      if (saleOverrideInvalid(line)) return t("saleInvalidOverride");
+      if (quantityDraftInvalid(line.quantityDraft)) return t("saleInvalidQuantity");
+      return null;
+    });
+    if (lineError !== null) {
+      setError(lineError);
+      return;
+    }
     // runs the shared percentage/amount/over-total checks and maps a zero draft
     // to «nothing paid now» (the api requires a positive initialPaid)
     const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
@@ -266,15 +280,6 @@ export function SalePage() {
         setError(t("saleInvalidDiscount"));
         return;
       }
-    }
-    const lineError = firstLineError(lines, (line) => {
-      if (saleOverrideInvalid(line)) return t("saleInvalidOverride");
-      if (quantityDraftInvalid(line.quantityDraft)) return t("saleInvalidQuantity");
-      return null;
-    });
-    if (lineError !== null) {
-      setError(lineError);
-      return;
     }
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {

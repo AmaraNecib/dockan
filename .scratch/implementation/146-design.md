@@ -299,6 +299,32 @@ is intact after a fresh value.
 
 ## 8. Review outcomes and follow-ups
 
+### Round 4: PR #188 review fix (Greptile round 2)
+
+**Finding 1 — a payment error masked a bad quantity.** `purchase.tsx` resolved the
+initial payment (including the amount-vs-total check) *before* it validated the
+line quantities. Once the operator typed a payment and then cleared a quantity,
+the total fell to zero while the typed amount stayed, so the over-total check
+fired and the page blamed `purchasesInvalidPaid` for a cart whose real problem
+was `purchasesInvalidQuantity`. The line drafts are the inputs; the total and the
+payment are derived from them, so the line check must run first. **`sale.tsx` had
+the identical order and the same failure**, verified with a red page test before
+the fix; it is reordered the same way. Both sites carry an `ORDER:` comment and a
+page test that fails if the two blocks are swapped.
+
+**Finding 2 — duplicated policy comment.** The comment block above
+`QuickAddSpec` was committed twice verbatim. The second copy is removed, leaving
+the one directly above the type where it reads correctly.
+
+**Stale finding — quick-add forgets the category.** Greptile re-listed the
+round-1 finding; the fix is already in the tree at this PR. `QuickAddSpec`
+carries the required `keepOnCreate` field and `nextBag` applies it
+(`use-invoice-draft.ts:143` and `:158` at the PR head before the duplicate
+comment was removed), with `purchase.tsx:53` declaring
+`keepOnCreate: ["categoryId"]`. Closed on the PR with those references; the
+round-1 page test that creates two purchase items from one category pick already
+pins it, so the mechanism is not re-implemented.
+
 ### Round 3: PR #188 review fix (Greptile 4/5)
 
 **Finding.** The shared success reset rebuilt the whole field bag, so purchase's

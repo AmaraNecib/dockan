@@ -806,6 +806,29 @@ describe("PurchasePage quantity draft (#146)", () => {
     container.remove();
   });
 
+  it("blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2)", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(totalText(container)).toContain("2400");
+
+    // type a valid payment: the pair's source becomes "amount", so clearing the
+    // quantity keeps 1200 in the amount field while the total falls to zero
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')!, "1200"));
+    expect(totalAmount(container)).toBe(2400);
+    await act(async () => setValue(quantityField(container), ""));
+    expect(quantityField(container).value).toBe("");
+    expect(totalAmount(container)).toBe(0);
+
+    await save(container);
+    // the quantity is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «purchasesInvalidPaid» here.
+    const message = container.querySelector('[data-testid="purchase-error"]')?.textContent ?? "";
+    expect(message).toContain("أدخل كمية صحيحة");
+    expect(message).not.toContain("أدخل مبلغاً مدفوعاً");
+    expect(lastPurchaseInput).toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   it("keeps an unreadable or zero draft visible and resolves it to zero, exactly like sale", async () => {
     const { container, root } = await mountWithLine("2", "1200");
     for (const draft of ["abc", "2.5", "-3", "0"]) {

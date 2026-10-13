@@ -1116,6 +1116,28 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     expect(totalAmount(host)).toBe(0);
   });
 
+  it("blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    // a typed payment pins the pair's source to "amount", so clearing the
+    // quantity keeps 500 in the amount field while the total falls to zero
+    await act(async () => setInput(host, "sale-paid", "500"));
+    expect(totalAmount(host)).toBe(1000);
+    await act(async () => setElementValue(quantityField(host), ""));
+    expect(quantityField(host).value).toBe("");
+    expect(totalAmount(host)).toBe(0);
+
+    await act(async () => {
+      saveButton(host).click();
+    });
+    // the quantity is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «saleInvalidPaid» here.
+    const message = host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+    expect(message).toContain(i18n.t("saleInvalidQuantity"));
+    expect(message).not.toContain(i18n.t("saleInvalidPaid"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
   it("pins a discounted cart total through the shared totals path", async () => {
     const host = await mountSale();
     await scan("111"); // 1 x 1000

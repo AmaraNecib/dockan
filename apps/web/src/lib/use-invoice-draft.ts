@@ -117,13 +117,6 @@ export type QuickAddOutcome = { ok: true; item: Item } | { ok: false; error: str
  * field would lose it again on the very next open, silently. A keep list is
  * only meaningful for a spec that does not reset on open.
  */
-/**
- * The quick-add form's policy, stated once per screen. The two arms are
- * mutually exclusive on purpose: `openForm` rebuilds the bag from `empty()`
- * whenever `resetOnOpen` is true, so a spec that reset on open and still kept a
- * field would lose it again on the very next open, silently. A keep list is
- * only meaningful for a spec that does not reset on open.
- */
 export type QuickAddSpec<F extends Record<string, string>> =
   | (QuickAddBag<F> & {
       resetOnOpen: true;

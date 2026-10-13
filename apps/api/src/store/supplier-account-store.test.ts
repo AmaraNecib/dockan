@@ -6,7 +6,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDate, localDateTime } from "../lib/logger";
-import { supplierBalance } from "../lib/supplier-ledger";
+import { deriveInvoicePaid, supplierBalance } from "../lib/supplier-ledger";
 import { backfillSupplierAccounts, createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
 
@@ -145,6 +145,39 @@ describe("supplier account store", () => {
     expect(history[0]?.lines[0]?.quantity).toBe(3);
     const detail = await store.getSupplierReturn(returnId);
     expect(detail?.amount).toBe(120);
+  });
+
+  it("keeps the invoice cache reconcilable from the entries and returns that name it", async () => {
+    const supplier = await makeSupplier("مورد اشتقاق");
+    const invoice = await makePurchase(supplier.id, 900);
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 900, invoiceId: invoice.id, occurredAt: now() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 300, invoiceId: invoice.id, method: "CASH", occurredAt: now() });
+    await store.applyPaymentToInvoice(invoice.id, 300);
+    // an invoice-linked purchase return reduces the debt but is NOT paid money
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "RETURN", amount: 200, invoiceId: invoice.id, occurredAt: now() });
+    const { id: returnId } = await store.insertSupplierReturn({
+      returnNumber: "PRT-0002",
+      supplierId: supplier.id,
+      invoiceId: invoice.id,
+      kind: "INVOICE_LINKED",
+      amount: 200,
+      debtReduction: 200,
+      credit: 0,
+      cashBack: 0,
+      reason: null,
+      occurredAt: now(),
+    });
+    expect(returnId).toBeTruthy();
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 200)).toBe(true);
+
+    const detail = await store.getInvoiceDetail(invoice.id);
+    const entries = await store.listSupplierEntries(supplier.id);
+    // SAFETY: the invoice was just read in this test and cannot vanish
+    const derived = deriveInvoicePaid(entries, invoice.id, detail!.totalAmount);
+    expect(detail?.paidAmount).toBe(derived);
+    expect(detail?.returnCreditAmount).toBe(200);
+    // the printed header reconciles: total − paid − returnCredit = remaining
+    expect(detail?.remainingAmount).toBe(detail!.totalAmount - derived - detail!.returnCreditAmount);
   });
 
   it("includes the signed account on a supplier party detail", async () => {

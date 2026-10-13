@@ -86,5 +86,5 @@ test("supplier account: pay, return, and refund move one signed balance", async 
   await page.getByTestId("supplier-action-refund").click();
   await page.getByTestId("supplier-refund-amount").fill("800");
   await page.getByTestId("supplier-refund-confirm").click();
-  await expect(page.getByTestId("supplier-balance-value")).toContainText("0");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("0 دج");
 });

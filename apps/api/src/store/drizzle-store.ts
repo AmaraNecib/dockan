@@ -543,9 +543,12 @@ export const backfillSupplierAccounts = (conn: Connection): void => {
       return;
     }
     // SAFETY: the SELECT aliases exactly these columns from invoices, whose
-    // types are fixed by db/schema.ts.
+    // types are fixed by db/schema.ts. total_amount > 0 keeps the ledger's
+    // CHECK(amount > 0) from aborting boot on a legacy zero-total purchase;
+    // the EXISTS keeps an orphaned counterparty_id (pre-#120 data) from
+    // violating the suppliers(id) foreign key.
     const invoiceRows = conn.raw
-      .query("SELECT id, counterparty_id AS supplierId, total_amount AS totalAmount, created_at AS createdAt FROM invoices WHERE kind = 'PURCHASE' AND counterparty_id IS NOT NULL")
+      .query("SELECT id, counterparty_id AS supplierId, total_amount AS totalAmount, created_at AS createdAt FROM invoices WHERE kind = 'PURCHASE' AND counterparty_id IS NOT NULL AND total_amount > 0 AND EXISTS (SELECT 1 FROM suppliers s WHERE s.id = invoices.counterparty_id)")
       .all() as Array<{ id: string; supplierId: string; totalAmount: number; createdAt: string }>;
     const insertEntry = conn.raw.query(
       "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, invoice_id, method, note, ref, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
@@ -1915,7 +1918,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return Number(result.changes) > 0;
     },
     async getInvoiceDetail(invoiceId: string) {
-      const [invoice, lines, paymentsRows, creditRows] = await Promise.all([
+      const [invoice, lines, paymentsRows, creditRows, supplierCreditRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
         db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id),
         db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
@@ -1926,6 +1929,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .select({ credit: sql<SqlScalar>`coalesce(sum(${returns.debtApplied}), 0)` })
           .from(returns)
           .where(eq(returns.invoiceId, invoiceId)),
+        // supplier purchase returns reduce a PURCHASE invoice's debt the same
+        // way; without this the printed header would not add up after a
+        // return (total − paid − remaining = returnCreditAmount)
+        db
+          .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierReturns.debtReduction}), 0)` })
+          .from(supplierReturns)
+          .where(eq(supplierReturns.invoiceId, invoiceId)),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
@@ -1940,7 +1950,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ...normalizeInvoiceLegacy(header),
         lines: normalizedLines,
         payments: paymentsRows,
-        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0),
+        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0) + safeWhole(supplierCreditRows[0]?.credit ?? 0),
       } satisfies InvoiceDetail;
     },
     async getInvoiceLine(lineId: string) {

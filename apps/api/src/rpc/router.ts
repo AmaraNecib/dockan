@@ -14,7 +14,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
-import { allocateOldestFirst, splitAgainstRemaining, supplierBalance, supplierReturnSplit } from "../lib/supplier-ledger";
+import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
@@ -721,7 +721,10 @@ export function createRpcRouter(deps: RpcDeps) {
             let left = input.amount;
             for (const line of plan) {
               if (line.applied <= 0) continue;
-              credit += await payInvoice(line.invoice.id, line.applied);
+              // allocateOldestFirst caps each applied at that invoice's
+              // remaining, so the split never yields credit here; any residue
+              // is the undistributed tail below
+              await payInvoice(line.invoice.id, line.applied);
               left -= line.applied;
             }
             // SAFETY: plan never applies more than `amount`; any residue is credit
@@ -791,7 +794,6 @@ export function createRpcRouter(deps: RpcDeps) {
 
           const split = supplierReturnSplit(amount, invoiceRemaining);
           const cashBack = input.cashBack ?? 0;
-          if (cashBack > amount) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
 
           const { id: returnId } = await tx.insertSupplierReturn({
             returnNumber,
@@ -845,7 +847,7 @@ export function createRpcRouter(deps: RpcDeps) {
           }
           if (cashBack > 0) {
             const before = await tx.listSupplierEntries(input.supplierId);
-            const availableCredit = Math.max(0, -supplierBalance(before));
+            const availableCredit = availableSupplierCredit(supplierBalance(before));
             if (cashBack > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "REFUND", amount: cashBack, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
           }
@@ -861,7 +863,7 @@ export function createRpcRouter(deps: RpcDeps) {
           const supplier = await tx.getParty("supplier", input.supplierId);
           if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
           const entries = await tx.listSupplierEntries(input.supplierId);
-          const availableCredit = Math.max(0, -supplierBalance(entries));
+          const availableCredit = availableSupplierCredit(supplierBalance(entries));
           if (input.amount > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
           const occurredAt = localDateTime();
           await tx.insertSupplierEntry({
@@ -1108,7 +1110,7 @@ export function createRpcRouter(deps: RpcDeps) {
           // Supplier account (issue 161): an id-backed purchase is a signed
           // charge, and a down payment is a signed payment entry. Typed-name
           // purchases (no supplier record) stay invoice-based like customers.
-          if (input.counterpartyId !== undefined && input.counterpartyId !== null) {
+          if (input.kind === "PURCHASE" && input.counterpartyId !== undefined && input.counterpartyId !== null) {
             const occurredAt = localDateTime();
             await tx.insertSupplierEntry({
               supplierId: input.counterpartyId,

@@ -26,6 +26,13 @@ export function splitAgainstRemaining(amount: number, remaining: number) {
   return { attached, credit: amount - attached };
 }
 
+/** How much cash the shop may still receive from the supplier: the size of
+ * the credit (a negative balance), never a positive amount. A refund or a
+ * return's cash-back may not exceed this. */
+export function availableSupplierCredit(balance: number): number {
+  return Math.max(0, -balance);
+}
+
 export interface AllocatableInvoice {
   id: string;
   invoiceDate: string;
@@ -73,11 +80,12 @@ export function allocateOldestFirst(invoices: readonly AllocatableInvoice[], amo
 }
 
 /**
- * The invoice's paid amount derived from the entries that name it: the sum of
- * the negative entries (payments and returns) attached to the invoice, capped
- * at the invoice total. This is the cache the printed invoice shows; the store
- * writes the same value through a conditional UPDATE, and a test proves the two
- * agree.
+ * The invoice's paid amount derived from the PAYMENT entries that name it,
+ * capped at the invoice total. A purchase return does not count as "paid"
+ * money: it is surfaced separately as `returnCreditAmount` on the invoice
+ * detail, so the printed header reconciles as `total − paid − returnCredit =
+ * remaining` (the same shape the sale side uses). The store writes the cache
+ * through a conditional UPDATE, and a store test proves the two agree.
  */
 export function deriveInvoicePaid(
   entries: readonly { kind: SupplierEntryKind; amount: number; invoiceId: string | null }[],
@@ -85,7 +93,7 @@ export function deriveInvoicePaid(
   totalAmount: number,
 ): number {
   const paid = entries
-    .filter((entry) => entry.invoiceId === invoiceId && supplierEntrySign(entry.kind) < 0)
+    .filter((entry) => entry.invoiceId === invoiceId && entry.kind === "PAYMENT")
     .reduce((sum, entry) => sum + entry.amount, 0);
   return Math.min(totalAmount, Math.max(0, paid));
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   allocateOldestFirst,
+  availableSupplierCredit,
   deriveInvoicePaid,
   splitAgainstRemaining,
   supplierBalance,
@@ -54,17 +55,19 @@ describe("splitAgainstRemaining", () => {
 });
 
 describe("deriveInvoicePaid", () => {
-  it("sums only the negative entries that name the invoice, capped at the total", () => {
+  it("sums only the PAYMENT entries that name the invoice, capped at the total", () => {
     const entries = [
       { kind: "PURCHASE" as const, amount: 1000, invoiceId: "inv-1" },
       { kind: "PAYMENT" as const, amount: 300, invoiceId: "inv-1" },
+      // a return reduces the debt but is not money paid: it is surfaced as
+      // returnCreditAmount, not counted here
       { kind: "RETURN" as const, amount: 200, invoiceId: "inv-1" },
       // a credit payment names no invoice and must not touch this one
       { kind: "PAYMENT" as const, amount: 999, invoiceId: null },
       // another invoice's payment is not this invoice's
       { kind: "PAYMENT" as const, amount: 500, invoiceId: "inv-2" },
     ];
-    expect(deriveInvoicePaid(entries, "inv-1", 1000)).toBe(500);
+    expect(deriveInvoicePaid(entries, "inv-1", 1000)).toBe(300);
   });
 
   it("never exceeds the invoice total even if corrupt entries would", () => {
@@ -133,6 +136,14 @@ describe("allocateOldestFirst", () => {
     const invoices = [invoice({ id: "a", remainingAmount: 100 })];
     expect(allocateOldestFirst(invoices, 0).every((line) => line.applied === 0)).toBe(true);
     expect(allocateOldestFirst(invoices, Number.NaN).every((line) => line.applied === 0)).toBe(true);
+  });
+});
+
+describe("availableSupplierCredit", () => {
+  it("is the size of a credit and zero when the shop owes", () => {
+    expect(availableSupplierCredit(-800)).toBe(800);
+    expect(availableSupplierCredit(1200)).toBe(0);
+    expect(availableSupplierCredit(0)).toBe(0);
   });
 });
 

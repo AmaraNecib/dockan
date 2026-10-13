@@ -75,14 +75,15 @@ export function SupplierOpeningBalancePage() {
 
   const newRow = newOpeningRowStatus({ name: newName, amount: newAmount, existingNames: suppliers.map((supplier) => supplier.name) });
   const newFilled = newRow.status === "filled";
+  // a duplicate name is not an error any more: the effect below moves the draft
+  // onto the matching supplier's row, so "duplicate" only exists for the render
+  // before that move (Greptile round 2)
   const newRowError =
     newRow.status === "incomplete"
       ? t("supplierOpeningNewIncomplete")
       : newRow.status === "invalid"
         ? t("supplierOpeningRowInvalid")
-        : newRow.status === "duplicate"
-          ? t("supplierOpeningNameExists")
-          : null;
+        : null;
 
   const totalRows = filledExisting.length + (newFilled ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
@@ -101,46 +102,37 @@ export function SupplierOpeningBalancePage() {
     });
   }
 
-  /** The typed new-name row resolved for saving: the existing supplier it now
-   * folds to (with the amount and direction preserved), or undefined when the
-   * name is genuinely new. */
-  function resolveNewNameRow(): { supplierId: string; direction: SupplierAdjustmentDirection; amount: number } | undefined {
+  /** The existing supplier the typed new name now folds to, with its parsed
+   * amount, or undefined when the name is genuinely new or the amount is
+   * unusable. Shared by the adoption effect and the save fallback so they agree. */
+  function resolveNewName(): { supplierId: string; amount: number } | undefined {
     const match = matchByNormalizedName(suppliers, newName);
     if (match === undefined) return undefined;
     const amount = parseGroupedAmount(newAmount);
     if (amount === null || amount <= 0) return undefined;
-    return { supplierId: match.id, direction: newDirection, amount };
+    return { supplierId: match.id, amount };
   }
 
-  // Greptile round 2 — the confirmation is client-derived from a possibly stale
-  // list. When the typed new name now matches an existing supplier (a concurrent
-  // create landed after this page loaded), move the draft onto that supplier's
-  // row so the confirmed save sends it under the existing id instead of dropping
-  // the row once the refreshed list turns it into a duplicate.
+  // Greptile round 2 — the typed new name may now match an existing supplier (a
+  // concurrent create landed after this page loaded, or a background refetch
+  // brought one in). Move the draft onto that supplier's row as soon as the
+  // match exists, preserving amount and direction, so a save never drops the row
+  // or mints a duplicate account — regardless of whether the confirmation
+  // dialog is open yet.
   useEffect(() => {
-    if (!confirming) return;
-    const match = matchByNormalizedName(suppliers, newName);
-    if (match === undefined || parseGroupedAmount(newAmount) === null) return;
-    setRow(match.id, { direction: newDirection, amount: newAmount });
+    const resolved = resolveNewName();
+    if (resolved === undefined) return;
+    setRow(resolved.supplierId, { direction: newDirection, amount: newAmount });
     setNewName("");
     setNewAmount("");
-  }, [confirming, suppliers, newName, newAmount, newDirection]);
+  }, [suppliers, newName, newAmount, newDirection]);
 
   async function save(confirmExisting: boolean) {
-    if (occurredAt === null) return;
-    // the duplicate-name block is resolved by adopting the matching existing
-    // row; the row cap and invalid existing rows still stop the save
-    const resolved = resolveNewNameRow();
-    if (blockedReason !== null && !(resolved !== undefined && !overLimit && invalidExisting.length === 0)) return;
+    if (occurredAt === null || blockedReason !== null) return;
+    const resolved = resolveNewName();
     setError(null);
     setSubmitting(true);
     try {
-      if (resolved !== undefined) {
-        // keep the UI in step: the draft moves onto the existing supplier's row
-        setRow(resolved.supplierId, { direction: newDirection, amount: newAmount });
-        setNewName("");
-        setNewAmount("");
-      }
       const result = await bulk.mutateAsync({
         occurredAt,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
@@ -151,8 +143,10 @@ export function SupplierOpeningBalancePage() {
             amount: row.state.amount,
             confirmExisting: confirmExisting || undefined,
           })),
+          // a name that raced into existence is sent under the existing supplier's
+          // id if the adoption effect has not moved it yet (a same-tick save)
           ...(resolved !== undefined
-            ? [{ supplierId: resolved.supplierId, direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
+            ? [{ supplierId: resolved.supplierId, direction: newDirection, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
             : newRow.status === "filled"
               ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }]
               : []),

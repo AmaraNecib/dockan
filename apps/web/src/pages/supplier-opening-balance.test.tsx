@@ -188,7 +188,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("لم تُدخل");
   });
 
-  it("renders a credit current balance with its direction and blocks a duplicate inline name", async () => {
+  it("renders a credit current balance with its direction and moves a duplicate inline name onto that supplier (issue 176 / Greptile round 2)", async () => {
     render();
     await settle();
 
@@ -197,12 +197,17 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(creditCell).toContain("300");
     expect(creditCell).toContain("يسالنا");
 
-    // typing an existing supplier's name must not create a second account
+    // typing an existing supplier's name moves the amount onto that supplier's
+    // row instead of minting a second account
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
-    expect(host.querySelector('[data-testid="opening-balance-name-exists"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-name-exists"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("500");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("");
+
+    // s-1 already carries entries, so the save still asks before posting
     clickOn("opening-balance-save");
-    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
   });
 
   it("surfaces the confirmation dialog when the server refuses a stale-expectation row", async () => {
@@ -366,5 +371,39 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the confirmed save posts under the existing id, not a silent no-op
     expect(captured?.rows).toHaveLength(1);
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-race", direction: "THEY_OWE", amount: 640, confirmExisting: true });
+  });
+
+  it("adopts a name that raced in before the save is pressed, so the save is never a dead end (Greptile round 2)", async () => {
+    render();
+    await settle();
+
+    const name = "مورد سبق الحفظ";
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, name);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "250");
+
+    // the concurrent create lands (a background refetch) before the owner saves
+    suppliers = [
+      ...BASE_SUPPLIERS,
+      { id: "s-pre", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
+    ];
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+    });
+    await settle();
+
+    // the draft moves and the save is not a disabled dead end
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[3]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("250");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-pre", direction: "WE_OWE", amount: 250, confirmExisting: true });
   });
 });

@@ -1,5 +1,7 @@
 # Code review — issue #163 (two axes)
 
+> **Superseded** by `f651a97…-code-review.md` (Greptile round-1 fix delta). Kept as history.
+
 Reviewed code SHA: `79a7e65281206875b547c2add383eae81e5e1377`
 Evidence SHA (this filename): `cbeba3012d5ac0928e796bd7a7ef490e5634c79f` (adds only the wisdom note)
 Fixed point: `c0794b7a1a0e1ec0e5af0ca6bd51c1a6588a4b92` (`origin/develop`, merge-base)

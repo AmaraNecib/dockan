@@ -19,15 +19,22 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
 - **When no key is sent** the #177 signature remains the key, unchanged, so the
   server-stamped-timestamp rule still protects omitted-date retries.
 - The key is **additive to** the signature, never a replacement: a duplicate is
-  refused when *either* matches. For a request that keeps its shape the key can
-  never weaken the #177 money-safe rule that an identical repeat is refused. A
-  caller that drops the key *and* changes the timestamp between attempts is
-  re-shaping its request, not retrying it, and is outside the contract. The
-  escape hatch for a genuinely-wanted identical entry is a wider signature (a
-  different reason/date/ref) when no key is sent, or a **different key** (or no
-  key) when one is: a request that keeps its key is that key's request, and
-  re-shaping its other fields does not release it. Neither path weakens the
-  guard.
+  refused when *either* arm matches.
+  - the **key arm** matches `supplierId` + the client key and ignores every other
+    field, so the same key is refused whatever else changed;
+  - the **signature arm** matches `supplierId`, `direction`, `amount`, `reason`,
+    `invoiceId`, and — **only when the incoming request carries its own
+    `occurredAt`** — that `occurredAt`. A request that omits the date
+    (`serverStamped`) drops the time and matches any stored time.
+  `ref` is in neither arm, so changing it never releases an entry.
+- **Recording a genuinely distinct entry** therefore means changing the
+  signature: at least one of `direction`, `amount`, `reason`, `invoiceId` — or
+  `occurredAt` when the request carries an explicit date (a request that omits
+  the date is time-insensitive and cannot be released by the date). A request
+  that carries a client key must *also* send a **new key**; a new key alone is
+  not enough while the signature is unchanged, and dropping the key is not enough
+  either because the signature arm stays active. `supplierId` differs only across
+  accounts. Neither path weakens the guard.
 - The key is written by the one guarded write path and enforced by a partial
   unique index, so a second process that races the identical request loses at
   the database, and the unique violation is mapped back to the same stable
@@ -63,6 +70,11 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   a crash between the `ALTER` and the version stamp is repaired). Those rows would
   otherwise escape the new dedup, so a version-3 build MUST refuse the version-4
   database (ADR-0008 §4.5).
-- A stamped request and an explicit request are now different requests (the key
-  encodes the request shape); this narrows, not widens, what is refused, and no
-  caller that retries changes shape between attempts.
+- The `serverStamped` rule is time-insensitive **in the matching direction**: a
+  request that omits `occurredAt` is refused by any existing `ADJUSTMENT` with
+  the same `(supplierId, direction, amount, reason, invoiceId)`, at any stored
+  time — an explicit row included. An explicit request is time-sensitive and
+  matches only a row with the same `occurredAt`. The *stored* key differs between
+  a stamped row (`sig:[…, null]`) and an explicit one (`sig:[…, timestamp]`),
+  which is what the index compares; the guard's column arm remains the authority
+  for a stamped incoming request.

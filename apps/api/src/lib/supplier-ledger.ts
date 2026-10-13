@@ -51,11 +51,11 @@ export function availableSupplierCredit(balance: number): number {
 
 /**
  * #181 — one adjustment's dedup identity, shared by the guarded write, the
- * duplicate guard, and the DB backfill so they can never drift. `idempotencyKey`
- * is an explicit client key; when present it is the whole key (D2). Otherwise
- * the key is the #177 signature, and `serverStamped` drops the timestamp from
- * it because the server minted that timestamp and a retry cannot be told apart
- * by time.
+ * duplicate guard, and the DB backfill so they can never drift. When
+ * `idempotencyKey` is present the computed key is `key:[supplierId, key]`;
+ * otherwise it is the #177 signature, where `serverStamped` drops the timestamp
+ * because the server minted it and a retry cannot be told apart by time. `ref`
+ * is part of neither form.
  */
 export type AdjustmentDedupInput = {
   supplierId: string;
@@ -66,7 +66,8 @@ export type AdjustmentDedupInput = {
   invoiceId: string | null;
   /** #177 — true when the server stamped `occurredAt` because the caller omitted it */
   serverStamped?: boolean;
-  /** #181 — an explicit client idempotency key; when present it wins over the signature */
+  /** #181 — an explicit client idempotency key; when present the computed key is
+   * this key (the guard still keeps the #177 signature as a backstop) */
   idempotencyKey?: string | null;
 };
 
@@ -74,7 +75,8 @@ export type AdjustmentDedupInput = {
  * The canonical dedup key of a manual adjustment. JSON encodes the tuple, so a
  * null column and an empty string stay distinct and no caller text can forge a
  * separator; the `key:` / `sig:` prefixes keep the two namespaces apart. A key
- * is scoped to the account, exactly like the signature is.
+ * is scoped to the account, exactly like the signature is. `ref` is in neither
+ * form, so changing it never changes the key.
  */
 export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
   if (hasExplicitIdempotencyKey(input)) {

@@ -543,6 +543,39 @@ describe("supplier account store", () => {
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 
+  it("refuses an identical adjustment that only changes ref (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد تغيير المرجع");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-A" }));
+    // ref is in neither the signature nor the key, so it cannot release an entry
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-B" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("matches any stored timestamp when the request omits the date (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد طابع مقابل صريح");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 250, reason: "رصيد", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
+    // the incoming request omits occurredAt, so its signature drops the time and
+    // matches the explicit row at a different stored time
+    await expect(
+      store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2099-01-01T00:00:00", serverStamped: true })),
+    ).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("refuses a fresh key while the signature is unchanged, and allows one with a changed signature (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد مفتاح جديد وتوقيع");
+    const base = { supplierId: supplier.id, direction: "WE_OWE" as const, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 400, idempotencyKey: "k1" }));
+    // a new key alone is not enough: the signature arm still matches
+    await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 400, idempotencyKey: "k2" }))).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    // a new key AND a changed signature is a genuinely distinct entry
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, amount: 401, idempotencyKey: "k2" }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
   it("dedupes a linked adjustment by its key and never reduces the invoice twice (issue 181)", async () => {
     const supplier = await makeSupplier("مورد رابط مفتاح");
     const invoice = await makePurchase(supplier.id, 1000);

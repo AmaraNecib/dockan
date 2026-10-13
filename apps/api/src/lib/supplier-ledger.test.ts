@@ -278,6 +278,11 @@ describe("adjustmentDedupKey (issue 181)", () => {
     expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-1" })).toBe('key:["sup-1","key-1"]');
   });
 
+  it("ignores ref, which is in neither form (issue 181 review)", () => {
+    const withRef: AdjustmentDedupInput & { ref: string } = { ...signature, ref: "REF-B" };
+    expect(adjustmentDedupKey(withRef)).toBe(adjustmentDedupKey(signature));
+  });
+
   it("cannot be forged by crafted text (JSON encoding)", () => {
     // a reason that embeds a whole other tuple cannot collide with it
     expect(adjustmentDedupKey({ ...signature, reason: '"],["sup-1","WE_OWE",500,null,null]' })).not.toBe(adjustmentDedupKey(signature));

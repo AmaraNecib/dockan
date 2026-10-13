@@ -42,10 +42,9 @@ export type AdjustmentDedupInput = {
 };
 
 export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
-  const idempotencyKey = input.idempotencyKey?.trim();
-  if (idempotencyKey !== undefined && idempotencyKey !== "") {
-    // an explicit key is scoped to the account, like the signature is
-    return `key:${JSON.stringify([input.supplierId, idempotencyKey])}`;
+  if (hasExplicitIdempotencyKey(input)) {
+    // hasExplicitIdempotencyKey proved a trimmed non-empty value exists
+    return `key:${JSON.stringify([input.supplierId, (input.idempotencyKey ?? "").trim()])}`;
   }
   return `sig:${JSON.stringify([
     input.supplierId,
@@ -56,7 +55,14 @@ export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
     input.serverStamped === true ? null : input.occurredAt,
   ])}`;
 }
+
+export function hasExplicitIdempotencyKey(input: { idempotencyKey?: string | null }): boolean {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  return idempotencyKey !== undefined && idempotencyKey !== "";
+}
 ```
+
+`ref` is part of neither form: changing it never changes the key.
 
 `JSON.stringify` gives NULL-safe, delimiter-safe, deterministic encoding, so a
 caller's note or key can never smuggle a separator. The `key:` / `sig:` prefixes
@@ -171,11 +177,14 @@ non-adjustment row and any legacy duplicate deliberately left unkeyed.
 
 The bulk `رصيد افتتاحي` and the manual panel produce the same signature for the
 same logical entry, so a repeat through either is refused. That is money-safe and
-unchanged. The escape hatch for a genuinely-wanted identical re-entry is a wider
-signature (a different `ref`/reason/date) when no key is sent, or a **different
-key** (or no key) when one is — a request that keeps its key is that key's
-request, and re-shaping its other fields does not release it. Neither path
-weakens the guard.
+unchanged. A genuinely distinct re-entry must change the **signature** —
+`direction`, `amount`, `reason`, `invoiceId`, or `occurredAt` when the request
+carries an explicit date (a request that omits the date is time-insensitive and
+cannot be released by the date). `ref` is not in the signature or the key, so
+changing it never releases an entry. A request that carries a client key must
+*also* send a **new key**; a new key alone is not enough while the signature is
+unchanged, and dropping the key is not enough either because the signature arm
+stays active. Neither path weakens the guard.
 
 ### D7 — not user-facing
 
@@ -219,10 +228,12 @@ no new Playwright flow; the full existing suite still runs as a gate.
 
 ## Risks
 
-- **Legacy cross-shape dedup.** A `serverStamped` query no longer matches a keyed
-  explicit row. A stamped request and an explicit request are different requests,
-  so this is a deliberate narrowing, and no caller that retries sends a different
-  shape. Documented; the key covers any caller that needs cross-shape safety.
+- **Time-insensitive matching for omitted-date requests.** A request that omits
+  `occurredAt` drops the time from the signature and is refused by any existing
+  ADJUSTMENT with the same `(supplierId, direction, amount, reason, invoiceId)`,
+  whether the stored row was explicit or stamped. An explicit request only
+  matches the same `occurredAt`. This is #177's existing rule, unchanged by the
+  key; the key only adds a match.
 - **Duplicate legacy rows.** Handled by leaving the later rows' `dedup_key` NULL
   (index creation cannot fail on existing data) and keeping the column fallback in
   the guard.

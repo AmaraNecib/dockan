@@ -969,7 +969,8 @@ export function createRpcRouter(deps: RpcDeps) {
               // when the caller omitted the date the server stamped it, so a
               // retry cannot be told apart by time: the store matches any time
               serverStamped: input.occurredAt === undefined,
-              // #181 — an explicit client key wins over the signature wholesale
+              // #181 — an explicit client key is the primary dedup identity;
+              // the #177 signature arm stays in force
               idempotencyKey: input.idempotencyKey ?? null,
             });
           } catch (error) {

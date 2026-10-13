@@ -1342,11 +1342,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return conditions;
   };
 
-  /** True when an ADJUSTMENT with this key already exists. Without an explicit
-   * idempotency key the #177 signature decides (unchanged). With one the key is
-   * authoritative — it matches the stored `dedup_key` at any shape — and the
-   * signature is still consulted so a keyed retry of a request that was first
-   * sent unkeyed is also refused. */
+  /** True when an ADJUSTMENT with this key or signature already exists. Without
+   * an explicit idempotency key the #177 signature decides (unchanged). With
+   * one the key is the primary match — it matches the stored `dedup_key` at any
+   * shape — and the signature stays in force, so a fresh key on an unchanged
+   * signature, or a keyed retry of a request first sent unkeyed, is refused. */
   const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
     const bySignature = and(...adjustmentSignatureConditions(input));
     // the keyed arm carries the kind predicate too: only an ADJUSTMENT row can
@@ -1977,10 +1977,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
      *   2. the amount is re-validated (a non-contract caller must not invert the
      *      reduction with a negative or fractional amount);
      *   3. the duplicate key is refused before any write — a retry cannot
-     *      double-post. When the caller sent an explicit `idempotencyKey` it is
-     *      the whole key; otherwise the #177 signature is, and a server-stamped
-     *      timestamp is matched at any time. The DB's partial unique index is the
-     *      cross-process backstop and its violation maps to the same DUPLICATE;
+     *      double-post. When the caller sent an explicit `idempotencyKey` that is
+     *      the primary match and the #177 signature stays in force; otherwise the
+     *      signature is the key, and a server-stamped timestamp is matched at any
+     *      time. The DB's partial unique index is the cross-process backstop and
+     *      its violation maps to the same DUPLICATE;
      *   4. a linked entry must be THEY_OWE;
      *   5. the linked invoice's conditional reduction runs before the entry is
      *      inserted, so the two can only commit together (the caller's unit rolls

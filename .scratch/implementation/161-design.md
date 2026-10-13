@@ -63,8 +63,14 @@ nothing else is migrated. Customer `SALE` invoices are untouched.
   `invoiceDate → createdAt → numeric invoice number → id`, each capped at its
   remaining, tail left undistributed (credit)
 - `splitAgainstRemaining(amount, remaining)` → `{ attached, credit }`
-- `deriveInvoicePaid(entries, totalAmount)` → `min(total, Σ attached magnitudes)`
+- `deriveInvoicePaid(entries, invoiceId, totalAmount)` → `min(total, Σ PAYMENT entries attached)`
 - `supplierReturnSplit(returnValue, invoiceRemaining)` → `{ debtReduction, credit }`
+- `availableSupplierCredit(balance)` → the refundable credit (`max(0, −balance)`)
+
+A purchase return is not "paid" money: the printed purchase invoice reconciles
+as `total − paid − returnCredit = remaining`, where `returnCredit` sums the
+sale-side `returns.debtApplied` and the supplier-side
+`supplier_returns.debtReduction` for that invoice.
 
 ## Contracts (`packages/contracts/src/core.ts`)
 
@@ -87,7 +93,7 @@ nothing else is migrated. Customer `SALE` invoices are untouched.
   specific invoice, or pure credit). For each target, attach `min(remaining,
   left)` and write a `PAYMENT` entry + conditional UPDATE; the remainder is one
   credit `PAYMENT` entry (`invoiceId = null`). Activity `PAYMENT_RECORDED`.
-- `supplierReturnsCreate`: `BEGIN IMMEDIATE`. Invoice-linked validates the
+- `suppliersReturn`: `BEGIN IMMEDIATE`. Invoice-linked validates the
   bought-minus-already-returned cap per line, prices at the line's unit cost and
   reduces stock at the current average. Free-standing takes item+quantity+amount
   and reduces stock. **Auto-accepted** (status ACCEPTED, no PENDING_REVIEW).

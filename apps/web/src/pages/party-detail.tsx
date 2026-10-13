@@ -234,15 +234,15 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               <Button
                 variant="destructive"
                 onClick={() => setDeleteOpen(true)}
-                disabled={detail.data.stats.invoiceCount > 0}
-                title={detail.data.stats.invoiceCount > 0 ? t("partyDeleteBlocked") : undefined}
+                disabled={detail.data.stats.invoiceCount > 0 || (account?.entries.length ?? 0) > 0}
+                title={detail.data.stats.invoiceCount > 0 || (account?.entries.length ?? 0) > 0 ? t("partyDeleteBlocked") : undefined}
                 data-testid="party-detail-delete"
               >
                 {t("partyDelete")}
               </Button>
             </div>
           </header>
-          {detail.data.stats.invoiceCount > 0 && (
+          {(detail.data.stats.invoiceCount > 0 || (account?.entries.length ?? 0) > 0) && (
             <p className="mt-2 text-sm text-muted-foreground" data-testid="party-delete-blocked-hint">{t("partyDeleteBlockedHint")}</p>
           )}
           {notice !== null && (

@@ -71,6 +71,9 @@ describe("supplier account store", () => {
     const supplier = await makeSupplier("مورد ترحيل");
     const invoice = await makePurchase(supplier.id, 1000);
     await store.insertPayment({ invoiceId: invoice.id, amount: 300, method: "CASH", note: null, paidAt: now() });
+    // the backfill reads the invoice's paid cache (the authority the app
+    // already displayed), not the payment rows
+    await store.setInvoicePaidAmounts(invoice.id, 300, 700);
 
     // setup() already ran the backfill on the empty database; clear the marker
     // to exercise the migration against these rows, exactly as an upgrade would.

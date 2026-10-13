@@ -691,9 +691,9 @@ export function createRpcRouter(deps: RpcDeps) {
           const occurredAt = localDateTime();
           const target = input.target ?? { kind: "OLDEST" as const };
 
-          /** Attach the part that fits, keep a payment history row, and turn the
-           * excess into a credit entry. */
-          const payInvoice = async (invoiceId: string, amount: number): Promise<number> => {
+          /** Attach the part that fits, keep a payment history row, and report
+           * the attached amount plus any excess the fresh read could not fit. */
+          const payInvoice = async (invoiceId: string, amount: number): Promise<{ attached: number; credit: number }> => {
             const detail = await tx.getInvoiceDetail(invoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
@@ -706,7 +706,7 @@ export function createRpcRouter(deps: RpcDeps) {
               }
               await tx.insertPayment({ invoiceId: detail.id, amount: attached, method, note, paidAt: occurredAt });
             }
-            return credit;
+            return { attached, credit };
           };
 
           let credit = 0;
@@ -714,21 +714,20 @@ export function createRpcRouter(deps: RpcDeps) {
             credit = input.amount;
           } else if (target.kind === "INVOICE") {
             // SAFETY: the contract superRefine requires an invoiceId for INVOICE
-            credit = await payInvoice(target.invoiceId!, input.amount);
+            credit = (await payInvoice(target.invoiceId!, input.amount)).credit;
           } else {
             const outstanding = await tx.listOutstandingPurchaseInvoices(input.supplierId);
             const plan = allocateOldestFirst(outstanding, input.amount);
-            let left = input.amount;
+            // Credit is whatever the FRESH per-invoice reads could not attach,
+            // so a divergence between the plan's stale remaining and the
+            // in-unit remaining can never silently drop money.
+            let attachedTotal = 0;
             for (const line of plan) {
               if (line.applied <= 0) continue;
-              // allocateOldestFirst caps each applied at that invoice's
-              // remaining, so the split never yields credit here; any residue
-              // is the undistributed tail below
-              await payInvoice(line.invoice.id, line.applied);
-              left -= line.applied;
+              const result = await payInvoice(line.invoice.id, line.applied);
+              attachedTotal += result.attached;
             }
-            // SAFETY: plan never applies more than `amount`; any residue is credit
-            credit += left;
+            credit = input.amount - attachedTotal;
           }
           if (credit > 0) {
             await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "PAYMENT", amount: credit, invoiceId: null, method, note, occurredAt });

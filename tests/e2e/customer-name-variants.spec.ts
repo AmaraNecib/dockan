@@ -22,15 +22,22 @@ test.afterEach(async ({ page }) => {
   const names = cleanupPartyNames;
   cleanupPartyNames = [];
   if (names.length === 0) return;
-  await page.goto("/customers");
-  await expect(page.getByTestId("parties-page-customer")).toBeVisible();
+  // `parties-page-customer` renders while the list query is still pending, so a
+  // zero row count only means "absent" AFTER the read landed (#189 review).
+  await actAndAck(page, "customersList", async () => {
+    await page.goto("/customers");
+  });
+  await expect(page.getByTestId("parties-table").or(page.getByTestId("parties-empty"))).toBeVisible();
   for (const name of names) {
     await page.getByTestId("parties-search").fill(name);
     const row = page.getByTestId("party-row").filter({ hasText: name });
     if ((await row.count()) === 0) continue;
     await row.getByTestId("party-row-delete").click();
-    await page.getByTestId("party-delete-confirm").click();
-    await expect(page.getByTestId("parties-notice")).toContainText("تم الحذف");
+    // await each delete's own acknowledgement and assert the ROW is gone: the
+    // success notice survives into the next dialog, so it proves nothing about
+    // this deletion (#189 review).
+    await actAndAck(page, "customersDelete", () => page.getByTestId("party-delete-confirm").click());
+    await expect(row).toHaveCount(0);
   }
 });
 

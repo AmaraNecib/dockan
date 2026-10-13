@@ -183,3 +183,23 @@ None added; `foldArabicVariants` is already exported by `@dokan/contracts`.
   at all, and a warning mounted inside a `role="status"` region may not be
   announced by every screen reader (pre-existing markup, both out of #130's
   scope).
+
+## Review-fix round 1 (PR #189, Greptile 4/5)
+
+- **Exact phoneless record was skipped** (correctness, finding 1): with a
+  phoneless «علي علي» AND a phoneless variant «على علي» stored, typing the exact
+  spelling returned the **variant**, so the warning's one-click pick offered a
+  different debtor while `needsChoice` still allowed the click. The exact
+  phoneless spelling now short-circuits to no warning at all (that record is the
+  identity; `needsChoice` already refuses the typed-only name), and the variant
+  fallback cannot run. Regression test added, verified red before the fix.
+- **E2E cleanup could skip saved customers** (finding 2): `parties-page-customer`
+  renders while `customersList` is still pending, so a zero row count was read as
+  "nothing to clean". The cleanup now arms the `customersList` RPC before
+  navigating and waits for the table-or-empty state.
+- **The delete assertion proved the wrong thing** (finding 3): the success notice
+  survives into the next dialog, so the cleanup could finish before the record
+  was gone. Each deletion now awaits its own `customersDelete` acknowledgement and
+  asserts the **row disappears**.
+- **Out of scope**: the CI failure on PR #189 was `receipts.spec.ts` (filed as
+  #191), not this branch.

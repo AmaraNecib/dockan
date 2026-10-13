@@ -91,6 +91,11 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  * the name still warns — the picker's phone-owner message takes precedence in
  * the UI, so this only decides the function's result.
  *
+ * An exact **phoneless** spelling short-circuits to no warning at all: that
+ * record IS this identity (the picker's `needsChoice` gate already refuses the
+ * typed-only name), and falling through to a variant would offer the one-click
+ * pick a DIFFERENT debtor than the owner typed (#189 review).
+ *
  * Identity (storage, the store's unique phone, `needsChoice`) keeps
  * `normalizeTextKey` (ADR-0007); folding identity would merge two people's
  * balances.
@@ -100,12 +105,16 @@ export function duplicateNameParty(name: string, phone: string | null, parties: 
   if (foldedKey === "") return undefined;
   const strictKey = normalizeTextKey(name);
   const canonical = normalizePartyPhone(phone);
+  // The exact phoneless spelling is one identity, not a duplicate — and the
+  // variant fallback below must not run either, or the warning would point at a
+  // different debtor than the one the owner typed (#189 review).
+  const isExactPhonelessSpelling = (party: PartyLike): boolean =>
+    canonical === null && normalizePartyPhone(party.phone) === null && normalizeTextKey(party.name) === strictKey;
+  if (parties.some(isExactPhonelessSpelling)) return undefined;
   const likelyDuplicate = (party: PartyLike): boolean => {
     if (nameVariantKey(party.name) !== foldedKey) return false;
     const storedPhone = normalizePartyPhone(party.phone);
-    if (canonical !== null && storedPhone === canonical) return false;
-    const samePhonelessSpelling = canonical === null && storedPhone === null && normalizeTextKey(party.name) === strictKey;
-    return !samePhonelessSpelling;
+    return !(canonical !== null && storedPhone === canonical);
   };
   return (
     parties.find((party) => normalizeTextKey(party.name) === strictKey && likelyDuplicate(party)) ?? parties.find(likelyDuplicate)

@@ -148,6 +148,21 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي", null, [walkIn])).toBeUndefined();
   });
 
+  it("never falls through to a variant when the exact phoneless spelling exists (#189 review)", () => {
+    const exact = party({ id: "exact", name: "علي علي", phone: null });
+    const variant = party({ id: "variant", name: "على علي", phone: null });
+
+    // the exact phoneless record IS this identity (needsChoice refuses the
+    // typed-only name), so no warning — and above all the warning must not name
+    // the OTHER debtor, whose one-click pick would move the sale's debt there
+    expect(duplicateNameParty("علي علي", null, [exact, variant])).toBeUndefined();
+    expect(duplicateNameParty("علي علي", null, [variant, exact])).toBeUndefined();
+    // the candidate's own exact spelling is the same case
+    expect(duplicateNameParty("على علي", null, [exact, variant])).toBeUndefined();
+    // a phone on the candidate keeps the exact record warnable: it differs
+    expect(duplicateNameParty("علي علي", "0555123456", [exact, variant])?.id).toBe("exact");
+  });
+
   it("prefers the exactly spelled record over an earlier variant of the name", () => {
     const variant = party({ id: "variant", name: "احمد", phone: "+213555000111" });
     const exact = party({ id: "exact", name: "أحمد", phone: "+213555000222" });

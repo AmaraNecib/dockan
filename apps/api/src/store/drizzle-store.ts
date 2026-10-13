@@ -1195,6 +1195,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return { ...toSupplierEntry({ ...row, invoiceNumber: null }) };
   };
 
+  /** The one conditional-write guard for a purchase invoice's debt side: the
+   * offset can never push the remaining below zero. Shared by the linked
+   * adjustment and `applyDebtOffsetToInvoice` so the money clamp cannot drift. */
+  const applyDebtOffset = (invoiceId: string, amount: number): boolean => {
+    const result = conn.raw
+      .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
+      .run(amount, now(), invoiceId, amount);
+    return Number(result.changes) > 0;
+  };
+
   const store: StorePort = {
     setup,
 
@@ -1766,42 +1776,54 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
     /**
      * #177 — the one guarded write path for a manual adjustment. In order:
-     *   1. the duplicate signature (supplier, direction, amount, reason,
-     *      occurredAt) is refused before any write — a retry cannot double-post;
-     *   2. a linked entry must be THEY_OWE;
-     *   3. the linked invoice's conditional reduction runs before the entry is
-     *      inserted, so the two can only commit together (the caller's BEGIN
-     *      IMMEDIATE rolls both back when either fails).
+     *   1. it must run inside the caller's write unit (BEGIN IMMEDIATE);
+     *   2. the amount is re-validated (a non-contract caller must not invert the
+     *      reduction with a negative or fractional amount);
+     *   3. the duplicate signature (supplier, direction, amount, reason,
+     *      invoiceId, occurredAt) is refused before any write — a retry cannot
+     *      double-post; a server-stamped timestamp is matched at any time;
+     *   4. a linked entry must be THEY_OWE;
+     *   5. the linked invoice's conditional reduction runs before the entry is
+     *      inserted, so the two can only commit together (the caller's unit rolls
+     *      both back when either fails).
      * Account-only (null invoiceId) writes the entry with a null invoice and
      * touches no invoice.
      */
     async insertSupplierAdjustment(input: SupplierAdjustmentInsert) {
+      // the invariant only holds inside the caller's unit: outside it the
+      // duplicate check races and the entry could commit without its reduction
+      if (!conn.inTransaction) throw new SupplierAdjustmentError("OUTSIDE_TRANSACTION");
       assertAdjustmentDirection("ADJUSTMENT", input.direction);
+      // never trust the transport contract here: a negative amount would make the
+      // conditional UPDATE increase the invoice's remaining, a fractional one
+      // would write non-whole DZD
+      if (!Number.isSafeInteger(input.amount) || input.amount <= 0) {
+        throw new SupplierAdjustmentError("INVALID_AMOUNT");
+      }
       if (input.invoiceId !== null && input.direction !== "THEY_OWE") {
         throw new SupplierAdjustmentError("LINKED_DIRECTION");
       }
+      const signature = [
+        eq(supplierAccountEntries.supplierId, input.supplierId),
+        eq(supplierAccountEntries.kind, "ADJUSTMENT"),
+        eq(supplierAccountEntries.direction, input.direction),
+        eq(supplierAccountEntries.amount, input.amount),
+        input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
+        input.invoiceId === null ? isNull(supplierAccountEntries.invoiceId) : eq(supplierAccountEntries.invoiceId, input.invoiceId),
+      ];
+      // a server-stamped timestamp cannot tell a retry apart, so match any time;
+      // a caller-supplied one is part of the idempotency signature
+      if (input.serverStamped !== true) signature.push(eq(supplierAccountEntries.occurredAt, input.occurredAt));
       const duplicates = await db
         .select({ id: supplierAccountEntries.id })
         .from(supplierAccountEntries)
-        .where(
-          and(
-            eq(supplierAccountEntries.supplierId, input.supplierId),
-            eq(supplierAccountEntries.kind, "ADJUSTMENT"),
-            eq(supplierAccountEntries.direction, input.direction),
-            eq(supplierAccountEntries.amount, input.amount),
-            input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
-            eq(supplierAccountEntries.occurredAt, input.occurredAt),
-          ),
-        )
+        .where(and(...signature))
         .limit(1);
       if (duplicates[0] !== undefined) throw new SupplierAdjustmentError("DUPLICATE");
       if (input.invoiceId !== null) {
         // same conditional write returns use: never push an invoice's remaining
         // below zero; the excess is refused, never silently moved to credit
-        const result = conn.raw
-          .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
-          .run(input.amount, now(), input.invoiceId, input.amount);
-        if (Number(result.changes) === 0) throw new SupplierAdjustmentError("EXCEEDS_REMAINING");
+        if (!applyDebtOffset(input.invoiceId, input.amount)) throw new SupplierAdjustmentError("EXCEEDS_REMAINING");
       }
       return insertEntryRow({
         supplierId: input.supplierId,
@@ -2009,10 +2031,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
      * the offset can never push an invoice's remaining debt below zero, even
      * across two processes on the same file. Raw SQL is the driver's job. */
     async applyDebtOffsetToInvoice(invoiceId: string, amount: number) {
-      const result = conn.raw
-        .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
-        .run(amount, now(), invoiceId, amount);
-      return Number(result.changes) > 0;
+      return applyDebtOffset(invoiceId, amount);
     },
     /** Record how much of a return's promised debtOffset was actually applied
      * (#68). Written in the same unit as the accept, so the review card and

@@ -160,13 +160,27 @@ export type SupplierAdjustmentInsert = {
   occurredAt: string;
   invoiceId: string | null;
   ref?: string | null;
+  /**
+   * #177 — true when the router stamped `occurredAt` because the caller omitted
+   * it. A retry then cannot be told apart by time, so the duplicate signature
+   * ignores `occurredAt` (same supplier/direction/amount/reason/invoiceId at any
+   * time is a duplicate). A caller that wants two genuinely distinct identical
+   * adjustments must send its own `occurredAt`.
+   */
+  serverStamped?: boolean;
 };
 
 /** Typed refusal from the #177 supplier-adjustment guard. The router maps these
  * to stable ORPC errors; the store never throws a transport error. */
 export class SupplierAdjustmentError extends Error {
   constructor(
-    public readonly code: "DUPLICATE" | "LINKED_DIRECTION" | "EXCEEDS_REMAINING" | "LINKED_NEEDS_ATOMIC_PATH",
+    public readonly code:
+      | "DUPLICATE"
+      | "INVALID_AMOUNT"
+      | "OUTSIDE_TRANSACTION"
+      | "LINKED_DIRECTION"
+      | "EXCEEDS_REMAINING"
+      | "LINKED_NEEDS_ATOMIC_PATH",
   ) {
     super(code);
     this.name = "SupplierAdjustmentError";
@@ -273,7 +287,10 @@ export interface StorePort {
   partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
   // --- supplier account (issue 161) ----------------------------------------
-  /** append-only signed entry; never updated or deleted */
+  /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
+   * (non-null invoiceId) is REFUSED here — it must go through
+   * `insertSupplierAdjustment`, which applies the invoice reduction in the same
+   * unit. */
   insertSupplierEntry(entry: SupplierEntryInsert): Promise<SupplierAccountEntry>;
   /**
    * #177 — the single guarded write path for a manual adjustment (تسوية). It

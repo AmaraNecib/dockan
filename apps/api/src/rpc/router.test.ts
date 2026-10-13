@@ -1768,6 +1768,34 @@ describe("supplier adjustments (issue 176)", () => {
     expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
   });
 
+  it("refuses a retry that omits the date (server-stamped signature) (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد ختم الخادم", 10);
+    // the caller omits occurredAt, so the server stamps a fresh second each call;
+    // the duplicate signature must still catch the retry at any time
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 300, reason: "دين قديم" };
+    await client.suppliersAdjust(payload);
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1300);
+  });
+
+  it("rejects a duplicate row inside an opening-balance batch with a row-specific error (issue 177)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد صف مكرر" });
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        reason: "رصيد افتتاحي",
+        rows: [
+          { supplierId: supplier.id, direction: "WE_OWE", amount: 500 },
+          { supplierId: supplier.id, direction: "WE_OWE", amount: 500 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_OPENING_BALANCE_ROW" });
+    // nothing half-saved
+    expect((await client.suppliersGet({ id: supplier.id })).account?.entries ?? []).toHaveLength(0);
+  });
+
   it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
@@ -2451,13 +2479,15 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
 
   it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    // paginate past the default 10 so a busy shared test database cannot hide
+    // this invoice behind same-second ties (issue 163 pagination)
+    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
-    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
-    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID", limit: 500 })).items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
   it("rejects amounts beyond the safe-integer money range at the schema", async () => {

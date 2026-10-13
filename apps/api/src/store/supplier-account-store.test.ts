@@ -331,4 +331,41 @@ describe("supplier account store", () => {
     ).rejects.toThrow(/DUPLICATE/);
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
+
+  it("re-validates the amount so a non-contract caller cannot invert the reduction (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد مبلغ سالب");
+    const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, reason: null, occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    for (const amount of [-5, 0, 1.5]) {
+      await expect(
+        store.withTransactionImmediate(async (tx) => {
+          await tx.insertSupplierAdjustment({ ...base, amount });
+        }),
+      ).rejects.toThrow(/INVALID_AMOUNT/);
+    }
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+  });
+
+  it("refuses the guarded adjustment outside a write unit (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد خارج الوحدة");
+    // a direct serialized call has no BEGIN IMMEDIATE: the duplicate check would
+    // race and the entry could commit without its reduction, so it is refused
+    await expect(
+      store.insertSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: null, occurredAt: now(), invoiceId: null }),
+    ).rejects.toThrow(/OUTSIDE_TRANSACTION/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+  });
+
+  it("treats an account-only and a linked adjustment with the same attributes as distinct (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد تمييز رابط");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const occurredAt = "2026-10-13T12:00:00";
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: null });
+    });
+    // the linked one is a different operation, not a duplicate of the account-only
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: invoice.id });
+    });
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
+  });
 });

@@ -176,7 +176,9 @@ const ADJUSTMENT_REFUSAL = {
   EXCEEDS_REMAINING: { status: "BAD_REQUEST", message: "ADJUSTMENT_EXCEEDS_REMAINING" },
   LINKED_DIRECTION: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVOICE_DIRECTION" },
   LINKED_NEEDS_ATOMIC_PATH: { status: "BAD_REQUEST", message: "ADJUSTMENT_LINK_INVALID" },
-} satisfies Record<SupplierAdjustmentError["code"], { status: "CONFLICT" | "BAD_REQUEST"; message: string }>;
+  INVALID_AMOUNT: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVALID_AMOUNT" },
+  OUTSIDE_TRANSACTION: { status: "INTERNAL_SERVER_ERROR", message: "ADJUSTMENT_NOT_TRANSACTIONAL" },
+} satisfies Record<SupplierAdjustmentError["code"], { status: "CONFLICT" | "BAD_REQUEST" | "INTERNAL_SERVER_ERROR"; message: string }>;
 
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
@@ -933,6 +935,9 @@ export function createRpcRouter(deps: RpcDeps) {
               reason,
               occurredAt,
               invoiceId: input.invoiceId ?? null,
+              // when the caller omitted the date the server stamped it, so a
+              // retry cannot be told apart by time: the store matches any time
+              serverStamped: input.occurredAt === undefined,
             });
           } catch (error) {
             if (error instanceof SupplierAdjustmentError) {
@@ -970,6 +975,15 @@ export function createRpcRouter(deps: RpcDeps) {
               const party = await tx.createParty("supplier", { name: row.newSupplierName! });
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             }
+          }
+          // #177/#180 (debate finding 4) — reject a duplicate row inside the
+          // batch with a row-specific error before any write, instead of letting
+          // the store's DUPLICATE roll the whole batch back with a vague code
+          const seen = new Set<string>();
+          for (const row of plan) {
+            const key = `${row.supplierId}:${row.direction}:${row.amount}`;
+            if (seen.has(key)) throw new ORPCError("CONFLICT", { message: "DUPLICATE_OPENING_BALANCE_ROW" });
+            seen.add(key);
           }
           for (const row of plan) {
             try {

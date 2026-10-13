@@ -40,9 +40,10 @@ const tierKind = {
 /**
  * Catalog ranking (ticket 28): exact barcode first, then partial barcode
  * (prefix before substring), then normalized name, then category name.
- * Pure and in-memory — shop catalogs are hundreds of rows. The query is
- * matched case-insensitively against normalized keys (Arabic diacritics and
- * tatweel stripped by normalizeTextKey).
+ * Pure and in-memory — shop catalogs are hundreds of rows. Barcode matching
+ * is case-insensitive on the normalized code; name and category matching use
+ * the Arabic search fold (`arabicIncludes`: article-folded + article-preserved),
+ * not the identity key `normalizeTextKey`.
  */
 export function rankCatalog(
   items: Item[],
@@ -66,10 +67,10 @@ export function rankCatalog(
     if (barcode !== null && barcode === upper) tier = "EXACT";
     else if (barcode !== null && barcode.startsWith(upper)) tier = "BARCODE_PREFIX";
     else if (barcode !== null && barcode.includes(upper)) tier = "BARCODE_CONTAINS";
-    else if (searchKey !== "" && arabicIncludes(item.name, rawQuery)) tier = "NAME";
+    else if (arabicIncludes(item.name, rawQuery)) tier = "NAME";
     else {
       const category = categoryById.get(item.categoryId);
-      if (category !== undefined && searchKey !== "" && arabicIncludes(category.name, rawQuery)) tier = "CATEGORY";
+      if (category !== undefined && arabicIncludes(category.name, rawQuery)) tier = "CATEGORY";
     }
     if (tier === null) continue;
     matchedIds.add(item.id);

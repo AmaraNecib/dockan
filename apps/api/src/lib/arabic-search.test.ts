@@ -84,6 +84,13 @@ describe("arabicIncludes", () => {
     expect(arabicIncludes("البطارية", "---")).toBe(false);
     expect(arabicIncludes("البطارية", "")).toBe(false);
   });
+
+  it("documents the bare-article widening: «ال» matches article-prefixed names", () => {
+    // a 2-letter «ال» query is forward-matched against the article-preserved
+    // key, so it finds «ال…» names but never a name without the article
+    expect(arabicIncludes("البطارية", "ال")).toBe(true);
+    expect(arabicIncludes("بطارية", "ال")).toBe(false);
+  });
 });
 
 describe("fuzzySearchScore", () => {

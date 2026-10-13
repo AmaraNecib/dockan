@@ -145,7 +145,9 @@ record stays absent**; also assert `احمد` finds `أحمد`, `مصطفي` fin
   asymmetric: «الب» keeps «ال» while «البطارية» drops it, so a single folded key
   hid the match. `arabicIncludes` now also tries the article-preserved form on
   both sides; the guard itself is unchanged, so «ال» + one letter still does not
-  become a one-letter key. Pinned by unit and Playwright tests.
+  become a one-letter key. Pinned by unit and Playwright tests. Consequence:
+  a bare «ال» query forward-matches any «ال…» name (it never matches a name
+  without the article); pinned as intentional.
 - **Coverage of the fuzzy pass.** The `>`-floor decision was driven by the
   indistinguishable-name case; no test can prove every possible related name is
   excluded, so `بطلرية`/`بطارية` is pinned as the positive case and

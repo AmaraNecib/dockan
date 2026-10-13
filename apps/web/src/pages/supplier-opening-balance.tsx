@@ -101,8 +101,12 @@ export function SupplierOpeningBalancePage() {
   const typedDestination = matchByNormalizedName(suppliers, newName);
   const typedRowReady = typedNameKey !== null && typedAmount !== null && typedAmount > 0;
   // guard: a typed name that folds onto a row the owner already picked must not be
-  // sent (the same supplier twice), so block with a visible conflict
-  const typedNameConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
+  // sent (the same account twice). Compare folded names AND the client-resolved
+  // id, so a stale/renamed list cannot hide a resolution collision.
+  const typedNameConflict =
+    typedRowReady &&
+    (filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey) ||
+      (typedDestination !== undefined && filledExisting.some((row) => row.supplier.id === typedDestination.id)));
 
   const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
@@ -114,13 +118,17 @@ export function SupplierOpeningBalancePage() {
       : typedNameConflict
         ? t("supplierOpeningRowHasAmount")
         : newRowError;
-  // the confirmation dialog names every account the batch will write to
+  // the confirmation dialog names every account the batch will write to, including
+  // the typed name itself, so a confirmed save never lands on an unnamed account
   const namedRowNeedsConfirm = typedRowReady && (typedDestination?.accountEntryCount ?? 0) > 0;
   const needsConfirmation = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0) || namedRowNeedsConfirm;
   const confirmNames = [
     ...filledExisting.filter((row) => (row.supplier.accountEntryCount ?? 0) > 0).map((row) => row.supplier.name),
-    ...(namedRowNeedsConfirm && typedDestination !== undefined && !filledExisting.some((row) => row.supplier.id === typedDestination.id) ? [typedDestination.name] : []),
-  ];
+    ...(typedRowReady && !typedNameConflict ? [newName.trim()] : []),
+  ].filter((name, index, all) => all.findIndex((other) => normalizeTextKey(other) === normalizeTextKey(name)) === index);
+  // forward confirmExisting only for the rows the dialog actually named (their
+  // cached count shows history); a stale count is resolved by the refusal round-trip
+  const forwardsConfirm = (confirm: boolean, accountEntryCount: number | null | undefined) => (confirm && (accountEntryCount ?? 0) > 0 ? true : undefined);
 
   function setRow(supplierId: string, patch: Partial<RowDraft>) {
     setDrafts((current) => {
@@ -147,11 +155,12 @@ export function SupplierOpeningBalancePage() {
             supplierId: row.supplier.id,
             direction: row.direction,
             amount: row.state.amount,
-            confirmExisting: confirmExisting || undefined,
+            confirmExisting: forwardsConfirm(confirmExisting, row.supplier.accountEntryCount),
           })),
-          // a typed name travels as a NAME; the server is the only resolver
+          // a typed name travels as a NAME; the server is the only resolver. Only a
+          // destination the dialog could name forwards confirmExisting.
           ...(typedRowReady
-            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: confirmExisting || undefined }]
+            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: namedRowNeedsConfirm ? true : undefined }]
             : []),
         ],
       });
@@ -167,10 +176,8 @@ export function SupplierOpeningBalancePage() {
       setConfirming(false);
     } catch (err) {
       // the confirmation is client-derived from a possibly stale list: an
-      // OPENING_BALANCE_EXISTS refusal refreshes so the page can move a named row
-      // onto the supplier that appeared on the server, and keeps the dialog open
-      // so the owner can confirm. Do this on the CONFIRMED path too, or a named
-      // row the client has not seen yet repeats the refusal forever.
+      // OPENING_BALANCE_EXISTS refusal refreshes the counts and re-opens the dialog
+      // so the named destination is current. Do this on the CONFIRMED path too.
       if (err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
         setConfirming(true);
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });

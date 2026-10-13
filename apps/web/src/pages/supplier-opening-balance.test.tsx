@@ -185,7 +185,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("500");
   });
 
-  it("surfaces the confirmation dialog when the server refuses a stale-expectation row", async () => {
+  it("surfaces the confirmation dialog when the server refuses a stale-expectation row (round 5)", async () => {
     rejectUnconfirmed = true;
     render();
     await settle();
@@ -195,6 +195,13 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-save");
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the refusal refreshes the counts: the supplier really does have history
+    suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+    });
+    await settle();
 
     await act(async () => {
       clickOn("opening-balance-confirm-save");
@@ -435,15 +442,14 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
-  it("forwards confirmExisting on a named row in a mixed confirmed batch (Greptile round 3)", async () => {
+  it("names and confirms a raced named row only after the refusal refreshes it (round 5)", async () => {
     rejectUnconfirmed = true;
     render();
     await settle();
 
-    // s-1 already has entries, so the batch needs confirmation; the second row is
-    // a typed name the client does not know the server already has
-    typeIntoRow(0, "800");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد ظهر مرتين");
+    const name = "مورد ظهر مرتين";
+    typeIntoRow(0, "800"); // s-1 has entries, so the batch needs confirmation
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, name);
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
 
     await act(async () => {
@@ -451,14 +457,30 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
 
+    // the client still thinks the name is new, so the first confirm does not
+    // forward confirmExisting; the server refuses and the catch refreshes
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
-    // the named row must carry confirmExisting too, or the server refuses and
-    // nothing in the mixed batch ever saves
+    expect(captured).toBeNull();
+
+    // the refresh shows the raced supplier with entries; the dialog now names it
+    suppliers = [
+      ...BASE_SUPPLIERS,
+      { id: "s-raced2", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
+    ];
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain(name);
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
     expect(captured?.rows).toHaveLength(2);
-    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-1", amount: 800, confirmExisting: true });
-    expect(captured?.rows[1]).toMatchObject({ newSupplierName: "مورد ظهر مرتين", amount: 400, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 800, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === name)).toMatchObject({ amount: 400, confirmExisting: true });
   });
 
   it("refreshes suppliers after a confirmed refusal too (Greptile round 3)", async () => {
@@ -508,13 +530,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       });
     });
 
-    // the typed name matches the 201st supplier; keep the amount focused so the
-    // adoption effect cannot mask the resolved-row count
+    // the typed name matches the 201st supplier, so the batch is 201 rows
     const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد 200");
-    await act(async () => {
-      amountInput.focus();
-    });
     setInput(amountInput, "5");
     await act(async () => {
       host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();

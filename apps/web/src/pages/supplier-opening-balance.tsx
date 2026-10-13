@@ -180,7 +180,10 @@ export function SupplierOpeningBalancePage() {
       return;
     }
     const resolved = resolveNewName();
-    if (resolved !== undefined && (filledExisting.some((row) => row.supplier.id === resolved.supplierId) || typedNameConflictsWithAdopted())) {
+    // the name guard stands alone: a name can duplicate an adopted one even when
+    // it no longer resolves to any current supplier (a refetch renamed/removed it)
+    const nameConflict = typedNameConflictsWithAdopted();
+    if (nameConflict || (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId))) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }
@@ -246,7 +249,8 @@ export function SupplierOpeningBalancePage() {
     // inline row still shows it (a focused duplicate name never blurs before an
     // Enter submit)
     const resolved = resolveNewName();
-    if (resolved !== undefined && (filledExisting.some((row) => row.supplier.id === resolved.supplierId) || typedNameConflictsWithAdopted())) {
+    const nameConflict = typedNameConflictsWithAdopted();
+    if (nameConflict || (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId))) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }

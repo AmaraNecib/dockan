@@ -9,6 +9,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
+import { routerMock } from "../tests/router-mock";
+
+// the empty-state action renders a router Link; keep this file self-contained
+// instead of relying on another test file's mock leaking in
+mock.module("@tanstack/react-router", () => routerMock());
+
 type Summary = {
   counterpartyId: string | null;
   counterpartyName: string | null;
@@ -33,6 +39,23 @@ let weOwe: Summary[] = [];
 let perParty: Map<string, Invoice[]> = new Map();
 /** when set to a party key, the drill-down for that party rejects */
 let failingParty: string | null = null;
+
+type SupplierEntry = {
+  id: string;
+  supplierId: string;
+  kind: "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
+  amount: number;
+  direction: "WE_OWE" | "THEY_OWE" | null;
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  method: string | null;
+  note: string | null;
+  ref: string | null;
+  occurredAt: string;
+  createdAt: string;
+};
+/** the expanded supplier row's account movements (#161/#176) */
+let supplierAccount: { balance: number; entries: SupplierEntry[] } | null = null;
 
 // The page resolves both queries through orpc.*.queryOptions; mock the rpc
 // module so tests drive fixtures without a network seam. debtsByParty keys on
@@ -62,7 +85,7 @@ mock.module("@/lib/rpc", () => ({
     suppliersGet: {
       queryOptions: ({ input }: { input: { id: string } }) => ({
         queryKey: ["suppliersGet", input],
-        queryFn: async () => ({ account: null }),
+        queryFn: async () => ({ account: supplierAccount }),
       }),
     },
   },
@@ -142,6 +165,7 @@ describe("DebtsPage (ticket 9)", () => {
     weOwe = [];
     perParty = new Map();
     failingParty = null;
+    supplierAccount = null;
   });
 
   afterEach(async () => {
@@ -330,6 +354,36 @@ describe("DebtsPage (ticket 9)", () => {
     const loaded = await ui.waitFor(() => ui.personButtons().length === 1);
     expect(loaded).toBe(true);
     expect(ui.text()).toContain(PARTY_ID);
+
+    await ui.unmount();
+  });
+
+  it("distinguishes opposite adjustments in the account movements table (Greptile finding 6)", async () => {
+    const PARTY_ID = "00000000-0000-4000-8000-0000000000ce";
+    weOwe = [summary({ kind: "PURCHASE", counterpartyId: PARTY_ID, counterpartyName: "مورد تسويات", remainingTotal: 0, invoiceCount: 0, accountBalance: 0 })];
+    supplierAccount = {
+      balance: 0,
+      entries: [
+        { id: "e1", supplierId: PARTY_ID, kind: "ADJUSTMENT", amount: 500, direction: "WE_OWE", invoiceId: null, invoiceNumber: null, method: null, note: null, ref: null, occurredAt: "2026-10-01T10:00:00", createdAt: "2026-10-01T10:00:00" },
+        { id: "e2", supplierId: PARTY_ID, kind: "ADJUSTMENT", amount: 500, direction: "THEY_OWE", invoiceId: null, invoiceNumber: null, method: null, note: null, ref: null, occurredAt: "2026-10-02T10:00:00", createdAt: "2026-10-02T10:00:00" },
+      ],
+    };
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 1);
+    expect(loaded).toBe(true);
+    await act(async () => {
+      ui.personNamed("مورد تسويات")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await ui.waitFor(() => document.querySelector('[data-testid="debts-account-entry-direction"]') !== null);
+
+    const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
+    expect(directions.join(" ")).toContain("نسالوه");
+    expect(directions.join(" ")).toContain("يسالنا");
+
+    const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
+    expect(amounts[0]).toContain("+");
+    expect(amounts[1]).toContain("−");
 
     await ui.unmount();
   });

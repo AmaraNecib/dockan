@@ -2216,7 +2216,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // The three money reads are the headline figures. If one of them cannot
       // be read the whole answer is unavailable, and the caller shows its error
       // state rather than a page of numbers it cannot vouch for.
-      const [salesRows, owedRows, weOweRows] = await Promise.all([
+      const [salesRows, owedRows, supplierLedgerRows, typedWeOweRows] = await Promise.all([
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`, count: sql<number>`COUNT(*)` })
           .from(invoices)
@@ -2231,6 +2231,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
               sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
             ),
           ),
+        // "we owe" is the supplier NET account balance, exactly what /debts
+        // shows: a migrated opening balance with no invoice would otherwise be
+        // invisible on the dashboard (issue 176). The signed SUM spans every
+        // supplier, so a credit offsets a debt the same way the /debts group
+        // total does.
+        db.all(sql`SELECT COALESCE(SUM(${sql.raw(supplierSignedAmountSql("e"))}), 0) AS total FROM supplier_account_entries e`),
+        // typed-name purchases have no account; their unpaid remainder still
+        // counts (the invoice-based path ADR-0009 left untouched)
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)` })
           .from(invoices)
@@ -2238,7 +2246,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             and(
               eq(invoices.kind, "PURCHASE"),
               sql`${invoices.remainingAmount} > 0`,
-              sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
+              sql`${invoices.counterpartyId} IS NULL`,
+              sql`${invoices.counterpartyName} IS NOT NULL`,
             ),
           ),
       ]);
@@ -2275,7 +2284,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         salesTotal: Number(salesRows[0]?.total ?? 0),
         salesCount: Number(salesRows[0]?.count ?? 0),
         owedToUs: Number(owedRows[0]?.total ?? 0),
-        weOwe: Number(weOweRows[0]?.total ?? 0),
+        // SAFETY: the raw SELECT aliases one column `total` (a SQLite INTEGER),
+        // so the first row, when present, has that shape
+        weOwe: Number((supplierLedgerRows as Array<{ total: number }>)[0]?.total ?? 0) + Number(typedWeOweRows[0]?.total ?? 0),
         lowStockCount:
           lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
         lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,

@@ -4,17 +4,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { SupplierAdjustmentDirection } from "@dokan/contracts";
-import { normalizeTextKey } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
-import { orpc } from "@/lib/rpc";
+import { DEBTS_BY_PARTY_QUERY_KEY, orpc } from "@/lib/rpc";
+import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus } from "@/lib/supplier-opening-draft";
 
 type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
 
@@ -50,30 +49,39 @@ export function SupplierOpeningBalancePage() {
   const suppliers = list.data?.items ?? [];
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
-  // typing the exact name of an existing supplier would create a SECOND account
-  // for the same person (ADR-0007 allows duplicate names, so the server cannot
-  // refuse), and that silently splits the opening balance; block it here and
-  // point the owner at the existing row
-  const newNameTrimmed = newName.trim();
-  const newNameMatchesExisting =
-    newNameTrimmed !== "" && suppliers.some((supplier) => normalizeTextKey(supplier.name) === normalizeTextKey(newNameTrimmed));
 
-  const filledExisting = useMemo(
-    () =>
-      suppliers
-        .map((supplier) => ({ supplier, draft: drafts[supplier.id] }))
-        .filter((entry): entry is { supplier: (typeof suppliers)[number]; draft: RowDraft } => {
-          if (entry.draft === undefined) return false;
-          const amount = parseWholeAmount(entry.draft.amount);
-          return amount !== null && amount > 0;
-        }),
+  // A filled row keeps its parsed amount; an invalid or incomplete draft BLOCKS
+  // the save instead of being silently dropped (Greptile round 1: "1,000" was
+  // rejected by the old reader and its row vanished from the batch).
+  const existingRows = useMemo(
+    () => suppliers.map((supplier) => ({ supplier, direction: drafts[supplier.id]?.direction ?? "WE_OWE", state: openingRowStatus(drafts[supplier.id]) })),
     [suppliers, drafts],
   );
-  const newAmountValue = parseWholeAmount(newAmount);
-  const newFilled = newNameTrimmed !== "" && !newNameMatchesExisting && newAmountValue !== null && newAmountValue > 0;
+  const filledExisting = existingRows.filter(
+    (row): row is { supplier: (typeof suppliers)[number]; direction: SupplierAdjustmentDirection; state: { status: "filled"; amount: number } } => row.state.status === "filled",
+  );
+  const invalidExisting = existingRows.filter((row) => row.state.status === "invalid");
+
+  const newRow = newOpeningRowStatus({ name: newName, amount: newAmount, existingNames: suppliers.map((supplier) => supplier.name) });
+  const newFilled = newRow.status === "filled";
+  const newRowError =
+    newRow.status === "incomplete"
+      ? t("supplierOpeningNewIncomplete")
+      : newRow.status === "invalid"
+        ? t("supplierOpeningRowInvalid")
+        : newRow.status === "duplicate"
+          ? t("supplierOpeningNameExists")
+          : null;
+
   const totalRows = filledExisting.length + (newFilled ? 1 : 0);
-  // the confirmation only concerns rows whose supplier already has entries
-  const needsConfirmation = filledExisting.some((entry) => (entry.supplier.accountEntryCount ?? 0) > 0);
+  const overLimit = totalRows > MAX_OPENING_BALANCE_ROWS;
+  // the save is blocked, and the reason shown, BEFORE the owner fills more rows
+  const blockedReason = overLimit
+    ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
+    : invalidExisting.length > 0
+      ? t("supplierOpeningFixRows")
+      : newRowError;
+  const needsConfirmation = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0);
 
   function setRow(supplierId: string, patch: Partial<RowDraft>) {
     setDrafts((current) => {
@@ -83,7 +91,7 @@ export function SupplierOpeningBalancePage() {
   }
 
   async function save(confirmExisting: boolean) {
-    if (occurredAt === null) return;
+    if (occurredAt === null || blockedReason !== null) return;
     setError(null);
     setSubmitting(true);
     try {
@@ -91,18 +99,20 @@ export function SupplierOpeningBalancePage() {
         occurredAt,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
         rows: [
-          ...filledExisting.map((entry) => ({
-            supplierId: entry.supplier.id,
-            direction: entry.draft.direction,
-            amount: parseWholeAmount(entry.draft.amount)!,
+          ...filledExisting.map((row) => ({
+            supplierId: row.supplier.id,
+            direction: row.direction,
+            amount: row.state.amount,
             confirmExisting: confirmExisting || undefined,
           })),
-          ...(newFilled ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: newAmountValue! }] : []),
+          ...(newRow.status === "filled" ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }] : []),
         ],
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() }),
-        queryClient.invalidateQueries({ queryKey: ["debtsData"] }),
+        queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
+        queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
         queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
@@ -127,6 +137,10 @@ export function SupplierOpeningBalancePage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting || bulk.isPending || dateInvalid) return;
+    if (blockedReason !== null) {
+      setError(blockedReason);
+      return;
+    }
     if (totalRows === 0) {
       setError(t("supplierOpeningNothing"));
       return;
@@ -207,9 +221,11 @@ export function SupplierOpeningBalancePage() {
                 </tr>
               </thead>
               <tbody>
-                {suppliers.map((supplier) => {
+                {existingRows.map((row) => {
+                  const supplier = row.supplier;
                   const draft = drafts[supplier.id] ?? { direction: "WE_OWE" as const, amount: "" };
                   const hasEntries = (supplier.accountEntryCount ?? 0) > 0;
+                  const invalid = row.state.status === "invalid";
                   return (
                     <tr key={supplier.id} className="border-b" data-testid="opening-balance-row">
                       <td className="p-2">
@@ -243,8 +259,12 @@ export function SupplierOpeningBalancePage() {
                           value={draft.amount}
                           onChange={(event) => setRow(supplier.id, { amount: event.target.value })}
                           aria-label={`${supplier.name}: ${t("supplierOpeningColAmount")}`}
+                          aria-invalid={invalid}
                           data-testid="opening-balance-amount"
                         />
+                        {invalid && (
+                          <p className="mt-1 text-xs text-destructive" role="alert" data-testid="opening-balance-amount-error">{t("supplierOpeningRowInvalid")}</p>
+                        )}
                       </td>
                     </tr>
                   );
@@ -257,11 +277,17 @@ export function SupplierOpeningBalancePage() {
                       onChange={(event) => setNewName(event.target.value)}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
-                      aria-invalid={newNameMatchesExisting}
+                      aria-invalid={newRow.status === "duplicate"}
                       data-testid="opening-balance-new-name"
                     />
-                    {newNameMatchesExisting && (
-                      <p className="mt-1 text-xs text-destructive" role="alert" data-testid="opening-balance-name-exists">{t("supplierOpeningNameExists")}</p>
+                    {newRowError !== null && (
+                      <p
+                        className="mt-1 text-xs text-destructive"
+                        role="alert"
+                        data-testid={newRow.status === "duplicate" ? "opening-balance-name-exists" : "opening-balance-new-error"}
+                      >
+                        {newRowError}
+                      </p>
                     )}
                   </td>
                   <td className="p-2 text-muted-foreground">—</td>
@@ -292,6 +318,12 @@ export function SupplierOpeningBalancePage() {
             </table>
           )}
 
+          {blockedReason !== null && (
+            <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="opening-balance-blocked">
+              {blockedReason}
+            </p>
+          )}
+
           {error !== null && (
             <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="opening-balance-form-error">
               {error}
@@ -299,7 +331,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || bulk.isPending || dateInvalid} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={() => void navigate({ to: "/suppliers" })} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">

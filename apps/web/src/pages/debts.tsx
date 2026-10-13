@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { formatDate } from "../lib/dates";
+import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
 
 /** A party's debt identity: id for a known customer/supplier, typed name otherwise. */
 type PartyIdentity = {
@@ -118,13 +119,23 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
                   </tr>
                 </thead>
                 <tbody>
-                  {account.data.account?.entries.map((entry) => (
-                    <tr key={entry.id} data-testid="debts-account-entry">
-                      <td className="p-2">{formatDate(entry.occurredAt)}</td>
-                      <td className="p-2">{t(`supplierEntry_${entry.kind}`)}</td>
-                      <td className="p-2 font-semibold"><Amount value={entry.amount} /></td>
-                    </tr>
-                  ))}
+                  {account.data.account?.entries.map((entry) => {
+                    const directionKey = supplierEntryDirectionKey(entry);
+                    return (
+                      <tr key={entry.id} data-testid="debts-account-entry">
+                        <td className="p-2">{formatDate(entry.occurredAt)}</td>
+                        <td className="p-2" data-testid="debts-account-entry-kind">
+                          {t(`supplierEntry_${entry.kind}`)}
+                          {directionKey !== null && (
+                            <span className="text-muted-foreground" data-testid="debts-account-entry-direction"> · {t(directionKey)}</span>
+                          )}
+                        </td>
+                        <td className="p-2 font-semibold" data-testid="debts-account-entry-amount">
+                          {supplierEntrySignLabel(entry)} <Amount value={entry.amount} />
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </>

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
-import { localDate } from "../lib/logger";
+import { localDate, localDateTime } from "../lib/logger";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StoreLogger, StorePort } from "./port";
 
@@ -135,7 +135,8 @@ describe("dashboardSummary (issue 84)", () => {
     const summary = await store.dashboardSummary(day);
     const rows = await store.debtSummaries();
     const owedFromRows = rows.filter((row) => row.kind === "SALE").reduce((sum, row) => sum + row.remainingTotal, 0);
-    const weOweFromRows = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + row.remainingTotal, 0);
+    // a supplier row shows its NET account balance when it has one (ADR-0009)
+    const weOweFromRows = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
 
     // the headline must equal the sum of the rows its own /debts drill-down lists
     expect(summary.owedToUs).toBe(owedFromRows);
@@ -188,6 +189,28 @@ describe("dashboardSummary (issue 84)", () => {
     // a partial response still succeeds at the RPC layer, so the cause has to
     // be reported here or it is lost entirely
     expect(warnings.some((w) => w.startsWith("DASHBOARD_SECTION_FAILED") && w.includes("lowStock"))).toBe(true);
+  });
+
+  it("includes a supplier account balance in weOwe even with no invoice (issue 176 review)", async () => {
+    const store = await freshStore();
+    const day = localDate();
+    const supplier = await store.createParty("supplier", { name: "مورد رصيد افتتاحي" });
+    // an opening balance with no purchase invoice: invisible to the old
+    // invoice-remainder-only aggregate, but shown on /debts
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 800, invoiceId: null, occurredAt: localDateTime() });
+
+    const result = await store.dashboardSummary(day);
+    expect(result.weOwe).toBe(800);
+
+    // the customer side is unchanged by the supplier-account aggregate
+    await seedInvoice(store, { invoiceNumber: "DASH-CUST", kind: "SALE", invoiceDate: day, totalAmount: 500, paidAmount: 0, remainingAmount: 500 });
+    const withCustomer = await store.dashboardSummary(day);
+    expect(withCustomer.weOwe).toBe(800);
+    expect(withCustomer.owedToUs).toBe(500);
+
+    // a THEY_OWE correction reduces the same figure, matching /debts
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, occurredAt: localDateTime() });
+    expect((await store.dashboardSummary(day)).weOwe).toBe(500);
   });
 
   it("returns zeros and an empty list on an empty store", async () => {

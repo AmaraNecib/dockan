@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -32,7 +32,10 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
+    reportsDebts: { queryKey: () => ["reportsDebts"] },
+    dashboardSummary: { queryKey: () => ["dashboardSummary"] },
   },
+  DEBTS_BY_PARTY_QUERY_KEY: [["debtsByParty"]],
   rpcClient: {},
 }));
 
@@ -60,9 +63,11 @@ const invoice = (over: Partial<Invoice> = {}): Invoice => ({
 
 let host: HTMLDivElement;
 let root: Root | null = null;
+let queryClient: QueryClient | null = null;
 
 beforeEach(() => {
   captured = null;
+  queryClient = null;
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -73,15 +78,26 @@ afterEach(() => {
   host.remove();
 });
 
+function tree(invoices: Invoice[]) {
+  return (
+    <QueryClientProvider client={queryClient!}>
+      <SupplierAdjustPanel supplierId="sup-1" supplierName="مورد الاختبار" balance={5000} invoices={invoices} onDone={() => undefined} onCancel={() => undefined} />
+    </QueryClientProvider>
+  );
+}
+
 function render(invoices: Invoice[] = [invoice()]) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(host);
   act(() => {
-    root!.render(
-      <QueryClientProvider client={client}>
-        <SupplierAdjustPanel supplierId="sup-1" supplierName="مورد الاختبار" balance={5000} invoices={invoices} onDone={() => undefined} onCancel={() => undefined} />
-      </QueryClientProvider>,
-    );
+    root!.render(tree(invoices));
+  });
+}
+
+/** Re-render the SAME panel with a new invoices prop (the background refresh). */
+function rerender(invoices: Invoice[]) {
+  act(() => {
+    root!.render(tree(invoices));
   });
 }
 
@@ -141,5 +157,35 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     clickOn("supplier-adjust-link");
     expect(host.querySelector('[data-testid="supplier-adjust-no-invoices"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
+  });
+
+  it("never auto-switches the linked invoice when the selected one is no longer open (Greptile finding 2)", () => {
+    render([invoice({ id: "inv-a", invoiceNumber: "INV-A" }), invoice({ id: "inv-b", invoiceNumber: "INV-B" })]);
+    clickOn("supplier-adjust-link");
+    // the owner's selected invoice A settles in another tab; a refresh drops it
+    rerender([invoice({ id: "inv-b", invoiceNumber: "INV-B" })]);
+    typeInto("supplier-adjust-amount", "100");
+
+    expect(host.querySelector('[data-testid="supplier-adjust-link-error"]')?.textContent).toContain("لم تعد مفتوحة");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
+    clickOn("supplier-adjust-confirm");
+    // nothing was submitted, and B was never silently discounted
+    expect(captured).toBeNull();
+  });
+
+  it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
+    render();
+    typeInto("supplier-adjust-amount", "500");
+    const spy = spyOn(queryClient!, "invalidateQueries");
+
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["reportsDebts"]));
+    expect(keys).toContain(JSON.stringify([["debtsByParty"]]));
+    expect(keys).toContain(JSON.stringify(["dashboardSummary"]));
+    expect(keys).not.toContain(JSON.stringify(["debtsData"]));
   });
 });

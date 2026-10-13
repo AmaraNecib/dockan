@@ -20,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatDateTime } from "../lib/dates";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
 
 type DetailTab = "invoices" | "payments" | "info";
 
@@ -81,18 +82,9 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
  * payment/return reduces it, an adjustment follows its own direction). */
 function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
   const { t } = useTranslation();
-  const sign =
-    entry.kind === "ADJUSTMENT"
-      ? entry.direction === "THEY_OWE"
-        ? "−"
-        : "+"
-      : entry.kind === "PURCHASE" || entry.kind === "REFUND"
-        ? "+"
-        : "−";
-  const directionLabel =
-    entry.kind === "ADJUSTMENT"
-      ? t(entry.direction === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe")
-      : null;
+  const sign = supplierEntrySignLabel(entry);
+  const directionKey = supplierEntryDirectionKey(entry);
+  const directionLabel = directionKey === null ? null : t(directionKey);
   return (
     <tr data-testid="supplier-account-row">
       <td className="p-2">{formatDateTime(entry.occurredAt)}</td>

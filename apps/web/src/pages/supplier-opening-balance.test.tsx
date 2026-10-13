@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -24,11 +24,12 @@ let captured: { rows: CapturedRow[] } | null = null;
 /** when true, the first unconfirmed save is refused as if the cached entry
  * count were stale */
 let rejectUnconfirmed = false;
-const suppliers = [
+const BASE_SUPPLIERS = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
   { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
 ];
+let suppliers = BASE_SUPPLIERS;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -48,7 +49,10 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
+    reportsDebts: { queryKey: () => ["reportsDebts"] },
+    dashboardSummary: { queryKey: () => ["dashboardSummary"] },
   },
+  DEBTS_BY_PARTY_QUERY_KEY: [["debtsByParty"]],
   rpcClient: {},
 }));
 
@@ -56,10 +60,13 @@ const { SupplierOpeningBalancePage } = await import("./supplier-opening-balance"
 
 let host: HTMLDivElement;
 let root: Root | null = null;
+let queryClient: QueryClient | null = null;
 
 beforeEach(() => {
   captured = null;
   rejectUnconfirmed = false;
+  suppliers = BASE_SUPPLIERS;
+  queryClient = null;
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -72,6 +79,7 @@ afterEach(() => {
 
 function render() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = client;
   root = createRoot(host);
   act(() => {
     root!.render(
@@ -185,5 +193,96 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", confirmExisting: true });
+  });
+
+  it("keeps a grouped 1,000 amount instead of silently dropping its row (Greptile finding 1)", async () => {
+    render();
+    await settle();
+    typeIntoRow(0, "1,000");
+    typeIntoRow(1, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    // row 0 already carries entries, so the confirmation comes first
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "s-1")?.amount).toBe(1000);
+    expect(captured?.rows.find((row) => row.supplierId === "s-2")?.amount).toBe(500);
+  });
+
+  it("blocks the save and marks the row when an amount draft is invalid (Greptile finding 1)", async () => {
+    render();
+    await settle();
+    typeIntoRow(1, "abc");
+
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
+  });
+
+  it("blocks an incomplete inline supplier instead of dropping it (Greptile finding 1)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ");
+
+    expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
+  });
+
+  it("blocks a batch over the 200-row contract limit before saving (Greptile finding 4)", async () => {
+    suppliers = Array.from({ length: 200 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      phone: null,
+      createdAt: "2026-01-01T10:00:00",
+      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(200);
+    act(() => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      inputs.forEach((input, index) => {
+        setter?.call(input, String(index + 1));
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    });
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
+  });
+
+  it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
+    render();
+    await settle();
+    typeIntoRow(1, "300");
+    const spy = spyOn(queryClient!, "invalidateQueries");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["reportsDebts"]));
+    expect(keys).toContain(JSON.stringify([["debtsByParty"]]));
+    expect(keys).toContain(JSON.stringify(["dashboardSummary"]));
+    expect(keys).not.toContain(JSON.stringify(["debtsData"]));
   });
 });

@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
-import { orpc } from "@/lib/rpc";
+import { DEBTS_BY_PARTY_QUERY_KEY, orpc } from "@/lib/rpc";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -56,11 +56,13 @@ export function SupplierAdjustPanel({
   const amount = parseWholeAmount(amountDraft);
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
-  // derive the effective selection at render time: if the invoices prop changes
-  // after mount (a return shrinks one to zero, the page refetches) the stored id
-  // may no longer be open, so fall back to the first still-open invoice
-  const effectiveInvoiceId = openInvoices.some((invoice) => invoice.id === invoiceId) ? invoiceId : (openInvoices[0]?.id ?? "");
-  const selected = openInvoices.find((invoice) => invoice.id === effectiveInvoiceId);
+  // NEVER auto-switch the linked invoice. The owner picked a specific invoice;
+  // if a background refresh settles and removes it, keep the selection and ask
+  // the owner to choose again (Greptile round 1 finding 2: the old fallback
+  // silently selected another invoice and discounted it).
+  const selected = openInvoices.find((invoice) => invoice.id === invoiceId);
+  const selectionLost = linked && invoiceId !== "" && selected === undefined;
+  const noInvoiceChosen = linked && openInvoices.length > 0 && invoiceId === "";
   // linking only reduces an invoice, so the direction is forced to يسالنا
   const effectiveDirection: SupplierAdjustmentDirection = linked ? "THEY_OWE" : direction;
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
@@ -72,9 +74,17 @@ export function SupplierAdjustPanel({
       : exceeds
         ? t("supplierAdjustExceedsRemaining")
         : null;
+  const linkError =
+    !linked || openInvoices.length === 0
+      ? null
+      : selectionLost
+        ? t("supplierAdjustInvoiceGone")
+        : noInvoiceChosen
+          ? t("supplierAdjustInvoiceRequired")
+          : null;
   const previewBalance = amount === null || amount <= 0 ? balance : balance + (effectiveDirection === "WE_OWE" ? amount : -amount);
   const previewRemaining = linked && selected !== undefined && amount !== null && amount > 0 ? Math.max(0, selected.remainingAmount - amount) : null;
-  const blocked = submitting || adjust.isPending || amountError !== null || amount === null || amount <= 0 || dateInvalid || (linked && effectiveInvoiceId === "");
+  const blocked = submitting || adjust.isPending || amountError !== null || amount === null || amount <= 0 || dateInvalid || linkError !== null || (linked && openInvoices.length === 0);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -88,13 +98,17 @@ export function SupplierAdjustPanel({
         amount,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
         occurredAt: occurredAt ?? undefined,
-        invoiceId: linked ? effectiveInvoiceId : undefined,
+        invoiceId: linked ? invoiceId : undefined,
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: orpc.suppliersGet.queryKey({ input: { id: supplierId } }) }),
         queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
         queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
-        queryClient.invalidateQueries({ queryKey: ["debtsData"] }),
+        // the real debt/dashboard keys (Greptile round 1 finding 5: ["debtsData"]
+        // matched nothing, so saving never marked the debts views stale)
+        queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
+        queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
       ]);
       onDone();
     } catch (err) {
@@ -199,7 +213,7 @@ export function SupplierAdjustPanel({
           <div className="flex flex-wrap items-end gap-3">
             <div className="grid gap-1 text-sm">
               {t("supplierPayInvoiceLabel")}
-              <Select value={effectiveInvoiceId} onValueChange={(next) => setInvoiceId(next ?? "")}>
+              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")}>
                 <SelectTrigger className="w-56" data-testid="supplier-adjust-invoice">
                   <SelectValue />
                 </SelectTrigger>
@@ -216,6 +230,9 @@ export function SupplierAdjustPanel({
               <p className="text-sm text-muted-foreground" data-testid="supplier-adjust-invoice-remaining">
                 {t("supplierAdjustInvoiceRemaining")}: <Amount value={selected.remainingAmount} />
               </p>
+            )}
+            {linkError !== null && (
+              <p role="alert" className="w-full text-sm text-destructive" data-testid="supplier-adjust-link-error">{linkError}</p>
             )}
           </div>
         )

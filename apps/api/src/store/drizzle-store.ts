@@ -46,7 +46,7 @@ import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 
 /**
@@ -1205,6 +1205,33 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return Number(result.changes) > 0;
   };
 
+  /** The #177 idempotency key as a WHERE clause, so the guarded write and the
+   * opening-balance confirmation read the same signature. */
+  const adjustmentSignatureConditions = (input: SupplierAdjustmentSignature) => {
+    const conditions = [
+      eq(supplierAccountEntries.supplierId, input.supplierId),
+      eq(supplierAccountEntries.kind, "ADJUSTMENT"),
+      eq(supplierAccountEntries.direction, input.direction),
+      eq(supplierAccountEntries.amount, input.amount),
+      input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
+      input.invoiceId === null ? isNull(supplierAccountEntries.invoiceId) : eq(supplierAccountEntries.invoiceId, input.invoiceId),
+    ];
+    // a server-stamped timestamp cannot tell a retry apart, so match any time;
+    // a caller-supplied one is part of the idempotency signature
+    if (input.serverStamped !== true) conditions.push(eq(supplierAccountEntries.occurredAt, input.occurredAt));
+    return conditions;
+  };
+
+  /** True when an ADJUSTMENT with this #177 signature already exists. */
+  const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
+    const rows = await db
+      .select({ id: supplierAccountEntries.id })
+      .from(supplierAccountEntries)
+      .where(and(...adjustmentSignatureConditions(input)))
+      .limit(1);
+    return rows[0] !== undefined;
+  };
+
   const store: StorePort = {
     setup,
 
@@ -1803,23 +1830,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (input.invoiceId !== null && input.direction !== "THEY_OWE") {
         throw new SupplierAdjustmentError("LINKED_DIRECTION");
       }
-      const signature = [
-        eq(supplierAccountEntries.supplierId, input.supplierId),
-        eq(supplierAccountEntries.kind, "ADJUSTMENT"),
-        eq(supplierAccountEntries.direction, input.direction),
-        eq(supplierAccountEntries.amount, input.amount),
-        input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
-        input.invoiceId === null ? isNull(supplierAccountEntries.invoiceId) : eq(supplierAccountEntries.invoiceId, input.invoiceId),
-      ];
-      // a server-stamped timestamp cannot tell a retry apart, so match any time;
-      // a caller-supplied one is part of the idempotency signature
-      if (input.serverStamped !== true) signature.push(eq(supplierAccountEntries.occurredAt, input.occurredAt));
-      const duplicates = await db
-        .select({ id: supplierAccountEntries.id })
-        .from(supplierAccountEntries)
-        .where(and(...signature))
-        .limit(1);
-      if (duplicates[0] !== undefined) throw new SupplierAdjustmentError("DUPLICATE");
+      if (await hasSupplierAdjustment(input)) throw new SupplierAdjustmentError("DUPLICATE");
       if (input.invoiceId !== null) {
         // the backstop also owns linkage: a linked entry may only reduce a
         // PURCHASE invoice of THIS supplier, so a non-UI caller cannot credit
@@ -1851,6 +1862,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     listSupplierEntries(supplierId: string) {
       return listEntries(supplierId);
     },
+    hasSupplierAdjustment,
     async listOutstandingPurchaseInvoices(supplierId: string) {
       const rows = await db
         .select(invoiceCols)

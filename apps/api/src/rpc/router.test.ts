@@ -1882,6 +1882,25 @@ describe("supplier adjustments (issue 176)", () => {
     expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(900);
   });
 
+  it("requires confirmation when a new-supplier name collides with a supplier that has entries (Greptile round 1)", async () => {
+    const existing = await client.suppliersCreate({ name: "مورد تصادم اسم" });
+    await client.suppliersAdjust({ supplierId: existing.id, direction: "WE_OWE", amount: 100 });
+
+    // a typed new name that resolves to an existing supplier with entries is a
+    // different amount: it must not append without the confirmation the
+    // supplierId path requires
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ newSupplierName: "مورد تصادم اسم", direction: "WE_OWE", amount: 700 }],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_EXISTS" });
+
+    // no second supplier and no second entry
+    expect((await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === "مورد تصادم اسم")).toHaveLength(1);
+    expect((await client.suppliersGet({ id: existing.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
   it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {
     const { supplier, invoice } = await setupSupplier("مورد إعادة رابط", 5);
     const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };

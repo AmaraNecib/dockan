@@ -170,6 +170,13 @@ export type SupplierAdjustmentInsert = {
   serverStamped?: boolean;
 };
 
+/** The #177 idempotency key of a manual adjustment, shared by the guarded write
+ * and the opening-balance confirmation so the two can never disagree. */
+export type SupplierAdjustmentSignature = Pick<
+  SupplierAdjustmentInsert,
+  "supplierId" | "direction" | "amount" | "reason" | "occurredAt" | "invoiceId" | "serverStamped"
+>;
+
 /** Typed refusal from the #177 supplier-adjustment guard. The router maps these
  * to stable ORPC errors; the store never throws a transport error. */
 export class SupplierAdjustmentError extends Error {
@@ -302,6 +309,10 @@ export interface StorePort {
    * the invoice's remaining can never diverge. Account-only (null invoiceId)
    * never touches an invoice. */
   insertSupplierAdjustment(input: SupplierAdjustmentInsert): Promise<SupplierAccountEntry>;
+  /** True when an ADJUSTMENT with this #177 signature already exists. Exposed so
+   * the bulk opening-balance confirmation can tell an exact resend from a
+   * genuinely new entry without duplicating the key. */
+  hasSupplierAdjustment(input: SupplierAdjustmentSignature): Promise<boolean>;
   /** every entry of one supplier, newest first, invoice number joined */
   listSupplierEntries(supplierId: string): Promise<SupplierAccountEntry[]>;
   /** outstanding PURCHASE invoices of one supplier, oldest first (allocation) */

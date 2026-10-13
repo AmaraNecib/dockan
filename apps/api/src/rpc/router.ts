@@ -979,9 +979,22 @@ export function createRpcRouter(deps: RpcDeps) {
           // batch that used newSupplierName must resolve to the supplier the
           // first attempt created. Otherwise createParty mints a second id and
           // the signature dedup runs under it, double-posting the same balance.
-          const supplierByName = new Map<string, { id: string; name: string }>();
-          for (const party of await tx.listParties("supplier")) {
-            supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name });
+          // Built lazily: an all-existing-supplier batch needs no name lookup,
+          // and listParties carries per-party aggregates.
+          const wantsNewNames = input.rows.some((row) => row.newSupplierName !== undefined);
+          const supplierByName = new Map<string, { id: string; name: string; entries: number }>();
+          if (wantsNewNames) {
+            for (const party of await tx.listParties("supplier")) {
+              const key = normalizeTextKey(party.name);
+              const entries = party.accountEntryCount ?? 0;
+              const current = supplierByName.get(key);
+              // two suppliers can fold to one name (legacy corruption): prefer the
+              // one that already carries entries, then the lowest id, so a resend
+              // resolves to the same row the first attempt used
+              if (current === undefined || entries > current.entries || (entries === current.entries && party.id < current.id)) {
+                supplierByName.set(key, { id: party.id, name: party.name, entries });
+              }
+            }
           }
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
@@ -998,11 +1011,18 @@ export function createRpcRouter(deps: RpcDeps) {
               const requested = supplierByName.get(normalizeTextKey(row.newSupplierName!));
               if (requested !== undefined) {
                 // the name already exists (a resend, or a typed name the picker
-                // would have matched): reuse it so the dedup can see prior rows
+                // would have matched). Apply the same confirmation gate as the
+                // supplierId path, EXCEPT for an exact resend: the guarded write
+                // below reports that as a duplicate rather than an unconfirmed add.
+                if (row.confirmExisting !== true) {
+                  const existing = await tx.listSupplierEntries(requested.id);
+                  const isResend = await tx.hasSupplierAdjustment({ supplierId: requested.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null });
+                  if (existing.length > 0 && !isResend) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+                }
                 plan.push({ supplierId: requested.id, name: requested.name, direction: row.direction, amount: row.amount });
               } else {
                 const party = await tx.createParty("supplier", { name: row.newSupplierName! });
-                supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name });
+                supplierByName.set(normalizeTextKey(party.name), { id: party.id, name: party.name, entries: 0 });
                 plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
               }
             }

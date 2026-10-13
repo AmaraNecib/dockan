@@ -332,6 +332,20 @@ describe("supplier account store", () => {
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 
+  it("reports whether an adjustment signature already exists (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد توقيع مخزن");
+    const signature = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 250, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    expect(await store.hasSupplierAdjustment(signature)).toBe(false);
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment(signature);
+    });
+    expect(await store.hasSupplierAdjustment(signature)).toBe(true);
+    // a different amount, direction, or reason is a different signature
+    expect(await store.hasSupplierAdjustment({ ...signature, amount: 251 })).toBe(false);
+    expect(await store.hasSupplierAdjustment({ ...signature, direction: "THEY_OWE" })).toBe(false);
+    expect(await store.hasSupplierAdjustment({ ...signature, reason: "تصحيح" })).toBe(false);
+  });
+
   it("re-validates the amount so a non-contract caller cannot invert the reduction (issue 177)", async () => {
     const supplier = await makeSupplier("مورد مبلغ سالب");
     const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, reason: null, occurredAt: "2026-10-13T12:00:00", invoiceId: null };

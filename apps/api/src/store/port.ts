@@ -33,6 +33,7 @@ import type {
   StockMovement,
   Supplier,
   SupplierAccountEntry,
+  SupplierAdjustmentDirection,
   SupplierEntryKind,
   SupplierReturnLine,
   SupplierReturnRecord,
@@ -136,6 +137,8 @@ export type SupplierEntryInsert = {
   supplierId: string;
   kind: SupplierEntryKind;
   amount: number;
+  /** ADJUSTMENT only (issue 176): WE_OWE / THEY_OWE carry the sign */
+  direction?: SupplierAdjustmentDirection | null;
   invoiceId: string | null;
   method?: PaymentMethod | null;
   note?: string | null;

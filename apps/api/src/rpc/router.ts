@@ -886,6 +886,106 @@ export function createRpcRouter(deps: RpcDeps) {
         }),
       ),
     ),
+    // #176 — a manual adjustment: append-only, account-only unless the
+    // owner links a purchase invoice, in which case it reduces THAT invoice's
+    // remaining with the same conditional UPDATE returns use. One BEGIN
+    // IMMEDIATE unit; the DB is the boundary (never check-then-act).
+    suppliersAdjust: os.suppliersAdjust.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const supplier = await tx.getParty("supplier", input.supplierId);
+          if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const occurredAt = input.occurredAt ?? localDateTime();
+          const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+
+          if (input.invoiceId !== undefined) {
+            // the contract requires THEY_OWE; re-check so a direct store-seam
+            // caller can never sign a linked reduction the other way
+            if (input.direction !== "THEY_OWE") throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_INVOICE_DIRECTION" });
+            const detail = await tx.getInvoiceDetail(input.invoiceId);
+            if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
+            }
+            // the remaining is clamped at >= 0 and a link may not exceed it:
+            // the excess is REFUSED, never silently moved to credit
+            if (input.amount > detail.remainingAmount) {
+              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_EXCEEDS_REMAINING" });
+            }
+            await tx.insertSupplierEntry({
+              supplierId: input.supplierId,
+              kind: "ADJUSTMENT",
+              direction: "THEY_OWE",
+              amount: input.amount,
+              invoiceId: detail.id,
+              note: reason,
+              occurredAt,
+            });
+            if (!(await tx.applyDebtOffsetToInvoice(detail.id, input.amount))) {
+              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_DEBT_OFFSET_REFUSED" });
+            }
+          } else {
+            await tx.insertSupplierEntry({
+              supplierId: input.supplierId,
+              kind: "ADJUSTMENT",
+              direction: input.direction,
+              amount: input.amount,
+              invoiceId: null,
+              note: reason,
+              occurredAt,
+            });
+          }
+          await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
+          const entries = await tx.listSupplierEntries(input.supplierId);
+          return { balance: supplierBalance(entries), entries };
+        }),
+      ),
+    ),
+    // #176 — the bulk opening-balance screen: one ACCOUNT-ONLY adjustment per
+    // filled row. Every row is resolved and confirmed BEFORE any write, so an
+    // unknown id or an unconfirmed existing account rolls the whole batch back
+    // with nothing half-saved.
+    suppliersOpeningBalances: os.suppliersOpeningBalances.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+          const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
+          for (const row of input.rows) {
+            if (row.supplierId !== undefined) {
+              const party = await tx.getParty("supplier", row.supplierId);
+              if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+              const existing = await tx.listSupplierEntries(party.id);
+              if (existing.length > 0 && row.confirmExisting !== true) {
+                throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+              }
+              plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+            } else {
+              // SAFETY: the contract superRefine guarantees newSupplierName here
+              const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+              plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+            }
+          }
+          for (const row of plan) {
+            await tx.insertSupplierEntry({
+              supplierId: row.supplierId,
+              kind: "ADJUSTMENT",
+              direction: row.direction,
+              amount: row.amount,
+              invoiceId: null,
+              note: reason,
+              ref: "OPENING_BALANCE",
+              occurredAt: input.occurredAt,
+            });
+            await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.amount} ${row.name}`, ref: row.supplierId });
+          }
+          const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];
+          for (const row of plan) {
+            const entries = await tx.listSupplierEntries(row.supplierId);
+            accounts.push({ supplierId: row.supplierId, name: row.name, balance: supplierBalance(entries) });
+          }
+          return { created: plan.length, accounts };
+        }),
+      ),
+    ),
     suppliersReturnsList: os.suppliersReturnsList.handler(
       guardedInput(async (input) => deps.store.listSupplierReturns({ supplierId: input.supplierId }, resolvePagination(input))),
     ),

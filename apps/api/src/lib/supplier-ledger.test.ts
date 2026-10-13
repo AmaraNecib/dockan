@@ -12,12 +12,25 @@ import {
   type AllocatableInvoice,
 } from "./supplier-ledger";
 
+
 describe("supplierEntrySign", () => {
   it("charges purchases and refunds, credits payments and returns", () => {
     expect(supplierEntrySign("PURCHASE")).toBe(1);
     expect(supplierEntrySign("REFUND")).toBe(1);
     expect(supplierEntrySign("PAYMENT")).toBe(-1);
     expect(supplierEntrySign("RETURN")).toBe(-1);
+  });
+
+  it("signs a manual adjustment by its direction (issue 176)", () => {
+    // نسالوه = we owe him = the balance grows
+    expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(1);
+    // يسالنا = he owes us = the balance shrinks
+    expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(-1);
+  });
+
+  it("refuses to sign an adjustment with no direction rather than guess", () => {
+    expect(() => supplierEntrySign("ADJUSTMENT")).toThrow(/direction/);
+    expect(() => supplierEntrySign("ADJUSTMENT", null)).toThrow(/direction/);
   });
 });
 
@@ -41,6 +54,20 @@ describe("supplierBalance", () => {
 
   it("is zero for an empty account", () => {
     expect(supplierBalance([])).toBe(0);
+  });
+
+  it("mixes a signed adjustment into the balance by its direction (issue 176)", () => {
+    const entries = [
+      { kind: "PURCHASE" as const, amount: 1000, direction: null },
+      { kind: "ADJUSTMENT" as const, amount: 800, direction: "WE_OWE" as const },
+      { kind: "ADJUSTMENT" as const, amount: 500, direction: "THEY_OWE" as const },
+    ];
+    expect(supplierBalance(entries)).toBe(1000 + 800 - 500);
+  });
+
+  it("moves an opening balance the right way from an empty account", () => {
+    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 25000, direction: "WE_OWE" as const }])).toBe(25000);
+    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 3000, direction: "THEY_OWE" as const }])).toBe(-3000);
   });
 });
 

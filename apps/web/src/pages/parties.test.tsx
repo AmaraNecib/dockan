@@ -109,6 +109,8 @@ const row = (over: Partial<PartyListItem> = {}): PartyListItem => ({
   phone: "+213555123456",
   createdAt: "2026-10-01T10:00:00",
   stats: EMPTY_STATS,
+  accountBalance: null,
+  accountEntryCount: null,
   ...over,
 });
 

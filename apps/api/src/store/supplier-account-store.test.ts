@@ -196,4 +196,73 @@ describe("supplier account store", () => {
     const customer = await store.createParty("customer", { name: "زبون" });
     expect((await store.partyDetail("customer", customer.id))?.account).toBeNull();
   });
+
+  it("moves the balance with an account-only adjustment and leaves invoices alone (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد تسوية رصيد");
+    const invoice = await makePurchase(supplier.id, 900);
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 900, invoiceId: invoice.id, occurredAt: now() });
+    const before = await store.getInvoiceDetail(invoice.id);
+
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 800, invoiceId: null, note: "رصيد افتتاحي", occurredAt: now() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, note: "تصحيح", occurredAt: now() });
+
+    const entries = await store.listSupplierEntries(supplier.id);
+    expect(supplierBalance(entries)).toBe(900 + 800 - 300);
+    expect(entries.find((entry) => entry.kind === "ADJUSTMENT")?.direction).toBe("THEY_OWE");
+
+    // account-only: paid/remaining/credit are exactly as before
+    const after = await store.getInvoiceDetail(invoice.id);
+    expect(after?.paidAmount).toBe(before?.paidAmount);
+    expect(after?.remainingAmount).toBe(before?.remainingAmount);
+    expect(after?.returnCreditAmount).toBe(0);
+  });
+
+  it("reduces a linked invoice's remaining with an adjustment and surfaces it in the header (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد تسوية خصم");
+    const invoice = await makePurchase(supplier.id, 5000);
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 5000, invoiceId: invoice.id, occurredAt: now() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 500, invoiceId: invoice.id, note: "خصم", occurredAt: now() });
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 500)).toBe(true);
+
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.remainingAmount).toBe(4500);
+    expect(detail?.paidAmount).toBe(0);
+    expect(detail?.returnCreditAmount).toBe(500);
+    expect(detail?.remainingAmount).toBe(detail!.totalAmount - detail!.paidAmount - detail!.returnCreditAmount);
+
+    const entries = await store.listSupplierEntries(supplier.id);
+    expect(supplierBalance(entries)).toBe(4500);
+  });
+
+  it("refuses a linked reduction above the remaining at the conditional UPDATE (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد تسوية زائدة");
+    const invoice = await makePurchase(supplier.id, 1000);
+    expect(await store.applyDebtOffsetToInvoice(invoice.id, 1001)).toBe(false);
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(1000);
+  });
+
+  it("lists a supplier's signed balance and entry count, and a customer's nulls (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد قائمة رصيد");
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 700, invoiceId: null, occurredAt: now() });
+    const supplierRow = (await store.listParties("supplier")).find((row) => row.id === supplier.id);
+    expect(supplierRow?.accountBalance).toBe(700);
+    expect(supplierRow?.accountEntryCount).toBe(1);
+
+    const customer = await store.createParty("customer", { name: "زبون قائمة" });
+    const customerRow = (await store.listParties("customer")).find((row) => row.id === customer.id);
+    expect(customerRow?.accountBalance).toBeNull();
+    expect(customerRow?.accountEntryCount).toBeNull();
+  });
+
+  it("agrees with the debts summary balance after a WE_OWE adjustment (issue 176)", async () => {
+    const supplier = await makeSupplier("مورد ديون تسوية");
+    const invoice = await makePurchase(supplier.id, 1000);
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 1000, invoiceId: invoice.id, occurredAt: now() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 250, invoiceId: null, occurredAt: now() });
+
+    const entries = await store.listSupplierEntries(supplier.id);
+    const row = (await store.debtSummaries()).find((summary) => summary.counterpartyId === supplier.id && summary.kind === "PURCHASE");
+    expect(row?.accountBalance).toBe(supplierBalance(entries));
+    expect(row?.accountBalance).toBe(1250);
+  });
 });

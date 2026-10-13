@@ -70,6 +70,9 @@ import {
   stockAddManualInputSchema,
   stockMovementSchema,
   supplierAccountSchema,
+  supplierAdjustInputSchema,
+  supplierOpeningBalancesInputSchema,
+  supplierOpeningBalancesOutputSchema,
   supplierPayInputSchema,
   supplierRefundInputSchema,
   supplierReturnGetInputSchema,
@@ -127,6 +130,11 @@ export const dokanContract = {
   suppliersReturn: oc.input(supplierReturnInputSchema).output(supplierAccountSchema),
   /** record cash received from the supplier to close a credit */
   suppliersRefund: oc.input(supplierRefundInputSchema).output(supplierAccountSchema),
+  /** #176 — a manual adjustment (تسوية): a signed account-only number, or an
+   * optional invoice-linked discount that reduces that invoice's remaining */
+  suppliersAdjust: oc.input(supplierAdjustInputSchema).output(supplierAccountSchema),
+  /** #176 — the bulk رصيد افتتاحي screen: one account-only adjustment per row */
+  suppliersOpeningBalances: oc.input(supplierOpeningBalancesInputSchema).output(supplierOpeningBalancesOutputSchema),
   /** supplier purchase-return history (plain list, no review state) */
   suppliersReturnsList: oc.input(supplierReturnsListInputSchema).output(supplierReturnsListOutputSchema),
   /** one purchase-return voucher by id; the print page never scans a page */

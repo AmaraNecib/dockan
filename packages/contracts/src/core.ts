@@ -51,6 +51,7 @@ export const activityTypes = [
   "STOCK_ADJUSTED",
   "RETURN_RECORDED",
   "RETURN_REVIEWED",
+  "ADJUSTMENT_RECORDED",
   "SETTINGS_UPDATED",
   "EXPENSE_RECORDED",
   "EXPENSE_CATEGORY_CREATED",
@@ -443,8 +444,10 @@ export const invoiceDetailSchema = invoiceSchema.extend({
    * returns' `debtApplied`). It is the missing term in the invoice header's
    * arithmetic: once a return has cleared part of the debt, `totalAmount −
    * paidAmount ≠ remainingAmount`, because that difference was settled with
-   * returned goods rather than with money. Surfacing it keeps the three
-   * stored figures reconcilable instead of looking like corrupt data.
+   * returned goods rather than with money. An invoice-linked account-only
+   * adjustment (تسوية, issue 176) that names this invoice reduces it the same
+   * way and is summed here too. Surfacing it keeps the three stored figures
+   * reconcilable instead of looking like corrupt data.
    */
   returnCreditAmount: dinarsSchema,
 });
@@ -468,8 +471,17 @@ export const partyStatsSchema = z.object({
 });
 
 /** List seam: the joined aggregates live here, never on the entity schema
- * (wisdom 2026-08-27: widening itemSchema rippled through every consumer). */
-export const partyListItemSchema = partySchema.extend({ stats: partyStatsSchema });
+ * (wisdom 2026-08-27: widening itemSchema rippled through every consumer).
+ * `accountBalance` / `accountEntryCount` are supplier-only (issue 176): the
+ * signed account balance and how many ledger entries back it. Null for a
+ * customer, who keeps invoice-based debt, and for a party with no account. The
+ * bulk رصيد افتتاحي screen reads both to show the current balance and to ask
+ * for confirmation before adding a second entry. */
+export const partyListItemSchema = partySchema.extend({
+  stats: partyStatsSchema,
+  accountBalance: z.number().int().nullable(),
+  accountEntryCount: z.number().int().min(0).nullable(),
+});
 export const partyListOutputSchema = z.object({ items: z.array(partyListItemSchema) });
 
 /** Payments tab row: the invoice number is joined at this seam so the page
@@ -482,9 +494,16 @@ export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string
 
 /** A supplier account entry. Purchase = +charge, payment = −paid,
  * purchase return = −returned value, account refund = +cash received to close a
- * credit. */
-export const supplierEntryKinds = ["PURCHASE", "PAYMENT", "RETURN", "REFUND"] as const;
+ * credit. A manual adjustment (تسوية, issue 176) carries a `direction`
+ * («نسالوه» / «يسالنا») that decides its sign. */
+export const supplierEntryKinds = ["PURCHASE", "PAYMENT", "RETURN", "REFUND", "ADJUSTMENT"] as const;
 export const supplierEntryKindSchema = z.enum(supplierEntryKinds);
+
+/** A manual adjustment's direction (issue 176). WE_OWE = «نسالوه» (the shop
+ * owes the supplier more, +); THEY_OWE = «يسالنا» (the shop owes less, −). The
+ * same two words will serve customers when their account lands. */
+export const supplierAdjustmentDirections = ["WE_OWE", "THEY_OWE"] as const;
+export const supplierAdjustmentDirectionSchema = z.enum(supplierAdjustmentDirections);
 
 /** How a supplier payment is distributed. OLDEST = spread over unpaid invoices
  * oldest-first; INVOICE = a named invoice; CREDIT = leave the whole amount as
@@ -505,6 +524,9 @@ export const supplierAccountEntrySchema = z.object({
   invoiceId: idSchema.nullable(),
   /** joined at the store seam so the UI never renders a raw invoiceId */
   invoiceNumber: z.string().nullable(),
+  /** ADJUSTMENT only (issue 176): the direction that decides its sign. Null
+   * for every other kind. */
+  direction: supplierAdjustmentDirectionSchema.nullable(),
   method: paymentMethodSchema.nullable(),
   note: z.string().nullable(),
   /** voucher/return reference, when the entry came from a return */
@@ -989,6 +1011,69 @@ export const supplierRefundInputSchema = z.object({
   note: z.string().nullable().optional(),
 });
 
+/**
+ * #176 — a manual adjustment (تسوية): a signed number written straight on the
+ * supplier account, with no invoice. `direction` carries «نسالوه» (WE_OWE, +)
+ * or «يسالنا» (THEY_OWE, −). An optional `invoiceId` turns it into a
+ * discount/write-off that reduces THAT invoice's remaining without cash; a
+ * linked reduction only makes sense in the THEY_OWE direction, so the contract
+ * refuses the contradiction before any store work. The linked amount may not
+ * exceed the invoice's remaining — the router refuses the excess instead of
+ * silently moving it to credit.
+ */
+export const supplierAdjustInputSchema = z
+  .object({
+    supplierId: idSchema,
+    direction: supplierAdjustmentDirectionSchema,
+    amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+    /** free text; the form offers presets (رصيد افتتاحي / تصحيح / دين قديم / خصم) */
+    reason: z.string().trim().max(500).nullable().optional(),
+    /** backdatable; defaults to the server's now when omitted */
+    occurredAt: localDateTimeSchema.optional(),
+    /** the purchase invoice this adjustment discounts, when the owner links one */
+    invoiceId: idSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.invoiceId !== undefined && value.direction !== "THEY_OWE") {
+      ctx.addIssue({ code: "custom", message: "a linked adjustment must be يسالنا (it reduces the invoice)", path: ["direction"] });
+    }
+  });
+
+/** One row of the bulk رصيد افتتاحي screen: an existing supplier or an inline
+ * new name, a direction, and an amount. `confirmExisting` acknowledges that
+ * the supplier already carries an account entry (the screen asks before
+ * saving). */
+export const supplierOpeningBalanceRowInputSchema = z
+  .object({
+    supplierId: idSchema.optional(),
+    newSupplierName: z.string().trim().min(1).max(200).optional(),
+    direction: supplierAdjustmentDirectionSchema,
+    amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+    confirmExisting: z.boolean().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const hasExisting = value.supplierId !== undefined;
+    const hasNew = value.newSupplierName !== undefined;
+    if (hasExisting === hasNew) {
+      ctx.addIssue({ code: "custom", message: "a row names either an existing supplierId or a new supplierName" });
+    }
+  });
+
+/** The whole batch: one shared date + reason, one account-only adjustment per
+ * filled row. No invoice link exists in the bulk screen. */
+export const supplierOpeningBalancesInputSchema = z.object({
+  occurredAt: localDateTimeSchema,
+  reason: z.string().trim().max(500).nullable().optional(),
+  rows: z.array(supplierOpeningBalanceRowInputSchema).min(1).max(200),
+});
+
+export const supplierOpeningBalancesOutputSchema = z.object({
+  /** how many adjustment entries were written (one per filled row) */
+  created: z.number().int().min(0),
+  /** the suppliers touched, with their balance after the batch */
+  accounts: z.array(z.object({ supplierId: idSchema, name: z.string(), balance: z.number().int() })),
+});
+
 export const returnLineInputSchema = z.object({
   invoiceLineId: idSchema,
   /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
@@ -1312,6 +1397,7 @@ export type ReturnStatus = z.infer<typeof returnStatusSchema>;
 export type ReturnLine = z.infer<typeof returnLineSchema>;
 export type ReturnDetail = z.infer<typeof returnDetailSchema>;
 export type SupplierEntryKind = z.infer<typeof supplierEntryKindSchema>;
+export type SupplierAdjustmentDirection = z.infer<typeof supplierAdjustmentDirectionSchema>;
 export type SupplierAccountEntry = z.infer<typeof supplierAccountEntrySchema>;
 export type SupplierAccount = z.infer<typeof supplierAccountSchema>;
 export type SupplierPayTarget = z.infer<typeof supplierPayTargetSchema>;
@@ -1353,6 +1439,10 @@ export type SupplierPay = z.infer<typeof supplierPayInputSchema>;
 export type SupplierReturn = z.infer<typeof supplierReturnInputSchema>;
 export type SupplierReturnLineInput = z.infer<typeof supplierReturnLineInputSchema>;
 export type SupplierRefund = z.infer<typeof supplierRefundInputSchema>;
+export type SupplierAdjust = z.infer<typeof supplierAdjustInputSchema>;
+export type SupplierOpeningBalanceRow = z.infer<typeof supplierOpeningBalanceRowInputSchema>;
+export type SupplierOpeningBalances = z.infer<typeof supplierOpeningBalancesInputSchema>;
+export type SupplierOpeningBalancesResult = z.infer<typeof supplierOpeningBalancesOutputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ItemListInput = z.infer<typeof itemListInputSchema>;
 export type ItemHistoryInput = z.infer<typeof itemHistoryInputSchema>;

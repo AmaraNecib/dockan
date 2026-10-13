@@ -346,6 +346,24 @@ describe("supplier account store", () => {
     expect(await store.hasSupplierAdjustment({ ...signature, reason: "تصحيح" })).toBe(false);
   });
 
+  it("keeps the linked and server-stamped dimensions of the adjustment signature distinct (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد توقيع أبعاد");
+    const invoice = await makePurchase(supplier.id, 1000);
+    const occurredAt = "2026-10-13T12:00:00";
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: null });
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: invoice.id });
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 300, reason: "ختم", occurredAt, invoiceId: null, serverStamped: true });
+    });
+    // account-only and linked with the same shape are distinct signatures
+    expect(await store.hasSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: null })).toBe(true);
+    expect(await store.hasSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 200, reason: "تصحيح", occurredAt, invoiceId: invoice.id })).toBe(true);
+    // a server-stamped signature matches at any time
+    expect(await store.hasSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 300, reason: "ختم", occurredAt: "2099-01-01T00:00:00", invoiceId: null, serverStamped: true })).toBe(true);
+    // the same query without serverStamped is a different signature
+    expect(await store.hasSupplierAdjustment({ supplierId: supplier.id, direction: "WE_OWE", amount: 300, reason: "ختم", occurredAt: "2099-01-01T00:00:00", invoiceId: null })).toBe(false);
+  });
+
   it("re-validates the amount so a non-contract caller cannot invert the reduction (issue 177)", async () => {
     const supplier = await makeSupplier("مورد مبلغ سالب");
     const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, reason: null, occurredAt: "2026-10-13T12:00:00", invoiceId: null };

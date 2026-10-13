@@ -1882,8 +1882,26 @@ describe("supplier adjustments (issue 176)", () => {
     expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(900);
   });
 
+  it("does not double-post an existing-supplier opening balance when the response is lost (Greptile round 1)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد إعادة معرف-${Date.now()}` });
+    // a first attempt against a supplier with no entries legitimately sends no
+    // confirmExisting; its exact resend must be a duplicate, not a confirmation
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: supplier.id, direction: "WE_OWE" as const, amount: 700 }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const entries = (await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT") ?? [];
+    expect(entries).toHaveLength(1);
+  });
+
   it("requires confirmation when a new-supplier name collides with a supplier that has entries (Greptile round 1)", async () => {
-    const existing = await client.suppliersCreate({ name: "مورد تصادم اسم" });
+    const collisionName = `مورد تصادم-${Date.now()}`;
+    const existing = await client.suppliersCreate({ name: collisionName });
     await client.suppliersAdjust({ supplierId: existing.id, direction: "WE_OWE", amount: 100 });
 
     // a typed new name that resolves to an existing supplier with entries is a
@@ -1892,13 +1910,30 @@ describe("supplier adjustments (issue 176)", () => {
     await expect(
       client.suppliersOpeningBalances({
         occurredAt: "2026-10-13T12:00:00",
-        rows: [{ newSupplierName: "مورد تصادم اسم", direction: "WE_OWE", amount: 700 }],
+        rows: [{ newSupplierName: collisionName, direction: "WE_OWE", amount: 700 }],
       }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_EXISTS" });
 
     // no second supplier and no second entry
-    expect((await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === "مورد تصادم اسم")).toHaveLength(1);
+    expect((await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === collisionName)).toHaveLength(1);
     expect((await client.suppliersGet({ id: existing.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("resolves a duplicated folded name to the supplier that already carries entries (Greptile round 1)", async () => {
+    const name = `مورد ازدواج-${Date.now()}`;
+    // the two names fold to the same normalizeTextKey (whitespace collapses)
+    const empty = await client.suppliersCreate({ name });
+    const carrying = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    await client.suppliersAdjust({ supplierId: carrying.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    // the resend of the carrying supplier's entry must resolve to it, not the
+    // empty twin, so the duplicate is reported against the right account
+    await expect(
+      client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 500 }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    expect((await client.suppliersGet({ id: empty.id })).account?.entries ?? []).toHaveLength(0);
+    expect((await client.suppliersGet({ id: carrying.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 
   it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {

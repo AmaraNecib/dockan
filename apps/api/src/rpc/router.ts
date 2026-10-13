@@ -1003,7 +1003,11 @@ export function createRpcRouter(deps: RpcDeps) {
               if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
               const existing = await tx.listSupplierEntries(party.id);
               if (existing.length > 0 && row.confirmExisting !== true) {
-                throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+                // same resend exemption as the newSupplierName branch: an exact
+                // retry of a first attempt (which legitimately sent no confirm)
+                // reaches the guarded write and is reported as a duplicate
+                const isResend = await tx.hasSupplierAdjustment({ supplierId: party.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null });
+                if (!isResend) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {

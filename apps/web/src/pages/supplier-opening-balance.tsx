@@ -100,9 +100,12 @@ export function SupplierOpeningBalancePage() {
       : null;
   // guard: a typed name that folds onto a row the owner already picked must not be
   // sent (the same account twice). Folded names are a local, tie-break-free
-  // check; the resolved id comes from the server (`typedDestination`).
+  // check; the resolved id comes from the server. One function so the render-time
+  // banner and the submit-time guard cannot drift apart.
   const foldedConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
-  const typedNameConflict = foldedConflict || (typedRowReady && typedDestination !== null && filledExisting.some((row) => row.supplier.id === typedDestination.id));
+  const conflictsWithFilled = (destination: ResolvedSupplier | null) =>
+    typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
+  const typedNameConflict = conflictsWithFilled(typedDestination);
 
   const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
@@ -126,6 +129,13 @@ export function SupplierOpeningBalancePage() {
   // forward confirmExisting only for the rows the dialog actually named (their
   // cached count shows history); a stale count is resolved by the refusal round-trip
   const forwardsConfirm = (confirm: boolean, accountEntryCount: number | null | undefined) => (confirm && (accountEntryCount ?? 0) > 0 ? true : undefined);
+
+  /** Close the dialog AND drop its destination snapshot, so a later edit cannot
+   * be judged against the account a previous dialog named (issue 184). */
+  function closeConfirm() {
+    setConfirming(false);
+    setTypedDestination(null);
+  }
 
   /** Ask the server which account this typed name resolves to (issue 184). The
    * only resolver; a `null` answer means a write would create a new supplier. */
@@ -172,7 +182,7 @@ export function SupplierOpeningBalancePage() {
                   newSupplierName: newName.trim(),
                   direction: newDirection,
                   amount: typedAmount ?? 0,
-                  confirmExisting: destination !== null && destination.accountEntryCount > 0 ? true : undefined,
+                  confirmExisting: forwardsConfirm(confirmExisting, destination?.accountEntryCount),
                   expectedSupplierId: destination?.id ?? null,
                 },
               ]
@@ -188,7 +198,7 @@ export function SupplierOpeningBalancePage() {
         queryClient.invalidateQueries({ queryKey: INVOICES_LIST_QUERY_KEY }),
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
-      setConfirming(false);
+      closeConfirm();
     } catch (err) {
       // surface the refusal first; a failed re-resolve below is the more
       // actionable error and must not be overwritten
@@ -231,7 +241,7 @@ export function SupplierOpeningBalancePage() {
     // no typed name stays synchronous — there is nothing to resolve.
     const destination = resolveInput === null ? null : await resolveForSubmit();
     if (destination === undefined) return; // resolve failed; the error is already shown
-    const conflict = typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
+    const conflict = conflictsWithFilled(destination);
     if (conflict) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
@@ -459,7 +469,7 @@ export function SupplierOpeningBalancePage() {
                 <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
-                <Button type="button" variant="outline" onClick={() => setConfirming(false)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
+                <Button type="button" variant="outline" onClick={closeConfirm} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
                   {t("partyCancel")}
                 </Button>
               </div>

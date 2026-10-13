@@ -193,6 +193,16 @@ const adjustmentRefusal = (error: SupplierAdjustmentError) => {
   return new ORPCError(refusal.status, { message: refusal.message });
 };
 
+/** The #177 adjustment signature one opening-balance row probes for. One builder
+ * so the resend check, the write resolution, and the read-only resolve query all
+ * use the identical fields (`invoiceId` is always null here; `ref` is excluded). */
+const openingSignature = (
+  supplierId: string,
+  row: { direction: "WE_OWE" | "THEY_OWE"; amount: number },
+  reason: string | null,
+  occurredAt: string,
+) => ({ supplierId, direction: row.direction, amount: row.amount, reason, occurredAt, invoiceId: null });
+
 /**
  * Issue 143: one mapper from the movement-posting module's typed refusals to
  * stable ORPC errors, so every stock write shares one home for the ledger's
@@ -1018,7 +1028,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 // same resend exemption as the newSupplierName branch: an exact
                 // retry of a first attempt (which legitimately sent no confirm)
                 // reaches the guarded write and is reported as a duplicate
-                const isResend = await tx.hasSupplierAdjustment({ supplierId: party.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null });
+                const isResend = await tx.hasSupplierAdjustment(openingSignature(party.id, row, reason, input.occurredAt));
                 if (!isResend) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
@@ -1032,7 +1042,7 @@ export function createRpcRouter(deps: RpcDeps) {
               // rule is the single `resolveOpeningDestination`, shared with the
               // read-only resolve query.
               const resolution = await resolveOpeningDestination(candidates, (candidate) =>
-                tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
+                tx.hasSupplierAdjustment(openingSignature(candidate.id, row, reason, input.occurredAt)),
               );
               const requested = resolution?.candidate;
               // #184 — the dialog named `expectedSupplierId`; refuse when the live
@@ -1109,7 +1119,7 @@ export function createRpcRouter(deps: RpcDeps) {
           .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
         const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
         const resolution = await resolveOpeningDestination(candidates, (candidate) =>
-          deps.store.hasSupplierAdjustment({ supplierId: candidate.id, direction: input.direction, amount: input.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
+          deps.store.hasSupplierAdjustment(openingSignature(candidate.id, input, reason, input.occurredAt)),
         );
         return {
           supplier:

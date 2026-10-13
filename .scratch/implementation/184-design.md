@@ -25,10 +25,10 @@ implementation of the rule, in `apps/api`.
 - `type NamedSupplierCandidate = { id; name; entries }`
 - `pickOpeningSupplier(candidates)` — the tie-break: most entries, then lowest id.
   **The only definition in the repo.**
-- `resolveOpeningDestination(candidates, row, signatureHolds)` — first candidate
-  already holding the row's #177 signature (a retry), else `pickOpeningSupplier`.
-  Both arms now live here; the write path and the resolve query call the same
-  function.
+- `resolveOpeningDestination(candidates, signatureHolds)` — the candidate already
+  holding the row's #177 signature (a retry; lowest id when two match), else
+  `pickOpeningSupplier`. Both arms now live here; the write path and the resolve
+  query call the same function.
 
 ### New procedure — `suppliersResolveName`
 
@@ -51,7 +51,7 @@ and calls `resolveOpeningDestination`. Behaviour unchanged.
   `queryClient.fetchQuery` on demand (submit, and again after a refusal), so the
   dialog never renders a locally-computed fold. The result is held in a
   `typedDestination` state snapshot: the dialog names exactly what that read
-  returned.
+  returned. The snapshot is cleared when the dialog closes.
 - `typedNameConflict` uses **only** the server id (plus the local folded-name
   check, which is not the tie-break).
 - `namedRowNeedsConfirm` / `confirmNames` / the dialog name all come from

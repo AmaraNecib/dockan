@@ -466,6 +466,30 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
   });
 
+  it("drops the dialog destination on cancel so it cannot block a later name (#184)", async () => {
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    const nameField = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    setInput(nameField, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-cancel");
+    });
+
+    // a new name plus a row for s-1: the cancelled dialog's destination must not
+    // linger and report a false conflict
+    setInput(nameField, "مورد جديد تماما");
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+  });
+
   it("writes nothing and surfaces the error when the resolve read fails (#184)", async () => {
     resolveFails = true;
     render();

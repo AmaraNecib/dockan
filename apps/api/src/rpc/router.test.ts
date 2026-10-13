@@ -2225,6 +2225,16 @@ describe("supplier adjustments (issue 176)", () => {
     expect(resolved.supplier?.id).toBe(supplier.id);
   });
 
+  it("rejects expectedSupplierId on an explicit supplierId row at the contract (issue 184)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد صريح-${Date.now()}` });
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ supplierId: supplier.id, direction: "WE_OWE", amount: 100, expectedSupplierId: supplier.id }],
+      }),
+    ).rejects.toThrow(/Input validation failed/);
+  });
+
   it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {
     const name = `مورد مطابق-${Date.now()}`;
     const a = await client.suppliersCreate({ name });

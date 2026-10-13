@@ -1101,6 +1101,11 @@ export const supplierOpeningBalanceRowInputSchema = z
     if (hasExisting === hasNew) {
       ctx.addIssue({ code: "custom", message: "a row names either an existing supplierId or a new supplierName" });
     }
+    // #184 — the consistency check belongs to a resolved typed name only; on an
+    // explicit id it would be silently ignored, so refuse it instead
+    if (value.expectedSupplierId !== undefined && !hasNew) {
+      ctx.addIssue({ code: "custom", message: "expectedSupplierId is only valid with newSupplierName" });
+    }
   });
 
 /** The whole batch: one shared date + reason, one account-only adjustment per

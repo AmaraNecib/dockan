@@ -33,17 +33,18 @@ export function CustomerSettlePanel({
   invoices,
   unpaid,
   onDone,
-  onPartialWrite,
+  onWriteFailed,
   onCancel,
 }: {
   partyId: string;
   invoices: readonly Invoice[];
   unpaid: number;
   onDone: () => void;
-  /** #174 round 1 — some per-invoice writes landed but the batch failed. The
-   * caller must still refresh views derived from those rows (the detail read
-   * refetches itself, but the paged tab queries carry their own keys). */
-  onPartialWrite?: () => void;
+  /** #174 round 1 — the per-invoice batch did not finish cleanly. A row may
+   * still have landed (an earlier invoice in the batch, or a write the API
+   * committed while the response was lost), so the caller must refresh views
+   * derived from those rows; the panel only refreshes the detail read. */
+  onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -120,26 +121,25 @@ export function CustomerSettlePanel({
       return;
     }
     setSubmitting(true);
-    // how many per-invoice payments actually landed; a mid-loop failure must
-    // still signal the caller when any did, or the paged tabs stay stale
-    let written = 0;
     try {
       // one atomic payment per invoice: the api re-checks the boundary inside
       // each write unit, so a stale remaining can never be overpaid
       for (const line of targets) {
         await pay.mutateAsync({ invoiceId: line.invoice.id, amount: line.applied, method });
-        written += 1;
       }
       await refresh();
       onDone();
     } catch (err) {
       // a failure mid-loop may have settled the earlier invoices already:
       // refetch everything and refuse a second confirm, or the next submit
-      // would replan from stale rows and re-send money already taken
+      // would replan from stale rows and re-send money already taken. Refresh
+      // the caller's tab views BEFORE signalling: a failure can also hide a
+      // write that committed (a lost response), and the signalled callback
+      // must never be able to skip the panel's own refresh.
       setError(tError(err instanceof Error ? err.message : undefined));
       setHalted(true);
-      if (written > 0) onPartialWrite?.();
       void refresh();
+      onWriteFailed?.();
     } finally {
       setSubmitting(false);
     }

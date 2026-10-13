@@ -412,6 +412,31 @@ describe("customer settle in place (#164)", () => {
     expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("INV-0001");
   });
 
+  it("keeps the tabs consistent when the very first settle write fails (issue #174 round 1)", async () => {
+    partyDetail = makeDetail([
+      invoice({ id: "first", invoiceNumber: "INV-0001", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 }),
+      invoice({ id: "second", invoiceNumber: "INV-0002", invoiceDate: "2026-09-02", remainingAmount: 1_000, totalAmount: 1_000 }),
+    ]);
+    failPayAt = 1;
+    await renderCustomer();
+    act(() => {
+      host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')?.click();
+    });
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 2);
+
+    click("party-settle");
+    click("party-settle-confirm");
+    await flushAsync();
+    expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
+
+    // nothing landed, so the rows must still be owed and no payment may appear
+    click("party-settle-cancel");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 2);
+    expect(host.querySelector('[data-testid="party-invoice-row"]')?.textContent).toContain("غير مدفوعة");
+    click("party-tab-payments");
+    await waitFor(() => host.querySelector('[data-testid="party-payments-empty"]') !== null);
+  });
+
   it("distributes a settle over every invoice, not just the visible page (#174)", async () => {
     // twelve unpaid invoices span two pages (default page size 10), but the
     // settle reference and plan must walk the FULL partyDetail set

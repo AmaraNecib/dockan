@@ -402,8 +402,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   invoices={detail.data.invoices}
                   unpaid={unpaidAmount}
                   onDone={() => { refreshTabQueries(); setSettleOpen(false); setNotice(t("partySettleRecorded")); }}
-                  // a partly failed settle still wrote rows: refresh the tabs too
-                  onPartialWrite={refreshTabQueries}
+                  // a failed settle may still have written rows: refresh the tabs too
+                  onWriteFailed={refreshTabQueries}
                   onCancel={() => setSettleOpen(false)}
                 />
               </div>

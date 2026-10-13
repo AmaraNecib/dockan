@@ -65,6 +65,9 @@ export function SupplierReturnPrintPage() {
         <h1 className="text-lg font-bold">{settings.data.storeName}</h1>
         <h2 className="mt-1 text-base font-semibold" data-testid="supplier-return-voucher-number">{t("supplierReturnVoucher")} <span dir="ltr">{record.returnNumber}</span></h2>
         <p className="mt-1 text-sm text-muted-foreground">{formatDate(record.occurredAt)}</p>
+        <p className="text-sm text-muted-foreground" data-testid="supplier-return-voucher-supplier">
+          {t("supplierReturnSupplier")}: <span data-testid="supplier-return-voucher-supplier-name">{record.supplierName ?? record.supplierId}</span>
+        </p>
         {record.invoiceNumber !== null && (
           <p className="text-sm text-muted-foreground">{t("supplierReturnInvoiceLink")}: <span dir="ltr">{record.invoiceNumber}</span></p>
         )}
@@ -82,7 +85,12 @@ export function SupplierReturnPrintPage() {
               <tr key={line.id} className="border-b last:border-0">
                 <td className="p-2">{line.description}</td>
                 <td className="p-2">{line.quantity}</td>
-                <td className="p-2"><Amount value={line.unitCost} /></td>
+                {/* a free-standing line's unitCost is the item's STOCK cost, not
+                    the agreed return price, so it is omitted rather than
+                    printed as if it were the agreed price */}
+                <td className="p-2" data-testid="supplier-return-voucher-unit">
+                  {record.kind === "FREE_STANDING" ? "—" : <Amount value={line.unitCost} />}
+                </td>
                 <td className="p-2"><Amount value={line.amount} /></td>
               </tr>
             ))}

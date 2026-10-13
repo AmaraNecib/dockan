@@ -145,6 +145,8 @@ describe("supplier account store", () => {
     const history = await store.listSupplierReturns({ supplierId: supplier.id });
     expect(history).toHaveLength(1);
     expect(history[0]?.returnNumber).toBe("PRT-0001");
+    // the supplier's current name is joined so the voucher/history identify it
+    expect(history[0]?.supplierName).toBe("مورد مرتجع");
     expect(history[0]?.lines[0]?.quantity).toBe(3);
     const detail = await store.getSupplierReturn(returnId);
     expect(detail?.amount).toBe(120);

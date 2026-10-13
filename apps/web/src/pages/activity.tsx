@@ -57,6 +57,10 @@ export function activitySummaryText(t: TFunction, summary: string): string {
     return t("activityPurchaseCreated", { number: tokens[1], party });
   }
   if (tag === "PAYMENT_RECORDED" && tokens.length >= 3) return t("activityPaymentRecorded", { number: tokens[2], amount: tokens[1] });
+  // issue 161: supplier-account actions (amount then the free-text name last)
+  if (tag === "SUPPLIER_PAYMENT" && tokens.length >= 3) return t("activitySupplierPayment", { amount: tokens[1], name: tokens.slice(2).join(" ") });
+  if (tag === "SUPPLIER_RETURN" && tokens.length >= 4) return t("activitySupplierReturn", { number: tokens[1], amount: tokens[2], name: tokens.slice(3).join(" ") });
+  if (tag === "SUPPLIER_REFUND" && tokens.length >= 3) return t("activitySupplierRefund", { amount: tokens[1], name: tokens.slice(2).join(" ") });
   if (tag === "EXPENSE_CATEGORY_CREATED" && tokens.length >= 3) {
     const name = tokens.slice(2).join(" ");
     return tokens[1] === "WITHDRAWAL"

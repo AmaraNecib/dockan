@@ -37,7 +37,16 @@ invoice_id TEXT NULL REFERENCES invoices(id), method TEXT NULL,
 note TEXT NULL, ref TEXT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL
 ```
 
-Index on `(supplier_id, occurred_at, rowid)`.
+Index on `(supplier_id, occurred_at)`.
+
+`CURRENT_SCHEMA_VERSION` is bumped to **2** (ADR-0009): an older build would
+accept the version-1 shape and record purchases/payments with no supplier
+entries, silently corrupting the balance, so it must refuse the upgraded data
+(ADR-0008 §4.5).
+
+A purchase whose total is zero opens no charge entry (the ledger's
+`CHECK (amount > 0)` would reject it); the invoice and its stock intake still
+land.
 
 `invoices.paid_amount / remaining_amount` remain the printed invoice's cache.
 They are written by the existing conditional UPDATEs (`applyPaymentToInvoice`,

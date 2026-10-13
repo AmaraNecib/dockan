@@ -623,6 +623,9 @@ export const supplierReturnSchema = z.object({
   id: idSchema,
   returnNumber: z.string().min(1),
   supplierId: idSchema,
+  /** the supplier's current name, joined at the store seam so the voucher and
+   * the global history can identify who holds the goods/credit */
+  supplierName: z.string().nullable(),
   invoiceId: idSchema.nullable(),
   invoiceNumber: z.string().nullable(),
   /** INVOICE_LINKED snapshots original purchase lines; FREE_STANDING names an item */

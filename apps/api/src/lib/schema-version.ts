@@ -4,8 +4,13 @@ import type { Database } from "bun:sqlite";
  * The data format this build reads and writes. Bump on every forward schema
  * change; `PRAGMA user_version` stores it. A database with no version (0) is
  * treated as the oldest pre-universal format and migrated forward on open.
+ *
+ * Version 2 (issue 161, ADR-0009): the signed supplier account. An older
+ * build accepts the version-1 shape but would record purchases and payments
+ * without supplier entries, silently corrupting the balance, so this format
+ * MUST be refused by a version-1 build (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 /**
  * A database written by a newer app. The older build cannot know what the

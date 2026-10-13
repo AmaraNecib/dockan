@@ -6,6 +6,7 @@ import {
   deriveInvoicePaid,
   splitAgainstRemaining,
   supplierBalance,
+  supplierChargeEntryAmount,
   supplierEntrySign,
   supplierReturnSplit,
   type AllocatableInvoice,
@@ -144,6 +145,15 @@ describe("availableSupplierCredit", () => {
     expect(availableSupplierCredit(-800)).toBe(800);
     expect(availableSupplierCredit(1200)).toBe(0);
     expect(availableSupplierCredit(0)).toBe(0);
+  });
+});
+
+describe("supplierChargeEntryAmount", () => {
+  it("opens a charge for a positive total and none for a free purchase", () => {
+    expect(supplierChargeEntryAmount(2000)).toBe(2000);
+    expect(supplierChargeEntryAmount(0)).toBeNull();
+    // a corrupt negative total must never become a ledger entry
+    expect(supplierChargeEntryAmount(-5)).toBeNull();
   });
 });
 

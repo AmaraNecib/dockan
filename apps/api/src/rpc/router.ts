@@ -14,7 +14,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
-import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierReturnSplit } from "../lib/supplier-ledger";
+import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
@@ -1111,13 +1111,18 @@ export function createRpcRouter(deps: RpcDeps) {
           // purchases (no supplier record) stay invoice-based like customers.
           if (input.kind === "PURCHASE" && input.counterpartyId !== undefined && input.counterpartyId !== null) {
             const occurredAt = localDateTime();
-            await tx.insertSupplierEntry({
-              supplierId: input.counterpartyId,
-              kind: "PURCHASE",
-              amount: totalAmount,
-              invoiceId: invoice.id,
-              occurredAt,
-            });
+            // a free purchase (total 0) opens no charge: the ledger's CHECK
+            // rejects a zero amount, and the invoice + stock intake still land
+            const charge = supplierChargeEntryAmount(totalAmount);
+            if (charge !== null) {
+              await tx.insertSupplierEntry({
+                supplierId: input.counterpartyId,
+                kind: "PURCHASE",
+                amount: charge,
+                invoiceId: invoice.id,
+                occurredAt,
+              });
+            }
             if (paidAmount > 0) {
               await tx.insertSupplierEntry({
                 supplierId: input.counterpartyId,

@@ -359,11 +359,12 @@ const toSupplierReturnLine = (r: typeof supplierReturnLines.$inferSelect): Suppl
 });
 
 const toSupplierReturn = (
-  r: typeof supplierReturns.$inferSelect & { invoice_number: string | null },
+  r: typeof supplierReturns.$inferSelect & { invoice_number: string | null; supplier_name: string | null },
 ): SupplierReturnRecord => ({
   id: r.id,
   returnNumber: r.returnNumber,
   supplierId: r.supplierId,
+  supplierName: r.supplier_name,
   invoiceId: r.invoiceId,
   invoiceNumber: r.invoice_number,
   kind: r.kind,
@@ -1726,6 +1727,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           id: supplierReturns.id,
           returnNumber: supplierReturns.returnNumber,
           supplierId: supplierReturns.supplierId,
+          supplier_name: suppliers.name,
           invoiceId: supplierReturns.invoiceId,
           invoice_number: invoices.invoiceNumber,
           kind: supplierReturns.kind,
@@ -1739,6 +1741,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         })
         .from(supplierReturns)
         .leftJoin(invoices, eq(invoices.id, supplierReturns.invoiceId))
+        .leftJoin(suppliers, eq(suppliers.id, supplierReturns.supplierId))
         .where(where)
         .orderBy(desc(supplierReturns.createdAt), sql`supplier_returns.rowid DESC`);
       const lineRows =
@@ -1763,6 +1766,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           id: supplierReturns.id,
           returnNumber: supplierReturns.returnNumber,
           supplierId: supplierReturns.supplierId,
+          supplier_name: suppliers.name,
           invoiceId: supplierReturns.invoiceId,
           invoice_number: invoices.invoiceNumber,
           kind: supplierReturns.kind,
@@ -1776,6 +1780,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         })
         .from(supplierReturns)
         .leftJoin(invoices, eq(invoices.id, supplierReturns.invoiceId))
+        .leftJoin(suppliers, eq(suppliers.id, supplierReturns.supplierId))
         .where(eq(supplierReturns.id, returnId))
         .limit(1);
       const header = rows[0];

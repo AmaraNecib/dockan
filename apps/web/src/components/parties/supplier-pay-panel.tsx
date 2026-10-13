@@ -89,7 +89,7 @@ export function SupplierPayPanel({
       ? []
       : target === "INVOICE"
         ? [{ invoice: selected, applied: Math.min(amount, selected?.remainingAmount ?? 0) }].filter((line): line is { invoice: Invoice; applied: number } => line.invoice !== undefined)
-        : distributePayment(invoices, Math.min(amount, owed));
+        : distributePayment(invoices, amount);
   const distributed = plan.reduce((sum, line) => sum + line.applied, 0);
   const credit = amount === null ? 0 : Math.max(0, amount - distributed);
   const blocked = submitting || pay.isPending || errorText !== null || amountInvalid || outstanding.length === 0 && target === "INVOICE";

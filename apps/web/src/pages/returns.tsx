@@ -218,6 +218,9 @@ export function SupplierReturnsList() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p dir="ltr" className="font-semibold">{record.returnNumber}</p>
+              <p className="text-sm text-muted-foreground" data-testid="supplier-return-supplier">
+                {t("supplierReturnSupplier")}: {record.supplierName ?? record.supplierId}
+              </p>
               <p className="text-sm text-muted-foreground">
                 {t("returnsRefundTotal")}: {record.amount} {t("dzd")}
                 {record.invoiceNumber !== null && <> — {t("supplierReturnInvoiceLink")}: <span dir="ltr">{record.invoiceNumber}</span></>}

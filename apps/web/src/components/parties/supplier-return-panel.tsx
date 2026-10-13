@@ -5,11 +5,13 @@ import { useTranslation } from "react-i18next";
 import type { Invoice } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { tError } from "@/lib/i18n";
 import { orpc } from "@/lib/rpc";
+import { parseCashBackDraft, parseReturnQuantities } from "./supplier-return-draft";
 
 type ReturnMode = "INVOICE_LINKED" | "FREE_STANDING";
 
@@ -59,7 +61,13 @@ export function SupplierReturnPanel({
     }, 0);
   }, [detail.data, quantities]);
   const value = mode === "INVOICE_LINKED" ? invoiceValue : Number(amount) || 0;
-  const parsedCash = Number(cashBack) || 0;
+  const parsedQuantities = parseReturnQuantities(quantities);
+  const invoiceReady = "lines" in parsedQuantities;
+  const parsedCash = parseCashBackDraft(cashBack);
+  const cashInvalid = parsedCash === null;
+  // a nonempty draft that is not a positive whole number must be rejected, not
+  // silently dropped: otherwise the saved return differs from the preview
+  const quantityDraftInvalid = !invoiceReady && Object.values(quantities).some((draft) => draft.trim() !== "");
 
   function refresh() {
     return Promise.all([
@@ -78,25 +86,23 @@ export function SupplierReturnPanel({
     setSubmitting(true);
     try {
       if (mode === "INVOICE_LINKED") {
-        const lines = Object.entries(quantities)
-          .map(([invoiceLineId, draft]) => ({ invoiceLineId, quantity: Number(draft) }))
-          .filter((line) => Number.isSafeInteger(line.quantity) && line.quantity > 0);
-        if (lines.length === 0) throw new Error("RETURN_EXCEEDS_RETURNABLE");
+        if (!("lines" in parsedQuantities) || parsedCash === null) throw new Error("supplierReturnInvalidDraft");
         await create.mutateAsync({
           supplierId,
           invoiceId,
-          lines,
+          lines: parsedQuantities.lines,
           reason: reason.trim() === "" ? undefined : reason.trim(),
           cashBack: parsedCash > 0 ? parsedCash : undefined,
         });
       } else {
-        if (itemId === "" || !Number.isSafeInteger(Number(quantity)) || Number(quantity) <= 0 || value <= 0) {
-          throw new Error("RETURN_EXCEEDS_RETURNABLE");
+        const freeQuantity = parseWholeAmount(quantity);
+        if (itemId === "" || freeQuantity === null || freeQuantity <= 0 || value <= 0 || parsedCash === null) {
+          throw new Error("supplierReturnInvalidDraft");
         }
         await create.mutateAsync({
           supplierId,
           itemId,
-          quantity: Number(quantity),
+          quantity: freeQuantity,
           amount: value,
           reason: reason.trim() === "" ? undefined : reason.trim(),
           cashBack: parsedCash > 0 ? parsedCash : undefined,
@@ -226,9 +232,25 @@ export function SupplierReturnPanel({
       {error !== null && (
         <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-return-error">{error}</p>
       )}
+      {(quantityDraftInvalid || cashInvalid) && (
+        <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-return-draft-error">
+          {t("supplierReturnInvalidDraft")}
+        </p>
+      )}
 
       <div className="flex gap-2">
-        <Button type="submit" disabled={submitting || create.isPending || value <= 0} data-testid="supplier-return-confirm">{t("supplierReturnSave")}</Button>
+        <Button
+          type="submit"
+          disabled={
+            submitting ||
+            create.isPending ||
+            cashInvalid ||
+            (mode === "INVOICE_LINKED" ? !invoiceReady : value <= 0 || itemId === "")
+          }
+          data-testid="supplier-return-confirm"
+        >
+          {t("supplierReturnSave")}
+        </Button>
         <Button type="button" variant="outline" onClick={onCancel} disabled={submitting || create.isPending} data-testid="supplier-return-cancel">{t("partyCancel")}</Button>
       </div>
     </form>

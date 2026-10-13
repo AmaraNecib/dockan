@@ -33,6 +33,13 @@ export function availableSupplierCredit(balance: number): number {
   return Math.max(0, -balance);
 }
 
+/** The charge a purchase opens on the supplier account, or null when the
+ * invoice is free: the ledger's `CHECK (amount > 0)` would reject a zero-value
+ * entry, and a free purchase still must save with its stock intake. */
+export function supplierChargeEntryAmount(totalAmount: number): number | null {
+  return totalAmount > 0 ? totalAmount : null;
+}
+
 export interface AllocatableInvoice {
   id: string;
   invoiceDate: string;

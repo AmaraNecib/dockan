@@ -51,6 +51,30 @@ const DETAIL_OPTIONS = ({ input }: { input: { id: string } }) => ({
     return found;
   },
 });
+// #174 — the tab reads page over the same party detail the money reads use
+const PARTY_INVOICES_OPTIONS = ({ input }: { input: { id: string; unpaidOnly?: boolean } }) => ({
+  queryKey: [["partyInvoices"], input],
+  queryFn: async () => {
+    const found = details.get(input.id);
+    const invoices = (found?.invoices ?? []).filter((invoice) => input.unpaidOnly !== true || invoice.remainingAmount > 0);
+    return { items: invoices, total: invoices.length };
+  },
+});
+const PARTY_PAYMENTS_OPTIONS = ({ input }: { input: { id: string } }) => ({
+  queryKey: [["partyPayments"], input],
+  queryFn: async () => {
+    const found = details.get(input.id);
+    return { items: found?.payments ?? [], total: found?.payments.length ?? 0 };
+  },
+});
+const SUPPLIER_ENTRIES_OPTIONS = ({ input }: { input: { id: string } }) => ({
+  queryKey: [["supplierEntries"], input],
+  queryFn: async () => {
+    const found = details.get(input.id);
+    const entries = found?.account?.entries ?? [];
+    return { items: entries, total: entries.length };
+  },
+});
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -58,6 +82,9 @@ mock.module("@/lib/rpc", () => ({
     suppliersList: { queryOptions: SUPPLIER_LIST_OPTIONS, queryKey: () => ["suppliersList"] },
     customersGet: { queryOptions: DETAIL_OPTIONS },
     suppliersGet: { queryOptions: DETAIL_OPTIONS },
+    partyInvoices: { queryOptions: PARTY_INVOICES_OPTIONS },
+    partyPayments: { queryOptions: PARTY_PAYMENTS_OPTIONS },
+    supplierEntries: { queryOptions: SUPPLIER_ENTRIES_OPTIONS },
     customersCreate: {
       mutationOptions: () => ({
         mutationFn: async (input: { name: string; phone?: string }) => {
@@ -331,6 +358,8 @@ describe("PartyDetailPage (issue 120)", () => {
     expect(host.querySelector('[data-testid="party-detail-name"]')?.textContent).toBe("علي علي");
     expect(host.querySelector('[data-testid="party-stat-partyStatsRemaining"]')?.textContent).toContain("1600");
     expect(host.querySelectorAll('[data-testid="party-tab-invoices"], [data-testid="party-tab-payments"], [data-testid="party-tab-info"]').length).toBe(3);
+    // #174 — the tab rows arrive from a server page read, so await them
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 1);
     expect(host.querySelectorAll('[data-testid="party-invoice-row"]').length).toBe(1);
     expect(host.querySelector('[data-testid="party-invoice-row"]')?.textContent).toContain("مدفوعة جزئياً");
     // #119's day-first formatter is wired into the detail cells
@@ -343,6 +372,7 @@ describe("PartyDetailPage (issue 120)", () => {
     expect(host.querySelector('[data-testid="party-delete-blocked-hint"]')).not.toBeNull();
 
     await click(host, '[data-testid="party-tab-payments"]');
+    await waitFor(() => host.querySelectorAll('[data-testid="party-payment-row"]').length === 1);
     expect(host.querySelectorAll('[data-testid="party-payment-row"]').length).toBe(1);
     expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("INV-0004");
     expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("01/10/2026 10:05");

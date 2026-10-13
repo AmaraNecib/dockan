@@ -1665,6 +1665,137 @@ describe("parties (issue 120)", () => {
   });
 });
 
+describe("party-detail tab pagination (issue 174)", () => {
+  async function makeItemWithStock(name: string, stock: number) {
+    const categories = await client.categoriesList();
+    const category = categories.items[0];
+    if (category === undefined) throw new Error("expected a category");
+    return client.itemsCreateWithStock({ name, categoryId: category.id, costPrice: 100, sellingPrice: 200, stockOnHand: stock });
+  }
+
+  it("pages the invoices tab, filters unpaid rows, and keeps partyDetail whole", async () => {
+    const customer = await client.customersCreate({ name: "زبون ترقيم الفواتير" });
+    const item = await makeItemWithStock("صنف ترقيم الفواتير", 50);
+    for (let i = 0; i < 12; i++) {
+      await client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: customer.id,
+        counterpartyName: customer.name,
+        initialPaid: 100,
+        lines: [{ itemId: item.id, quantity: 1 }],
+      });
+    }
+    // one fully paid invoice: excluded by unpaidOnly, included without it
+    await client.invoicesCreate({
+      kind: "SALE",
+      counterpartyId: customer.id,
+      counterpartyName: customer.name,
+      initialPaid: 200,
+      lines: [{ itemId: item.id, quantity: 1 }],
+    });
+
+    const first = await client.partyInvoices({ role: "customer", id: customer.id, limit: 10, offset: 0 });
+    expect(first.items).toHaveLength(10);
+    expect(first.total).toBe(13);
+    const second = await client.partyInvoices({ role: "customer", id: customer.id, limit: 10, offset: 10 });
+    expect(second.items).toHaveLength(3);
+    expect(second.total).toBe(13);
+    // pages never overlap and together cover every row
+    const seen = [...first.items, ...second.items].map((invoice) => invoice.id);
+    expect(new Set(seen).size).toBe(13);
+
+    const unpaid = await client.partyInvoices({ role: "customer", id: customer.id, unpaidOnly: true, limit: 10, offset: 0 });
+    expect(unpaid.total).toBe(12);
+    expect(unpaid.items.every((invoice) => invoice.remainingAmount > 0)).toBe(true);
+
+    // the money read is untouched: partyDetail still returns every invoice
+    const detail = await client.customersGet({ id: customer.id });
+    expect(detail.invoices).toHaveLength(13);
+    expect(detail.stats.invoiceCount).toBe(13);
+  });
+
+  it("pages the payments tab and rejects an out-of-range page size", async () => {
+    const customer = await client.customersCreate({ name: "زبون ترقيم الدفعات" });
+    const item = await makeItemWithStock("صنف ترقيم الدفعات", 50);
+    for (let i = 0; i < 12; i++) {
+      await client.invoicesCreate({
+        kind: "SALE",
+        counterpartyId: customer.id,
+        counterpartyName: customer.name,
+        initialPaid: 100,
+        lines: [{ itemId: item.id, quantity: 1 }],
+      });
+    }
+    const first = await client.partyPayments({ id: customer.id, limit: 5, offset: 0 });
+    expect(first.items).toHaveLength(5);
+    expect(first.total).toBe(12);
+    const last = await client.partyPayments({ id: customer.id, limit: 5, offset: 10 });
+    expect(last.items).toHaveLength(2);
+    expect(last.total).toBe(12);
+    expect(last.items.every((payment) => payment.invoiceNumber.length > 0)).toBe(true);
+
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: 0 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: MAX_PAGE_SIZE + 1 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, offset: -1 })).rejects.toThrow(/Input validation failed/);
+    await expect(client.partyInvoices({ role: "customer", id: customer.id, limit: 1.5 })).rejects.toThrow(/Input validation failed/);
+  });
+
+  it("pages a supplier's account entries while the detail account stays whole", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد ترقيم الحساب" });
+    const item = await makeItemWithStock("صنف ترقيم الحساب", 1);
+    for (let i = 0; i < 12; i++) {
+      await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
+    }
+    const first = await client.supplierEntries({ id: supplier.id, limit: 10, offset: 0 });
+    expect(first.items).toHaveLength(10);
+    expect(first.total).toBe(12);
+    const second = await client.supplierEntries({ id: supplier.id, limit: 10, offset: 10 });
+    expect(second.items).toHaveLength(2);
+    expect(second.total).toBe(12);
+
+    // the signed balance is derived from the FULL entries, not the page
+    const detail = await client.suppliersGet({ id: supplier.id });
+    expect(detail.account?.entries).toHaveLength(12);
+    expect(detail.account?.balance).toBe(1200);
+    await expect(client.suppliersDelete({ id: supplier.id })).rejects.toThrow(/PARTY_HAS_INVOICES/);
+  });
+
+  it("settles a supplier across more than one page without truncating the distribution (issue 174)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد ترقيم التسوية" });
+    const item = await makeItemWithStock("صنف ترقيم التسوية", 1);
+    for (let i = 0; i < 12; i++) {
+      await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 1, unitPrice: 100 }] });
+    }
+    // the tab pages, but the money read carries every invoice the OLDEST-first
+    // allocation walks; if pagination had leaked into that read, this would
+    // leave unpaid remainders behind
+    expect((await client.suppliersGet({ id: supplier.id })).invoices).toHaveLength(12);
+    const paid = await client.suppliersPay({ supplierId: supplier.id, amount: 1_200, target: { kind: "OLDEST" } });
+    expect(paid.balance).toBe(0);
+    const all = await client.partyInvoices({ role: "supplier", id: supplier.id, limit: 100, offset: 0 });
+    expect(all.total).toBe(12);
+    expect(all.items.every((invoice) => invoice.remainingAmount === 0)).toBe(true);
+  });
+
+  it("returns an empty page for an unknown party and never crosses roles", async () => {
+    const ghost = "00000000-0000-4000-8000-0000000000ff";
+    expect(await client.partyInvoices({ role: "customer", id: ghost })).toEqual({ items: [], total: 0 });
+    expect(await client.partyPayments({ id: ghost })).toEqual({ items: [], total: 0 });
+    expect(await client.supplierEntries({ id: ghost })).toEqual({ items: [], total: 0 });
+
+    const customer = await client.customersCreate({ name: "زبون ترقيم الأدوار" });
+    const item = await makeItemWithStock("صنف ترقيم الأدوار", 1);
+    await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, counterpartyName: customer.name, lines: [{ itemId: item.id, quantity: 1 }] });
+    // a customer id under the supplier role scans purchase invoices: none
+    expect(await client.partyInvoices({ role: "supplier", id: customer.id })).toEqual({ items: [], total: 0 });
+    expect(await client.supplierEntries({ id: customer.id })).toEqual({ items: [], total: 0 });
+
+    const empty = await client.suppliersCreate({ name: "مورد ترقيم فارغ" });
+    expect(await client.supplierEntries({ id: empty.id })).toEqual({ items: [], total: 0 });
+    expect((await client.partyInvoices({ role: "supplier", id: empty.id })).total).toBe(0);
+  });
+});
+
 describe("supplier adjustments (issue 176)", () => {
   async function setupSupplier(name: string, units: number) {
     const category = await client.categoriesCreate({ name: `تصنيف ${name}` });

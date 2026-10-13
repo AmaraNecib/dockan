@@ -297,6 +297,11 @@ function mapRecentInvoices(rows: Array<typeof invoices.$inferSelect>): Invoice[]
   }
 }
 
+/** Party payment rows with the joined invoice number normalized to the
+ * contract's non-empty string (the driver hands back a nullable scalar). */
+const mapPartyPayments = <T extends { invoiceNumber: string | null }>(rows: T[]) =>
+  rows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) }));
+
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
@@ -1146,9 +1151,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return rows.length === 0 ? undefined : toSupplier(firstRowOf(rows));
   };
 
-  /** One supplier's account entries, newest first, invoice number joined. */
-  const listEntries = async (supplierId: string): Promise<SupplierAccountEntry[]> => {
-    const rows = await db
+  /** One supplier's account-entry select, newest first. Shared by the full
+   * money read (`listSupplierEntries`) and the paginated tab read
+   * (`supplierEntries`) so the two can never diverge. */
+  const supplierEntrySelect = (supplierId: string) =>
+    db
       .select({
         id: supplierAccountEntries.id,
         supplierId: supplierAccountEntries.supplierId,
@@ -1167,7 +1174,45 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       .leftJoin(invoices, eq(invoices.id, supplierAccountEntries.invoiceId))
       .where(eq(supplierAccountEntries.supplierId, supplierId))
       .orderBy(desc(supplierAccountEntries.occurredAt), sql`supplier_account_entries.rowid DESC`);
-    return rows.map(toSupplierEntry);
+
+  /** One supplier's account entries, newest first, invoice number joined. */
+  const listEntries = async (supplierId: string): Promise<SupplierAccountEntry[]> =>
+    (await supplierEntrySelect(supplierId)).map(toSupplierEntry);
+
+  /**
+   * Issue 174 — the one invoice predicate for a party-detail read. Shared by
+   * `partyDetail` (full), `partyInvoices` (paged), and the payments select so
+   * the money read and the tab read can never scope different rows. The rowid
+   * tie-break in the selects below keeps pages deterministic when two rows
+   * share a date and second; the settle distribution re-sorts independently.
+   */
+  const partyInvoiceWhere = (role: PartyRole, partyId: string, unpaidOnly = false) => {
+    const conds = [eq(invoices.counterpartyId, partyId), eq(invoices.kind, partyInvoiceKind[role])];
+    if (unpaidOnly) conds.push(sql`${invoices.remainingAmount} > 0`);
+    return and(...conds);
+  };
+  const partyInvoiceSelect = (role: PartyRole, partyId: string, unpaidOnly = false) =>
+    db
+      .select(invoiceCols)
+      .from(invoices)
+      .where(partyInvoiceWhere(role, partyId, unpaidOnly))
+      .orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt), sql`invoices.rowid DESC`);
+  const partyPaymentSelect = (role: PartyRole, partyId: string) =>
+    db
+      .select({ ...paymentCols, invoiceNumber: invoices.invoiceNumber })
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+      .where(partyInvoiceWhere(role, partyId))
+      .orderBy(desc(payments.paidAt), desc(payments.createdAt), sql`payments.rowid DESC`);
+  /** `db.$count` cannot carry the invoice join, so the payments total is an
+   * explicit COUNT over the same scope. */
+  const partyPaymentCount = async (role: PartyRole, partyId: string): Promise<number> => {
+    const rows = await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+      .where(partyInvoiceWhere(role, partyId));
+    return Number(rows[0]?.count ?? 0);
   };
 
   /** Raw append-only ledger insert. `insertSupplierEntry` and the #177 guarded
@@ -1547,19 +1592,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined> {
       const party = await fetchParty(role, partyId);
       if (party === undefined) return undefined;
-      const kind = partyInvoiceKind[role];
       const [invoiceRows, paymentRows] = await Promise.all([
-        db
-          .select(invoiceCols)
-          .from(invoices)
-          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
-          .orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)),
-        db
-          .select({ ...paymentCols, invoiceNumber: invoices.invoiceNumber })
-          .from(payments)
-          .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
-          .where(and(eq(invoices.counterpartyId, partyId), eq(invoices.kind, kind)))
-          .orderBy(desc(payments.paidAt), desc(payments.createdAt)),
+        partyInvoiceSelect(role, partyId),
+        partyPaymentSelect(role, partyId),
       ]);
       // the strip derives from the SAME mapped rows the invoices tab renders:
       // one malformed legacy row cannot make the numbers and the table disagree
@@ -1580,9 +1615,39 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         party,
         stats: safePartyStats(stats),
         invoices: detailInvoices,
-        payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
+        payments: mapPartyPayments(paymentRows),
         account: role === "supplier" ? { balance: supplierBalance(entries), entries } : null,
       } satisfies PartyDetail;
+    },
+
+    // --- party-detail tab reads (issue 174) ---------------------------------
+    // Additive to `partyDetail`, which stays the full read the money paths
+    // need. Only the tab tables call these; they never feed a settle/pay
+    // distribution or the delete guard.
+    async partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination: PaginationInput) {
+      const unpaidOnly = filters.unpaidOnly === true;
+      const { limit, offset } = resolvePagination(pagination);
+      const [rows, total] = await Promise.all([
+        partyInvoiceSelect(role, partyId, unpaidOnly).limit(limit).offset(offset),
+        db.$count(invoices, partyInvoiceWhere(role, partyId, unpaidOnly)),
+      ]);
+      return { items: mapRecentInvoices(rows) ?? [], total };
+    },
+    async partyPayments(partyId: string, pagination: PaginationInput) {
+      const { limit, offset } = resolvePagination(pagination);
+      const [rows, total] = await Promise.all([
+        partyPaymentSelect("customer", partyId).limit(limit).offset(offset),
+        partyPaymentCount("customer", partyId),
+      ]);
+      return { items: mapPartyPayments(rows), total };
+    },
+    async supplierEntries(supplierId: string, pagination: PaginationInput) {
+      const { limit, offset } = resolvePagination(pagination);
+      const [rows, total] = await Promise.all([
+        supplierEntrySelect(supplierId).limit(limit).offset(offset),
+        db.$count(supplierAccountEntries, eq(supplierAccountEntries.supplierId, supplierId)),
+      ]);
+      return { items: rows.map(toSupplierEntry), total };
     },
 
     // --- invoices / payments -------------------------------------------------

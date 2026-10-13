@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
@@ -107,4 +107,137 @@ test("pagination: pager, page size, and filter reset on the invoices list", asyn
   // the unfiltered list must render min(20, allTotal) rows.
   await page.reload();
   await expect(page.getByTestId("invoice-row")).toHaveCount(Math.min(20, seeded.allTotal));
+});
+
+/**
+ * Issue 174 — the party-detail tabs page server-side while the settle/pay
+ * money reads stay whole. The supplier tab proves invoices + account entries
+ * page; the customer tab proves the unpaid-only filter resets to page 1.
+ */
+/** The RPC calls the party-detail pagination specs seed through. */
+type TabSeedRequest =
+  | { procedure: "categoriesList"; input: Record<string, never> }
+  | { procedure: "itemsCreate"; input: { name: string; categoryId: string; costPrice: number; sellingPrice: number; lowStockThreshold: number } }
+  | { procedure: "itemsCreateWithStock"; input: { name: string; categoryId: string; costPrice: number; sellingPrice: number; stockOnHand: number } }
+  | { procedure: "suppliersCreate"; input: { name: string } }
+  | { procedure: "customersCreate"; input: { name: string } }
+  | {
+      procedure: "invoicesCreate";
+      input: { kind: "SALE" | "PURCHASE"; counterpartyId: string; counterpartyName?: string; initialPaid?: number; lines: Array<{ itemId: string; quantity: number; unitPrice?: number }> };
+    }
+  | { procedure: "preferencesSet"; input: { key: string; value: string } }
+  | { procedure: "supplierEntries"; input: { id: string; limit: number; offset: number } };
+
+/** Seed through the authenticated RPC wire the page's session cookie carries. */
+async function callRpc(page: Page, request: TabSeedRequest): Promise<string> {
+  return page.evaluate(async ({ procedure: name, input: body }: TabSeedRequest) => {
+    const response = await fetch(`/api/rpc/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ json: body }),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${name} failed: ${response.status} ${text}`);
+    return text;
+  }, request);
+}
+
+/** The seeded owner's default category id (the first-run seed creates one). */
+async function firstCategoryId(page: Page): Promise<string> {
+  // SAFETY: categoriesList answers { json: { items: Array<{ id: string }> } }
+  const body = JSON.parse(await callRpc(page, { procedure: "categoriesList", input: {} })) as { json: { items: Array<{ id: string }> } };
+  return body.json.items[0]!.id;
+}
+
+test("pagination: a supplier's invoices and account entries page", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryId = await firstCategoryId(page);
+  // SAFETY: itemsCreate answers the created item, whose id is a string
+  const item = JSON.parse(
+    await callRpc(page, {
+      procedure: "itemsCreate",
+      input: { name: `حساب-ترقيم-${stamp}`, categoryId, costPrice: 100, sellingPrice: 150, lowStockThreshold: 1 },
+    }),
+  ) as { json: { id: string } };
+  // SAFETY: suppliersCreate answers the created supplier, whose id is a string
+  const supplier = JSON.parse(
+    await callRpc(page, { procedure: "suppliersCreate", input: { name: `مورد-حساب-ترقيم-${stamp}` } }),
+  ) as { json: { id: string } };
+  for (let i = 0; i < 12; i++) {
+    await callRpc(page, {
+      procedure: "invoicesCreate",
+      input: { kind: "PURCHASE", counterpartyId: supplier.json.id, lines: [{ itemId: item.json.id, quantity: 1, unitPrice: 100 }] },
+    });
+  }
+  // deterministic start: the page size is a persisted preference
+  await callRpc(page, { procedure: "preferencesSet", input: { key: "ui.pageSize", value: "10" } });
+  // SAFETY: supplierEntries answers { json: { total: number } }
+  const entries = JSON.parse(
+    await callRpc(page, { procedure: "supplierEntries", input: { id: supplier.json.id, limit: 10, offset: 0 } }),
+  ) as { json: { total: number } };
+  expect(entries.json.total).toBeGreaterThan(10);
+
+  await page.goto(`/suppliers/${supplier.json.id}`);
+  await expect(page.getByTestId("party-detail-supplier")).toBeVisible();
+
+  // invoices tab: ten rows, the pager appears, page 2 shows the remainder
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(10);
+  await expect(page.getByTestId("party-invoices-pager")).toBeVisible();
+  await expect(page.getByTestId("party-invoices-pager-page-1")).toHaveAttribute("aria-current", "page");
+  await page.getByTestId("party-invoices-pager-page-2").click();
+  await expect(page.getByTestId("party-invoices-pager-page-2")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);
+
+  // payments tab: the supplier account ledger pages the same way
+  await page.getByTestId("party-tab-payments").click();
+  await expect(page.getByTestId("supplier-account-row")).toHaveCount(10);
+  await expect(page.getByTestId("supplier-entries-pager")).toBeVisible();
+  await page.getByTestId("supplier-entries-pager-page-2").click();
+  await expect(page.getByTestId("supplier-account-row")).toHaveCount(2);
+});
+
+test("pagination: a customer's unpaid-only filter resets to page 1", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryId = await firstCategoryId(page);
+  // SAFETY: itemsCreateWithStock answers the created item, whose id is a string
+  const item = JSON.parse(
+    await callRpc(page, {
+      procedure: "itemsCreateWithStock",
+      input: { name: `زبون-ترقيم-${stamp}`, categoryId, costPrice: 50, sellingPrice: 100, stockOnHand: 13 },
+    }),
+  ) as { json: { id: string } };
+  // SAFETY: customersCreate answers the created customer, whose id and name are strings
+  const customer = JSON.parse(
+    await callRpc(page, { procedure: "customersCreate", input: { name: `زبون-فواتير-ترقيم-${stamp}` } }),
+  ) as { json: { id: string; name: string } };
+  // twelve unpaid sales + one fully paid sale: both the filtered and the full
+  // list span more than one page, so the pager stays while the offset resets
+  for (let i = 0; i < 12; i++) {
+    await callRpc(page, {
+      procedure: "invoicesCreate",
+      input: { kind: "SALE", counterpartyId: customer.json.id, counterpartyName: customer.json.name, lines: [{ itemId: item.json.id, quantity: 1 }] },
+    });
+  }
+  await callRpc(page, {
+    procedure: "invoicesCreate",
+    input: { kind: "SALE", counterpartyId: customer.json.id, counterpartyName: customer.json.name, initialPaid: 100, lines: [{ itemId: item.json.id, quantity: 1 }] },
+  });
+  await callRpc(page, { procedure: "preferencesSet", input: { key: "ui.pageSize", value: "10" } });
+
+  await page.goto(`/customers/${customer.json.id}`);
+  await expect(page.getByTestId("party-detail-customer")).toBeVisible();
+  await expect(page.getByTestId("party-unpaid-filter")).toBeChecked();
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(10);
+
+  await page.getByTestId("party-invoices-pager-page-2").click();
+  await expect(page.getByTestId("party-invoices-pager-page-2")).toHaveAttribute("aria-current", "page");
+
+  // clearing the filter changes the list and snaps back to page 1
+  await page.getByTestId("party-unpaid-filter").uncheck();
+  await expect(page.getByTestId("party-invoices-pager-page-1")).toHaveAttribute("aria-current", "page");
+  await expect(page.getByTestId("party-invoice-row")).toHaveCount(10);
 });

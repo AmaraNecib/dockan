@@ -703,6 +703,36 @@ export const supplierReturnsListInputSchema = paginationInputSchema.extend({
 
 export const supplierReturnsListOutputSchema = pagedOutputSchema(supplierReturnSchema);
 
+// ---------------------------------------------------------------------------
+// Party-detail tab pagination (issue 174)
+// ---------------------------------------------------------------------------
+// The tabs page; the money reads do not. `partyDetail` keeps returning the
+// FULL invoice set because the in-page settle/pay panels and the deleteParty
+// FK guard distribute money over every row (issue 163 deferred this on
+// purpose). These three endpoints exist only for the tab tables.
+
+/** Invoices tab. `unpaidOnly` matches `unpaidInvoices` (remaining > 0), the
+ * customer tab's default filter; suppliers pass it false/omitted. */
+export const partyInvoicesInputSchema = paginationInputSchema.extend({
+  role: partyRoleSchema,
+  id: idSchema,
+  unpaidOnly: z.boolean().optional(),
+});
+export const partyInvoicesOutputSchema = pagedOutputSchema(invoiceSchema);
+
+/** Payments tab: the customer payments list. A supplier's payments tab is the
+ * signed account ledger, read through `supplierEntries`, so this read takes no
+ * role. */
+export const partyPaymentsInputSchema = paginationInputSchema.extend({
+  id: idSchema,
+});
+export const partyPaymentsOutputSchema = pagedOutputSchema(partyPaymentSchema);
+
+/** Payments tab, supplier half: the #161 signed account entries, newest first.
+ * The unpaginated `listSupplierEntries` stays for the money paths. */
+export const supplierEntriesInputSchema = paginationInputSchema.extend({ id: idSchema });
+export const supplierEntriesOutputSchema = pagedOutputSchema(supplierAccountEntrySchema);
+
 /** Read one purchase-return voucher by id. The print page must never scan a
  * paginated list for the requested row (issue #163 review). */
 export const supplierReturnGetInputSchema = z.object({ returnId: idSchema });

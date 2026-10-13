@@ -20,6 +20,7 @@ import type {
   PartyCreate,
   PartyDetail,
   PartyListItem,
+  PartyPayment,
   PartyRole,
   PartyUpdate,
   Payment,
@@ -294,6 +295,17 @@ export interface StorePort {
   /** header + stats + every invoice + every payment, one call for the page */
   partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
+  /**
+   * Issue 174 — the party-detail TAB reads. `partyDetail` stays the full,
+   * unpaginated read the settle/pay money distribution and the delete guard
+   * need; only the tables page. `unpaidOnly` matches the customer tab's
+   * `unpaidInvoices` (remaining > 0). The router always resolves concrete
+   * pagination, so it is required here.
+   */
+  partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination: PaginationInput): Promise<{ items: Invoice[]; total: number }>;
+  /** the customer payments tab (a supplier's tab is `supplierEntries`) */
+  partyPayments(partyId: string, pagination: PaginationInput): Promise<{ items: PartyPayment[]; total: number }>;
+
   // --- supplier account (issue 161) ----------------------------------------
   /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
    * (non-null invoiceId) is REFUSED here — it must go through
@@ -315,6 +327,10 @@ export interface StorePort {
   hasSupplierAdjustment(input: SupplierAdjustmentSignature): Promise<boolean>;
   /** every entry of one supplier, newest first, invoice number joined */
   listSupplierEntries(supplierId: string): Promise<SupplierAccountEntry[]>;
+  /** issue 174 — the account-entries tab: same select as `listSupplierEntries`,
+   * sliced, with `total` the whole filtered count. The unpaginated read above
+   * stays for the money paths (balance derivation). */
+  supplierEntries(supplierId: string, pagination: PaginationInput): Promise<{ items: SupplierAccountEntry[]; total: number }>;
   /** outstanding PURCHASE invoices of one supplier, oldest first (allocation) */
   listOutstandingPurchaseInvoices(supplierId: string): Promise<Invoice[]>;
   allocateSupplierReturnNumber(): Promise<string>;

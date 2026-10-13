@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import type { Invoice, PartyDetail, PartyPayment, PartyRole, SupplierAccountEntry } from "@dokan/contracts";
@@ -15,9 +15,12 @@ import { unpaidInvoices, unpaidTotal } from "@/components/parties/party-settle";
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
+import { Pager } from "@/components/ui/pager";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { formatDate, formatDateTime } from "../lib/dates";
+import { PARTY_INVOICES_QUERY_KEY, PARTY_PAYMENTS_QUERY_KEY, SUPPLIER_ENTRIES_QUERY_KEY } from "../lib/query-keys";
+import { usePagination } from "../hooks/use-pagination";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
@@ -161,6 +164,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   // the per-route generic, so the shape is asserted here from the route tree.
   const { partyId } = useParams({ strict: false }) as { partyId: string };
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const customerDetail = useQuery({ ...orpc.customersGet.queryOptions({ input: { id: partyId } }), enabled: role === "customer" });
   const supplierDetail = useQuery({ ...orpc.suppliersGet.queryOptions({ input: { id: partyId } }), enabled: role === "supplier" });
   const detail = role === "customer" ? customerDetail : supplierDetail;
@@ -179,10 +183,48 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const allInvoices = detail.data?.invoices ?? [];
   const unpaid = unpaidInvoices(allInvoices);
   const showUnpaidOnly = customerScope && unpaidOnly;
-  const visibleInvoices = showUnpaidOnly ? unpaid : allInvoices;
   // the settle cap and the distribution both walk the invoice rows, so the
   // reference is their sum too — never a second, potentially divergent stat
   const unpaidAmount = unpaidTotal(allInvoices);
+
+  // #174 — the TABS page. The settle/pay panels, the unpaid total, and the
+  // delete guard keep reading the FULL `detail.data` above; only these reads
+  // are paginated.
+  const invoicePager = usePagination();
+  const paymentPager = usePagination();
+  const invoiceList = useQuery({
+    ...orpc.partyInvoices.queryOptions({
+      input: { role, id: partyId, unpaidOnly: showUnpaidOnly, ...invoicePager.pagination },
+    }),
+    enabled: detail.data !== undefined,
+  });
+  const paymentList = useQuery({
+    ...orpc.partyPayments.queryOptions({ input: { id: partyId, ...paymentPager.pagination } }),
+    enabled: detail.data !== undefined && role === "customer",
+  });
+  const entryList = useQuery({
+    ...orpc.supplierEntries.queryOptions({ input: { id: partyId, ...paymentPager.pagination } }),
+    enabled: detail.data !== undefined && role === "supplier",
+  });
+
+  // the shared panels invalidate customersGet/suppliersGet; the tab queries
+  // carry their own keys, so refresh them here after money moves. The constants
+  // are the double-nested oRPC path prefix (a string-first key is a no-op).
+  function refreshTabQueries() {
+    void queryClient.invalidateQueries({ queryKey: PARTY_INVOICES_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: PARTY_PAYMENTS_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: SUPPLIER_ENTRIES_QUERY_KEY });
+  }
+
+  /** #174 round 1 — a party write that reported failure may still have landed
+   * (an earlier invoice in the batch, or a lost response). The party detail and
+   * the paged tabs carry different keys, so refresh both. */
+  function refreshAfterWriteFailure() {
+    void queryClient.invalidateQueries({
+      queryKey: role === "customer" ? orpc.customersGet.queryKey({ input: { id: partyId } }) : orpc.suppliersGet.queryKey({ input: { id: partyId } }),
+    });
+    refreshTabQueries();
+  }
 
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");
 
@@ -278,7 +320,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       supplierId={partyId}
                       balance={account.balance}
                       invoices={detail.data.invoices}
-                      onDone={() => { setSupplierAction(null); setNotice(t("supplierPayRecorded")); }}
+                      onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierPayRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -286,7 +329,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                     <SupplierReturnPanel
                       supplierId={partyId}
                       invoices={detail.data.invoices}
-                      onDone={() => { setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
+                      onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -296,7 +340,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       supplierName={detail.data.party.name}
                       balance={account.balance}
                       invoices={detail.data.invoices}
-                      onDone={() => { setSupplierAction(null); setNotice(t("supplierAdjustRecorded")); }}
+                      onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierAdjustRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -304,7 +349,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                     <SupplierRefundPanel
                       supplierId={partyId}
                       availableCredit={Math.max(0, -account.balance)}
-                      onDone={() => { setSupplierAction(null); setNotice(t("supplierRefundRecorded")); }}
+                      onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierRefundRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -344,7 +390,11 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   <input
                     type="checkbox"
                     checked={unpaidOnly}
-                    onChange={(event) => setUnpaidOnly(event.target.checked)}
+                    onChange={(event) => {
+                      setUnpaidOnly(event.target.checked);
+                      // a filter change invalidates the old offset: page 1
+                      invoicePager.reset();
+                    }}
                     data-testid="party-unpaid-filter"
                   />
                   {t("partyUnpaidOnly")}
@@ -365,77 +415,137 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   partyId={partyId}
                   invoices={detail.data.invoices}
                   unpaid={unpaidAmount}
-                  onDone={() => { setSettleOpen(false); setNotice(t("partySettleRecorded")); }}
+                  onDone={() => { refreshTabQueries(); setSettleOpen(false); setNotice(t("partySettleRecorded")); }}
+                  // a failed settle may still have written rows: refresh the tabs too
+                  onWriteFailed={refreshAfterWriteFailure}
                   onCancel={() => setSettleOpen(false)}
                 />
               </div>
             )}
-            {visibleInvoices.length === 0 ? (
+            {invoiceList.isError ? (
+              <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="party-invoices-error">
+                {tError(invoiceList.error.message)}
+              </p>
+            ) : invoiceList.isPending ? (
+              <div className="grid gap-2" data-testid="party-invoices-loading">
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+              </div>
+            ) : (invoiceList.data?.total ?? 0) === 0 ? (
               <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-invoices-empty">
                 {showUnpaidOnly ? t("partyNoUnpaid") : t("partyInvoicesEmpty")}
               </p>
             ) : (
-              <table className="w-full text-sm" data-testid="party-invoices">
-                <thead>
-                  <tr className="border-b text-right text-muted-foreground">
-                    <th scope="col" className="p-2 font-medium">{t("debtsInvNumber")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("debtsInvDate")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("debtsInvTotal")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("invoicePaid")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("debtsInvRemaining")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("partyInvoiceStatus")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleInvoices.map((invoice) => (
-                    <PartyInvoiceRow key={invoice.id} invoice={invoice} />
-                  ))}
-                </tbody>
-              </table>
+              <>
+                <table className="w-full text-sm" data-testid="party-invoices">
+                  <thead>
+                    <tr className="border-b text-right text-muted-foreground">
+                      <th scope="col" className="p-2 font-medium">{t("debtsInvNumber")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("debtsInvDate")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("debtsInvTotal")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("invoicePaid")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("debtsInvRemaining")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("partyInvoiceStatus")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(invoiceList.data?.items ?? []).map((invoice) => (
+                      <PartyInvoiceRow key={invoice.id} invoice={invoice} />
+                    ))}
+                  </tbody>
+                </table>
+                <Pager
+                  total={invoiceList.data?.total ?? 0}
+                  pageSize={invoicePager.pageSize}
+                  offset={invoicePager.offset}
+                  onOffsetChange={invoicePager.setOffset}
+                  onPageSizeChange={invoicePager.setPageSize}
+                  testId="party-invoices-pager"
+                />
+              </>
             )}
           </div>
 
           <div role="tabpanel" id="party-panel-payments" aria-labelledby="party-tab-payments" hidden={tab !== "payments"} className="mt-4" data-testid="party-panel-payments">
             {role === "supplier" && account !== null ? (
-              account.entries.length === 0 ? (
+              entryList.isError ? (
+                <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="supplier-account-error">
+                  {tError(entryList.error.message)}
+                </p>
+              ) : entryList.isPending ? (
+                <div className="grid gap-2" data-testid="supplier-account-loading">
+                  <Skeleton className="h-6 w-full" />
+                  <Skeleton className="h-6 w-full" />
+                </div>
+              ) : (entryList.data?.total ?? 0) === 0 ? (
                 <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="supplier-account-empty">{t("supplierAccountEmpty")}</p>
               ) : (
-                <table className="w-full text-sm" data-testid="supplier-account-entries">
+                <>
+                  <table className="w-full text-sm" data-testid="supplier-account-entries">
+                    <thead>
+                      <tr className="border-b text-right text-muted-foreground">
+                        <th scope="col" className="p-2 font-medium">{t("supplierEntryDate")}</th>
+                        <th scope="col" className="p-2 font-medium">{t("supplierEntryKind")}</th>
+                        <th scope="col" className="p-2 font-medium">{t("supplierEntryInvoice")}</th>
+                        <th scope="col" className="p-2 font-medium">{t("supplierEntryAmount")}</th>
+                        <th scope="col" className="p-2 font-medium">{t("supplierEntryNote")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(entryList.data?.items ?? []).map((entry) => (
+                        <SupplierAccountRow key={entry.id} entry={entry} />
+                      ))}
+                    </tbody>
+                  </table>
+                  <Pager
+                    total={entryList.data?.total ?? 0}
+                    pageSize={paymentPager.pageSize}
+                    offset={paymentPager.offset}
+                    onOffsetChange={paymentPager.setOffset}
+                    onPageSizeChange={paymentPager.setPageSize}
+                    testId="supplier-entries-pager"
+                  />
+                </>
+              )
+            ) : paymentList.isError ? (
+              <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="party-payments-error">
+                {tError(paymentList.error.message)}
+              </p>
+            ) : paymentList.isPending ? (
+              <div className="grid gap-2" data-testid="party-payments-loading">
+                <Skeleton className="h-6 w-full" />
+                <Skeleton className="h-6 w-full" />
+              </div>
+            ) : (paymentList.data?.total ?? 0) === 0 ? (
+              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-payments-empty">{t("partyPaymentsEmpty")}</p>
+            ) : (
+              <>
+                <table className="w-full text-sm" data-testid="party-payments">
                   <thead>
                     <tr className="border-b text-right text-muted-foreground">
-                      <th scope="col" className="p-2 font-medium">{t("supplierEntryDate")}</th>
-                      <th scope="col" className="p-2 font-medium">{t("supplierEntryKind")}</th>
-                      <th scope="col" className="p-2 font-medium">{t("supplierEntryInvoice")}</th>
-                      <th scope="col" className="p-2 font-medium">{t("supplierEntryAmount")}</th>
-                      <th scope="col" className="p-2 font-medium">{t("supplierEntryNote")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("partyPaymentDate")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("partyPaymentInvoice")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("partyPaymentAmount")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("pmtMethod")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("partyPaymentNote")}</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {account.entries.map((entry) => (
-                      <SupplierAccountRow key={entry.id} entry={entry} />
+                    {(paymentList.data?.items ?? []).map((payment) => (
+                      <PartyPaymentRow key={payment.id} payment={payment} />
                     ))}
                   </tbody>
                 </table>
-              )
-            ) : detail.data.payments.length === 0 ? (
-              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-payments-empty">{t("partyPaymentsEmpty")}</p>
-            ) : (
-              <table className="w-full text-sm" data-testid="party-payments">
-                <thead>
-                  <tr className="border-b text-right text-muted-foreground">
-                    <th scope="col" className="p-2 font-medium">{t("partyPaymentDate")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("partyPaymentInvoice")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("partyPaymentAmount")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("pmtMethod")}</th>
-                    <th scope="col" className="p-2 font-medium">{t("partyPaymentNote")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {detail.data.payments.map((payment) => (
-                    <PartyPaymentRow key={payment.id} payment={payment} />
-                  ))}
-                </tbody>
-              </table>
+                <Pager
+                  total={paymentList.data?.total ?? 0}
+                  pageSize={paymentPager.pageSize}
+                  offset={paymentPager.offset}
+                  onOffsetChange={paymentPager.setOffset}
+                  onPageSizeChange={paymentPager.setPageSize}
+                  testId="party-payments-pager"
+                />
+              </>
             )}
           </div>
 

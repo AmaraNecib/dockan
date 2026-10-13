@@ -33,12 +33,19 @@ export function CustomerSettlePanel({
   invoices,
   unpaid,
   onDone,
+  onWriteFailed,
   onCancel,
 }: {
   partyId: string;
   invoices: readonly Invoice[];
   unpaid: number;
   onDone: () => void;
+  /** #174 round 1 — the per-invoice batch did not finish cleanly. A row may
+   * still have landed (an earlier invoice in the batch, or a write the API
+   * committed while the response was lost), so the caller must refresh views
+   * derived from those rows; the panel only refreshes the detail read. Required
+   * so a new host cannot silently reintroduce the stale-tab bug. */
+  onWriteFailed: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -126,10 +133,14 @@ export function CustomerSettlePanel({
     } catch (err) {
       // a failure mid-loop may have settled the earlier invoices already:
       // refetch everything and refuse a second confirm, or the next submit
-      // would replan from stale rows and re-send money already taken
+      // would replan from stale rows and re-send money already taken. Refresh
+      // the caller's tab views BEFORE signalling: a failure can also hide a
+      // write that committed (a lost response), and the signalled callback
+      // must never be able to skip the panel's own refresh.
       setError(tError(err instanceof Error ? err.message : undefined));
       setHalted(true);
       void refresh();
+      onWriteFailed();
     } finally {
       setSubmitting(false);
     }

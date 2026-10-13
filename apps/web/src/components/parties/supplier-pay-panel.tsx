@@ -29,6 +29,7 @@ export function SupplierPayPanel({
   balance,
   invoices,
   onDone,
+  onWriteFailed,
   onCancel,
 }: {
   supplierId: string;
@@ -36,6 +37,9 @@ export function SupplierPayPanel({
   balance: number;
   invoices: readonly Invoice[];
   onDone: () => void;
+  /** #174 round 1 — a failed (possibly lost-response) call may still have
+   * written a row, so the caller must refresh the derived tab reads. */
+  onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -122,6 +126,7 @@ export function SupplierPayPanel({
     } catch (err) {
       setError(tError(err instanceof Error ? err.message : undefined));
       void refresh();
+      onWriteFailed?.();
     } finally {
       setSubmitting(false);
     }

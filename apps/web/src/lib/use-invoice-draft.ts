@@ -110,31 +110,43 @@ export function usePaymentPair(total: number): PaymentPairState {
 /** Whether a quick-add's create call produced the item or a message to show. */
 export type QuickAddOutcome = { ok: true; item: Item } | { ok: false; error: string };
 
-export interface QuickAddSpec<F extends Record<string, string>> {
-  /** The field bag a fresh form starts with. */
-  empty(): F;
-  /**
-   * Whether opening the form resets the bag. Sale resets on every open (a scan
-   * seeds the barcode); purchase keeps what the owner already typed.
-   */
-  resetOnOpen: boolean;
-  /**
-   * Fields that survive a SUCCESSFUL create. Everything else returns to
-   * `empty()`. This is required so every caller states the policy: the first
-   * version of this hook reset the whole bag, which silently dropped the
-   * category purchase used to keep and forced the owner to re-pick it for
-   * every item. Purchase keeps the destination category; sale keeps nothing,
-   * because it re-derives its category default on every open.
-   */
-  keepOnCreate: readonly (keyof F & string)[];
-}
+/**
+ * The quick-add form's policy, stated once per screen. The two arms are
+ * mutually exclusive on purpose: `openForm` rebuilds the bag from `empty()`
+ * whenever `resetOnOpen` is true, so a spec that reset on open and still kept a
+ * field would lose it again on the very next open, silently. A keep list is
+ * only meaningful for a spec that does not reset on open.
+ */
+export type QuickAddSpec<F extends Record<string, string>> =
+  | {
+      /** The field bag a fresh form starts with. Must return a fresh object. */
+      empty(): F;
+      resetOnOpen: true;
+      /** Sale resets on every open, so nothing can survive a create. */
+      keepOnCreate: readonly [];
+    }
+  | {
+      /** The field bag a fresh form starts with. Must return a fresh object. */
+      empty(): F;
+      /** Purchase keeps what the owner already typed across a close. */
+      resetOnOpen: false;
+      /**
+       * Fields that survive a SUCCESSFUL create. Everything else returns to
+       * `empty()`. Required so every caller states the policy: the first
+       * version of this hook reset the whole bag, which silently dropped the
+       * destination category purchase used to keep and forced the owner to
+       * re-pick it for every item.
+       */
+      keepOnCreate: readonly (keyof F & string)[];
+    };
 
 /**
  * The bag the next form starts from after a successful create: everything back
- * to `empty()`, except the fields the spec declared it keeps.
+ * to `empty()`, except the fields the spec declared it keeps. The copy means a
+ * spec that hands back a cached object can never be mutated through this path.
  */
 function nextBag<F extends Record<string, string>>(spec: QuickAddSpec<F>, fields: F): F {
-  const next = spec.empty();
+  const next = { ...spec.empty() };
   for (const key of spec.keepOnCreate) next[key] = fields[key];
   return next;
 }
@@ -195,7 +207,9 @@ export function useQuickAdd<F extends Record<string, string>>(
       }
       options.onCreated(outcome.item, fields);
       setOpen(false);
-      setFields(nextBag(spec, fields));
+      // the updater form keeps a field the owner changed while the create was in
+      // flight, which is what the pre-#146 handlers did by leaving state alone
+      setFields((current) => nextBag(spec, current));
     },
     [fields, options, spec],
   );

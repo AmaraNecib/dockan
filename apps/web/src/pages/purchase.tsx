@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { percentageDraftInvalid } from "@/lib/amount-parse";
 import { firstLineError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
-import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
 
@@ -50,8 +50,8 @@ const PURCHASE_QUICK = {
   // the owner stocks several items in one sitting, so a successful create keeps
   // the destination category. The old handler cleared the item fields and kept
   // quickCategoryId for the same reason.
-  keepOnCreate: ["categoryId"] as const,
-};
+  keepOnCreate: ["categoryId"],
+} satisfies QuickAddSpec<PurchaseQuickFields>;
 
 export function PurchasePage() {
   const { t } = useTranslation();

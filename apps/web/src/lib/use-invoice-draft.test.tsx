@@ -83,14 +83,22 @@ const SALE_DRAFT = {
 };
 
 /** sale's contract: reset on every open, and nothing survives a create */
-const RESETTING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: true, keepOnCreate: [] as const };
+const RESETTING_QUICK: QuickAddSpec<{ name: string; barcode: string }> = {
+  empty: () => ({ name: "", barcode: "" }),
+  resetOnOpen: true,
+  keepOnCreate: [],
+};
 /** purchase's open policy: keep what is typed across a close */
-const RETAINING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: false, keepOnCreate: [] as const };
+const RETAINING_QUICK: QuickAddSpec<{ name: string; barcode: string }> = {
+  empty: () => ({ name: "", barcode: "" }),
+  resetOnOpen: false,
+  keepOnCreate: [],
+};
 /** purchase's create policy: the destination category survives a successful create */
-const KEEPING_QUICK = {
+const KEEPING_QUICK: QuickAddSpec<{ name: string; barcode: string; categoryId: string }> = {
   empty: () => ({ name: "", barcode: "", categoryId: "" }),
   resetOnOpen: false,
-  keepOnCreate: ["categoryId"] as const,
+  keepOnCreate: ["categoryId"],
 };
 
 function mountQuick<F extends { name: string } & Record<string, string>>(spec: QuickAddSpec<F>) {
@@ -198,6 +206,45 @@ describe("useQuickAdd (the quick-add form's behaviour)", () => {
     });
     // the declared field survives so the next item needs no second pick
     expect(hook.get().fields).toEqual({ name: "", barcode: "", categoryId: "cat-1" });
+  });
+
+  it("keeps a cleared declared field cleared rather than resurrecting it", async () => {
+    const { hook } = mountQuick(KEEPING_QUICK);
+    act(() => hook.get().openForm({ categoryId: "cat-1" }));
+    act(() => hook.get().setField("categoryId", ""));
+
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: true, item: item("a") }));
+    });
+    // the owner cleared it, so the next create asks for a pick again
+    expect(hook.get().fields.categoryId).toBe("");
+  });
+
+  it("does not touch the bag when the create is refused", async () => {
+    const { hook } = mountQuick(KEEPING_QUICK);
+    act(() => hook.get().openForm({ name: "منتج", barcode: "111" }));
+    act(() => hook.get().setField("categoryId", "cat-1"));
+
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: false, error: "أدخل كمية صحيحة" }));
+    });
+    // the typed work survives so the owner can correct the one bad value
+    expect(hook.get().fields).toEqual({ name: "منتج", barcode: "111", categoryId: "cat-1" });
+    expect(hook.get().open).toBe(true);
+  });
+
+  it("lets a later seed win over a kept field, since a kept field is not preserved across an open", async () => {
+    const { hook } = mountQuick(KEEPING_QUICK);
+    act(() => hook.get().openForm({ categoryId: "cat-1" }));
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: true, item: item("a") }));
+    });
+    expect(hook.get().fields.categoryId).toBe("cat-1");
+
+    // resetOnOpen false merges into the retained bag, so a seed overwrites a
+    // kept field on purpose; the keep list governs the create, not the open
+    act(() => hook.get().openForm({ name: "next", categoryId: "cat-2" }));
+    expect(hook.get().fields).toEqual({ name: "next", barcode: "", categoryId: "cat-2" });
   });
 
   it("re-seeds from empty on the next open when the spec keeps nothing", async () => {

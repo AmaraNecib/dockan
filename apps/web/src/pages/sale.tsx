@@ -28,7 +28,7 @@ import {
   type AmountKind,
   type SaleDraftLine,
 } from "@/lib/invoice-draft";
-import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -85,8 +85,8 @@ const SALE_QUICK = {
   resetOnOpen: true,
   // sale keeps nothing across a create: its category is a default it re-derives
   // from the list on every open, not an explicit pick to preserve
-  keepOnCreate: [] as const,
-};
+  keepOnCreate: [],
+} satisfies QuickAddSpec<SaleQuickFields>;
 
 export function SalePage() {
   const { t } = useTranslation();

@@ -144,9 +144,13 @@ useQuickAdd(spec, options): {
   open; fields; setField(key, value); openForm(seed?); close; toggle;
   submit(create: (fields) => Promise<QuickAddOutcome>): Promise<void>;
 }
-// spec: { empty(): F; resetOnOpen: boolean; keepOnCreate: readonly (keyof F)[] }
-//   keepOnCreate is REQUIRED: it names the fields that survive a successful
-//   create, so every caller answers the question the first version missed.
+// spec: { empty(): F } & (
+//     { resetOnOpen: true;  keepOnCreate: readonly [] }
+//   | { resetOnOpen: false; keepOnCreate: readonly (keyof F)[] }
+//   )
+//   keepOnCreate is REQUIRED, and the two arms are exclusive: a spec that resets
+//   on every open cannot also claim to keep a field, because the next open would
+//   drop it again without a word.
 ```
 
 `draftReducer` is exported pure, so the line-list rules are unit-tested without
@@ -208,11 +212,11 @@ so the accounting is written out here and the declaration is required.
 
 Sale is not affected by the shared reset. Its handler never preserved anything:
 every open rebuilt the bag and re-seeded the category default, so the next form
-the owner sees is `empty()` plus the seed in both the old and the new code. The
-only observable difference is that sale's typed values are now cleared at create
-time rather than lingering in closed-form state, which fixes a stale
-`draftDirty` flag (the header's New Sale action no longer warns about a draft
-that a successful create already ended).
+the owner sees is `empty()` plus the seed in both the old and the new code. That
+leaves the field state itself as the only difference, and it is not observable:
+a sale quick-add always lands a line, which already marks the draft dirty, and
+every open rebuilds the bag. Clearing the fields at create time changes nothing
+the owner can see or act on.
 
 Purchase keeps `categoryId` because it requires an explicit pick: an owner
 stocking several items in one sitting would otherwise re-pick the destination
@@ -311,6 +315,22 @@ contract (nothing survives, the next open re-seeds from `empty()`), and a page
 test creates two purchase items in a row from one category pick. Both falsify
 when the keep list is emptied: the form falls back to the «—» placeholder and
 the second create is refused with `itemsChooseCategory`.
+
+**Round-3 review follow-ups, applied.**
+
+- The spec type became a discriminated union, so `resetOnOpen: true` can only
+  keep nothing. The previous shape allowed a self-contradictory spec whose keep
+  list the next open would silently discard.
+- `nextBag` copies `empty()`'s result before writing to it, so a spec that hands
+  back a cached object can never be mutated through this path.
+- The success reset uses the state updater, matching the pre-#146 handlers, which
+  left state alone and therefore kept a field the owner edited while the create
+  was in flight.
+- Tests added for the invariants the reviews asked for: a refused create does not
+  touch the bag, a cleared kept field stays cleared, a later `openForm` seed wins
+  over a kept field (the keep list governs the create, not the open), and the
+  page test now uses a distinct item id per create so it proves two draft lines
+  landed and that the other fields still reset.
 
 **Sale.** Not affected, and section 4.2 says why: sale preserved nothing before
 this change either, because every open rebuilt the bag and re-seeded the

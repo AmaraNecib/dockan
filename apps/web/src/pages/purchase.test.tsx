@@ -92,7 +92,9 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: PanelMutationOptions) => ({
         mutationFn: async (input: { name: string; categoryId: string }) => {
           createdItems.push({ name: input.name, categoryId: input.categoryId });
-          return { id: "item-1", name: "منتج", costPrice: 100, sellingPrice: 150 };
+          // one item per distinct name: re-adding the same name replaces that
+          // line (like the real page), and two names give two distinct lines
+          return { id: `item-${input.name}`, name: input.name, costPrice: 100, sellingPrice: 150 };
         },
         ...opts,
       }),
@@ -150,6 +152,12 @@ mock.module("@/lib/rpc", () => ({
   },
   rpcClient: {},
 }));
+
+// the mocked quick-add records every create, so clear it before every test:
+// a test that asserts create counts or item ids must not see another test's calls
+beforeEach(() => {
+  createdItems = [];
+});
 
 const { LinkProposalPanel, PurchasePage } = await import("./purchase");
 
@@ -677,7 +685,6 @@ describe("PurchasePage quantity draft (#146)", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     document.body.innerHTML = "";
     lastPurchaseInput = null;
-    createdItems = [];
     mounted = [];
     purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
   });
@@ -815,7 +822,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(totalText(container)).toContain("2400");
     await save(container);
     expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
-    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-1", quantity: 2, unitPrice: 1200 }]);
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
     await act(async () => root.unmount());
     container.remove();
   });
@@ -869,13 +876,21 @@ describe("PurchasePage quantity draft (#146)", () => {
     // the trigger carries only the selected label plus its chevron, so this
     // fails if the pick was dropped back to the «—» placeholder
     const trigger = categoryTrigger(container);
+    expect(trigger).not.toBeNull();
     expect(trigger?.textContent).toContain("تصنيف");
     expect(trigger?.textContent).not.toContain("—");
+    // and the fields that must NOT survive are still cleared: the quantity is
+    // back to its seed and the previous name is gone
+    expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')?.value).toBe("1");
+    expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-name"]')?.value).toBe("");
+
     await fillQuick(container, "منتج ثانٍ", "1", "100");
     await submitQuick(container);
 
+    // two distinct items landed as two draft lines
     expect(createdItems).toHaveLength(2);
     expect(createdItems[1]).toEqual({ name: "منتج ثانٍ", categoryId: "cat-1" });
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
     // no itemsChooseCategory: the second create never asked for a pick
     expect(container.querySelector('[data-testid="purchase-error"]')).toBeNull();
   });

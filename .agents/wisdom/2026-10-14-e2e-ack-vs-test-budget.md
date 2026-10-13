@@ -23,16 +23,21 @@ whole budget. Asserting the surfaced state right after the click turns it back i
 named ≤5s failure:
 
 ```ts
+await expect(page.getByTestId("sale-save")).toBeEnabled();     // pre-click gate
 await actAndAck(page, "invoicesCreate", async () => {
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toHaveCount(0);  // synchronous refusal
 });
-await expect(page.getByTestId("sale-save")).toBeEnabled();      // disabled gate
+await expect(page.getByTestId("sale-saved")).toBeVisible();    // the write landed
 ```
 
-**Always**: for every ack, also assert (a) the app is not showing an error and (b)
-the control the spec clicks is enabled, both before and immediately after the click.
-The pre-click checks catch a stale gate; the in-action check catches a refusal.
+**Always**: for every ack, also assert (a) the app is not showing an error
+**immediately after the click** — that catches a synchronous refusal — and (b) the
+control the spec clicks is enabled **before** the click, which catches a stale gate.
+Do **not** assert that the clicked control stays enabled afterwards: a successful
+write can legitimately disable, unmount or replace it (`sale-save` becomes
+`sale-saved` on success), and demanding it survive turns a healthy save into a
+failure. Assert the **outcome** instead — the confirmation the write produces.
 
 ## An ack whose value is discarded proves nothing
 `await rpcOutput<{ id: string }>(await actAndAck(…))` reads the envelope and throws

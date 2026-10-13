@@ -24,12 +24,21 @@ type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
 
 /** The existing supplier a typed new name folds to (the same normalization the
- * server uses), or undefined when the name is genuinely new. */
-function matchByNormalizedName<T extends { name: string }>(suppliers: readonly T[], newName: string): T | undefined {
+ * server uses), or undefined when the name is genuinely new. Legacy duplicate
+ * folded names resolve the same way the server resolves them: prefer the
+ * entry-carrying party, then the lowest id. */
+function matchByNormalizedName<T extends { id: string; name: string; accountEntryCount?: number | null }>(suppliers: readonly T[], newName: string): T | undefined {
   const trimmed = newName.trim();
   if (trimmed === "") return undefined;
   const key = normalizeTextKey(trimmed);
-  return suppliers.find((supplier) => normalizeTextKey(supplier.name) === key);
+  let best: T | undefined;
+  for (const supplier of suppliers) {
+    if (normalizeTextKey(supplier.name) !== key) continue;
+    const entries = supplier.accountEntryCount ?? 0;
+    const bestEntries = best?.accountEntryCount ?? 0;
+    if (best === undefined || entries > bestEntries || (entries === bestEntries && supplier.id < best.id)) best = supplier;
+  }
+  return best;
 }
 
 /**
@@ -50,6 +59,7 @@ export function SupplierOpeningBalancePage() {
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
   const [newName, setNewName] = useState("");
   const [nameFocused, setNameFocused] = useState(false);
+  const [amountFocused, setAmountFocused] = useState(false);
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -104,31 +114,35 @@ export function SupplierOpeningBalancePage() {
   }
 
   /** The existing supplier the typed new name now folds to, with its parsed
-   * amount, or undefined when the name is genuinely new or the amount is
-   * unusable. Shared by the adoption effect and the save fallback so they agree. */
-  function resolveNewName(): { supplierId: string; amount: number } | undefined {
+   * amount and direction, or undefined when the name is genuinely new or the
+   * amount is unusable. Shared by the adoption effect and the save fallback so
+   * they agree. */
+  function resolveNewName(): { supplierId: string; direction: SupplierAdjustmentDirection; amount: number; needsConfirm: boolean } | undefined {
     const match = matchByNormalizedName(suppliers, newName);
     if (match === undefined) return undefined;
     const amount = parseGroupedAmount(newAmount);
     if (amount === null || amount <= 0) return undefined;
-    return { supplierId: match.id, amount };
+    return { supplierId: match.id, direction: newDirection, amount, needsConfirm: (match.accountEntryCount ?? 0) > 0 };
   }
 
   // Greptile round 2 — the typed new name may now match an existing supplier (a
   // concurrent create landed after this page loaded, or a background refetch
-  // brought one in). Move the draft onto that supplier's row as soon as the
-  // match exists, preserving amount and direction, so a save never drops the row
-  // or mints a duplicate account — regardless of whether the confirmation
-  // dialog is open yet. Gate on the name field being UNfocused so an owner still
-  // typing a new name (amount entered first) is not cut off mid-word.
+  // brought one in). Move the draft onto that supplier's row once the owner has
+  // left BOTH edit fields, preserving amount and direction, so a save never
+  // drops the row or mints a duplicate account — regardless of whether the
+  // confirmation dialog is open yet. Gating on focus matters: adopting while the
+  // amount is still focused would move a partial entry ("1500" → "1") and strand
+  // the rest in the now-empty new-name row.
   useEffect(() => {
-    if (nameFocused) return;
+    if (nameFocused || amountFocused) return;
     const resolved = resolveNewName();
     if (resolved === undefined) return;
-    setRow(resolved.supplierId, { direction: newDirection, amount: newAmount });
+    // never clobber an amount the owner already entered on that row
+    if ((drafts[resolved.supplierId]?.amount ?? "").trim() !== "") return;
+    setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
     setNewName("");
     setNewAmount("");
-  }, [suppliers, newName, newAmount, newDirection, nameFocused]);
+  }, [suppliers, newName, newAmount, newDirection, nameFocused, amountFocused, drafts]);
 
   async function save(confirmExisting: boolean) {
     if (occurredAt === null || blockedReason !== null) return;
@@ -149,7 +163,7 @@ export function SupplierOpeningBalancePage() {
           // a name that raced into existence is sent under the existing supplier's
           // id if the adoption effect has not moved it yet (a same-tick save)
           ...(resolved !== undefined
-            ? [{ supplierId: resolved.supplierId, direction: newDirection, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
+            ? [{ supplierId: resolved.supplierId, direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
             : newRow.status === "filled"
               ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount }]
               : []),
@@ -185,15 +199,20 @@ export function SupplierOpeningBalancePage() {
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (submitting || bulk.isPending || dateInvalid) return;
-    if (blockedReason !== null) {
+    // a typed name that folds to an existing supplier is a row even while the
+    // inline row still shows it (a focused duplicate name never blurs before an
+    // Enter submit)
+    const resolved = resolveNewName();
+    if (blockedReason !== null && resolved === undefined) {
       setError(blockedReason);
       return;
     }
-    if (totalRows === 0) {
+    const effectiveTotal = totalRows + (resolved !== undefined && !newFilled ? 1 : 0);
+    if (effectiveTotal === 0) {
       setError(t("supplierOpeningNothing"));
       return;
     }
-    if (needsConfirmation) {
+    if (needsConfirmation || resolved?.needsConfirm === true) {
       setConfirming(true);
       return;
     }
@@ -355,6 +374,8 @@ export function SupplierOpeningBalancePage() {
                       autoComplete="off"
                       value={newAmount}
                       onChange={(event) => setNewAmount(event.target.value)}
+                      onFocus={() => setAmountFocused(true)}
+                      onBlur={() => setAmountFocused(false)}
                       aria-label={t("supplierOpeningNewRow")}
                       data-testid="opening-balance-new-amount"
                     />

@@ -436,4 +436,71 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات 2", direction: "WE_OWE", amount: 250 });
   });
+
+  it("adopts only after the amount field blurs, never mid-keystroke (Greptile round 2)", async () => {
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    const matchedRowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, "مورد له حركات");
+    await act(async () => {
+      nameInput.blur();
+      amountInput.focus();
+    });
+
+    // type the amount one digit at a time; the amount is focused, so nothing moves
+    for (const draft of ["1", "15", "150", "1500"]) setInput(amountInput, draft);
+    expect(amountInput.value).toBe("1500");
+    expect(matchedRowAmount()).toBe("");
+
+    // leaving the amount adopts the FULL value in one piece
+    await act(async () => {
+      amountInput.blur();
+    });
+    expect(matchedRowAmount()).toBe("1500");
+    expect(amountInput.value).toBe("");
+  });
+
+  it("submits a focused duplicate name on Enter instead of reporting nothing entered (Greptile round 2)", async () => {
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    // the name field is still focused when the owner presses Enter: the row must
+    // count as filled via the resolved supplier, not report "nothing entered"
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-1", direction: "WE_OWE", amount: 500, confirmExisting: true });
+  });
+
+  it("does not clobber an amount already entered on the matching supplier's row (Greptile round 2)", async () => {
+    render();
+    await settle();
+    const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+
+    typeIntoRow(0, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    // the row keeps the owner's earlier 700; the new-name draft is left intact
+    expect(rowAmount()).toBe("700");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("300");
+  });
 });

@@ -6,14 +6,29 @@ import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { parseGroupedAmount, percentageDraftInvalid } from "@/lib/amount-parse";
+import {
+  discountAmountFor,
+  lineQuantity,
+  nonNegativeOr,
+  parseQuantityDraft,
+  quantityDraftInvalid,
+  resolveInitialPaid,
+  saleOverrideInvalid,
+  saleUnitPrice,
+  toDiscountType,
+  toOverrideType,
+  type DiscountType,
+  type SaleDraftLine,
+} from "@/lib/invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -26,74 +41,15 @@ import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { resolveOpeningStock } from "../lib/numeric-input";
 
-type OverrideType = "" | "AMOUNT" | "PERCENTAGE";
-type DiscountType = "" | "AMOUNT" | "PERCENTAGE";
-type SaleLine = {
-  item: Item;
-  /** raw quantity input text; empty is a valid transient draft while typing */
-  quantityDraft: string;
-  overrideType: OverrideType;
-  overrideValue: string;
-};
-
-function nonNegativeOr(value: string, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function toOverrideType(value: string): OverrideType {
-  return value === "AMOUNT" || value === "PERCENTAGE" ? value : "";
-}
-
-function toDiscountType(value: string): DiscountType {
-  return value === "AMOUNT" || value === "PERCENTAGE" ? value : "";
-}
+type SaleLine = SaleDraftLine;
 
 /**
- * Resolve a cart quantity draft to its effective line quantity. Empty,
- * non-integer, or over-cap drafts yield 0 (invalid); the input never rewrites
- * the draft, so clearing it stays visually empty instead of snapping back to
- * the previous value (the field is NOT a controlled number). The 1_000_000
- * cap mirrors the RPC contract's line-quantity max — an oversized draft is
- * refused client-side instead of surfacing an opaque server error. Only an
- * explicit add-line action (scan / duplicate picker entry) repairs a cleared
- * draft to a single unit.
+ * Whether a pre-commit paid draft is usable, and the debt it leaves.
+ *
+ * #146 moved the quantity parser, the totals, and the amount ⇄ percentage pair
+ * into `@/lib/invoice-draft`; this preview stays sale-only (a purchase has no
+ * customer debt notice).
  */
-const MAX_LINE_QUANTITY = 1_000_000;
-
-export function parseQuantityDraft(draft: string): number {
-  const trimmed = draft.trim();
-  if (trimmed === "" || !/^\d+$/u.test(trimmed)) return 0;
-  const value = Number(trimmed);
-  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_LINE_QUANTITY ? value : 0;
-}
-
-/** True when the draft cannot form a sellable line (empty, zero, or garbage). */
-export function quantityDraftInvalid(draft: string): boolean {
-  return parseQuantityDraft(draft) < 1;
-}
-
-function actualPrice(line: SaleLine): number {
-  const value = nonNegativeOr(line.overrideValue, line.item.sellingPrice);
-  if (line.overrideValue.trim() === "") return line.item.sellingPrice;
-  if (line.overrideType === "AMOUNT") return Math.round(value);
-  if (line.overrideType === "PERCENTAGE") return Math.round((line.item.sellingPrice * value) / 100);
-  return line.item.sellingPrice;
-}
-
-/** A chosen price override must carry a usable value: empty input parses to 0
- * (Number("") === 0) and would bill the line as free while the preview still
- * shows the default price, so it is rejected here before submission. */
-export function overrideInputInvalid(line: Pick<SaleLine, "overrideType" | "overrideValue">): boolean {
-  if (line.overrideType === "") return false;
-  if (line.overrideValue.trim() === "") return true;
-  const value = Number(line.overrideValue);
-  if (!Number.isFinite(value)) return true;
-  if (line.overrideType === "AMOUNT") return !Number.isInteger(value) || value < 0;
-  return !Number.isInteger(value) || value < 0 || value > 100;
-}
-
-/** Whether a pre-commit paid draft is usable, and the debt it leaves. */
 export interface SaleDebt {
   valid: boolean;
   debt: number;
@@ -117,25 +73,29 @@ export function saleDebt(total: number, paidDraft: string): SaleDebt {
   return { valid: true, debt: Math.max(total - paid, 0) };
 }
 
+/** The per-kind draft rules; module scope keeps the config identity stable. */
+const SALE_DRAFT = {
+  emptyLine: (item: Item): SaleLine => ({ item, quantityDraft: "1", overrideType: "", overrideValue: "" }),
+  unitPrice: saleUnitPrice,
+};
+
+/** The quick-add field bag; sale resets it on every open (a scan seeds the barcode). */
+type SaleQuickFields = { name: string; barcode: string; categoryId: string; cost: string; sell: string; stock: string };
+
+const SALE_QUICK = {
+  empty: (): SaleQuickFields => ({ name: "", barcode: "", categoryId: "", cost: "", sell: "", stock: "" }),
+  resetOnOpen: true,
+};
+
 export function SalePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
-  const [lines, setLines] = useState<SaleLine[]>([]);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [discountType, setDiscountType] = useState<DiscountType>("");
   const [discountValue, setDiscountValue] = useState("");
-  const [paidNow, setPaidNow] = useState("");
-  // #162 — the initial payment is a share of the cart total; amount and
-  // percentage mirror each other. The full total is the default until the
-  // owner edits either field.
-  const [paidPercentage, setPaidPercentage] = useState("");
-  // which field the owner edits is the source of truth when the cart total
-  // later changes: a percentage rescales the amount, an amount re-derives the
-  // percentage. `null` = untouched, so the pair follows the full total.
-  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
    * kept whole so the card reads the authoritative number, remaining and party */
@@ -144,13 +104,6 @@ export function SalePage() {
   // these values, so in-flight edits must not contradict it.
   const [submittedNotice, setSubmittedNotice] = useState<SaleDebt | null>(null);
 
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [quickName, setQuickName] = useState("");
-  const [quickBarcode, setQuickBarcode] = useState("");
-  const [quickCategoryId, setQuickCategoryId] = useState("");
-  const [quickCost, setQuickCost] = useState("");
-  const [quickSell, setQuickSell] = useState("");
-  const [quickStock, setQuickStock] = useState("");
   // The stock field is always visible. The unknown-scan "create with stock"
   // choice promises an opening movement, so its path refuses a blank/zero
   // quantity; the plain create keeps blank = no opening stock (stock 0).
@@ -169,20 +122,15 @@ export function SalePage() {
   // commit has started.
   const commitRef = useRef(false);
 
+  const draft = useInvoiceDraft(SALE_DRAFT);
+  const { lines } = draft;
+
   const addLine = (item: Item) => {
     // The sale is frozen once a commit is in flight: ignore late adds (scanner,
     // an already-open dialog, or a quick-add that settles after Save) so the
     // cart cannot drift from the request.
     if (commitRef.current) return;
-    setLines((current) => {
-      const existing = current.find((line) => line.item.id === item.id);
-      if (existing) {
-        // a scanned/added unit bumps the effective quantity by one, repairing
-        // an invalid (cleared) draft to a single unit
-        return current.map((line) => (line.item.id === item.id ? { ...line, quantityDraft: String(parseQuantityDraft(line.quantityDraft) + 1) } : line));
-      }
-      return [...current, { item, quantityDraft: "1", overrideType: "", overrideValue: "" }];
-    });
+    draft.addItem(item);
     setPickerOpen(false);
   };
 
@@ -204,6 +152,17 @@ export function SalePage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
+  const quick = useQuickAdd(SALE_QUICK, { onCreated: (item) => addLine(item), setError });
+
+  // The invoice total must be known before the payment pair (its reference) and
+  // before the dirty flag reads the payment amount, so the totals are computed
+  // first. This is the only ordering constraint the hooks have.
+  const subtotal = draft.subtotal;
+  const enteredDiscount = nonNegativeOr(discountValue, 0);
+  const discountAmount = discountAmountFor(subtotal, discountType, discountValue);
+  const total = subtotal - discountAmount;
+  const payment = usePaymentPair(total);
+
   const createItem = useMutation(orpc.itemsCreate.mutationOptions());
   const createWithStock = useMutation(orpc.itemsCreateWithStock.mutationOptions());
   const createInvoice = useMutation(
@@ -214,13 +173,11 @@ export function SalePage() {
         // its id and remaining amount are authoritative, unlike cart-price math
         // which can drift from current item prices.
         setSavedSale(invoice);
-        setLines([]);
+        draft.reset();
         setCustomer({ id: null, name: "", needsChoice: false });
         setDiscountType("");
         setDiscountValue("");
-        setPaidNow("");
-        setPaidPercentage("");
-        paidSource.current = null;
+        payment.reset();
         setError(null);
         void Promise.all([
           queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() }),
@@ -238,16 +195,16 @@ export function SalePage() {
   // Quick-add inputs count too: a half-created item in that form is live work the
   // header's New Sale action must not silently discard.
   const quickDraft =
-    quickName.trim() !== "" ||
-    quickBarcode.trim() !== "" ||
-    quickCost.trim() !== "" ||
-    quickSell.trim() !== "";
+    quick.fields.name.trim() !== "" ||
+    quick.fields.barcode.trim() !== "" ||
+    quick.fields.cost.trim() !== "" ||
+    quick.fields.sell.trim() !== "";
   const draftDirty =
     lines.length > 0 ||
     customer.name.trim() !== "" ||
     discountType !== "" ||
     discountValue.trim() !== "" ||
-    paidNow.trim() !== "" ||
+    payment.amount.trim() !== "" ||
     quickDraft;
   const savePending = createInvoice.isPending || createItem.isPending || createWithStock.isPending;
 
@@ -267,47 +224,8 @@ export function SalePage() {
     [setDraftDirty, setSavePending],
   );
 
-  const subtotal = lines.reduce((sum, line) => sum + parseQuantityDraft(line.quantityDraft) * actualPrice(line), 0);
-  const enteredDiscount = nonNegativeOr(discountValue, 0);
-  const discountAmount = discountType === "AMOUNT" ? Math.min(enteredDiscount, subtotal) : discountType === "PERCENTAGE" ? Math.min(Math.round((subtotal * enteredDiscount) / 100), subtotal) : 0;
-  const total = subtotal - discountAmount;
-
-  // #162 — keep the pair linked as the cart total changes: untouched follows
-  // the full total, an edited percentage rescales the amount, an edited amount
-  // keeps the amount and re-derives the percentage. Recomputing from the same
-  // values is a no-op, so the effect stays convergent.
-  useEffect(() => {
-    if (total === 0) {
-      // a percentage-based payment must fall to zero when a discount zeroes the
-      // total, or the old positive amount is sent and the api rejects it
-      if (paidSource.current === "percentage") {
-        setPaidNow("0");
-        return;
-      }
-      // an amount typed while the cart was still empty (no reference yet) is
-      // the owner's to keep; an untouched pair follows the empty cart
-      if (paidSource.current === null) {
-        setPaidNow("");
-        setPaidPercentage("");
-      }
-      return;
-    }
-    if (paidSource.current === null) {
-      setPaidNow(String(total));
-      setPaidPercentage("100");
-      return;
-    }
-    if (paidSource.current === "percentage") {
-      const percentage = parseWholePercentage(paidPercentage);
-      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
-      return;
-    }
-    const amount = parseGroupedAmount(paidNow);
-    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
-  }, [total, paidNow, paidPercentage]);
-
   // Live debt preview for the pending sale — see `saleDebt` for the invariant.
-  const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, paidNow);
+  const { valid: paidInputValid, debt: totalDebt } = saleDebt(total, payment.amount);
   const liveNotice: SaleDebt = { valid: paidInputValid, debt: totalDebt };
   // While a commit is in flight the request carries the values captured at
   // click time, so keep showing those instead of recomputing from editable
@@ -331,19 +249,10 @@ export function SalePage() {
       setError(t("partyChooseExisting"));
       return;
     }
-    const paid = paidNow.trim() === "" ? undefined : parseGroupedAmount(paidNow);
-    // an invalid percentage draft clears the amount, which would otherwise take
-    // the intentional "unpaid" path and save silently
-    if (percentageDraftInvalid(paidPercentage)) {
-      setError(t("saleInvalidPaid"));
-      return;
-    }
-    if (paid === null) {
-      setError(t("saleInvalidPaid"));
-      return;
-    }
-    // an over-total amount is refused here, not by the api round-trip
-    if (paid !== undefined && paid > total) {
+    // runs the shared percentage/amount/over-total checks and maps a zero draft
+    // to «nothing paid now» (the api requires a positive initialPaid)
+    const paid = resolveInitialPaid(total, { amount: payment.amount, percentage: payment.percentage, source: payment.source });
+    if (!paid.ok) {
       setError(t("saleInvalidPaid"));
       return;
     }
@@ -357,7 +266,7 @@ export function SalePage() {
       }
     }
     for (const line of lines) {
-      if (overrideInputInvalid(line)) {
+      if (saleOverrideInvalid(line)) {
         setError(t("saleInvalidOverride"));
         return;
       }
@@ -381,7 +290,7 @@ export function SalePage() {
       // the picker keeps the picked record's id; a typed-only name stays null
       counterpartyId: customer.id === null ? undefined : customer.id,
       counterpartyName: customer.name.trim() === "" ? undefined : customer.name.trim(),
-      initialPaid: paid === 0 ? undefined : paid,
+      initialPaid: paid.paid,
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };
@@ -392,20 +301,14 @@ export function SalePage() {
 
   // what the quick-add will save into: the operator's pick, or the first
   // category the shop has. Display and submit read this one value.
-  const quickCategory = quickCategoryId || categories.data?.items[0]?.id || "";
+  const quickCategory = quick.fields.categoryId || categories.data?.items[0]?.id || "";
   /** the list has not answered yet: nothing to pick, nothing to submit */
   const quickCategoriesLoading = categories.data === undefined;
 
   function openQuick(code = "", withStock = false) {
     setQuickStockRequired(withStock);
     if (withStock) setQuickStockFocusRequest((request) => request + 1);
-    setQuickOpen(true);
-    setQuickBarcode(code);
-    setQuickCategoryId(categories.data?.items[0]?.id ?? "");
-    setQuickStock("");
-    setQuickCost("");
-    setQuickSell("");
-    setQuickName("");
+    quick.openForm({ barcode: code, categoryId: categories.data?.items[0]?.id ?? "" });
   }
 
   // "create with stock" always moves focus to the quantity, whether the form is
@@ -417,41 +320,39 @@ export function SalePage() {
 
   function quickSubmit(event: React.FormEvent) {
     event.preventDefault();
-    setError(null);
-    const categoryId = quickCategory;
-    const cost = Number(quickCost);
-    const sell = Number(quickSell);
-    // the plain path reads blank and 0 as "no opening stock"; the scan's
-    // create-with-stock path requires a positive count — the resolver owns
-    // that rule, the messages stay here
-    const stock = resolveOpeningStock(quickStock, quickStockRequired);
-    if (!categoryId) {
-      setError(t("itemsChooseCategory"));
-      return;
-    }
-    if (quickName.trim() === "" || !Number.isInteger(cost) || cost < 0 || !Number.isInteger(sell) || sell < 0) {
-      setError(t("saleQuickInvalid"));
-      return;
-    }
-    if (!stock.ok) {
-      setError(t(stock.reason === "required" ? "scanStockRequired" : "scanStockInvalid"));
-      return;
-    }
-    const input = {
-      name: quickName.trim(),
-      categoryId,
-      costPrice: cost,
-      sellingPrice: sell,
-      barcode: quickBarcode.trim() === "" ? undefined : quickBarcode.trim(),
-    };
-    if (stock.value > 0) {
-      void createWithStock.mutate(
-        { ...input, stockOnHand: stock.value },
-        { onSuccess: (item) => { addLine(item); setQuickOpen(false); }, onError: (err) => setError(tError(err.message)) },
-      );
-    } else {
-      void createItem.mutate(input, { onSuccess: (item) => { addLine(item); setQuickOpen(false); }, onError: (err) => setError(tError(err.message)) });
-    }
+    void quick.submit(async (fields) => {
+      const categoryId = quickCategory;
+      const cost = Number(fields.cost);
+      const sell = Number(fields.sell);
+      // the plain path reads blank and 0 as "no opening stock"; the scan's
+      // create-with-stock path requires a positive count — the resolver owns
+      // that rule, the messages stay here
+      const stock = resolveOpeningStock(fields.stock, quickStockRequired);
+      if (!categoryId) return { ok: false, error: t("itemsChooseCategory") };
+      if (fields.name.trim() === "" || !Number.isInteger(cost) || cost < 0 || !Number.isInteger(sell) || sell < 0) {
+        return { ok: false, error: t("saleQuickInvalid") };
+      }
+      if (!stock.ok) {
+        return { ok: false, error: t(stock.reason === "required" ? "scanStockRequired" : "scanStockInvalid") };
+      }
+      const input = {
+        name: fields.name.trim(),
+        categoryId,
+        costPrice: cost,
+        sellingPrice: sell,
+        barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
+      };
+      return await new Promise<QuickAddOutcome>((resolve) => {
+        if (stock.value > 0) {
+          createWithStock.mutate(
+            { ...input, stockOnHand: stock.value },
+            { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
+          );
+          return;
+        }
+        createItem.mutate(input, { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) });
+      });
+    });
   }
 
   if (savedSale !== null) {
@@ -498,17 +399,13 @@ export function SalePage() {
           />
           <AmountPercentageInput
             referenceTotal={total > 0 ? total : null}
-            value={{ amount: paidNow, percentage: paidPercentage }}
-            onChange={(next, edited) => {
-              paidSource.current = edited;
-              setPaidNow(next.amount);
-              setPaidPercentage(next.percentage);
-            }}
+            value={{ amount: payment.amount, percentage: payment.percentage }}
+            onChange={payment.onChange}
             amountLabel={t("salePaid")}
             amountTestId="sale-paid"
             percentageTestId="sale-paid-percentage"
             referenceTestId="sale-paid-reference"
-            percentageInvalid={percentageDraftInvalid(paidPercentage)}
+            percentageInvalid={percentageDraftInvalid(payment.percentage)}
             disabled={createInvoice.isPending}
           />
         </div>
@@ -531,16 +428,16 @@ export function SalePage() {
 
           {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="sale-error" role="alert">{error}</p>}
 
-          {quickOpen && (
+          {quick.open && (
             <form className="m-4 grid gap-3 rounded bg-accent p-3" onSubmit={quickSubmit} data-testid="sale-quick-form">
               <div className="grid grid-cols-2 gap-3">
-                <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" value={quickName} onChange={(event) => setQuickName(event.target.value)} required data-testid="sale-quick-name" /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" value={quickBarcode} onChange={(event) => setQuickBarcode(event.target.value)} data-testid="sale-quick-barcode" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickName")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" value={quick.fields.name} onChange={(event) => quick.setField("name", event.target.value)} required data-testid="sale-quick-name" /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("saleQuickBarcode")}<input dir="ltr" className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" value={quick.fields.barcode} onChange={(event) => quick.setField("barcode", event.target.value)} data-testid="sale-quick-barcode" /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {t("itemsCategory")}
                   <Select
                     value={quickCategory}
-                    onValueChange={(value) => setQuickCategoryId(value ?? "")}
+                    onValueChange={(value) => quick.setField("categoryId", value ?? "")}
                     name="quickCategory"
                     disabled={quickCategoriesLoading}
                     items={categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []}
@@ -553,14 +450,14 @@ export function SalePage() {
                     </SelectContent>
                   </Select>
                 </label>
-                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quickCost} onChange={(event) => setQuickCost(event.target.value)} required /></label>
-                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSell} onChange={(event) => setQuickSell(event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsCost")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickCost" autoComplete="off" inputMode="numeric" value={quick.fields.cost} onChange={(event) => quick.setField("cost", event.target.value)} required /></label>
+                <label className="grid gap-1 text-sm font-medium">{t("itemsSell")}<input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sell} onChange={(event) => quick.setField("sell", event.target.value)} required /></label>
                 <label className="grid gap-1 text-sm font-medium">
                   {quickStockRequired ? t("saleQuickStockRequired") : t("saleQuickStock")}
-                  <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quickStock} onChange={(event) => setQuickStock(event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
+                  <input ref={quickStockRef} className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickStock" autoComplete="off" inputMode="numeric" value={quick.fields.stock} onChange={(event) => quick.setField("stock", event.target.value)} aria-required={quickStockRequired || undefined} data-testid="sale-quick-stock" />
                 </label>
               </div>
-              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => setQuickOpen(false)}>{t("dialogClose")}</Button></div>
+              <div className="flex gap-2"><Button type="submit" disabled={createItem.isPending || createWithStock.isPending || createInvoice.isPending}>{t("saleQuickSave")}</Button><Button type="button" variant="outline" onClick={() => quick.close()}>{t("dialogClose")}</Button></div>
             </form>
           )}
 
@@ -581,7 +478,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line, index) => { const price = actualPrice(line); const quantity = parseQuantityDraft(line.quantityDraft); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, quantityDraft: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toOverrideType(value ?? ""); if (next === line.overrideType) return; setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideType: next, overrideValue: "" } : entry)); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => setLines((current) => current.map((entry, i) => i === index ? { ...entry, overrideValue: event.target.value } : entry))} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const next = lines.filter((_, i) => i !== index); setLines(next); if (next.length === 0) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toOverrideType(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceDetail, Item } from "@dokan/contracts";
@@ -10,13 +10,15 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { percentageDraftInvalid } from "@/lib/amount-parse";
+import { lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
 
@@ -27,9 +29,27 @@ import { orpc } from "../lib/rpc";
  * Ticket 29 — purchase intake (/purchase): multi-line PURCHASE invoices with
  * an inline quick-add, then the deferred-linking proposal panel that attributes
  * earlier uninvoiced stock (stock_links) to the saved invoice.
+ *
+ * #146 — the draft mechanics (line list, quantity parser, totals, the
+ * amount ⇄ percentage payment pair, the quick-add flow) come from the shared
+ * invoice-draft module; this page adds only the fields a purchase has.
  */
 
-type DraftLine = { item: Item; quantity: number; unitCost: number };
+type DraftLine = PurchaseDraftLine;
+
+/** The per-kind draft rules; module scope keeps the config identity stable. */
+const PURCHASE_DRAFT = {
+  emptyLine: (item: Item): DraftLine => ({ item, quantityDraft: "1", unitCost: item.costPrice }),
+  unitPrice: purchaseUnitPrice,
+};
+
+/** The quick-add field bag; purchase keeps what is typed across a close. */
+type PurchaseQuickFields = { name: string; barcode: string; categoryId: string; sellPrice: string; threshold: string; qty: string; unitCost: string };
+
+const PURCHASE_QUICK = {
+  empty: (): PurchaseQuickFields => ({ name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" }),
+  resetOnOpen: false,
+};
 
 export function PurchasePage() {
   const { t } = useTranslation();
@@ -37,85 +57,50 @@ export function PurchasePage() {
   const categories = useQuery(orpc.categoriesList.queryOptions());
 
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [lines, setLines] = useState<DraftLine[]>([]);
   const [supplier, setSupplier] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
   const [notes, setNotes] = useState("");
-  const [paidNow, setPaidNow] = useState("");
-  // #162 — the initial payment is a share of the cart total (amount ⇄ percentage)
-  const [paidPercentage, setPaidPercentage] = useState("");
-  const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedInvoice, setSavedInvoice] = useState<InvoiceDetail | null>(null);
 
-  // quick-add mini-form state: item fields + the line it lands as
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [quickName, setQuickName] = useState("");
-  const [quickBarcode, setQuickBarcode] = useState("");
-  const [quickCategoryId, setQuickCategoryId] = useState("");
-  const [quickSellPrice, setQuickSellPrice] = useState("");
-  const [quickThreshold, setQuickThreshold] = useState("");
-  const [quickQty, setQuickQty] = useState("1");
-  const [quickUnitCost, setQuickUnitCost] = useState("");
+  const draft = useInvoiceDraft(PURCHASE_DRAFT);
+  const { lines } = draft;
 
   const addLine = (item: Item) => {
-    setLines((current) => {
-      const existing = current.find((line) => line.item.id === item.id);
-      if (existing) {
-        return current.map((line) => (line.item.id === item.id ? { ...line, quantity: line.quantity + 1 } : line));
-      }
-      return [...current, { item, quantity: 1, unitCost: item.costPrice }];
-    });
+    draft.addItem(item);
     setPickerOpen(false);
   };
 
   const createItem = useMutation(orpc.itemsCreate.mutationOptions());
 
+  const total = draft.subtotal;
+  // #162 — the initial payment is a share of the cart total; the shared pair
+  // keeps amount and percentage linked as the total changes.
+  const payment = usePaymentPair(total);
+
   const createInvoice = useMutation(
     orpc.invoicesCreate.mutationOptions({
       onSuccess: (invoice) => {
         setSavedInvoice(invoice);
-        setLines([]);
+        draft.reset();
         setSupplier({ id: null, name: "", needsChoice: false });
         setNotes("");
-        setPaidNow("");
-        setPaidPercentage("");
-        paidSource.current = null;
+        payment.reset();
         void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
       },
       onError: (err) => setError(tError(err.message)),
     }),
   );
 
-  const total = lines.reduce((sum, line) => sum + line.quantity * line.unitCost, 0);
-
-  // #162 — keep the pair linked as the cart total changes (same rule as sale)
-  useEffect(() => {
-    if (total === 0) {
-      // a percentage-based payment falls to zero with the total; a typed amount
-      // survives; an untouched pair follows the empty cart
-      if (paidSource.current === "percentage") {
-        setPaidNow("0");
-        return;
-      }
-      if (paidSource.current === null) {
-        setPaidNow("");
-        setPaidPercentage("");
-      }
-      return;
-    }
-    if (paidSource.current === null) {
-      setPaidNow(String(total));
-      setPaidPercentage("100");
-      return;
-    }
-    if (paidSource.current === "percentage") {
-      const percentage = parseWholePercentage(paidPercentage);
-      if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
-      return;
-    }
-    const amount = parseGroupedAmount(paidNow);
-    setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
-  }, [total, paidNow, paidPercentage]);
+  const quick = useQuickAdd(PURCHASE_QUICK, {
+    onCreated: (item, fields) => {
+      // straight back to the line: the purchase line itself is the stock event,
+      // so the freshly created item lands as a line immediately, replacing any
+      // line the same item already had
+      draft.remove(item.id);
+      draft.addItem(item, { quantityDraft: String(Number(fields.qty)), unitCost: Number(fields.unitCost) });
+    },
+    setError,
+  });
 
   function submit() {
     setError(null);
@@ -129,20 +114,21 @@ export function PurchasePage() {
       setError(t("partyChooseExisting"));
       return;
     }
-    const paid = paidNow.trim() === "" ? undefined : parseGroupedAmount(paidNow);
-    // an invalid percentage draft clears the amount, which would otherwise take
-    // the intentional "unpaid" path and save silently
-    if (percentageDraftInvalid(paidPercentage)) {
+    // runs the shared percentage/amount/over-total checks and maps a zero draft
+    // to «nothing paid now» (the api requires a positive initialPaid)
+    const paid = resolveInitialPaid(total, { amount: payment.amount, percentage: payment.percentage, source: payment.source });
+    if (!paid.ok) {
       setError(t("purchasesInvalidPaid"));
       return;
     }
-    if (paid === null) {
-      setError(t("purchasesInvalidPaid"));
-      return;
-    }
-    if (paid !== undefined && paid > total) {
-      setError(t("purchasesInvalidPaid"));
-      return;
+    // #146 — the quantity field is the shared draft now, so an unusable draft is
+    // refused instead of silently keeping a stale quantity (the old
+    // `Number(event.target.value)` handler dropped the keystroke)
+    for (const line of lines) {
+      if (quantityDraftInvalid(line.quantityDraft)) {
+        setError(t("purchasesInvalidQuantity"));
+        return;
+      }
     }
     void createInvoice.mutate({
       kind: "PURCHASE",
@@ -152,52 +138,32 @@ export function PurchasePage() {
       notes: notes.trim() === "" ? undefined : notes.trim(),
       // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
       // percentage that rounds to 0) means "nothing paid now"
-      initialPaid: paid === 0 ? undefined : paid,
-      lines: lines.map((line) => ({ itemId: line.item.id, quantity: line.quantity, unitPrice: line.unitCost })),
+      initialPaid: paid.paid,
+      lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost })),
     });
   }
 
   function quickSubmit() {
-    setError(null);
-    if (quickCategoryId === "") {
-      setError(t("itemsChooseCategory"));
-      return;
-    }
-    const qty = Number(quickQty);
-    const unitCost = Number(quickUnitCost);
-    if (!Number.isInteger(qty) || qty < 1) {
-      setError(t("purchasesInvalidQuantity"));
-      return;
-    }
-    if (!Number.isInteger(unitCost) || unitCost <= 0) {
-      setError(t("purchasesInvalidCost"));
-      return;
-    }
-    void createItem.mutate(
-      {
-        name: quickName,
-        categoryId: quickCategoryId,
-        costPrice: unitCost,
-        sellingPrice: quickSellPrice === "" ? unitCost : Number(quickSellPrice),
-        lowStockThreshold: quickThreshold === "" ? undefined : Number(quickThreshold),
-        barcode: quickBarcode.trim() === "" ? undefined : quickBarcode.trim(),
-      },
-      {
-        // straight back to the line: the purchase line itself is the stock
-        // event, so the freshly created item lands as a line immediately
-        onSuccess: (item) => {
-          setLines((current) => [...current.filter((line) => line.item.id !== item.id), { item, quantity: qty, unitCost }]);
-          setQuickOpen(false);
-          setQuickName("");
-          setQuickBarcode("");
-          setQuickSellPrice("");
-          setQuickThreshold("");
-          setQuickQty("1");
-          setQuickUnitCost("");
-        },
-        onError: (err) => setError(tError(err.message)),
-      },
-    );
+    void quick.submit(async (fields) => {
+      if (fields.categoryId === "") return { ok: false, error: t("itemsChooseCategory") };
+      const qty = Number(fields.qty);
+      const unitCost = Number(fields.unitCost);
+      if (!Number.isInteger(qty) || qty < 1) return { ok: false, error: t("purchasesInvalidQuantity") };
+      if (!Number.isInteger(unitCost) || unitCost <= 0) return { ok: false, error: t("purchasesInvalidCost") };
+      return await new Promise<QuickAddOutcome>((resolve) => {
+        createItem.mutate(
+          {
+            name: fields.name,
+            categoryId: fields.categoryId,
+            costPrice: unitCost,
+            sellingPrice: fields.sellPrice === "" ? unitCost : Number(fields.sellPrice),
+            lowStockThreshold: fields.threshold === "" ? undefined : Number(fields.threshold),
+            barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
+          },
+          { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
+        );
+      });
+    });
   }
 
   return (
@@ -252,17 +218,13 @@ export function PurchasePage() {
               </label>
               <AmountPercentageInput
                 referenceTotal={total > 0 ? total : null}
-                value={{ amount: paidNow, percentage: paidPercentage }}
-                onChange={(next, edited) => {
-                  paidSource.current = edited;
-                  setPaidNow(next.amount);
-                  setPaidPercentage(next.percentage);
-                }}
+                value={{ amount: payment.amount, percentage: payment.percentage }}
+                onChange={payment.onChange}
                 amountLabel={t("purchasesPaidNow")}
                 amountTestId="purchase-paid"
                 percentageTestId="purchase-paid-percentage"
                 referenceTestId="purchase-paid-reference"
-                percentageInvalid={percentageDraftInvalid(paidPercentage)}
+                percentageInvalid={percentageDraftInvalid(payment.percentage)}
                 disabled={createInvoice.isPending}
               />
             </div>
@@ -278,14 +240,14 @@ export function PurchasePage() {
                   {t("purchasesAddItem")}
                 </Button>
               )}
-              <Button variant="outline" data-testid="purchase-toggle-quick" aria-expanded={quickOpen} onClick={() => setQuickOpen((open) => !open)}>
+              <Button variant="outline" data-testid="purchase-toggle-quick" aria-expanded={quick.open} onClick={() => quick.toggle()}>
                 {t("purchasesQuickAddBtn")}
               </Button>
             </div>
 
             {lines.length === 0 && error && <p className="mx-4 mt-3 rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="purchase-error" role="alert">{error}</p>}
 
-            {quickOpen && (
+            {quick.open && (
               <form
                 className="m-4 grid gap-3 rounded bg-accent p-3"
                 // SAFETY: preventDefault keeps the SPA from native-posting;
@@ -298,17 +260,17 @@ export function PurchasePage() {
                 <div className="grid grid-cols-2 gap-3">
                   <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickName")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" required value={quickName} onChange={(e) => setQuickName(e.target.value)} data-testid="quick-name" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickName" autoComplete="off" required value={quick.fields.name} onChange={(e) => quick.setField("name", e.target.value)} data-testid="quick-name" />
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickBarcode")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" dir="ltr" value={quickBarcode} onChange={(e) => setQuickBarcode(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickBarcode" autoComplete="off" dir="ltr" value={quick.fields.barcode} onChange={(e) => quick.setField("barcode", e.target.value)} />
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesQuickCategory")}
                     <Select
-                      value={quickCategoryId}
-                      onValueChange={(value) => setQuickCategoryId(value ?? "")}
+                      value={quick.fields.categoryId}
+                      onValueChange={(value) => quick.setField("categoryId", value ?? "")}
                       items={[
                         { value: "", label: "—" },
                         ...(categories.data?.items.map((category) => ({ value: category.id, label: category.name })) ?? []),
@@ -329,19 +291,19 @@ export function PurchasePage() {
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("itemsSell")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quickSellPrice} onChange={(e) => setQuickSellPrice(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickSell" autoComplete="off" inputMode="numeric" value={quick.fields.sellPrice} onChange={(e) => quick.setField("sellPrice", e.target.value)} />
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("itemsThreshold")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickThreshold" autoComplete="off" inputMode="numeric" value={quickThreshold} onChange={(e) => setQuickThreshold(e.target.value)} />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickThreshold" autoComplete="off" inputMode="numeric" value={quick.fields.threshold} onChange={(e) => quick.setField("threshold", e.target.value)} />
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesLineQty")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickQty" autoComplete="off" required inputMode="numeric" value={quickQty} onChange={(e) => setQuickQty(e.target.value)} data-testid="quick-qty" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickQty" autoComplete="off" required inputMode="numeric" value={quick.fields.qty} onChange={(e) => quick.setField("qty", e.target.value)} data-testid="quick-qty" />
                   </label>
                   <label className="grid gap-1 text-sm font-medium">
                     {t("purchasesLineCost")}
-                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quickUnitCost} onChange={(e) => setQuickUnitCost(e.target.value)} data-testid="quick-cost" />
+                    <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quick.fields.unitCost} onChange={(e) => quick.setField("unitCost", e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
                 <Button type="submit" disabled={createItem.isPending}>
@@ -376,7 +338,7 @@ export function PurchasePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {lines.map((line, index) => (
+                    {lines.map((line) => (
                       <tr key={line.item.id} className="border-b last:border-0">
                         <td className="p-2">{line.item.name}</td>
                         <td className="p-2">
@@ -385,13 +347,8 @@ export function PurchasePage() {
                             name={`quantity-${line.item.id}`}
                             autoComplete="off"
                             inputMode="numeric"
-                            value={String(line.quantity)}
-                            onChange={(e) => {
-                              const parsed = Number(e.target.value);
-                              if (Number.isInteger(parsed) && parsed >= 1) {
-                                setLines((current) => current.map((l, i) => (i === index ? { ...l, quantity: parsed } : l)));
-                              }
-                            }}
+                            value={line.quantityDraft}
+                            onChange={(e) => draft.setQuantity(line.item.id, e.target.value)}
                             aria-label={`${line.item.name}: ${t("purchasesLineQty")}`}
                           />
                         </td>
@@ -402,18 +359,13 @@ export function PurchasePage() {
                             autoComplete="off"
                             inputMode="numeric"
                             value={String(line.unitCost)}
-                            onChange={(e) => {
-                              const parsed = Number(e.target.value);
-                              if (Number.isInteger(parsed) && parsed >= 0) {
-                                setLines((current) => current.map((l, i) => (i === index ? { ...l, unitCost: parsed } : l)));
-                              }
-                            }}
+                            onChange={(e) => draft.patch(line.item.id, { unitCost: nextUnitCost(e.target.value, line.unitCost) })}
                             aria-label={`${line.item.name}: ${t("purchasesLineCost")}`}
                           />
                         </td>
-                        <td className="p-2">{line.quantity * line.unitCost}</td>
+                        <td className="p-2">{lineQuantity(line) * line.unitCost}</td>
                         <td className="p-2">
-                          <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>
+                          <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => draft.remove(line.item.id)}>
                             <X size={16} aria-hidden="true" />
                           </button>
                         </td>

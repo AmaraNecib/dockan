@@ -40,7 +40,7 @@ let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
 let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 /** the picker's loaded supplier list and the last invoice input (issue 120) */
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
-let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number } | null = null;
+let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number; notes?: string; lines?: Array<{ itemId: string; quantity: number; unitPrice: number }> } | null = null;
 /** clears the recorder without narrowing the module variable at the call site */
 function clearPurchaseRecorder() {
   lastPurchaseInput = null;
@@ -652,6 +652,123 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
     await save(container);
     expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
     expect(lastPurchaseInput).toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+});
+
+/**
+ * #146 — the purchase quantity field is the shared quantity *draft* now, so it
+ * behaves exactly like sale's: a cleared or unreadable draft stays visible and
+ * resolves to zero, and submit refuses it instead of silently keeping the
+ * previous number (the drift this ticket fixes).
+ */
+describe("PurchasePage quantity draft (#146)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    document.body.innerHTML = "";
+    lastPurchaseInput = null;
+    purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+  });
+
+  const setValue = (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  /** mount the page and land one purchase line through the quick-add */
+  async function mountWithLine(qty: string, cost: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const quickForm = container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]')!;
+    await act(async () => {
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, "منتج");
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, qty);
+      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await act(async () => {
+      quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    return { container, root };
+  }
+
+  const quantityField = (container: HTMLElement) => container.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+  const totalText = (container: HTMLElement) => container.querySelector('[data-testid="purchase-total"]')?.textContent ?? "";
+  const save = async (container: HTMLElement) => {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  };
+
+  it("keeps a cleared draft cleared and refuses to save it, instead of silently keeping the stale quantity", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(quantityField(container).value).toBe("2");
+    expect(totalText(container)).toContain("2400");
+
+    // the drift: the field must stay empty, exactly like sale — the old
+    // `Number(event.target.value)` handler snapped it back to "2"
+    await act(async () => setValue(quantityField(container), ""));
+    expect(quantityField(container).value).toBe("");
+    // the line is still there and resolves to zero, like sale
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
+    expect(totalText(container)).toContain("0");
+
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')?.textContent).toContain("أدخل كمية صحيحة");
+    expect(lastPurchaseInput).toBeNull();
+
+    // typing a fresh value after the cleared draft still works
+    await act(async () => setValue(quantityField(container), "3"));
+    expect(quantityField(container).value).toBe("3");
+    expect(totalText(container)).toContain("3600");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("keeps an unreadable or zero draft visible and resolves it to zero, exactly like sale", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    for (const draft of ["abc", "2.5", "-3", "0"]) {
+      await act(async () => setValue(quantityField(container), draft));
+      expect(quantityField(container).value).toBe(draft);
+      expect(totalText(container)).toContain("0");
+      await save(container);
+      expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+      expect(lastPurchaseInput).toBeNull();
+    }
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("sends a valid draft as a whole number and keeps the per-line unitPrice (money math pinned)", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(totalText(container)).toContain("2400");
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-1", quantity: 2, unitPrice: 1200 }]);
     await act(async () => root.unmount());
     container.remove();
   });

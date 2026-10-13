@@ -61,7 +61,24 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await expect(page.getByTestId("purchase-lines")).toContainText(filterName);
 
   // quantities: battery ×2 @1200, filter ×3 @900 → total 5100
-  await page.getByTestId("purchase-lines").getByLabel(`${batteryName}: ${tQty}`).fill("2");
+  const batteryQty = page.getByTestId("purchase-lines").getByLabel(`${batteryName}: ${tQty}`);
+  await batteryQty.fill("2");
+  await expect(batteryQty).toHaveValue("2");
+
+  // #146 drift fix: the quantity field is a draft now, so clearing it must STAY
+  // cleared (purchase used to silently keep the previous number) and saving an
+  // unusable draft is refused instead of billing a stale quantity.
+  await batteryQty.fill("");
+  await expect(batteryQty).toHaveValue("");
+  await page.getByTestId("purchase-save").click();
+  await expect(page.getByTestId("purchase-error")).toContainText("أدخل كمية صحيحة");
+  await expect(batteryQty).toHaveValue("");
+  await expect(page.getByTestId("purchase-saved")).toHaveCount(0);
+
+  // a fresh value after the cleared draft still works, and the total is intact
+  await batteryQty.fill("2");
+  await expect(batteryQty).toHaveValue("2");
+  await expect(page.getByTestId("purchase-total")).toContainText("5100");
 
   await page.getByTestId("purchase-save").click();
   await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");

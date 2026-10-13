@@ -477,7 +477,7 @@ export const partyListOutputSchema = z.object({ items: z.array(partyListItemSche
 export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string().min(1) });
 
 // ---------------------------------------------------------------------------
-// Supplier account (issue 161): one signed ledger per supplier (ADR-0008)
+// Supplier account (issue 161): one signed ledger per supplier (ADR-0009)
 // ---------------------------------------------------------------------------
 
 /** A supplier account entry. Purchase = +charge, payment = −paid,

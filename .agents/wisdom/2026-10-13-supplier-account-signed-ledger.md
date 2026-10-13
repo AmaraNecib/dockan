@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13 · **Ticket:** 161 (supplier half of 164) · **Area:** apps/api/src/lib/supplier-ledger.ts, apps/api/src/rpc/router.ts, apps/api/src/store/drizzle-store.ts
 
-ADR-0008 makes one signed account per supplier the single money primitive. The
+ADR-0009 makes one signed account per supplier the single money primitive. The
 implementation choices worth carrying forward:
 
 1. **Keep the invoice cache, but derive its value from the entries.** The

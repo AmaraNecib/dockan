@@ -2,7 +2,7 @@
 
 Closes the supplier half of #164. Base: `origin/develop` @ `c873e16`. Tier: **High-assurance**.
 
-## Model (ADR-0008)
+## Model (ADR-0009)
 
 One **signed account per supplier**. Every money movement is one append-only entry:
 

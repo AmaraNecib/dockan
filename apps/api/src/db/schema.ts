@@ -219,7 +219,7 @@ export const stockLinks = sqliteTable("stock_links", {
 });
 
 // ---------------------------------------------------------------------------
-// Supplier account (issue 161): one signed ledger per supplier (ADR-0008)
+// Supplier account (issue 161): one signed ledger per supplier (ADR-0009)
 // ---------------------------------------------------------------------------
 
 /** Append-only supplier account entries. `amount` is always positive; the kind

@@ -1963,28 +1963,24 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
   });
 
-  it("keeps a supplierId retry on the signature-holding sibling (Greptile round 3)", async () => {
-    const name = `مورد مطابق معرف-${Date.now()}`;
-    const a = await client.suppliersCreate({ name });
-    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
-    const payload = { occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 700 }] };
-    const first = await client.suppliersOpeningBalances(payload);
-    const originalId = first.accounts[0]!.supplierId;
-    const otherId = originalId === a.id ? b.id : a.id;
+  it("accepts an explicit supplierId for a same-name sibling with no matching entry (Greptile round 4)", async () => {
+    const name = `مورد توأم-${Date.now()}`;
+    const a = await client.suppliersCreate({ name, phone: "0550111111" });
+    const b = await client.suppliersCreate({ name, phone: "0550222222" });
 
-    // the other folded-match gains more entries, so a client tie-break would
-    // resolve the typed name to it and send its supplierId
-    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 50 });
-    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 60 });
+    // A already holds an identical signature
+    await client.suppliersAdjust({ supplierId: a.id, direction: "WE_OWE", amount: 700, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
 
-    // the server must still find the signature on the original sibling and never
-    // post a second 700 to the client-chosen one
-    await expect(
-      client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ supplierId: otherId, direction: "WE_OWE", amount: 700, confirmExisting: true }] }),
-    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
-
-    expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
-    expect((await client.suppliersGet({ id: originalId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+    // B is the user's explicit choice: its opening balance must be accepted, not
+    // replaced by A's id (which would refuse the whole batch as a duplicate)
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: b.id, direction: "WE_OWE", amount: 700, confirmExisting: true }],
+    });
+    expect(result.created).toBe(1);
+    expect((await client.suppliersGet({ id: b.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+    expect((await client.suppliersGet({ id: a.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
   });
 
   it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {

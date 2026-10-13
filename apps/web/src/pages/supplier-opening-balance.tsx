@@ -62,6 +62,10 @@ export function SupplierOpeningBalancePage() {
   const [amountFocused, setAmountFocused] = useState(false);
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
+  // Greptile round 4 — a supplier row that started life as a typed name is sent
+  // as that NAME, not as a pre-resolved id, so the server can resolve it
+  // consistently (and an explicit user-picked supplierId is never re-targeted).
+  const [namedTargets, setNamedTargets] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
@@ -146,7 +150,9 @@ export function SupplierOpeningBalancePage() {
     // error instead of being silently overwritten. The inline draft is left for
     // submit/save to flag as a conflict.
     if (openingRowStatus(drafts[resolved.supplierId]).status !== "untouched") return;
+    const typedName = newName.trim();
     setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
+    setNamedTargets((current) => ({ ...current, [resolved.supplierId]: typedName }));
     setNewName("");
     setNewAmount("");
   }, [suppliers, newName, newAmount, newDirection, nameFocused, amountFocused, drafts]);
@@ -170,16 +176,16 @@ export function SupplierOpeningBalancePage() {
         occurredAt,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
         rows: [
-          ...filledExisting.map((row) => ({
-            supplierId: row.supplier.id,
-            direction: row.direction,
-            amount: row.state.amount,
-            confirmExisting: confirmExisting || undefined,
-          })),
-          // a name that raced into existence is sent under the existing supplier's
-          // id if the adoption effect has not moved it yet (a same-tick save)
+          ...filledExisting.map((row) => {
+            const adoptedName = namedTargets[row.supplier.id];
+            const base = { direction: row.direction, amount: row.state.amount, confirmExisting: confirmExisting || undefined };
+            // a row that came from a typed name keeps that name in the request
+            return adoptedName !== undefined ? { ...base, newSupplierName: adoptedName } : { ...base, supplierId: row.supplier.id };
+          }),
+          // a typed name the adoption effect has not moved yet (a same-tick save)
+          // is sent as the name, never a pre-resolved id
           ...(resolved !== undefined
-            ? [{ supplierId: resolved.supplierId, direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
+            ? [{ newSupplierName: newName.trim(), direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
             : newRow.status === "filled"
               ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount, confirmExisting: confirmExisting || undefined }]
               : []),

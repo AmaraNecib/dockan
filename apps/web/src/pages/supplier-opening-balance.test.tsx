@@ -375,9 +375,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-confirm-save");
     });
 
-    // the confirmed save posts under the existing id, not a silent no-op
+    // the confirmed save posts the typed name, not a pre-resolved id
     expect(captured?.rows).toHaveLength(1);
-    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-race", direction: "THEY_OWE", amount: 640, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: name, direction: "THEY_OWE", amount: 640, confirmExisting: true });
   });
 
   it("adopts a name that raced in before the save is pressed, so the save is never a dead end (Greptile round 2)", async () => {
@@ -411,7 +411,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(1);
-    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-pre", direction: "WE_OWE", amount: 250, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: name, direction: "WE_OWE", amount: 250, confirmExisting: true });
   });
 
   it("does not cut off an owner still typing a new name that starts like an existing one (Greptile round 2)", async () => {
@@ -495,7 +495,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
-    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-1", direction: "WE_OWE", amount: 500, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات", direction: "WE_OWE", amount: 500, confirmExisting: true });
   });
 
   it("blocks a typed name whose supplier already has a filled row instead of double-posting (Greptile round 2)", async () => {

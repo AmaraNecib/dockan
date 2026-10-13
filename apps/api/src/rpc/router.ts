@@ -986,14 +986,17 @@ export function createRpcRouter(deps: RpcDeps) {
           // batch that used newSupplierName must resolve to the supplier the
           // first attempt created. Otherwise createParty mints a second id and
           // the signature dedup runs under it, double-posting the same balance.
-          // Built for every batch: a client that resolved a folded name to one
-          // sibling must be checked against all siblings (round 3, finding 2).
+          // Built only when a row names a supplier: an explicit supplierId is the
+          // user's own choice and is never re-targeted (round 4).
+          const wantsNewNames = input.rows.some((row) => row.newSupplierName !== undefined);
           const suppliersByName = new Map<string, NamedSupplierCandidate[]>();
-          for (const party of await tx.listParties("supplier")) {
-            const key = normalizeTextKey(party.name);
-            const candidates = suppliersByName.get(key) ?? [];
-            candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
-            suppliersByName.set(key, candidates);
+          if (wantsNewNames) {
+            for (const party of await tx.listParties("supplier")) {
+              const key = normalizeTextKey(party.name);
+              const candidates = suppliersByName.get(key) ?? [];
+              candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
+              suppliersByName.set(key, candidates);
+            }
           }
           const candidatesForName = (name: string): NamedSupplierCandidate[] => suppliersByName.get(normalizeTextKey(name)) ?? [];
           // the entry-count/lowest-id tie-break, used only when no candidate
@@ -1019,14 +1022,9 @@ export function createRpcRouter(deps: RpcDeps) {
             if (row.supplierId !== undefined) {
               const party = await tx.getParty("supplier", row.supplierId);
               if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
-              // the client may have resolved a typed name to one folded sibling; if
-              // another sibling already holds the signature, keep the retry on the
-              // original account so it is reported as a duplicate, not re-posted
-              const holder = await signatureHolder(candidatesForName(party.name).filter((candidate) => candidate.id !== party.id), row);
-              if (holder !== undefined) {
-                plan.push({ supplierId: holder.id, name: holder.name, direction: row.direction, amount: row.amount });
-                continue;
-              }
+              // an explicit supplierId is the user's choice, even when another
+              // supplier folds to the same name: never replace it with a sibling
+              // (round 4 — same-name suppliers must not block each other)
               const existing = await tx.listSupplierEntries(party.id);
               if (existing.length > 0 && row.confirmExisting !== true) {
                 // same resend exemption as the newSupplierName branch: an exact

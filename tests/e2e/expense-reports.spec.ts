@@ -118,8 +118,8 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText(backdatedNote);
 
-  // an impossible bound is refused by name and drops out of the window instead
-  // of silently widening it
+  // an impossible bound is refused by name and is not applied: the window keeps
+  // its last bound rather than silently widening to everything
   await customFrom.fill("31/02/2020 00:00");
   await customFrom.blur();
   await expect(page.getByTestId("expense-custom-from-error")).toContainText("01/10/2026 00:34");

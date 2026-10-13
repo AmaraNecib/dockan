@@ -9,6 +9,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
+import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 /**
@@ -276,7 +278,7 @@ describe("ReportsPage custom bounds (issue #123)", () => {
     const to = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-to"]');
     expect(from?.type).toBe("text");
     expect(to?.type).toBe("text");
-    expect(from?.getAttribute("placeholder")).toBe("01/10/2026 00:34");
+    expect(from?.getAttribute("placeholder")).toBe(i18n.t("expenseDateHint"));
 
     await page.unmount();
   });
@@ -294,9 +296,12 @@ describe("ReportsPage custom bounds (issue #123)", () => {
     await page.unmount();
   });
 
-  it("refuses an impossible bound visibly and omits it from the query", async () => {
+  it("refuses an impossible bound visibly and keeps the last applied window", async () => {
     const page = await mountPage(queryClient);
     await openCustomRange(page);
+
+    await page.type("report-custom-from", "01/01/2020 00:00");
+    expect(await page.waitFor(() => lastReportInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
 
     await page.type("report-custom-from", "31/02/2020 00:00");
     const from = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-from"]')!;
@@ -308,23 +313,30 @@ describe("ReportsPage custom bounds (issue #123)", () => {
     expect(from.getAttribute("aria-invalid")).toBe("true");
     const error = page.container().querySelector<HTMLElement>('[data-testid="report-custom-from-error"]');
     expect(error?.getAttribute("role")).toBe("alert");
-    expect(error?.textContent).toContain("01/10/2026 00:34");
-    // the unreadable bound drops out rather than reaching the api
-    expect(lastReportInput?.customFrom).toBeUndefined();
+    expect(error?.textContent).toContain(i18n.t("expenseDateInvalid"));
+    // the impossible value is not applied; the window keeps its last bound
+    expect(lastReportInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    // correcting the value clears the refusal and applies the new bound
+    await page.type("report-custom-from", "02/01/2020 00:00");
+    expect(from.getAttribute("aria-invalid")).toBeNull();
+    expect(page.container().querySelector('[data-testid="report-custom-from-error"]')).toBeNull();
+    expect(await page.waitFor(() => lastReportInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
 
     await page.unmount();
   });
 
-  it("fills a bound with now from «الآن»", async () => {
+  it("fills the upper bound with now from «الآن» and sends it", async () => {
     const page = await mountPage(queryClient);
     await openCustomRange(page);
 
-    await page.type("report-custom-from", "15/01/2026 08:05");
-    await page.click("report-custom-from-now");
+    await page.type("report-custom-to", "15/01/2026 08:05");
+    await page.click("report-custom-to-now");
 
-    const value = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-from"]')!.value;
+    const value = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-to"]')!.value;
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
+    expect(await page.waitFor(() => lastReportInput?.customTo !== undefined)).toBe(true);
 
     await page.unmount();
   });

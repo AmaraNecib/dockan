@@ -888,7 +888,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     await ui.unmount();
   });
 
-  it("refuses an impossible bound visibly and never sends it", async () => {
+  it("refuses an impossible bound visibly and keeps the last applied window", async () => {
     const ui = await mountPage(queryClient);
     await openCustomRange(ui);
 
@@ -908,9 +908,30 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     expect(from.getAttribute("aria-invalid")).toBe("true");
     const error = ui.query("expense-custom-from-error");
     expect(error?.getAttribute("role")).toBe("alert");
-    expect(error?.textContent).toContain("01/10/2026 00:34");
-    // the unreadable bound drops out of the query rather than going to the api
-    expect(lastListInput?.customFrom).toBeUndefined();
+    expect(error?.textContent).toContain(i18n.t("expenseDateInvalid"));
+    // the unreadable value is not applied: the window keeps its last bound
+    // instead of silently widening to everything
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    // correcting the value clears the refusal and applies the new bound
+    await ui.type("expense-custom-from", "02/01/2020 00:00");
+    expect(from.getAttribute("aria-invalid")).toBeNull();
+    expect(ui.query("expense-custom-from-error")).toBeNull();
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps the applied bound while a new value is only half-typed", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    // an incomplete time must not drop the bound and refetch the whole list
+    await ui.type("expense-custom-from", "01/01/2020 0");
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
 
     await ui.unmount();
   });
@@ -919,13 +940,13 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     const ui = await mountPage(queryClient);
     await openCustomRange(ui);
 
-    await ui.type("expense-custom-from", "15/01/2026 08:05");
-    await ui.click("expense-custom-from-now");
+    await ui.type("expense-custom-to", "15/01/2026 08:05");
+    await ui.click("expense-custom-to-now");
 
-    const value = ui.query<HTMLInputElement>("expense-custom-from")!.value;
+    const value = ui.query<HTMLInputElement>("expense-custom-to")!.value;
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
-    expect(await ui.waitFor(() => lastListInput?.customFrom === parseDateTimeText(value))).toBe(true);
+    expect(await ui.waitFor(() => lastListInput?.customTo === parseDateTimeText(value))).toBe(true);
 
     await ui.unmount();
   });

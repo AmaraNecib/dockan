@@ -33,14 +33,14 @@ export interface DateFieldProps {
   /** every edit as raw text, and the fresh now on an «الآن» click */
   onValueChange: (text: string) => void;
   testId: string;
-  nowTestId: string;
   disabled?: boolean;
-  className?: string;
   /** a submit-time refusal the parent owns */
   invalid?: boolean;
-  /** id of the alert carrying that refusal; renders no node of its own */
+  /** id of the alert carrying that refusal; it must be in the DOM whenever
+   * `invalid` is true, because the field renders no node of its own then */
   errorId?: string;
-  /** runs after «الآن» writes the value (clearing the parent's refusal) */
+  /** runs after «الآن» writes the value; use it to clear the *message* tied to
+   * this field. The invalid flag itself is cleared by `onValueChange`. */
   onNow?: () => void;
 }
 
@@ -50,26 +50,25 @@ export function DateField({
   value,
   onValueChange,
   testId,
-  nowTestId,
   disabled = false,
-  className,
   invalid,
   errorId,
   onNow,
 }: DateFieldProps) {
   const { t } = useTranslation();
-  const [left, setLeft] = useState(false);
+  const [blurred, setBlurred] = useState(false);
 
   // the empty field is "not provided", never unreadable; everything else has
   // to be a real day-first moment the moment it is parsed
   const unreadable = value.trim() !== "" && parseDateTimeText(value) === null;
   // an owned refusal (a submit) shows at once; the field's own waits for blur
-  const refused = invalid === true || (errorId === undefined && left && unreadable);
+  const refused = invalid === true || (errorId === undefined && blurred && unreadable);
+  const nowTestId = `${testId}-now`;
   const ownErrorId = `${testId}-error`;
   const describedBy = errorId ?? ownErrorId;
 
   return (
-    <div className={cn("grid gap-1", className)}>
+    <div className="grid gap-1">
       <div className="flex gap-2">
         <input
           id={id}
@@ -83,16 +82,19 @@ export function DateField({
           aria-invalid={refused || undefined}
           aria-describedby={refused ? describedBy : undefined}
           onChange={(event) => onValueChange(event.target.value)}
-          onBlur={() => setLeft(true)}
+          onBlur={() => setBlurred(true)}
           data-testid={testId}
         />
         <Button
           type="button"
           variant="outline"
           disabled={disabled}
+          // a mousedown would move focus off the input, blurring it and flashing
+          // a refusal for text «الآن» is about to replace; keep focus where it is
+          onMouseDown={(event) => event.preventDefault()}
           onClick={() => {
             onValueChange(nowDateTimeText());
-            setLeft(false);
+            setBlurred(false);
             onNow?.();
           }}
           data-testid={nowTestId}
@@ -101,7 +103,7 @@ export function DateField({
         </Button>
       </div>
       {refused && errorId === undefined && (
-        <p id={ownErrorId} role="alert" className="text-sm text-destructive" data-testid={ownErrorId}>
+        <p id={ownErrorId} role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid={ownErrorId}>
           {t("expenseDateInvalid")}
         </p>
       )}

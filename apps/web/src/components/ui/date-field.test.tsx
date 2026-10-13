@@ -42,7 +42,7 @@ function mount(extra: Partial<DateFieldProps> = {}, initial = "") {
 
   function Harness() {
     const [value, setValue] = useState(initial);
-    return <DateField value={value} onValueChange={setValue} testId="date" nowTestId="date-now" {...extra} />;
+    return <DateField value={value} onValueChange={setValue} testId="date" {...extra} />;
   }
 
   act(() => root.render(<Harness />));

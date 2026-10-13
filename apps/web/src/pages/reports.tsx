@@ -11,7 +11,7 @@ import { DateField } from "@/components/ui/date-field";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
-import { formatDate, parseDateTimeText } from "../lib/dates";
+import { editDateBound, formatDate, OPEN_BOUND, type DateBound } from "../lib/dates";
 
 /**
  * Ticket 31 — profit report (/reports). Six figures over one Algeria-local
@@ -42,12 +42,12 @@ function toPreset(value: string): ReportRangePreset {
 export function ReportsPage() {
   const { t } = useTranslation();
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [customFrom, setCustomFrom] = useState<DateBound>(OPEN_BOUND);
+  const [customTo, setCustomTo] = useState<DateBound>(OPEN_BOUND);
 
   const report = useQuery(
     orpc.reportsProfit.queryOptions({
-      input: { preset, customFrom: parseDateTimeText(customFrom) ?? undefined, customTo: parseDateTimeText(customTo) ?? undefined },
+      input: { preset, customFrom: customFrom.bound, customTo: customTo.bound },
     }),
   );
 
@@ -85,20 +85,18 @@ export function ReportsPage() {
               <label htmlFor="report-custom-from">{t("expensesCustomFrom")}</label>
               <DateField
                 id="report-custom-from"
-                value={customFrom}
-                onValueChange={setCustomFrom}
+                value={customFrom.text}
+                onValueChange={(text) => setCustomFrom((previous) => editDateBound(previous, text))}
                 testId="report-custom-from"
-                nowTestId="report-custom-from-now"
               />
             </div>
             <div className="grid gap-1">
               <label htmlFor="report-custom-to">{t("expensesCustomTo")}</label>
               <DateField
                 id="report-custom-to"
-                value={customTo}
-                onValueChange={setCustomTo}
+                value={customTo.text}
+                onValueChange={(text) => setCustomTo((previous) => editDateBound(previous, text))}
                 testId="report-custom-to"
-                nowTestId="report-custom-to-now"
               />
             </div>
           </div>

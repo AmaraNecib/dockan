@@ -12,7 +12,7 @@ import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
-import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
+import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -74,8 +74,8 @@ export function ExpensesPage() {
 
   // history filters — default: current month, newest first, all categories
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [customFrom, setCustomFrom] = useState<DateBound>(OPEN_BOUND);
+  const [customTo, setCustomTo] = useState<DateBound>(OPEN_BOUND);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<"occurredAt" | "amount">("occurredAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -104,8 +104,8 @@ export function ExpensesPage() {
     orpc.expensesList.queryOptions({
       input: {
         preset,
-        customFrom: parseDateTimeText(customFrom) ?? undefined,
-        customTo: parseDateTimeText(customTo) ?? undefined,
+        customFrom: customFrom.bound,
+        customTo: customTo.bound,
         categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
         sortBy,
         sortDir,
@@ -341,7 +341,6 @@ export function ExpensesPage() {
             if (error?.field === "date") setError(null);
           }}
           testId="expense-date"
-          nowTestId="expense-date-now"
         />
       </div>
     </div>
@@ -471,20 +470,24 @@ export function ExpensesPage() {
                 <label htmlFor="expense-custom-from">{t("expensesCustomFrom")}</label>
                 <DateField
                   id="expense-custom-from"
-                  value={customFrom}
-                  onValueChange={(text) => { setCustomFrom(text); pager.reset(); }}
+                  value={customFrom.text}
+                  onValueChange={(text) => {
+                    setCustomFrom((previous) => editDateBound(previous, text));
+                    pager.reset();
+                  }}
                   testId="expense-custom-from"
-                  nowTestId="expense-custom-from-now"
                 />
               </div>
               <div className="grid gap-1">
                 <label htmlFor="expense-custom-to">{t("expensesCustomTo")}</label>
                 <DateField
                   id="expense-custom-to"
-                  value={customTo}
-                  onValueChange={(text) => { setCustomTo(text); pager.reset(); }}
+                  value={customTo.text}
+                  onValueChange={(text) => {
+                    setCustomTo((previous) => editDateBound(previous, text));
+                    pager.reset();
+                  }}
                   testId="expense-custom-to"
-                  nowTestId="expense-custom-to-now"
                 />
               </div>
             </div>

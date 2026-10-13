@@ -102,6 +102,27 @@ afterAll(() => {
   }
 });
 
+/** Build a client over an alternate StorePort with the shared config, auth and
+ * owner cookie — for tests that must observe or fail one store call. */
+const clientForStore = (storeFor: StorePort): DokanClient => {
+  const app = createApp({
+    config,
+    logger,
+    auth,
+    rpcRouter: createRpcRouter({ db: conn.db, config, logger, store: storeFor, auth }),
+  });
+  const link = new RPCLink({
+    url: () => `http://127.0.0.1:${config.port}/api/rpc`,
+    // SAFETY: the link's fetch contract wants a Promise; hono's fetch returns one
+    fetch: (request) => {
+      const headers = Object.fromEntries(request.headers.entries());
+      if (cookie !== "") headers.cookie = cookie;
+      return Promise.resolve(app.fetch(new Request(request, { headers })));
+    },
+  });
+  return createORPCClient(link);
+};
+
 describe("health", () => {
 
   it("rejects a business procedure without a session (merged auth guard)", async () => {
@@ -3138,6 +3159,57 @@ describe("returns & refunds", () => {
     expect(history.movements.find((movement) => movement.returnMark === "REJECTED")).toBeDefined();
     // the full ledger still replays: 2 → 0 → 2 → 0
     expect(history.movements.map((movement) => movement.stockAfter)).toEqual([2, 0, 2, 0]);
+  });
+
+  it("reads one item's history once for the whole multi-line scrap, not once per line", async () => {
+    const item = await makeReturnItem("مرجوع-قراءة-واحدة", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 3, unitCost: 100, kind: "PURCHASE" });
+    // a THREE-line sale of one item: the reject must not re-read and re-sort the
+    // item history per line (a supported return can carry 200)
+    const sale = await client.invoicesCreate({
+      kind: "SALE",
+      lines: [
+        { itemId: item.id, quantity: 1 },
+        { itemId: item.id, quantity: 1 },
+        { itemId: item.id, quantity: 1 },
+      ],
+    });
+    const created = await client.returnsCreate({
+      invoiceId: sale.id,
+      lines: sale.lines.map((line) => ({ invoiceLineId: line.id, quantity: 1 })),
+    });
+    expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(3);
+
+    // count the ledger reads the reject performs through the real transaction
+    let historyReads = 0;
+    const countingStore: StorePort = {
+      ...store,
+      withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> =>
+        store.withTransactionImmediate((tx: StorePort) =>
+          fn({
+            ...tx,
+            listStockMovements: (id) => {
+              historyReads += 1;
+              return tx.listStockMovements(id);
+            },
+          }),
+        ),
+    };
+    const countingClient = clientForStore(countingStore);
+
+    await countingClient.returnsReject({ returnId: created.id, reason: "تلف" });
+    // the pre-scrap projection plus the batch's single history read; a
+    // regression back to one post-per-line would read four-plus times here
+    expect(historyReads).toBe(2);
+
+    // every line still contributes its own movement row, and the numbers hold
+    const history = await client.itemsHistory({ itemId: item.id });
+    expect(history.stockOnHand).toBe(0);
+    const scraps = history.movements.filter((m) => m.kind === "MANUAL_ADJUSTMENT" && m.delta < 0);
+    expect(scraps).toHaveLength(3);
+    expect(scraps.reduce((sum, m) => sum + m.delta, 0)).toBe(-3);
+    expect(scraps.every((m) => m.ref === created.id && (m.reason ?? "").includes("RETURN_REJECTED_DAMAGED"))).toBe(true);
+    expect((await client.itemsAll()).items.find((i) => i.id === item.id)!.costPrice).toBe(100);
   });
 
   it("reject after some units were resold clamps the removal to available stock and never blocks the review", async () => {

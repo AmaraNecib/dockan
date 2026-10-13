@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Item, StockMovement } from "@dokan/contracts";
 
-import { recordStockMovement, StockItemMissingError, type StockPostingTx } from "./stock-posting";
+import { recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec, type StockPostingTx } from "./stock-posting";
 import { StockLedgerError } from "./stock-ledger";
 
 /**
@@ -15,11 +15,13 @@ type Row = StockMovement & { seq: number };
 
 function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
   const itemId = opts.itemId ?? "i1";
-  // SAFETY: the module under test only reads `id` and `costPrice`; this fake is
-  // a stand-in for the persisted row, never sent across the store boundary.
-  const item = { id: itemId, costPrice: opts.costPrice ?? 100 } as Item;
+  // SAFETY: the module under test only reads `id`, `costPrice` and (for the
+  // batch's initial cache) `stockOnHand`; this fake is a stand-in for the
+  // persisted row, never sent across the store boundary.
+  const item = { id: itemId, costPrice: opts.costPrice ?? 100, stockOnHand: 0 } as Item;
   const movements: Row[] = [];
   const cache = { stockOnHand: 0, costPrice: item.costPrice };
+  const stats = { historyReads: 0, cacheWrites: 0 };
   let seq = 0;
   const tx: StockPostingTx = {
     async getItemsByIds(ids) {
@@ -28,6 +30,7 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       return found;
     },
     async listStockMovements(id) {
+      stats.historyReads += 1;
       // mirror the store: occurred_at, then insertion order (rowid/seq)
       return movements
         .filter((m) => m.itemId === id)
@@ -50,12 +53,19 @@ function fakeTx(opts: { itemId?: string; costPrice?: number } = {}) {
       movements.push(row);
       return row;
     },
-    async setItemStockAndCost(_id, stockOnHand, costPrice) {
+    async setItemStockAndCost(id, stockOnHand, costPrice) {
+      stats.cacheWrites += 1;
       cache.stockOnHand = stockOnHand;
       cache.costPrice = costPrice;
+      // the real store UPDATEs items.stock_on_hand / cost_price, so a later
+      // getItemsByIds in the same unit reads the new values back
+      if (id === itemId) {
+        item.stockOnHand = stockOnHand;
+        item.costPrice = costPrice;
+      }
     },
   };
-  return { tx, itemId, movements, cache, item };
+  return { tx, itemId, movements, cache, item, stats };
 }
 
 describe("recordStockMovement", () => {
@@ -255,5 +265,68 @@ describe("recordStockMovement", () => {
     // +10@100 → 100; +10@300 → (1000+3000)/20 = 200; −10 → 10 units @200
     expect(posted.stockOnHand).toBe(10);
     expect(posted.costPrice).toBe(200);
+  });
+
+  it("defaults the next inflow to the cost the previous post wrote, not the created cost", async () => {
+    const { tx, cache, item } = fakeTx({ costPrice: 500 });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 500, occurredAt: "2020-01-01T10:00:00" });
+    await recordStockMovement(tx, { itemId: "i1", kind: "PURCHASE", delta: 5, unitCost: 700, occurredAt: "2020-01-01T11:00:00" });
+    expect(cache.costPrice).toBe(567); // (10×500 + 5×700) / 15
+
+    // no unitCost: the default must be the item's UPDATED cached cost. The fake
+    // used to leave `item` at its created cost, so this posted at 500 and the
+    // assertion below (and the real fallback) was never exercised.
+    const posted = await recordStockMovement(tx, {
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 5,
+      occurredAt: "2020-01-01T12:00:00",
+    });
+    expect(posted.movement.unitCost).toBe(567);
+    expect(posted.costPrice).toBe(567); // (567×15 + 567×5) / 20
+    expect(cache).toEqual({ stockOnHand: 20, costPrice: 567 });
+    expect(item.costPrice).toBe(567);
+  });
+
+  it("posts a batch with one history read and one cache write per item, matching the per-line calls", async () => {
+    const specs: StockMovementSpec[] = [
+      { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T10:00:00" },
+      { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: -4, occurredAt: "2020-01-02T10:00:00" },
+      { itemId: "i1", kind: "PURCHASE", delta: 6, occurredAt: "2020-01-03T10:00:00" }, // default = running cache
+      { itemId: "i1", kind: "SALE", delta: -5, occurredAt: "2020-01-04T10:00:00" },
+    ];
+    // a legacy null-cost inflow makes the replay fallback observable, so a
+    // batch that froze the fallback would change the average and fail here
+    const legacy: Row = {
+      id: "legacy",
+      itemId: "i1",
+      kind: "PURCHASE",
+      delta: 5,
+      unitCost: null,
+      reason: null,
+      ref: null,
+      returnMark: null,
+      occurredAt: "2019-12-31T10:00:00",
+      createdAt: "2019-12-31T10:00:00",
+      seq: 0,
+    };
+
+    const perLine = fakeTx({ costPrice: 250 });
+    perLine.movements.push({ ...legacy });
+    const perLineResults = [];
+    for (const spec of specs) perLineResults.push(await recordStockMovement(perLine.tx, spec));
+
+    const batch = fakeTx({ costPrice: 250 });
+    batch.movements.push({ ...legacy });
+    const batchResults = await recordStockMovements(batch.tx, specs);
+
+    // identical rows, per-movement results and final cache…
+    expect(batchResults).toEqual(perLineResults);
+    expect(batch.movements).toEqual(perLine.movements);
+    expect(batch.cache).toEqual(perLine.cache);
+    // …but the batch pays the history read and cache write once per item
+    expect(batch.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
+    expect(perLine.stats.historyReads).toBe(specs.length);
+    expect(perLine.stats.cacheWrites).toBe(specs.length);
   });
 });

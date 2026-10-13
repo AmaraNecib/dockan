@@ -12,7 +12,7 @@ import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
-import { itemStockProjection, recordStockMovement, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
+import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
@@ -197,10 +197,14 @@ const adjustmentRefusal = (error: SupplierAdjustmentError) => {
  * stable ORPC errors, so every stock write shares one home for the ledger's
  * STOCK_NEGATIVE and the module's missing-item refusal instead of five inline
  * try/catch blocks. Anything else is a real bug and rethrows.
+ *
+ * The batch form posts a whole flow's movements through one seam pass (a
+ * supported returns review scrap is up to 200 lines), reading each item's
+ * history and writing its cache once — see `recordStockMovements`.
  */
-async function postStock(tx: StorePort, spec: StockMovementSpec) {
+async function postStockBatch(tx: StorePort, specs: StockMovementSpec[]) {
   try {
-    return await recordStockMovement(tx, spec);
+    return await recordStockMovements(tx, specs);
   } catch (error) {
     if (error instanceof StockItemMissingError) {
       throw new ORPCError("BAD_REQUEST", { message: "ITEM_NOT_FOUND" });
@@ -210,6 +214,13 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
     }
     throw error;
   }
+}
+
+/** The length-one case of `postStockBatch`, for the single-movement call sites. */
+async function postStock(tx: StorePort, spec: StockMovementSpec) {
+  const [posted] = await postStockBatch(tx, [spec]);
+  // SAFETY: the batch returns exactly one result per spec, and we passed one
+  return posted!;
 }
 
 /** One supplier that folds to a given normalized name, for the opening-balance
@@ -1668,14 +1679,19 @@ export function createRpcRouter(deps: RpcDeps) {
             if (removalBudget <= 0) continue;
             // allocate the scrapped units across this item's return lines,
             // first-come-first-served; each line's movement carries its id as
-            // the reason suffix for exact report attribution. One movement per
-            // line through the seam: outflows never move the average, so the
-            // final cache matches a single aggregate replay.
+            // the reason suffix for exact report attribution. The lines ship as
+            // ONE batch through the seam: the item's history is read and its
+            // cache written once for the whole scrap, not once per line. A
+            // supported return can carry 200 lines, so per-line reads/sorts
+            // would block every other store request. The batch replays the
+            // lines in order against the running cache, so every movement and
+            // the final cache match the per-line calls exactly.
+            const scrapSpecs: StockMovementSpec[] = [];
             let remaining = removalBudget;
             for (const line of linesOfItem) {
               const take = Math.min(line.quantity, remaining);
               if (take <= 0) continue;
-              await postStock(tx, {
+              scrapSpecs.push({
                 itemId: item.id,
                 kind: "MANUAL_ADJUSTMENT",
                 delta: -take,
@@ -1685,6 +1701,7 @@ export function createRpcRouter(deps: RpcDeps) {
               });
               remaining -= take;
             }
+            await postStockBatch(tx, scrapSpecs);
           }
           await tx.setReturnMarks(existing.id, "REJECTED");
           await tx.insertActivity({

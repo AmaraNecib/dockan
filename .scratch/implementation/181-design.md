@@ -1,6 +1,7 @@
 # Design — #181 supplier adjustments: explicit client idempotency key + DB-level unique index
 
-Base: `origin/develop` @ `8bf2a81` (contains #177/#180).
+Base: `origin/develop` @ `fc95113` after the #174 rebase (designed against `8bf2a81`;
+#174/#177/#180 included).
 Branch: `feat-181-adjustment-idempotency`. Tier: **High-assurance** (invoice/debt money math + a schema-version bump).
 
 ## Problem
@@ -198,10 +199,11 @@ no new Playwright flow; the full existing suite still runs as a gate.
   `idempotencyKey: z.string().trim().min(1).max(200).optional()`.
 - `apps/api/src/lib/supplier-ledger.ts`: `AdjustmentDedupInput`, `adjustmentDedupKey`, `hasExplicitIdempotencyKey`.
 - `apps/api/src/store/port.ts`: `SupplierAdjustmentInsert.idempotencyKey`,
-  `SupplierAdjustmentSignature` picks it up; `insertEntryRow` takes the key.
+  `SupplierAdjustmentSignature` picks it up.
 - `apps/api/src/db/schema.ts`: `supplierAccountEntries.dedupKey` + DDL + index.
 - `apps/api/src/lib/schema-version.ts`: `CURRENT_SCHEMA_VERSION = 4`.
-- `apps/api/src/store/drizzle-store.ts`: migration, key write, key guard, constraint mapping.
+- `apps/api/src/store/drizzle-store.ts`: migration, the key write (`insertEntryRow`
+  takes the key), key guard, constraint mapping.
 - `apps/api/src/rpc/router.ts`: forwards `idempotencyKey`.
 
 ## Planned tests (TDD)

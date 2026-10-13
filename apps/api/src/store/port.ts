@@ -179,6 +179,7 @@ export class SupplierAdjustmentError extends Error {
       | "INVALID_AMOUNT"
       | "OUTSIDE_TRANSACTION"
       | "LINKED_DIRECTION"
+      | "INVOICE_MISMATCH"
       | "EXCEEDS_REMAINING"
       | "LINKED_NEEDS_ATOMIC_PATH",
   ) {

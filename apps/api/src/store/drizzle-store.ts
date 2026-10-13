@@ -1821,6 +1821,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         .limit(1);
       if (duplicates[0] !== undefined) throw new SupplierAdjustmentError("DUPLICATE");
       if (input.invoiceId !== null) {
+        // the backstop also owns linkage: a linked entry may only reduce a
+        // PURCHASE invoice of THIS supplier, so a non-UI caller cannot credit
+        // one supplier while reducing another's invoice
+        const targets = await db
+          .select({ kind: invoices.kind, counterpartyId: invoices.counterpartyId })
+          .from(invoices)
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1);
+        const target = targets[0];
+        if (target === undefined || target.kind !== "PURCHASE" || target.counterpartyId !== input.supplierId) {
+          throw new SupplierAdjustmentError("INVOICE_MISMATCH");
+        }
         // same conditional write returns use: never push an invoice's remaining
         // below zero; the excess is refused, never silently moved to credit
         if (!applyDebtOffset(input.invoiceId, input.amount)) throw new SupplierAdjustmentError("EXCEEDS_REMAINING");
@@ -2168,13 +2180,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // no pagination keys = an internal full read (tests, aggregates); a
       // concrete limit/offset comes from resolvePagination at the router
       if (filters.limit === undefined && filters.offset === undefined) {
-        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt), sql`invoices.rowid DESC`);
+        const rows = await db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt));
         return { items: rows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })), total: rows.length };
       }
       const { limit, offset } = resolvePagination(filters);
       const [total, itemsRows] = await Promise.all([
         db.$count(invoices, where),
-        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt), sql`invoices.rowid DESC`).limit(limit).offset(offset),
+        db.select(invoiceCols).from(invoices).where(where).orderBy(desc(invoices.invoiceDate), desc(invoices.createdAt)).limit(limit).offset(offset),
       ]);
       return {
         items: itemsRows.map((row) => ({ ...row, ...normalizeInvoiceLegacy(row) })),

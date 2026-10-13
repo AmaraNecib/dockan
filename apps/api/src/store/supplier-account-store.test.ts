@@ -387,6 +387,20 @@ describe("supplier account store", () => {
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
   });
 
+  it("refuses a linked adjustment aimed at another supplier's invoice at the store backstop (issue 177)", async () => {
+    const a = await makeSupplier("مورد خلفي أ");
+    const b = await makeSupplier("مورد خلفي ب");
+    const invoiceB = await makePurchase(b.id, 1000);
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment({ supplierId: a.id, direction: "THEY_OWE", amount: 100, reason: null, occurredAt: now(), invoiceId: invoiceB.id });
+      }),
+    ).rejects.toThrow(/INVOICE_MISMATCH/);
+    // neither the other supplier's invoice nor this supplier's account moved
+    expect((await store.getInvoiceDetail(invoiceB.id))?.remainingAmount).toBe(1000);
+    expect((await store.listSupplierEntries(a.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+  });
+
   it("accepts the same amount with a different reason as a distinct adjustment (issue 177)", async () => {
     const supplier = await makeSupplier("مورد أسباب");
     const occurredAt = "2026-10-13T12:00:00";

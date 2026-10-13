@@ -507,6 +507,25 @@ describe("ExpensesPage — create a category inline (issue #99)", () => {
     await ui.unmount();
   });
 
+  it("records a grouped amount with the shared parser (#180)", async () => {
+    categoriesFixture = [category("cat-1", "عام")];
+    const ui = await mountPage(queryClient);
+    await ui.waitFor(() => ui.query("expense-category-add") !== null);
+
+    await ui.click("expense-category-add");
+    await ui.type("expense-category-name", "وقود");
+    await ui.submit("expense-category-form");
+    expect(await ui.waitFor(() => lastCreatedName === "وقود")).toBe(true);
+
+    // #180 — the expense amount now uses the one shared grouped parser
+    await ui.type("expense-amount", "1,000");
+    await ui.click("expense-save");
+    expect(await ui.waitFor(() => lastExpense !== null)).toBe(true);
+    expect(lastExpense).toMatchObject({ amount: 1000 });
+
+    await ui.unmount();
+  });
+
   it("names the missing category and its recovery in Arabic at submit", async () => {
     categoriesFixture = [category("cat-1", "عام")];
     const ui = await mountPage(queryClient);

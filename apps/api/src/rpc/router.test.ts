@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, MAX_PAGE_SIZE, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -2545,13 +2545,15 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
 
   it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    // the shared test database accumulates invoices; request the full page so a
+    // same-second createdAt tie cannot push this invoice off page 1
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
-    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
-    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
   it("rejects amounts beyond the safe-integer money range at the schema", async () => {

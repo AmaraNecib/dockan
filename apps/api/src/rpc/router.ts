@@ -178,7 +178,15 @@ const ADJUSTMENT_REFUSAL = {
   LINKED_NEEDS_ATOMIC_PATH: { status: "BAD_REQUEST", message: "ADJUSTMENT_LINK_INVALID" },
   INVALID_AMOUNT: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVALID_AMOUNT" },
   OUTSIDE_TRANSACTION: { status: "INTERNAL_SERVER_ERROR", message: "ADJUSTMENT_NOT_TRANSACTIONAL" },
+  INVOICE_MISMATCH: { status: "BAD_REQUEST", message: "INVOICE_NOT_PURCHASE" },
 } satisfies Record<SupplierAdjustmentError["code"], { status: "CONFLICT" | "BAD_REQUEST" | "INTERNAL_SERVER_ERROR"; message: string }>;
+
+/** Map a typed store adjustment refusal to its stable ORPC error. One mapper
+ * for every guarded-adjustment call site; the caller rethrows anything else. */
+const adjustmentRefusal = (error: SupplierAdjustmentError) => {
+  const refusal = ADJUSTMENT_REFUSAL[error.code];
+  return new ORPCError(refusal.status, { message: refusal.message });
+};
 
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
@@ -940,10 +948,7 @@ export function createRpcRouter(deps: RpcDeps) {
               serverStamped: input.occurredAt === undefined,
             });
           } catch (error) {
-            if (error instanceof SupplierAdjustmentError) {
-              const refusal = ADJUSTMENT_REFUSAL[error.code];
-              throw new ORPCError(refusal.status, { message: refusal.message });
-            }
+            if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
             throw error;
           }
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
@@ -1007,10 +1012,7 @@ export function createRpcRouter(deps: RpcDeps) {
                 ref: "OPENING_BALANCE",
               });
             } catch (error) {
-              if (error instanceof SupplierAdjustmentError) {
-                const refusal = ADJUSTMENT_REFUSAL[error.code];
-                throw new ORPCError(refusal.status, { message: refusal.message });
-              }
+              if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
               throw error;
             }
             await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });

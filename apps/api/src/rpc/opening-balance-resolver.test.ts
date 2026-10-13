@@ -52,14 +52,17 @@ describe("resolveOpeningDestination (issue 184)", () => {
 });
 
 describe("tie-break lives in exactly one place (issue 184, structural)", () => {
+  const SKIP = /(^|[\\/])(node_modules|\.git|dist|\.scratch|test-results|playwright-report|\.turbo)([\\/]|$)/;
+
   it("defines the entry-count/lowest-id comparison only in the api resolver module", async () => {
     const root = fileURLToPath(new URL("../../../../", import.meta.url));
-    const glob = new Bun.Glob("{apps,packages}/*/src/**/*.{ts,tsx}");
+    const glob = new Bun.Glob("**/*.{ts,tsx}");
     const offenders: string[] = [];
     for await (const file of glob.scan({ cwd: root, absolute: true })) {
-      if (file.endsWith(".test.ts") || file.endsWith(".test.tsx")) continue;
+      const rel = file.slice(root.length).replaceAll("\\", "/");
+      if (SKIP.test(rel) || rel.endsWith(".test.ts") || rel.endsWith(".test.tsx")) continue;
       const source = await Bun.file(file).text();
-      if (/entries\s*>\s*(best|bestEntries)\b/.test(source)) offenders.push(file.slice(root.length).replaceAll("\\", "/"));
+      if (/entries\s*>\s*(best|bestEntries|winner|current)\b/.test(source)) offenders.push(rel);
     }
     expect(offenders).toEqual(["apps/api/src/rpc/opening-balance-resolver.ts"]);
   });
@@ -68,5 +71,7 @@ describe("tie-break lives in exactly one place (issue 184, structural)", () => {
     const page = await Bun.file(fileURLToPath(new URL("../../../web/src/pages/supplier-opening-balance.tsx", import.meta.url))).text();
     expect(page).not.toContain("matchByNormalizedName");
     expect(page).toContain("suppliersResolveName");
+    // no local entry-count comparator over folded siblings
+    expect(page).not.toMatch(/bestEntries|\bentries\s*>/);
   });
 });

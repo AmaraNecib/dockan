@@ -1088,6 +1088,12 @@ export const supplierOpeningBalanceRowInputSchema = z
     direction: supplierAdjustmentDirectionSchema,
     amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
     confirmExisting: z.boolean().optional(),
+    /** #184 — the destination the confirmation dialog named for a typed name
+     * (`suppliersResolveName`'s answer). `null` means the dialog named a NEW
+     * supplier. The write never uses this as its target; it refuses when its
+     * own resolution differs, so the dialog can never name account A while the
+     * amount lands on B. Omitted by callers that did not show a dialog. */
+    expectedSupplierId: idSchema.nullable().optional(),
   })
   .superRefine((value, ctx) => {
     const hasExisting = value.supplierId !== undefined;

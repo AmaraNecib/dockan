@@ -47,18 +47,27 @@ and calls `resolveOpeningDestination`. Behaviour unchanged.
 ### Client
 
 - Delete `matchByNormalizedName`.
-- `useQuery(orpc.suppliersResolveName, …)` keyed on the typed row when it is ready
-  (name + positive amount + valid date). `typedDestination` = the server response.
+- `resolveTypedDestination()` reads `suppliersResolveName` through
+  `queryClient.fetchQuery` on demand (submit, and again after a refusal), so the
+  dialog never renders a locally-computed fold. The result is held in a
+  `typedDestination` state snapshot: the dialog names exactly what that read
+  returned.
 - `typedNameConflict` uses **only** the server id (plus the local folded-name
   check, which is not the tie-break).
 - `namedRowNeedsConfirm` / `confirmNames` / the dialog name all come from
   `typedDestination.name` (fallback to the typed name only when the server says
   `null` = new).
-- `submit` awaits `ensureQueryData` for freshness, re-checks the resolved-id
-  conflict, then opens the dialog or saves.
-- The `OPENING_BALANCE_EXISTS` catch re-resolves (`resolve.refetch()`) after
-  invalidating the supplier list, so the re-opened dialog names the refreshed
-  destination.
+- `submit` awaits the resolve (with a `resolving` guard and an error surface),
+  re-checks the resolved-id conflict, then opens the dialog or saves.
+- The typed row also sends `expectedSupplierId` (the named id, or `null` for
+  "new"). The server never uses it as the write target; it refuses with
+  `OPENING_BALANCE_TARGET_CHANGED` when its own live resolution differs. This
+  closes the draft-edited-while-the-dialog-was-open window and the
+  resolve-to-write race: the amount can only land on the account the dialog
+  named, or the save refuses and re-resolves.
+- The `OPENING_BALANCE_EXISTS` / `OPENING_BALANCE_TARGET_CHANGED` catch
+  re-resolves after invalidating the supplier list, so the re-opened dialog names
+  the refreshed destination.
 
 ## Contract
 
@@ -74,6 +83,11 @@ supplierResolveNameOutputSchema = z.object({
   supplier: z.object({ id: idSchema, name: z.string(), accountEntryCount: z.number().int().min(0) }).nullable(),
 });
 ```
+
+`supplierOpeningBalanceRowInputSchema` gains an optional
+`expectedSupplierId: idSchema.nullable()`: the destination the dialog named
+(`null` = new). The server compares it with its own live resolution and refuses
+`OPENING_BALANCE_TARGET_CHANGED` on a mismatch.
 
 ## Planned tests
 

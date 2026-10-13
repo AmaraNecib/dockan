@@ -19,6 +19,7 @@ type CapturedRow = {
   direction: "WE_OWE" | "THEY_OWE";
   amount: number;
   confirmExisting?: boolean;
+  expectedSupplierId?: string | null;
 };
 
 type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
@@ -209,6 +210,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", direction: "WE_OWE", amount: 300 });
     expect(captured?.rows[0]?.confirmExisting).toBeUndefined();
     expect(captured?.rows[1]).toMatchObject({ newSupplierName: "مورد جملة", direction: "WE_OWE", amount: 800 });
+    // the server answered null (new supplier): the named destination is "create"
+    expect(captured?.rows[1]?.expectedSupplierId).toBeNull();
   });
 
   it("asks for confirmation before adding an opening balance to a supplier that already has entries", async () => {
@@ -373,7 +376,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
   });
 
-  it("sends a typed name as newSupplierName, never a pre-resolved id (round 5)", async () => {
+  it("sends a typed name as newSupplierName with the named id as a consistency check (round 5 / #184)", async () => {
     render();
     await settle();
     const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
@@ -385,7 +388,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("");
     expect(amountInput.value).toBe("500");
 
-    // s-1 has entries, so the dialog asks; confirming posts the NAME
+    // s-1 has entries, so the dialog asks; confirming posts the NAME plus the
+    // server-named id, which the write only uses to detect drift
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -394,7 +398,26 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(1);
-    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات", direction: "WE_OWE", amount: 500, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات", direction: "WE_OWE", amount: 500, confirmExisting: true, expectedSupplierId: "s-1" });
+  });
+
+  it("blocks a typed name that resolves to an already-picked supplier, even when the names differ (#184)", async () => {
+    // the server folds a different-looking name onto s-1, which row 0 already targets
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    typeIntoRow(0, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    // the folded names differ, so the local banner cannot see it; the submit
+    // still refuses to send two rows to one account
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("مبلغ");
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
   });
 
   it("names the destination supplier in the confirmation dialog (round 5)", async () => {

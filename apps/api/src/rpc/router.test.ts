@@ -2153,6 +2153,33 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: busier.id })).account?.entries.filter((entry) => entry.amount === 700) ?? []).toHaveLength(0);
   });
 
+  it("refuses when the named destination no longer matches the server's resolution (issue 184)", async () => {
+    const name = `مورد تغيّر-${Date.now()}`;
+    const a = await client.suppliersCreate({ name });
+    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    const resolved = await client.suppliersResolveName({ name, direction: "WE_OWE", amount: 400, occurredAt: "2026-10-13T12:00:00" });
+    const otherId = resolved.supplier?.id === a.id ? b.id : a.id;
+
+    // the dialog named `otherId`, but the live resolution picks someone else:
+    // the write must refuse instead of posting to an account the owner never saw
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 400, expectedSupplierId: otherId }],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_TARGET_CHANGED" });
+    expect((await client.suppliersGet({ id: a.id })).account?.entries ?? []).toHaveLength(0);
+    expect((await client.suppliersGet({ id: b.id })).account?.entries ?? []).toHaveLength(0);
+
+    // a name that folds to an existing supplier cannot be sent as "new" either
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 400, expectedSupplierId: null }],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_TARGET_CHANGED" });
+  });
+
   it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {
     const name = `مورد مطابق-${Date.now()}`;
     const a = await client.suppliersCreate({ name });

@@ -18,6 +18,7 @@ async function rpc<T>(page: Page, procedure: string, json: RpcInput): Promise<T>
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ json }),
       });
+      if (!response.ok) throw new Error(`${procedure} failed with HTTP ${response.status}`);
       // SAFETY: the oRPC fetch link answers a successful procedure call with the
       // `{ json: <declared output> }` envelope
       const body = (await response.json()) as { json: unknown };

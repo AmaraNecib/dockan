@@ -53,6 +53,9 @@ export function SupplierOpeningBalancePage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  /** true while a submit is asking the server for the destination, so a rapid
+   * double-click cannot run two resolutions (issue 184) */
+  const [resolving, setResolving] = useState(false);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
 
   const suppliers = list.data?.items ?? [];
@@ -99,7 +102,7 @@ export function SupplierOpeningBalancePage() {
   const foldedConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
   const typedNameConflict = foldedConflict || (typedRowReady && typedDestination !== null && filledExisting.some((row) => row.supplier.id === typedDestination.id));
 
-  const totalRows = filledExisting.length + (typedRowReady ? 1 : 0);
+  const totalRows = filledExisting.length + (typedRowReady && !foldedConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows
   const blockedReason = overLimit
@@ -156,9 +159,19 @@ export function SupplierOpeningBalancePage() {
             confirmExisting: forwardsConfirm(confirmExisting, row.supplier.accountEntryCount),
           })),
           // a typed name travels as a NAME; the server is the only resolver. Only a
-          // destination the server named (and the dialog showed) forwards confirmExisting.
+          // destination the server named (and the dialog showed) forwards
+          // confirmExisting, and the named id travels as a consistency check so a
+          // draft edited while the dialog was open cannot land elsewhere (issue 184).
           ...(typedRowReady
-            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: destination !== null && destination.accountEntryCount > 0 ? true : undefined }]
+            ? [
+                {
+                  newSupplierName: newName.trim(),
+                  direction: newDirection,
+                  amount: typedAmount ?? 0,
+                  confirmExisting: destination !== null && destination.accountEntryCount > 0 ? true : undefined,
+                  expectedSupplierId: destination?.id ?? null,
+                },
+              ]
             : []),
         ],
       });
@@ -177,11 +190,16 @@ export function SupplierOpeningBalancePage() {
       // dialog had not named (or a stale count). Refresh the counts AND re-ask the
       // server for the destination, then re-open the dialog so what it names is
       // what the confirmed write will touch. Do this on the CONFIRMED path too.
-      if (err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
+      if (err instanceof Error && (err.message.includes("OPENING_BALANCE_EXISTS") || err.message.includes("OPENING_BALANCE_TARGET_CHANGED"))) {
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
-        const destination = await resolveTypedDestination();
-        setTypedDestination(destination);
-        setConfirming(true);
+        try {
+          const destination = await resolveTypedDestination();
+          setTypedDestination(destination);
+          setConfirming(true);
+        } catch (resolveError) {
+          // a failed re-resolve must not mask the original refusal
+          setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
+        }
       }
       setError(tError(err instanceof Error ? err.message : undefined));
     } finally {
@@ -194,7 +212,7 @@ export function SupplierOpeningBalancePage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting || bulk.isPending || dateInvalid) return;
+    if (submitting || resolving || bulk.isPending || dateInvalid) return;
     if (blockedReason !== null) {
       setError(blockedReason);
       return;
@@ -206,7 +224,8 @@ export function SupplierOpeningBalancePage() {
     // the server's resolution is the only source of the typed row's destination
     // (issue 184): ask it before deciding what the dialog must name. A batch with
     // no typed name stays synchronous — there is nothing to resolve.
-    const destination = resolveInput === null ? null : await resolveTypedDestination();
+    const destination = resolveInput === null ? null : await resolveForSubmit();
+    if (destination === undefined) return; // resolve failed; the error is already shown
     const conflict = typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
     if (conflict) {
       setError(t("supplierOpeningRowHasAmount"));
@@ -219,6 +238,21 @@ export function SupplierOpeningBalancePage() {
       return;
     }
     await save(false, destination);
+  }
+
+  /** `submit`'s resolve with the UI guards a bare read needs: a pending flag so
+   * a double-click cannot run two, and an error surface instead of an unhandled
+   * rejection. `undefined` means it failed and the error is shown. */
+  async function resolveForSubmit(): Promise<ResolvedSupplier | null | undefined> {
+    setResolving(true);
+    try {
+      return await resolveTypedDestination();
+    } catch (err) {
+      setError(tError(err instanceof Error ? err.message : undefined));
+      return undefined;
+    } finally {
+      setResolving(false);
+    }
   }
 
   return (
@@ -344,6 +378,7 @@ export function SupplierOpeningBalancePage() {
                       className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                       value={newName}
                       onChange={(event) => setNewName(event.target.value)}
+                      maxLength={200}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
                       aria-invalid={newRow.status === "invalid"}
@@ -396,7 +431,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={() => void navigate({ to: "/suppliers" })} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">

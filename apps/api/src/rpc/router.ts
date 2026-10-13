@@ -1034,15 +1034,25 @@ export function createRpcRouter(deps: RpcDeps) {
               const resolution = await resolveOpeningDestination(candidates, row, (candidate) =>
                 tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
               );
+              const requested = resolution?.candidate;
+              // #184 — the dialog named `expectedSupplierId`; refuse when the live
+              // resolution differs (a draft edited while the dialog was open, or a
+              // raced candidate set) so the amount can never land on an account
+              // the owner was not shown. `null` asserts the dialog named a NEW
+              // supplier. The server's resolution stays authoritative; this field
+              // is only a consistency check.
+              if (row.expectedSupplierId !== undefined && (requested?.id ?? null) !== row.expectedSupplierId) {
+                throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_TARGET_CHANGED" });
+              }
               if (resolution !== undefined) {
-                const requested = resolution.candidate;
+                const resolved = resolution.candidate;
                 // the same confirmation gate as the supplierId path, EXCEPT for an
                 // exact resend: the guarded write below reports that as a duplicate
                 if (!resolution.holder && row.confirmExisting !== true) {
-                  const existing = await tx.listSupplierEntries(requested.id);
+                  const existing = await tx.listSupplierEntries(resolved.id);
                   if (existing.length > 0) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
                 }
-                plan.push({ supplierId: requested.id, name: requested.name, direction: row.direction, amount: row.amount });
+                plan.push({ supplierId: resolved.id, name: resolved.name, direction: row.direction, amount: row.amount });
               } else {
                 const party = await tx.createParty("supplier", { name: row.newSupplierName! });
                 suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);

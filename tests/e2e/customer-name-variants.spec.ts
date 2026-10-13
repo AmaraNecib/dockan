@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { actAndAck } from "./rpc-helpers";
+import { actAndAck, rpcOutput } from "./rpc-helpers";
 
 /**
  * #130 — the picker's duplicate-name warning folds alef/ya name variants, so a
@@ -22,18 +22,22 @@ test.afterEach(async ({ page }) => {
   const names = cleanupPartyNames;
   cleanupPartyNames = [];
   if (names.length === 0) return;
-  // `parties-page-customer` renders while the list query is still pending, so a
-  // zero row count only means "absent" AFTER the read landed (#189 review).
-  await actAndAck(page, "customersList", async () => {
-    await page.goto("/customers");
-  });
-  await expect(page.getByTestId("parties-table").or(page.getByTestId("parties-empty"))).toBeVisible();
+  // Presence comes from the ACKED `customersList` payload, not from the DOM:
+  // `parties-page-customer` renders while the query is still pending and a row
+  // count has no auto-wait, so either could read a saved customer as absent and
+  // skip it silently (#189 review).
+  const list = await rpcOutput<{ items: Array<{ name: string }> }>(
+    await actAndAck(page, "customersList", async () => {
+      await page.goto("/customers");
+    }),
+  );
   for (const name of names) {
+    if (!list.items.some((party) => party.name === name)) continue;
     await page.getByTestId("parties-search").fill(name);
     const row = page.getByTestId("party-row").filter({ hasText: name });
-    if ((await row.count()) === 0) continue;
+    await expect(row).toHaveCount(1);
     await row.getByTestId("party-row-delete").click();
-    // await each delete's own acknowledgement and assert the ROW is gone: the
+    // await THIS deletion's acknowledgement and assert the ROW is gone: the
     // success notice survives into the next dialog, so it proves nothing about
     // this deletion (#189 review).
     await actAndAck(page, "customersDelete", () => page.getByTestId("party-delete-confirm").click());

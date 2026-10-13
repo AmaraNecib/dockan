@@ -246,6 +246,22 @@ describe("PartyPicker (issue 120)", () => {
     expect(host.querySelector('[data-testid="picker-duplicate"]')?.textContent).toContain("علي علي");
   });
 
+  it("does not offer a variant debtor when the typed spelling is already stored without a phone (#189 review)", async () => {
+    parties = [
+      { ...ALI, id: "exact", name: "علي علي", phone: null },
+      { ...ALI, id: "variant", name: "على علي", phone: null },
+    ];
+    const host = await mount();
+    await type(host, "picker", "علي علي");
+
+    // the exact phoneless record is the needs-choice case, not a duplicate...
+    expect(choiceState(host)).toBe("needs");
+    await click(host, "picker-create");
+    // ...and the create panel must not warn about the OTHER debtor, whose
+    // one-click pick would move the sale's balance there
+    expect(host.querySelector('[data-testid="picker-duplicate"]')).toBeNull();
+  });
+
   it("blocks creating with a phone another record owns and offers that record instead", async () => {
     const host = await mount();
     await type(host, "picker", "شخص جديد");

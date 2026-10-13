@@ -79,22 +79,17 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  * identity. It is exact folded equality, never edit distance, and a WARNING
  * only — the owner can still create the record deliberately.
  *
- * Not a duplicate when the two records ARE one identity:
- * - the same phone (the store refuses a second owner; `phoneMatchParty` already
- *   offers that record), or
- * - the same spelling with no phone on either side — a walk-in re-typing her own
- *   name, which the picker's `needsChoice` gate already refuses.
+ * The two records ARE one identity — so no warning — when:
+ * - they share a phone (the store refuses a second owner; `phoneMatchParty`
+ *   already offers that record), or
+ * - the candidate's exact spelling is already stored with no phone: a walk-in
+ *   re-typing her own name, which the picker's `needsChoice` gate already
+ *   refuses. That one clears the whole list of duplicates, because the warning's
+ *   one-click pick must never offer a DIFFERENT debtor than the one typed
+ *   (#189 review).
  *
- * The identical spelling is preferred over an earlier variant of the name, so
+ * Otherwise the identical spelling is preferred over a variant of the name, so
  * the warning (and its one-click pick) points at the record the owner typed.
- * When that exact record is itself the same identity (same phone), a variant of
- * the name still warns — the picker's phone-owner message takes precedence in
- * the UI, so this only decides the function's result.
- *
- * An exact **phoneless** spelling short-circuits to no warning at all: that
- * record IS this identity (the picker's `needsChoice` gate already refuses the
- * typed-only name), and falling through to a variant would offer the one-click
- * pick a DIFFERENT debtor than the owner typed (#189 review).
  *
  * Identity (storage, the store's unique phone, `needsChoice`) keeps
  * `normalizeTextKey` (ADR-0007); folding identity would merge two people's
@@ -105,20 +100,16 @@ export function duplicateNameParty(name: string, phone: string | null, parties: 
   if (foldedKey === "") return undefined;
   const strictKey = normalizeTextKey(name);
   const canonical = normalizePartyPhone(phone);
-  // The exact phoneless spelling is one identity, not a duplicate — and the
-  // variant fallback below must not run either, or the warning would point at a
-  // different debtor than the one the owner typed (#189 review).
-  const isExactPhonelessSpelling = (party: PartyLike): boolean =>
-    canonical === null && normalizePartyPhone(party.phone) === null && normalizeTextKey(party.name) === strictKey;
-  if (parties.some(isExactPhonelessSpelling)) return undefined;
-  const likelyDuplicate = (party: PartyLike): boolean => {
-    if (nameVariantKey(party.name) !== foldedKey) return false;
+  let variant: PartyLike | undefined;
+  for (const party of parties) {
+    if (nameVariantKey(party.name) !== foldedKey) continue;
     const storedPhone = normalizePartyPhone(party.phone);
-    return !(canonical !== null && storedPhone === canonical);
-  };
-  return (
-    parties.find((party) => normalizeTextKey(party.name) === strictKey && likelyDuplicate(party)) ?? parties.find(likelyDuplicate)
-  );
+    if (canonical === null && storedPhone === null && normalizeTextKey(party.name) === strictKey) return undefined;
+    if (canonical !== null && storedPhone === canonical) continue;
+    if (normalizeTextKey(party.name) === strictKey) return party;
+    variant ??= party;
+  }
+  return variant;
 }
 
 /** The party that already owns a present phone (identity when present). */

@@ -1963,6 +1963,30 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
   });
 
+  it("keeps a supplierId retry on the signature-holding sibling (Greptile round 3)", async () => {
+    const name = `مورد مطابق معرف-${Date.now()}`;
+    const a = await client.suppliersCreate({ name });
+    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    const payload = { occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 700 }] };
+    const first = await client.suppliersOpeningBalances(payload);
+    const originalId = first.accounts[0]!.supplierId;
+    const otherId = originalId === a.id ? b.id : a.id;
+
+    // the other folded-match gains more entries, so a client tie-break would
+    // resolve the typed name to it and send its supplierId
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 50 });
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 60 });
+
+    // the server must still find the signature on the original sibling and never
+    // post a second 700 to the client-chosen one
+    await expect(
+      client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ supplierId: otherId, direction: "WE_OWE", amount: 700, confirmExisting: true }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
+    expect((await client.suppliersGet({ id: originalId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+  });
+
   it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {
     const { supplier, invoice } = await setupSupplier("مورد إعادة رابط", 5);
     const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };

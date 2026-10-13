@@ -191,6 +191,10 @@ const adjustmentRefusal = (error: SupplierAdjustmentError) => {
   return new ORPCError(refusal.status, { message: refusal.message });
 };
 
+/** One supplier that folds to a given normalized name, for the opening-balance
+ * resolver (a name can match more than one row after legacy duplicate creation). */
+type NamedSupplierCandidate = { id: string; name: string; entries: number };
+
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
  * categories/items procedures. Every business procedure passes requireSession;
@@ -982,33 +986,47 @@ export function createRpcRouter(deps: RpcDeps) {
           // batch that used newSupplierName must resolve to the supplier the
           // first attempt created. Otherwise createParty mints a second id and
           // the signature dedup runs under it, double-posting the same balance.
-          // Built lazily: an all-existing-supplier batch needs no name lookup,
-          // and listParties carries per-party aggregates.
-          type NamedCandidate = { id: string; name: string; entries: number };
-          const wantsNewNames = input.rows.some((row) => row.newSupplierName !== undefined);
-          const suppliersByName = new Map<string, NamedCandidate[]>();
-          if (wantsNewNames) {
-            for (const party of await tx.listParties("supplier")) {
-              const key = normalizeTextKey(party.name);
-              const candidates = suppliersByName.get(key) ?? [];
-              candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
-              suppliersByName.set(key, candidates);
-            }
+          // Built for every batch: a client that resolved a folded name to one
+          // sibling must be checked against all siblings (round 3, finding 2).
+          const suppliersByName = new Map<string, NamedSupplierCandidate[]>();
+          for (const party of await tx.listParties("supplier")) {
+            const key = normalizeTextKey(party.name);
+            const candidates = suppliersByName.get(key) ?? [];
+            candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
+            suppliersByName.set(key, candidates);
           }
+          const candidatesForName = (name: string): NamedSupplierCandidate[] => suppliersByName.get(normalizeTextKey(name)) ?? [];
           // the entry-count/lowest-id tie-break, used only when no candidate
           // already holds the row's signature
-          const pickByName = (key: string): NamedCandidate | undefined => {
-            const candidates = suppliersByName.get(key);
-            if (candidates === undefined || candidates.length === 0) return undefined;
+          const pickByName = (candidates: NamedSupplierCandidate[]): NamedSupplierCandidate | undefined => {
+            if (candidates.length === 0) return undefined;
             return candidates.reduce((best, candidate) =>
               candidate.entries > best.entries || (candidate.entries === best.entries && candidate.id < best.id) ? candidate : best,
             );
+          };
+          /** The candidate already holding this row's #177 signature, if any. */
+          const signatureHolder = async (
+            candidates: NamedSupplierCandidate[],
+            row: { direction: "WE_OWE" | "THEY_OWE"; amount: number },
+          ): Promise<NamedSupplierCandidate | undefined> => {
+            for (const candidate of candidates) {
+              if (await tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null })) return candidate;
+            }
+            return undefined;
           };
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {
               const party = await tx.getParty("supplier", row.supplierId);
               if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+              // the client may have resolved a typed name to one folded sibling; if
+              // another sibling already holds the signature, keep the retry on the
+              // original account so it is reported as a duplicate, not re-posted
+              const holder = await signatureHolder(candidatesForName(party.name).filter((candidate) => candidate.id !== party.id), row);
+              if (holder !== undefined) {
+                plan.push({ supplierId: holder.id, name: holder.name, direction: row.direction, amount: row.amount });
+                continue;
+              }
               const existing = await tx.listSupplierEntries(party.id);
               if (existing.length > 0 && row.confirmExisting !== true) {
                 // same resend exemption as the newSupplierName branch: an exact
@@ -1020,28 +1038,17 @@ export function createRpcRouter(deps: RpcDeps) {
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
               // SAFETY: the contract superRefine guarantees newSupplierName here
-              const key = normalizeTextKey(row.newSupplierName!);
-              const candidates = suppliersByName.get(key);
-              let requested: NamedCandidate | undefined;
-              let isResend = false;
-              if (candidates !== undefined) {
-                // #177 round 3 (finding 2) — a retry must stay on the account that
-                // already holds the signature. Checking only the entry-count
-                // winner can pick a different folded-match that has since gained
-                // more entries, miss the prior row, and post again.
-                for (const candidate of candidates) {
-                  if (await tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null })) {
-                    requested = candidate;
-                    isResend = true;
-                    break;
-                  }
-                }
-              }
-              if (requested === undefined) requested = pickByName(key);
+              const candidates = candidatesForName(row.newSupplierName!);
+              // #177 round 3 (finding 2) — a retry must stay on the account that
+              // already holds the signature. Checking only the entry-count winner
+              // can pick a different folded-match that has since gained more
+              // entries, miss the prior row, and post again.
+              const holder = await signatureHolder(candidates, row);
+              const requested = holder ?? pickByName(candidates);
               if (requested !== undefined) {
                 // the same confirmation gate as the supplierId path, EXCEPT for an
                 // exact resend: the guarded write below reports that as a duplicate
-                if (!isResend && row.confirmExisting !== true) {
+                if (holder === undefined && row.confirmExisting !== true) {
                   const existing = await tx.listSupplierEntries(requested.id);
                   if (existing.length > 0) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
                 }

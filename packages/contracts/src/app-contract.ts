@@ -26,6 +26,9 @@ import {
   invoicePayInputSchema,
   itemCreateInputSchema,
   itemCreateWithStockInputSchema,
+  itemHistoryInputSchema,
+  itemListAllOutputSchema,
+  itemListInputSchema,
   itemListOutputSchema,
   itemSchema,
   itemUpdateInputSchema,
@@ -88,7 +91,9 @@ export const dokanContract = {
   categoriesCreate: oc.input(categoryCreateInputSchema).output(categorySchema),
 
   // --- items ---------------------------------------------------------------
-  itemsList: oc.output(itemListOutputSchema),
+  itemsList: oc.input(itemListInputSchema).output(itemListOutputSchema),
+  /** whole catalog for pickers/selects; never paginated (see itemListAllOutputSchema) */
+  itemsAll: oc.output(itemListAllOutputSchema),
   itemsCreate: oc.input(itemCreateInputSchema).output(itemSchema),
   itemsCreateWithStock: oc.input(itemCreateWithStockInputSchema).output(itemSchema),
   itemsUpdate: oc.input(itemUpdateInputSchema).output(itemSchema),
@@ -98,7 +103,7 @@ export const dokanContract = {
   catalogSearch: oc.input(catalogSearchInputSchema).output(catalogSearchOutputSchema),
   // --- stock ledger (ticket 27) --------------------------------------------
   stockAddManual: oc.input(stockAddManualInputSchema).output(stockMovementSchema),
-  itemsHistory: oc.input(z.object({ itemId: z.string().uuid() })).output(itemHistoryOutputSchema),
+  itemsHistory: oc.input(itemHistoryInputSchema).output(itemHistoryOutputSchema),
 
   // --- parties (customer / supplier share one code path; issue 120) --------
   customersList: oc.output(partyListOutputSchema),

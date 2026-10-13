@@ -53,6 +53,23 @@ export async function signIn(page: Page, options: SignInOptions = {}): Promise<v
   await page.getByLabel("كلمة السر").fill(PASSWORD);
   await page.getByTestId("login-submit").click();
   await expect(page.getByTestId(options.landingTestId ?? "dashboard-page")).toBeVisible();
+  await openListsWide(page);
+}
+
+/**
+ * Issue 163 made every flat list page at the shared default of 10 rows. Specs
+ * about other features assert on complete lists, so the shared preamble opens
+ * them wide through the real preference write. `pagination.spec.ts` sets the
+ * size back to 10 itself to exercise paging from a known state.
+ */
+async function openListsWide(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    await fetch("/api/rpc/preferencesSet", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ json: { key: "ui.pageSize", value: "500" } }),
+    });
+  });
 }
 
 /** The provisioned owner's credentials, for specs that try and fail to log in. */

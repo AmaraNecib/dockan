@@ -7,8 +7,10 @@ import type { ReturnDetail, SupplierReturnRecord } from "@dokan/contracts";
 
 import { debtOffsetDisplay } from "../lib/return-voucher";
 import { tError } from "../lib/i18n";
+import { usePagination } from "../hooks/use-pagination";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
+import { Pager } from "@/components/ui/pager";
 import { orpc } from "../lib/rpc";
 
 /**
@@ -25,16 +27,11 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
   const [rejectReasons, setRejectReasons] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
-  const invalidate = async () => {
-    await Promise.all([
-      // exact keys matching the mounted queries (a bare prefix string does not
-      // reliably refetch the orpc-generated `["path", { input, type }]` keys)
-      queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: {} }) }),
-      // the shell badge and dashboard notice read this aggregate (issue #118)
-      queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
-      queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
-      queryClient.invalidateQueries({ queryKey: ["itemsList"] }),
-    ]);
+  const invalidate = () => {
+    // app-wide (like the items page): a review touches the pending badge, the
+    // activity log, item stock, and the returns list — whose key now carries
+    // the page, so a bare path prefix would not match the orpc key shape
+    return queryClient.invalidateQueries();
   };
 
   const accept = useMutation(
@@ -137,7 +134,8 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
 
 export function ReturnsPage() {
   const { t } = useTranslation();
-  const query = useQuery(orpc.returnsList.queryOptions({ input: {} }));
+  const pager = usePagination();
+  const query = useQuery(orpc.returnsList.queryOptions({ input: { ...pager.pagination } }));
   const [tab, setTab] = useState<"customers" | "suppliers">("customers");
   if (query.isPending) {
     return <p className="text-sm text-muted-foreground" data-testid="returns-loading">{t("expensesLoading")}</p>;
@@ -185,6 +183,14 @@ export function ReturnsPage() {
       </div>
       <div role="tabpanel" id="returns-panel-customers" aria-labelledby="returns-tab-customers" hidden={tab !== "customers"}>
         <ReturnsReviewList returns={[...pending, ...reviewed]} />
+        <Pager
+          total={query.data.total}
+          pageSize={pager.pageSize}
+          offset={pager.offset}
+          onOffsetChange={pager.setOffset}
+          onPageSizeChange={pager.setPageSize}
+          testId="returns-pager"
+        />
       </div>
       <div role="tabpanel" id="returns-panel-suppliers" aria-labelledby="returns-tab-suppliers" hidden={tab !== "suppliers"}>
         <SupplierReturnsList />
@@ -200,7 +206,8 @@ export function ReturnsPage() {
  */
 export function SupplierReturnsList() {
   const { t } = useTranslation();
-  const query = useQuery(orpc.suppliersReturnsList.queryOptions({ input: {} }));
+  const pager = usePagination();
+  const query = useQuery(orpc.suppliersReturnsList.queryOptions({ input: { ...pager.pagination } }));
   if (query.isPending) {
     return <p className="text-sm text-muted-foreground" data-testid="supplier-returns-loading">{t("expensesLoading")}</p>;
   }
@@ -208,10 +215,11 @@ export function SupplierReturnsList() {
     const message = query.error instanceof Error ? query.error.message : undefined;
     return <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-returns-error">{tError(message)}</p>;
   }
-  if (query.data.items.length === 0) {
+  if (query.data.total === 0) {
     return <p className="text-sm text-muted-foreground" data-testid="supplier-returns-empty">{t("supplierReturnsEmpty")}</p>;
   }
   return (
+    <>
     <div className="grid gap-3" data-testid="supplier-returns-list">
       {query.data.items.map((record: SupplierReturnRecord) => (
         <article key={record.id} className="rounded border bg-card p-4" data-testid={`supplier-return-${record.returnNumber}`}>
@@ -244,5 +252,14 @@ export function SupplierReturnsList() {
         </article>
       ))}
     </div>
+    <Pager
+      total={query.data.total}
+      pageSize={pager.pageSize}
+      offset={pager.offset}
+      onOffsetChange={pager.setOffset}
+      onPageSizeChange={pager.setPageSize}
+      testId="supplier-returns-pager"
+    />
+    </>
   );
 }

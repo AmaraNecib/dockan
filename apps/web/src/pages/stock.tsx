@@ -10,8 +10,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
 
 import { tError } from "../lib/i18n";
-import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
+import { inputClass } from "@/components/ui/input";
+import { usePagination } from "../hooks/use-pagination";
+import { Pager } from "@/components/ui/pager";
 import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
 import { formatDateTime } from "../lib/dates";
 
@@ -24,7 +26,7 @@ import { formatDateTime } from "../lib/dates";
 export function StockForm() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const items = useQuery(orpc.itemsList.queryOptions());
+  const items = useQuery(orpc.itemsAll.queryOptions());
   const [itemId, setItemId] = useState("");
   const [delta, setDelta] = useState("");
   const [unitCost, setUnitCost] = useState("");
@@ -76,11 +78,10 @@ export function StockForm() {
         // let the next refetch re-prefill the (possibly changed) average cost
         prefilledRef.current = null;
         freshAfterRef.current = Date.now();
-        void Promise.all([
-          queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
-          queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
-          queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
-        ]);
+        // the items table (paginated, so its key carries the page), the
+        // low-stock badge, the item pickers (itemsAll) and the dashboard all
+        // derive from the ledger; invalidate app-wide like the items page
+        void queryClient.invalidateQueries();
       },
       onError: (err) => setError(tError(err.message)),
     }),
@@ -235,7 +236,8 @@ export function ItemHistoryPage() {
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
-  const history = useQuery(orpc.itemsHistory.queryOptions({ input: { itemId } }));
+  const pager = usePagination();
+  const history = useQuery(orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }));
 
   return (
     <section>
@@ -254,9 +256,10 @@ export function ItemHistoryPage() {
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
-      ) : history.data.movements.length === 0 ? (
+      ) : history.data.total === 0 ? (
         <p className="mt-4 rounded border bg-card p-3 text-muted-foreground">{t("historyEmpty")}</p>
       ) : (
+        <>
         <table className="mt-4 w-full rounded border bg-card" data-testid="history-table">
           <thead>
             <tr className="border-b text-right text-sm text-muted-foreground">
@@ -291,6 +294,15 @@ export function ItemHistoryPage() {
             ))}
           </tbody>
         </table>
+        <Pager
+          total={history.data.total}
+          pageSize={pager.pageSize}
+          offset={pager.offset}
+          onOffsetChange={pager.setOffset}
+          onPageSizeChange={pager.setPageSize}
+          testId="history-pager"
+        />
+        </>
       )}
     </section>
   );

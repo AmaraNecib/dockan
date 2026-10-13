@@ -11,8 +11,10 @@ import { Amount } from "@/components/ui/amount";
 
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
+import { Pager } from "@/components/ui/pager";
 import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { usePagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
@@ -566,7 +568,8 @@ function ItemForm({
 function ItemList({ scanNonce }: { scanNonce: number }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const items = useQuery(orpc.itemsList.queryOptions());
+  const pager = usePagination();
+  const items = useQuery(orpc.itemsList.queryOptions({ input: { ...pager.pagination } }));
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [draft, setDraft] = useState<ItemEditDraft | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
@@ -773,7 +776,7 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
     );
   }
 
-  if (items.data.items.length === 0) {
+  if (items.data.total === 0) {
     return <p className="mt-6 rounded border bg-card p-3 text-muted-foreground">{t("itemsEmpty")}</p>;
   }
 
@@ -972,6 +975,14 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
         </tbody>
       </table>
       </div>
+      <Pager
+        total={items.data.total}
+        pageSize={pager.pageSize}
+        offset={pager.offset}
+        onOffsetChange={pager.setOffset}
+        onPageSizeChange={pager.setPageSize}
+        testId="items-pager"
+      />
     </>
   );
 }

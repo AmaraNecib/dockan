@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -25,7 +25,7 @@ import { localDate, localDateTime } from "../lib/logger";
  * `ui.onboarding.completed`, which `onboardingComplete` derives from real shop
  * records — is server-owned, so a client cannot fake it.
  */
-const CLIENT_WRITABLE_PREFERENCE_KEYS = new Set(["ui.sidebar.collapsed", "ui.onboarding.dismissed"]);
+const CLIENT_WRITABLE_PREFERENCE_KEYS = new Set(["ui.sidebar.collapsed", "ui.onboarding.dismissed", "ui.pageSize"]);
 import type { ReportRangePreset } from "@dokan/contracts";
 import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
 import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
@@ -374,7 +374,9 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
 
     // --- items (ticket 03) ---------------------------------------------------
-    itemsList: os.itemsList.handler(guarded(async () => ({ items: await deps.store.listItems() }))),
+    itemsList: os.itemsList.handler(guardedInput(async (input) => deps.store.listItems(resolvePagination(input)))),
+    // pickers/selects need the whole catalog; `itemsList` pages the table
+    itemsAll: os.itemsAll.handler(guarded(async () => ({ items: (await deps.store.listItems()).items }))),
     itemsCreate: os.itemsCreate.handler(
       guardedInput(async (input) => {
         const categories = await deps.store.listCategories();
@@ -509,7 +511,7 @@ export function createRpcRouter(deps: RpcDeps) {
     catalogSearch: os.catalogSearch.handler(
       guardedInput(async ({ query, limit }) => {
         const [items, categories] = await Promise.all([deps.store.listItems(), deps.store.listCategories()]);
-        return rankCatalog(items, categories, query, limit);
+        return rankCatalog(items.items, categories, query, limit);
       }),
     ),
 
@@ -578,10 +580,14 @@ export function createRpcRouter(deps: RpcDeps) {
         if (item === undefined) {
           throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
         }
+        // `stockAfter` is cumulative, so the whole ledger is projected first;
+        // only the projected rows are sliced. `total` is the full ledger count.
         const movements = await deps.store.listStockMovements(item.id);
-        const rows = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
+        const projected = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
+        const { limit, offset } = resolvePagination(input);
+        const rows = projected.slice(offset, offset + limit);
         const { stockOnHand } = projectLedger(movements, { fallbackUnitCost: item.costPrice });
-        return { movements: rows, stockOnHand };
+        return { movements: rows, total: movements.length, stockOnHand };
       }),
     ),
 
@@ -881,7 +887,7 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
     suppliersReturnsList: os.suppliersReturnsList.handler(
-      guardedInput(async ({ supplierId }) => ({ items: await deps.store.listSupplierReturns({ supplierId }) })),
+      guardedInput(async (input) => deps.store.listSupplierReturns({ supplierId: input.supplierId }, resolvePagination(input))),
     ),
 
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
@@ -1148,7 +1154,7 @@ export function createRpcRouter(deps: RpcDeps) {
         return detail;
       }),
     ),
-    invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices(filters))),
+    invoicesList: os.invoicesList.handler(guardedInput(async (filters) => deps.store.listInvoices({ ...filters, ...resolvePagination(filters) }))),
     // ticket 8 — later payments in instalments. Payment row + paid/remaining
     // recompute + PAYMENT_RECORDED audit commit in ONE write-first unit, so a
     // concurrent pay or a crash mid-way can never leave paidAmount out of
@@ -1373,7 +1379,9 @@ export function createRpcRouter(deps: RpcDeps) {
         }),
       ),
     ),
-    returnsList: os.returnsList.handler(guardedInput(async ({ invoiceId }) => ({ items: await deps.store.listReturns({ invoiceId }) }))),
+    returnsList: os.returnsList.handler(
+      guardedInput(async (input) => deps.store.listReturns({ invoiceId: input.invoiceId }, resolvePagination(input))),
+    ),
     returnsPendingCount: os.returnsPendingCount.handler(guarded(async () => ({ count: await deps.store.pendingReturnsCount() }))),
     // Review accept: consumes the pending stock mark — the returned goods are
     // confirmed salable. The ledger facts are untouched; only the review tag
@@ -1712,7 +1720,7 @@ export function createRpcRouter(deps: RpcDeps) {
       guardedInput(async ({ kind, counterpartyId, counterpartyName }) => {
         const items = await deps.store.listUnpaidInvoicesByParty(kind, counterpartyId, counterpartyName);
         // the party query has no pagination cap, so the count is the list size
-        return { items, totalCount: items.length };
+        return { items, total: items.length };
       }),
     ),
 
@@ -1818,7 +1826,11 @@ export function createRpcRouter(deps: RpcDeps) {
             : undefined));
         const range = resolveWindow({ preset, customFrom: input.customFrom, customTo: input.customTo, from: input.from, to: input.to });
         const rows = await deps.store.listExpenseRecords({ categoryIds: input.categoryIds, from: range.from, to: range.to });
-        return { items: sortExpenses(rows, input.sortBy, input.sortDir) };
+        // sortExpenses owns ordering (a tested pure module), so the page is
+        // sliced after the sort; `total` is the filtered, sorted length.
+        const sorted = sortExpenses(rows, input.sortBy, input.sortDir);
+        const { limit, offset } = resolvePagination(input);
+        return { items: sorted.slice(offset, offset + limit), total: sorted.length };
       }),
     ),
 
@@ -1873,7 +1885,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
 
     activitiesList: os.activitiesList.handler(
-      guardedInput(async ({ limit }) => ({ items: await deps.store.listActivities(limit ?? 50) })),
+      guardedInput(async (input) => deps.store.listActivities(resolvePagination(input))),
     ),
 
     diagnosticsLogsTail: os.diagnosticsLogsTail.handler(

@@ -51,7 +51,7 @@ export function SupplierReturnPanel({
   const onModeChange = (next: string | null) => setMode((next ?? "INVOICE_LINKED") as ReturnMode);
 
   const detail = useQuery({ ...orpc.invoicesGet.queryOptions({ input: { id: invoiceId } }), enabled: mode === "INVOICE_LINKED" && invoiceId !== "" });
-  const items = useQuery({ ...orpc.itemsList.queryOptions(), enabled: mode === "FREE_STANDING" });
+  const items = useQuery({ ...orpc.itemsAll.queryOptions(), enabled: mode === "FREE_STANDING" });
 
   const invoiceValue = useMemo(() => {
     if (detail.data === undefined) return 0;
@@ -73,7 +73,7 @@ export function SupplierReturnPanel({
     return Promise.all([
       queryClient.invalidateQueries({ queryKey: orpc.suppliersGet.queryKey({ input: { id: supplierId } }) }),
       queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
-      queryClient.invalidateQueries({ queryKey: ["itemsList"] }),
+      queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() }),
       queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
       queryClient.invalidateQueries({ queryKey: ["suppliersReturnsList"] }),
     ]);

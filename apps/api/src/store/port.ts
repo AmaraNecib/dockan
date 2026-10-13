@@ -15,6 +15,7 @@ import type {
   ItemListItem,
   ItemUpdate,
   OnboardingProgress,
+  PaginationInput,
   Party,
   PartyCreate,
   PartyDetail,
@@ -189,7 +190,7 @@ export interface StorePort {
   listCategories(): Promise<Category[]>;
   createCategory(input: { name: string }): Promise<Category>;
 
-  listItems(): Promise<ItemListItem[]>;
+  listItems(pagination?: PaginationInput): Promise<{ items: ItemListItem[]; total: number }>;
   listLowStockItems(): Promise<Item[]>;
   getItemsByIds(ids: string[]): Promise<Map<string, Item>>;
   /** exact normalized-barcode lookup; undefined when no item carries it */
@@ -252,7 +253,7 @@ export interface StorePort {
   insertSupplierReturn(input: SupplierReturnInsert): Promise<{ id: string }>;
   insertSupplierReturnLine(line: SupplierReturnLineInsert): Promise<void>;
   /** supplier purchase-return history, newest first; optional supplier scope */
-  listSupplierReturns(filters: { supplierId?: string }): Promise<SupplierReturnRecord[]>;
+  listSupplierReturns(filters: { supplierId?: string }, pagination?: PaginationInput): Promise<{ items: SupplierReturnRecord[]; total: number }>;
   getSupplierReturn(returnId: string): Promise<SupplierReturnRecord | undefined>;
 
   /** Runs an atomic unit; the callback receives the same store with the queue
@@ -270,8 +271,9 @@ export interface StorePort {
   allocateReturnNumber(): Promise<string>;
   insertReturn(input: ReturnInsert): Promise<{ id: string }>;
   insertReturnLine(line: ReturnLineInsert): Promise<void>;
-  /** full return with lines, newest-first; optional invoice scope */
-  listReturns(filters: { invoiceId?: string }): Promise<ReturnDetail[]>;
+  /** full return with lines; optional invoice scope. `total` is the count for
+   * the filters, independent of the page. */
+  listReturns(filters: { invoiceId?: string }, pagination?: PaginationInput): Promise<{ items: ReturnDetail[]; total: number }>;
   /** count of PENDING_REVIEW returns (issue 118); a SQL aggregate, never a list sum */
   pendingReturnsCount(): Promise<number>;
   getReturnDetail(returnId: string): Promise<ReturnDetail | undefined>;
@@ -308,7 +310,7 @@ export interface StorePort {
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
   /** single line lookup; entry point for purchase corrections */
   getInvoiceLine(lineId: string): Promise<InvoiceLine | undefined>;
-  listInvoices(filters: InvoiceListFilters): Promise<{ items: Invoice[]; totalCount: number }>;
+  listInvoices(filters: InvoiceListFilters): Promise<{ items: Invoice[]; total: number }>;
   setInvoicePaidAmounts(id: string, paidAmount: number, remainingAmount: number): Promise<void>;
   /** unpaid invoices for one person (debts-screen drill-down). Matches the
    * debtSummaries grouping key: id for a known party, typed name otherwise,
@@ -328,7 +330,7 @@ export interface StorePort {
   recordOnboardingCompletion(): Promise<boolean>;
 
   insertActivity(activity: { type: ActivityType; summary: string; ref?: string | null }): Promise<void>;
-  listActivities(limit: number): Promise<Activity[]>;
+  listActivities(pagination?: PaginationInput): Promise<{ items: Activity[]; total: number }>;
   /** true only when no shop record exists (seed rows and settings excluded).
    * The first-run provisioning gate uses this: a non-empty database with no
    * owner refuses to create one (ADR-0008 §4.1). */

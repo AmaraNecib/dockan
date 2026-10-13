@@ -34,7 +34,7 @@ mock.module("@/lib/rpc", () => ({
         }),
       }),
     },
-    itemsList: { queryOptions: () => ({ queryKey: ["itemsList"], queryFn: async () => ({ items: [{ id: "item-1", name: "هدية" }] }) }) },
+    itemsAll: { queryOptions: () => ({ queryKey: ["itemsAll"], queryFn: async () => ({ items: [{ id: "item-1", name: "هدية" }] }) }) },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
     suppliersReturnsList: { queryKey: () => ["suppliersReturnsList"] },
   },

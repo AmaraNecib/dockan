@@ -267,7 +267,7 @@ describe("items", () => {
       costPrice: 500,
       sellingPrice: 600,
     });
-    const listed = await store.listItems();
+    const listed = (await store.listItems()).items;
     const row = listed.find((i) => i.id === item.id)!;
     expect(row.categoryName).toBe("سوائل محركات");
     expect(row.categoryId).toBe(category.id);
@@ -358,7 +358,7 @@ describe("barcodes (ticket 28)", () => {
       expect(migrated).toBeUndefined();
       const updated = await legacyStore.updateItem("item-l", { id: "item-l", barcode: "NEW-1" });
       expect(updated?.barcode).toBe("NEW-1");
-      const listed = await legacyStore.listItems();
+      const listed = (await legacyStore.listItems()).items;
       expect(listed.find((i) => i.id === "item-l")?.name).toBe("منتج قديم");
     } finally {
       legacy.close();
@@ -1308,7 +1308,7 @@ describe("edge cases", () => {
 
     const farFuture = await store.listInvoices({ fromDate: "2099-01-01" });
     expect(farFuture.items).toHaveLength(0);
-    expect(farFuture.totalCount).toBe(0);
+    expect(farFuture.total).toBe(0);
   });
 
   it("returns undefined for missing rows", async () => {
@@ -1346,7 +1346,7 @@ describe("transactions", () => {
       return category;
     });
     expect((await store.listCategories()).some((c) => c.id === created.id)).toBe(true);
-    expect((await store.listActivities(10)).some((a) => a.ref === created.id)).toBe(true);
+    expect((await store.listActivities({ limit: 10 })).items.some((a) => a.ref === created.id)).toBe(true);
   });
 
   it("serializes concurrent units without nested BEGIN collisions", async () => {
@@ -1486,7 +1486,7 @@ describe("activities + settings", () => {
   it("records and lists activities newest-first", async () => {
     await store.insertActivity({ type: "SALE_CREATED", summary: "بيع INV-0002", ref: "INV-0002" });
     await store.insertActivity({ type: "ITEM_CREATED", summary: "إنشاء منتج بطارية" });
-    const list = await store.listActivities(10);
+    const list = (await store.listActivities({ limit: 10 })).items;
     expect(list[0]?.type).toBe("ITEM_CREATED");
     expect(list.length).toBeGreaterThanOrEqual(2);
   });
@@ -1893,11 +1893,11 @@ describe("returns seam (cash refunds + review marks)", () => {
       occurredAt: stamp(),
     });
 
-    const scoped = await store.listReturns({ invoiceId: a.invoice.id });
+    const scoped = (await store.listReturns({ invoiceId: a.invoice.id })).items;
     expect(scoped).toHaveLength(1);
     expect(scoped[0]?.invoiceId).toBe(a.invoice.id);
     // earlier tests in this file also insert returns — only the scoped count is exact
-    expect((await store.listReturns({})).length).toBeGreaterThanOrEqual(2);
+    expect((await store.listReturns({})).items.length).toBeGreaterThanOrEqual(2);
 
     const totals = await store.returnedByLine(a.invoice.id);
     expect(totals.get(a.line.id)?.quantity).toBe(1);

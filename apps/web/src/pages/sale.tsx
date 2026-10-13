@@ -223,7 +223,7 @@ export function SalePage() {
         paidSource.current = null;
         setError(null);
         void Promise.all([
-          queryClient.invalidateQueries({ queryKey: orpc.itemsList.queryKey() }),
+          queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.itemsLowStock.queryKey() }),
         ]);
       },

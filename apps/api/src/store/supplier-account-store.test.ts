@@ -142,7 +142,7 @@ describe("supplier account store", () => {
     });
     const returned = await store.returnedByPurchaseLine(invoice.id);
     expect(returned.get(line.id)).toBe(3);
-    const history = await store.listSupplierReturns({ supplierId: supplier.id });
+    const history = (await store.listSupplierReturns({ supplierId: supplier.id })).items;
     expect(history).toHaveLength(1);
     expect(history[0]?.returnNumber).toBe("PRT-0001");
     // the supplier's current name is joined so the voucher/history identify it

@@ -33,12 +33,17 @@ export function CustomerSettlePanel({
   invoices,
   unpaid,
   onDone,
+  onPartialWrite,
   onCancel,
 }: {
   partyId: string;
   invoices: readonly Invoice[];
   unpaid: number;
   onDone: () => void;
+  /** #174 round 1 — some per-invoice writes landed but the batch failed. The
+   * caller must still refresh views derived from those rows (the detail read
+   * refetches itself, but the paged tab queries carry their own keys). */
+  onPartialWrite?: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -115,11 +120,15 @@ export function CustomerSettlePanel({
       return;
     }
     setSubmitting(true);
+    // how many per-invoice payments actually landed; a mid-loop failure must
+    // still signal the caller when any did, or the paged tabs stay stale
+    let written = 0;
     try {
       // one atomic payment per invoice: the api re-checks the boundary inside
       // each write unit, so a stale remaining can never be overpaid
       for (const line of targets) {
         await pay.mutateAsync({ invoiceId: line.invoice.id, amount: line.applied, method });
+        written += 1;
       }
       await refresh();
       onDone();
@@ -129,6 +138,7 @@ export function CustomerSettlePanel({
       // would replan from stale rows and re-send money already taken
       setError(tError(err instanceof Error ? err.message : undefined));
       setHalted(true);
+      if (written > 0) onPartialWrite?.();
       void refresh();
     } finally {
       setSubmitting(false);

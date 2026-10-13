@@ -123,6 +123,31 @@ mock.module("@/lib/rpc", () => ({
           payInputs.push({ invoiceId: input.invoiceId, amount: input.amount, method: input.method });
           payCalls += 1;
           if (failPayAt > 0 && payCalls === failPayAt) throw new Error("PAYMENT_EXCEEDS_REMAINING");
+          // #174 round 1 — model the server write so a later tab refetch can
+          // observe it (the real api reduces remaining and records a payment)
+          const invoiceNumber = partyDetail.invoices.find((entry) => entry.id === input.invoiceId)?.invoiceNumber ?? "INV-0000";
+          partyDetail = {
+            ...partyDetail,
+            invoices: partyDetail.invoices.map((entry) =>
+              entry.id === input.invoiceId
+                ? { ...entry, paidAmount: entry.paidAmount + input.amount, remainingAmount: entry.remainingAmount - input.amount }
+                : entry,
+            ),
+            payments: [
+              ...partyDetail.payments,
+              {
+                id: `pay-${payCalls}`,
+                invoiceId: input.invoiceId,
+                invoiceNumber,
+                amount: input.amount,
+                // SAFETY: the settle panel only ever sends the CASH / BANK method
+                method: (input.method ?? "CASH") as "CASH" | "BANK",
+                note: null,
+                paidAt: "2026-10-01T10:00:00",
+                createdAt: "2026-10-01T10:00:00",
+              },
+            ],
+          };
           return {};
         },
       }),
@@ -347,6 +372,44 @@ describe("customer settle in place (#164)", () => {
     // be a silent no-op)
     await waitFor(() => invoiceTabCalls > tabCallsBefore);
     expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم توزيع الدفعة");
+    // ...and the all-success path refreshes the payments tab too
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-payment-row"]').length === 2);
+  });
+
+  it("refreshes the paged tabs after a partly failed settle (issue #174 round 1)", async () => {
+    partyDetail = makeDetail([
+      invoice({ id: "first", invoiceNumber: "INV-0001", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 }),
+      invoice({ id: "second", invoiceNumber: "INV-0002", invoiceDate: "2026-09-02", remainingAmount: 1_000, totalAmount: 1_000 }),
+    ]);
+    failPayAt = 2; // the oldest write lands, the second fails
+    await renderCustomer();
+    // show every invoice so the settled row stays visible WITHOUT changing the
+    // query key (a filter change would refetch regardless of the fix)
+    act(() => {
+      host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')?.click();
+    });
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 2);
+
+    click("party-settle");
+    click("party-settle-confirm");
+    await flushAsync();
+    expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
+    expect(payInputs).toEqual([
+      { invoiceId: "first", amount: 1_000, method: "CASH" },
+      { invoiceId: "second", amount: 1_000, method: "CASH" },
+    ]);
+
+    // close the halted panel: the tabs must already carry the landed write,
+    // so the paid invoice shows settled instead of staying unpaid
+    click("party-settle-cancel");
+    await waitFor(() => {
+      const row = Array.from(host.querySelectorAll('[data-testid="party-invoice-row"]')).find((entry) => entry.textContent?.includes("INV-0001"));
+      return row?.textContent?.includes("مسدّدة بالكامل") ?? false;
+    });
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-payment-row"]').length === 1);
+    expect(host.querySelector('[data-testid="party-payment-row"]')?.textContent).toContain("INV-0001");
   });
 
   it("distributes a settle over every invoice, not just the visible page (#174)", async () => {

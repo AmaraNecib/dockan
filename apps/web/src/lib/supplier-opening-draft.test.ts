@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, parseBulkAmount } from "./supplier-opening-draft";
+import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, parseBulkAmount, isOpeningBatchOverLimit } from "./supplier-opening-draft";
 
 /**
  * Greptile round 1 finding 1: a "1,000" amount was rejected by the strict
@@ -57,8 +57,9 @@ describe("newOpeningRowStatus", () => {
   it("is invalid for a malformed amount and duplicate for an existing name", () => {
     expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "abc", existingNames })).toEqual({ status: "invalid" });
     expect(newOpeningRowStatus({ name: "مورد البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
-    // Arabic folding: alef/ya variants of the same name are still a duplicate
-    expect(newOpeningRowStatus({ name: "مورد البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
+    // normalizeTextKey (ADR-0007) collapses whitespace: a padded variant is
+    // still the same supplier and must be caught as a duplicate
+    expect(newOpeningRowStatus({ name: "مورد  البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
   });
 
   it("is filled with the trimmed name and the parsed amount", () => {
@@ -69,5 +70,11 @@ describe("newOpeningRowStatus", () => {
 describe("MAX_OPENING_BALANCE_ROWS", () => {
   it("matches the contract's 200-row cap", () => {
     expect(MAX_OPENING_BALANCE_ROWS).toBe(200);
+  });
+
+  it("allows exactly the cap and blocks only a larger batch", () => {
+    expect(isOpeningBatchOverLimit(199)).toBe(false);
+    expect(isOpeningBatchOverLimit(200)).toBe(false);
+    expect(isOpeningBatchOverLimit(201)).toBe(true);
   });
 });

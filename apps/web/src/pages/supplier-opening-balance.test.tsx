@@ -283,6 +283,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).toContain(JSON.stringify(["reportsDebts"]));
     expect(keys).toContain(JSON.stringify([["debtsByParty"]]));
     expect(keys).toContain(JSON.stringify(["dashboardSummary"]));
+    expect(keys).toContain(JSON.stringify([["activitiesList"]]));
+    expect(keys).toContain(JSON.stringify([["invoicesList"]]));
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
   });
 });

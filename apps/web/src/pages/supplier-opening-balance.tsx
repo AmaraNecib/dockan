@@ -12,8 +12,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
-import { DEBTS_BY_PARTY_QUERY_KEY, orpc } from "@/lib/rpc";
-import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus } from "@/lib/supplier-opening-draft";
+import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
+import { orpc } from "@/lib/rpc";
+import { MAX_OPENING_BALANCE_ROWS, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus } from "@/lib/supplier-opening-draft";
 
 type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
 
@@ -74,7 +75,7 @@ export function SupplierOpeningBalancePage() {
           : null;
 
   const totalRows = filledExisting.length + (newFilled ? 1 : 0);
-  const overLimit = totalRows > MAX_OPENING_BALANCE_ROWS;
+  const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
@@ -113,7 +114,8 @@ export function SupplierOpeningBalancePage() {
         queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
-        queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+        queryClient.invalidateQueries({ queryKey: ACTIVITIES_LIST_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: INVOICES_LIST_QUERY_KEY }),
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
       setConfirming(false);

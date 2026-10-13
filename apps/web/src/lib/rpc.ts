@@ -32,10 +32,3 @@ const rpcLink = new RPCLink({
 
 export const rpcClient: DokanClient = createORPCClient(rpcLink);
 export const orpc = createTanstackQueryUtils(rpcClient);
-
-/**
- * Base key for the per-party debts query family. React Query prefix-matches, so
- * invalidating this marks every `debtsByParty` result stale; a cross-party
- * refresh has no single input to key on (issue #176 review round 1). The shape
- * matches the first element oRPC generates for the procedure path. */
-export const DEBTS_BY_PARTY_QUERY_KEY = [["debtsByParty"]] as const;

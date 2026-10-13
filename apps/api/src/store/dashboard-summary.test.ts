@@ -213,6 +213,48 @@ describe("dashboardSummary (issue 84)", () => {
     expect((await store.dashboardSummary(day)).weOwe).toBe(500);
   });
 
+  it("matches the /debts supplier total across id-backed, typed-only and credit accounts (issue 176 review)", async () => {
+    const store = await freshStore();
+    const day = localDate();
+
+    // id-backed supplier: a 1000 purchase invoice, 300 paid, a 100 THEY_OWE
+    // adjustment -> net 600. The ledger already carries the charge, so adding
+    // the open invoice's remainder again would double-count it.
+    const supplier = await store.createParty("supplier", { name: "مورد حساب" });
+    const invoice = await store.insertInvoice({
+      invoiceNumber: "DASH-LEDGER-1",
+      kind: "PURCHASE",
+      counterpartyId: supplier.id,
+      counterpartyName: supplier.name,
+      invoiceDate: day,
+      subtotalAmount: 1000,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 1000,
+      paidAmount: 300,
+      remainingAmount: 700,
+      notes: null,
+    });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 1000, invoiceId: invoice.id, occurredAt: localDateTime() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 300, invoiceId: invoice.id, occurredAt: localDateTime() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 100, invoiceId: null, occurredAt: localDateTime() });
+
+    // a supplier in credit with no invoice at all
+    const credit = await store.createParty("supplier", { name: "مورد دائن" });
+    await store.insertSupplierEntry({ supplierId: credit.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 200, invoiceId: null, occurredAt: localDateTime() });
+
+    // a typed-name purchase has no account; its unpaid remainder still counts
+    await seedInvoice(store, { invoiceNumber: "DASH-TYPED", kind: "PURCHASE", invoiceDate: day, totalAmount: 500, paidAmount: 0, remainingAmount: 500 });
+
+    const result = await store.dashboardSummary(day);
+    const rows = await store.debtSummaries();
+    const displayed = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+
+    expect(result.weOwe).toBe(600 + 500 - 200); // 900
+    expect(result.weOwe).toBe(displayed);
+  });
+
   it("returns zeros and an empty list on an empty store", async () => {
     const store = await freshStore();
 

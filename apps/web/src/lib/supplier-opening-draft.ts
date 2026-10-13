@@ -64,3 +64,9 @@ export function newOpeningRowStatus(input: { name: string; amount: string; exist
 
 /** The contract's row cap (`supplierOpeningBalancesInputSchema.rows.max(200)`). */
 export const MAX_OPENING_BALANCE_ROWS = 200;
+
+/** True when a batch of `totalRows` would exceed the contract cap. Exactly the
+ * cap is allowed; only a larger batch is blocked. */
+export function isOpeningBatchOverLimit(totalRows: number): boolean {
+  return totalRows > MAX_OPENING_BALANCE_ROWS;
+}

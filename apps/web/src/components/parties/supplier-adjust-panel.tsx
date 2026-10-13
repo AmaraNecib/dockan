@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
-import { DEBTS_BY_PARTY_QUERY_KEY, orpc } from "@/lib/rpc";
+import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
+import { orpc } from "@/lib/rpc";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -102,10 +103,11 @@ export function SupplierAdjustPanel({
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: orpc.suppliersGet.queryKey({ input: { id: supplierId } }) }),
-        queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
-        queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
+        queryClient.invalidateQueries({ queryKey: INVOICES_LIST_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: ACTIVITIES_LIST_QUERY_KEY }),
         // the real debt/dashboard keys (Greptile round 1 finding 5: ["debtsData"]
-        // matched nothing, so saving never marked the debts views stale)
+        // matched nothing, so saving never marked the debts views stale). The
+        // list/activity prefixes use the same generated-path shape.
         queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),

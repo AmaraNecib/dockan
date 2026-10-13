@@ -45,3 +45,42 @@ rule. The lessons:
    over the identifier spelling (`entries > bestEntries`) is evaded by a rename or
    `Math.max`. Broaden it, but rely on the shared function plus a test that
    asserts the same account on both sides.
+
+## Addendum — review round 1 (Greptile 4/5): the async guard is not one bool
+
+Two failures survived the first cut, both from treating "the user left / the
+input changed" as a single flag.
+
+6. **Cancel must invalidate the in-flight attempt synchronously, and Cancel must
+   never be blocked on the lookup.** A pending `suppliersResolveName` resolved
+   after Cancel and still reached `save(false, …)` — money written after the
+   owner left. A monotonic `attemptRef` captured by `submit` and re-checked
+   after the await fixes it, but bump *it in the click handler*, not only in the
+   unmount cleanup: under StrictMode + a router `startTransition` the unmount
+   commit is deferred, so a back-link/browser-back leave can settle the resolve
+   before the cleanup runs. Give every leave control (Cancel, back link) a
+   synchronous bump. Do **not** disable Cancel while resolving — a hung lookup
+   would trap the owner. Prefer "abandon the attempt" over "block the exit".
+
+7. **Any edit to the outgoing batch invalidates the submit, not just the typed
+   row.** `submit` closes over `filledExisting` at click time. If the owner fills
+   or clears an existing row while the lookup runs, a late resolve writes the
+   stale closure (a silently dropped/ghost row). Bump the attempt in `setRow`
+   and in every field `onChange`, synchronously.
+
+8. **Tag a cached resolution with the exact key it answered for, and derive the
+   consumer from the key.** `typedResolution = { key, supplier }` +
+   `typedDestination = key === currentKey ? supplier : null` makes a stale
+   destination impossible to *use* in render, before any effect runs. A plain
+   state snapshot cleared in an effect is one commit late and blocks valid edits.
+
+9. **A refusal-recovery guard keyed on the attempt id can create an infinite
+   refusal loop.** `save`'s catch re-resolves to re-name the dialog; if it bails
+   because *any* edit bumped the attempt, a mere row edit during the write leaves
+   the dialog naming the old `expectedSupplierId` → confirm → refuse → forever.
+   Compare the **lookup key** (`resolveKeyRef`) instead: a row edit must still
+   refresh the dialog, only a typed-field edit may skip it.
+
+10. **"No write" needs a call counter, not just a null capture.** Assert
+    `mutationCalls === 0` *and* `resolveCalls === 1` so the test proves the lookup
+    ran and no write was attempted, rather than passing because nothing ran.

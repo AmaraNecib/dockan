@@ -58,7 +58,12 @@ test("picker warns on an alef/ya name variant and still creates the second recor
   await expect(page.getByTestId("sale-form")).toBeVisible();
   await page.getByTestId("sale-customer").fill(variantName);
   await page.getByTestId("sale-customer-create").click();
-  await expect(page.getByTestId("sale-customer-duplicate")).toContainText(storedName);
+  const warning = page.getByTestId("sale-customer-duplicate");
+  await expect(warning).toContainText(storedName);
+  // the stored record has no phone, so the copy must not claim a different one
+  await expect(warning).toContainText("بلا هاتف");
+  // a variant spelling is not the exact-name gate: the identity refusal stays off
+  await expect(page.getByTestId("sale-customer-needs-choice")).toHaveCount(0);
 
   // ...and does not block: the save stays enabled and the variant is created
   await expect(page.getByTestId("sale-customer-create-save")).toBeEnabled();

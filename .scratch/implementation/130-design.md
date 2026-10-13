@@ -92,6 +92,10 @@ sentence that keeps the second record available («إن لم يكن الشخص �
 سجلاً ثانياً») stays: it is the "warning, not a block" affordance. Arabic via
 i18n only; no display text from the API.
 
+A second key, `partyDuplicateNameNoPhone`, covers a stored record with no phone
+— the walk-in case #130 now warns about. Without it the copy read «باسم مشابه
+«علي علي» برقم مختلف (بدون هاتف)»: "a different phone (no phone)".
+
 ## Planned tests
 
 *Unit — `apps/web/src/components/parties/party-match.test.ts`:*
@@ -144,7 +148,7 @@ i18n only; no display text from the API.
 
 None added; `foldArabicVariants` is already exported by `@dokan/contracts`.
 
-## Review-driven changes (debate round 1 at `57acb32` → fixed before the final HEAD)
+## Review-driven changes (debate round 1 at `57acb32`, test audit at `e750327`)
 
 - **Article drop removed from the warning key** (critic F1, severity 5):
   `foldArabic` → `foldArabicVariants(...)[1]`, so «ال» stays significant.
@@ -156,11 +160,25 @@ None added; `foldArabicVariants` is already exported by `@dokan/contracts`.
 - **E2E cleanup moved to `test.afterEach`** (critic F3) and the
   non-discriminating "list offers the record" step dropped (critic F4: the #165
   fuzzy fallback made it pass for the wrong reason).
+- **Copy contradiction fixed** (test-audit edge-case lens, ORANGE): a stored
+  phoneless record rendered as «برقم مختلف (بدون هاتف)»; now
+  `partyDuplicateNameNoPhone`, pinned by the E2E.
+- **Missing tests added** (test-audit lenses): the warning's one-click pick
+  resolving to the existing debtor, a component-level negative (real letter),
+  the supplier half of the shared picker, alef inside an article-prefixed name,
+  a hyphen separator, substring/word-order negatives, and the Arabic-Indic
+  spelling of the same phone.
 - **Accepted, not fixed**: `duplicateNameParty` folds the loaded list on each
   keystroke while the create panel is open (critic F6, severity 2). It only runs
   with the panel open, `customersList` returns the whole list either way, and the
   pre-#130 code did the same walk with `normalizeTextKey`; memoizing the keys is
   a performance follow-up, not a #130 requirement.
+- **Dismissed**: "the E2E proves two list rows, not two debtors" (test-audit
+  coverage lens). Two rows with the two spellings IS two records, each with its
+  own invoice count and remaining; a balance merge requires merging the records,
+  which the two-row assertion fails on. The existing `customers.spec.ts` already
+  proves the debts screen groups by `counterparty_id`, and the new component test
+  proves the warning's button selects the existing record.
 - **Deferred**: the `/customers` create form still has no duplicate-name warning
   at all, and a warning mounted inside a `role="status"` region may not be
   announced by every screen reader (pre-existing markup, both out of #130's

@@ -66,7 +66,8 @@ describe("duplicateNameParty", () => {
 
   it("does not warn when the same phone is already on the same name (same identity)", () => {
     expect(duplicateNameParty("علي علي", "0555123456", LIST)).toBeUndefined();
-    // ...nor for walk-ins with no phone on either side
+    // ...nor for the IDENTICAL spelling with no phone on either side: the
+    // picker's `needsChoice` gate already refuses that one (#130)
     expect(duplicateNameParty("عماره", null, LIST)).toBeUndefined();
   });
 
@@ -76,9 +77,8 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي\u061C", "0555123457", LIST)?.id).toBe("ali");
   });
 
-  it("does not warn for an unrelated or empty name", () => {
+  it("does not warn for an unrelated name", () => {
     expect(duplicateNameParty("اسم آخر", "0555123456", LIST)).toBeUndefined();
-    expect(duplicateNameParty("   ", "0555123456", LIST)).toBeUndefined();
   });
 
   /**
@@ -102,9 +102,14 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("مصطفي", null, variants)?.id).toBe("mostafa-maqsura");
     // the reused fold also covers the ta-marbuta pair «عمارة»/«عماره»
     expect(duplicateNameParty("عمارة", null, variants)?.id).toBe("omar-ta");
-    // ...and tashkeel, as the strict key already did before #130
+    // ...tashkeel, as the strict key already did before #130
     const MOHAMED = party({ id: "mohamed", name: "محمد", phone: "+213555000777" });
     expect(duplicateNameParty("مُحَمَّد", null, [MOHAMED])?.id).toBe("mohamed");
+    // ...alef inside an article-prefixed name (the article itself is kept)
+    const ELASAD = party({ id: "elasad", name: "الأسد", phone: "+213555000888" });
+    expect(duplicateNameParty("الاسد", null, [ELASAD])?.id).toBe("elasad");
+    // ...and a separator, which the fold reads as a word break
+    expect(duplicateNameParty("علي-علي", null, variants)?.id).toBe("ali-maqsura");
     // the stored spelling is reported, whatever the candidate's was
     expect(duplicateNameParty("أحمد بنين", "0555000999", variants)?.id).toBe("ahmed-hamza");
   });
@@ -121,12 +126,17 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علا علي", null, variants)).toBeUndefined();
     expect(duplicateNameParty("مصطفى نور", "0555000111", variants)).toBeUndefined();
     expect(duplicateNameParty("عماد", null, variants)).toBeUndefined();
+    // a superstring or a reordered name is not the same name either
+    expect(duplicateNameParty("مصطفى", null, [party({ id: "full", name: "مصطفى نور", phone: "+213555000999" })])).toBeUndefined();
+    expect(duplicateNameParty("علي محمد", null, [party({ id: "order", name: "محمد علي", phone: "+213555000111" })])).toBeUndefined();
   });
 
   it("treats a variant spelling with the same phone as one identity, not a duplicate", () => {
     const ali = party({ id: "ali-maqsura", name: "على علي", phone: "+213555123456" });
     expect(duplicateNameParty("علي علي", "0555123456", [ali])).toBeUndefined();
     expect(duplicateNameParty("على علي", "+213555123456", [ali])).toBeUndefined();
+    // the Arabic-Indic spelling of the same phone is the same identity too
+    expect(duplicateNameParty("علي علي", "٠٥٥٥١٢٣٤٥٦", [ali])).toBeUndefined();
   });
 
   it("warns for a variant spelling even when neither side has a phone", () => {

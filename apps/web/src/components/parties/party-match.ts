@@ -87,6 +87,9 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  *
  * The identical spelling is preferred over an earlier variant of the name, so
  * the warning (and its one-click pick) points at the record the owner typed.
+ * When that exact record is itself the same identity (same phone), a variant of
+ * the name still warns — the picker's phone-owner message takes precedence in
+ * the UI, so this only decides the function's result.
  *
  * Identity (storage, the store's unique phone, `needsChoice`) keeps
  * `normalizeTextKey` (ADR-0007); folding identity would merge two people's

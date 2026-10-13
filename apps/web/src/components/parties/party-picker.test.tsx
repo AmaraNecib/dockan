@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
-import type { PartyListItem } from "@dokan/contracts";
+import type { PartyListItem, PartyRole } from "@dokan/contracts";
 
 import { PartyPicker, type PartySelection } from "./party-picker";
 
@@ -19,8 +19,10 @@ const EMPTY_STATS = { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingA
 
 const ALI: PartyFixture = { id: "ali", name: "علي علي", phone: "+213555123456", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS, accountBalance: null, accountEntryCount: null };
 const OMAR: PartyFixture = { id: "omar", name: "عماره", phone: "+213555111222", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS, accountBalance: null, accountEntryCount: null };
+const SUPPLIER_ALI: PartyFixture = { id: "sup-ali", name: "علي علي", phone: "+213555123456", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS, accountBalance: null, accountEntryCount: null };
 
 let parties: PartyFixture[] = [ALI, OMAR];
+let suppliers: PartyFixture[] = [];
 let created: Array<{ name: string; phone?: string }> = [];
 let createFails = false;
 
@@ -31,7 +33,7 @@ mock.module("@/lib/rpc", () => ({
       queryKey: () => ["customers"],
     },
     suppliersList: {
-      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: [] }) }),
+      queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: suppliers }) }),
       queryKey: () => ["suppliers"],
     },
     customersCreate: {
@@ -52,18 +54,18 @@ mock.module("@/lib/rpc", () => ({
 
 const mounted: Array<{ root: Root; host: HTMLElement; queryClient: QueryClient }> = [];
 
-function Harness() {
+function Harness({ role = "customer" }: { role?: PartyRole }) {
   const [value, setValue] = useState<PartySelection>({ id: null, name: "" });
   return (
     <div>
-      <PartyPicker role="customer" label="الزبون" value={value} onChange={setValue} testId="picker" />
+      <PartyPicker role={role} label={role === "customer" ? "الزبون" : "المورّد"} value={value} onChange={setValue} testId="picker" />
       <output data-testid="selection">{`${value.id ?? "none"}|${value.name}`}</output>
       <output data-testid="needs-choice">{value.needsChoice === true ? "needs" : "ok"}</output>
     </div>
   );
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(role: PartyRole = "customer"): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -71,7 +73,7 @@ async function mount(): Promise<HTMLElement> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <Harness />
+        <Harness role={role} />
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -116,6 +118,7 @@ afterEach(async () => {
     host.remove();
   }
   parties = [ALI, OMAR];
+  suppliers = [];
   created = [];
   createFails = false;
 });
@@ -212,6 +215,35 @@ describe("PartyPicker (issue 120)", () => {
     await click(host, "picker-create-save");
     expect(created).toEqual([{ name: "على علي" }]);
     expect(selection(host)).toBe("new-1|على علي");
+  });
+
+  it("resolves a folded match to the existing debtor when the owner picks it (#130)", async () => {
+    const host = await mount();
+    await type(host, "picker", "على علي");
+    await click(host, "picker-create");
+
+    // the money path: the warning's button selects the STORED record, so the
+    // sale lands on the existing debtor instead of a second one
+    await click(host, "picker-pick-duplicate");
+    expect(selection(host)).toBe("ali|علي علي");
+    expect(created).toEqual([]);
+  });
+
+  it("does not warn for a name that differs by a real letter (#130)", async () => {
+    const host = await mount();
+    await type(host, "picker", "علا علي");
+    await click(host, "picker-create");
+
+    expect(host.querySelector('[data-testid="picker-duplicate"]')).toBeNull();
+  });
+
+  it("warns for a variant spelling on the supplier picker too (shared path, #130)", async () => {
+    suppliers = [SUPPLIER_ALI];
+    const host = await mount("supplier");
+    await type(host, "picker", "على علي");
+    await click(host, "picker-create");
+
+    expect(host.querySelector('[data-testid="picker-duplicate"]')?.textContent).toContain("علي علي");
   });
 
   it("blocks creating with a phone another record owns and offers that record instead", async () => {

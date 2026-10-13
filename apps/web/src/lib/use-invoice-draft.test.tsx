@@ -10,6 +10,7 @@ import {
   usePaymentPair,
   useQuickAdd,
   type PaymentPairState,
+  type QuickAddSpec,
 } from "./use-invoice-draft";
 
 // React 19 act() requires the environment flag to be set explicitly.
@@ -81,10 +82,18 @@ const SALE_DRAFT = {
   unitPrice: saleUnitPrice,
 };
 
-const RESETTING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: true };
-const RETAINING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: false };
+/** sale's contract: reset on every open, and nothing survives a create */
+const RESETTING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: true, keepOnCreate: [] as const };
+/** purchase's open policy: keep what is typed across a close */
+const RETAINING_QUICK = { empty: () => ({ name: "", barcode: "" }), resetOnOpen: false, keepOnCreate: [] as const };
+/** purchase's create policy: the destination category survives a successful create */
+const KEEPING_QUICK = {
+  empty: () => ({ name: "", barcode: "", categoryId: "" }),
+  resetOnOpen: false,
+  keepOnCreate: ["categoryId"] as const,
+};
 
-function mountQuick(spec: { empty: () => { name: string; barcode: string }; resetOnOpen: boolean }) {
+function mountQuick<F extends { name: string } & Record<string, string>>(spec: QuickAddSpec<F>) {
   const created: Array<{ id: string; name: string }> = [];
   const errors: Array<string | null> = [];
   const hook = mountHook(() =>
@@ -177,6 +186,34 @@ describe("useQuickAdd (the quick-add form's behaviour)", () => {
     expect(hook.get().open).toBe(false);
     expect(hook.get().fields).toEqual({ name: "", barcode: "" });
     expect(errors).toEqual([null]);
+  });
+
+  it("keeps only the fields the spec declares across a successful create", async () => {
+    const { hook } = mountQuick(KEEPING_QUICK);
+    act(() => hook.get().openForm({ name: "منتج", barcode: "111" }));
+    act(() => hook.get().setField("categoryId", "cat-1"));
+
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: true, item: item("منتج") }));
+    });
+    // the declared field survives so the next item needs no second pick
+    expect(hook.get().fields).toEqual({ name: "", barcode: "", categoryId: "cat-1" });
+  });
+
+  it("re-seeds from empty on the next open when the spec keeps nothing", async () => {
+    const { hook } = mountQuick(RESETTING_QUICK);
+    act(() => hook.get().openForm({ barcode: "111" }));
+    act(() => hook.get().setField("name", "typed"));
+
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: true, item: item("a") }));
+    });
+    expect(hook.get().fields).toEqual({ name: "", barcode: "" });
+
+    // sale's contract: the next open rebuilds from empty() plus its seed, so a
+    // previous pick is deliberately gone
+    act(() => hook.get().openForm({ barcode: "222" }));
+    expect(hook.get().fields).toEqual({ name: "", barcode: "222" });
   });
 
   it("does not land a line when the create call refuses, and reports it", async () => {

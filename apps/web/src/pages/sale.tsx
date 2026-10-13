@@ -83,6 +83,9 @@ type SaleQuickFields = { name: string; barcode: string; categoryId: string; cost
 const SALE_QUICK = {
   empty: (): SaleQuickFields => ({ name: "", barcode: "", categoryId: "", cost: "", sell: "", stock: "" }),
   resetOnOpen: true,
+  // sale keeps nothing across a create: its category is a default it re-derives
+  // from the list on every open, not an explicit pick to preserve
+  keepOnCreate: [] as const,
 };
 
 export function SalePage() {

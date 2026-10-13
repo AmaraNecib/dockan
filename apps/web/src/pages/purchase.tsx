@@ -47,6 +47,10 @@ type PurchaseQuickFields = { name: string; barcode: string; categoryId: string; 
 const PURCHASE_QUICK = {
   empty: (): PurchaseQuickFields => ({ name: "", barcode: "", categoryId: "", sellPrice: "", threshold: "", qty: "1", unitCost: "" }),
   resetOnOpen: false,
+  // the owner stocks several items in one sitting, so a successful create keeps
+  // the destination category. The old handler cleared the item fields and kept
+  // quickCategoryId for the same reason.
+  keepOnCreate: ["categoryId"] as const,
 };
 
 export function PurchasePage() {

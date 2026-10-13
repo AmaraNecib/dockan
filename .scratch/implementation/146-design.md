@@ -144,6 +144,9 @@ useQuickAdd(spec, options): {
   open; fields; setField(key, value); openForm(seed?); close; toggle;
   submit(create: (fields) => Promise<QuickAddOutcome>): Promise<void>;
 }
+// spec: { empty(): F; resetOnOpen: boolean; keepOnCreate: readonly (keyof F)[] }
+//   keepOnCreate is REQUIRED: it names the fields that survive a successful
+//   create, so every caller answers the question the first version missed.
 ```
 
 `draftReducer` is exported pure, so the line-list rules are unit-tested without
@@ -176,6 +179,7 @@ config would have to restate field by field:
 | stock | optional on the plain path, required on the scan path, takes focus | absent |
 | qty | absent | required, seeds `"1"`, becomes the line quantity |
 | reset | resets on every open (a scan seeds the barcode) | keeps what is typed across a close |
+| post-create | keeps nothing: the category is a derived default | keeps the picked category, so several items are created from one pick |
 | buttons | submit plus close | submit only |
 | test ids, labels, layout | sale-quick-* | quick-*, purchase-* |
 
@@ -183,6 +187,37 @@ A descriptor list carrying all of that would be as long as the forms it replaced
 which is the definition of a shallow module. So the module owns the quick-add's
 rules and the pages own its fields. This narrows the issue's wording, and it is
 reported as a `decisionRequest` rather than treated as settled.
+
+### 4.2 What a successful create keeps, per field
+
+The shared reset rebuilds every field from `empty()` and then re-applies
+`keepOnCreate`. Round 1 of the PR review found that the first version of this
+reset rebuilt the whole bag and silently dropped a field one screen cared about,
+so the accounting is written out here and the declaration is required.
+
+| field | sale, old handler | sale, now | purchase, old handler | purchase, now |
+|---|---|---|---|---|
+| name | not cleared (the form closed; the next open reset it) | `empty()` | cleared | `empty()` |
+| barcode | same | `empty()` | cleared | `empty()` |
+| category | re-derived to the first category on every open | `empty()` then re-derived by `openForm` | **kept** | **kept** via `keepOnCreate` |
+| stock (sale) | reset by every `openQuick` | `empty()` | n/a | n/a |
+| cost / sell (sale) | reset by every `openQuick` | `empty()` | n/a | n/a |
+| sell / threshold (purchase) | n/a | n/a | cleared | `empty()` |
+| qty (purchase) | n/a | n/a | reset to `"1"` | `empty()` |
+| unit cost (purchase) | n/a | n/a | cleared | `empty()` |
+
+Sale is not affected by the shared reset. Its handler never preserved anything:
+every open rebuilt the bag and re-seeded the category default, so the next form
+the owner sees is `empty()` plus the seed in both the old and the new code. The
+only observable difference is that sale's typed values are now cleared at create
+time rather than lingering in closed-form state, which fixes a stale
+`draftDirty` flag (the header's New Sale action no longer warns about a draft
+that a successful create already ended).
+
+Purchase keeps `categoryId` because it requires an explicit pick: an owner
+stocking several items in one sitting would otherwise re-pick the destination
+category for every item, or hit `itemsChooseCategory`. That is what the old
+handler did, and it is a regression if it lapses.
 
 ## 5. Dependencies
 
@@ -199,8 +234,9 @@ schema change.
 **New, `apps/web/src/lib/use-invoice-draft.test.tsx`:** the adapter's own
 coverage, which the pure tests cannot reach: the line list through
 `useInvoiceDraft` (add, merge, re-price, remove, reset, subtotal), the
-quick-add's seed and reset policy for both kinds, the create-then-land-the-line
-flow, the refusal path, and the payment pair following the reference total.
+quick-add's seed and reset policy for both kinds, which fields a spec declares
+survive a successful create, the create-then-land-the-line flow, the refusal
+path, and the payment pair following the reference total.
 
 **New, `apps/web/src/lib/invoice-draft.test.ts` (pure):**
 - the quantity parse table: `""`, `"   "`, `"0"`, `"-3"`, `"2.5"`, `"abc"`,
@@ -227,7 +263,11 @@ clears the quantity field and asserts it stays empty, the line resolves to zero,
 the save is refused with `purchasesInvalidQuantity`, and nothing is sent. A loop
 asserts `"abc"`, `"2.5"`, `"-3"` and `"0"` stay visible and resolve to zero. A
 unit-cost test pins the money contract of that field, and an over-cap quick-add
-quantity is refused instead of landing a dead line.
+quantity is refused instead of landing a dead line. The PR review's round-1 fix
+adds the regression test: two items created in a row through the quick-add form
+with **one** category pick, asserting the second create happens, keeps the
+category, and never raises `itemsChooseCategory`. It fails with the keep list
+emptied.
 
 **E2E:** `tests/e2e/sale-checkout.spec.ts` and `tests/e2e/purchase-intake.spec.ts`
 stay green. `purchase-intake.spec.ts` gains the browser-level drift proof:
@@ -249,6 +289,34 @@ is intact after a fresh value.
 | both: `initialPaid` | 0 reads as `undefined`, partial reads as that number, over total is refused |
 
 ## 8. Review outcomes and follow-ups
+
+### Round 3: PR #188 review fix (Greptile 4/5)
+
+**Finding.** The shared success reset rebuilt the whole field bag, so purchase's
+quick-add forgot the category it had just used. The old handler cleared the item
+fields and kept `quickCategoryId`, and an owner stocking several items in one
+sitting now had to re-pick the category for every item or hit
+`itemsChooseCategory`. A regression this branch introduced.
+
+**Fix.** `QuickAddSpec.keepOnCreate` is now a required field naming the fields a
+successful create keeps, and the reset is
+`nextBag(spec, fields) = { ...spec.empty(), ...kept }`. Purchase declares
+`keepOnCreate: ["categoryId"]`; sale declares `[]` because it re-derives its
+category default on every open. Making the declaration required is the part that
+prevents the class of bug: every caller has to answer which fields survive.
+Section 4.2 carries the per-field accounting for both screens.
+
+**Tests.** A hook test pins the declared-field survival, a second pins sale's
+contract (nothing survives, the next open re-seeds from `empty()`), and a page
+test creates two purchase items in a row from one category pick. Both falsify
+when the keep list is emptied: the form falls back to the «—» placeholder and
+the second create is refused with `itemsChooseCategory`.
+
+**Sale.** Not affected, and section 4.2 says why: sale preserved nothing before
+this change either, because every open rebuilt the bag and re-seeded the
+category default.
+
+### Rounds 1 and 2
 
 Round 1 and round 2 each ran a critic and defender pair, a three-agent test
 audit, and a two-axis code review. The findings that were accepted are fixed

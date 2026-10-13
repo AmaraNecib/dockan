@@ -45,6 +45,8 @@ let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; ini
 function clearPurchaseRecorder() {
   lastPurchaseInput = null;
 }
+/** every itemsCreate the mocked quick-add performed, in order (issue #146) */
+let createdItems: Array<{ name: string; categoryId: string }> = [];
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -88,7 +90,10 @@ mock.module("@/lib/rpc", () => ({
     itemsCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
-        mutationFn: async () => ({ id: "item-1", name: "منتج", costPrice: 100, sellingPrice: 150 }),
+        mutationFn: async (input: { name: string; categoryId: string }) => {
+          createdItems.push({ name: input.name, categoryId: input.categoryId });
+          return { id: "item-1", name: "منتج", costPrice: 100, sellingPrice: 150 };
+        },
         ...opts,
       }),
     },
@@ -672,6 +677,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     document.body.innerHTML = "";
     lastPurchaseInput = null;
+    createdItems = [];
     mounted = [];
     purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
   });
@@ -694,8 +700,8 @@ describe("PurchasePage quantity draft (#146)", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   };
 
-  /** mount the page and land one purchase line through the quick-add */
-  async function mountWithLine(qty: string, cost: string) {
+  /** mount the page with the category list resolved */
+  async function mountPage() {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -708,25 +714,50 @@ describe("PurchasePage quantity draft (#146)", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
+    return { container, root };
+  }
+
+  const quickForm = (container: HTMLElement) => container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]');
+  /** the quick-add category control; its rendered label shows the current pick */
+  const categoryTrigger = (container: HTMLElement) => quickForm(container)?.querySelector<HTMLElement>('[data-slot="select-trigger"]') ?? null;
+
+  /** open the inline create form */
+  async function toggleQuick(container: HTMLElement) {
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    const quickForm = container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]')!;
+  }
+
+  /** fill the open form's item fields; the category is left exactly as it is */
+  async function fillQuick(container: HTMLElement, name: string, qty: string, cost: string) {
+    const form = quickForm(container);
+    if (form === null) throw new Error("the quick-add form is not open");
     await act(async () => {
-      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, "منتج");
-      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, qty);
-      setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, name);
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, qty);
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+  }
+
+  async function submitQuick(container: HTMLElement) {
     await act(async () => {
-      await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
-    });
-    await act(async () => {
-      quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      quickForm(container)?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    return { container, root };
+  }
+
+  /** mount the page and land one purchase line through the quick-add */
+  async function mountWithLine(qty: string, cost: string) {
+    const page = await mountPage();
+    await toggleQuick(page.container);
+    await fillQuick(page.container, "منتج", qty, cost);
+    await act(async () => {
+      await chooseOption(categoryTrigger(page.container)!, "تصنيف");
+    });
+    await submitQuick(page.container);
+    return page;
   }
 
   const quantityField = (container: HTMLElement) => container.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
@@ -815,5 +846,37 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
     expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(0);
     expect(lastPurchaseInput).toBeNull();
+  });
+
+  it("creates two items in a row from a single category pick (greptile round 1)", async () => {
+    const { container } = await mountPage();
+    await toggleQuick(container);
+    await fillQuick(container, "منتج واحد", "1", "100");
+    // the one category pick that must serve both creates
+    await act(async () => {
+      await chooseOption(categoryTrigger(container)!, "تصنيف");
+    });
+    await submitQuick(container);
+
+    expect(createdItems).toHaveLength(1);
+    expect(createdItems[0]!.categoryId).toBe("cat-1");
+    // a successful create closes the form
+    expect(quickForm(container)).toBeNull();
+
+    // reopen and create a second item without touching the category, which the
+    // old handler kept and the first shared reset dropped
+    await toggleQuick(container);
+    // the trigger carries only the selected label plus its chevron, so this
+    // fails if the pick was dropped back to the «—» placeholder
+    const trigger = categoryTrigger(container);
+    expect(trigger?.textContent).toContain("تصنيف");
+    expect(trigger?.textContent).not.toContain("—");
+    await fillQuick(container, "منتج ثانٍ", "1", "100");
+    await submitQuick(container);
+
+    expect(createdItems).toHaveLength(2);
+    expect(createdItems[1]).toEqual({ name: "منتج ثانٍ", categoryId: "cat-1" });
+    // no itemsChooseCategory: the second create never asked for a pick
+    expect(container.querySelector('[data-testid="purchase-error"]')).toBeNull();
   });
 });

@@ -118,6 +118,25 @@ export interface QuickAddSpec<F extends Record<string, string>> {
    * seeds the barcode); purchase keeps what the owner already typed.
    */
   resetOnOpen: boolean;
+  /**
+   * Fields that survive a SUCCESSFUL create. Everything else returns to
+   * `empty()`. This is required so every caller states the policy: the first
+   * version of this hook reset the whole bag, which silently dropped the
+   * category purchase used to keep and forced the owner to re-pick it for
+   * every item. Purchase keeps the destination category; sale keeps nothing,
+   * because it re-derives its category default on every open.
+   */
+  keepOnCreate: readonly (keyof F & string)[];
+}
+
+/**
+ * The bag the next form starts from after a successful create: everything back
+ * to `empty()`, except the fields the spec declared it keeps.
+ */
+function nextBag<F extends Record<string, string>>(spec: QuickAddSpec<F>, fields: F): F {
+  const next = spec.empty();
+  for (const key of spec.keepOnCreate) next[key] = fields[key];
+  return next;
 }
 
 export interface QuickAddOptions<F> {
@@ -176,7 +195,7 @@ export function useQuickAdd<F extends Record<string, string>>(
       }
       options.onCreated(outcome.item, fields);
       setOpen(false);
-      setFields(spec.empty());
+      setFields(nextBag(spec, fields));
     },
     [fields, options, spec],
   );

@@ -146,6 +146,55 @@ export type SupplierEntryInsert = {
   occurredAt: string;
 };
 
+/**
+ * #177 — one manual adjustment through the guarded store path. A null
+ * `invoiceId` is account-only (touches no invoice); a non-null one links a
+ * purchase invoice and the store applies its reduction in the same unit, so
+ * the account entry and the invoice's remaining can never diverge.
+ */
+export type SupplierAdjustmentInsert = {
+  supplierId: string;
+  direction: SupplierAdjustmentDirection;
+  amount: number;
+  reason: string | null;
+  occurredAt: string;
+  invoiceId: string | null;
+  ref?: string | null;
+  /**
+   * #177 — true when the router stamped `occurredAt` because the caller omitted
+   * it. A retry then cannot be told apart by time, so the duplicate signature
+   * ignores `occurredAt` (same supplier/direction/amount/reason/invoiceId at any
+   * time is a duplicate). A caller that wants two genuinely distinct identical
+   * adjustments must send its own `occurredAt`.
+   */
+  serverStamped?: boolean;
+};
+
+/** The #177 idempotency key of a manual adjustment, shared by the guarded write
+ * and the opening-balance confirmation so the two can never disagree. */
+export type SupplierAdjustmentSignature = Pick<
+  SupplierAdjustmentInsert,
+  "supplierId" | "direction" | "amount" | "reason" | "occurredAt" | "invoiceId" | "serverStamped"
+>;
+
+/** Typed refusal from the #177 supplier-adjustment guard. The router maps these
+ * to stable ORPC errors; the store never throws a transport error. */
+export class SupplierAdjustmentError extends Error {
+  constructor(
+    public readonly code:
+      | "DUPLICATE"
+      | "INVALID_AMOUNT"
+      | "OUTSIDE_TRANSACTION"
+      | "LINKED_DIRECTION"
+      | "INVOICE_MISMATCH"
+      | "EXCEEDS_REMAINING"
+      | "LINKED_NEEDS_ATOMIC_PATH",
+  ) {
+    super(code);
+    this.name = "SupplierAdjustmentError";
+  }
+}
+
 export type SupplierReturnInsert = {
   returnNumber: string;
   supplierId: string;
@@ -246,8 +295,24 @@ export interface StorePort {
   partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
   // --- supplier account (issue 161) ----------------------------------------
-  /** append-only signed entry; never updated or deleted */
+  /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
+   * (non-null invoiceId) is REFUSED here — it must go through
+   * `insertSupplierAdjustment`, which applies the invoice reduction in the same
+   * unit. */
   insertSupplierEntry(entry: SupplierEntryInsert): Promise<SupplierAccountEntry>;
+  /**
+   * #177 — the single guarded write path for a manual adjustment (تسوية). It
+   * refuses a duplicate submission (same supplier, direction, amount, reason,
+   * occurredAt), refuses a linked entry signed the wrong way or one the invoice
+   * cannot cover, and applies the linked invoice's reduction in the same unit as
+   * the entry. Call inside a `withTransactionImmediate` unit so the entry and
+   * the invoice's remaining can never diverge. Account-only (null invoiceId)
+   * never touches an invoice. */
+  insertSupplierAdjustment(input: SupplierAdjustmentInsert): Promise<SupplierAccountEntry>;
+  /** True when an ADJUSTMENT with this #177 signature already exists. Exposed so
+   * the bulk opening-balance confirmation can tell an exact resend from a
+   * genuinely new entry without duplicating the key. */
+  hasSupplierAdjustment(input: SupplierAdjustmentSignature): Promise<boolean>;
   /** every entry of one supplier, newest first, invoice number joined */
   listSupplierEntries(supplierId: string): Promise<SupplierAccountEntry[]>;
   /** outstanding PURCHASE invoices of one supplier, oldest first (allocation) */

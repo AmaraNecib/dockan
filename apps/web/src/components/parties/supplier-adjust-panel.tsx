@@ -5,9 +5,10 @@ import { useTranslation } from "react-i18next";
 import type { Invoice, SupplierAdjustmentDirection } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+import { parseGroupedAmount } from "@/lib/amount-parse";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
@@ -54,7 +55,7 @@ export function SupplierAdjustPanel({
   const [submitting, setSubmitting] = useState(false);
   const adjust = useMutation(orpc.suppliersAdjust.mutationOptions());
 
-  const amount = parseWholeAmount(amountDraft);
+  const amount = parseGroupedAmount(amountDraft);
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
   // NEVER auto-switch the linked invoice. The owner picked a specific invoice;

@@ -1,4 +1,4 @@
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
 
 /**
  * #161 — the pure half of the supplier-return form's draft validation. A draft
@@ -37,5 +37,5 @@ export function parseReturnQuantities(
 export function parseCashBackDraft(draft: string): number | null {
   const trimmed = draft.trim();
   if (trimmed === "") return 0;
-  return parseWholeAmount(trimmed);
+  return parseGroupedAmount(trimmed);
 }

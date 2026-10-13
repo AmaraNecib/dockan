@@ -96,4 +96,22 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-remaining")).toHaveText("4500 دج");
   await expect(page.getByTestId("invoice-returns-credit")).toHaveText("500 دج");
+
+  // 8. #180 — a supplier whose account is net in credit shows the credit label
+  // on the /debts group total, never a bare negative number
+  const creditSupplierName = `رصيد-دائن-${stamp}`;
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await page.getByTestId("opening-balance-new-name").fill(creditSupplierName);
+  await chooseSelectOption(page, page.getByTestId("opening-balance-new-direction"), "يسالنا");
+  await page.getByTestId("opening-balance-new-amount").fill("100000");
+  await page.getByTestId("opening-balance-save").click();
+  await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
+
+  await page.goto("/debts");
+  await expect(page.getByTestId("debts-group-weowe-credit")).toContainText("رصيد لنا عند الموردين");
+  // the amount renders as a positive figure under the credit label: the
+  // currency suffix alone would also pass for a negative value
+  await expect(page.getByTestId("debts-group-weowe-total")).toContainText("دج");
+  await expect(page.getByTestId("debts-group-weowe-total")).not.toContainText("-");
 });

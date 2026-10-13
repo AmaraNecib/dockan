@@ -6,6 +6,7 @@ import type { ExpenseCategory, ReportRangePreset } from "@dokan/contracts";
 import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { cn } from "@/lib/utils";
 import { Pager } from "@/components/ui/pager";
 import { inputClass } from "@/components/ui/input";
@@ -193,8 +194,8 @@ export function ExpensesPage() {
     event.preventDefault();
     setError(null);
     setDateInvalid(false);
-    const parsed = Number(amount);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
+    const parsed = parseGroupedAmount(amount);
+    if (parsed === null || parsed <= 0) {
       setError({ message: t("expenseInvalidAmount"), field: "amount" });
       return;
     }

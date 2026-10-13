@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 
 import { tError } from "@/lib/i18n";
@@ -44,13 +45,13 @@ export function SupplierRefundPanel({
         const percentage = parseWholePercentage(current.percentage);
         return percentage === null ? current : { amount: String(amountFromPercentage(availableCredit, percentage)), percentage: current.percentage };
       }
-      const amount = parseWholeAmount(current.amount);
+      const amount = parseGroupedAmount(current.amount);
       return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(availableCredit, amount)) };
     });
   }, [availableCredit]);
 
   const percentageInvalid = percentageDraftInvalid(value.percentage);
-  const amount = parseWholeAmount(value.amount);
+  const amount = parseGroupedAmount(value.amount);
   const amountError = amount === null || amount <= 0 ? t("partySettleAmountRequired") : amount > availableCredit ? t("REFUND_EXCEEDS_CREDIT") : null;
 
   async function submit(event: React.FormEvent) {

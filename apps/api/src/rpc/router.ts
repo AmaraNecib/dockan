@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, normalizeTextKey, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -9,7 +9,7 @@ import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
-import { PartyError } from "../store/port";
+import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
@@ -165,6 +165,35 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
   }
   return total;
 }
+
+/**
+ * #177 — a typed store refusal from the guarded adjustment path maps to a
+ * stable ORPC error. The router still runs its invoice OWNERSHIP checks
+ * (purchase + belongs to the supplier) before the store call; the store checks
+ * the duplicate signature BEFORE the remaining-amount offset, so an exact
+ * linked resend is reported as a duplicate. These mappings cover the store's
+ * backstop.
+ */
+const ADJUSTMENT_REFUSAL = {
+  DUPLICATE: { status: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" },
+  EXCEEDS_REMAINING: { status: "BAD_REQUEST", message: "ADJUSTMENT_EXCEEDS_REMAINING" },
+  LINKED_DIRECTION: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVOICE_DIRECTION" },
+  LINKED_NEEDS_ATOMIC_PATH: { status: "BAD_REQUEST", message: "ADJUSTMENT_LINK_INVALID" },
+  INVALID_AMOUNT: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVALID_AMOUNT" },
+  OUTSIDE_TRANSACTION: { status: "INTERNAL_SERVER_ERROR", message: "ADJUSTMENT_NOT_TRANSACTIONAL" },
+  INVOICE_MISMATCH: { status: "BAD_REQUEST", message: "INVOICE_NOT_PURCHASE" },
+} satisfies Record<SupplierAdjustmentError["code"], { status: "CONFLICT" | "BAD_REQUEST" | "INTERNAL_SERVER_ERROR"; message: string }>;
+
+/** Map a typed store adjustment refusal to its stable ORPC error. One mapper
+ * for every guarded-adjustment call site; the caller rethrows anything else. */
+const adjustmentRefusal = (error: SupplierAdjustmentError) => {
+  const refusal = ADJUSTMENT_REFUSAL[error.code];
+  return new ORPCError(refusal.status, { message: refusal.message });
+};
+
+/** One supplier that folds to a given normalized name, for the opening-balance
+ * resolver (a name can match more than one row after legacy duplicate creation). */
+type NamedSupplierCandidate = { id: string; name: string; entries: number };
 
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
@@ -886,10 +915,11 @@ export function createRpcRouter(deps: RpcDeps) {
         }),
       ),
     ),
-    // #176 — a manual adjustment: append-only, account-only unless the
+    // #176/#177 — a manual adjustment: append-only, account-only unless the
     // owner links a purchase invoice, in which case it reduces THAT invoice's
     // remaining with the same conditional UPDATE returns use. One BEGIN
-    // IMMEDIATE unit; the DB is the boundary (never check-then-act).
+    // IMMEDIATE unit; the guarded store path refuses a duplicate signature and
+    // keeps the entry and the reduction together (never check-then-act).
     suppliersAdjust: os.suppliersAdjust.handler(
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
@@ -899,40 +929,34 @@ export function createRpcRouter(deps: RpcDeps) {
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
 
           if (input.invoiceId !== undefined) {
-            // the contract requires THEY_OWE; re-check so a direct store-seam
-            // caller can never sign a linked reduction the other way
+            // the contract requires THEY_OWE; re-check so a direct caller can
+            // never sign a linked reduction the other way
             if (input.direction !== "THEY_OWE") throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_INVOICE_DIRECTION" });
             const detail = await tx.getInvoiceDetail(input.invoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
               throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
             }
-            // the remaining is clamped at >= 0 and a link may not exceed it:
-            // the excess is REFUSED, never silently moved to credit
-            if (input.amount > detail.remainingAmount) {
-              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_EXCEEDS_REMAINING" });
-            }
-            await tx.insertSupplierEntry({
+            // NOTE (Greptile round 1): the remaining check deliberately lives in
+            // the store, AFTER its duplicate check. Running it here would report
+            // an exact resend as ADJUSTMENT_EXCEEDS_REMAINING once the first
+            // request had reduced the invoice. The store's conditional offset
+            // still refuses a genuinely oversized link (EXCEEDS_REMAINING).
+          }
+          try {
+            await tx.insertSupplierAdjustment({
               supplierId: input.supplierId,
-              kind: "ADJUSTMENT",
-              direction: "THEY_OWE",
-              amount: input.amount,
-              invoiceId: detail.id,
-              note: reason,
-              occurredAt,
-            });
-            if (!(await tx.applyDebtOffsetToInvoice(detail.id, input.amount))) {
-              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_DEBT_OFFSET_REFUSED" });
-            }
-          } else {
-            await tx.insertSupplierEntry({
-              supplierId: input.supplierId,
-              kind: "ADJUSTMENT",
               direction: input.direction,
               amount: input.amount,
-              invoiceId: null,
-              note: reason,
+              reason,
               occurredAt,
+              invoiceId: input.invoiceId ?? null,
+              // when the caller omitted the date the server stamped it, so a
+              // retry cannot be told apart by time: the store matches any time
+              serverStamped: input.occurredAt === undefined,
             });
+          } catch (error) {
+            if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
+            throw error;
           }
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
@@ -948,33 +972,116 @@ export function createRpcRouter(deps: RpcDeps) {
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+          // #177 (debate finding 8) — two rows naming the same new supplier would
+          // create two parties and double-post; refuse the duplicate name before
+          // any createParty write
+          const newNames = new Set<string>();
+          for (const row of input.rows) {
+            if (row.newSupplierName === undefined) continue;
+            const key = normalizeTextKey(row.newSupplierName);
+            if (newNames.has(key)) throw new ORPCError("CONFLICT", { message: "DUPLICATE_OPENING_BALANCE_ROW" });
+            newNames.add(key);
+          }
+          // #177 (Greptile round 1, finding 1) — a lost-response resend of a
+          // batch that used newSupplierName must resolve to the supplier the
+          // first attempt created. Otherwise createParty mints a second id and
+          // the signature dedup runs under it, double-posting the same balance.
+          // Built only when a row names a supplier: an explicit supplierId is the
+          // user's own choice and is never re-targeted (round 4).
+          const wantsNewNames = input.rows.some((row) => row.newSupplierName !== undefined);
+          const suppliersByName = new Map<string, NamedSupplierCandidate[]>();
+          if (wantsNewNames) {
+            for (const party of await tx.listParties("supplier")) {
+              const key = normalizeTextKey(party.name);
+              const candidates = suppliersByName.get(key) ?? [];
+              candidates.push({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 });
+              suppliersByName.set(key, candidates);
+            }
+          }
+          const candidatesForName = (name: string): NamedSupplierCandidate[] => suppliersByName.get(normalizeTextKey(name)) ?? [];
+          // the entry-count/lowest-id tie-break, used only when no candidate
+          // already holds the row's signature
+          const pickByName = (candidates: NamedSupplierCandidate[]): NamedSupplierCandidate | undefined => {
+            if (candidates.length === 0) return undefined;
+            return candidates.reduce((best, candidate) =>
+              candidate.entries > best.entries || (candidate.entries === best.entries && candidate.id < best.id) ? candidate : best,
+            );
+          };
+          /** The candidate already holding this row's #177 signature, if any. */
+          const signatureHolder = async (
+            candidates: NamedSupplierCandidate[],
+            row: { direction: "WE_OWE" | "THEY_OWE"; amount: number },
+          ): Promise<NamedSupplierCandidate | undefined> => {
+            for (const candidate of candidates) {
+              if (await tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null })) return candidate;
+            }
+            return undefined;
+          };
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {
               const party = await tx.getParty("supplier", row.supplierId);
               if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+              // an explicit supplierId is the user's choice, even when another
+              // supplier folds to the same name: never replace it with a sibling
+              // (round 4 — same-name suppliers must not block each other)
               const existing = await tx.listSupplierEntries(party.id);
               if (existing.length > 0 && row.confirmExisting !== true) {
-                throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+                // same resend exemption as the newSupplierName branch: an exact
+                // retry of a first attempt (which legitimately sent no confirm)
+                // reaches the guarded write and is reported as a duplicate
+                const isResend = await tx.hasSupplierAdjustment({ supplierId: party.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null });
+                if (!isResend) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
               }
               plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
             } else {
               // SAFETY: the contract superRefine guarantees newSupplierName here
-              const party = await tx.createParty("supplier", { name: row.newSupplierName! });
-              plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+              const candidates = candidatesForName(row.newSupplierName!);
+              // #177 round 3 (finding 2) — a retry must stay on the account that
+              // already holds the signature. Checking only the entry-count winner
+              // can pick a different folded-match that has since gained more
+              // entries, miss the prior row, and post again.
+              const holder = await signatureHolder(candidates, row);
+              const requested = holder ?? pickByName(candidates);
+              if (requested !== undefined) {
+                // the same confirmation gate as the supplierId path, EXCEPT for an
+                // exact resend: the guarded write below reports that as a duplicate
+                if (holder === undefined && row.confirmExisting !== true) {
+                  const existing = await tx.listSupplierEntries(requested.id);
+                  if (existing.length > 0) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
+                }
+                plan.push({ supplierId: requested.id, name: requested.name, direction: row.direction, amount: row.amount });
+              } else {
+                const party = await tx.createParty("supplier", { name: row.newSupplierName! });
+                suppliersByName.set(normalizeTextKey(party.name), [{ id: party.id, name: party.name, entries: 0 }]);
+                plan.push({ supplierId: party.id, name: party.name, direction: row.direction, amount: row.amount });
+              }
             }
           }
+          // #177/#180 (debate finding 4) — reject a duplicate row inside the
+          // batch with a row-specific error before any write, instead of letting
+          // the store's DUPLICATE roll the whole batch back with a vague code
+          const seen = new Set<string>();
           for (const row of plan) {
-            await tx.insertSupplierEntry({
-              supplierId: row.supplierId,
-              kind: "ADJUSTMENT",
-              direction: row.direction,
-              amount: row.amount,
-              invoiceId: null,
-              note: reason,
-              ref: "OPENING_BALANCE",
-              occurredAt: input.occurredAt,
-            });
+            const key = `${row.supplierId}:${row.direction}:${row.amount}`;
+            if (seen.has(key)) throw new ORPCError("CONFLICT", { message: "DUPLICATE_OPENING_BALANCE_ROW" });
+            seen.add(key);
+          }
+          for (const row of plan) {
+            try {
+              await tx.insertSupplierAdjustment({
+                supplierId: row.supplierId,
+                direction: row.direction,
+                amount: row.amount,
+                reason,
+                occurredAt: input.occurredAt,
+                invoiceId: null,
+                ref: "OPENING_BALANCE",
+              });
+            } catch (error) {
+              if (error instanceof SupplierAdjustmentError) throw adjustmentRefusal(error);
+              throw error;
+            }
             await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];

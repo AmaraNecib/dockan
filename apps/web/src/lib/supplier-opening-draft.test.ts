@@ -1,38 +1,31 @@
 import { describe, expect, it } from "bun:test";
 
-import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, parseBulkAmount, isOpeningBatchOverLimit } from "./supplier-opening-draft";
+import { parseGroupedAmount } from "./amount-parse";
+import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, isOpeningBatchOverLimit } from "./supplier-opening-draft";
 
 /**
  * Greptile round 1 finding 1: a "1,000" amount was rejected by the strict
  * reader and its row silently dropped, so the batch saved one amount short.
  * These readers make the row state explicit so the page can block instead.
+ *
+ * #180 — the parser table itself lives in amount-parse.test.ts; this file pins
+ * that the bulk row readers WIRE to that shared parser (the same number the
+ * single-entry money inputs get).
  */
-describe("parseBulkAmount", () => {
-  it("accepts plain digits and valid thousands grouping", () => {
-    expect(parseBulkAmount("1000")).toBe(1000);
-    expect(parseBulkAmount("1,000")).toBe(1000);
-    expect(parseBulkAmount("25 000")).toBe(25000);
-    expect(parseBulkAmount("1 000 000")).toBe(1_000_000);
-    expect(parseBulkAmount("1,000,000")).toBe(1_000_000);
-    expect(parseBulkAmount("٢٥٬٠٠٠")).toBe(25000);
-    expect(parseBulkAmount("۱۲۳")).toBe(123);
+describe("bulk amount reader (shared parseGroupedAmount)", () => {
+  it("fills a bulk row with exactly the number the single-entry reader returns", () => {
+    for (const draft of ["1,000", "1 000", "٢٥٬٠٠٠", "1000000"]) {
+      const parsed = parseGroupedAmount(draft);
+      expect(parsed).not.toBeNull();
+      expect(openingRowStatus({ amount: draft })).toEqual({ status: "filled", amount: parsed! });
+    }
   });
 
-  it("rejects a decimal or a malformed separator instead of deleting it", () => {
-    expect(parseBulkAmount("")).toBeNull();
-    expect(parseBulkAmount("   ")).toBeNull();
-    expect(parseBulkAmount("abc")).toBeNull();
-    expect(parseBulkAmount("1.5")).toBeNull();
-    // the reported 100x bug: a decimal tail must not be deleted into another number
-    expect(parseBulkAmount("1 000,00")).toBeNull();
-    expect(parseBulkAmount("1,5")).toBeNull();
-    // malformed grouping (wrong group width, leading/trailing separator)
-    expect(parseBulkAmount("1 00")).toBeNull();
-    expect(parseBulkAmount("1,0000")).toBeNull();
-    expect(parseBulkAmount("1000,000")).toBeNull();
-    expect(parseBulkAmount(",1000")).toBeNull();
-    expect(parseBulkAmount("1,00,0")).toBeNull();
-    expect(parseBulkAmount("1٬00")).toBeNull();
+  it("blocks the same malformed drafts the single-entry reader rejects", () => {
+    for (const draft of ["1 000,00", "1,5", "1 00", "abc"]) {
+      expect(parseGroupedAmount(draft)).toBeNull();
+      expect(openingRowStatus({ amount: draft })).toEqual({ status: "invalid" });
+    }
   });
 });
 

@@ -1,0 +1,95 @@
+# Supplier-adjustment hardening: a server-stamped retry key guards nothing
+
+**Date:** 2026-10-14 · **Tickets:** 177, 180 · **Area:** apps/api/src/store/drizzle-store.ts, apps/api/src/rpc/router.ts, apps/web/src/lib/amount-parse.ts
+
+Follow-ups from #176. The lessons the debate/test-audit/code-review caught:
+
+0. **An idempotency key that includes a server-minted id is defeated by the very
+   retry it targets.** The opening-balance signature was keyed on `supplierId`,
+   but a lost-response resend of a `newSupplierName` batch ran `createParty`
+   again, minting a fresh id — so the dedup never saw the first entry and the
+   balance doubled. Resolve a typed name to the existing supplier (same
+   `normalizeTextKey` fold the picker uses) BEFORE creating one. When duplicate
+   names already exist, prefer the entry-carrying row deterministically. Test the
+   retry with the response thrown away, not just the happy path.
+
+1. **A retry guard keyed on a server-stamped timestamp does not guard retries.**
+   `occurredAt ?? localDateTime()` gives each request a fresh second, so an
+   omitted-date retry never matches. When the signature must include the
+   timestamp, also pass a `serverStamped` flag and drop the timestamp from the
+   duplicate key in that case (match any time). The UI always sends its form
+   date, so this closes the script/import hole; a caller that sends a *changing*
+   timestamp still needs an explicit client idempotency key (deferred).
+
+2. **Re-validate money at the store seam, not only at the transport contract.**
+   A negative `amount` makes the conditional clamp
+   `remaining_amount >= amount` true and `remaining_amount - amount` *increases*
+   the debt. Guard "non-contract caller" methods with
+   `Number.isSafeInteger(amount) && amount > 0`.
+
+3. **A guarded write that assumes a caller-opened unit must assert it.**
+   `insertSupplierAdjustment` refuses to run unless `conn.inTransaction` (the
+   `withTransactionImmediate` flag). Outside the unit the duplicate check races
+   and the entry can commit without its reduction. Alternatively have the method
+   own the unit — never document the requirement and hope.
+
+4. **A "store backstop" that skips ownership is not a backstop.**
+   Re-check the linked invoice's `kind` and `counterpartyId` inside the store,
+   or a non-UI caller can credit supplier A while reducing supplier B's invoice.
+
+5. **Extract the conditional debt-offset SQL once.** Two copies of the
+   `remaining_amount >= ?` clamp can drift; one `applyDebtOffset` helper backs
+   both the adjustment and the return path.
+
+6. **Do not change production ordering to satisfy a flaky test.** A pre-existing
+   invoice-status test inspected a global paginated list and broke on
+   same-second `createdAt` ties once more invoices existed. The tempting fix was
+   a `rowid DESC` tie-break in `listInvoices` — out of scope for the ticket.
+   Fix the test instead (`limit: MAX_PAGE_SIZE`), and note the ordering fragility
+   as a follow-up. If the tie-break is genuinely wanted, land it as its own
+   ticket with its own design.
+
+7. **Every new refusal code needs an i18n entry.** `tError` renders unmapped
+   codes raw; the UI showed `DUPLICATE_ADJUSTMENT` until the Arabic strings were
+   added. Removing a code's last throw means removing its key too.
+
+8. **"One parser everywhere" includes the submit-side readers.** Making the
+   `AmountPercentageInput` field accept `1 000` while `paymentAmountError` /
+   `saleDebt` / `settleAmountError` still parse digits-only re-creates the exact
+   "same string, two numbers" bug. Move the field reader and every validator that
+   reads the same draft, and keep quantities on the strict reader.
+
+9. **Do not let the client resolve an identity the server owns.** The bulk screen
+   once moved a typed name onto an existing supplier's row and the server
+   re-resolved the name at save time, so the account shown and the account written
+   could differ (Greptile rounds 2–4 patched symptoms; round 5 deleted the
+   mechanism). The durable design: a typed name is a NAME and travels as
+   `newSupplierName`; an owner-picked row travels as an explicit `supplierId`; the
+   server is the only resolver. Two consequences to keep:
+   - a pre-submit guard must scan EVERY outgoing row — a typed name that folds onto
+     a picked row (by folded name or by resolved id) is a visible conflict, never a
+     server refusal after pressing save;
+   - `confirmExisting` is forwarded per row only when the cached count shows history,
+     and the confirm dialog names every account the batch will write to, or a
+     confirmed save can still land on an unnamed account.
+   The old advice to "move the draft onto the existing row" was removed with the
+   mechanism.
+
+10. **When a name can fold to several rows, resolve by SIGNATURE before any
+    tie-break — and do it only on the NAME-resolved path.** The bulk batch preferred
+    the entry-carrying supplier, so once another folded-match gained more entries a
+    retry resolved to it, missed the prior entry on the original, and posted again.
+    Scan all folded candidates for the #177 signature first. But an explicit
+    `supplierId` is the user's own choice: re-targeting it to a sibling made two
+    same-name suppliers block each other (round 4). Split the cases at the source —
+    the scan runs only for `newSupplierName`, and the client sends a typed name as a
+    NAME, never as a pre-resolved id (track which rows originated from a typed name).
+    A named row must also forward `confirmExisting`, and an `OPENING_BALANCE_EXISTS`
+    refusal must refresh the list even on the already-confirmed path, or a mixed
+    batch repeats the refusal forever.
+
+11. **A client that resolves names locally must also de-duplicate them.** The
+    server refuses any batch with two rows folding to one name. Once adopted rows
+    are keyed by the typed name, two same-name suppliers can each be adopted and
+    both emitted. Guard on the folded NAME independently of whether it currently
+    resolves to a supplier — a refetch can change which sibling it matches.

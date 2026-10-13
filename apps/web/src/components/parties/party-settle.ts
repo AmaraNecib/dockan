@@ -1,6 +1,6 @@
 import type { Invoice } from "@dokan/contracts";
 
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 
 /**
  * #164 (customer half) — the pure half of the in-page settlement: which
@@ -57,10 +57,11 @@ function invoiceSequence(invoiceNumber: string): number {
   return digits === null ? 0 : Number(digits[1]);
 }
 
-/** The settle amount's boundary: digits-only whole DZD, 1..max. Shares the
- * component's parser so the two money guards cannot drift. */
+/** The settle amount's boundary: a whole DZD amount (grouped input allowed),
+ * 1..max. Shares the one grouped parser so the field and the guard cannot
+ * drift. */
 export function settleAmountError(draft: string, max: number): "INVALID" | "EXCEEDS" | null {
-  const value = parseWholeAmount(draft);
+  const value = parseGroupedAmount(draft);
   if (value === null || value <= 0) return "INVALID";
   if (value > max) return "EXCEEDS";
   return null;

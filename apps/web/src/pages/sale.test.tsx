@@ -274,6 +274,14 @@ describe("saleDebt (pre-commit customer debt preview)", () => {
     expect(saleDebt(1000, "12.5")).toEqual({ valid: false, debt: 0 });
     expect(saleDebt(1000, "abc")).toEqual({ valid: false, debt: 0 });
   });
+
+  it("reads a grouped paid draft with the shared parser (#180)", () => {
+    expect(saleDebt(2_000, "1 000")).toEqual({ valid: true, debt: 1_000 });
+    expect(saleDebt(1_000, "1,000")).toEqual({ valid: true, debt: 0 });
+    // a decimal/malformed grouping is invalid, never a different number
+    expect(saleDebt(1_000, "1 000,00")).toEqual({ valid: false, debt: 0 });
+    expect(saleDebt(1_000, "1,5")).toEqual({ valid: false, debt: 0 });
+  });
 });
 
 // --- rendered SalePage states ----------------------------------------------

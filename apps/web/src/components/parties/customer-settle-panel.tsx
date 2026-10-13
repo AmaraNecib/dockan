@@ -5,7 +5,8 @@ import { useTranslation } from "react-i18next";
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -71,7 +72,7 @@ export function CustomerSettlePanel({
         const percentage = parseWholePercentage(current.percentage);
         return percentage === null ? current : { amount: String(amountFromPercentage(unpaid, percentage)), percentage: current.percentage };
       }
-      const amount = parseWholeAmount(current.amount);
+      const amount = parseGroupedAmount(current.amount);
       return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(unpaid, amount)) };
     });
   }, [unpaid]);
@@ -87,7 +88,7 @@ export function CustomerSettlePanel({
       : ((amountError === "INVALID" && value.amount.trim() !== "") || percentageInvalid)
         ? t("partySettleAmountRequired")
         : null;
-  const amount = parseWholeAmount(value.amount);
+  const amount = parseGroupedAmount(value.amount);
   const plan = amount !== null && amount > 0 ? distributePayment(invoices, Math.min(amount, unpaid)) : [];
   const distributed = plan.reduce((sum, line) => sum + line.applied, 0);
   const blocked = submitting || pay.isPending || halted || amountError !== null || percentageInvalid;

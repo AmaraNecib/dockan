@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, MAX_PAGE_SIZE, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -1731,6 +1731,283 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
   });
 
+  it("rejects a duplicate adjustment submission so a retry cannot double-post (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تكرار تسوية", 10);
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" };
+
+    const first = await client.suppliersAdjust(payload);
+    expect(first.balance).toBe(1400);
+
+    // the same signature (supplier, direction, amount, reason, timestamp) is
+    // refused: one entry, one balance move
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1400);
+  });
+
+  it("does not reduce a linked invoice twice on a duplicate submission (issue 177)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تكرار رابط", 50);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 500, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    // the entry and the reduction both moved exactly once
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(4500);
+    expect(detail.returnCreditAmount).toBe(500);
+    expect(detail.remainingAmount).toBe(detail.totalAmount - detail.paidAmount - detail.returnCreditAmount);
+  });
+
+  it("accepts the same amount on a different date (not a duplicate) (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تواريخ تسوية", 10);
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-13T12:00:00" });
+    const second = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-14T12:00:00" });
+    expect(second.balance).toBe(1400);
+    expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
+  it("refuses a retry that omits the date (server-stamped signature) (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد ختم الخادم", 10);
+    // the caller omits occurredAt, so the server stamps a fresh second each call;
+    // the duplicate signature must still catch the retry at any time
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 300, reason: "دين قديم" };
+    await client.suppliersAdjust(payload);
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1300);
+  });
+
+  it("rejects a duplicate row inside an opening-balance batch with a row-specific error (issue 177)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد صف مكرر" });
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        reason: "رصيد افتتاحي",
+        rows: [
+          { supplierId: supplier.id, direction: "WE_OWE", amount: 500 },
+          { supplierId: supplier.id, direction: "WE_OWE", amount: 500 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_OPENING_BALANCE_ROW" });
+    // nothing half-saved
+    expect((await client.suppliersGet({ id: supplier.id })).account?.entries ?? []).toHaveLength(0);
+  });
+
+  it("serialises two identical concurrent submissions so only one posts (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تزامن تسوية", 10);
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 450, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" };
+    const results = await Promise.allSettled([client.suppliersAdjust(payload), client.suppliersAdjust(payload)]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1450);
+  });
+
+  it("keeps remaining >= 0 when two linked adjustments race (issue 177)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تزامن رابط", 5);
+    const base = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+    const results = await Promise.allSettled([
+      client.suppliersAdjust({ ...base, reason: "خصم أ" }),
+      client.suppliersAdjust({ ...base, reason: "خصم ب" }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(200);
+    expect(detail.remainingAmount).toBeGreaterThanOrEqual(0);
+  });
+
+  it("does not double-post an identical bulk opening-balance batch (issue 177)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد دفعي مكرر" });
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: supplier.id, direction: "WE_OWE" as const, amount: 700, confirmExisting: true }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("posts one row per distinct supplier in a bulk batch (issue 177)", async () => {
+    const a = await client.suppliersCreate({ name: "مورد دفعي أ" });
+    const b = await client.suppliersCreate({ name: "مورد دفعي ب" });
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [
+        { supplierId: a.id, direction: "WE_OWE", amount: 500 },
+        { supplierId: b.id, direction: "WE_OWE", amount: 500 },
+      ],
+    });
+    expect(result.created).toBe(2);
+  });
+
+  it("refuses two rows naming the same new supplier before creating a party (issue 177)", async () => {
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [
+          { newSupplierName: "مورد اسم مكرر", direction: "WE_OWE", amount: 100 },
+          { newSupplierName: "مورد  اسم مكرر", direction: "WE_OWE", amount: 100 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_OPENING_BALANCE_ROW" });
+    // the folded-whitespace duplicate never created a party
+    expect((await client.suppliersList()).items.some((row) => row.name.includes("اسم مكرر"))).toBe(false);
+  });
+
+  it("does not double-post a new-supplier opening balance when the response is lost (Greptile round 1)", async () => {
+    const name = `مورد إعادة إرسال-${Date.now()}`;
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 900 }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+
+    // the response is lost; the client resends the exact batch. The name must
+    // resolve to the supplier the first attempt created, so the signature dedup
+    // sees the prior entry instead of minting a second supplier and double-posting.
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    const matches = (await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === name);
+    expect(matches).toHaveLength(1);
+    expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(900);
+  });
+
+  it("does not double-post an existing-supplier opening balance when the response is lost (Greptile round 1)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد إعادة معرف-${Date.now()}` });
+    // a first attempt against a supplier with no entries legitimately sends no
+    // confirmExisting; its exact resend must be a duplicate, not a confirmation
+    const payload = {
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: supplier.id, direction: "WE_OWE" as const, amount: 700 }],
+    };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+
+    await expect(client.suppliersOpeningBalances(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const entries = (await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT") ?? [];
+    expect(entries).toHaveLength(1);
+  });
+
+  it("requires confirmation when a new-supplier name collides with a supplier that has entries (Greptile round 1)", async () => {
+    const collisionName = `مورد تصادم-${Date.now()}`;
+    const existing = await client.suppliersCreate({ name: collisionName });
+    await client.suppliersAdjust({ supplierId: existing.id, direction: "WE_OWE", amount: 100 });
+
+    // a typed new name that resolves to an existing supplier with entries is a
+    // different amount: it must not append without the confirmation the
+    // supplierId path requires
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ newSupplierName: collisionName, direction: "WE_OWE", amount: 700 }],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_EXISTS" });
+
+    // no second supplier and no second entry
+    expect((await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === collisionName)).toHaveLength(1);
+    expect((await client.suppliersGet({ id: existing.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("resolves a duplicated folded name to the supplier that already carries entries (Greptile round 1)", async () => {
+    const name = `مورد ازدواج-${Date.now()}`;
+    // the two names fold to the same normalizeTextKey (whitespace collapses)
+    const empty = await client.suppliersCreate({ name });
+    const carrying = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    await client.suppliersAdjust({ supplierId: carrying.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    // the resend of the carrying supplier's entry must resolve to it, not the
+    // empty twin, so the duplicate is reported against the right account
+    await expect(
+      client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 500 }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    expect((await client.suppliersGet({ id: empty.id })).account?.entries ?? []).toHaveLength(0);
+    expect((await client.suppliersGet({ id: carrying.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {
+    const name = `مورد مطابق-${Date.now()}`;
+    const a = await client.suppliersCreate({ name });
+    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+
+    // the first attempt posts to the tie-break winner (both 0 entries -> lowest id)
+    const payload = { occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ newSupplierName: name, direction: "WE_OWE" as const, amount: 700 }] };
+    const first = await client.suppliersOpeningBalances(payload);
+    expect(first.created).toBe(1);
+    const originalId = first.accounts[0]!.supplierId;
+
+    // the OTHER folded-match gains more entries, so the entry-count tie-break
+    // alone would now pick it and miss the entry on the original
+    const otherId = originalId === a.id ? b.id : a.id;
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 50 });
+    await client.suppliersAdjust({ supplierId: otherId, direction: "WE_OWE", amount: 60 });
+
+    // the client's confirmed retry must resolve to the original account and
+    // report the duplicate, never post a second 700 to the other supplier
+    await expect(
+      client.suppliersOpeningBalances({ ...payload, rows: [{ ...payload.rows[0]!, confirmExisting: true }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    expect((await client.suppliersGet({ id: originalId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+    expect((await client.suppliersGet({ id: otherId })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(0);
+  });
+
+  it("accepts an explicit supplierId for a same-name sibling with no matching entry (Greptile round 4)", async () => {
+    const name = `مورد توأم-${Date.now()}`;
+    const a = await client.suppliersCreate({ name, phone: "0550111111" });
+    const b = await client.suppliersCreate({ name, phone: "0550222222" });
+
+    // A already holds an identical signature
+    await client.suppliersAdjust({ supplierId: a.id, direction: "WE_OWE", amount: 700, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    // B is the user's explicit choice: its opening balance must be accepted, not
+    // replaced by A's id (which would refuse the whole batch as a duplicate)
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ supplierId: b.id, direction: "WE_OWE", amount: 700, confirmExisting: true }],
+    });
+    expect(result.created).toBe(1);
+    expect((await client.suppliersGet({ id: b.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+    expect((await client.suppliersGet({ id: a.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT" && entry.amount === 700) ?? []).toHaveLength(1);
+  });
+
+  it("reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد إعادة رابط", 5);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 300, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(200);
+
+    // the invoice now has 200 left, but the exact resend is a duplicate, not an
+    // amount that newly exceeds the remaining
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(200);
+  });
+
+  it("reports a full-settlement linked resend as a duplicate (Greptile round 1)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد إعادة تسوية كامل", 5);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 500, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(0);
+
+    // a zeroed invoice must still report the resend as a duplicate
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(0);
+  });
+
   it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
@@ -2414,13 +2691,15 @@ it("two concurrent payments serialize and never overpay the invoice", async () =
 
   it("flips the invoice to PARTIAL after the first instalment and to PAID at settlement", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-حالة-الفاتورة");
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    // the shared test database accumulates invoices; request the full page so a
+    // same-second createdAt tie cannot push this invoice off page 1
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 300 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(true);
-    expect((await client.invoicesList({ status: "UNPAID" })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "UNPAID", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
     await client.invoicesPay({ invoiceId: invoice.id, amount: 500 });
-    expect((await client.invoicesList({ status: "PARTIAL" })).items.some((i) => i.id === invoice.id)).toBe(false);
-    expect((await client.invoicesList({ status: "PAID" })).items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "PARTIAL", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(false);
+    expect((await client.invoicesList({ status: "PAID", limit: MAX_PAGE_SIZE })).items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
   it("rejects amounts beyond the safe-integer money range at the schema", async () => {

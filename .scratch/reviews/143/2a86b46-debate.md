@@ -1,7 +1,7 @@
 # Issue 143 — debate evidence (critic + defender)
 
 - Base: `da44b50` (origin/develop merge-base)
-- Reviewed HEAD: `156e135` (amended from `ea8804b` after applying the debate fixes below)
+- Reviewed HEAD: `2a86b46` (debate ran on `ea8804b`; fixes folded through `156e135` → `80fb564` → `ba3230ad` → `2a86b46`)
 - Workflow: 2 reviewers in parallel — harsh critic + charitable defender (`reviewer` agent, read-only)
 - Inputs: `.scratch/sessions/143-debate-ea8804b.diff`, `.scratch/sessions/143-issue.txt`, `.scratch/implementation/143-design.md`, full changed files.
 

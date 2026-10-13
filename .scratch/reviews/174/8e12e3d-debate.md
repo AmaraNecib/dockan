@@ -2,7 +2,8 @@
 
 Base: `8bf2a81` (origin/develop merge-base). Round-1 delta reviewed:
 `e84d592..676cde5`, then the debate fixes `676cde5..d8d21f4`. Evidence anchor:
-`d8d21f4`. Code under review: the round-1 fix (`c93d628` onward).
+`8e12e3d` (the code under review is `d8d21f4`; the only later commit is this
+docs/evidence anchor).
 
 Two read-only `reviewer` sub-agents ran in opposite directions on
 `git diff e84d592...HEAD`, plus the round-1 brief

@@ -1,7 +1,7 @@
 # Issue 174 — Round 1 test-audit evidence
 
 Base: `8bf2a81`. Round-1 delta: `e84d592..d8d21f4`. Evidence anchor:
-`d8d21f4`.
+`8e12e3d`.
 
 Three read-only `reviewer` sub-agents ran in parallel: Edge Case Hunter,
 Coverage Analyst, Quality Reviewer.

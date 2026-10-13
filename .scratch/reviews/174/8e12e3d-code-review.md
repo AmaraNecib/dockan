@@ -1,7 +1,7 @@
 # Issue 174 — Round 1 code-review evidence
 
 Base: `8bf2a81`. Round-1 delta: `e84d592..d8d21f4`. Evidence anchor:
-`d8d21f4`.
+`8e12e3d`.
 
 Two read-only `reviewer` sub-agents reviewed the delta on opposite axes.
 Standards sources: `AGENTS.md`, `CONTEXT.md`, `docs/engineering-workflow.md`,

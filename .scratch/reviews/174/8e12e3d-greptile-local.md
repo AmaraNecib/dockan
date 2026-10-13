@@ -19,5 +19,5 @@ PR #186, or re-authenticate and run:
 greptile review --json --branch develop
 ```
 
-Local gates are green; see the sibling `d8d21f4-{debate,test-audit,code-review}.md`
+Local gates are green; see the sibling `8e12e3d-{debate,test-audit,code-review}.md`
 evidence.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -58,14 +58,8 @@ export function SupplierOpeningBalancePage() {
   const [reasonDraft, setReasonDraft] = useState(() => t("supplierAdjustPresetOpening"));
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
   const [newName, setNewName] = useState("");
-  const [nameFocused, setNameFocused] = useState(false);
-  const [amountFocused, setAmountFocused] = useState(false);
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
-  // Greptile round 4 — a supplier row that started life as a typed name is sent
-  // as that NAME, not as a pre-resolved id, so the server can resolve it
-  // consistently (and an explicit user-picked supplierId is never re-targeted).
-  const [namedTargets, setNamedTargets] = useState<Record<string, string>>({});
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
@@ -89,10 +83,9 @@ export function SupplierOpeningBalancePage() {
   const invalidExisting = existingRows.filter((row) => row.state.status === "invalid");
 
   const newRow = newOpeningRowStatus({ name: newName, amount: newAmount, existingNames: suppliers.map((supplier) => supplier.name) });
-  const newFilled = newRow.status === "filled";
-  // a duplicate name is not an error any more: the effect below moves the draft
-  // onto the matching supplier's row, so "duplicate" only exists for the render
-  // before that move (Greptile round 2)
+  // a typed name is a NAME: the server is the only resolver. A "duplicate" draft
+  // is not an error by itself; the pre-submit guard blocks it only when it
+  // collides with a row the owner already picked.
   const newRowError =
     newRow.status === "incomplete"
       ? t("supplierOpeningNewIncomplete")
@@ -100,19 +93,34 @@ export function SupplierOpeningBalancePage() {
         ? t("supplierOpeningRowInvalid")
         : null;
 
-  // a typed name that folds to a supplier without its own row is still a row: it
-  // counts toward the batch cap even before the adoption effect moves it
-  const resolvedNewRow = resolveNewName();
-  const resolvedRowIsExtra = resolvedNewRow !== undefined && !newFilled && !filledExisting.some((row) => row.supplier.id === resolvedNewRow.supplierId);
-  const totalRows = filledExisting.length + (newFilled ? 1 : 0) + (resolvedRowIsExtra ? 1 : 0);
+  // Round 5 — the typed name is its own outgoing row, sent as newSupplierName and
+  // never moved onto another supplier's row. One resolver: the server.
+  const typedNameKey = newName.trim() === "" ? null : normalizeTextKey(newName);
+  const typedAmount = parseGroupedAmount(newAmount);
+  // the supplier the server will resolve the name to, for the confirm dialog only
+  const typedDestination = matchByNormalizedName(suppliers, newName);
+  const typedRowReady = typedNameKey !== null && typedAmount !== null && typedAmount > 0;
+  // guard: a typed name that folds onto a row the owner already picked must not be
+  // sent (the same supplier twice), so block with a visible conflict
+  const typedNameConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
+
+  const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
     : invalidExisting.length > 0
       ? t("supplierOpeningFixRows")
-      : newRowError;
-  const needsConfirmation = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0);
+      : typedNameConflict
+        ? t("supplierOpeningRowHasAmount")
+        : newRowError;
+  // the confirmation dialog names every account the batch will write to
+  const namedRowNeedsConfirm = typedRowReady && (typedDestination?.accountEntryCount ?? 0) > 0;
+  const needsConfirmation = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0) || namedRowNeedsConfirm;
+  const confirmNames = [
+    ...filledExisting.filter((row) => (row.supplier.accountEntryCount ?? 0) > 0).map((row) => row.supplier.name),
+    ...(namedRowNeedsConfirm && typedDestination !== undefined && !filledExisting.some((row) => row.supplier.id === typedDestination.id) ? [typedDestination.name] : []),
+  ];
 
   function setRow(supplierId: string, patch: Partial<RowDraft>) {
     setDrafts((current) => {
@@ -121,70 +129,11 @@ export function SupplierOpeningBalancePage() {
     });
   }
 
-  /** The existing supplier the typed new name now folds to, with its parsed
-   * amount and direction, or undefined when the name is genuinely new or the
-   * amount is unusable. Shared by the adoption effect and the save fallback so
-   * they agree. */
-  function resolveNewName(): { supplierId: string; direction: SupplierAdjustmentDirection; amount: number; needsConfirm: boolean } | undefined {
-    const match = matchByNormalizedName(suppliers, newName);
-    if (match === undefined) return undefined;
-    const amount = parseGroupedAmount(newAmount);
-    if (amount === null || amount <= 0) return undefined;
-    return { supplierId: match.id, direction: newDirection, amount, needsConfirm: (match.accountEntryCount ?? 0) > 0 };
-  }
-
-  /** True when the typed name duplicates a name already adopted onto another row.
-   * Two rows folding to one name would be refused by the server's batch check, so
-   * the page must block instead of sending them (round 4 review). */
-  function typedNameConflictsWithAdopted(): boolean {
-    const key = newName.trim() === "" ? null : normalizeTextKey(newName);
-    if (key === null) return false;
-    return filledExisting.some((row) => {
-      const adopted = namedTargets[row.supplier.id];
-      return adopted !== undefined && normalizeTextKey(adopted) === key;
-    });
-  }
-
-  // Greptile round 2 — the typed new name may now match an existing supplier (a
-  // concurrent create landed after this page loaded, or a background refetch
-  // brought one in). Move the draft onto that supplier's row once the owner has
-  // left BOTH edit fields, preserving amount and direction, so a save never
-  // drops the row or mints a duplicate account — regardless of whether the
-  // confirmation dialog is open yet. Gating on focus matters: adopting while the
-  // amount is still focused would move a partial entry ("1500" → "1") and strand
-  // the rest in the now-empty new-name row.
-  useEffect(() => {
-    if (nameFocused || amountFocused) return;
-    const resolved = resolveNewName();
-    if (resolved === undefined) return;
-    // only an untouched target row is safe to adopt into: a filled row would
-    // double-post, and a nonempty INVALID draft (e.g. "1 000,00") must keep its
-    // error instead of being silently overwritten. The inline draft is left for
-    // submit/save to flag as a conflict.
-    if (openingRowStatus(drafts[resolved.supplierId]).status !== "untouched") return;
-    // another row already carries this name: leave the inline draft for the
-    // conflict guard, never emit two same-name rows the server would refuse
-    if (typedNameConflictsWithAdopted()) return;
-    const typedName = newName.trim();
-    setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
-    setNamedTargets((current) => ({ ...current, [resolved.supplierId]: typedName }));
-    setNewName("");
-    setNewAmount("");
-  }, [suppliers, newName, newAmount, newDirection, nameFocused, amountFocused, drafts]);
-
   async function save(confirmExisting: boolean) {
     if (occurredAt === null) return;
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
-      return;
-    }
-    const resolved = resolveNewName();
-    // the name guard stands alone: a name can duplicate an adopted one even when
-    // it no longer resolves to any current supplier (a refetch renamed/removed it)
-    const nameConflict = typedNameConflictsWithAdopted();
-    if (nameConflict || (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId))) {
-      setError(t("supplierOpeningRowHasAmount"));
       return;
     }
     setError(null);
@@ -194,19 +143,16 @@ export function SupplierOpeningBalancePage() {
         occurredAt,
         reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim(),
         rows: [
-          ...filledExisting.map((row) => {
-            const adoptedName = namedTargets[row.supplier.id];
-            const base = { direction: row.direction, amount: row.state.amount, confirmExisting: confirmExisting || undefined };
-            // a row that came from a typed name keeps that name in the request
-            return adoptedName !== undefined ? { ...base, newSupplierName: adoptedName } : { ...base, supplierId: row.supplier.id };
-          }),
-          // a typed name the adoption effect has not moved yet (a same-tick save)
-          // is sent as the name, never a pre-resolved id
-          ...(resolved !== undefined
-            ? [{ newSupplierName: newName.trim(), direction: resolved.direction, amount: resolved.amount, confirmExisting: confirmExisting || undefined }]
-            : newRow.status === "filled"
-              ? [{ newSupplierName: newRow.name, direction: newDirection, amount: newRow.amount, confirmExisting: confirmExisting || undefined }]
-              : []),
+          ...filledExisting.map((row) => ({
+            supplierId: row.supplier.id,
+            direction: row.direction,
+            amount: row.state.amount,
+            confirmExisting: confirmExisting || undefined,
+          })),
+          // a typed name travels as a NAME; the server is the only resolver
+          ...(typedRowReady
+            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: confirmExisting || undefined }]
+            : []),
         ],
       });
       await Promise.all([
@@ -245,21 +191,11 @@ export function SupplierOpeningBalancePage() {
       setError(blockedReason);
       return;
     }
-    // a typed name that folds to an existing supplier is a row even while the
-    // inline row still shows it (a focused duplicate name never blurs before an
-    // Enter submit)
-    const resolved = resolveNewName();
-    const nameConflict = typedNameConflictsWithAdopted();
-    if (nameConflict || (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId))) {
-      setError(t("supplierOpeningRowHasAmount"));
-      return;
-    }
-    const effectiveTotal = totalRows;
-    if (effectiveTotal === 0) {
+    if (totalRows === 0) {
       setError(t("supplierOpeningNothing"));
       return;
     }
-    if (needsConfirmation || resolved?.needsConfirm === true) {
+    if (needsConfirmation) {
       setConfirming(true);
       return;
     }
@@ -389,8 +325,6 @@ export function SupplierOpeningBalancePage() {
                       className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                       value={newName}
                       onChange={(event) => setNewName(event.target.value)}
-                      onFocus={() => setNameFocused(true)}
-                      onBlur={() => setNameFocused(false)}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
                       aria-invalid={newRow.status === "invalid"}
@@ -421,8 +355,6 @@ export function SupplierOpeningBalancePage() {
                       autoComplete="off"
                       value={newAmount}
                       onChange={(event) => setNewAmount(event.target.value)}
-                      onFocus={() => setAmountFocused(true)}
-                      onBlur={() => setAmountFocused(false)}
                       aria-label={t("supplierOpeningNewRow")}
                       data-testid="opening-balance-new-amount"
                     />
@@ -458,8 +390,8 @@ export function SupplierOpeningBalancePage() {
               <p className="font-semibold">{t("supplierOpeningConfirmTitle")}</p>
               <p className="mt-1 text-sm">{t("supplierOpeningConfirmBody")}</p>
               <ul className="mt-2 grid gap-1 text-sm">
-                {filledExisting.filter((entry) => (entry.supplier.accountEntryCount ?? 0) > 0).map((entry) => (
-                  <li key={entry.supplier.id}>{entry.supplier.name}</li>
+                {confirmNames.map((name, index) => (
+                  <li key={`${index}-${name}`} data-testid="opening-balance-confirm-name">{name}</li>
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">

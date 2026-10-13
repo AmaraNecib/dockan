@@ -3198,9 +3198,10 @@ describe("returns & refunds", () => {
     const countingClient = clientForStore(countingStore);
 
     await countingClient.returnsReject({ returnId: created.id, reason: "تلف" });
-    // the pre-scrap projection plus the batch's single history read; a
-    // regression back to one post-per-line would read four-plus times here
-    expect(historyReads).toBe(2);
+    // one pre-scrap clamp projection + one batched history read for the whole
+    // scrap; a regression back to one post per line would read four-plus times
+    const expectedLedgerReads = 1 + 1;
+    expect(historyReads).toBe(expectedLedgerReads);
 
     // every line still contributes its own movement row, and the numbers hold
     const history = await client.itemsHistory({ itemId: item.id });

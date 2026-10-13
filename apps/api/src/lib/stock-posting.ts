@@ -85,8 +85,9 @@ export class StockItemMissingError extends Error {
  * cache a sequence of single posts would have written) so every candidate is
  * validated in order, and each item's cache is written ONCE after its last
  * movement. A supported return can carry 200 lines of a handful of items, so
- * re-reading and re-sorting the same history per line would block every other
- * store request.
+ * re-reading the same rows (each read a store round-trip and SQL sort) per line
+ * would block every other store request; the in-memory replay still runs once
+ * per movement, which is cheap next to the round-trips it replaces.
  *
  * This is the single implementation of the ADR-0002/0005 rule; the one-item
  * `recordStockMovement` is the length-one case over it. The caller must
@@ -107,9 +108,6 @@ export async function recordStockMovements(
   // movements that item carries in this batch
   const itemIds = [...new Set(specs.map((spec) => spec.itemId))];
   const items = await tx.getItemsByIds(itemIds);
-  for (const itemId of itemIds) {
-    if (!items.has(itemId)) throw new StockItemMissingError(itemId);
-  }
   const history = new Map<string, Array<StockMovement & { seq: number }>>();
   for (const itemId of itemIds) {
     history.set(itemId, await tx.listStockMovements(itemId));
@@ -119,10 +117,18 @@ export async function recordStockMovements(
   // movement's fallback (and an inflow's default unit cost) is what the
   // previous movement in this batch left in the cache
   const running = new Map<string, { stockOnHand: number; costPrice: number }>();
-  for (const itemId of itemIds) {
-    const item = items.get(itemId)!;
-    running.set(itemId, { stockOnHand: item.stockOnHand, costPrice: item.costPrice });
-  }
+  const cacheFor = (itemId: string) => {
+    let cache = running.get(itemId);
+    if (cache === undefined) {
+      const item = items.get(itemId);
+      // a missing item is reported when its first movement is reached, exactly
+      // like the single-post path, so error precedence is unchanged
+      if (item === undefined) throw new StockItemMissingError(itemId);
+      cache = { stockOnHand: item.stockOnHand, costPrice: item.costPrice };
+      running.set(itemId, cache);
+    }
+    return cache;
+  };
 
   const appended = new Map<string, LedgerMovement[]>();
   const posted: PostedStockMovement[] = [];
@@ -131,7 +137,7 @@ export async function recordStockMovements(
       ...(history.get(spec.itemId) ?? []),
       ...(appended.get(spec.itemId) ?? []),
     ];
-    const cache = running.get(spec.itemId)!;
+    const cache = cacheFor(spec.itemId);
     // the replay fallback is always the item's cached cost: the single home of
     // the ADR-0002 blend for a legacy inflow with no stored unit cost
     const fallbackUnitCost = cache.costPrice;
@@ -183,8 +189,7 @@ export async function recordStockMovements(
   }
 
   // one cache write per item, after the item's whole batch landed
-  for (const itemId of itemIds) {
-    const cache = running.get(itemId)!;
+  for (const [itemId, cache] of running) {
     await tx.setItemStockAndCost(itemId, cache.stockOnHand, cache.costPrice);
   }
   return posted;

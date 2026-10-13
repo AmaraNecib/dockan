@@ -202,7 +202,7 @@ const adjustmentRefusal = (error: SupplierAdjustmentError) => {
  * supported returns review scrap is up to 200 lines), reading each item's
  * history and writing its cache once — see `recordStockMovements`.
  */
-async function postStockBatch(tx: StorePort, specs: StockMovementSpec[]) {
+async function postStockBatch(tx: StorePort, specs: readonly StockMovementSpec[]) {
   try {
     return await recordStockMovements(tx, specs);
   } catch (error) {
@@ -1682,7 +1682,7 @@ export function createRpcRouter(deps: RpcDeps) {
             // the reason suffix for exact report attribution. The lines ship as
             // ONE batch through the seam: the item's history is read and its
             // cache written once for the whole scrap, not once per line. A
-            // supported return can carry 200 lines, so per-line reads/sorts
+            // supported return can carry 200 lines, so per-line store reads
             // would block every other store request. The batch replays the
             // lines in order against the running cache, so every movement and
             // the final cache match the per-line calls exactly.

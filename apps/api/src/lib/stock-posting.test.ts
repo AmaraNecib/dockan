@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Item, StockMovement } from "@dokan/contracts";
 
 import { recordStockMovement, recordStockMovements, StockItemMissingError, type StockMovementSpec, type StockPostingTx } from "./stock-posting";
-import { StockLedgerError } from "./stock-ledger";
+import { COST_CORRECTION_REASON, StockLedgerError } from "./stock-ledger";
 
 /**
  * Direct unit tests for the movement-posting seam. A tiny in-memory
@@ -293,7 +293,9 @@ describe("recordStockMovement", () => {
       { itemId: "i1", kind: "PURCHASE", delta: 10, unitCost: 100, occurredAt: "2020-01-01T10:00:00" },
       { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: -4, occurredAt: "2020-01-02T10:00:00" },
       { itemId: "i1", kind: "PURCHASE", delta: 6, occurredAt: "2020-01-03T10:00:00" }, // default = running cache
+      { itemId: "i1", kind: "MANUAL_ADJUSTMENT", delta: 0, unitCost: 250, reason: COST_CORRECTION_REASON, occurredAt: "2020-01-03T12:00:00" },
       { itemId: "i1", kind: "SALE", delta: -5, occurredAt: "2020-01-04T10:00:00" },
+      { itemId: "i1", kind: "SALE", delta: -2, backdateTo: "2020-01-01" }, // clamps to the newest inflow
     ];
     // a legacy null-cost inflow makes the replay fallback observable, so a
     // batch that froze the fallback would change the average and fail here
@@ -328,5 +330,20 @@ describe("recordStockMovement", () => {
     expect(batch.stats).toEqual({ historyReads: 1, cacheWrites: 1 });
     expect(perLine.stats.historyReads).toBe(specs.length);
     expect(perLine.stats.cacheWrites).toBe(specs.length);
+  });
+
+  it("touches the store for nothing on an empty batch", async () => {
+    const { tx, stats } = fakeTx();
+    expect(await recordStockMovements(tx, [])).toEqual([]);
+    expect(stats).toEqual({ historyReads: 0, cacheWrites: 0 });
+  });
+
+  it("refuses a batch movement for an item that does not exist, writing nothing", async () => {
+    const { tx, movements, stats } = fakeTx();
+    await expect(
+      recordStockMovements(tx, [{ itemId: "absent", kind: "PURCHASE", delta: 1, occurredAt: "2020-01-01T10:00:00" }]),
+    ).rejects.toBeInstanceOf(StockItemMissingError);
+    expect(movements).toHaveLength(0);
+    expect(stats.cacheWrites).toBe(0);
   });
 });

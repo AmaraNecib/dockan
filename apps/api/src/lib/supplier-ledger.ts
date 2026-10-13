@@ -77,9 +77,9 @@ export type AdjustmentDedupInput = {
  * is scoped to the account, exactly like the signature is.
  */
 export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
-  const idempotencyKey = input.idempotencyKey?.trim();
-  if (idempotencyKey !== undefined && idempotencyKey !== "") {
-    return `key:${JSON.stringify([input.supplierId, idempotencyKey])}`;
+  if (hasExplicitIdempotencyKey(input)) {
+    // hasExplicitIdempotencyKey proved a trimmed non-empty value exists
+    return `key:${JSON.stringify([input.supplierId, (input.idempotencyKey ?? "").trim()])}`;
   }
   return `sig:${JSON.stringify([
     input.supplierId,
@@ -89,6 +89,16 @@ export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
     input.invoiceId,
     input.serverStamped === true ? null : input.occurredAt,
   ])}`;
+}
+
+/**
+ * True when the caller sent a usable explicit key (trimmed, non-empty). The
+ * guard and `adjustmentDedupKey` share this one predicate, so the key branch
+ * cannot be entered on one side and not the other.
+ */
+export function hasExplicitIdempotencyKey(input: { idempotencyKey?: string | null }): boolean {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  return idempotencyKey !== undefined && idempotencyKey !== "";
 }
 
 /** The charge a purchase opens on the supplier account, or null when the

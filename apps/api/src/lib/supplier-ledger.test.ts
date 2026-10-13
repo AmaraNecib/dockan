@@ -5,6 +5,7 @@ import {
   allocateOldestFirst,
   availableSupplierCredit,
   deriveInvoicePaid,
+  hasExplicitIdempotencyKey,
   splitAgainstRemaining,
   supplierBalance,
   supplierChargeEntryAmount,
@@ -253,6 +254,14 @@ describe("adjustmentDedupKey (issue 181)", () => {
     );
     expect(adjustmentDedupKey({ ...signature, idempotencyKey: "   " })).toBe(adjustmentDedupKey(signature));
     expect(adjustmentDedupKey({ ...signature, idempotencyKey: null })).toBe(adjustmentDedupKey(signature));
+  });
+
+  it("only treats a trimmed non-empty key as explicit", () => {
+    expect(hasExplicitIdempotencyKey({ idempotencyKey: "k" })).toBe(true);
+    expect(hasExplicitIdempotencyKey({ idempotencyKey: " k " })).toBe(true);
+    expect(hasExplicitIdempotencyKey({ idempotencyKey: "  " })).toBe(false);
+    expect(hasExplicitIdempotencyKey({ idempotencyKey: null })).toBe(false);
+    expect(hasExplicitIdempotencyKey({})).toBe(false);
   });
 
   it("scopes the key to the account", () => {

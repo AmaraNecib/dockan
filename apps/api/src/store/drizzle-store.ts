@@ -43,7 +43,7 @@ import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeText
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
-import { adjustmentDedupKey, supplierBalance } from "../lib/supplier-ledger";
+import { adjustmentDedupKey, hasExplicitIdempotencyKey, supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
@@ -57,6 +57,11 @@ const isUniqueViolation = (error: Error): boolean => {
   // only compared to a literal and never used as another type
   return (error as Error & { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE";
 };
+
+/** The typed refusal for a dedup-key collision, or null when the error is not
+ * one. Shared by the guarded path and the raw seam so their mapping cannot drift. */
+const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
+  isUniqueViolation(error) ? new SupplierAdjustmentError("DUPLICATE") : null;
 
 /**
  * The signed-amount SQL for one supplier-ledger alias. Kept in one place
@@ -1331,14 +1336,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
    * sent unkeyed is also refused. */
   const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
     const bySignature = and(...adjustmentSignatureConditions(input));
-    const idempotencyKey = input.idempotencyKey?.trim();
     // the keyed arm carries the kind predicate too: only an ADJUSTMENT row can
     // hold an adjustment key, and a future kind must not match across kinds
     const keyed = and(
       eq(supplierAccountEntries.kind, "ADJUSTMENT"),
       eq(supplierAccountEntries.dedupKey, adjustmentDedupKey(input)),
     );
-    const where = idempotencyKey === undefined || idempotencyKey === "" ? bySignature : or(keyed, bySignature);
+    const where = hasExplicitIdempotencyKey(input) ? or(keyed, bySignature) : bySignature;
     const rows = await db.select({ id: supplierAccountEntries.id }).from(supplierAccountEntries).where(where).limit(1);
     return rows[0] !== undefined;
   };
@@ -1950,7 +1954,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       try {
         return await insertEntryRow(entry, dedupKey);
       } catch (error) {
-        if (entry.kind === "ADJUSTMENT" && error instanceof Error && isUniqueViolation(error)) throw new SupplierAdjustmentError("DUPLICATE");
+        if (entry.kind === "ADJUSTMENT" && error instanceof Error) throw duplicateKeyRefusal(error) ?? error;
         throw error;
       }
     },
@@ -2020,7 +2024,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       } catch (error) {
         // the partial unique index is the DB backstop for a writer that raced
         // the guard above; report it as the same typed refusal the guard throws
-        if (error instanceof Error && isUniqueViolation(error)) throw new SupplierAdjustmentError("DUPLICATE");
+        if (error instanceof Error) throw duplicateKeyRefusal(error) ?? error;
         throw error;
       }
     },

@@ -8,6 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import { parseDateTimeText } from "../lib/dates";
+import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 interface ExpenseCategory {
   id: string;
@@ -50,6 +52,21 @@ let deferredCategoryCreates: Array<() => void> = [];
 let categoriesListFails = false;
 let lastCreatedName: string | null = null;
 let lastExpense: CapturedExpense | null = null;
+
+/** The slice of the `expensesList` input the range filters own, recorded so a
+ * spec can assert the custom bounds the field parsed to. */
+interface ListInput {
+  preset: string;
+  customFrom?: string;
+  customTo?: string;
+  categoryIds?: string[];
+  sortBy: string;
+  sortDir: string;
+  pageSize: number;
+  offset: number;
+}
+
+let lastListInput: ListInput | null = null;
 
 const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseCategory => ({
   id,
@@ -98,10 +115,15 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     expensesList: {
-      queryOptions: () => ({
-        queryKey: ["expenses"],
-        queryFn: async () => ({ items: [] }),
-      }),
+      // SAFETY: mirror the real utils signature ({ input }) and record the
+      // input so a spec can assert the custom bounds the field parsed to
+      queryOptions: ({ input }: { input?: ListInput }) => {
+        lastListInput = input ?? null;
+        return {
+          queryKey: ["expenses", input],
+          queryFn: async () => ({ items: [] }),
+        };
+      },
     },
     expensesCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
@@ -806,6 +828,104 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
 
     expect(ui.query<HTMLInputElement>("expense-date")?.disabled).toBe(true);
     expect(ui.query<HTMLButtonElement>("expense-date-now")?.disabled).toBe(true);
+
+    await ui.unmount();
+  });
+});
+
+describe("ExpensesPage — custom range bounds (issue #123)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    categoriesFixture = [category("cat-1", "عام")];
+    lastListInput = null;
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  async function openCustomRange(ui: Awaited<ReturnType<typeof mountPage>>) {
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    await openSelect(ui.query("expense-range-preset")!);
+    const option = await findOption("فترة مخصصة");
+    expect(option).not.toBeNull();
+    await activateOption(option!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") !== null)).toBe(true);
+  }
+
+  it("shows day-first text bounds, never the OS datetime-local control", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    expect(from.type).toBe("text");
+    expect(to.type).toBe("text");
+    expect(from.getAttribute("placeholder")).toBe(i18n.t("expenseDateHint"));
+    expect(ui.query("expense-custom-from-now")?.textContent).toContain("الآن");
+
+    await ui.unmount();
+  });
+
+  it("sends the typed day-first bounds as the api's ISO moments, empty as open", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // nothing typed yet: both bounds stay open
+    expect(lastListInput).not.toBeNull();
+    expect(lastListInput?.customFrom).toBeUndefined();
+    expect(lastListInput?.customTo).toBeUndefined();
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    await ui.type("expense-custom-to", "31/01/2020 23:59");
+
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    expect(lastListInput).toMatchObject({ customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:00" });
+
+    await ui.unmount();
+  });
+
+  it("refuses an impossible bound visibly and never sends it", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    // the #119 follow-up already refuses the calendar-impossible day at the parse
+    expect(parseDateTimeText("31/02/2020 00:00")).toBeNull();
+
+    await act(async () => {
+      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    const error = ui.query("expense-custom-from-error");
+    expect(error?.getAttribute("role")).toBe("alert");
+    expect(error?.textContent).toContain("01/10/2026 00:34");
+    // the unreadable bound drops out of the query rather than going to the api
+    expect(lastListInput?.customFrom).toBeUndefined();
+
+    await ui.unmount();
+  });
+
+  it("fills a bound with now from «الآن» and sends it", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "15/01/2026 08:05");
+    await ui.click("expense-custom-from-now");
+
+    const value = ui.query<HTMLInputElement>("expense-custom-from")!.value;
+    expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    expect(value).not.toBe("15/01/2026 08:05");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === parseDateTimeText(value))).toBe(true);
 
     await ui.unmount();
   });

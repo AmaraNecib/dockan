@@ -7,8 +7,8 @@ import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
 import { parseGroupedAmount } from "@/lib/amount-parse";
-import { cn } from "@/lib/utils";
 import { Pager } from "@/components/ui/pager";
+import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
@@ -38,12 +38,6 @@ function toPreset(value: string): ReportRangePreset {
     if (value === preset) return preset;
   }
   return "CURRENT_MONTH";
-}
-
-/** datetime-local gives "YYYY-MM-DDTHH:mm"; the api wants seconds. */
-function withSeconds(value: string): string | undefined {
-  if (value === "") return undefined;
-  return value.length === 16 ? `${value}:00` : value;
 }
 
 /** The record form's error, tagged with the control it belongs to so a field
@@ -110,8 +104,8 @@ export function ExpensesPage() {
     orpc.expensesList.queryOptions({
       input: {
         preset,
-        customFrom: withSeconds(customFrom),
-        customTo: withSeconds(customTo),
+        customFrom: parseDateTimeText(customFrom) ?? undefined,
+        customTo: parseDateTimeText(customTo) ?? undefined,
         categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
         sortBy,
         sortDir,
@@ -330,39 +324,25 @@ export function ExpensesPage() {
       </label>
       <div className="grid gap-1">
         <label htmlFor="expense-occurred-at">{t("expenseOccurredAt")}</label>
-        <div className="flex gap-2">
-          <input
-            id="expense-occurred-at"
-            className={cn(inputClass, "w-full")}
-            name="expenseOccurredAt"
-            autoComplete="off"
-            placeholder={t("expenseDateHint")}
-            disabled={disabled}
-            value={occurredAt}
-            aria-invalid={dateInvalid || undefined}
-            aria-describedby={dateInvalid ? "expense-error" : undefined}
-            onChange={(event) => {
-              setOccurredAt(event.target.value);
-              setDateInvalid(false);
-            }}
-            data-testid="expense-date"
-          />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => {
-              setOccurredAt(nowDateTimeText());
-              // a fresh now is valid: clear only the date field's own refusal —
-              // an amount/category/save error is not this button's to hide
-              setDateInvalid(false);
-              if (error?.field === "date") setError(null);
-            }}
-            data-testid="expense-date-now"
-          >
-            {t("dateNow")}
-          </Button>
-        </div>
+        <DateField
+          id="expense-occurred-at"
+          name="expenseOccurredAt"
+          disabled={disabled}
+          value={occurredAt}
+          invalid={dateInvalid}
+          errorId="expense-error"
+          onValueChange={(text) => {
+            setOccurredAt(text);
+            setDateInvalid(false);
+          }}
+          onNow={() => {
+            // a fresh now is valid: clear only the date field's own refusal —
+            // an amount/category/save error is not this button's to hide
+            if (error?.field === "date") setError(null);
+          }}
+          testId="expense-date"
+          nowTestId="expense-date-now"
+        />
       </div>
     </div>
   );
@@ -487,14 +467,26 @@ export function ExpensesPage() {
           </div>
           {preset === "CUSTOM" && (
             <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1">
-                {t("expensesCustomFrom")}
-                <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => { setCustomFrom(event.target.value); pager.reset(); }} data-testid="expense-custom-from" />
-              </label>
-              <label className="grid gap-1">
-                {t("expensesCustomTo")}
-                <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => { setCustomTo(event.target.value); pager.reset(); }} data-testid="expense-custom-to" />
-              </label>
+              <div className="grid gap-1">
+                <label htmlFor="expense-custom-from">{t("expensesCustomFrom")}</label>
+                <DateField
+                  id="expense-custom-from"
+                  value={customFrom}
+                  onValueChange={(text) => { setCustomFrom(text); pager.reset(); }}
+                  testId="expense-custom-from"
+                  nowTestId="expense-custom-from-now"
+                />
+              </div>
+              <div className="grid gap-1">
+                <label htmlFor="expense-custom-to">{t("expensesCustomTo")}</label>
+                <DateField
+                  id="expense-custom-to"
+                  value={customTo}
+                  onValueChange={(text) => { setCustomTo(text); pager.reset(); }}
+                  testId="expense-custom-to"
+                  nowTestId="expense-custom-to-now"
+                />
+              </div>
             </div>
           )}
           <div className="flex flex-wrap gap-2">

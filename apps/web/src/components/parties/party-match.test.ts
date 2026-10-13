@@ -137,6 +137,8 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("على علي", "+213555123456", [ali])).toBeUndefined();
     // the Arabic-Indic spelling of the same phone is the same identity too
     expect(duplicateNameParty("علي علي", "٠٥٥٥١٢٣٤٥٦", [ali])).toBeUndefined();
+    // ...and so is a separated one
+    expect(duplicateNameParty("علي علي", "+213 555 123 456", [ali])).toBeUndefined();
   });
 
   it("warns for a variant spelling even when neither side has a phone", () => {
@@ -148,7 +150,7 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي", null, [walkIn])).toBeUndefined();
   });
 
-  it("never falls through to a variant when the exact phoneless spelling exists (#189 review)", () => {
+  it("does not warn about the other debtor when the typed name is already stored without a phone (#189 review)", () => {
     const exact = party({ id: "exact", name: "علي علي", phone: null });
     const variant = party({ id: "variant", name: "على علي", phone: null });
     const variantWithPhone = party({ id: "variant-phone", name: "على علي", phone: "+213555000999" });
@@ -162,9 +164,22 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي", null, [variantWithPhone, exact])).toBeUndefined();
     // the candidate's own exact spelling is the same case
     expect(duplicateNameParty("على علي", null, [exact, variant])).toBeUndefined();
+    // ...including a bidi mark or tashkeel pasted into the typed name: the exact
+    // record is recognised through the identity key, not the folded one
+    expect(duplicateNameParty("علي علي\u061C", null, [exact, variant])).toBeUndefined();
+    expect(duplicateNameParty("عَلِي عَلِي", null, [exact, variant])).toBeUndefined();
     // a phone on the candidate keeps the exact record warnable: it differs
     expect(duplicateNameParty("علي علي", "0555123456", [exact, variant])?.id).toBe("exact");
     expect(duplicateNameParty("علي علي", "0555123456", [variant, exact])?.id).toBe("exact");
+    // when the exact record is skipped as one identity (shared phone), a
+    // differently spelled duplicate of it still warns
+    const exactPhone = party({ id: "exact-phone", name: "علي علي", phone: "+213555123456" });
+    expect(duplicateNameParty("علي علي", "0555123456", [exactPhone, variantWithPhone])?.id).toBe("variant-phone");
+    // ...and with two variant spellings and no exact match, list order decides
+    // (documented): the candidate here differs from both by a separator
+    const hyphenVariant = party({ id: "hyphen-variant", name: "علي-علي", phone: "+213555000888" });
+    expect(duplicateNameParty("على-علي", null, [hyphenVariant, variant])?.id).toBe("hyphen-variant");
+    expect(duplicateNameParty("على-علي", null, [variant, hyphenVariant])?.id).toBe("variant");
   });
 
   it("prefers the exactly spelled record over an earlier variant of the name", () => {

@@ -260,6 +260,10 @@ describe("PartyPicker (issue 120)", () => {
     // ...and the create panel must not warn about the OTHER debtor, whose
     // one-click pick would move the sale's balance there
     expect(host.querySelector('[data-testid="picker-duplicate"]')).toBeNull();
+    // opening the panel must not clear the identity gate either: it is the only
+    // thing left refusing a typed-only submit for this spelling
+    expect(choiceState(host)).toBe("needs");
+    expect(host.querySelector('[data-testid="picker-needs-choice"]')).not.toBeNull();
   });
 
   it("blocks creating with a phone another record owns and offers that record instead", async () => {

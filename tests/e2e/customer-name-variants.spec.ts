@@ -43,6 +43,16 @@ test.afterEach(async ({ page }) => {
     await actAndAck(page, "customersDelete", () => page.getByTestId("party-delete-confirm").click());
     await expect(row).toHaveCount(0);
   }
+  // Prove the SERVER lost them, not just the render: a fresh read must not
+  // return either name. A write that failed behind an optimistic row removal,
+  // or a name this hook skipped, fails the test here instead of leaking into
+  // later specs' shared database (#189 review).
+  const after = await rpcOutput<{ items: Array<{ name: string }> }>(
+    await actAndAck(page, "customersList", async () => {
+      await page.goto("/customers");
+    }),
+  );
+  expect(after.items.filter((party) => names.includes(party.name)).map((party) => party.name)).toEqual([]);
 });
 
 test("picker warns on an alef/ya name variant and still creates the second record", async ({ page }) => {
@@ -55,9 +65,11 @@ test("picker warns on an alef/ya name variant and still creates the second recor
   cleanupPartyNames = [storedName, variantName];
 
   // 1. seed the stored spelling from the customers page (that form has no
-  //    duplicate-name warning, so the picker below is what is under test)
-  await page.goto("/customers");
-  await expect(page.getByTestId("parties-page-customer")).toBeVisible();
+  //    duplicate-name warning, so the picker below is what is under test). The
+  //    list read is awaited first so nothing downstream races its own render.
+  await actAndAck(page, "customersList", async () => {
+    await page.goto("/customers");
+  });
   await page.getByTestId("party-new").click();
   await page.getByTestId("party-form-name").fill(storedName);
   await actAndAck(page, "customersCreate", () => page.getByTestId("party-form-save").click());
@@ -88,7 +100,19 @@ test("picker warns on an alef/ya name variant and still creates the second recor
   await expect(page.getByTestId("party-row").filter({ hasText: storedName })).toHaveCount(1);
   await expect(page.getByTestId("party-row").filter({ hasText: variantName })).toHaveCount(1);
 
-  // 4. negative control: a name differing by a real letter is NOT a variant
+  // 4. #189 regression: with BOTH phoneless spellings now stored, typing the
+  //    EXACT one must not offer the variant debtor. The identity gate is the
+  //    positive signal (on for the stored exact name, off for a variant), and
+  //    the panel must open without a duplicate warning naming the other record.
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-customer").fill(storedName);
+  await expect(page.getByTestId("sale-customer-needs-choice")).toBeVisible();
+  await page.getByTestId("sale-customer-create").click();
+  await expect(page.getByTestId("sale-customer-create-panel")).toBeVisible();
+  await expect(page.getByTestId("sale-customer-duplicate")).toHaveCount(0);
+
+  // 5. negative control: a name differing by a real letter is NOT a variant
   //    (the fold must not widen past spelling variants)
   await page.goto("/sale");
   await expect(page.getByTestId("sale-form")).toBeVisible();

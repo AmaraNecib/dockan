@@ -81,7 +81,8 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  *
  * The two records ARE one identity — so no warning — when:
  * - they share a phone (the store refuses a second owner; `phoneMatchParty`
- *   already offers that record), or
+ *   already offers that record). That record alone is skipped, so a differently
+ *   spelled duplicate of it still warns, or
  * - the candidate's exact spelling is already stored with no phone: a walk-in
  *   re-typing her own name, which the picker's `needsChoice` gate already
  *   refuses. That one clears the whole list of duplicates, because the warning's

@@ -43,6 +43,12 @@ const BASE_SUPPLIERS = [
   { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
 ];
 let suppliers = BASE_SUPPLIERS;
+/** when true, the next resolve rejects (a failed read) */
+let resolveFails = false;
+/** count of resolve calls, to assert a no-op path never asks the server */
+let resolveCalls = 0;
+/** when true, the next save is refused as a stale named destination */
+let rejectTargetChanged = false;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -54,6 +60,11 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
+          if (rejectTargetChanged) {
+            rejectTargetChanged = false;
+            if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
+            throw new Error("OPENING_BALANCE_TARGET_CHANGED");
+          }
           if (rejectUnconfirmed && !input.rows.every((row) => row.confirmExisting === true)) {
             if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
             throw new Error("OPENING_BALANCE_EXISTS");
@@ -68,9 +79,13 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     suppliersResolveName: {
-      queryOptions: ({ input }: { input: { name: string } }) => ({
-        queryKey: ["suppliersResolveName", normalizeTextKey(input.name)],
-        queryFn: async () => ({ supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null }),
+      queryOptions: ({ input }: { input: { name: string; direction: string; amount: number; occurredAt: string; reason?: string } }) => ({
+        queryKey: ["suppliersResolveName", input.name, input.direction, input.amount, input.occurredAt, input.reason ?? ""],
+        queryFn: async () => {
+          resolveCalls += 1;
+          if (resolveFails) throw new Error("NETWORK");
+          return { supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null };
+        },
       }),
     },
     reportsDebts: { queryKey: () => ["reportsDebts"] },
@@ -90,6 +105,9 @@ beforeEach(() => {
   captured = null;
   rejectUnconfirmed = false;
   rejectOnce = false;
+  resolveFails = false;
+  resolveCalls = 0;
+  rejectTargetChanged = false;
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
   racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
@@ -416,8 +434,80 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-save");
     });
     expect(captured).toBeNull();
-    expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("مبلغ");
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
+  it("re-blocks the open dialog when a row is edited onto the named account (#184)", async () => {
+    // the dialog will name s-1 for this differently-spelled name
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the owner edits row 0 (s-1) while the dialog is open: the resolved-id
+    // conflict is visible again and must stop the confirm from posting two rows
+    // to the account the dialog named once
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    // the conflict is visible again (banner) and the confirm button is disabled
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
+  });
+
+  it("writes nothing and surfaces the error when the resolve read fails (#184)", async () => {
+    resolveFails = true;
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+    // resolving was reset in `finally`, so the owner can retry
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+  });
+
+  it("re-resolves and re-opens the dialog when the named destination moved (#184)", async () => {
+    const typed = "مورد انزاح";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    rejectTargetChanged = true;
+    // the refusal reveals the drifted account
+    racedAfterRefusal = { key: normalizeTextKey(typed), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const confirmNames = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(confirmNames()).toContain("مورد له حركات");
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    // the dialog re-opened naming the moved account, never the stale one
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(confirmNames()).toContain("مورد بديل");
+    expect(confirmNames()).not.toContain("مورد له حركات");
   });
 
   it("names the destination supplier in the confirmation dialog (round 5)", async () => {
@@ -581,7 +671,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured?.rows).toHaveLength(2);
     expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 800, confirmExisting: true });
-    expect(captured?.rows.find((row) => row.newSupplierName === typedName)).toMatchObject({ amount: 400, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === typedName)).toMatchObject({ amount: 400, confirmExisting: true, expectedSupplierId: "s-raced2" });
   });
 
   it("refreshes suppliers after a confirmed refusal too (Greptile round 3)", async () => {

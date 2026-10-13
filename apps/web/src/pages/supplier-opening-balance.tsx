@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -54,8 +54,10 @@ export function SupplierOpeningBalancePage() {
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   /** true while a submit is asking the server for the destination, so a rapid
-   * double-click cannot run two resolutions (issue 184) */
+   * double-click cannot run two resolutions (issue 184). The ref guards the
+   * same-task double-fire that React has not yet re-rendered. */
   const [resolving, setResolving] = useState(false);
+  const resolvingRef = useRef(false);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
 
   const suppliers = list.data?.items ?? [];
@@ -102,14 +104,16 @@ export function SupplierOpeningBalancePage() {
   const foldedConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
   const typedNameConflict = foldedConflict || (typedRowReady && typedDestination !== null && filledExisting.some((row) => row.supplier.id === typedDestination.id));
 
-  const totalRows = filledExisting.length + (typedRowReady && !foldedConflict ? 1 : 0);
+  const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
-  // the save is blocked, and the reason shown, BEFORE the owner fills more rows
+  // the save is blocked, and the reason shown, BEFORE the owner fills more rows.
+  // `typedNameConflict` includes the server-resolved id, so editing a row onto the
+  // account the dialog named re-blocks the dialog too (issue 177 round 5 / #184).
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
     : invalidExisting.length > 0
       ? t("supplierOpeningFixRows")
-      : foldedConflict
+      : typedNameConflict
         ? t("supplierOpeningRowHasAmount")
         : newRowError;
   // the confirmation dialog names every account the batch will write to, including
@@ -186,6 +190,9 @@ export function SupplierOpeningBalancePage() {
       setSaved({ created: result.created, accounts: result.accounts });
       setConfirming(false);
     } catch (err) {
+      // surface the refusal first; a failed re-resolve below is the more
+      // actionable error and must not be overwritten
+      setError(tError(err instanceof Error ? err.message : undefined));
       // a refusal means the server resolved the typed name to an account the
       // dialog had not named (or a stale count). Refresh the counts AND re-ask the
       // server for the destination, then re-open the dialog so what it names is
@@ -197,11 +204,9 @@ export function SupplierOpeningBalancePage() {
           setTypedDestination(destination);
           setConfirming(true);
         } catch (resolveError) {
-          // a failed re-resolve must not mask the original refusal
           setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
         }
       }
-      setError(tError(err instanceof Error ? err.message : undefined));
     } finally {
       // NOTE: do NOT reset `confirming` here — the catch may have just set it to
       // surface the dialog after a stale-expectation refusal. It is cleared on
@@ -212,7 +217,7 @@ export function SupplierOpeningBalancePage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting || resolving || bulk.isPending || dateInvalid) return;
+    if (submitting || resolvingRef.current || bulk.isPending || dateInvalid) return;
     if (blockedReason !== null) {
       setError(blockedReason);
       return;
@@ -244,6 +249,7 @@ export function SupplierOpeningBalancePage() {
    * a double-click cannot run two, and an error surface instead of an unhandled
    * rejection. `undefined` means it failed and the error is shown. */
   async function resolveForSubmit(): Promise<ResolvedSupplier | null | undefined> {
+    resolvingRef.current = true;
     setResolving(true);
     try {
       return await resolveTypedDestination();
@@ -251,6 +257,7 @@ export function SupplierOpeningBalancePage() {
       setError(tError(err instanceof Error ? err.message : undefined));
       return undefined;
     } finally {
+      resolvingRef.current = false;
       setResolving(false);
     }
   }
@@ -449,7 +456,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={() => setConfirming(false)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

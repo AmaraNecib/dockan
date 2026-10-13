@@ -33,7 +33,7 @@ describe("pickOpeningSupplier (issue 184 — the single tie-break)", () => {
 describe("resolveOpeningDestination (issue 184)", () => {
   it("falls back to the tie-break when no candidate holds the signature", async () => {
     const rows = [candidate("a", 0), candidate("b", 4)];
-    const resolved = await resolveOpeningDestination(rows, { direction: "WE_OWE", amount: 500 }, async () => false);
+    const resolved = await resolveOpeningDestination(rows, async () => false);
     expect(resolved?.candidate.id).toBe("b");
     expect(resolved?.holder).toBe(false);
   });
@@ -41,13 +41,22 @@ describe("resolveOpeningDestination (issue 184)", () => {
   it("keeps a retry on the account already holding the signature, even when another candidate now has more entries", async () => {
     const original = candidate("a", 1);
     const busier = candidate("b", 9);
-    const resolved = await resolveOpeningDestination([original, busier], { direction: "WE_OWE", amount: 700 }, async (row) => row.id === "a");
+    const resolved = await resolveOpeningDestination([original, busier], async (row) => row.id === "a");
     expect(resolved?.candidate.id).toBe("a");
     expect(resolved?.holder).toBe(true);
   });
 
+  it("is order-independent when two candidates both hold the signature", async () => {
+    const a = candidate("a", 0);
+    const b = candidate("b", 5);
+    const forward = await resolveOpeningDestination([a, b], async () => true);
+    const reverse = await resolveOpeningDestination([b, a], async () => true);
+    expect(forward?.candidate.id).toBe("a");
+    expect(reverse?.candidate.id).toBe("a");
+  });
+
   it("returns undefined when no supplier folds to the name", async () => {
-    expect(await resolveOpeningDestination([], { direction: "WE_OWE", amount: 1 }, async () => false)).toBeUndefined();
+    expect(await resolveOpeningDestination([], async () => false)).toBeUndefined();
   });
 });
 

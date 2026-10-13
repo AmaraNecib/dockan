@@ -1031,7 +1031,7 @@ export function createRpcRouter(deps: RpcDeps) {
               // entries, miss the prior row, and post again. #184 — the same
               // rule is the single `resolveOpeningDestination`, shared with the
               // read-only resolve query.
-              const resolution = await resolveOpeningDestination(candidates, row, (candidate) =>
+              const resolution = await resolveOpeningDestination(candidates, (candidate) =>
                 tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
               );
               const requested = resolution?.candidate;
@@ -1108,7 +1108,7 @@ export function createRpcRouter(deps: RpcDeps) {
           .filter((party) => normalizeTextKey(party.name) === key)
           .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
         const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
-        const resolution = await resolveOpeningDestination(candidates, { direction: input.direction, amount: input.amount }, (candidate) =>
+        const resolution = await resolveOpeningDestination(candidates, (candidate) =>
           deps.store.hasSupplierAdjustment({ supplierId: candidate.id, direction: input.direction, amount: input.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
         );
         return {

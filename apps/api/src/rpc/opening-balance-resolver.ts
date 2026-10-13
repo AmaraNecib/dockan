@@ -12,10 +12,6 @@
  * row after legacy duplicate creation (same `normalizeTextKey`, different text). */
 export type NamedSupplierCandidate = { id: string; name: string; entries: number };
 
-/** The row a destination is resolved for: the #177 signature fields that decide
- * whether a retry stays on the account that already holds it. */
-export type OpeningDestinationRow = { direction: "WE_OWE" | "THEY_OWE"; amount: number };
-
 /**
  * The fold tie-break: prefer the entry-carrying party, then the lowest id.
  * Deterministic and total: equal entries compare ids as strings.
@@ -28,6 +24,12 @@ export function pickOpeningSupplier(candidates: readonly NamedSupplierCandidate[
   );
 }
 
+/** The lowest id; used for the holder arm so two folded rows that both carry the
+ * row's signature resolve identically from either call site. */
+function lowestById(candidates: readonly NamedSupplierCandidate[]): NamedSupplierCandidate | undefined {
+  return candidates.reduce<NamedSupplierCandidate | undefined>((best, candidate) => (best === undefined || candidate.id < best.id ? candidate : best), undefined);
+}
+
 /**
  * The destination for a typed name: the candidate already holding the row's
  * signature (so a lost-response retry stays on the original account), else the
@@ -35,7 +37,8 @@ export function pickOpeningSupplier(candidates: readonly NamedSupplierCandidate[
  * would create one.
  *
  * `signatureHolds` is injected so the rule stays pure and the same function
- * serves the transaction write path and the read-only resolve query.
+ * serves the transaction write path and the read-only resolve query. Both arms
+ * are order-independent, so the two call sites cannot disagree.
  */
 export type OpeningDestinationResolution = {
   candidate: NamedSupplierCandidate;
@@ -45,12 +48,14 @@ export type OpeningDestinationResolution = {
 
 export async function resolveOpeningDestination(
   candidates: readonly NamedSupplierCandidate[],
-  row: OpeningDestinationRow,
   signatureHolds: (candidate: NamedSupplierCandidate) => Promise<boolean>,
 ): Promise<OpeningDestinationResolution | undefined> {
+  const holders: NamedSupplierCandidate[] = [];
   for (const candidate of candidates) {
-    if (await signatureHolds(candidate)) return { candidate, holder: true };
+    if (await signatureHolds(candidate)) holders.push(candidate);
   }
+  const holder = lowestById(holders);
+  if (holder !== undefined) return { candidate: holder, holder: true };
   const picked = pickOpeningSupplier(candidates);
   return picked === undefined ? undefined : { candidate: picked, holder: false };
 }

@@ -2100,6 +2100,8 @@ describe("supplier adjustments (issue 176)", () => {
 
     const resolved = await client.suppliersResolveName({ name, direction: "WE_OWE", amount: 500, occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي" });
     expect(resolved.supplier?.id).toBe(carrying.id);
+    // the dialog renders the server's stored text; the write returns the same name
+    expect(resolved.supplier?.name).toBe(name.replace(" ", "  "));
 
     // the dialog names the resolved account; the write must land on that same one
     const result = await client.suppliersOpeningBalances({
@@ -2109,6 +2111,7 @@ describe("supplier adjustments (issue 176)", () => {
     });
     expect(result.accounts[0]?.supplierId).toBe(resolved.supplier?.id);
     expect(result.accounts[0]?.supplierId).toBe(carrying.id);
+    expect(result.accounts[0]?.name).toBe(resolved.supplier?.name);
     expect((await client.suppliersGet({ id: empty.id })).account?.entries ?? []).toHaveLength(0);
   });
 
@@ -2178,6 +2181,48 @@ describe("supplier adjustments (issue 176)", () => {
         rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 400, expectedSupplierId: null }],
       }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_TARGET_CHANGED" });
+  });
+
+  it("refuses when the named account no longer folds to the typed name (issue 184)", async () => {
+    const name = `مورد أعيدت-${Date.now()}`;
+    const named = await client.suppliersCreate({ name });
+    // the dialog named `named`, then the supplier was renamed so the name no
+    // longer folds to it
+    await client.suppliersUpdate({ id: named.id, name: `${name}-2` });
+
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 400, expectedSupplierId: named.id }],
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_TARGET_CHANGED" });
+    // the name was not silently materialized as a brand-new party
+    const matches = (await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === name);
+    expect(matches).toHaveLength(0);
+  });
+
+  it("accepts expectedSupplierId: null when the name is genuinely new (issue 184)", async () => {
+    const name = `مورد جديد-${Date.now()}`;
+    const resolved = await client.suppliersResolveName({ name, direction: "WE_OWE", amount: 250, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
+
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 250, expectedSupplierId: null }],
+    });
+    expect(result.created).toBe(1);
+    expect(result.accounts[0]?.name).toBe(name);
+  });
+
+  it("rejects a whitespace-only resolve name and a zero amount, and folds surrounding whitespace (issue 184)", async () => {
+    await expect(client.suppliersResolveName({ name: "   ", direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" })).rejects.toThrow(/Input validation failed/);
+    await expect(client.suppliersResolveName({ name: "مورد حد", direction: "WE_OWE", amount: 0, occurredAt: "2026-10-13T12:00:00" })).rejects.toThrow(/Input validation failed/);
+
+    const name = `مورد هامش-${Date.now()}`;
+    const supplier = await client.suppliersCreate({ name });
+    // surrounding whitespace folds to the stored name, exactly as the write folds it
+    const resolved = await client.suppliersResolveName({ name: `  ${name}  `, direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier?.id).toBe(supplier.id);
   });
 
   it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {

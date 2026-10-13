@@ -72,13 +72,20 @@ Follow-ups from #176. The lessons the debate/test-audit/code-review caught:
    delete them.
 
 10. **When a name can fold to several rows, resolve by SIGNATURE before any
-    tie-break — and do it on every path that can reach the row.** The bulk batch
-    preferred the entry-carrying supplier, so once another folded-match gained more
-    entries a retry resolved to it, missed the prior entry on the original, and
-    posted again. Scan all folded candidates for the #177 signature first. Also:
-    a client that resolves the name itself sends `supplierId`, which bypasses a
-    server check that only runs in the `newSupplierName` branch — so the
-    `supplierId` branch must scan the party's folded siblings too. A named row must
-    also forward `confirmExisting`, and an `OPENING_BALANCE_EXISTS` refusal must
-    refresh the list even on the already-confirmed path, or a mixed batch repeats
-    the refusal forever.
+    tie-break — and do it only on the NAME-resolved path.** The bulk batch preferred
+    the entry-carrying supplier, so once another folded-match gained more entries a
+    retry resolved to it, missed the prior entry on the original, and posted again.
+    Scan all folded candidates for the #177 signature first. But an explicit
+    `supplierId` is the user's own choice: re-targeting it to a sibling made two
+    same-name suppliers block each other (round 4). Split the cases at the source —
+    the scan runs only for `newSupplierName`, and the client sends a typed name as a
+    NAME, never as a pre-resolved id (track which rows originated from a typed name).
+    A named row must also forward `confirmExisting`, and an `OPENING_BALANCE_EXISTS`
+    refusal must refresh the list even on the already-confirmed path, or a mixed
+    batch repeats the refusal forever.
+
+11. **A client that resolves names locally must also de-duplicate them.** The
+    server refuses any batch with two rows folding to one name. Once adopted rows
+    are keyed by the typed name, two same-name suppliers can each be adopted and
+    both emitted. Guard on the folded NAME independently of whether it currently
+    resolves to a supplier — a refetch can change which sibling it matches.

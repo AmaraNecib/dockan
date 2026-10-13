@@ -78,6 +78,10 @@ function dropArticles(folded: string): string {
  * Matching needs both because the stem guard is asymmetric between a short
  * query and a long name: «الب» keeps its «ال» while «البطارية» drops it, so the
  * article-preserved pair is what lets the query find the name.
+ *
+ * The article-preserved element is also the key the picker's duplicate-name
+ * warning matches on (#130): it folds alef/ya but keeps «ال» significant, the
+ * narrowest rung for a soft nudge. Still NOT an identity key.
  */
 export function foldArabicVariants(raw: string): [string, string] {
   const preserved = foldLetters(raw);

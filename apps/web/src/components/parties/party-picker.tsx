@@ -345,7 +345,9 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                   )}
                   {phoneOwner === undefined && duplicate !== undefined && (
                     <p className="rounded border border-warning/30 bg-warning/10 p-2 text-sm" role="status" data-testid={`${testId}-duplicate`}>
-                      {t("partyDuplicateName", { name: duplicate.name, phone: duplicate.phone === null ? t("partyNoPhone") : displayAlgerianPhone(duplicate.phone) })}{" "}
+                      {duplicate.phone === null
+                        ? t("partyDuplicateNameNoPhone", { name: duplicate.name })
+                        : t("partyDuplicateName", { name: duplicate.name, phone: displayAlgerianPhone(duplicate.phone) })}{" "}
                       <button type="button" className="underline" onClick={() => pick(duplicate)} data-testid={`${testId}-pick-duplicate`}>
                         {t("partyPickRecord", { name: duplicate.name })}
                       </button>

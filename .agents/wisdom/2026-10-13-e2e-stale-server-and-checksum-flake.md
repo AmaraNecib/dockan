@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13 · **Ticket:** 174 · **Area:** tests/e2e, apps/api port probe, apps/web vite proxy, apps/api/src/lib/vault/format.test.ts
 
-Two traps that cost real time on this ticket.
+Three traps that cost real time in this area.
 
 ## 1. Isolated-pass / full-fail e2e is a stale-server smell, not a test bug
 
@@ -47,3 +47,22 @@ checksum-collision flake, not a regression from your change — re-run or treat 
 as a pre-existing flake and report it. A durable fix would re-roll the code
 until the typo is rejected or assert the weaker "rejected" contract; both are
 separate from any feature lane.
+
+## 3. The vault spec's own pair uses fixed ports 4399/5174 (same trap, 2026-10-14)
+
+`tests/e2e/vault.spec.ts` spawns its dedicated API+web pair on **hard-coded**
+ports (4399/5174), so the `DOKAN_PORT`/`DOKAN_WEB_PORT` isolation that protects
+the shared pair does not cover it. Its teardown kills the spawn with
+`taskkill /T /F`, which on Windows does not always take the process tree down:
+a stale vault API then answers the *next* run's `waitForOk(4399)`, the run talks
+to a database where a vault already exists, and the "first run: create the vault"
+test fails deterministically on `vault-recovery-key` — while the previous run
+passed. Observed on #130 (PR #189) across two consecutive runs.
+
+**Always**: before a full e2e run, also clear 4399/5174, not just 4317/5173:
+
+```bash
+for p in $(netstat -ano | grep -E ":4399|:5174" | grep LISTENING | awk '{print $5}' | sort -u); do
+  taskkill //PID $p //T //F
+done
+```

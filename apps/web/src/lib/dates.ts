@@ -167,8 +167,9 @@ export interface DateBound {
   bound: string | undefined;
 }
 
-/** An untouched range bound: no text, no filter. */
-export const OPEN_BOUND: DateBound = { text: "", bound: undefined };
+/** An untouched range bound: no text, no filter. Frozen so the two bounds that
+ * share it as a `useState` initial value can never drift. */
+export const OPEN_BOUND: DateBound = Object.freeze({ text: "", bound: undefined });
 
 /**
  * Fold an edit into a range bound (issue #123). Empty text opens the bound; a

@@ -81,7 +81,11 @@ export function DateField({
           value={value}
           aria-invalid={refused || undefined}
           aria-describedby={refused ? describedBy : undefined}
-          onChange={(event) => onValueChange(event.target.value)}
+          onChange={(event) => {
+            onValueChange(event.target.value);
+            // once the owner is editing again, stop scolding until they leave
+            setBlurred(false);
+          }}
           onBlur={() => setBlurred(true)}
           data-testid={testId}
         />

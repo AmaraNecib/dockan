@@ -936,6 +936,28 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     await ui.unmount();
   });
 
+  it("refuses an impossible upper bound the same way", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-to", "31/01/2020 23:59");
+    expect(await ui.waitFor(() => lastListInput?.customTo === "2020-01-31T23:59:00")).toBe(true);
+
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    await ui.type("expense-custom-to", "31/02/2020 00:00");
+    await act(async () => {
+      to.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(to.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-to-error")?.getAttribute("role")).toBe("alert");
+    // the upper bound keeps its last applied moment too
+    expect(lastListInput?.customTo).toBe("2020-01-31T23:59:00");
+
+    await ui.unmount();
+  });
+
   it("fills a bound with now from «الآن» and sends it", async () => {
     const ui = await mountPage(queryClient);
     await openCustomRange(ui);

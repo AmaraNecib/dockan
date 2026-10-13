@@ -166,7 +166,10 @@ export function ExpensesPage() {
           // are unconditional…
           setCreatedCategory(category);
           setCategoryNotice(category.name);
+          // the record form's refusal goes with the message node it names, so a
+          // refused date cannot leave a dangling aria-describedby (issue #123)
           setError(null);
+          setDateInvalid(false);
           // …but only the attempt still on screen may select it and close
           if (attempt === categoryAttemptRef.current) {
             setCategoryId(category.id);

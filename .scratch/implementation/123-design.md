@@ -32,17 +32,19 @@ export interface DateFieldProps {
   /** raw text on every edit and on «الآن» */
   onValueChange: (text: string) => void;
   testId: string;
-  nowTestId: string;
   disabled?: boolean;
-  className?: string;
   /** a submit-time refusal the parent owns (the record form) */
   invalid?: boolean;
-  /** id of the alert that carries that refusal */
+  /** id of the alert that carries that refusal; it must be in the DOM whenever
+   * `invalid` is true, because the field then renders no node of its own */
   errorId?: string;
   /** cleared on a «الآن» click, after the value updates */
   onNow?: () => void;
 }
 ```
+
+The «الآن» and error testids are derived from `testId` (`${testId}-now`,
+`${testId}-error`), so every caller gets them without a second prop.
 
 Validation is the component's job: `unreadable = value.trim() !== "" &&
 parseDateTimeText(value) === null`. Two display modes, because the two contexts
@@ -66,10 +68,20 @@ No `Date`, no `Intl`, no `dir` override — same bidi rules as #119.
 | `expenses.tsx` | custom from/to | `expense-custom-from` / `-to` | `…-now` |
 | `reports.tsx` | custom from/to | `report-custom-from` / `-to` | `…-now` |
 
-`withSeconds` is deleted from both pages. The bound sent to the api becomes
-`parseDateTimeText(text) ?? undefined` — the same naive ISO moment
-(`2020-01-01T00:00:00`) `datetime-local` + `withSeconds` produced. Empty and
-unreadable both mean "open bound"; unreadable additionally shows the refusal.
+`withSeconds` is deleted from both pages. A range bound is now a `DateBound`
+(`{ text, bound }`) folded by `editDateBound` in `lib/dates.ts`: empty opens the
+bound, a readable moment sets it, and anything else (a half-typed or impossible
+value) **keeps the previous bound**. That is what stops an existing range from
+refetching the whole list unfiltered on every keystroke — a widening
+`datetime-local` never produced. The bound the api receives is the same naive
+ISO moment (`2020-01-01T00:00:00`) `datetime-local` + `withSeconds` produced.
+The field's visible refusal, not a silent widening, says a value was not applied.
+The record form is unaffected: it keeps a plain text state and parses once at
+submit.
+
+Accepted, unchanged from the shared parser: a bare date is midnight (so a bare
+`to` bound is the start of that day), and a reversed range is not refused
+client-side — the api resolves the window.
 
 ## Round-trip
 
@@ -78,7 +90,8 @@ unreadable both mean "open bound"; unreadable additionally shows the refusal.
 | `01/01/2020 00:00` | `2020-01-01T00:00:00` | `2020-01-01T00:00:00` |
 | `31/01/2020 23:59` | `2020-01-31T23:59:00` | `2020-01-31T23:59:00` |
 | `` (empty) | `undefined` | `undefined` |
-| `31/02/2020 00:00` | `undefined` + refusal | n/a (impossible) |
+| `01/01/2020 0` (half-typed) | keeps the previous bound | n/a (old control could not emit it) |
+| `31/02/2020 00:00` | keeps the previous bound + refusal | n/a (impossible) |
 
 ## Impossible calendar days
 
@@ -89,21 +102,28 @@ relies on it and repeats the assertion at the field level.
 
 ## Tests
 
-- `dates.test.ts` — unchanged; already pins the impossible-day refusal.
+- `dates.test.ts` — pins the impossible-day refusal (#119 follow-up already in
+  `develop` @ `a0b9671`) and the `editDateBound` fold (empty / readable /
+  half-typed / impossible).
 - `components/ui/date-field.test.tsx` (new) — `type="text"` + shared placeholder,
   `onValueChange` on edit, «الآن» writes a now-shaped value, uncontrolled
   refusal after blur with `aria-invalid`/own alert, controlled `invalid` +
   `errorId` wiring with no own node, disabled disables both.
 - `pages/expenses.test.tsx` — custom bounds send the parsed ISO; an impossible
-  bound shows the visible error and omits the bound; «الآن» fills.
+  bound shows the visible error and keeps the last applied bound; errors on both
+  the `from` and `to` bounds; «الآن» fills and sends.
 - `pages/reports.test.tsx` — CUSTOM reveals day-first text fields; parsed ISO in
-  the query input; an impossible bound shows the error and omits the bound.
+  the query input; an impossible bound keeps the last applied window; «الآن» on
+  the upper bound reaches the query.
 - `tests/e2e/expense-reports.spec.ts` — backdated custom filter fills day-first
-  and still returns the row; reports custom bound; «الآن»; impossible-date
-  refusal on both screens.
+  and still returns the row; reports custom bound round-trips onto the period
+  line; «الآن»; impossible-date refusal on both screens.
 
 ## Risks
 
 - The filter refusal is blur-based; the specs must blur (`.fill` then blur).
 - RTL bidi can only be seen in a browser, not a unit test — the component keeps
   the #119 rule (plain text run, no `dir` forcing).
+- `inputClass` now carries `aria-invalid:` border/ring tokens, so a raw input
+  with `aria-invalid` turns red like the themed `Input` (the DateField fields
+  included).

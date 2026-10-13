@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils"
  * while the call site supplies only its size/layout extras.
  */
 export const inputClass =
-  "rounded border border-input bg-background px-3 py-2 outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30"
+  "rounded border border-input bg-background px-3 py-2 outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-invalid:border-destructive aria-invalid:ring-[3px] aria-invalid:ring-destructive/20 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-input/30"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
   return (

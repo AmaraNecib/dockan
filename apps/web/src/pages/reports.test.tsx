@@ -8,9 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
-
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import i18n from "../lib/i18n";
+import { parseDateTimeText } from "../lib/dates";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 /**
@@ -336,7 +335,7 @@ describe("ReportsPage custom bounds (issue #123)", () => {
     const value = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-to"]')!.value;
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
-    expect(await page.waitFor(() => lastReportInput?.customTo !== undefined)).toBe(true);
+    expect(await page.waitFor(() => lastReportInput?.customTo === parseDateTimeText(value))).toBe(true);
 
     await page.unmount();
   });

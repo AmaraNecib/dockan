@@ -49,6 +49,7 @@ export function SupplierOpeningBalancePage() {
   const [reasonDraft, setReasonDraft] = useState(() => t("supplierAdjustPresetOpening"));
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
   const [newName, setNewName] = useState("");
+  const [nameFocused, setNameFocused] = useState(false);
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -118,14 +119,16 @@ export function SupplierOpeningBalancePage() {
   // brought one in). Move the draft onto that supplier's row as soon as the
   // match exists, preserving amount and direction, so a save never drops the row
   // or mints a duplicate account — regardless of whether the confirmation
-  // dialog is open yet.
+  // dialog is open yet. Gate on the name field being UNfocused so an owner still
+  // typing a new name (amount entered first) is not cut off mid-word.
   useEffect(() => {
+    if (nameFocused) return;
     const resolved = resolveNewName();
     if (resolved === undefined) return;
     setRow(resolved.supplierId, { direction: newDirection, amount: newAmount });
     setNewName("");
     setNewAmount("");
-  }, [suppliers, newName, newAmount, newDirection]);
+  }, [suppliers, newName, newAmount, newDirection, nameFocused]);
 
   async function save(confirmExisting: boolean) {
     if (occurredAt === null || blockedReason !== null) return;
@@ -320,17 +323,15 @@ export function SupplierOpeningBalancePage() {
                       className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                       value={newName}
                       onChange={(event) => setNewName(event.target.value)}
+                      onFocus={() => setNameFocused(true)}
+                      onBlur={() => setNameFocused(false)}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
-                      aria-invalid={newRow.status === "duplicate"}
+                      aria-invalid={newRow.status === "invalid"}
                       data-testid="opening-balance-new-name"
                     />
                     {newRowError !== null && (
-                      <p
-                        className="mt-1 text-xs text-destructive"
-                        role="alert"
-                        data-testid={newRow.status === "duplicate" ? "opening-balance-name-exists" : "opening-balance-new-error"}
-                      >
+                      <p className="mt-1 text-xs text-destructive" role="alert" data-testid="opening-balance-new-error">
                         {newRowError}
                       </p>
                     )}

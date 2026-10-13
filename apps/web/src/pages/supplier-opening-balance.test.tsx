@@ -201,7 +201,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // row instead of minting a second account
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
-    expect(host.querySelector('[data-testid="opening-balance-name-exists"]')).toBeNull();
     expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("500");
     expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("");
 
@@ -405,5 +404,36 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured?.rows).toHaveLength(1);
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-pre", direction: "WE_OWE", amount: 250, confirmExisting: true });
+  });
+
+  it("does not cut off an owner still typing a new name that starts like an existing one (Greptile round 2)", async () => {
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+
+    // amount first, then the owner focuses the name field and starts typing a
+    // name whose prefix matches an existing supplier
+    setInput(amountInput, "250");
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, "مورد له حركات");
+
+    // still focused: the draft has not moved, so the amount is intact
+    expect(amountInput.value).toBe("250");
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("");
+
+    // the owner finishes the intended NEW name (no longer matching)
+    setInput(nameInput, "مورد له حركات 2");
+    await act(async () => {
+      nameInput.blur();
+    });
+    expect(amountInput.value).toBe("250");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات 2", direction: "WE_OWE", amount: 250 });
   });
 });

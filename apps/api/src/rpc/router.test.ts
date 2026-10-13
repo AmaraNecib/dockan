@@ -2091,6 +2091,68 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: carrying.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 
+  it("resolves a typed name to the same supplier the opening-balance write lands on (issue 184)", async () => {
+    const name = `مورد قرار-${Date.now()}`;
+    // both fold to one normalizeTextKey; only the second carries an entry
+    const empty = await client.suppliersCreate({ name });
+    const carrying = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    await client.suppliersAdjust({ supplierId: carrying.id, direction: "WE_OWE", amount: 100, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    const resolved = await client.suppliersResolveName({ name, direction: "WE_OWE", amount: 500, occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي" });
+    expect(resolved.supplier?.id).toBe(carrying.id);
+
+    // the dialog names the resolved account; the write must land on that same one
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 500, confirmExisting: true }],
+    });
+    expect(result.accounts[0]?.supplierId).toBe(resolved.supplier?.id);
+    expect(result.accounts[0]?.supplierId).toBe(carrying.id);
+    expect((await client.suppliersGet({ id: empty.id })).account?.entries ?? []).toHaveLength(0);
+  });
+
+  it("resolves two empty folded names to the lowest id, the same id the write picks (issue 184)", async () => {
+    const name = `مورد فارغ-${Date.now()}`;
+    const a = await client.suppliersCreate({ name });
+    const b = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    const expectedId = a.id < b.id ? a.id : b.id;
+
+    const resolved = await client.suppliersResolveName({ name, direction: "WE_OWE", amount: 300, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier?.id).toBe(expectedId);
+    expect(resolved.supplier?.accountEntryCount).toBe(0);
+
+    const result = await client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", rows: [{ newSupplierName: name, direction: "WE_OWE", amount: 300 }] });
+    expect(result.accounts[0]?.supplierId).toBe(expectedId);
+  });
+
+  it("resolves a fresh name to null, meaning a write would create one (issue 184)", async () => {
+    const resolved = await client.suppliersResolveName({ name: `مورد فرِيد-${Date.now()}`, direction: "WE_OWE", amount: 400, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
+  });
+
+  it("resolves a retry to the account already holding the row signature, over the entry-count winner (issue 184)", async () => {
+    const name = `مورد توقيع-${Date.now()}`;
+    const busier = await client.suppliersCreate({ name });
+    const holder = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    // busier carries more entries, so the tie-break alone would pick it
+    await client.suppliersAdjust({ supplierId: busier.id, direction: "WE_OWE", amount: 10, reason: "أ" });
+    await client.suppliersAdjust({ supplierId: busier.id, direction: "WE_OWE", amount: 20, reason: "ب" });
+    // holder already carries the exact row signature below
+    await client.suppliersAdjust({ supplierId: holder.id, direction: "WE_OWE", amount: 700, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    const row = { direction: "WE_OWE" as const, amount: 700, occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي" };
+    const resolved = await client.suppliersResolveName({ name, ...row });
+    expect(resolved.supplier?.id).toBe(holder.id);
+
+    // the write targets the same account and reports the duplicate there, never
+    // posting the 700 to the busier tie-break winner
+    await expect(
+      client.suppliersOpeningBalances({ occurredAt: row.occurredAt, reason: row.reason, rows: [{ newSupplierName: name, direction: row.direction, amount: row.amount, confirmExisting: true }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    expect((await client.suppliersGet({ id: busier.id })).account?.entries.filter((entry) => entry.amount === 700) ?? []).toHaveLength(0);
+  });
+
   it("keeps a named-batch retry on the original account when both fold to one name (Greptile round 3)", async () => {
     const name = `مورد مطابق-${Date.now()}`;
     const a = await client.suppliersCreate({ name });

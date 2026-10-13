@@ -19,27 +19,13 @@ import { MAX_OPENING_BALANCE_ROWS, isOpeningBatchOverLimit, newOpeningRowStatus,
 
 type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
 
+/** The server's resolved destination for a typed name (issue 184). Never
+ * computed here: the client renders exactly what `suppliersResolveName` returns. */
+type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
+
 /** The direction Selects render only these two values, so any string they hand
  * back is narrowed here instead of asserting it. */
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
-
-/** The existing supplier a typed new name folds to (the same normalization the
- * server uses), or undefined when the name is genuinely new. Legacy duplicate
- * folded names resolve the same way the server resolves them: prefer the
- * entry-carrying party, then the lowest id. */
-function matchByNormalizedName<T extends { id: string; name: string; accountEntryCount?: number | null }>(suppliers: readonly T[], newName: string): T | undefined {
-  const trimmed = newName.trim();
-  if (trimmed === "") return undefined;
-  const key = normalizeTextKey(trimmed);
-  let best: T | undefined;
-  for (const supplier of suppliers) {
-    if (normalizeTextKey(supplier.name) !== key) continue;
-    const entries = supplier.accountEntryCount ?? 0;
-    const bestEntries = best?.accountEntryCount ?? 0;
-    if (best === undefined || entries > bestEntries || (entries === bestEntries && supplier.id < best.id)) best = supplier;
-  }
-  return best;
-}
 
 /**
  * #176 — the bulk «رصيد افتتاحي» screen. One row per supplier (name + current
@@ -61,6 +47,9 @@ export function SupplierOpeningBalancePage() {
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
+  // the destination the server named when the dialog last opened; the dialog
+  // renders it verbatim (issue 184)
+  const [typedDestination, setTypedDestination] = useState<ResolvedSupplier | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -97,38 +86,47 @@ export function SupplierOpeningBalancePage() {
   // never moved onto another supplier's row. One resolver: the server.
   const typedNameKey = newName.trim() === "" ? null : normalizeTextKey(newName);
   const typedAmount = parseGroupedAmount(newAmount);
-  // the supplier the server will resolve the name to, for the confirm dialog only
-  const typedDestination = matchByNormalizedName(suppliers, newName);
   const typedRowReady = typedNameKey !== null && typedAmount !== null && typedAmount > 0;
+  // #184 — the resolution input: the same row signature the server resolves
+  // against, so the answer names the account the write will actually touch.
+  const resolveInput =
+    typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
+      ? { name: newName.trim(), direction: newDirection, amount: typedAmount, occurredAt, reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim() }
+      : null;
   // guard: a typed name that folds onto a row the owner already picked must not be
-  // sent (the same account twice). Compare folded names AND the client-resolved
-  // id, so a stale/renamed list cannot hide a resolution collision.
-  const typedNameConflict =
-    typedRowReady &&
-    (filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey) ||
-      (typedDestination !== undefined && filledExisting.some((row) => row.supplier.id === typedDestination.id)));
+  // sent (the same account twice). Folded names are a local, tie-break-free
+  // check; the resolved id comes from the server (`typedDestination`).
+  const foldedConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
+  const typedNameConflict = foldedConflict || (typedRowReady && typedDestination !== null && filledExisting.some((row) => row.supplier.id === typedDestination.id));
 
-  const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
+  const totalRows = filledExisting.length + (typedRowReady ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
     : invalidExisting.length > 0
       ? t("supplierOpeningFixRows")
-      : typedNameConflict
+      : foldedConflict
         ? t("supplierOpeningRowHasAmount")
         : newRowError;
   // the confirmation dialog names every account the batch will write to, including
-  // the typed name itself, so a confirmed save never lands on an unnamed account
-  const namedRowNeedsConfirm = typedRowReady && (typedDestination?.accountEntryCount ?? 0) > 0;
-  const needsConfirmation = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0) || namedRowNeedsConfirm;
+  // the server's resolved name for the typed row, so a confirmed save never lands
+  // on an unnamed account
   const confirmNames = [
     ...filledExisting.filter((row) => (row.supplier.accountEntryCount ?? 0) > 0).map((row) => row.supplier.name),
-    ...(typedRowReady && !typedNameConflict ? [newName.trim()] : []),
+    ...(typedRowReady && !typedNameConflict ? [typedDestination?.name ?? newName.trim()] : []),
   ].filter((name, index, all) => all.findIndex((other) => normalizeTextKey(other) === normalizeTextKey(name)) === index);
   // forward confirmExisting only for the rows the dialog actually named (their
   // cached count shows history); a stale count is resolved by the refusal round-trip
   const forwardsConfirm = (confirm: boolean, accountEntryCount: number | null | undefined) => (confirm && (accountEntryCount ?? 0) > 0 ? true : undefined);
+
+  /** Ask the server which account this typed name resolves to (issue 184). The
+   * only resolver; a `null` answer means a write would create a new supplier. */
+  async function resolveTypedDestination(): Promise<ResolvedSupplier | null> {
+    if (resolveInput === null) return null;
+    const result = await queryClient.fetchQuery(orpc.suppliersResolveName.queryOptions({ input: resolveInput }));
+    return result.supplier;
+  }
 
   function setRow(supplierId: string, patch: Partial<RowDraft>) {
     setDrafts((current) => {
@@ -137,7 +135,7 @@ export function SupplierOpeningBalancePage() {
     });
   }
 
-  async function save(confirmExisting: boolean) {
+  async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
     if (occurredAt === null) return;
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
@@ -158,9 +156,9 @@ export function SupplierOpeningBalancePage() {
             confirmExisting: forwardsConfirm(confirmExisting, row.supplier.accountEntryCount),
           })),
           // a typed name travels as a NAME; the server is the only resolver. Only a
-          // destination the dialog could name forwards confirmExisting.
+          // destination the server named (and the dialog showed) forwards confirmExisting.
           ...(typedRowReady
-            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: namedRowNeedsConfirm ? true : undefined }]
+            ? [{ newSupplierName: newName.trim(), direction: newDirection, amount: typedAmount ?? 0, confirmExisting: destination !== null && destination.accountEntryCount > 0 ? true : undefined }]
             : []),
         ],
       });
@@ -175,12 +173,15 @@ export function SupplierOpeningBalancePage() {
       setSaved({ created: result.created, accounts: result.accounts });
       setConfirming(false);
     } catch (err) {
-      // the confirmation is client-derived from a possibly stale list: an
-      // OPENING_BALANCE_EXISTS refusal refreshes the counts and re-opens the dialog
-      // so the named destination is current. Do this on the CONFIRMED path too.
+      // a refusal means the server resolved the typed name to an account the
+      // dialog had not named (or a stale count). Refresh the counts AND re-ask the
+      // server for the destination, then re-open the dialog so what it names is
+      // what the confirmed write will touch. Do this on the CONFIRMED path too.
       if (err instanceof Error && err.message.includes("OPENING_BALANCE_EXISTS")) {
-        setConfirming(true);
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
+        const destination = await resolveTypedDestination();
+        setTypedDestination(destination);
+        setConfirming(true);
       }
       setError(tError(err instanceof Error ? err.message : undefined));
     } finally {
@@ -202,11 +203,22 @@ export function SupplierOpeningBalancePage() {
       setError(t("supplierOpeningNothing"));
       return;
     }
-    if (needsConfirmation) {
+    // the server's resolution is the only source of the typed row's destination
+    // (issue 184): ask it before deciding what the dialog must name. A batch with
+    // no typed name stays synchronous — there is nothing to resolve.
+    const destination = resolveInput === null ? null : await resolveTypedDestination();
+    const conflict = typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
+    if (conflict) {
+      setError(t("supplierOpeningRowHasAmount"));
+      return;
+    }
+    const existingNeedsConfirm = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0);
+    if (existingNeedsConfirm || (destination?.accountEntryCount ?? 0) > 0) {
+      setTypedDestination(destination);
       setConfirming(true);
       return;
     }
-    await save(false);
+    await save(false, destination);
   }
 
   return (
@@ -402,7 +414,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={() => setConfirming(false)} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

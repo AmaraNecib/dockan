@@ -1,7 +1,34 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+
+/** The inputs this spec sends over the issue-184 RPC helper. */
+type RpcInput =
+  | { name: string }
+  | { id: string }
+  | { supplierId: string; direction: "WE_OWE" | "THEY_OWE"; amount: number; reason: string; occurredAt: string };
+
+/** Call one oRPC procedure from the page and return its output (issue 184). */
+async function rpc<T>(page: Page, procedure: string, json: RpcInput): Promise<T> {
+  const result = await page.evaluate(
+    async ({ procedure, json }) => {
+      const response = await fetch(`/api/rpc/${procedure}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ json }),
+      });
+      // SAFETY: the oRPC fetch link answers a successful procedure call with the
+      // `{ json: <declared output> }` envelope
+      const body = (await response.json()) as { json: unknown };
+      return body.json;
+    },
+    { procedure, json },
+  );
+  // SAFETY: the caller's T names the procedure's declared output, which the
+  // envelope carries
+  return result as T;
+}
 
 /**
  * #176 — supplier adjustments (تسوية) and the bulk opening-balance screen
@@ -114,4 +141,45 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // currency suffix alone would also pass for a negative value
   await expect(page.getByTestId("debts-group-weowe-total")).toContainText("دج");
   await expect(page.getByTestId("debts-group-weowe-total")).not.toContainText("-");
+});
+
+/**
+ * #184 — the opening-balance confirmation dialog must name the account the
+ * server will write to, even when two suppliers fold to one name. The typed
+ * text here has three spaces; the entry-carrying twin's stored text has two, so
+ * a client-side mirror of the tie-break could not produce the named string.
+ */
+test("a folded opening-balance name lands on the supplier the dialog names (issue 184)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const carriedName = `مورد  نزاع-${stamp}`; // double space: carries an entry, so the tie-break picks it
+  const emptyName = `مورد نزاع-${stamp}`; // single space: folds to the same key, no entries
+  const typedName = `مورد   نزاع-${stamp}`; // triple space: the owner's draft
+
+  const carried = await rpc<{ id: string }>(page, "suppliersCreate", { name: carriedName });
+  const empty = await rpc<{ id: string }>(page, "suppliersCreate", { name: emptyName });
+  await rpc(page, "suppliersAdjust", { supplierId: carried.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(typedName);
+  await page.getByTestId("opening-balance-new-amount").fill("300");
+  await page.getByTestId("opening-balance-save").click();
+
+  // the dialog names the SERVER's resolved text, not the typed string
+  const dialog = page.getByTestId("opening-balance-confirm");
+  await expect(dialog).toBeVisible();
+  const named = await dialog.getByTestId("opening-balance-confirm-name").allTextContents();
+  expect(named).toEqual([carriedName]);
+
+  await page.getByTestId("opening-balance-confirm-save").click();
+  await expect(page.getByTestId("opening-balance-saved")).toContainText(carriedName);
+
+  // the amount landed on the account the dialog named, not its empty twin
+  const landed = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: carried.id });
+  const twin = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: empty.id });
+  expect(landed.account?.balance).toBe(800);
+  expect(twin.account?.balance).toBe(0);
 });

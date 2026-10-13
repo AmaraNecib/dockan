@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { normalizeTextKey } from "@dokan/contracts";
 
 // SAFETY: React 19 act() requires the environment flag to be set explicitly
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,6 +21,8 @@ type CapturedRow = {
   confirmExisting?: boolean;
 };
 
+type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
+
 let captured: { rows: CapturedRow[] } | null = null;
 /** when true, the first unconfirmed save is refused as if the cached entry
  * count were stale */
@@ -27,6 +30,12 @@ let rejectUnconfirmed = false;
 /** when true, the next save is refused even when confirmed (a stale confirmed
  * attempt) */
 let rejectOnce = false;
+/** the server's answer for `suppliersResolveName`, keyed by normalized name.
+ * The page must render this verbatim (issue 184). */
+let resolveByKey = new Map<string, ResolvedSupplier>();
+/** when set, the unconfirmed refusal models a raced account: the server gains
+ * the name, so the next resolve answers with this destination */
+let racedAfterRefusal: { key: string; supplier: ResolvedSupplier } | null = null;
 const BASE_SUPPLIERS = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
@@ -45,6 +54,7 @@ mock.module("@/lib/rpc", () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
           if (rejectUnconfirmed && !input.rows.every((row) => row.confirmExisting === true)) {
+            if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
             throw new Error("OPENING_BALANCE_EXISTS");
           }
           if (rejectOnce) {
@@ -54,6 +64,12 @@ mock.module("@/lib/rpc", () => ({
           captured = input;
           return { created: input.rows.length, accounts: input.rows.map((_row, index) => ({ supplierId: `s-${index}`, name: `مورد ${index}`, balance: 0 })) };
         },
+      }),
+    },
+    suppliersResolveName: {
+      queryOptions: ({ input }: { input: { name: string } }) => ({
+        queryKey: ["suppliersResolveName", normalizeTextKey(input.name)],
+        queryFn: async () => ({ supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null }),
       }),
     },
     reportsDebts: { queryKey: () => ["reportsDebts"] },
@@ -73,6 +89,8 @@ beforeEach(() => {
   captured = null;
   rejectUnconfirmed = false;
   rejectOnce = false;
+  resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
+  racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
   queryClient = null;
   host = document.createElement("div");
@@ -393,6 +411,23 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).toHaveLength(1);
   });
 
+  it("renders the server-resolved destination name, not the typed text (issue 184)", async () => {
+    // the server folds the typed text onto s-1 and answers with s-1's stored name
+    const typed = "مورد   له حركات";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent);
+    expect(names).toEqual(["مورد له حركات"]);
+    expect(names).not.toContain(typed);
+  });
+
   it("blocks two outgoing rows folding to one name before the server (round 5)", async () => {
     render();
     await settle();
@@ -484,45 +519,46 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
-  it("names and confirms a raced named row only after the refusal refreshes it (round 5)", async () => {
+  it("names and confirms a raced named row only after the refusal refreshes it (round 5 / #184)", async () => {
     rejectUnconfirmed = true;
+    const typedName = "مورد ظهر مرتين";
+    // folds to the same key as the typed text, but is a different string: the
+    // dialog must switch to the server's stored text after the refresh
+    const racedName = "مورد  ظهر مرتين";
+    racedAfterRefusal = { key: normalizeTextKey(typedName), supplier: { id: "s-raced2", name: racedName, accountEntryCount: 2 } };
     render();
     await settle();
 
-    const name = "مورد ظهر مرتين";
     typeIntoRow(0, "800"); // s-1 has entries, so the batch needs confirmation
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, name);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typedName);
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
 
     await act(async () => {
       clickOn("opening-balance-save");
     });
+    const confirmNames = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(confirmNames()).toContain(typedName);
 
     // the client still thinks the name is new, so the first confirm does not
-    // forward confirmExisting; the server refuses and the catch refreshes
+    // forward confirmExisting; the server refuses and the catch re-asks for the
+    // destination
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured).toBeNull();
 
-    // the refresh shows the raced supplier with entries; the dialog now names it
-    suppliers = [
-      ...BASE_SUPPLIERS,
-      { id: "s-raced2", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
-    ];
-    await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
-    });
-    await settle();
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain(name);
+    // the refused resolve now answers with the raced account: the dialog names
+    // the server's text, not the typed string
+    expect(confirmNames()).toContain(racedName);
+    expect(confirmNames()).not.toContain(typedName);
 
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(2);
     expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 800, confirmExisting: true });
-    expect(captured?.rows.find((row) => row.newSupplierName === name)).toMatchObject({ amount: 400, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === typedName)).toMatchObject({ amount: 400, confirmExisting: true });
   });
 
   it("refreshes suppliers after a confirmed refusal too (Greptile round 3)", async () => {

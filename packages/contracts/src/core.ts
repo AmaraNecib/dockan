@@ -1112,6 +1112,28 @@ export const supplierOpeningBalancesOutputSchema = z.object({
   accounts: z.array(z.object({ supplierId: idSchema, name: z.string(), balance: z.number().int() })),
 });
 
+/** #184 — resolve a typed supplier name to the account the server would write
+ * an opening-balance row to, WITHOUT writing. The row signature is part of the
+ * input so the resolver can reproduce both arms of the server rule: the account
+ * already holding the signature (a retry), then the entry-count/lowest-id
+ * tie-break. The confirmation dialog renders the result instead of mirroring
+ * the rule on the client. */
+export const supplierResolveNameInputSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  direction: supplierAdjustmentDirectionSchema,
+  amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+  occurredAt: localDateTimeSchema,
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+export const supplierResolveNameOutputSchema = z.object({
+  /** the supplier a write would land on, or null when the name is new and a
+   * write would create one */
+  supplier: z
+    .object({ id: idSchema, name: z.string(), accountEntryCount: z.number().int().min(0) })
+    .nullable(),
+});
+
 export const returnLineInputSchema = z.object({
   invoiceLineId: idSchema,
   /** capped so quantity × price never approaches Number.MAX_SAFE_INTEGER */
@@ -1485,6 +1507,8 @@ export type SupplierAdjust = z.infer<typeof supplierAdjustInputSchema>;
 export type SupplierOpeningBalanceRow = z.infer<typeof supplierOpeningBalanceRowInputSchema>;
 export type SupplierOpeningBalances = z.infer<typeof supplierOpeningBalancesInputSchema>;
 export type SupplierOpeningBalancesResult = z.infer<typeof supplierOpeningBalancesOutputSchema>;
+export type SupplierResolveName = z.infer<typeof supplierResolveNameInputSchema>;
+export type SupplierResolveNameResult = z.infer<typeof supplierResolveNameOutputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ItemListInput = z.infer<typeof itemListInputSchema>;
 export type ItemHistoryInput = z.infer<typeof itemHistoryInputSchema>;

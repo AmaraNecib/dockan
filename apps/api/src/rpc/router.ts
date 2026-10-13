@@ -15,6 +15,7 @@ import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON } from "
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
+import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
@@ -222,10 +223,6 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
   // SAFETY: the batch returns exactly one result per spec, and we passed one
   return posted!;
 }
-
-/** One supplier that folds to a given normalized name, for the opening-balance
- * resolver (a name can match more than one row after legacy duplicate creation). */
-type NamedSupplierCandidate = { id: string; name: string; entries: number };
 
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
@@ -1008,24 +1005,6 @@ export function createRpcRouter(deps: RpcDeps) {
             }
           }
           const candidatesForName = (name: string): NamedSupplierCandidate[] => suppliersByName.get(normalizeTextKey(name)) ?? [];
-          // the entry-count/lowest-id tie-break, used only when no candidate
-          // already holds the row's signature
-          const pickByName = (candidates: NamedSupplierCandidate[]): NamedSupplierCandidate | undefined => {
-            if (candidates.length === 0) return undefined;
-            return candidates.reduce((best, candidate) =>
-              candidate.entries > best.entries || (candidate.entries === best.entries && candidate.id < best.id) ? candidate : best,
-            );
-          };
-          /** The candidate already holding this row's #177 signature, if any. */
-          const signatureHolder = async (
-            candidates: NamedSupplierCandidate[],
-            row: { direction: "WE_OWE" | "THEY_OWE"; amount: number },
-          ): Promise<NamedSupplierCandidate | undefined> => {
-            for (const candidate of candidates) {
-              if (await tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null })) return candidate;
-            }
-            return undefined;
-          };
           const plan: Array<{ supplierId: string; name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> = [];
           for (const row of input.rows) {
             if (row.supplierId !== undefined) {
@@ -1049,13 +1028,17 @@ export function createRpcRouter(deps: RpcDeps) {
               // #177 round 3 (finding 2) — a retry must stay on the account that
               // already holds the signature. Checking only the entry-count winner
               // can pick a different folded-match that has since gained more
-              // entries, miss the prior row, and post again.
-              const holder = await signatureHolder(candidates, row);
-              const requested = holder ?? pickByName(candidates);
-              if (requested !== undefined) {
+              // entries, miss the prior row, and post again. #184 — the same
+              // rule is the single `resolveOpeningDestination`, shared with the
+              // read-only resolve query.
+              const resolution = await resolveOpeningDestination(candidates, row, (candidate) =>
+                tx.hasSupplierAdjustment({ supplierId: candidate.id, direction: row.direction, amount: row.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
+              );
+              if (resolution !== undefined) {
+                const requested = resolution.candidate;
                 // the same confirmation gate as the supplierId path, EXCEPT for an
                 // exact resend: the guarded write below reports that as a duplicate
-                if (holder === undefined && row.confirmExisting !== true) {
+                if (!resolution.holder && row.confirmExisting !== true) {
                   const existing = await tx.listSupplierEntries(requested.id);
                   if (existing.length > 0) throw new ORPCError("CONFLICT", { message: "OPENING_BALANCE_EXISTS" });
                 }
@@ -1101,6 +1084,30 @@ export function createRpcRouter(deps: RpcDeps) {
           return { created: plan.length, accounts };
         }),
       ),
+    ),
+    // #184 — resolve a typed supplier name to the account a write would land on,
+    // so the confirmation dialog renders the server's resolution instead of
+    // mirroring the fold tie-break. Read-only: the rule lives once, in
+    // `resolveOpeningDestination`, shared with the guarded bulk write above. The
+    // row signature is part of the input so a retry resolves to the account that
+    // already holds it (the same arm the write takes).
+    suppliersResolveName: os.suppliersResolveName.handler(
+      guardedInput(async (input) => {
+        const key = normalizeTextKey(input.name);
+        const candidates: NamedSupplierCandidate[] = (await deps.store.listParties("supplier"))
+          .filter((party) => normalizeTextKey(party.name) === key)
+          .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
+        const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+        const resolution = await resolveOpeningDestination(candidates, { direction: input.direction, amount: input.amount }, (candidate) =>
+          deps.store.hasSupplierAdjustment({ supplierId: candidate.id, direction: input.direction, amount: input.amount, reason, occurredAt: input.occurredAt, invoiceId: null }),
+        );
+        return {
+          supplier:
+            resolution === undefined
+              ? null
+              : { id: resolution.candidate.id, name: resolution.candidate.name, accountEntryCount: resolution.candidate.entries },
+        };
+      }),
     ),
     suppliersReturnsList: os.suppliersReturnsList.handler(
       guardedInput(async (input) => deps.store.listSupplierReturns({ supplierId: input.supplierId }, resolvePagination(input))),

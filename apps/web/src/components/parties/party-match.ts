@@ -92,7 +92,9 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  *
  * Otherwise the identical spelling is preferred over a variant of the name, so
  * the warning (and its one-click pick) points at the record the owner typed.
- * The result never depends on the list order.
+ * Which record is the same identity, and whether the exact spelling wins, never
+ * depends on the list order; only which of two equally folded variants is named
+ * does.
  *
  * Identity (storage, the store's unique phone, `needsChoice`) keeps
  * `normalizeTextKey` (ADR-0007); folding identity would merge two people's
@@ -108,20 +110,18 @@ export function duplicateNameParty(name: string, phone: string | null, parties: 
   for (const party of parties) {
     if (nameVariantKey(party.name) !== foldedKey) continue;
     const storedPhone = normalizePartyPhone(party.phone);
-    const exactSpelling = normalizeTextKey(party.name) === strictKey;
-    if (exactSpelling) {
-      // the candidate's own spelling with no phone is this identity, not a
-      // duplicate; it also clears any variant the loop already found (#189)
+    // a shared phone is one identity, whatever the spelling
+    if (canonical !== null && storedPhone === canonical) continue;
+    if (normalizeTextKey(party.name) === strictKey) {
+      // the candidate's own spelling with no phone is this identity too, and it
+      // clears any variant the loop already found (#189 review)
       if (canonical === null && storedPhone === null) {
         exactPhonelessStored = true;
         continue;
       }
-      // a shared phone is one identity; a DIFFERENT phone on the exact spelling
-      // is the duplicate worth warning about, in any list order
-      if (canonical !== null && storedPhone === canonical) continue;
+      // an exact spelling held with a different phone is a real duplicate
       return party;
     }
-    if (canonical !== null && storedPhone === canonical) continue;
     variantMatch ??= party;
   }
   return exactPhonelessStored ? undefined : variantMatch;

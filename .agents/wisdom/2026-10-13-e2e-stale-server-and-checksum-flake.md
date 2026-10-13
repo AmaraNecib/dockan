@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-13 · **Ticket:** 174 · **Area:** tests/e2e, apps/api port probe, apps/web vite proxy, apps/api/src/lib/vault/format.test.ts
 
-Two traps that cost real time on this ticket.
+Three traps that cost real time in this area.
 
 ## 1. Isolated-pass / full-fail e2e is a stale-server smell, not a test bug
 

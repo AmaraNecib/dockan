@@ -190,10 +190,13 @@ None added; `foldArabicVariants` is already exported by `@dokan/contracts`.
   phoneless «علي علي» AND a phoneless variant «على علي» stored, typing the exact
   spelling returned the **variant**, so the warning's one-click pick offered a
   different debtor while `needsChoice` still allowed the click. `duplicateNameParty`
-  is now a single pass that returns `undefined` as soon as a stored record is the
-  candidate's exact phoneless spelling — the identity case `needsChoice` already
-  refuses — so the variant fallback cannot run. A shared-phone record is skipped
-  individually instead, so a differently spelled duplicate of it still warns.
+  is now a single pass that flags a stored record carrying the candidate's exact
+  spelling with no phone — the identity case `needsChoice` already refuses — and
+  suppresses the variant match at the end, so the variant fallback cannot run.
+  A shared-phone record is skipped individually, so a differently spelled
+  duplicate of it still warns; an exact spelling held with a **different** phone
+  still warns too, in either list order. The result therefore never depends on
+  the list order except for which of two equally folded variants is named.
   Regression tests: unit (both list orders, variant with and without a phone,
   bidi/tashkeel-typed names, the candidate-with-a-phone counter-case), a
   component test at the seam the bug crossed (no `picker-duplicate`, identity gate

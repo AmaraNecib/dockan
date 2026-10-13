@@ -50,14 +50,45 @@ test("invoice print button → receipt document with identity, totals and paymen
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("2");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  // Ack the quick-add's own write (issue 191). The form takes the
+  // create-with-stock path whenever a quantity is given, so the procedure is
+  // itemsCreateWithStock — an ack armed for itemsCreate would never fire. The
+  // cart line is added only from this response, so the ack is what makes the
+  // saved item's id a server fact instead of a render guess, and it is the last
+  // writer of sale-save's disabled state before the save click below.
+  const created = await rpcOutput<{ id: string }>(
+    await actAndAck(page, "itemsCreateWithStock", async () => {
+      await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+      // quickSubmit refuses before sending anything (unpicked category, bad
+      // price, rejected stock) and records that refusal synchronously, so assert
+      // it away here: otherwise a regression would hang the armed ack above for
+      // the rest of the test budget instead of failing by name in this window
+      await expect(page.getByTestId("sale-error")).toHaveCount(0);
+    }),
+  );
   await page.getByTestId("sale-paid").fill("500");
   await expect(page.getByTestId("sale-total")).toContainText("900");
+  // The row the sale will send is the one the api just created — keyed on the
+  // id it issued — and the save must be clickable: the app disables it while an
+  // item write is still in flight. Assert both before arming the save's own
+  // acknowledgement, so a stuck cart or a stale disabled state fails here by
+  // name instead of as an unattributable timeout inside that wait (issue 191).
+  const cartRow = page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`);
+  await expect(cartRow).toHaveValue("1");
+  await expect(cartRow).toHaveAttribute("name", `quantity-${created.id}`);
+  await expect(page.getByTestId("sale-save")).toBeEnabled();
   // Wait on the api acknowledgement, not a 5 s UI poll: under CI load the write
   // can outlast the default expect window even though it lands (issue 179).
   // The number asserted below is the one the server actually allocated.
   const saved = await rpcOutput<{ invoiceNumber: string }>(
-    await actAndAck(page, "invoicesCreate", () => page.getByTestId("sale-save").click()),
+    await actAndAck(page, "invoicesCreate", async () => {
+      await page.getByTestId("sale-save").click();
+      // submit() refuses client-side before sending anything (empty cart, a
+      // party that still needs picking, an over-total paid amount) and records
+      // that refusal synchronously: asserting it away keeps such a regression a
+      // named failure here instead of a wait for a request never sent
+      await expect(page.getByTestId("sale-error")).toHaveCount(0);
+    }),
   );
   // the contract guarantees the server-issued number's INV-<digits> shape
   const number = saved.invoiceNumber;

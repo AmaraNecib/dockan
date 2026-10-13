@@ -34,7 +34,7 @@ mock.module("@/lib/rpc", () => ({
         }),
       }),
     },
-    itemsList: { queryOptions: () => ({ queryKey: ["itemsList"], queryFn: async () => ({ items: [] }) }) },
+    itemsList: { queryOptions: () => ({ queryKey: ["itemsList"], queryFn: async () => ({ items: [{ id: "item-1", name: "هدية" }] }) }) },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
     suppliersReturnsList: { queryKey: () => ["suppliersReturnsList"] },
   },
@@ -75,6 +75,8 @@ afterEach(() => {
   if (root !== null) act(() => root!.unmount());
   root = null;
   host.remove();
+  // Select popups render into a body portal; clear any stragglers
+  document.body.innerHTML = "";
 });
 
 async function render() {
@@ -117,6 +119,30 @@ async function submit() {
   });
 }
 
+/** Open a Base UI Select trigger and click the option whose label contains `optionText`. */
+async function openSelect(testId: string, optionText: string) {
+  const trigger = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  if (trigger === null) throw new Error(`missing ${testId}`);
+  act(() => {
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (document.querySelectorAll("[role='option']").length > 0) break;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find((element) => element.textContent?.includes(optionText));
+  if (option === undefined) throw new Error(`missing option ${optionText}`);
+  act(() => {
+    // Base UI items arm mouse selection on pointerdown, then commit on click.
+    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+    option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
+  });
+}
+
 describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
   it("enables submit for a valid quantity on a free line (zero return value)", async () => {
     await render();
@@ -151,5 +177,31 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
       lines: [{ invoiceLineId: "l1", quantity: 2 }],
       cashBack: 100,
     });
+  });
+
+  it("clears a hidden invoice quantity error after switching to free-standing, then submits (round-2 finding)", async () => {
+    await render();
+    typeInto("supplier-return-qty-l1", "1.5");
+    expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).not.toBeNull();
+
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    // the hidden invoice draft must no longer warn in free-standing mode
+    expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).toBeNull();
+
+    await openSelect("supplier-return-item", "هدية");
+    typeInto("supplier-return-quantity", "2");
+    typeInto("supplier-return-amount", "300");
+    expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).toBeNull();
+
+    await submit();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 2, amount: 300 });
+  });
+
+  it("still shows a bad cash-back error in free-standing (shared check)", async () => {
+    await render();
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    typeInto("supplier-return-cash", "1.5");
+    expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).not.toBeNull();
   });
 });

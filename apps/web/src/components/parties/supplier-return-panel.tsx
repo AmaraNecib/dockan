@@ -232,7 +232,7 @@ export function SupplierReturnPanel({
       {error !== null && (
         <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-return-error">{error}</p>
       )}
-      {(quantityDraftInvalid || cashInvalid) && (
+      {((mode === "INVOICE_LINKED" && quantityDraftInvalid) || cashInvalid) && (
         <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-return-draft-error">
           {t("supplierReturnInvalidDraft")}
         </p>

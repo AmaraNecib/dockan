@@ -43,8 +43,9 @@ export function CustomerSettlePanel({
   /** #174 round 1 — the per-invoice batch did not finish cleanly. A row may
    * still have landed (an earlier invoice in the batch, or a write the API
    * committed while the response was lost), so the caller must refresh views
-   * derived from those rows; the panel only refreshes the detail read. */
-  onWriteFailed?: () => void;
+   * derived from those rows; the panel only refreshes the detail read. Required
+   * so a new host cannot silently reintroduce the stale-tab bug. */
+  onWriteFailed: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -139,7 +140,7 @@ export function CustomerSettlePanel({
       setError(tError(err instanceof Error ? err.message : undefined));
       setHalted(true);
       void refresh();
-      onWriteFailed?.();
+      onWriteFailed();
     } finally {
       setSubmitting(false);
     }

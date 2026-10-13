@@ -24,6 +24,10 @@ let payCalls = 0;
 let detailCalls = 0;
 /** #174 — the invoices tab served from the paginated read */
 let invoiceTabCalls = 0;
+/** #174 round 1 — the supplier payments tab served from the paginated read */
+let supplierEntriesCalls = 0;
+/** #174 round 1 — supplier pay mutations the account panel sent */
+let supplierPayCalls = 0;
 let detailGate: Promise<void> | null = null;
 let releaseDetailGate: (() => void) | null = null;
 let partyDetail: PartyDetail;
@@ -47,8 +51,8 @@ function invoice(over: Partial<Invoice> & Pick<Invoice, "id" | "invoiceDate" | "
   };
 }
 
-function makeDetail(invoices: Invoice[]): PartyDetail {
-  const stats = invoices.reduce(
+function statsOf(invoices: readonly Invoice[]): PartyDetail["stats"] {
+  return invoices.reduce(
     (acc, entry) => ({
       invoiceCount: acc.invoiceCount + 1,
       totalAmount: acc.totalAmount + entry.totalAmount,
@@ -57,9 +61,12 @@ function makeDetail(invoices: Invoice[]): PartyDetail {
     }),
     { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
   );
+}
+
+function makeDetail(invoices: Invoice[]): PartyDetail {
   return {
     party: { id: PARTY_ID, name: "زبون الاختبار", phone: "0550112233", createdAt: "2026-09-01T10:00:00" },
-    stats,
+    stats: statsOf(invoices),
     invoices,
     payments: [],
     account: null,
@@ -112,7 +119,10 @@ mock.module("@/lib/rpc", () => ({
     supplierEntries: {
       queryOptions: () => ({
         queryKey: [["supplierEntries"], PARTY_ID],
-        queryFn: async () => ({ items: partyDetail.account?.entries ?? [], total: partyDetail.account?.entries.length ?? 0 }),
+        queryFn: async () => {
+          supplierEntriesCalls += 1;
+          return { items: partyDetail.account?.entries ?? [], total: partyDetail.account?.entries.length ?? 0 };
+        },
       }),
     },
     invoicesPay: {
@@ -124,21 +134,26 @@ mock.module("@/lib/rpc", () => ({
           payCalls += 1;
           if (failPayAt > 0 && payCalls === failPayAt) throw new Error("PAYMENT_EXCEEDS_REMAINING");
           // #174 round 1 — model the server write so a later tab refetch can
-          // observe it (the real api reduces remaining and records a payment)
-          const invoiceNumber = partyDetail.invoices.find((entry) => entry.id === input.invoiceId)?.invoiceNumber ?? "INV-0000";
+          // observe it (the real api reduces remaining and records a payment),
+          // including the over-remaining refusal and the derived stats
+          const target = partyDetail.invoices.find((entry) => entry.id === input.invoiceId);
+          if (target === undefined) throw new Error("INVOICE_NOT_FOUND");
+          if (input.amount > target.remainingAmount) throw new Error("PAYMENT_EXCEEDS_REMAINING");
+          const invoices = partyDetail.invoices.map((entry) =>
+            entry.id === input.invoiceId
+              ? { ...entry, paidAmount: entry.paidAmount + input.amount, remainingAmount: entry.remainingAmount - input.amount }
+              : entry,
+          );
           partyDetail = {
             ...partyDetail,
-            invoices: partyDetail.invoices.map((entry) =>
-              entry.id === input.invoiceId
-                ? { ...entry, paidAmount: entry.paidAmount + input.amount, remainingAmount: entry.remainingAmount - input.amount }
-                : entry,
-            ),
+            invoices,
+            stats: statsOf(invoices),
             payments: [
               ...partyDetail.payments,
               {
                 id: `pay-${payCalls}`,
                 invoiceId: input.invoiceId,
-                invoiceNumber,
+                invoiceNumber: target.invoiceNumber,
                 amount: input.amount,
                 // SAFETY: the settle panel only ever sends the CASH / BANK method
                 method: (input.method ?? "CASH") as "CASH" | "BANK",
@@ -153,6 +168,22 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     customersCreate: { mutationOptions: () => ({ mutationFn: async () => ({}) }) },
+    suppliersPay: {
+      mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
+        mutationKey: ["suppliersPay"],
+        ...options,
+        mutationFn: async (input: { supplierId: string; amount: number }) => {
+          supplierPayCalls += 1;
+          const invoices = partyDetail.invoices.map((entry) => ({
+            ...entry,
+            paidAmount: entry.paidAmount + Math.min(input.amount, entry.remainingAmount),
+            remainingAmount: Math.max(0, entry.remainingAmount - input.amount),
+          }));
+          partyDetail = { ...partyDetail, invoices, stats: statsOf(invoices) };
+          return { balance: 0, entries: partyDetail.account?.entries ?? [] };
+        },
+      }),
+    },
     suppliersCreate: { mutationOptions: () => ({ mutationFn: async () => ({}) }) },
     customersUpdate: { mutationOptions: () => ({ mutationFn: async () => ({}) }) },
     suppliersUpdate: { mutationOptions: () => ({ mutationFn: async () => ({}) }) },
@@ -176,6 +207,8 @@ beforeEach(() => {
   payCalls = 0;
   detailCalls = 0;
   invoiceTabCalls = 0;
+  supplierEntriesCalls = 0;
+  supplierPayCalls = 0;
   detailGate = null;
   releaseDetailGate = null;
 });
@@ -186,14 +219,14 @@ afterEach(() => {
   host.remove();
 });
 
-async function renderCustomer() {
+async function renderParty(role: "customer" | "supplier") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const root = createRoot(host);
   roots.push(root);
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <PartyDetailPage role="customer" />
+        <PartyDetailPage role={role} />
       </QueryClientProvider>,
     );
   });
@@ -204,6 +237,14 @@ async function renderCustomer() {
     });
   }
   throw new Error("PartyDetailPage did not settle");
+}
+
+function renderCustomer() {
+  return renderParty("customer");
+}
+
+function renderSupplier() {
+  return renderParty("supplier");
 }
 
 function click(testId: string) {
@@ -393,7 +434,7 @@ describe("customer settle in place (#164)", () => {
 
     click("party-settle");
     click("party-settle-confirm");
-    await flushAsync();
+    await waitFor(() => host.querySelector('[data-testid="party-settle-halted"]') !== null);
     expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
     expect(payInputs).toEqual([
       { invoiceId: "first", amount: 1_000, method: "CASH" },
@@ -426,7 +467,7 @@ describe("customer settle in place (#164)", () => {
 
     click("party-settle");
     click("party-settle-confirm");
-    await flushAsync();
+    await waitFor(() => host.querySelector('[data-testid="party-settle-halted"]') !== null);
     expect(host.querySelector('[data-testid="party-settle-halted"]')).not.toBeNull();
 
     // nothing landed, so the rows must still be owed and no payment may appear
@@ -588,7 +629,7 @@ describe("CustomerSettlePanel reference-change relink (#171)", () => {
     const renderWith = (next: number) =>
       root.render(
         <QueryClientProvider client={client}>
-          <CustomerSettlePanel partyId={PARTY_ID} invoices={invoices} unpaid={next} onDone={() => undefined} onCancel={() => undefined} />
+          <CustomerSettlePanel partyId={PARTY_ID} invoices={invoices} unpaid={next} onDone={() => undefined} onWriteFailed={() => undefined} onCancel={() => undefined} />
         </QueryClientProvider>,
       );
     act(() => renderWith(unpaid));
@@ -664,5 +705,49 @@ describe("CustomerSettlePanel reference-change relink (#171)", () => {
     act(() => renderWith(2_000));
     expect(percentage()).toBe("50");
     expect(amount()).toBe("1000");
+  });
+});
+
+/**
+ * #174 round 1 — the supplier-entries tab is written by single atomic RPC
+ * calls, so it has no partial-write path like the settle loop, but its refresh
+ * wiring must still be proven: a supplier action on success invalidates the
+ * paged supplier-entries key.
+ */
+describe("supplier action refreshes the entries tab (#174 round 1)", () => {
+  it("re-reads the paged supplier entries after a successful pay", async () => {
+    const entry = {
+      id: "e1",
+      supplierId: PARTY_ID,
+      kind: "PURCHASE" as const,
+      amount: 1_000,
+      invoiceId: "pur",
+      invoiceNumber: "INV-0001",
+      direction: null,
+      method: null,
+      note: null,
+      ref: null,
+      occurredAt: "2026-09-01T10:00:00",
+      createdAt: "2026-09-01T10:00:00",
+    };
+    partyDetail = {
+      party: { id: PARTY_ID, name: "مورد الاختبار", phone: null, createdAt: "2026-09-01T10:00:00" },
+      stats: { invoiceCount: 1, totalAmount: 1_000, paidAmount: 0, remainingAmount: 1_000 },
+      invoices: [invoice({ id: "pur", invoiceNumber: "INV-0001", kind: "PURCHASE", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })],
+      payments: [],
+      account: { balance: 1_000, entries: [entry] },
+    };
+    await renderSupplier();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="supplier-account-row"]').length === 1);
+    const before = supplierEntriesCalls;
+
+    click("supplier-action-pay");
+    click("supplier-pay-confirm");
+    await flushAsync();
+    expect(supplierPayCalls).toBe(1);
+    // onDone invalidates the paged supplier-entries key, so the tab re-reads
+    await waitFor(() => supplierEntriesCalls > before);
+    expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم تسجيل الدفعة");
   });
 });

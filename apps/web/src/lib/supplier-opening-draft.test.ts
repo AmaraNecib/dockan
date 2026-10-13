@@ -8,20 +8,31 @@ import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, parseB
  * These readers make the row state explicit so the page can block instead.
  */
 describe("parseBulkAmount", () => {
-  it("tolerates grouping separators and Arabic-Indic digits", () => {
+  it("accepts plain digits and valid thousands grouping", () => {
     expect(parseBulkAmount("1000")).toBe(1000);
     expect(parseBulkAmount("1,000")).toBe(1000);
     expect(parseBulkAmount("25 000")).toBe(25000);
+    expect(parseBulkAmount("1 000 000")).toBe(1_000_000);
+    expect(parseBulkAmount("1,000,000")).toBe(1_000_000);
     expect(parseBulkAmount("٢٥٬٠٠٠")).toBe(25000);
     expect(parseBulkAmount("۱۲۳")).toBe(123);
   });
 
-  it("returns null for an unusable draft", () => {
+  it("rejects a decimal or a malformed separator instead of deleting it", () => {
     expect(parseBulkAmount("")).toBeNull();
     expect(parseBulkAmount("   ")).toBeNull();
     expect(parseBulkAmount("abc")).toBeNull();
     expect(parseBulkAmount("1.5")).toBeNull();
-    expect(parseBulkAmount("1,00,0")).toBe(1000);
+    // the reported 100x bug: a decimal tail must not be deleted into another number
+    expect(parseBulkAmount("1 000,00")).toBeNull();
+    expect(parseBulkAmount("1,5")).toBeNull();
+    // malformed grouping (wrong group width, leading/trailing separator)
+    expect(parseBulkAmount("1 00")).toBeNull();
+    expect(parseBulkAmount("1,0000")).toBeNull();
+    expect(parseBulkAmount("1000,000")).toBeNull();
+    expect(parseBulkAmount(",1000")).toBeNull();
+    expect(parseBulkAmount("1,00,0")).toBeNull();
+    expect(parseBulkAmount("1٬00")).toBeNull();
   });
 });
 
@@ -39,6 +50,11 @@ describe("openingRowStatus", () => {
   it("marks a non-positive or malformed draft invalid so the row is blocked", () => {
     expect(openingRowStatus({ amount: "0" })).toEqual({ status: "invalid" });
     expect(openingRowStatus({ amount: "abc" })).toEqual({ status: "invalid" });
+    // a decimal/malformed grouping is invalid, never a silently different number
+    expect(openingRowStatus({ amount: "1 000,00" })).toEqual({ status: "invalid" });
+    expect(openingRowStatus({ amount: "1,5" })).toEqual({ status: "invalid" });
+    // valid grouping still fills
+    expect(openingRowStatus({ amount: "1 000" })).toEqual({ status: "filled", amount: 1000 });
   });
 });
 

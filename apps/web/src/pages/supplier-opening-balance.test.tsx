@@ -227,6 +227,17 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  it("rejects a decimal-grouped amount with a row error instead of saving 100x (Greptile round 2)", async () => {
+    render();
+    await settle();
+    typeIntoRow(1, "1 000,00");
+
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
+  });
+
   it("blocks an incomplete inline supplier instead of dropping it (Greptile finding 1)", async () => {
     render();
     await settle();

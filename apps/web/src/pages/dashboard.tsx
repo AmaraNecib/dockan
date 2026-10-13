@@ -246,9 +246,9 @@ export function DashboardPage({ refreshMs = REFRESH_MS }: { refreshMs?: number }
               testId="dashboard-debt-owed"
               value={<Amount value={summary.data.owedToUs} />}
               detail={
-                <>
-                  {t("debtsWeOwe")}: <Amount value={summary.data.weOwe} />
-                </>
+                summary.data.weOwe < 0
+                  ? <>{t("dashboardSupplierCredit")}: <Amount value={Math.abs(summary.data.weOwe)} /></>
+                  : <>{t("debtsWeOwe")}: <Amount value={summary.data.weOwe} /></>
               }
             />
 

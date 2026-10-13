@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -3389,6 +3389,36 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await pinnedClient.dashboardSummary();
     expect(summary.day).toBe("2026-08-25");
+  });
+
+  it("accepts a signed weOwe in the dashboard output contract (issue 176 round 2)", () => {
+    // a shop whose suppliers are net in credit is a valid state: the supervisor
+    // must not reject it (round 1 made weOwe signed but left the schema min 0)
+    const parsed = dashboardSummaryOutputSchema.safeParse({
+      day: "2026-10-13",
+      salesTotal: 0,
+      salesCount: 0,
+      owedToUs: 0,
+      weOwe: -300,
+      lowStockCount: 0,
+      lowStockItems: [],
+      recentInvoices: [],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("serves the signed supplier net for a credit-only shop and agrees with /debts (issue 176 round 2)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد دائن-${Date.now()}` });
+    // large enough to dominate any positive supplier ledger the suite has seeded
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500_000_000 });
+
+    // before the schema fix this call rejected with an output-validation error
+    const summary = await client.dashboardSummary();
+    expect(summary.weOwe).toBeLessThan(0);
+
+    const debts = await client.reportsDebts();
+    const supplierNet = debts.weOwe.reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+    expect(summary.weOwe).toBe(supplierNet);
   });
 });
 

@@ -1287,8 +1287,11 @@ export const dashboardSummaryOutputSchema = z.object({
   salesCount: z.number().int().min(0),
   /** party-attributed unpaid SALE debt — mirrors the debts screen's drill-down */
   owedToUs: dinarsSchema,
-  /** party-attributed unpaid PURCHASE debt */
-  weOwe: dinarsSchema,
+  /** the signed supplier NET account balance across all suppliers: positive =
+   * the shop owes suppliers, negative = the shop is ahead (supplier credit).
+   * Signed to match the /debts supplier group total, so a valid credit state
+   * never fails output validation (Greptile round 2). */
+  weOwe: z.number().int(),
   /** count of items at or below their low-stock threshold, or null when that
    * read failed. Nullable so one failing section cannot blank the money
    * figures that did load. */

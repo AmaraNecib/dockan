@@ -849,6 +849,7 @@ const resources = {
       supplierReturnVoucher: "سند المرتجع",
       debtsNetBalance: "الرصيد الصافي",
       debtsAccountMovements: "حركات الحساب",
+      dashboardSupplierCredit: "رصيد لنا عند الموردين",
       REFUND_EXCEEDS_CREDIT: "المبلغ يتجاوز الرصيد المتاح عند المورّد",
       // #176 — supplier adjustments (تسوية) and the bulk opening balance
       supplierActionAdjust: "تسوية",

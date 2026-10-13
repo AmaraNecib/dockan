@@ -3394,17 +3394,20 @@ describe("dashboard summary (issue 84)", () => {
   it("accepts a signed weOwe in the dashboard output contract (issue 176 round 2)", () => {
     // a shop whose suppliers are net in credit is a valid state: the supervisor
     // must not reject it (round 1 made weOwe signed but left the schema min 0)
-    const parsed = dashboardSummaryOutputSchema.safeParse({
+    const base = {
       day: "2026-10-13",
       salesTotal: 0,
       salesCount: 0,
       owedToUs: 0,
-      weOwe: -300,
       lowStockCount: 0,
       lowStockItems: [],
       recentInvoices: [],
-    });
-    expect(parsed.success).toBe(true);
+    };
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: -300 }).success).toBe(true);
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: 300 }).success).toBe(true);
+    // still bounded to the safe-integer money range on both sides
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: Number.MAX_SAFE_INTEGER + 1 }).success).toBe(false);
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: -(Number.MAX_SAFE_INTEGER + 1) }).success).toBe(false);
   });
 
   it("serves the signed supplier net for a credit-only shop and agrees with /debts (issue 176 round 2)", async () => {

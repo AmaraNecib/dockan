@@ -1290,8 +1290,9 @@ export const dashboardSummaryOutputSchema = z.object({
   /** the signed supplier NET account balance across all suppliers: positive =
    * the shop owes suppliers, negative = the shop is ahead (supplier credit).
    * Signed to match the /debts supplier group total, so a valid credit state
-   * never fails output validation (Greptile round 2). */
-  weOwe: z.number().int(),
+   * never fails output validation (Greptile round 2). Bounded to the safe
+   * integer range like every other money field. */
+  weOwe: z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER),
   /** count of items at or below their low-stock threshold, or null when that
    * read failed. Nullable so one failing section cannot blank the money
    * figures that did load. */

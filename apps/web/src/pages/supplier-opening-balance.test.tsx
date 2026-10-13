@@ -21,6 +21,9 @@ type CapturedRow = {
 };
 
 let captured: { rows: CapturedRow[] } | null = null;
+/** when true, the first unconfirmed save is refused as if the cached entry
+ * count were stale */
+let rejectUnconfirmed = false;
 const suppliers = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
@@ -37,6 +40,9 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
+          if (rejectUnconfirmed && !input.rows.every((row) => row.confirmExisting === true)) {
+            throw new Error("OPENING_BALANCE_EXISTS");
+          }
           captured = input;
           return { created: input.rows.length, accounts: input.rows.map((_row, index) => ({ supplierId: `s-${index}`, name: `مورد ${index}`, balance: 0 })) };
         },
@@ -53,6 +59,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   captured = null;
+  rejectUnconfirmed = false;
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -161,5 +168,22 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-name-exists"]')).not.toBeNull();
     clickOn("opening-balance-save");
     expect(captured).toBeNull();
+  });
+
+  it("surfaces the confirmation dialog when the server refuses a stale-expectation row", async () => {
+    rejectUnconfirmed = true;
+    render();
+    await settle();
+    // the cached list says this supplier has no entries, but the server disagrees
+    typeIntoRow(1, "200");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", confirmExisting: true });
   });
 });

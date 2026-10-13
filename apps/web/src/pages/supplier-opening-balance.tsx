@@ -106,6 +106,7 @@ export function SupplierOpeningBalancePage() {
         queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
+      setConfirming(false);
     } catch (err) {
       // the confirmation is client-derived from a possibly stale list; when the
       // server refuses an unconfirmed existing account, surface the dialog so
@@ -116,8 +117,10 @@ export function SupplierOpeningBalancePage() {
       }
       setError(tError(err instanceof Error ? err.message : undefined));
     } finally {
+      // NOTE: do NOT reset `confirming` here — the catch may have just set it to
+      // surface the dialog after a stale-expectation refusal. It is cleared on
+      // success above and by the dialog's own cancel button.
       setSubmitting(false);
-      setConfirming(false);
     }
   }
 

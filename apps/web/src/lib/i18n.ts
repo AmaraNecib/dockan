@@ -899,7 +899,6 @@ const resources = {
       supplierOpeningSaved: "تم حفظ الرصيد الافتتاحي",
       supplierOpeningLink: "رصيد افتتاحي",
       supplierOpeningBack: "رجوع إلى الموردين",
-      supplierOpeningAmountRequired: "أدخل مبلغاً صحيحاً أكبر من صفر",
       supplierOpeningNameExists: "هذا الاسم موجود في الجدول؛ اكتب المبلغ في صفّه بدل إنشاء مورّد جديد",
     },
   },

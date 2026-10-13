@@ -1736,6 +1736,30 @@ describe("supplier adjustments (issue 176)", () => {
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
   });
 
+  it("refuses a link to another supplier's invoice or to a sale invoice", async () => {
+    const a = await setupSupplier("مورد رابط أ", 10);
+    const b = await setupSupplier("مورد رابط ب", 10);
+    await expect(client.suppliersAdjust({ supplierId: a.supplier.id, direction: "THEY_OWE", amount: 100, invoiceId: b.invoice.id })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "INVOICE_NOT_PURCHASE",
+    });
+
+    const item = (await client.itemsAll()).items.find((row) => row.name === "صنف مورد رابط أ");
+    if (item === undefined) throw new Error("expected the seeded item");
+    const customer = await client.customersCreate({ name: "زبون رابط" });
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 1 }] });
+    await expect(client.suppliersAdjust({ supplierId: a.supplier.id, direction: "THEY_OWE", amount: 50, invoiceId: sale.id })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "INVOICE_NOT_PURCHASE",
+    });
+  });
+
+  it("rejects an empty opening-balance batch and a zero amount at the contract", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد حدود صفر" });
+    await expect(client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", rows: [] })).rejects.toThrow(/Input validation failed/);
+    await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 0 })).rejects.toThrow(/Input validation failed/);
+  });
+
   it("zeroes an invoice when the linked adjustment equals its remaining", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية كامل", 50);
 

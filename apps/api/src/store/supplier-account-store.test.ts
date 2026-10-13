@@ -208,7 +208,8 @@ describe("supplier account store", () => {
 
     const entries = await store.listSupplierEntries(supplier.id);
     expect(supplierBalance(entries)).toBe(900 + 800 - 300);
-    expect(entries.find((entry) => entry.kind === "ADJUSTMENT")?.direction).toBe("THEY_OWE");
+    // both directions persisted, independent of the list's ordering
+    expect(entries.filter((entry) => entry.kind === "ADJUSTMENT").map((entry) => entry.direction).sort()).toEqual(["THEY_OWE", "WE_OWE"]);
 
     // account-only: paid/remaining/credit are exactly as before
     const after = await store.getInvoiceDetail(invoice.id);
@@ -273,6 +274,8 @@ describe("supplier account store", () => {
     const row = (await store.listParties("supplier")).find((party) => party.id === supplier.id);
     expect(row?.accountBalance).toBe(-300);
     expect(row?.accountEntryCount).toBe(1);
+    // the SQL sign expression agrees with the pure signer on the THEY_OWE branch
+    expect(row?.accountBalance).toBe(supplierBalance(await store.listSupplierEntries(supplier.id)));
 
     // the debts summary agrees with the same sign on the THEY_OWE branch
     const summary = (await store.debtSummaries()).find((entry) => entry.counterpartyId === supplier.id && entry.kind === "PURCHASE");

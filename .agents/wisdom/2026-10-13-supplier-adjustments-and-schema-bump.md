@@ -65,3 +65,22 @@ kind `ADJUSTMENT` with a `WE_OWE` / `THEY_OWE` direction. Lessons worth carrying
    out and the batch saved one amount short. Read grouping separators and
    Arabic-Indic digits, and BLOCK an invalid/incomplete row with a visible error
    rather than dropping it.
+
+10. **Validate grouping BEFORE stripping separators, or a decimal becomes 100×.**
+    Deleting every `,`/space turns `1 000,00` into `100000` DZD. Accept only
+    `^\d+$` or a real groups-of-3 shape (`^\d{1,3}(?:[,\s\u066C\u00A0]\d{3})+$`)
+    first, then strip; reject everything else with a row error. Never delete a
+    separator to produce a different number.
+
+11. **A signed aggregate needs a signed response schema, or the whole request
+    fails.** Round 1 made `dashboardSummary.weOwe` sum the signed supplier
+    ledger but left the field as `dinarsSchema` (`min(0)`); a shop whose
+    suppliers were net in credit then failed output validation and the
+    dashboard vanished. When an aggregate can legitimately be negative, widen
+    the schema the same commit — and render the credit explicitly.
+
+12. **zod v4's `.int()` already enforces safe integers.** `z.number().int()`
+    rejects `> 2^53-1` with an `origin: "int"` issue, so an explicit
+    `.max(Number.MAX_SAFE_INTEGER)` is redundant. Don't write a test that claims
+    to guard a bound `.int()` already enforces; pin the case that actually
+    changed (here, accepting a negative).

@@ -14,6 +14,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
+import { allocateOldestFirst, splitAgainstRemaining, supplierBalance, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
@@ -676,6 +677,212 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
 
+    // --- supplier account (issue 161) ----------------------------------------
+    // Every money path is ONE BEGIN IMMEDIATE unit: the signed entry and the
+    // invoice's paid/remaining cache move together, and the DB-level conditional
+    // UPDATE is the authoritative boundary (never check-then-act).
+    suppliersPay: os.suppliersPay.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const supplier = await tx.getParty("supplier", input.supplierId);
+          if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const method = input.method ?? "CASH";
+          const note = input.note == null || input.note.trim() === "" ? null : input.note.trim();
+          const occurredAt = localDateTime();
+          const target = input.target ?? { kind: "OLDEST" as const };
+
+          /** Attach the part that fits, keep a payment history row, and turn the
+           * excess into a credit entry. */
+          const payInvoice = async (invoiceId: string, amount: number): Promise<number> => {
+            const detail = await tx.getInvoiceDetail(invoiceId);
+            if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
+            }
+            const { attached, credit } = splitAgainstRemaining(amount, detail.remainingAmount);
+            if (attached > 0) {
+              await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "PAYMENT", amount: attached, invoiceId: detail.id, method, note, occurredAt });
+              if (!(await tx.applyPaymentToInvoice(detail.id, attached))) {
+                throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+              }
+              await tx.insertPayment({ invoiceId: detail.id, amount: attached, method, note, paidAt: occurredAt });
+            }
+            return credit;
+          };
+
+          let credit = 0;
+          if (target.kind === "CREDIT") {
+            credit = input.amount;
+          } else if (target.kind === "INVOICE") {
+            // SAFETY: the contract superRefine requires an invoiceId for INVOICE
+            credit = await payInvoice(target.invoiceId!, input.amount);
+          } else {
+            const outstanding = await tx.listOutstandingPurchaseInvoices(input.supplierId);
+            const plan = allocateOldestFirst(outstanding, input.amount);
+            let left = input.amount;
+            for (const line of plan) {
+              if (line.applied <= 0) continue;
+              credit += await payInvoice(line.invoice.id, line.applied);
+              left -= line.applied;
+            }
+            // SAFETY: plan never applies more than `amount`; any residue is credit
+            credit += left;
+          }
+          if (credit > 0) {
+            await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "PAYMENT", amount: credit, invoiceId: null, method, note, occurredAt });
+          }
+          await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_PAYMENT ${input.amount} ${supplier.name}`, ref: supplier.id });
+          const entries = await tx.listSupplierEntries(input.supplierId);
+          return { balance: supplierBalance(entries), entries };
+        }),
+      ),
+    ),
+    suppliersReturn: os.suppliersReturn.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const supplier = await tx.getParty("supplier", input.supplierId);
+          if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const occurredAt = localDateTime();
+          const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+          const returnNumber = await tx.allocateSupplierReturnNumber();
+          const invoiceLinked = input.invoiceId !== undefined && input.lines !== undefined;
+
+          // Snapshot every returned line first so the header amounts and the
+          // stock movements are computed from one consistent read.
+          const lines: Array<{ invoiceLineId: string | null; itemId: string; description: string; quantity: number; unitCost: number; amount: number }> = [];
+          let amount = 0;
+          let invoiceRemaining: number | null = null;
+          let invoiceId: string | null = null;
+          if (invoiceLinked) {
+            // SAFETY: the contract superRefine guarantees both fields here
+            const detail = await tx.getInvoiceDetail(input.invoiceId!);
+            if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
+              throw new ORPCError("BAD_REQUEST", { message: "INVOICE_NOT_PURCHASE" });
+            }
+            const linesById = new Map(detail.lines.map((line) => [line.id, line]));
+            for (const entry of input.lines!) {
+              const line = linesById.get(entry.invoiceLineId);
+              if (line === undefined) throw new ORPCError("BAD_REQUEST", { message: "LINE_NOT_ON_INVOICE" });
+              if (line.itemId === null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_LINE_NOT_RETURNABLE" });
+            }
+            // cap: bought minus already returned, per original line
+            const already = await tx.returnedByPurchaseLine(detail.id);
+            const violation = returnCapViolation(
+              input.lines!,
+              detail.lines.map((line) => ({ id: line.id, quantity: line.quantity })),
+              already,
+            );
+            if (violation !== null) throw new ORPCError("BAD_REQUEST", { message: "RETURN_EXCEEDS_RETURNABLE" });
+            invoiceId = detail.id;
+            invoiceRemaining = detail.remainingAmount;
+            for (const entry of input.lines!) {
+              // SAFETY: every requested line was resolved above
+              const line = linesById.get(entry.invoiceLineId)!;
+              const lineAmount = entry.quantity * line.unitPrice;
+              lines.push({ invoiceLineId: line.id, itemId: line.itemId!, description: line.description, quantity: entry.quantity, unitCost: line.unitPrice, amount: lineAmount });
+              amount += lineAmount;
+            }
+          } else {
+            // SAFETY: the contract superRefine guarantees the free-standing trio
+            const item = (await tx.getItemsByIds([input.itemId!])).get(input.itemId!);
+            if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            amount = input.amount!;
+            lines.push({ invoiceLineId: null, itemId: item.id, description: item.name, quantity: input.quantity!, unitCost: item.costPrice, amount });
+          }
+
+          const split = supplierReturnSplit(amount, invoiceRemaining);
+          const cashBack = input.cashBack ?? 0;
+          if (cashBack > amount) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
+
+          const { id: returnId } = await tx.insertSupplierReturn({
+            returnNumber,
+            supplierId: input.supplierId,
+            invoiceId,
+            kind: invoiceLinked ? "INVOICE_LINKED" : "FREE_STANDING",
+            amount,
+            debtReduction: split.debtReduction,
+            credit: split.credit,
+            cashBack,
+            reason,
+            occurredAt,
+          });
+          for (const line of lines) {
+            await tx.insertSupplierReturnLine({
+              returnId,
+              invoiceLineId: line.invoiceLineId,
+              itemId: line.itemId,
+              description: line.description,
+              quantity: line.quantity,
+              unitCost: line.unitCost,
+              amount: line.amount,
+            });
+            const item = (await tx.getItemsByIds([line.itemId])).get(line.itemId);
+            if (item === undefined) throw new ORPCError("NOT_FOUND", { message: "ITEM_NOT_FOUND" });
+            const existing = await tx.listStockMovements(item.id);
+            const candidate = { kind: "MANUAL_ADJUSTMENT" as const, delta: -line.quantity, unitCost: null, occurredAt, seq: undefined };
+            let stockAfter: number;
+            try {
+              stockAfter = projectLedger([...existing, candidate], { fallbackUnitCost: item.costPrice }).stockOnHand;
+            } catch (err) {
+              if (err instanceof StockLedgerError) throw new ORPCError("BAD_REQUEST", { message: err.code });
+              throw err;
+            }
+            await tx.insertStockMovement({ itemId: item.id, kind: "MANUAL_ADJUSTMENT", delta: -line.quantity, unitCost: null, reason: "SUPPLIER_RETURN", ref: returnId, occurredAt });
+            const newCost = weightedAverageCost([...existing, candidate], { fallbackUnitCost: item.costPrice });
+            await tx.setItemStockAndCost(item.id, stockAfter, newCost);
+          }
+
+          // the signed entries: the debt-reducing part names the invoice, the
+          // credit part does not. A cash-back records cash received from the
+          // supplier (a REFUND) and may never exceed the resulting credit.
+          if (split.debtReduction > 0 && invoiceId !== null) {
+            await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "RETURN", amount: split.debtReduction, invoiceId, note: reason, ref: returnNumber, occurredAt });
+            if (!(await tx.applyDebtOffsetToInvoice(invoiceId, split.debtReduction))) {
+              throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+            }
+          }
+          if (split.credit > 0) {
+            await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "RETURN", amount: split.credit, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
+          }
+          if (cashBack > 0) {
+            const before = await tx.listSupplierEntries(input.supplierId);
+            const availableCredit = Math.max(0, -supplierBalance(before));
+            if (cashBack > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
+            await tx.insertSupplierEntry({ supplierId: input.supplierId, kind: "REFUND", amount: cashBack, invoiceId: null, note: reason, ref: returnNumber, occurredAt });
+          }
+          await tx.insertActivity({ type: "RETURN_RECORDED", summary: `SUPPLIER_RETURN ${returnNumber} ${amount} ${supplier.name}`, ref: returnId });
+          const entries = await tx.listSupplierEntries(input.supplierId);
+          return { balance: supplierBalance(entries), entries };
+        }),
+      ),
+    ),
+    suppliersRefund: os.suppliersRefund.handler(
+      guardedInput(async (input) =>
+        deps.store.withTransactionImmediate(async (tx) => {
+          const supplier = await tx.getParty("supplier", input.supplierId);
+          if (supplier === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
+          const entries = await tx.listSupplierEntries(input.supplierId);
+          const availableCredit = Math.max(0, -supplierBalance(entries));
+          if (input.amount > availableCredit) throw new ORPCError("BAD_REQUEST", { message: "REFUND_EXCEEDS_CREDIT" });
+          const occurredAt = localDateTime();
+          await tx.insertSupplierEntry({
+            supplierId: input.supplierId,
+            kind: "REFUND",
+            amount: input.amount,
+            invoiceId: null,
+            method: input.method ?? "CASH",
+            note: input.note == null || input.note.trim() === "" ? null : input.note.trim(),
+            occurredAt,
+          });
+          await tx.insertActivity({ type: "PAYMENT_RECORDED", summary: `SUPPLIER_REFUND ${input.amount} ${supplier.name}`, ref: supplier.id });
+          const next = await tx.listSupplierEntries(input.supplierId);
+          return { balance: supplierBalance(next), entries: next };
+        }),
+      ),
+    ),
+    suppliersReturnsList: os.suppliersReturnsList.handler(
+      guardedInput(async ({ supplierId }) => ({ items: await deps.store.listSupplierReturns({ supplierId }) })),
+    ),
+
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
       guardedInput(async (input) => {
@@ -898,6 +1105,29 @@ export function createRpcRouter(deps: RpcDeps) {
             );
           }
           await tx.insertActivity({ type: "PURCHASE_CREATED", summary: `PURCHASE_CREATED ${invoiceNumber}${partyName ? ` ${partyName}` : ""}`, ref: invoice.id });
+          // Supplier account (issue 161): an id-backed purchase is a signed
+          // charge, and a down payment is a signed payment entry. Typed-name
+          // purchases (no supplier record) stay invoice-based like customers.
+          if (input.counterpartyId !== undefined && input.counterpartyId !== null) {
+            const occurredAt = localDateTime();
+            await tx.insertSupplierEntry({
+              supplierId: input.counterpartyId,
+              kind: "PURCHASE",
+              amount: totalAmount,
+              invoiceId: invoice.id,
+              occurredAt,
+            });
+            if (paidAmount > 0) {
+              await tx.insertSupplierEntry({
+                supplierId: input.counterpartyId,
+                kind: "PAYMENT",
+                amount: paidAmount,
+                invoiceId: invoice.id,
+                method: input.paymentMethod ?? "CASH",
+                occurredAt,
+              });
+            }
+          }
           // a brand-new invoice has no returns yet, so no debt was relieved
           return { ...invoice, lines: insertedLines, payments: insertedPayments, returnCreditAmount: 0 } satisfies InvoiceDetail;
         });
@@ -947,6 +1177,19 @@ export function createRpcRouter(deps: RpcDeps) {
             // amount between our read and the write); the whole unit rolls
             // back, so the payment row above never persists
             throw new ORPCError("BAD_REQUEST", { message: "PAYMENT_EXCEEDS_REMAINING" });
+          }
+          // A purchase invoice paid in place is a signed supplier payment too
+          // (issue 161), so the account balance stays the one truth.
+          if (detail.kind === "PURCHASE" && detail.counterpartyId !== null) {
+            await tx.insertSupplierEntry({
+              supplierId: detail.counterpartyId,
+              kind: "PAYMENT",
+              amount: input.amount,
+              invoiceId: detail.id,
+              method: input.method ?? "CASH",
+              note: input.note == null || input.note.trim() === "" ? null : input.note.trim(),
+              occurredAt: localDateTime(),
+            });
           }
           await tx.insertActivity({
             type: "PAYMENT_RECORDED",

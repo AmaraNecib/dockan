@@ -22,6 +22,7 @@ import type {
   PartyRole,
   PartyUpdate,
   Payment,
+  PaymentMethod,
   ReturnDetail,
   ReturnMark,
   ReturnPayoutMethod,
@@ -30,9 +31,13 @@ import type {
   SettingsUpdate,
   StockMovement,
   Supplier,
+  SupplierAccountEntry,
+  SupplierEntryKind,
+  SupplierReturnLine,
+  SupplierReturnRecord,
 } from "@dokan/contracts";
 
-export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory };
+export type { Category, Item, Customer, Supplier, Invoice, InvoiceLine, Payment, Activity, Settings, Expense, ExpenseCategory, SupplierAccountEntry, SupplierReturnRecord, SupplierReturnLine, SupplierEntryKind };
 
 /**
  * One raw SALE invoice line fact the profit report sums. Read via a JOIN of
@@ -124,6 +129,42 @@ export type ReturnLineInsert = {
 /** Summed returned quantity per invoice line (the refund cap key). */
 export type ReturnedQuantityByLine = Map<string, number>;
 
+/** Raw supplier-account entry the adapter persists. `amount` is always positive;
+ * the kind carries the sign. */
+export type SupplierEntryInsert = {
+  supplierId: string;
+  kind: SupplierEntryKind;
+  amount: number;
+  invoiceId: string | null;
+  method?: PaymentMethod | null;
+  note?: string | null;
+  ref?: string | null;
+  occurredAt: string;
+};
+
+export type SupplierReturnInsert = {
+  returnNumber: string;
+  supplierId: string;
+  invoiceId: string | null;
+  kind: "INVOICE_LINKED" | "FREE_STANDING";
+  amount: number;
+  debtReduction: number;
+  credit: number;
+  cashBack: number;
+  reason: string | null;
+  occurredAt: string;
+};
+
+export type SupplierReturnLineInsert = {
+  returnId: string;
+  invoiceLineId: string | null;
+  itemId: string | null;
+  description: string;
+  quantity: number;
+  unitCost: number;
+  amount: number;
+};
+
 /** Typed refusal from the store's party identity rule (phone uniqueness). */
 export class PartyError extends Error {
   constructor(public readonly code: "PHONE_EXISTS") {
@@ -200,6 +241,20 @@ export interface StorePort {
   /** header + stats + every invoice + every payment, one call for the page */
   partyDetail(role: PartyRole, partyId: string): Promise<PartyDetail | undefined>;
 
+  // --- supplier account (issue 161) ----------------------------------------
+  /** append-only signed entry; never updated or deleted */
+  insertSupplierEntry(entry: SupplierEntryInsert): Promise<SupplierAccountEntry>;
+  /** every entry of one supplier, newest first, invoice number joined */
+  listSupplierEntries(supplierId: string): Promise<SupplierAccountEntry[]>;
+  /** outstanding PURCHASE invoices of one supplier, oldest first (allocation) */
+  listOutstandingPurchaseInvoices(supplierId: string): Promise<Invoice[]>;
+  allocateSupplierReturnNumber(): Promise<string>;
+  insertSupplierReturn(input: SupplierReturnInsert): Promise<{ id: string }>;
+  insertSupplierReturnLine(line: SupplierReturnLineInsert): Promise<void>;
+  /** supplier purchase-return history, newest first; optional supplier scope */
+  listSupplierReturns(filters: { supplierId?: string }): Promise<SupplierReturnRecord[]>;
+  getSupplierReturn(returnId: string): Promise<SupplierReturnRecord | undefined>;
+
   /** Runs an atomic unit; the callback receives the same store with the queue
    * bypassed for its own calls, so nested operations never deadlock and no
    * external call can ever land inside this transaction. */
@@ -227,6 +282,8 @@ export interface StorePort {
   /** per-line already-returned totals for this invoice (quantity for the cap,
    * refundAmount for the sequence-aware refund remainder) */
   returnedByLine(invoiceId: string): Promise<Map<string, { quantity: number; refundAmount: number }>>;
+  /** per-line already-returned quantity of a PURCHASE invoice (supplier return cap) */
+  returnedByPurchaseLine(invoiceId: string): Promise<Map<string, number>>;
   /** Atomic debt settlement: debits remainingAmount by amount ONLY while it
    * still covers the offset. Returns true when the debt moved, false when the
    * boundary was violated — the caller rolls the unit back in that case. */

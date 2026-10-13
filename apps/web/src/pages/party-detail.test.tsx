@@ -60,6 +60,7 @@ function makeDetail(invoices: Invoice[]): PartyDetail {
     stats,
     invoices,
     payments: [],
+    account: null,
   };
 }
 

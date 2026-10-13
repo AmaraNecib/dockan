@@ -1,5 +1,5 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses } from "@dokan/contracts";
+import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses, supplierEntryKinds } from "@dokan/contracts";
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer
  * maps rows to the camelCase shapes of @dokan/contracts.
@@ -219,6 +219,71 @@ export const stockLinks = sqliteTable("stock_links", {
 });
 
 // ---------------------------------------------------------------------------
+// Supplier account (issue 161): one signed ledger per supplier (ADR-0008)
+// ---------------------------------------------------------------------------
+
+/** Append-only supplier account entries. `amount` is always positive; the kind
+ * determines the sign (PURCHASE/REFUND +, PAYMENT/RETURN −). An entry with an
+ * `invoice_id` reduces that purchase invoice's remaining debt; an entry with a
+ * null invoice is a credit/advance. Never rewritten. */
+export const supplierAccountEntries = sqliteTable("supplier_account_entries", {
+  id: text("id").primaryKey(),
+  supplierId: text("supplier_id")
+    .notNull()
+    .references(() => suppliers.id),
+  kind: text("kind", { enum: supplierEntryKinds }).notNull(),
+  amount: integer("amount").notNull(),
+  invoiceId: text("invoice_id").references(() => invoices.id),
+  method: text("method", { enum: paymentMethods }),
+  note: text("note"),
+  ref: text("ref"),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Database-owned next supplier-return number; the singleton row is updated
+ * atomically like the invoice and sale-return sequences. */
+export const supplierReturnNumberSequence = sqliteTable("supplier_return_number_sequence", {
+  id: integer("id").primaryKey(),
+  nextNumber: integer("next_number").notNull(),
+});
+
+/** One purchase return (issue 161). Auto-accepted — no review state. It always
+ * writes a RETURN account entry (ref = return_number); `cash_back` records cash
+ * received from the supplier in the same unit. */
+export const supplierReturns = sqliteTable("supplier_returns", {
+  id: text("id").primaryKey(),
+  returnNumber: text("return_number").notNull().unique(),
+  supplierId: text("supplier_id")
+    .notNull()
+    .references(() => suppliers.id),
+  invoiceId: text("invoice_id").references(() => invoices.id),
+  kind: text("kind", { enum: ["INVOICE_LINKED", "FREE_STANDING"] }).notNull(),
+  amount: integer("amount").notNull(),
+  debtReduction: integer("debt_reduction").notNull().default(0),
+  credit: integer("credit").notNull().default(0),
+  cashBack: integer("cash_back").notNull().default(0),
+  reason: text("reason"),
+  occurredAt: text("occurred_at").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** One returned purchase line with its whole-DZD snapshot. */
+export const supplierReturnLines = sqliteTable("supplier_return_lines", {
+  id: text("id").primaryKey(),
+  returnId: text("return_id")
+    .notNull()
+    .references(() => supplierReturns.id),
+  /** the original PURCHASE line this unit came from; null when free-standing */
+  invoiceLineId: text("invoice_line_id").references(() => invoiceLines.id),
+  itemId: text("item_id").references(() => items.id),
+  description: text("description").notNull(),
+  quantity: integer("quantity").notNull(),
+  unitCost: integer("unit_cost").notNull(),
+  amount: integer("amount").notNull(),
+});
+
+// ---------------------------------------------------------------------------
 // Expenses and profit reports (ticket 31)
 // ---------------------------------------------------------------------------
 
@@ -338,6 +403,13 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, return_mark TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,
+  `CREATE TABLE IF NOT EXISTS supplier_return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS supplier_returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, supplier_id TEXT NOT NULL REFERENCES suppliers(id), invoice_id TEXT REFERENCES invoices(id), kind TEXT NOT NULL, amount INTEGER NOT NULL, debt_reduction INTEGER NOT NULL DEFAULT 0, credit INTEGER NOT NULL DEFAULT 0, cash_back INTEGER NOT NULL DEFAULT 0, reason TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_supplier_returns_supplier ON supplier_returns(supplier_id, occurred_at)`,
+  `CREATE TABLE IF NOT EXISTS supplier_return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES supplier_returns(id), invoice_line_id TEXT REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, unit_cost INTEGER NOT NULL, amount INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_supplier_return_lines_return ON supplier_return_lines(return_id)`,
   `CREATE TABLE IF NOT EXISTS expense_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, is_owner_withdrawal INTEGER NOT NULL DEFAULT 0 CHECK (is_owner_withdrawal IN (0,1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS expenses (id TEXT PRIMARY KEY, category_id TEXT NOT NULL REFERENCES expense_categories(id), amount INTEGER NOT NULL CHECK (amount > 0), note TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_occurred_at ON expenses(occurred_at)`,

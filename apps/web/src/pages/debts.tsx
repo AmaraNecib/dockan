@@ -35,6 +35,10 @@ function partyId(signature: string): string {
 function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void }) {
   const { t } = useTranslation();
   const signature = partySignature(row);
+  // #161 — a supplier row is the signed net balance (negative = we are ahead),
+  // not the sum of its unpaid invoices. Customer rows keep the invoice total.
+  const netBalance = row.kind === "PURCHASE" ? row.accountBalance : null;
+  const displayAmount = netBalance ?? row.remainingTotal;
 
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
@@ -44,6 +48,11 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       input: { kind: row.kind, counterpartyId: row.counterpartyId, counterpartyName: row.counterpartyName },
     }),
     enabled: expanded,
+  });
+  // supplier account movements behind the net balance (issue 161)
+  const account = useQuery({
+    ...orpc.suppliersGet.queryOptions({ input: { id: row.counterpartyId ?? "" } }),
+    enabled: expanded && row.kind === "PURCHASE" && row.counterpartyId !== null,
   });
 
   return (
@@ -58,7 +67,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
         <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
-        <span className="font-semibold" data-testid="debts-person-total"><Amount value={row.remainingTotal} /></span>
+        <span className={`font-semibold ${netBalance !== null && netBalance < 0 ? "text-success" : ""}`} data-testid="debts-person-total"><Amount value={Math.abs(displayAmount)} /></span>
         {expanded ? <ChevronUp size={14} className="text-muted-foreground" aria-hidden="true" /> : <ChevronDown size={14} className="text-muted-foreground" aria-hidden="true" />}
       </button>
 
@@ -96,6 +105,30 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
               </tbody>
             </table>
           )}
+
+          {row.kind === "PURCHASE" && row.counterpartyId !== null && account.isSuccess && (account.data.account?.entries.length ?? 0) > 0 && (
+            <>
+              <h3 className="mt-3 text-sm font-semibold text-muted-foreground">{t("debtsAccountMovements")}</h3>
+              <table className="mt-2 w-full text-sm" data-testid="debts-account-entries">
+                <thead>
+                  <tr className="border-b text-muted-foreground">
+                    <th className="p-2 text-right font-medium">{t("supplierEntryDate")}</th>
+                    <th className="p-2 text-right font-medium">{t("supplierEntryKind")}</th>
+                    <th className="p-2 text-right font-medium">{t("supplierEntryAmount")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {account.data.account?.entries.map((entry) => (
+                    <tr key={entry.id} data-testid="debts-account-entry">
+                      <td className="p-2">{formatDate(entry.occurredAt)}</td>
+                      <td className="p-2">{t(`supplierEntry_${entry.kind}`)}</td>
+                      <td className="p-2 font-semibold"><Amount value={entry.amount} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
     </li>
@@ -113,7 +146,7 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
   onToggle: (party: PartyIdentity) => void;
 }) {
   const { t } = useTranslation();
-  const groupTotal = rows.reduce((sum, row) => sum + row.remainingTotal, 0);
+  const groupTotal = rows.reduce((sum, row) => sum + (row.kind === "PURCHASE" ? (row.accountBalance ?? row.remainingTotal) : row.remainingTotal), 0);
   const groupCount = rows.reduce((sum, row) => sum + row.invoiceCount, 0);
 
   return (

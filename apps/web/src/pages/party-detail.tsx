@@ -3,10 +3,13 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
-import type { Invoice, PartyDetail, PartyPayment, PartyRole } from "@dokan/contracts";
+import type { Invoice, PartyDetail, PartyPayment, PartyRole, SupplierAccountEntry } from "@dokan/contracts";
 import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { CustomerSettlePanel } from "@/components/parties/customer-settle-panel";
+import { SupplierPayPanel } from "@/components/parties/supplier-pay-panel";
+import { SupplierRefundPanel } from "@/components/parties/supplier-refund-panel";
+import { SupplierReturnPanel } from "@/components/parties/supplier-return-panel";
 import { unpaidInvoices, unpaidTotal } from "@/components/parties/party-settle";
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
@@ -72,6 +75,50 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
   );
 }
 
+/** #161 — one signed supplier-account entry. The amount is shown with the
+ * direction its kind implies (a purchase/refund adds to what we owe, a
+ * payment/return reduces it). */
+function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
+  const { t } = useTranslation();
+  const sign = entry.kind === "PURCHASE" || entry.kind === "REFUND" ? "+" : "−";
+  return (
+    <tr data-testid="supplier-account-row">
+      <td className="p-2">{formatDateTime(entry.occurredAt)}</td>
+      <td className="p-2 text-sm" data-testid={`supplier-entry-kind-${entry.kind}`}>{t(`supplierEntry_${entry.kind}`)}</td>
+      <td className="p-2 cell-ltr">
+        {entry.invoiceId === null ? (
+          <span className="text-muted-foreground">—</span>
+        ) : (
+          <Link to="/invoices/$invoiceId" params={{ invoiceId: entry.invoiceId }} className="underline-offset-4 hover:underline">
+            {entry.invoiceNumber ?? entry.invoiceId}
+          </Link>
+        )}
+      </td>
+      <td className="p-2 font-medium" data-testid="supplier-entry-amount">
+        {sign} <Amount value={entry.amount} />
+      </td>
+      <td className="p-2 text-sm text-muted-foreground">{entry.ref ?? entry.note ?? "—"}</td>
+    </tr>
+  );
+}
+
+/** The supplier's signed balance header: what we owe (positive) or the credit
+ * we hold (negative). */
+function SupplierBalanceHeader({ balance }: { balance: number }) {
+  const { t } = useTranslation();
+  const owed = balance >= 0;
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border bg-card p-4" data-testid="supplier-balance">
+      <div>
+        <p className="text-xs text-muted-foreground">{owed ? t("supplierBalanceOwed") : t("supplierBalanceCredit")}</p>
+        <p className={`mt-1 text-2xl font-bold ${owed ? "" : "text-success"}`} data-testid="supplier-balance-value">
+          <Amount value={Math.abs(balance)} />
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function StatsStrip({ detail, role }: { detail: PartyDetail; role: PartyRole }) {
   const { t } = useTranslation();
   const cells: ReadonlyArray<{ labelKey: "partyStatsCount" | "partyStatsTotalSales" | "partyStatsTotalPurchases" | "partyStatsPaid" | "partyStatsRemaining"; value: number }> = [
@@ -119,6 +166,9 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const customerScope = role === "customer";
   const [unpaidOnly, setUnpaidOnly] = useState(true);
   const [settleOpen, setSettleOpen] = useState(false);
+  // #161 — supplier account actions (pay / return / refund) open in place.
+  const [supplierAction, setSupplierAction] = useState<"pay" | "return" | "refund" | null>(null);
+  const account = detail.data?.account ?? null;
   const allInvoices = detail.data?.invoices ?? [];
   const unpaid = unpaidInvoices(allInvoices);
   const showUnpaidOnly = customerScope && unpaidOnly;
@@ -203,6 +253,48 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
 
           <StatsStrip detail={detail.data} role={role} />
 
+          {role === "supplier" && account !== null && (
+            <>
+              <SupplierBalanceHeader balance={account.balance} />
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button onClick={() => { setSupplierAction("pay"); setNotice(null); }} data-testid="supplier-action-pay">{t("supplierActionPay")}</Button>
+                <Button variant="outline" onClick={() => { setSupplierAction("return"); setNotice(null); }} data-testid="supplier-action-return">{t("supplierActionReturn")}</Button>
+                {account.balance < 0 && (
+                  <Button variant="outline" onClick={() => { setSupplierAction("refund"); setNotice(null); }} data-testid="supplier-action-refund">{t("supplierActionRefund")}</Button>
+                )}
+              </div>
+              {supplierAction !== null && (
+                <div className="mt-4">
+                  {supplierAction === "pay" && (
+                    <SupplierPayPanel
+                      supplierId={partyId}
+                      balance={account.balance}
+                      invoices={detail.data.invoices}
+                      onDone={() => { setSupplierAction(null); setNotice(t("supplierPayRecorded")); }}
+                      onCancel={() => setSupplierAction(null)}
+                    />
+                  )}
+                  {supplierAction === "return" && (
+                    <SupplierReturnPanel
+                      supplierId={partyId}
+                      invoices={detail.data.invoices}
+                      onDone={() => { setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
+                      onCancel={() => setSupplierAction(null)}
+                    />
+                  )}
+                  {supplierAction === "refund" && (
+                    <SupplierRefundPanel
+                      supplierId={partyId}
+                      availableCredit={Math.max(0, -account.balance)}
+                      onDone={() => { setSupplierAction(null); setNotice(t("supplierRefundRecorded")); }}
+                      onCancel={() => setSupplierAction(null)}
+                    />
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
           <div role="tablist" aria-label={detail.data.party.name} className="mt-6 flex gap-1 border-b border-border">
             {DETAIL_TABS.map((entry, index) => (
               <button
@@ -286,7 +378,28 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
           </div>
 
           <div role="tabpanel" id="party-panel-payments" aria-labelledby="party-tab-payments" hidden={tab !== "payments"} className="mt-4" data-testid="party-panel-payments">
-            {detail.data.payments.length === 0 ? (
+            {role === "supplier" && account !== null ? (
+              account.entries.length === 0 ? (
+                <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="supplier-account-empty">{t("supplierAccountEmpty")}</p>
+              ) : (
+                <table className="w-full text-sm" data-testid="supplier-account-entries">
+                  <thead>
+                    <tr className="border-b text-right text-muted-foreground">
+                      <th scope="col" className="p-2 font-medium">{t("supplierEntryDate")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("supplierEntryKind")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("supplierEntryInvoice")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("supplierEntryAmount")}</th>
+                      <th scope="col" className="p-2 font-medium">{t("supplierEntryNote")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {account.entries.map((entry) => (
+                      <SupplierAccountRow key={entry.id} entry={entry} />
+                    ))}
+                  </tbody>
+                </table>
+              )
+            ) : detail.data.payments.length === 0 ? (
               <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-payments-empty">{t("partyPaymentsEmpty")}</p>
             ) : (
               <table className="w-full text-sm" data-testid="party-payments">

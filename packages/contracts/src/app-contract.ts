@@ -64,6 +64,12 @@ import {
   settingsUpdateInputSchema,
   stockAddManualInputSchema,
   stockMovementSchema,
+  supplierAccountSchema,
+  supplierPayInputSchema,
+  supplierRefundInputSchema,
+  supplierReturnInputSchema,
+  supplierReturnsListInputSchema,
+  supplierReturnsListOutputSchema,
 } from "./core";
 
 /**
@@ -105,6 +111,15 @@ export const dokanContract = {
   suppliersCreate: oc.input(partyCreateInputSchema).output(partySchema),
   suppliersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),
   suppliersDelete: oc.input(z.object({ id: z.string().uuid() })).output(partyDeleteOutputSchema),
+  // --- supplier account (issue 161) ---------------------------------------
+  /** pay a supplier: oldest-first default, a named invoice, or leave as credit */
+  suppliersPay: oc.input(supplierPayInputSchema).output(supplierAccountSchema),
+  /** a purchase return (invoice-linked or free-standing), auto-accepted */
+  suppliersReturn: oc.input(supplierReturnInputSchema).output(supplierAccountSchema),
+  /** record cash received from the supplier to close a credit */
+  suppliersRefund: oc.input(supplierRefundInputSchema).output(supplierAccountSchema),
+  /** supplier purchase-return history (plain list, no review state) */
+  suppliersReturnsList: oc.input(supplierReturnsListInputSchema).output(supplierReturnsListOutputSchema),
 
   // --- invoices ------------------------------------------------------------
   invoicesCreate: oc.input(invoiceCreateInputSchema).output(invoiceDetailSchema),

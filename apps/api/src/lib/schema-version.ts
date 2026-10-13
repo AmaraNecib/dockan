@@ -9,8 +9,14 @@ import type { Database } from "bun:sqlite";
  * build accepts the version-1 shape but would record purchases and payments
  * without supplier entries, silently corrupting the balance, so this format
  * MUST be refused by a version-1 build (ADR-0008 §4.5).
+ *
+ * Version 3 (issue 176): the manual adjustment kind (تسوية) and the
+ * `supplier_account_entries.direction` column that carries its sign. An older
+ * build accepts the version-2 shape but signs an adjustment with no branch of
+ * its own — it would read a «نسالوه» adjustment as a decrement — so a
+ * version-2 build MUST refuse this format (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 /**
  * A database written by a newer app. The older build cannot know what the

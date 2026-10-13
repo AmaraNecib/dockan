@@ -17,8 +17,8 @@ type PartyFixture = PartyListItem;
 
 const EMPTY_STATS = { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 };
 
-const ALI: PartyFixture = { id: "ali", name: "علي علي", phone: "+213555123456", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS };
-const OMAR: PartyFixture = { id: "omar", name: "عماره", phone: "+213555111222", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS };
+const ALI: PartyFixture = { id: "ali", name: "علي علي", phone: "+213555123456", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS, accountBalance: null, accountEntryCount: null };
+const OMAR: PartyFixture = { id: "omar", name: "عماره", phone: "+213555111222", createdAt: "2026-10-01T10:00:00", stats: EMPTY_STATS, accountBalance: null, accountEntryCount: null };
 
 let parties: PartyFixture[] = [ALI, OMAR];
 let created: Array<{ name: string; phone?: string }> = [];

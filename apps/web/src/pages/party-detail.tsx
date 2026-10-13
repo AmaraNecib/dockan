@@ -7,6 +7,7 @@ import type { Invoice, PartyDetail, PartyPayment, PartyRole, SupplierAccountEntr
 import { displayAlgerianPhone } from "@dokan/contracts";
 
 import { CustomerSettlePanel } from "@/components/parties/customer-settle-panel";
+import { SupplierAdjustPanel } from "@/components/parties/supplier-adjust-panel";
 import { SupplierPayPanel } from "@/components/parties/supplier-pay-panel";
 import { SupplierRefundPanel } from "@/components/parties/supplier-refund-panel";
 import { SupplierReturnPanel } from "@/components/parties/supplier-return-panel";
@@ -19,6 +20,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate, formatDateTime } from "../lib/dates";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
+import { supplierEntryDirectionKey, supplierEntrySignLabel } from "../lib/supplier-entry-display";
 
 type DetailTab = "invoices" | "payments" | "info";
 
@@ -75,16 +77,21 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
   );
 }
 
-/** #161 — one signed supplier-account entry. The amount is shown with the
+/** #161/#176 — one signed supplier-account entry. The amount is shown with the
  * direction its kind implies (a purchase/refund adds to what we owe, a
- * payment/return reduces it). */
+ * payment/return reduces it, an adjustment follows its own direction). */
 function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
   const { t } = useTranslation();
-  const sign = entry.kind === "PURCHASE" || entry.kind === "REFUND" ? "+" : "−";
+  const sign = supplierEntrySignLabel(entry);
+  const directionKey = supplierEntryDirectionKey(entry);
+  const directionLabel = directionKey === null ? null : t(directionKey);
   return (
     <tr data-testid="supplier-account-row">
       <td className="p-2">{formatDateTime(entry.occurredAt)}</td>
-      <td className="p-2 text-sm" data-testid={`supplier-entry-kind-${entry.kind}`}>{t(`supplierEntry_${entry.kind}`)}</td>
+      <td className="p-2 text-sm" data-testid={`supplier-entry-kind-${entry.kind}`}>
+        {t(`supplierEntry_${entry.kind}`)}
+        {directionLabel !== null && <span className="text-muted-foreground" data-testid="supplier-entry-direction"> · {directionLabel}</span>}
+      </td>
       <td className="p-2 cell-ltr">
         {entry.invoiceId === null ? (
           <span className="text-muted-foreground">—</span>
@@ -166,8 +173,8 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const customerScope = role === "customer";
   const [unpaidOnly, setUnpaidOnly] = useState(true);
   const [settleOpen, setSettleOpen] = useState(false);
-  // #161 — supplier account actions (pay / return / refund) open in place.
-  const [supplierAction, setSupplierAction] = useState<"pay" | "return" | "refund" | null>(null);
+  // #161 — supplier account actions (pay / return / refund / adjust) open in place.
+  const [supplierAction, setSupplierAction] = useState<"pay" | "return" | "refund" | "adjust" | null>(null);
   const account = detail.data?.account ?? null;
   const allInvoices = detail.data?.invoices ?? [];
   const unpaid = unpaidInvoices(allInvoices);
@@ -258,6 +265,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               <SupplierBalanceHeader balance={account.balance} />
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button onClick={() => { setSupplierAction("pay"); setNotice(null); }} data-testid="supplier-action-pay">{t("supplierActionPay")}</Button>
+                <Button variant="outline" onClick={() => { setSupplierAction("adjust"); setNotice(null); }} data-testid="supplier-action-adjust">{t("supplierActionAdjust")}</Button>
                 <Button variant="outline" onClick={() => { setSupplierAction("return"); setNotice(null); }} data-testid="supplier-action-return">{t("supplierActionReturn")}</Button>
                 {account.balance < 0 && (
                   <Button variant="outline" onClick={() => { setSupplierAction("refund"); setNotice(null); }} data-testid="supplier-action-refund">{t("supplierActionRefund")}</Button>
@@ -279,6 +287,16 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       supplierId={partyId}
                       invoices={detail.data.invoices}
                       onDone={() => { setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
+                      onCancel={() => setSupplierAction(null)}
+                    />
+                  )}
+                  {supplierAction === "adjust" && (
+                    <SupplierAdjustPanel
+                      supplierId={partyId}
+                      supplierName={detail.data.party.name}
+                      balance={account.balance}
+                      invoices={detail.data.invoices}
+                      onDone={() => { setSupplierAction(null); setNotice(t("supplierAdjustRecorded")); }}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}

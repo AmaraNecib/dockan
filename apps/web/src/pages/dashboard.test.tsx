@@ -391,6 +391,18 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
+  it("renders a net supplier credit as a credit subline, not a negative debt (issue 176 round 2)", async () => {
+    summary.weOwe = -300;
+    const page = await mount(queryClient);
+
+    const loaded = await waitFor(() => page.card("dashboard-debt-owed")?.textContent?.includes(i18n.t("dashboardSupplierCredit")) ?? false);
+    expect(loaded).toBe(true);
+    const debt = page.card("dashboard-debt-owed")?.textContent ?? "";
+    expect(debt).toContain("300");
+    expect(debt).not.toContain(`-300`);
+    await page.unmount();
+  });
+
   it("shows a failed section as unavailable without hiding the figures", async () => {
     // null is "this read failed", which must look different from an empty shop
     summary.lowStockCount = null;

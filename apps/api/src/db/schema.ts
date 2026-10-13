@@ -1,5 +1,5 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses, supplierEntryKinds } from "@dokan/contracts";
+import { activityTypes, invoiceKinds, movementKinds, paymentMethods, returnMarks, returnPayoutMethods, returnStatuses, supplierAdjustmentDirections, supplierEntryKinds } from "@dokan/contracts";
 /**
  * Drizzle table definitions. Column names are snake_case; the API layer
  * maps rows to the camelCase shapes of @dokan/contracts.
@@ -223,9 +223,10 @@ export const stockLinks = sqliteTable("stock_links", {
 // ---------------------------------------------------------------------------
 
 /** Append-only supplier account entries. `amount` is always positive; the kind
- * determines the sign (PURCHASE/REFUND +, PAYMENT/RETURN −). An entry with an
- * `invoice_id` reduces that purchase invoice's remaining debt; an entry with a
- * null invoice is a credit/advance. Never rewritten. */
+ * determines the sign (PURCHASE/REFUND +, PAYMENT/RETURN −), except an
+ * ADJUSTMENT whose `direction` (WE_OWE +, THEY_OWE −, issue 176) carries it. An
+ * entry with an `invoice_id` reduces that purchase invoice's remaining debt; an
+ * entry with a null invoice is a credit/advance. Never rewritten. */
 export const supplierAccountEntries = sqliteTable("supplier_account_entries", {
   id: text("id").primaryKey(),
   supplierId: text("supplier_id")
@@ -233,6 +234,8 @@ export const supplierAccountEntries = sqliteTable("supplier_account_entries", {
     .references(() => suppliers.id),
   kind: text("kind", { enum: supplierEntryKinds }).notNull(),
   amount: integer("amount").notNull(),
+  /** ADJUSTMENT only; null for every other kind */
+  direction: text("direction", { enum: supplierAdjustmentDirections }),
   invoiceId: text("invoice_id").references(() => invoices.id),
   method: text("method", { enum: paymentMethods }),
   note: text("note"),
@@ -403,7 +406,7 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,
   `CREATE TABLE IF NOT EXISTS stock_movements (id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items(id), kind TEXT NOT NULL, delta INTEGER NOT NULL, unit_cost INTEGER, reason TEXT, ref TEXT, return_mark TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS stock_links (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), movement_id TEXT NOT NULL REFERENCES stock_movements(id), quantity INTEGER NOT NULL, created_at TEXT NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT REFERENCES invoices(id), method TEXT, note TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))`,
   `CREATE INDEX IF NOT EXISTS idx_supplier_entries_supplier ON supplier_account_entries(supplier_id, occurred_at)`,
   `CREATE TABLE IF NOT EXISTS supplier_return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS supplier_returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, supplier_id TEXT NOT NULL REFERENCES suppliers(id), invoice_id TEXT REFERENCES invoices(id), kind TEXT NOT NULL, amount INTEGER NOT NULL, debt_reduction INTEGER NOT NULL DEFAULT 0, credit INTEGER NOT NULL DEFAULT 0, cash_back INTEGER NOT NULL DEFAULT 0, reason TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL)`,

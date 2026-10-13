@@ -21,6 +21,7 @@ import { DebtsPage } from "./pages/debts";
 import { ExpensesPage } from "./pages/expenses";
 import { PartiesPage } from "./pages/parties";
 import { PartyDetailPage } from "./pages/party-detail";
+import { SupplierOpeningBalancePage } from "./pages/supplier-opening-balance";
 import { ReportsPage } from "./pages/reports";
 import { AppShell } from "./components/app/app-shell";
 import { SaleDraftProvider } from "./components/app/sale-draft";
@@ -83,6 +84,9 @@ const debtsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/debts"
 const customersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/customers", component: CustomersPage });
 const customerDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/customers/$partyId", component: CustomerDetailRoutePage });
 const suppliersRoute = createRoute({ getParentRoute: () => rootRoute, path: "/suppliers", component: SuppliersPage });
+// static route declared beside the dynamic detail route: TanStack ranks a static
+// segment above `$partyId`, so /suppliers/opening-balance never hits the detail page
+const supplierOpeningBalanceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/suppliers/opening-balance", component: SupplierOpeningBalancePage });
 const supplierDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/suppliers/$partyId", component: SupplierDetailRoutePage });
 const invoicesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices", component: InvoicesPage });
 const invoiceRoute = createRoute({ getParentRoute: () => rootRoute, path: "/invoices/$invoiceId", component: InvoicePage });
@@ -120,6 +124,7 @@ export const routeTree = rootRoute.addChildren([
   customersRoute,
   customerDetailRoute,
   suppliersRoute,
+  supplierOpeningBalanceRoute,
   supplierDetailRoute,
   invoicesRoute,
   invoiceRoute,

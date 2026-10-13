@@ -6,17 +6,33 @@
  * SQL.
  */
 
-export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND";
+export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
+
+/** The direction of a manual adjustment (issue 176). «نسالوه» = the shop owes
+ * the supplier more; «يسالنا» = the shop owes less / moves toward credit. */
+export type SupplierAdjustmentDirection = "WE_OWE" | "THEY_OWE";
 
 /** The sign one entry kind contributes to the supplier balance.
- * Positive = the shop owes the supplier; negative = the shop is ahead. */
-export function supplierEntrySign(kind: SupplierEntryKind): 1 | -1 {
+ * Positive = the shop owes the supplier; negative = the shop is ahead. An
+ * ADJUSTMENT's sign comes from its direction, so a missing one is refused
+ * rather than guessed (a wrongly-signed money row is worse than an error). */
+export function supplierEntrySign(
+  kind: SupplierEntryKind,
+  direction: SupplierAdjustmentDirection | null = null,
+): 1 | -1 {
+  if (kind === "ADJUSTMENT") {
+    if (direction === "WE_OWE") return 1;
+    if (direction === "THEY_OWE") return -1;
+    throw new Error("a supplier adjustment entry needs a direction");
+  }
   return kind === "PURCHASE" || kind === "REFUND" ? 1 : -1;
 }
 
 /** The signed balance of a supplier account: Σ amount × sign(kind). */
-export function supplierBalance(entries: readonly { kind: SupplierEntryKind; amount: number }[]): number {
-  return entries.reduce((sum, entry) => sum + supplierEntrySign(entry.kind) * entry.amount, 0);
+export function supplierBalance(
+  entries: readonly { kind: SupplierEntryKind; amount: number; direction?: SupplierAdjustmentDirection | null }[],
+): number {
+  return entries.reduce((sum, entry) => sum + supplierEntrySign(entry.kind, entry.direction ?? null) * entry.amount, 0);
 }
 
 /** How much of `amount` fits an invoice that still owes `remaining`; the rest

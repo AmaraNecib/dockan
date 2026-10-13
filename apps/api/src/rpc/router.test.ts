@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -1665,6 +1665,164 @@ describe("parties (issue 120)", () => {
   });
 });
 
+describe("supplier adjustments (issue 176)", () => {
+  async function setupSupplier(name: string, units: number) {
+    const category = await client.categoriesCreate({ name: `تصنيف ${name}` });
+    const item = await client.itemsCreateWithStock({ name: `صنف ${name}`, categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 1 });
+    const supplier = await client.suppliersCreate({ name });
+    const invoice = await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: units, unitPrice: 100 }] });
+    return { supplier, invoice };
+  }
+
+  it("records an account-only adjustment: the balance moves and no invoice is touched", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية رصيد", 10);
+
+    const increased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 800, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+    expect(increased.balance).toBe(1800);
+    expect(increased.entries.find((entry) => entry.kind === "ADJUSTMENT")).toMatchObject({
+      direction: "WE_OWE",
+      amount: 800,
+      invoiceId: null,
+      note: "رصيد افتتاحي",
+      // the backdatable date is persisted as the owner entered it
+      occurredAt: "2026-10-13T12:00:00",
+    });
+
+    const decreased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح" });
+    expect(decreased.balance).toBe(1500);
+
+    // the account-only adjustment never touches paid/remaining
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.paidAmount).toBe(0);
+    expect(detail.remainingAmount).toBe(1000);
+    expect(detail.returnCreditAmount).toBe(0);
+
+    // the list seam shows the same signed balance
+    expect((await client.suppliersList()).items.find((row) => row.id === supplier.id)?.accountBalance).toBe(1500);
+  });
+
+  it("reduces a linked invoice's remaining without cash and the header reconciles", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية خصم", 50);
+
+    const account = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500, reason: "خصم", invoiceId: invoice.id });
+    expect(account.balance).toBe(4500);
+    expect(account.entries.find((entry) => entry.kind === "ADJUSTMENT")).toMatchObject({ direction: "THEY_OWE", amount: 500, invoiceId: invoice.id });
+
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(4500);
+    expect(detail.paidAmount).toBe(0);
+    expect(detail.returnCreditAmount).toBe(500);
+    expect(detail.remainingAmount).toBe(detail.totalAmount - detail.paidAmount - detail.returnCreditAmount);
+
+    // the account balance and the invoice agree, as the owner's worked example requires
+    expect(account.balance).toBe(detail.remainingAmount);
+  });
+
+  it("refuses a linked adjustment above the remaining and writes nothing", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية زائدة", 50);
+
+    await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 5001, reason: "خصم", invoiceId: invoice.id })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "ADJUSTMENT_EXCEEDS_REMAINING",
+    });
+
+    // atomic: neither the invoice nor the account moved
+    expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(5000);
+    expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+  });
+
+  it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
+    await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
+  });
+
+  it("refuses a link to another supplier's invoice or to a sale invoice", async () => {
+    const a = await setupSupplier("مورد رابط أ", 10);
+    const b = await setupSupplier("مورد رابط ب", 10);
+    await expect(client.suppliersAdjust({ supplierId: a.supplier.id, direction: "THEY_OWE", amount: 100, invoiceId: b.invoice.id })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "INVOICE_NOT_PURCHASE",
+    });
+
+    const item = (await client.itemsAll()).items.find((row) => row.name === "صنف مورد رابط أ");
+    if (item === undefined) throw new Error("expected the seeded item");
+    const customer = await client.customersCreate({ name: "زبون رابط" });
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 1 }] });
+    await expect(client.suppliersAdjust({ supplierId: a.supplier.id, direction: "THEY_OWE", amount: 50, invoiceId: sale.id })).rejects.toMatchObject({
+      code: "BAD_REQUEST",
+      message: "INVOICE_NOT_PURCHASE",
+    });
+  });
+
+  it("rejects an empty opening-balance batch and a zero amount at the contract", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد حدود صفر" });
+    await expect(client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", rows: [] })).rejects.toThrow(/Input validation failed/);
+    await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 0 })).rejects.toThrow(/Input validation failed/);
+  });
+
+  it("zeroes an invoice when the linked adjustment equals its remaining", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تسوية كامل", 50);
+
+    const account = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 5000, reason: "خصم", invoiceId: invoice.id });
+    expect(account.balance).toBe(0);
+
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(0);
+    expect(detail.returnCreditAmount).toBe(5000);
+    // a settled invoice is no longer offered for linking
+    const outstanding = await store.listOutstandingPurchaseInvoices(supplier.id);
+    expect(outstanding.map((row) => row.id)).not.toContain(invoice.id);
+  });
+
+  it("writes one opening balance per filled row and confirms a supplier that already has entries", async () => {
+    const existing = await client.suppliersCreate({ name: "مورد رصيد قائم" });
+    const fresh = await client.suppliersCreate({ name: "مورد بلا حركات" });
+    await client.suppliersAdjust({ supplierId: existing.id, direction: "WE_OWE", amount: 100 });
+
+    // an unconfirmed row for a supplier that already has an entry is refused
+    // atomically: nothing is written
+    await expect(
+      client.suppliersOpeningBalances({ occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي", rows: [{ supplierId: existing.id, direction: "WE_OWE", amount: 800 }] }),
+    ).rejects.toMatchObject({ code: "CONFLICT", message: "OPENING_BALANCE_EXISTS" });
+    expect((await client.suppliersGet({ id: existing.id })).account?.entries).toHaveLength(1);
+
+    const result = await client.suppliersOpeningBalances({
+      occurredAt: "2026-10-13T12:00:00",
+      reason: "رصيد افتتاحي",
+      rows: [
+        { supplierId: existing.id, direction: "WE_OWE", amount: 800, confirmExisting: true },
+        { supplierId: fresh.id, direction: "THEY_OWE", amount: 300 },
+        { newSupplierName: "مورد جملة جديد", direction: "WE_OWE", amount: 5000 },
+      ],
+    });
+    expect(result.created).toBe(3);
+    expect(result.accounts.find((account) => account.supplierId === existing.id)?.balance).toBe(900);
+    expect(result.accounts.find((account) => account.supplierId === fresh.id)?.balance).toBe(-300);
+    expect(result.accounts.find((account) => account.name === "مورد جملة جديد")?.balance).toBe(5000);
+
+    // the inline supplier is real, listable, and carries its opening balance
+    const created = (await client.suppliersList()).items.find((row) => row.name === "مورد جملة جديد");
+    expect(created).toBeDefined();
+    expect(created?.accountBalance).toBe(5000);
+    expect(created?.accountEntryCount).toBe(1);
+  });
+
+  it("rolls the whole batch back when one row names an unknown supplier", async () => {
+    const fresh = await client.suppliersCreate({ name: "مورد دفعة صالحة" });
+    await expect(
+      client.suppliersOpeningBalances({
+        occurredAt: "2026-10-13T12:00:00",
+        rows: [
+          { supplierId: fresh.id, direction: "WE_OWE", amount: 100 },
+          { supplierId: "00000000-0000-4000-8000-000000000000", direction: "WE_OWE", amount: 200 },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    // nothing half-saved, even for the valid first row
+    expect((await client.suppliersGet({ id: fresh.id })).account?.entries ?? []).toHaveLength(0);
+  });
+});
+
 describe("expenses (ticket 31)", () => {
   it("seeds default expense categories with exactly one owner-withdrawal flag", async () => {
     const { items } = await client.expenseCategoriesList();
@@ -3231,6 +3389,39 @@ describe("dashboard summary (issue 84)", () => {
 
     const summary = await pinnedClient.dashboardSummary();
     expect(summary.day).toBe("2026-08-25");
+  });
+
+  it("accepts a signed weOwe in the dashboard output contract (issue 176 round 2)", () => {
+    // a shop whose suppliers are net in credit is a valid state: the supervisor
+    // must not reject it (round 1 made weOwe signed but left the schema min 0)
+    const base = {
+      day: "2026-10-13",
+      salesTotal: 0,
+      salesCount: 0,
+      owedToUs: 0,
+      lowStockCount: 0,
+      lowStockItems: [],
+      recentInvoices: [],
+    };
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: -300 }).success).toBe(true);
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: 300 }).success).toBe(true);
+    // still bounded to the safe-integer money range on both sides
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: Number.MAX_SAFE_INTEGER + 1 }).success).toBe(false);
+    expect(dashboardSummaryOutputSchema.safeParse({ ...base, weOwe: -(Number.MAX_SAFE_INTEGER + 1) }).success).toBe(false);
+  });
+
+  it("serves the signed supplier net for a credit-only shop and agrees with /debts (issue 176 round 2)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد دائن-${Date.now()}` });
+    // large enough to dominate any positive supplier ledger the suite has seeded
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500_000_000 });
+
+    // before the schema fix this call rejected with an output-validation error
+    const summary = await client.dashboardSummary();
+    expect(summary.weOwe).toBeLessThan(0);
+
+    const debts = await client.reportsDebts();
+    const supplierNet = debts.weOwe.reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+    expect(summary.weOwe).toBe(supplierNet);
   });
 });
 

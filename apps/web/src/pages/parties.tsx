@@ -99,6 +99,11 @@ export function PartiesPage({ role }: { role: PartyRole }) {
         <Button onClick={() => setCreateOpen(true)} data-testid="party-new">
           {t(role === "customer" ? "partyNewCustomer" : "partyNewSupplier")}
         </Button>
+        {role === "supplier" && (
+          <Button variant="outline" asChild data-testid="suppliers-opening-balance">
+            <Link to="/suppliers/opening-balance">{t("supplierOpeningLink")}</Link>
+          </Button>
+        )}
       </div>
 
       {notice !== null && (

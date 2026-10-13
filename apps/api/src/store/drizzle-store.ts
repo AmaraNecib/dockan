@@ -35,6 +35,7 @@ import type {
   StockMovement,
   Supplier,
   SupplierAccountEntry,
+  SupplierAdjustmentDirection,
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
@@ -47,6 +48,28 @@ import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError } from "./port";
+
+/**
+ * The signed-amount SQL for one supplier-ledger alias. Kept in one place
+ * (issue 176): if `debtSummaries` or `listParties` forgot the ADJUSTMENT branch
+ * the /debts screen and the supplier detail would disagree about the balance.
+ * Mirrors `supplierEntrySign` in ../lib/supplier-ledger.ts. `alias` comes from a
+ * closed literal, never input.
+ */
+const supplierSignedAmountSql = (alias: string): string =>
+  `CASE WHEN ${alias}.kind IN ('PURCHASE','REFUND') OR (${alias}.kind = 'ADJUSTMENT' AND ${alias}.direction = 'WE_OWE') THEN ${alias}.amount ELSE -${alias}.amount END`;
+
+/** An ADJUSTMENT's sign comes from its direction, so the store refuses to write
+ * one without it (issue 176). The SQL sign expression signs a null direction as
+ * negative while `supplierEntrySign` throws; validating here keeps every
+ * persistence path on the same side of that line (the ALTER migration cannot
+ * add a table-level CHECK, so this is the boundary the fresh DDL CHECK
+ * complements). */
+const assertAdjustmentDirection = (kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null | undefined): void => {
+  if (kind === "ADJUSTMENT" && direction !== "WE_OWE" && direction !== "THEY_OWE") {
+    throw new Error("a supplier adjustment entry needs a direction");
+  }
+};
 
 const now = () => localDateTime();
 const id = () => randomUUID();
@@ -130,6 +153,9 @@ type PartyAggregateRow = {
   totalAmount: SqlScalar;
   paidAmount: SqlScalar;
   remainingAmount: SqlScalar;
+  /** supplier-only (issue 176); null for a customer */
+  accountBalance: SqlScalar;
+  accountEntryCount: SqlScalar;
 };
 
 const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
@@ -138,6 +164,8 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
   phone: r.phone === null || r.phone === undefined ? null : String(r.phone),
   createdAt: String(r.createdAt),
   stats: safePartyStats(r),
+  accountBalance: r.accountBalance === null || r.accountBalance === undefined ? null : safeSignedWhole(r.accountBalance),
+  accountEntryCount: r.accountEntryCount === null || r.accountEntryCount === undefined ? null : safeWhole(r.accountEntryCount),
 });
 
 /**
@@ -150,6 +178,19 @@ const toPartyListItem = (r: PartyAggregateRow): PartyListItem => ({
 const safeWhole = (value: SqlScalar): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.trunc(parsed))) : 0;
+};
+
+/**
+ * Coerce a SIGNED aggregate (the supplier account balance) without the
+ * non-negativity clamp `safeWhole` applies. A negative balance is a legitimate
+ * credit («يسالنا»), so clamping it to 0 would make the list disagree with the
+ * supplier detail and /debts (issue 176). Only the safe-integer ceiling and
+ * non-finite values are guarded. */
+const safeSignedWhole = (value: SqlScalar): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const truncated = Math.trunc(parsed);
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(-Number.MAX_SAFE_INTEGER, truncated));
 };
 
 type SqlPartyStats = { invoiceCount: SqlScalar; totalAmount: SqlScalar; paidAmount: SqlScalar; remainingAmount: SqlScalar };
@@ -326,6 +367,7 @@ type SupplierEntryRow = {
   supplierId: string;
   kind: SupplierEntryKind;
   amount: number;
+  direction: SupplierAdjustmentDirection | null;
   invoiceId: string | null;
   invoiceNumber: string | null;
   method: PaymentMethod | null;
@@ -339,6 +381,7 @@ const toSupplierEntry = (r: SupplierEntryRow): SupplierAccountEntry => ({
   supplierId: r.supplierId,
   kind: r.kind,
   amount: r.amount,
+  direction: r.direction,
   invoiceId: r.invoiceId,
   invoiceNumber: r.invoiceNumber,
   method: r.method,
@@ -813,6 +856,22 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
   };
 
+  /**
+   * Issue 176: version-2 databases predate the manual-adjustment direction
+   * column. CREATE TABLE IF NOT EXISTS cannot add it, so ALTER here when
+   * missing (the barcode pattern), idempotent by construction. Every existing
+   * row keeps `direction = NULL`, which is exactly right for the pre-existing
+   * kinds; no data backfill is needed. Fresh databases get the column from
+   * SCHEMA_DDL and skip this.
+   */
+  const ensureSupplierAdjustmentDirectionColumn = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
+    if (rows.length > 0 && !rows.some((row) => row.name === "direction")) {
+      conn.raw.exec("ALTER TABLE supplier_account_entries ADD COLUMN direction TEXT");
+    }
+  };
+
   /** Settlement columns (cashPaidOut / debtOffset) for databases that predate
    * the owner-approved cash/debt split. ALTER when missing (barcode pattern);
    * rows created before the split carry cash 0 + debt 0 + a real refund, which
@@ -973,6 +1032,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     rebuildLegacyAuthTables();
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
+    ensureSupplierAdjustmentDirectionColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
@@ -1093,6 +1153,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         supplierId: supplierAccountEntries.supplierId,
         kind: supplierAccountEntries.kind,
         amount: supplierAccountEntries.amount,
+        direction: supplierAccountEntries.direction,
         invoiceId: supplierAccountEntries.invoiceId,
         invoiceNumber: invoices.invoiceNumber,
         method: supplierAccountEntries.method,
@@ -1348,6 +1409,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async listParties(role: PartyRole) {
       const kind = partyInvoiceKind[role];
       // One LEFT JOIN keeps a zero-invoice party on the list with zero stats.
+      // Suppliers also carry their signed account balance and entry count
+      // (issue 176) so the bulk رصيد افتتاحي screen can show the current
+      // balance and ask for confirmation before adding a second entry. The
+      // balance uses the shared signed-amount expression, so it can never
+      // disagree with the supplier detail or /debts. Customers stay null.
+      const accountSelect =
+        role === "supplier"
+          ? sql`, COALESCE((SELECT SUM(${sql.raw(supplierSignedAmountSql("e"))}) FROM supplier_account_entries e WHERE e.supplier_id = p.id), 0) AS accountBalance,
+                  (SELECT COUNT(*) FROM supplier_account_entries e WHERE e.supplier_id = p.id) AS accountEntryCount`
+          : sql`, NULL AS accountBalance, NULL AS accountEntryCount`;
       // SAFETY: the table name comes from a closed literal map (never input);
       // each alias lands in PartyAggregateRow before typing.
       const rows = (await db.all(sql`
@@ -1355,7 +1426,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                COUNT(i.id) AS invoiceCount,
                COALESCE(SUM(i.total_amount), 0) AS totalAmount,
                COALESCE(SUM(i.paid_amount), 0) AS paidAmount,
-               COALESCE(SUM(i.remaining_amount), 0) AS remainingAmount
+               COALESCE(SUM(i.remaining_amount), 0) AS remainingAmount${accountSelect}
         FROM ${sql.raw(PARTY_TABLES[role])} p
         LEFT JOIN invoices i ON i.counterparty_id = p.id AND i.kind = ${kind}
         GROUP BY p.id
@@ -1657,6 +1728,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     },
     // --- supplier account (issue 161) ----------------------------------------
     async insertSupplierEntry(entry: SupplierEntryInsert) {
+      assertAdjustmentDirection(entry.kind, entry.direction);
       const row = firstRowOf(
         await db
           .insert(supplierAccountEntries)
@@ -1665,6 +1737,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             supplierId: entry.supplierId,
             kind: entry.kind,
             amount: entry.amount,
+            direction: entry.direction ?? null,
             invoiceId: entry.invoiceId,
             method: entry.method ?? null,
             note: entry.note ?? null,
@@ -1951,7 +2024,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return Number(result.changes) > 0;
     },
     async getInvoiceDetail(invoiceId: string) {
-      const [invoice, lines, paymentsRows, creditRows, supplierCreditRows] = await Promise.all([
+      const [invoice, lines, paymentsRows, creditRows, supplierCreditRows, adjustmentRows] = await Promise.all([
         db.select(invoiceCols).from(invoices).where(eq(invoices.id, invoiceId)).limit(1),
         db.select(lineCols).from(invoiceLines).where(eq(invoiceLines.invoiceId, invoiceId)).orderBy(invoiceLines.id),
         db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
@@ -1969,6 +2042,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierReturns.debtReduction}), 0)` })
           .from(supplierReturns)
           .where(eq(supplierReturns.invoiceId, invoiceId)),
+        // an invoice-linked adjustment (تسوية, issue 176) reduces a PURCHASE
+        // invoice's remaining the same way a return does; without this the
+        // header would not add up (total − paid − remaining = returnCreditAmount)
+        db
+          .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierAccountEntries.amount}), 0)` })
+          .from(supplierAccountEntries)
+          .where(and(eq(supplierAccountEntries.invoiceId, invoiceId), eq(supplierAccountEntries.kind, "ADJUSTMENT"), eq(supplierAccountEntries.direction, "THEY_OWE"))),
       ]);
       const header = invoice[0];
       if (header === undefined) return undefined;
@@ -1983,7 +2063,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         ...normalizeInvoiceLegacy(header),
         lines: normalizedLines,
         payments: paymentsRows,
-        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0) + safeWhole(supplierCreditRows[0]?.credit ?? 0),
+        returnCreditAmount: safeWhole(creditRows[0]?.credit ?? 0) + safeWhole(supplierCreditRows[0]?.credit ?? 0) + safeWhole(adjustmentRows[0]?.credit ?? 0),
       } satisfies InvoiceDetail;
     },
     async getInvoiceLine(lineId: string) {
@@ -2061,7 +2141,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
                MIN(invoices.invoice_date) AS oldest_date,
                MAX(invoices.invoice_date) AS latest_date,
                CASE WHEN invoices.kind = 'PURCHASE' AND invoices.counterparty_id IS NOT NULL
-                 THEN COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+                 THEN COALESCE((SELECT SUM(${sql.raw(supplierSignedAmountSql("e"))})
                                 FROM supplier_account_entries e WHERE e.supplier_id = invoices.counterparty_id), 0)
                  ELSE NULL END AS account_balance
         FROM invoices
@@ -2099,7 +2179,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // balance are SQLite INTEGERs, the id/name/date columns TEXT.
       const creditOnly = (await db.all(sql`
         SELECT s.id AS counterparty_id, s.name AS counterparty_name,
-               COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+               COALESCE((SELECT SUM(${sql.raw(supplierSignedAmountSql("e"))})
                          FROM supplier_account_entries e WHERE e.supplier_id = s.id), 0) AS account_balance,
                (SELECT COUNT(*) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS invoice_count,
                (SELECT MIN(i.invoice_date) FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE') AS oldest_date,
@@ -2107,7 +2187,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         FROM suppliers s
         WHERE EXISTS (SELECT 1 FROM supplier_account_entries e WHERE e.supplier_id = s.id)
           AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.counterparty_id = s.id AND i.kind = 'PURCHASE' AND i.remaining_amount > 0)
-          AND COALESCE((SELECT SUM(CASE WHEN e.kind IN ('PURCHASE','REFUND') THEN e.amount ELSE -e.amount END)
+          AND COALESCE((SELECT SUM(${sql.raw(supplierSignedAmountSql("e"))})
                         FROM supplier_account_entries e WHERE e.supplier_id = s.id), 0) <> 0
       `)) as Array<{ counterparty_id: unknown; counterparty_name: unknown; account_balance: unknown; invoice_count: unknown; oldest_date: unknown; latest_date: unknown }>;
       for (const row of creditOnly) {
@@ -2136,7 +2216,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // The three money reads are the headline figures. If one of them cannot
       // be read the whole answer is unavailable, and the caller shows its error
       // state rather than a page of numbers it cannot vouch for.
-      const [salesRows, owedRows, weOweRows] = await Promise.all([
+      const [salesRows, owedRows, supplierLedgerRows, typedWeOweRows] = await Promise.all([
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.totalAmount}), 0)`, count: sql<number>`COUNT(*)` })
           .from(invoices)
@@ -2151,6 +2231,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
               sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
             ),
           ),
+        // "we owe" is the supplier NET account balance, exactly what /debts
+        // shows: a migrated opening balance with no invoice would otherwise be
+        // invisible on the dashboard (issue 176). The signed SUM spans every
+        // supplier, so a credit offsets a debt the same way the /debts group
+        // total does.
+        db.all(sql`SELECT COALESCE(SUM(${sql.raw(supplierSignedAmountSql("e"))}), 0) AS total FROM supplier_account_entries e`),
+        // typed-name purchases have no account; their unpaid remainder still
+        // counts (the invoice-based path ADR-0009 left untouched)
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)` })
           .from(invoices)
@@ -2158,7 +2246,8 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             and(
               eq(invoices.kind, "PURCHASE"),
               sql`${invoices.remainingAmount} > 0`,
-              sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
+              sql`${invoices.counterpartyId} IS NULL`,
+              sql`${invoices.counterpartyName} IS NOT NULL`,
             ),
           ),
       ]);
@@ -2195,7 +2284,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         salesTotal: Number(salesRows[0]?.total ?? 0),
         salesCount: Number(salesRows[0]?.count ?? 0),
         owedToUs: Number(owedRows[0]?.total ?? 0),
-        weOwe: Number(weOweRows[0]?.total ?? 0),
+        // SAFETY: the raw SELECT aliases one column `total` (a SQLite INTEGER),
+        // so the first row, when present, has that shape
+        weOwe: Number((supplierLedgerRows as Array<{ total: number }>)[0]?.total ?? 0) + Number(typedWeOweRows[0]?.total ?? 0),
         lowStockCount:
           lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
         lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,

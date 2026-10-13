@@ -573,6 +573,32 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
   });
 
+  it("abandons a pending save when an existing row changes before the lookup answers (review round 1 F1)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the owner fills an existing row while the lookup is running: the submit was
+    // for the previous batch, so it must not write a batch missing this row
+    await act(async () => {
+      typeIntoRow(1, "500");
+    });
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+  });
+
   it("lets a valid batch save after the typed name moves to another supplier (review round 1 finding 2)", async () => {
     resolveByKey.set(normalizeTextKey("مورد آخر"), { id: "s-9", name: "مورد آخر", accountEntryCount: 0 });
     render();

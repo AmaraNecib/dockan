@@ -106,11 +106,15 @@ export function SupplierOpeningBalancePage() {
   // destination and closes the confirmation (review round 1 finding 2)
   const resolveKey =
     typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
-      ? [newName.trim(), newDirection, typedAmount, occurredAt, reasonDraft.trim()].join("\u0000")
+      ? JSON.stringify([newName.trim(), newDirection, typedAmount, occurredAt, reasonDraft.trim()])
       : null;
   // the destination snapshot is only used while it belongs to the CURRENT lookup
   // fields, so a stale snapshot can never block a valid edited batch
   const typedDestination = typedResolution !== null && typedResolution.key === resolveKey ? typedResolution.supplier : null;
+  // the confirmation is stale the moment the typed row's lookup fields move (or a
+  // typed row appears while an existing-rows-only confirmation is open), so the
+  // dialog cannot act on an old snapshot for even one commit (review round 1 F3)
+  const confirmStale = typedResolution === null ? resolveKey !== null : typedResolution.key !== resolveKey;
   // guard: a typed name that folds onto a row the owner already picked must not be
   // sent (the same account twice). Folded names are a local, tie-break-free
   // check; the resolved id comes from the server. One function so the render-time
@@ -194,7 +198,15 @@ export function SupplierOpeningBalancePage() {
     return result.supplier;
   }
 
+  /** Any edit to the outgoing batch invalidates an in-flight submit: the lookup
+   * was for the previous batch, so a late answer must not write it. Synchronous,
+   * so it beats a already-queued resolve continuation (review round 1 F1/F2). */
+  function invalidateAttempt() {
+    attemptRef.current += 1;
+  }
+
   function setRow(supplierId: string, patch: Partial<RowDraft>) {
+    invalidateAttempt();
     setDrafts((current) => {
       const existing = current[supplierId] ?? { direction: "WE_OWE", amount: "" };
       return { ...current, [supplierId]: { ...existing, ...patch } };
@@ -250,7 +262,7 @@ export function SupplierOpeningBalancePage() {
         queryClient.invalidateQueries({ queryKey: INVOICES_LIST_QUERY_KEY }),
       ]);
       setSaved({ created: result.created, accounts: result.accounts });
-      closeConfirm();
+      if (mountedRef.current) closeConfirm();
     } catch (err) {
       // surface the refusal first; a failed re-resolve below is the more
       // actionable error and must not be overwritten
@@ -363,7 +375,10 @@ export function SupplierOpeningBalancePage() {
                 inputMode="numeric"
                 autoComplete="off"
                 value={dateDraft}
-                onChange={(event) => setDateDraft(event.target.value)}
+                onChange={(event) => {
+                  invalidateAttempt();
+                  setDateDraft(event.target.value);
+                }}
                 aria-invalid={dateInvalid}
                 data-testid="opening-balance-date"
               />
@@ -373,7 +388,10 @@ export function SupplierOpeningBalancePage() {
               <input
                 className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                 value={reasonDraft}
-                onChange={(event) => setReasonDraft(event.target.value)}
+                onChange={(event) => {
+                  invalidateAttempt();
+                  setReasonDraft(event.target.value);
+                }}
                 data-testid="opening-balance-reason"
               />
             </label>
@@ -452,7 +470,10 @@ export function SupplierOpeningBalancePage() {
                     <input
                       className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                       value={newName}
-                      onChange={(event) => setNewName(event.target.value)}
+                      onChange={(event) => {
+                        invalidateAttempt();
+                        setNewName(event.target.value);
+                      }}
                       maxLength={200}
                       placeholder={t("supplierOpeningNewRow")}
                       aria-label={t("supplierOpeningNewRow")}
@@ -467,7 +488,13 @@ export function SupplierOpeningBalancePage() {
                   </td>
                   <td className="p-2 text-muted-foreground">—</td>
                   <td className="p-2">
-                    <Select value={newDirection} onValueChange={(next) => setNewDirection(asDirection(next))}>
+                    <Select
+                      value={newDirection}
+                      onValueChange={(next) => {
+                        invalidateAttempt();
+                        setNewDirection(asDirection(next));
+                      }}
+                    >
                       <SelectTrigger className="w-28" data-testid="opening-balance-new-direction">
                         <SelectValue />
                       </SelectTrigger>
@@ -483,7 +510,10 @@ export function SupplierOpeningBalancePage() {
                       inputMode="numeric"
                       autoComplete="off"
                       value={newAmount}
-                      onChange={(event) => setNewAmount(event.target.value)}
+                      onChange={(event) => {
+                        invalidateAttempt();
+                        setNewAmount(event.target.value);
+                      }}
                       aria-label={t("supplierOpeningNewRow")}
                       data-testid="opening-balance-new-amount"
                     />
@@ -514,7 +544,7 @@ export function SupplierOpeningBalancePage() {
             </Button>
           </div>
 
-          {confirming && (
+          {confirming && !confirmStale && (
             <div className="rounded border border-warning/40 bg-warning/10 p-4" role="alertdialog" aria-label={t("supplierOpeningConfirmTitle")} data-testid="opening-balance-confirm">
               <p className="font-semibold">{t("supplierOpeningConfirmTitle")}</p>
               <p className="mt-1 text-sm">{t("supplierOpeningConfirmBody")}</p>

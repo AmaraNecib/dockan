@@ -58,3 +58,15 @@ Follow-ups from #176. The lessons the debate/test-audit/code-review caught:
    `saleDebt` / `settleAmountError` still parse digits-only re-creates the exact
    "same string, two numbers" bug. Move the field reader and every validator that
    reads the same draft, and keep quantities on the strict reader.
+
+9. **A confirmation gate derived from a stale client list must MOVE the draft, not
+   just re-send it.** The bulk opening-balance dialog confirmed rows by existing id;
+   when the typed supplier raced into existence the new-name row could not be
+   confirmed and the save silently dropped it. Resolve the typed name to the
+   existing supplier with the same `normalizeTextKey` fold the server uses and move
+   the amount+direction onto that row. Do the move BEFORE the confirmation (an
+   effect) and keep a synchronous fallback in the save, or a same-tick save can still
+   drop the row. Gate the effect on the name field being unfocused, or an owner
+   typing a new name that starts like an existing one loses the amount mid-word.
+   Removing the now-dead duplicate-name error also orphans its i18n key and testid;
+   delete them.

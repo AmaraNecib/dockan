@@ -346,4 +346,16 @@ describe("recordStockMovement", () => {
     expect(movements).toHaveLength(0);
     expect(stats.cacheWrites).toBe(0);
   });
+
+  it("reports an earlier movement's oversell before a later spec's missing item", async () => {
+    // the missing item must not pre-empt an earlier spec's refusal: a per-line
+    // loop would hit the first movement's oversell first, so the batch must too
+    const { tx } = fakeTx({ costPrice: 100 });
+    await expect(
+      recordStockMovements(tx, [
+        { itemId: "i1", kind: "SALE", delta: -1, occurredAt: "2020-01-01T10:00:00" },
+        { itemId: "absent", kind: "PURCHASE", delta: 1, occurredAt: "2020-01-01T10:00:00" },
+      ]),
+    ).rejects.toBeInstanceOf(StockLedgerError);
+  });
 });

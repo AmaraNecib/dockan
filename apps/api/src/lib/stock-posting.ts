@@ -105,7 +105,8 @@ export async function recordStockMovements(
   if (specs.length === 0) return [];
 
   // one item read and one history read per distinct item, no matter how many
-  // movements that item carries in this batch
+  // movements that item carries in this batch (one batched item read for the
+  // whole batch, then one history read per item)
   const itemIds = [...new Set(specs.map((spec) => spec.itemId))];
   const items = await tx.getItemsByIds(itemIds);
   const history = new Map<string, Array<StockMovement & { seq: number }>>();

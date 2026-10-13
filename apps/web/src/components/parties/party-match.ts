@@ -101,16 +101,16 @@ export function duplicateNameParty(name: string, phone: string | null, parties: 
   if (foldedKey === "") return undefined;
   const strictKey = normalizeTextKey(name);
   const canonical = normalizePartyPhone(phone);
-  let variant: PartyLike | undefined;
+  let variantMatch: PartyLike | undefined;
   for (const party of parties) {
     if (nameVariantKey(party.name) !== foldedKey) continue;
     const storedPhone = normalizePartyPhone(party.phone);
     if (canonical === null && storedPhone === null && normalizeTextKey(party.name) === strictKey) return undefined;
     if (canonical !== null && storedPhone === canonical) continue;
     if (normalizeTextKey(party.name) === strictKey) return party;
-    variant ??= party;
+    variantMatch ??= party;
   }
-  return variant;
+  return variantMatch;
 }
 
 /** The party that already owns a present phone (identity when present). */

@@ -171,13 +171,21 @@ describe("duplicateNameParty", () => {
     // a phone on the candidate keeps the exact record warnable: it differs
     expect(duplicateNameParty("علي علي", "0555123456", [exact, variant])?.id).toBe("exact");
     expect(duplicateNameParty("علي علي", "0555123456", [variant, exact])?.id).toBe("exact");
-    // when the exact record is skipped as one identity (shared phone), a
-    // differently spelled duplicate of it still warns
+  });
+
+  it("still warns about a differently spelled duplicate when the exact record is one identity", () => {
+    // the exact record shares the candidate's phone, so it is skipped as this
+    // identity — but the OTHER spelling is still a likely second debtor
     const exactPhone = party({ id: "exact-phone", name: "علي علي", phone: "+213555123456" });
+    const variantWithPhone = party({ id: "variant-phone", name: "على علي", phone: "+213555000999" });
     expect(duplicateNameParty("علي علي", "0555123456", [exactPhone, variantWithPhone])?.id).toBe("variant-phone");
-    // ...and with two variant spellings and no exact match, list order decides
-    // (documented): the candidate here differs from both by a separator
+  });
+
+  it("resolves several variant spellings by list order (documented)", () => {
+    const variant = party({ id: "variant", name: "على علي", phone: null });
     const hyphenVariant = party({ id: "hyphen-variant", name: "علي-علي", phone: "+213555000888" });
+    // the candidate differs from both by a separator, so neither is the exact
+    // spelling and the first folded match wins
     expect(duplicateNameParty("على-علي", null, [hyphenVariant, variant])?.id).toBe("hyphen-variant");
     expect(duplicateNameParty("على-علي", null, [variant, hyphenVariant])?.id).toBe("variant");
   });

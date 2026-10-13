@@ -189,17 +189,27 @@ None added; `foldArabicVariants` is already exported by `@dokan/contracts`.
 - **Exact phoneless record was skipped** (correctness, finding 1): with a
   phoneless «علي علي» AND a phoneless variant «على علي» stored, typing the exact
   spelling returned the **variant**, so the warning's one-click pick offered a
-  different debtor while `needsChoice` still allowed the click. The exact
-  phoneless spelling now short-circuits to no warning at all (that record is the
-  identity; `needsChoice` already refuses the typed-only name), and the variant
-  fallback cannot run. Regression test added, verified red before the fix.
+  different debtor while `needsChoice` still allowed the click. `duplicateNameParty`
+  is now a single pass that returns `undefined` as soon as a stored record is the
+  candidate's exact phoneless spelling — the identity case `needsChoice` already
+  refuses — so the variant fallback cannot run. A shared-phone record is skipped
+  individually instead, so a differently spelled duplicate of it still warns.
+  Regression tests: unit (both list orders, variant with and without a phone,
+  bidi/tashkeel-typed names, the candidate-with-a-phone counter-case), a
+  component test at the seam the bug crossed (no `picker-duplicate`, identity gate
+  still on), and an E2E step that seeds **both** phoneless spellings, types the
+  exact one, and asserts no warning. All three were verified red against the
+  pre-fix source (`14f0a0d`) and green after.
 - **E2E cleanup could skip saved customers** (finding 2): `parties-page-customer`
-  renders while `customersList` is still pending, so a zero row count was read as
-  "nothing to clean". The cleanup now arms the `customersList` RPC before
-  navigating and waits for the table-or-empty state.
+  renders while `customersList` is still pending and a DOM row count has no
+  auto-wait, so either could read a saved customer as absent. Presence now comes
+  from the **acked `customersList` payload** (`readCustomers()` helper), then the
+  row is asserted with `toHaveCount(1)` before it is deleted.
 - **The delete assertion proved the wrong thing** (finding 3): the success notice
   survives into the next dialog, so the cleanup could finish before the record
   was gone. Each deletion now awaits its own `customersDelete` acknowledgement and
-  asserts the **row disappears**.
+  asserts the **row disappears**; a final fresh `customersList` read asserts
+  neither name is left, which turns a silent skip or a failed write into a test
+  failure instead of shared-DB drift.
 - **Out of scope**: the CI failure on PR #189 was `receipts.spec.ts` (filed as
   #191), not this branch.

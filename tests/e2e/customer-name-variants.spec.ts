@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { actAndAck, rpcOutput } from "./rpc-helpers";
 
@@ -22,15 +22,7 @@ test.afterEach(async ({ page }) => {
   const names = cleanupPartyNames;
   cleanupPartyNames = [];
   if (names.length === 0) return;
-  // Presence comes from the ACKED `customersList` payload, not from the DOM:
-  // `parties-page-customer` renders while the query is still pending and a row
-  // count has no auto-wait, so either could read a saved customer as absent and
-  // skip it silently (#189 review).
-  const list = await rpcOutput<{ items: Array<{ name: string }> }>(
-    await actAndAck(page, "customersList", async () => {
-      await page.goto("/customers");
-    }),
-  );
+  const list = await readCustomers(page);
   for (const name of names) {
     if (!list.items.some((party) => party.name === name)) continue;
     await page.getByTestId("parties-search").fill(name);
@@ -47,11 +39,7 @@ test.afterEach(async ({ page }) => {
   // return either name. A write that failed behind an optimistic row removal,
   // or a name this hook skipped, fails the test here instead of leaking into
   // later specs' shared database (#189 review).
-  const after = await rpcOutput<{ items: Array<{ name: string }> }>(
-    await actAndAck(page, "customersList", async () => {
-      await page.goto("/customers");
-    }),
-  );
+  const after = await readCustomers(page);
   expect(after.items.filter((party) => names.includes(party.name)).map((party) => party.name)).toEqual([]);
 });
 
@@ -67,9 +55,7 @@ test("picker warns on an alef/ya name variant and still creates the second recor
   // 1. seed the stored spelling from the customers page (that form has no
   //    duplicate-name warning, so the picker below is what is under test). The
   //    list read is awaited first so nothing downstream races its own render.
-  await actAndAck(page, "customersList", async () => {
-    await page.goto("/customers");
-  });
+  await readCustomers(page);
   await page.getByTestId("party-new").click();
   await page.getByTestId("party-form-name").fill(storedName);
   await actAndAck(page, "customersCreate", () => page.getByTestId("party-form-save").click());
@@ -121,3 +107,20 @@ test("picker warns on an alef/ya name variant and still creates the second recor
   await expect(page.getByTestId("sale-customer-duplicate")).toHaveCount(0);
   await expect(page.getByTestId("sale-customer-create-save")).toBeEnabled();
 });
+
+/** The declared output of `customersList` that this spec reads. */
+type CustomerListPayload = { items: Array<{ name: string }> };
+
+/**
+ * Load /customers and return the ACKED list payload. Presence is taken from the
+ * payload, never from the DOM: `parties-page-customer` renders while the query
+ * is still pending and a row count has no auto-wait, so either could read a
+ * saved customer as absent and skip it silently (#189 review).
+ */
+async function readCustomers(page: Page): Promise<CustomerListPayload> {
+  return rpcOutput<CustomerListPayload>(
+    await actAndAck(page, "customersList", async () => {
+      await page.goto("/customers");
+    }),
+  );
+}

@@ -46,32 +46,34 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   }
 
   // 2. the owner's case: «اليوز» finds «ليوز» (article + bare alef), and the
-  //    unrelated item is not dragged in
+  //    unrelated item is not dragged in. The catalog search is a server read,
+  //    so every fill awaits its response too: a slow read under CI load must
+  //    not be mistaken for a missing match (issue 179).
   const search = page.getByTestId("catalog-search");
   const results = page.getByTestId("search-results");
   /** This spec's own result row; another spec's catalog can never satisfy or
    * break an assertion meant for the stamped item (issue 179). */
   const resultRow = (name: string) => results.getByText(name, { exact: true });
 
-  await search.fill("اليوز");
+  await actAndAck(page, "catalogSearch", () => search.fill("اليوز"));
   await expect(resultRow(lyousItem)).toBeVisible();
   await expect(resultRow(unrelatedItem)).toHaveCount(0);
 
   // 3. «احمد» finds «أحمد»; «مصطفي» finds «مصطفى»
-  await search.fill("احمد");
+  await actAndAck(page, "catalogSearch", () => search.fill("احمد"));
   await expect(resultRow(ahmedItem)).toBeVisible();
-  await search.fill("مصطفي");
+  await actAndAck(page, "catalogSearch", () => search.fill("مصطفي"));
   await expect(resultRow(mustafaItem)).toBeVisible();
 
   // 3b. typo tolerance is only a fallback: a one-letter slip still finds it
-  await search.fill("بطلرية");
+  await actAndAck(page, "catalogSearch", () => search.fill("بطلرية"));
   await expect(resultRow(batteryItem)).toBeVisible();
 
   // 3c. a short article-prefixed query still finds the article-prefixed name
   //     (Greptile round 1: the stem guard used to hide it). `batteryItem` is a
   //     fuzzy hit of the previous query and NOT a hit of «الب», so its absence
   //     proves the list belongs to the new query and not a stale render.
-  await search.fill("الب");
+  await actAndAck(page, "catalogSearch", () => search.fill("الب"));
   await expect(resultRow(articleItem)).toBeVisible();
   await expect(resultRow(batteryItem)).toHaveCount(0);
   await expect(resultRow(unrelatedItem)).toHaveCount(0);

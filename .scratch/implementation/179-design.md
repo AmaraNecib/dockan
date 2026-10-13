@@ -83,9 +83,12 @@ to get wrong.
    shows that server-issued number.
 2. **`tests/e2e/arabic-search.spec.ts`** — wrap every `itemsCreate` /
    `customersCreate` save in `actAndAck` so the search queries always run against
-   committed data. Scope each search assertion to the spec's own result row
-   (the `<li>`/row for the stamped name) rather than the aggregate list, so
-   another spec's data can never satisfy or break it.
+   committed data, and wrap every `catalogSearch` fill as well (the search is a
+   server read, so a slow read must not look like a missing match). Scope each
+   search assertion to the spec's own result row (the `<li>` for the stamped
+   name) rather than the aggregate list, so another spec's data can never
+   satisfy or break it. The parties search is client-side (`parties.tsx`
+   `filterParties`), so it has no RPC to acknowledge.
 
 No timeout increases, no app change, no `workers`/config change.
 
@@ -104,3 +107,10 @@ No timeout increases, no app change, no `workers`/config change.
   `expectRpcOk` failing on any non-2xx status with the status in the message.
 - The assertion-scoping must not weaken coverage — every negative assertion
   (`unrelatedItem`, `unrelatedParty`) is preserved.
+- **Cross-spec truncation (considered, accepted):** `catalogSearch` caps results
+  at `DEFAULT_CATALOG_LIMIT = 20`. The spec's stamped names are the only strict
+  matches for its fold queries in practice, and the `resultRow` assertions now
+  target the spec's own rows; the `batteryItem`-absent assertion additionally
+  proves the render is for the current query. The global `catalogSearch` contract
+  has no category filter, so no tighter scoping is expressible without an app
+  change, which the issue forbids for a test-only fix.

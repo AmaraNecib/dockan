@@ -1,13 +1,14 @@
 import { expect, type Page, type Response } from "@playwright/test";
 
 /**
- * Server-acknowledged writes (issue 179).
+ * Server-acknowledged RPCs (issue 179).
  *
  * Every oRPC procedure is POSTed to `/api/rpc/<procedure>` and answers
  * `{ json: <output> }` on success. A spec that must observe the effect of a
- * write awaits this acknowledgement instead of polling the UI inside
- * Playwright's default 5 s `expect` window: under CI load the write can land
- * after the poll has already given up even though nothing is broken.
+ * write — or the result of a server-side read it just triggered — awaits this
+ * acknowledgement instead of polling the UI inside Playwright's default 5 s
+ * `expect` window: under CI load the round-trip can land after the poll has
+ * already given up even though nothing is broken.
  */
 
 /** Resolve on the POST response for one procedure. Arm this BEFORE the click. */
@@ -26,8 +27,9 @@ export async function expectRpcOk(response: Promise<Response>, procedure: string
 }
 
 /**
- * Run `action` and return only after its write was accepted by the server.
- * Arm-then-act in one call so the wait can never be set up after the request.
+ * Run `action` and return only after the RPC it triggered was accepted by the
+ * server. Arm-then-act in one call so the wait can never be set up after the
+ * request.
  */
 export async function actAndAck(page: Page, procedure: string, action: () => Promise<void>): Promise<Response> {
   const ack = waitForRpc(page, procedure);

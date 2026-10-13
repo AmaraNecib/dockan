@@ -27,11 +27,6 @@ type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
  * back is narrowed here instead of asserting it. */
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
 
-/** #183 — the reads this screen owns. A write changes supplier identities and
- * accounts, so all three are refreshed; `suppliersList` is kept because other
- * screens still read the full list. */
-const SUPPLIER_READ_QUERY_KEYS = [orpc.suppliersListNames.queryKey(), orpc.suppliersAccountSummaries.queryKey(), orpc.suppliersList.queryKey()];
-
 /** A dismissal hung off a navigation gesture must fire only when the gesture
  * actually navigates THIS tab. A modified mouse activation (Ctrl/Cmd/Shift/Alt), a
  * non-primary button, or a link whose target is not this tab (e.g. `_blank`) sends
@@ -100,6 +95,11 @@ export function SupplierOpeningBalancePage() {
   const dismissalRef = useRef(0);
   const mountedRef = useRef(true);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
+  // #183 — the reads this screen owns. A write changes supplier identities and
+  // accounts, so all three are refreshed; `suppliersList` is kept because other
+  // screens still read the full list. Computed in the component (not at module
+  // load) so importing the page never depends on the full rpc surface existing.
+  const supplierReadQueryKeys = [orpc.suppliersListNames.queryKey(), orpc.suppliersAccountSummaries.queryKey(), orpc.suppliersList.queryKey()];
 
   // merge by id into the rows the table renders; a supplier with no account
   // entry is absent from the summary and defaults to 0/0, exactly as the list
@@ -346,7 +346,7 @@ export function SupplierOpeningBalancePage() {
         ],
       });
       await Promise.all([
-        ...SUPPLIER_READ_QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+        ...supplierReadQueryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
         queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
@@ -364,7 +364,7 @@ export function SupplierOpeningBalancePage() {
       // server for the destination, then re-open the dialog so what it names is
       // what the confirmed write will touch. Do this on the CONFIRMED path too.
       if (err instanceof Error && (err.message.includes("OPENING_BALANCE_EXISTS") || err.message.includes("OPENING_BALANCE_TARGET_CHANGED"))) {
-        await Promise.all(SUPPLIER_READ_QUERY_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
+        await Promise.all(supplierReadQueryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
         try {
           const destination = await resolveTypedDestination();
           if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey || dismissalRef.current !== saveDismissal) return;

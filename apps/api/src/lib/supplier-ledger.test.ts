@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  adjustmentDedupKey,
   allocateOldestFirst,
   availableSupplierCredit,
   deriveInvoicePaid,
@@ -9,6 +10,7 @@ import {
   supplierChargeEntryAmount,
   supplierEntrySign,
   supplierReturnSplit,
+  type AdjustmentDedupInput,
   type AllocatableInvoice,
 } from "./supplier-ledger";
 
@@ -195,5 +197,67 @@ describe("supplierReturnSplit", () => {
 
   it("is all credit when the named invoice is already settled", () => {
     expect(supplierReturnSplit(400, 0)).toEqual({ debtReduction: 0, credit: 400 });
+  });
+});
+
+describe("adjustmentDedupKey (issue 181)", () => {
+  const signature: AdjustmentDedupInput = {
+    supplierId: "sup-1",
+    direction: "WE_OWE",
+    amount: 500,
+    reason: "رصيد افتتاحي",
+    occurredAt: "2026-10-13T12:00:00",
+    invoiceId: null,
+  };
+
+  it("is stable for an identical signature", () => {
+    expect(adjustmentDedupKey(signature)).toBe(adjustmentDedupKey({ ...signature }));
+  });
+
+  it("is time-sensitive for a caller-supplied date and time-insensitive when server-stamped", () => {
+    expect(adjustmentDedupKey(signature)).not.toBe(adjustmentDedupKey({ ...signature, occurredAt: "2026-10-14T12:00:00" }));
+    // a retry of an omitted-date call is the same key at any fresh server clock
+    expect(adjustmentDedupKey({ ...signature, serverStamped: true })).toBe(
+      adjustmentDedupKey({ ...signature, serverStamped: true, occurredAt: "2099-01-01T00:00:00" }),
+    );
+  });
+
+  it("treats each signature column as its own dimension", () => {
+    const base = adjustmentDedupKey(signature);
+    expect(adjustmentDedupKey({ ...signature, amount: 501 })).not.toBe(base);
+    expect(adjustmentDedupKey({ ...signature, direction: "THEY_OWE" })).not.toBe(base);
+    expect(adjustmentDedupKey({ ...signature, reason: "تصحيح" })).not.toBe(base);
+    expect(adjustmentDedupKey({ ...signature, invoiceId: "inv-1" })).not.toBe(base);
+    expect(adjustmentDedupKey({ ...signature, supplierId: "sup-2" })).not.toBe(base);
+  });
+
+  it("distinguishes a null reason from an empty one (NULL-safe encoding)", () => {
+    expect(adjustmentDedupKey({ ...signature, reason: null })).not.toBe(adjustmentDedupKey({ ...signature, reason: "" }));
+  });
+
+  it("lets an explicit key win over the signature and over serverStamped", () => {
+    // the same key with a changed timestamp is still the SAME logical request
+    const first = adjustmentDedupKey({ ...signature, idempotencyKey: "key-1" });
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-1", occurredAt: "2026-10-14T12:00:00" })).toBe(first);
+    // ... even when the shape changes; the key is the whole contract
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-1", amount: 999, reason: "غير ذلك" })).toBe(first);
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-1", serverStamped: true })).toBe(first);
+    // a different key is a different request, and a key never collides with a signature
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "key-2" })).not.toBe(first);
+    expect(first).not.toBe(adjustmentDedupKey(signature));
+  });
+
+  it("trims the key and treats a blank one as absent", () => {
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "  key-1  " })).toBe(
+      adjustmentDedupKey({ ...signature, idempotencyKey: "key-1" }),
+    );
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "   " })).toBe(adjustmentDedupKey(signature));
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: null })).toBe(adjustmentDedupKey(signature));
+  });
+
+  it("scopes the key to the account", () => {
+    expect(adjustmentDedupKey({ ...signature, idempotencyKey: "same" })).not.toBe(
+      adjustmentDedupKey({ ...signature, supplierId: "sup-2", idempotencyKey: "same" }),
+    );
   });
 });

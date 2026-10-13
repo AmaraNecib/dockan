@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type {
   Activity,
   Category,
@@ -43,11 +43,15 @@ import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeText
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
-import { supplierBalance } from "../lib/supplier-ledger";
+import { adjustmentDedupKey, supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
+
+/** bun:sqlite surfaces a partial unique-index violation as this text. */
+const isUniqueViolation = (error: Error): boolean =>
+  error.message.includes("UNIQUE constraint failed") || error.message.includes("unique constraint");
 
 /**
  * The signed-amount SQL for one supplier-ledger alias. Kept in one place
@@ -878,6 +882,49 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     }
   };
 
+  /**
+   * Issue 181: the version-3 shape predates `supplier_account_entries.dedup_key`.
+   * CREATE TABLE IF NOT EXISTS cannot add it, so ALTER when missing (the barcode
+   * pattern). The ALTER and the backfill are ONE write-locked unit: a boot
+   * interrupted between them rolls back, so the next setup re-runs the pair
+   * instead of seeing the column and silently skipping the backfill.
+   *
+   * Backfill: every existing ADJUSTMENT row gets the time-inclusive #177
+   * signature key. The old shape did not store whether a row was server-stamped,
+   * so the conservative (most specific) key is used. A key already taken by an
+   * earlier row is left NULL: a pre-#177 duplicate cannot be re-keyed without
+   * failing the new unique index, and the guard's column fallback still matches
+   * it. Fresh databases get the column from SCHEMA_DDL and skip this entirely.
+   */
+  const ensureSupplierAdjustmentDedupKeyColumn = (): void => {
+    // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+    const rows = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
+    if (rows.length === 0 || rows.some((row) => row.name === "dedup_key")) return;
+    conn.raw.exec("BEGIN IMMEDIATE");
+    try {
+      conn.raw.exec("ALTER TABLE supplier_account_entries ADD COLUMN dedup_key TEXT");
+      // SAFETY: the SELECT names each column, so every row has exactly those
+      // fields with the supplier-ledger types (reason is the nullable note).
+      const adjustments = conn.raw
+        .query(
+          "SELECT id, supplier_id AS supplierId, direction, amount, note AS reason, invoice_id AS invoiceId, occurred_at AS occurredAt FROM supplier_account_entries WHERE kind = 'ADJUSTMENT' ORDER BY rowid",
+        )
+        .all() as Array<{ id: string; supplierId: string; direction: "WE_OWE" | "THEY_OWE"; amount: number; reason: string | null; invoiceId: string | null; occurredAt: string }>;
+      const used = new Set<string>();
+      const update = conn.raw.query("UPDATE supplier_account_entries SET dedup_key = ? WHERE id = ?");
+      for (const row of adjustments) {
+        const key = adjustmentDedupKey({ ...row, serverStamped: false });
+        if (used.has(key)) continue; // a legacy duplicate stays unkeyed (index-exempt)
+        used.add(key);
+        update.run(key, row.id);
+      }
+      conn.raw.exec("COMMIT");
+    } catch (error) {
+      conn.raw.exec("ROLLBACK");
+      throw error;
+    }
+  };
+
   /** Settlement columns (cashPaidOut / debtOffset) for databases that predate
    * the owner-approved cash/debt split. ALTER when missing (barcode pattern);
    * rows created before the split carry cash 0 + debt 0 + a real refund, which
@@ -1039,6 +1086,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     ensureItemsBarcodeColumn();
     ensureStockMovementsReturnMarkColumn();
     ensureSupplierAdjustmentDirectionColumn();
+    ensureSupplierAdjustmentDedupKeyColumn();
     ensureReturnsSettlementColumns();
     for (const ddl of SCHEMA_DDL) await db.run(sql.raw(ddl));
     ensureSaleColumns();
@@ -1216,8 +1264,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   };
 
   /** Raw append-only ledger insert. `insertSupplierEntry` and the #177 guarded
-   * adjustment path share it. The caller owns the surrounding unit. */
-  const insertEntryRow = async (entry: SupplierEntryInsert): Promise<SupplierAccountEntry> => {
+   * adjustment path share it. The caller owns the surrounding unit. `dedupKey`
+   * is set only for an ADJUSTMENT (the #181 partial unique index keys on it). */
+  const insertEntryRow = async (entry: SupplierEntryInsert, dedupKey: string | null = null): Promise<SupplierAccountEntry> => {
     const row = firstRowOf(
       await db
         .insert(supplierAccountEntries)
@@ -1231,6 +1280,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           method: entry.method ?? null,
           note: entry.note ?? null,
           ref: entry.ref ?? null,
+          dedupKey,
           occurredAt: entry.occurredAt,
           createdAt: now(),
         })
@@ -1250,8 +1300,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return Number(result.changes) > 0;
   };
 
-  /** The #177 idempotency key as a WHERE clause, so the guarded write and the
-   * opening-balance confirmation read the same signature. */
+  /** The #177 signature as a WHERE clause: the duplicate key when the caller
+   * sent no idempotency key, and the extra match a keyed request must also
+   * satisfy (see `hasSupplierAdjustment`). Kept in one place so the guarded
+   * write and the opening-balance confirmation cannot drift. */
   const adjustmentSignatureConditions = (input: SupplierAdjustmentSignature) => {
     const conditions = [
       eq(supplierAccountEntries.supplierId, input.supplierId),
@@ -1267,13 +1319,19 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return conditions;
   };
 
-  /** True when an ADJUSTMENT with this #177 signature already exists. */
+  /** True when an ADJUSTMENT with this key already exists. Without an explicit
+   * idempotency key the #177 signature decides (unchanged). With one the key is
+   * authoritative — it matches the stored `dedup_key` at any shape — and the
+   * signature is still consulted so a keyed retry of a request that was first
+   * sent unkeyed is also refused. */
   const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
-    const rows = await db
-      .select({ id: supplierAccountEntries.id })
-      .from(supplierAccountEntries)
-      .where(and(...adjustmentSignatureConditions(input)))
-      .limit(1);
+    const bySignature = and(...adjustmentSignatureConditions(input));
+    const idempotencyKey = input.idempotencyKey?.trim();
+    const where =
+      idempotencyKey === undefined || idempotencyKey === ""
+        ? bySignature
+        : or(eq(supplierAccountEntries.dedupKey, adjustmentDedupKey(input)), bySignature);
+    const rows = await db.select({ id: supplierAccountEntries.id }).from(supplierAccountEntries).where(where).limit(1);
     return rows[0] !== undefined;
   };
 
@@ -1871,9 +1929,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
      *   1. it must run inside the caller's write unit (BEGIN IMMEDIATE);
      *   2. the amount is re-validated (a non-contract caller must not invert the
      *      reduction with a negative or fractional amount);
-     *   3. the duplicate signature (supplier, direction, amount, reason,
-     *      invoiceId, occurredAt) is refused before any write — a retry cannot
-     *      double-post; a server-stamped timestamp is matched at any time;
+     *   3. the duplicate key is refused before any write — a retry cannot
+     *      double-post. When the caller sent an explicit `idempotencyKey` it is
+     *      the whole key; otherwise the #177 signature is, and a server-stamped
+     *      timestamp is matched at any time. The DB's partial unique index is the
+     *      cross-process backstop and its violation maps to the same DUPLICATE;
      *   4. a linked entry must be THEY_OWE;
      *   5. the linked invoice's conditional reduction runs before the entry is
      *      inserted, so the two can only commit together (the caller's unit rolls
@@ -1913,16 +1973,26 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         // below zero; the excess is refused, never silently moved to credit
         if (!applyDebtOffset(input.invoiceId, input.amount)) throw new SupplierAdjustmentError("EXCEEDS_REMAINING");
       }
-      return insertEntryRow({
-        supplierId: input.supplierId,
-        kind: "ADJUSTMENT",
-        direction: input.direction,
-        amount: input.amount,
-        invoiceId: input.invoiceId,
-        note: input.reason,
-        ref: input.ref ?? null,
-        occurredAt: input.occurredAt,
-      });
+      try {
+        return await insertEntryRow(
+          {
+            supplierId: input.supplierId,
+            kind: "ADJUSTMENT",
+            direction: input.direction,
+            amount: input.amount,
+            invoiceId: input.invoiceId,
+            note: input.reason,
+            ref: input.ref ?? null,
+            occurredAt: input.occurredAt,
+          },
+          adjustmentDedupKey(input),
+        );
+      } catch (error) {
+        // the partial unique index is the DB backstop for a writer that raced
+        // the guard above; report it as the same typed refusal the guard throws
+        if (error instanceof Error && isUniqueViolation(error)) throw new SupplierAdjustmentError("DUPLICATE");
+        throw error;
+      }
     },
     listSupplierEntries(supplierId: string) {
       return listEntries(supplierId);

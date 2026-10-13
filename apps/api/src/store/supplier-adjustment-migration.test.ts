@@ -7,6 +7,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { assertSchemaVersionSupported, readSchemaVersion, UnsupportedSchemaVersionError } from "../lib/schema-version";
+import { adjustmentDedupKey } from "../lib/supplier-ledger";
 import { createDrizzleStore } from "./drizzle-store";
 
 /**
@@ -70,8 +71,8 @@ function seedVersion2Database(dbPath: string): void {
   db.close();
 }
 
-describe("v2 -> v3 supplier-adjustment migration (issue 176, blocking)", () => {
-  it("adds the direction column, preserves rows, stamps 3, refuses a v2 build, and re-opens idempotently", async () => {
+describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", () => {
+  it("adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "v2.db");
     seedVersion2Database(dbPath);
@@ -79,13 +80,14 @@ describe("v2 -> v3 supplier-adjustment migration (issue 176, blocking)", () => {
     // 1. the new build opens the old database and migrates it forward
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(conn).setup();
-    expect(readSchemaVersion(conn.raw)).toBe(3);
+    expect(readSchemaVersion(conn.raw)).toBe(4);
 
-    // the additive column landed; the pre-existing row is untouched and its
+    // the additive columns landed; the pre-existing row is untouched and its
     // direction is null (correct for every non-ADJUSTMENT kind)
     // SAFETY: PRAGMA table_info returns one object with a string name per column
     const columns = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
     expect(columns.some((column) => column.name === "direction")).toBe(true);
+    expect(columns.some((column) => column.name === "dedup_key")).toBe(true);
     // SAFETY: the SELECT names kind/amount/direction, so the single row has
     // exactly those columns (kind/amount INTEGER or TEXT, direction nullable)
     const preserved = conn.raw
@@ -112,12 +114,107 @@ describe("v2 -> v3 supplier-adjustment migration (issue 176, blocking)", () => {
     await conn.close();
 
     // 4. re-opening runs the (idempotent) migrations again: no error, the
-    //    version stays 3 and no row is duplicated
+    //    version stays 4 and no row is duplicated
     const again = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(again).setup();
-    expect(readSchemaVersion(again.raw)).toBe(3);
+    expect(readSchemaVersion(again.raw)).toBe(4);
     // SAFETY: COUNT(*) returns one numeric row
     const count = again.raw.query("SELECT COUNT(*) AS count FROM supplier_account_entries").get() as { count: number };
     expect(count.count).toBe(2);
+  });
+});
+
+/**
+ * The exact shape a version-3 build wrote: the `direction` column is present,
+ * `dedup_key` is not, `PRAGMA user_version = 3`. The two identical ADJUSTMENT
+ * rows model a pre-#177 duplicate the backfill cannot key without breaking the
+ * new unique index.
+ */
+function seedVersion3Database(dbPath: string): void {
+  const db = new Database(dbPath, { create: true });
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("CREATE TABLE suppliers (id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, created_at TEXT NOT NULL)");
+  db.exec(
+    "CREATE TABLE supplier_account_entries (id TEXT PRIMARY KEY, supplier_id TEXT NOT NULL REFERENCES suppliers(id), kind TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), direction TEXT CHECK (direction IN ('WE_OWE','THEY_OWE') OR direction IS NULL), invoice_id TEXT, method TEXT, note TEXT, ref TEXT, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, CHECK (kind <> 'ADJUSTMENT' OR direction IS NOT NULL))",
+  );
+  db.query("INSERT INTO suppliers (id, name, phone, created_at) VALUES (?, ?, NULL, ?)").run("sup-1", "مورد v3", "2026-01-01T10:00:00");
+  const insert = db.query(
+    "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, occurred_at, created_at) VALUES (?, 'sup-1', ?, ?, ?, NULL, NULL, ?, NULL, ?, ?)",
+  );
+  insert.run("entry-1", "PURCHASE", 5000, null, null, "2026-01-01T10:00:00", "2026-01-01T10:00:00");
+  insert.run("entry-2", "ADJUSTMENT", 800, "WE_OWE", "رصيد افتتاحي", "2026-01-02T10:00:00", "2026-01-02T10:00:00");
+  // a pre-#177 duplicate of entry-2 (identical signature)
+  insert.run("entry-3", "ADJUSTMENT", 800, "WE_OWE", "رصيد افتتاحي", "2026-01-02T10:00:00", "2026-01-02T10:00:00");
+  insert.run("entry-4", "ADJUSTMENT", 300, "THEY_OWE", null, "2026-01-03T10:00:00", "2026-01-03T10:00:00");
+  db.exec("PRAGMA user_version = 3");
+  db.close();
+}
+
+describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => {
+  it("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently", async () => {
+    const dir = tempDir();
+    const dbPath = path.join(dir, "v3.db");
+    seedVersion3Database(dbPath);
+
+    // 1. the new build opens the old database and migrates it forward
+    const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
+    await createDrizzleStore(conn).setup();
+    expect(readSchemaVersion(conn.raw)).toBe(4);
+
+    // SAFETY: PRAGMA table_info returns one object with a string name per column
+    const columns = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "dedup_key")).toBe(true);
+
+    // 2. every row is preserved and keyed by its time-inclusive signature; the
+    //    pre-#177 duplicate is left NULL because the index must stay creatable
+    // SAFETY: the SELECT names id/kind/dedup_key, so each row has those columns
+    const rows = conn.raw.query("SELECT id, kind, dedup_key AS dedupKey FROM supplier_account_entries ORDER BY rowid").all() as Array<{ id: string; kind: string; dedupKey: string | null }>;
+    expect(rows.map((row) => row.id)).toEqual(["entry-1", "entry-2", "entry-3", "entry-4"]);
+    const expectedKey = adjustmentDedupKey({
+      supplierId: "sup-1",
+      direction: "WE_OWE",
+      amount: 800,
+      reason: "رصيد افتتاحي",
+      occurredAt: "2026-01-02T10:00:00",
+      invoiceId: null,
+      serverStamped: false,
+    });
+    expect(rows.find((row) => row.id === "entry-1")?.dedupKey).toBeNull();
+    expect(rows.find((row) => row.id === "entry-2")?.dedupKey).toBe(expectedKey);
+    expect(rows.find((row) => row.id === "entry-3")?.dedupKey).toBeNull();
+    expect(rows.find((row) => row.id === "entry-4")?.dedupKey).not.toBeNull();
+
+    // 3. the partial unique index exists on the key column
+    // SAFETY: PRAGMA index_list returns one object per index with these fields
+    const indexes = conn.raw.query("PRAGMA index_list(supplier_account_entries)").all() as Array<{ name: string; unique: number; partial: number }>;
+    const dedupIndex = indexes.find((index) => index.name === "idx_supplier_entries_dedup");
+    expect(dedupIndex?.unique).toBe(1);
+    expect(dedupIndex?.partial).toBe(1);
+    // SAFETY: PRAGMA index_info returns one object per column with a name
+    const indexColumns = conn.raw.query("PRAGMA index_info(idx_supplier_entries_dedup)").all() as Array<{ name: string }>;
+    expect(indexColumns.map((column) => column.name)).toEqual(["dedup_key"]);
+
+    // 4. the DB itself refuses a duplicate key, even when it bypasses the store
+    expect(() =>
+      conn.raw
+        .query(
+          "INSERT INTO supplier_account_entries (id, supplier_id, kind, amount, direction, invoice_id, method, note, ref, dedup_key, occurred_at, created_at) VALUES ('entry-5', 'sup-1', 'ADJUSTMENT', 800, 'WE_OWE', NULL, NULL, 'رصيد افتتاحي', NULL, ?, '2026-01-02T10:00:00', '2026-01-02T10:00:00')",
+        )
+        .run(expectedKey),
+    ).toThrow(/UNIQUE constraint failed/);
+
+    // 5. an older build cannot read this format: it has no dedup_key and would
+    //    insert the duplicate the index now forbids
+    expect(() => assertSchemaVersionSupported(conn.raw, 3)).toThrow(UnsupportedSchemaVersionError);
+    await conn.close();
+
+    // 6. re-opening runs the (idempotent) migrations again: no error, the
+    //    version stays 4, no row is duplicated and no key changes
+    const again = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
+    await createDrizzleStore(again).setup();
+    expect(readSchemaVersion(again.raw)).toBe(4);
+    // SAFETY: the SELECT names id/dedup_key, so each row has those columns
+    const after = again.raw.query("SELECT id, dedup_key AS dedupKey FROM supplier_account_entries ORDER BY rowid").all() as Array<{ id: string; dedupKey: string | null }>;
+    expect(after).toEqual(rows.map((row) => ({ id: row.id, dedupKey: row.dedupKey })));
   });
 });

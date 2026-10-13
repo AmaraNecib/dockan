@@ -49,6 +49,48 @@ export function availableSupplierCredit(balance: number): number {
   return Math.max(0, -balance);
 }
 
+/**
+ * #181 — one adjustment's dedup identity, shared by the guarded write, the
+ * duplicate guard, and the DB backfill so they can never drift. `idempotencyKey`
+ * is an explicit client key; when present it is the whole key (D2). Otherwise
+ * the key is the #177 signature, and `serverStamped` drops the timestamp from
+ * it because the server minted that timestamp and a retry cannot be told apart
+ * by time.
+ */
+export type AdjustmentDedupInput = {
+  supplierId: string;
+  direction: SupplierAdjustmentDirection;
+  amount: number;
+  reason: string | null;
+  occurredAt: string;
+  invoiceId: string | null;
+  /** #177 — true when the server stamped `occurredAt` because the caller omitted it */
+  serverStamped?: boolean;
+  /** #181 — an explicit client idempotency key; when present it wins over the signature */
+  idempotencyKey?: string | null;
+};
+
+/**
+ * The canonical dedup key of a manual adjustment. JSON encodes the tuple, so a
+ * null column and an empty string stay distinct and no caller text can forge a
+ * separator; the `key:` / `sig:` prefixes keep the two namespaces apart. A key
+ * is scoped to the account, exactly like the signature is.
+ */
+export function adjustmentDedupKey(input: AdjustmentDedupInput): string {
+  const idempotencyKey = input.idempotencyKey?.trim();
+  if (idempotencyKey !== undefined && idempotencyKey !== "") {
+    return `key:${JSON.stringify([input.supplierId, idempotencyKey])}`;
+  }
+  return `sig:${JSON.stringify([
+    input.supplierId,
+    input.direction,
+    input.amount,
+    input.reason,
+    input.invoiceId,
+    input.serverStamped === true ? null : input.occurredAt,
+  ])}`;
+}
+
 /** The charge a purchase opens on the supplier account, or null when the
  * invoice is free: the ledger's `CHECK (amount > 0)` would reject a zero-value
  * entry, and a free purchase still must save with its stock intake. */

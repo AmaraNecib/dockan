@@ -4,6 +4,15 @@
 
 Follow-ups from #176. The lessons the debate/test-audit/code-review caught:
 
+0. **An idempotency key that includes a server-minted id is defeated by the very
+   retry it targets.** The opening-balance signature was keyed on `supplierId`,
+   but a lost-response resend of a `newSupplierName` batch ran `createParty`
+   again, minting a fresh id — so the dedup never saw the first entry and the
+   balance doubled. Resolve a typed name to the existing supplier (same
+   `normalizeTextKey` fold the picker uses) BEFORE creating one. When duplicate
+   names already exist, prefer the entry-carrying row deterministically. Test the
+   retry with the response thrown away, not just the happy path.
+
 1. **A retry guard keyed on a server-stamped timestamp does not guard retries.**
    `occurredAt ?? localDateTime()` gives each request a fresh second, so an
    omitted-date retry never matches. When the signature must include the

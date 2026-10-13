@@ -18,9 +18,11 @@ import type { Database } from "bun:sqlite";
  *
  * Version 4 (issue 181): the `supplier_account_entries.dedup_key` column and
  * its partial unique index — the DB backstop for the #177 adjustment dedup, plus
- * the explicit client idempotency key. A version-3 build has no `dedup_key` and
- * would happily insert the duplicate signature the new unique index forbids, so
- * it MUST refuse the version-4 database (ADR-0008 §4.5).
+ * the explicit client idempotency key. A version-3 build does not know the
+ * column, so it writes every new ADJUSTMENT with a NULL `dedup_key`, which the
+ * partial index exempts: those rows silently escape the new dedup, and the v4
+ * backfill never re-keys them (it runs only when the column is missing). It MUST
+ * therefore refuse the version-4 database (ADR-0008 §4.5).
  */
 export const CURRENT_SCHEMA_VERSION = 4;
 

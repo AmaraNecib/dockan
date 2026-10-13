@@ -507,4 +507,16 @@ describe("supplier account store", () => {
     const indexes = conn.raw.query("PRAGMA index_list(supplier_account_entries)").all() as Array<{ name: string; unique: number; partial: number }>;
     expect(indexes.find((index) => index.name === "idx_supplier_entries_dedup")).toMatchObject({ unique: 1, partial: 1 });
   });
+
+  it("keys an account-only adjustment written through the raw entry seam (issue 181)", async () => {
+    const supplier = await makeSupplier("مورد خام مفتاح");
+    const entry = { supplierId: supplier.id, kind: "ADJUSTMENT" as const, direction: "WE_OWE" as const, amount: 100, invoiceId: null, occurredAt: "2026-10-13T12:00:00" };
+    const first = await store.insertSupplierEntry(entry);
+    // the raw seam now carries the canonical key, so the DB index dedupes it too
+    await expect(store.insertSupplierEntry(entry)).rejects.toThrow(/DUPLICATE/);
+    // SAFETY: the SELECT names dedup_key, so the row has that nullable column
+    const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = ?").get(first.id) as { dedupKey: string | null };
+    expect(row.dedupKey).not.toBeNull();
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
 });

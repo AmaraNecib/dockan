@@ -49,9 +49,14 @@ import { stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 
-/** bun:sqlite surfaces a partial unique-index violation as this text. */
-const isUniqueViolation = (error: Error): boolean =>
-  error.message.includes("UNIQUE constraint failed") || error.message.includes("unique constraint");
+/** bun:sqlite surfaces a partial unique-index violation as this text (some
+ * drivers expose the SQLite code instead of embedding it in the message). */
+const isUniqueViolation = (error: Error): boolean => {
+  if (error.message.includes("UNIQUE constraint failed")) return true;
+  // SAFETY: read-only probe of a driver-specific optional field; the value is
+  // only compared to a literal and never used as another type
+  return (error as Error & { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE";
+};
 
 /**
  * The signed-amount SQL for one supplier-ledger alias. Kept in one place
@@ -1327,10 +1332,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
     const bySignature = and(...adjustmentSignatureConditions(input));
     const idempotencyKey = input.idempotencyKey?.trim();
-    const where =
-      idempotencyKey === undefined || idempotencyKey === ""
-        ? bySignature
-        : or(eq(supplierAccountEntries.dedupKey, adjustmentDedupKey(input)), bySignature);
+    // the keyed arm carries the kind predicate too: only an ADJUSTMENT row can
+    // hold an adjustment key, and a future kind must not match across kinds
+    const keyed = and(
+      eq(supplierAccountEntries.kind, "ADJUSTMENT"),
+      eq(supplierAccountEntries.dedupKey, adjustmentDedupKey(input)),
+    );
+    const where = idempotencyKey === undefined || idempotencyKey === "" ? bySignature : or(keyed, bySignature);
     const rows = await db.select({ id: supplierAccountEntries.id }).from(supplierAccountEntries).where(where).limit(1);
     return rows[0] !== undefined;
   };
@@ -1922,7 +1930,29 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (entry.kind === "ADJUSTMENT" && entry.invoiceId !== null) {
         throw new SupplierAdjustmentError("LINKED_NEEDS_ATOMIC_PATH");
       }
-      return insertEntryRow(entry);
+      // #181 — an account-only ADJUSTMENT still carries the canonical dedup key,
+      // so the raw seam is covered by the partial unique index too. A raw caller
+      // has no server-stamped flag, so the time-inclusive signature is used (the
+      // same choice the v4 backfill makes).
+      const dedupKey =
+        entry.kind === "ADJUSTMENT"
+          ? adjustmentDedupKey({
+              supplierId: entry.supplierId,
+              // SAFETY: assertAdjustmentDirection above has proven the direction
+              // for an ADJUSTMENT, so the cast cannot smuggle a null into the key
+              direction: entry.direction as SupplierAdjustmentDirection,
+              amount: entry.amount,
+              reason: entry.note ?? null,
+              occurredAt: entry.occurredAt,
+              invoiceId: entry.invoiceId,
+            })
+          : null;
+      try {
+        return await insertEntryRow(entry, dedupKey);
+      } catch (error) {
+        if (entry.kind === "ADJUSTMENT" && error instanceof Error && isUniqueViolation(error)) throw new SupplierAdjustmentError("DUPLICATE");
+        throw error;
+      }
     },
     /**
      * #177 — the one guarded write path for a manual adjustment. In order:

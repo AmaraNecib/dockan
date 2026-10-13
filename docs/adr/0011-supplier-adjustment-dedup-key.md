@@ -49,8 +49,11 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   existing `ADJUSTMENT` rows are backfilled with the time-inclusive signature key,
   and a pre-#177 duplicate (two rows with one signature) keeps a `NULL` key so the
   index stays creatable and the duplicate is preserved. Re-opening is idempotent.
-- A version-3 build has no `dedup_key` and would write the duplicates the index
-  forbids, so it MUST refuse the version-4 database (ADR-0008 §4.5).
+- A version-3 build does not know the column, so it writes each new ADJUSTMENT
+  with a NULL `dedup_key` — exempt from the partial index and never re-keyed (the
+  v4 backfill runs only when the column is missing). Those rows would silently
+  escape the new dedup, so a version-3 build MUST refuse the version-4 database
+  (ADR-0008 §4.5).
 - A stamped request and an explicit request are now different requests (the key
   encodes the request shape); this narrows, not widens, what is refused, and no
   caller that retries changes shape between attempts.

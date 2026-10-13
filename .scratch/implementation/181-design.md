@@ -182,8 +182,11 @@ no new Playwright flow; the full existing suite still runs as a gate.
   invoice differ; NULL-safe (null note vs note "" differ).
 - `store/supplier-account-store.test.ts`: a keyed insert then a same-key insert
   with a **different** `occurredAt` is `DUPLICATE`; a same-signature different-key
-  insert is allowed; the `dedup_key` column is written; the unique index exists
-  and a raw duplicate `dedup_key` INSERT is refused at the DB level.
+  insert is still `DUPLICATE` (the key cannot weaken the signature); a different
+  key with a different signature is allowed; the `dedup_key` column is written;
+  the unique index exists and a raw duplicate `dedup_key` INSERT is refused at
+  the DB level; the raw `insertSupplierEntry` seam keys an account-only
+  adjustment too.
 - `store/supplier-adjustment-migration.test.ts`: the blocking v3→v4 test (add
   column, preserve + key rows, leave a duplicate unkeyed, stamp 4, v3 build
   refuses, reopen idempotent) plus the index rejecting a duplicate.

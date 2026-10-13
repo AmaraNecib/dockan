@@ -26,11 +26,15 @@ export function SupplierReturnPanel({
   supplierId,
   invoices,
   onDone,
+  onWriteFailed,
   onCancel,
 }: {
   supplierId: string;
   invoices: readonly Invoice[];
   onDone: () => void;
+  /** #174 round 1 — a failed (possibly lost-response) call may still have
+   * written a row, so the caller must refresh the derived tab reads. */
+  onWriteFailed?: () => void;
   onCancel: () => void;
 }) {
   const { t } = useTranslation();
@@ -112,6 +116,7 @@ export function SupplierReturnPanel({
       onDone();
     } catch (err) {
       setError(tError(err instanceof Error ? err.message : undefined));
+      onWriteFailed?.();
     } finally {
       setSubmitting(false);
     }

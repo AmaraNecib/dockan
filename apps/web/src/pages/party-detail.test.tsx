@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import "../lib/i18n";
 
-import type { Invoice, PartyDetail } from "@dokan/contracts";
+import type { Invoice, PartyDetail, SupplierAccountEntry } from "@dokan/contracts";
 
 import { routerMock } from "../tests/router-mock";
 
@@ -28,6 +28,8 @@ let invoiceTabCalls = 0;
 let supplierEntriesCalls = 0;
 /** #174 round 1 — supplier pay mutations the account panel sent */
 let supplierPayCalls = 0;
+/** when > 0, the next suppliersPay call rejects */
+let failSupplierPay = 0;
 let detailGate: Promise<void> | null = null;
 let releaseDetailGate: (() => void) | null = null;
 let partyDetail: PartyDetail;
@@ -71,6 +73,47 @@ function makeDetail(invoices: Invoice[]): PartyDetail {
     payments: [],
     account: null,
   };
+}
+
+/** One signed supplier-account entry, shaped for the payments tab. */
+function supplierEntry(over: Partial<SupplierAccountEntry> = {}): SupplierAccountEntry {
+  return {
+    id: "e1",
+    supplierId: PARTY_ID,
+    kind: "PURCHASE",
+    amount: 1_000,
+    invoiceId: "pur",
+    invoiceNumber: "INV-0001",
+    direction: null,
+    method: null,
+    note: null,
+    ref: null,
+    occurredAt: "2026-09-01T10:00:00",
+    createdAt: "2026-09-01T10:00:00",
+    ...over,
+  };
+}
+
+/** A supplier with one unpaid purchase and one ledger entry. */
+function makeSupplierDetail(): PartyDetail {
+  return {
+    party: { id: PARTY_ID, name: "مورد الاختبار", phone: null, createdAt: "2026-09-01T10:00:00" },
+    stats: { invoiceCount: 1, totalAmount: 1_000, paidAmount: 0, remainingAmount: 1_000 },
+    invoices: [invoice({ id: "pur", invoiceNumber: "INV-0001", kind: "PURCHASE", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })],
+    payments: [],
+    account: { balance: 1_000, entries: [supplierEntry()] },
+  };
+}
+
+/** The one server-write rule both pay mocks share: reduce remaining, add paid,
+ * recompute the derived stats. */
+function applyPayment(invoiceId: string, amount: number): void {
+  const invoices = partyDetail.invoices.map((entry) =>
+    entry.id === invoiceId
+      ? { ...entry, paidAmount: entry.paidAmount + amount, remainingAmount: entry.remainingAmount - amount }
+      : entry,
+  );
+  partyDetail = { ...partyDetail, invoices, stats: statsOf(invoices) };
 }
 
 // The page mounts the router Link and reads the partyId from the route.
@@ -139,15 +182,9 @@ mock.module("@/lib/rpc", () => ({
           const target = partyDetail.invoices.find((entry) => entry.id === input.invoiceId);
           if (target === undefined) throw new Error("INVOICE_NOT_FOUND");
           if (input.amount > target.remainingAmount) throw new Error("PAYMENT_EXCEEDS_REMAINING");
-          const invoices = partyDetail.invoices.map((entry) =>
-            entry.id === input.invoiceId
-              ? { ...entry, paidAmount: entry.paidAmount + input.amount, remainingAmount: entry.remainingAmount - input.amount }
-              : entry,
-          );
+          applyPayment(input.invoiceId, input.amount);
           partyDetail = {
             ...partyDetail,
-            invoices,
-            stats: statsOf(invoices),
             payments: [
               ...partyDetail.payments,
               {
@@ -174,12 +211,9 @@ mock.module("@/lib/rpc", () => ({
         ...options,
         mutationFn: async (input: { supplierId: string; amount: number }) => {
           supplierPayCalls += 1;
-          const invoices = partyDetail.invoices.map((entry) => ({
-            ...entry,
-            paidAmount: entry.paidAmount + Math.min(input.amount, entry.remainingAmount),
-            remainingAmount: Math.max(0, entry.remainingAmount - input.amount),
-          }));
-          partyDetail = { ...partyDetail, invoices, stats: statsOf(invoices) };
+          if (failSupplierPay > 0) throw new Error("PAYMENT_FAILED");
+          const target = partyDetail.invoices.find((entry) => entry.remainingAmount > 0);
+          if (target !== undefined) applyPayment(target.id, Math.min(input.amount, target.remainingAmount));
           return { balance: 0, entries: partyDetail.account?.entries ?? [] };
         },
       }),
@@ -209,6 +243,7 @@ beforeEach(() => {
   invoiceTabCalls = 0;
   supplierEntriesCalls = 0;
   supplierPayCalls = 0;
+  failSupplierPay = 0;
   detailGate = null;
   releaseDetailGate = null;
 });
@@ -716,27 +751,7 @@ describe("CustomerSettlePanel reference-change relink (#171)", () => {
  */
 describe("supplier action refreshes the entries tab (#174 round 1)", () => {
   it("re-reads the paged supplier entries after a successful pay", async () => {
-    const entry = {
-      id: "e1",
-      supplierId: PARTY_ID,
-      kind: "PURCHASE" as const,
-      amount: 1_000,
-      invoiceId: "pur",
-      invoiceNumber: "INV-0001",
-      direction: null,
-      method: null,
-      note: null,
-      ref: null,
-      occurredAt: "2026-09-01T10:00:00",
-      createdAt: "2026-09-01T10:00:00",
-    };
-    partyDetail = {
-      party: { id: PARTY_ID, name: "مورد الاختبار", phone: null, createdAt: "2026-09-01T10:00:00" },
-      stats: { invoiceCount: 1, totalAmount: 1_000, paidAmount: 0, remainingAmount: 1_000 },
-      invoices: [invoice({ id: "pur", invoiceNumber: "INV-0001", kind: "PURCHASE", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })],
-      payments: [],
-      account: { balance: 1_000, entries: [entry] },
-    };
+    partyDetail = makeSupplierDetail();
     await renderSupplier();
     click("party-tab-payments");
     await waitFor(() => host.querySelectorAll('[data-testid="supplier-account-row"]').length === 1);
@@ -749,5 +764,21 @@ describe("supplier action refreshes the entries tab (#174 round 1)", () => {
     // onDone invalidates the paged supplier-entries key, so the tab re-reads
     await waitFor(() => supplierEntriesCalls > before);
     expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم تسجيل الدفعة");
+  });
+
+  it("re-reads the paged supplier entries when a supplier pay fails", async () => {
+    partyDetail = makeSupplierDetail();
+    await renderSupplier();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="supplier-account-row"]').length === 1);
+    const before = supplierEntriesCalls;
+
+    failSupplierPay = 1;
+    click("supplier-action-pay");
+    click("supplier-pay-confirm");
+    await flushAsync();
+    // a rejection may still hide a committed write: the failure path must
+    // invalidate the paged supplier-entries key, not only the success path
+    await waitFor(() => supplierEntriesCalls > before);
   });
 });

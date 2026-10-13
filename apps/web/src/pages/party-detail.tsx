@@ -216,6 +216,16 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
     void queryClient.invalidateQueries({ queryKey: SUPPLIER_ENTRIES_QUERY_KEY });
   }
 
+  /** #174 round 1 — a party write that reported failure may still have landed
+   * (an earlier invoice in the batch, or a lost response). The party detail and
+   * the paged tabs carry different keys, so refresh both. */
+  function refreshAfterWriteFailure() {
+    void queryClient.invalidateQueries({
+      queryKey: role === "customer" ? orpc.customersGet.queryKey({ input: { id: partyId } }) : orpc.suppliersGet.queryKey({ input: { id: partyId } }),
+    });
+    refreshTabQueries();
+  }
+
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");
 
   function onTabKeyDown(event: React.KeyboardEvent, index: number) {
@@ -311,6 +321,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       balance={account.balance}
                       invoices={detail.data.invoices}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierPayRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -319,6 +330,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       supplierId={partyId}
                       invoices={detail.data.invoices}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -329,6 +341,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       balance={account.balance}
                       invoices={detail.data.invoices}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierAdjustRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -337,6 +350,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                       supplierId={partyId}
                       availableCredit={Math.max(0, -account.balance)}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierRefundRecorded")); }}
+                      onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}
                     />
                   )}
@@ -403,7 +417,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   unpaid={unpaidAmount}
                   onDone={() => { refreshTabQueries(); setSettleOpen(false); setNotice(t("partySettleRecorded")); }}
                   // a failed settle may still have written rows: refresh the tabs too
-                  onWriteFailed={refreshTabQueries}
+                  onWriteFailed={refreshAfterWriteFailure}
                   onCancel={() => setSettleOpen(false)}
                 />
               </div>

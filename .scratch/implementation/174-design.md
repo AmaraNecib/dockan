@@ -193,15 +193,20 @@ The paged tab queries were refreshed only through each panel's `onDone`, which
 refreshes only `customersGet`, so `partyInvoices` / `partyPayments` kept stale
 data: a paid invoice still showed unpaid and its payment was missing.
 
-`CustomerSettlePanel` now takes an optional `onWriteFailed` callback, invoked
+`CustomerSettlePanel` now takes a required `onWriteFailed` callback, invoked
 when the per-invoice batch does not finish cleanly (whether an earlier invoice
-landed, or a write committed while the response was lost); the page wires it to
-`refreshTabQueries`. The call is unconditional on failure because a rejection
-can also hide a committed write. The all-success path is unchanged (`onDone`).
+landed, or a write committed while the response was lost). The call is
+unconditional on failure because a rejection can also hide a committed write.
+The all-success path is unchanged (`onDone`). The four supplier panels
+(`SupplierPay` / `Return` / `Adjust` / `Refund`) take the same optional callback
+for their failure paths. The page wires all of them to
+`refreshAfterWriteFailure`, which invalidates the party detail read and the
+paged tabs (they carry different keys).
 
 Class check across the tabs: the party-invoices and party-payments tabs are
-affected by the settle loop (fixed). The supplier-entries tab is written by
-single atomic RPC calls (`suppliersPay` with `OLDEST` allocates inside one
+written by the settle loop, which can stop mid-batch (fixed). The
+supplier-entries tab is written by single atomic
+RPC calls (`suppliersPay` with `OLDEST` allocates inside one
 `withTransactionImmediate`; `suppliersReturn` / `suppliersAdjust` /
-`suppliersRefund` are one call each), so they have no partial-write path and no
-stale-refresh class.
+`suppliersRefund` are one call each), so it has no mid-batch path; its panels'
+failure paths still refresh the tab keys to cover a committed-but-lost response.

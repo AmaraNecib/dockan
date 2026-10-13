@@ -108,6 +108,11 @@ export function SupplierOpeningBalancePage() {
   }, [namesQuery.data, accountsQuery.data]);
   const listPending = namesQuery.isPending || accountsQuery.isPending;
   const listError = namesQuery.isError ? namesQuery.error : accountsQuery.isError ? accountsQuery.error : null;
+  // #183 — a failed read must block the save. If only the account summary fails,
+  // the merge would still yield rows with accountEntryCount 0, silently skipping
+  // the confirmation gate the full list used to power; the base page blocked
+  // because its empty list made the batch look empty. Refuse explicitly.
+  const listFailed = listError !== null;
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
 
@@ -332,6 +337,8 @@ export function SupplierOpeningBalancePage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: orpc.suppliersListNames.queryKey() }),
         queryClient.invalidateQueries({ queryKey: orpc.suppliersAccountSummaries.queryKey() }),
+        // the write changes supplier accounts; other screens still read the full list
+        queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() }),
         queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
@@ -376,7 +383,7 @@ export function SupplierOpeningBalancePage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting || resolvingRef.current || bulk.isPending || dateInvalid) return;
+    if (submitting || resolvingRef.current || bulk.isPending || dateInvalid || listFailed) return;
     if (blockedReason !== null) {
       setError(blockedReason);
       return;
@@ -643,7 +650,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">

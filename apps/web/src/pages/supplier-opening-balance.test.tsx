@@ -43,6 +43,10 @@ const BASE_SUPPLIERS = [
   { id: "s-3", name: "مورد رصيد سالب", accountBalance: -300, accountEntryCount: 1 },
 ];
 let suppliers = BASE_SUPPLIERS;
+/** #183 — set when the page reads the full party list; it must never do so. */
+let suppliersListUsed = false;
+/** when true, the account summary read rejects */
+let accountsShouldFail = false;
 /** when true, the next resolve rejects (a failed read) */
 let resolveFails = false;
 /** count of resolve calls, to assert a no-op path never asks the server */
@@ -62,9 +66,17 @@ let releaseMutationHold: (() => void) | null = null;
 // #183 — the page reads two lean seams: names-only (the conflict-check list)
 // and the supplier account summary (the balance/entry columns). The mock mirrors
 // the server: the summary omits suppliers with no entry, and the page defaults
-// a missing id to 0/0.
+// a missing id to 0/0. The full `suppliersList` seam is still mocked, but only to
+// prove the page never touches it.
 mock.module("@/lib/rpc", () => ({
   orpc: {
+    suppliersList: {
+      queryOptions: () => {
+        suppliersListUsed = true;
+        return { queryKey: ["suppliersList"], queryFn: async () => ({ items: suppliers }) };
+      },
+      queryKey: () => ["suppliersList"],
+    },
     suppliersListNames: {
       queryOptions: () => ({ queryKey: ["suppliersListNames"], queryFn: async () => ({ items: suppliers.map(({ id, name }) => ({ id, name })) }) }),
       queryKey: () => ["suppliersListNames"],
@@ -72,9 +84,10 @@ mock.module("@/lib/rpc", () => ({
     suppliersAccountSummaries: {
       queryOptions: () => ({
         queryKey: ["suppliersAccountSummaries"],
-        queryFn: async () => ({
-          items: suppliers.filter((supplier) => supplier.accountEntryCount > 0).map(({ id, accountBalance, accountEntryCount }) => ({ id, accountBalance, accountEntryCount })),
-        }),
+        queryFn: async () => {
+          if (accountsShouldFail) throw new Error("ACCOUNT_SUMMARY_FAILED");
+          return { items: suppliers.filter((supplier) => supplier.accountEntryCount > 0).map(({ id, accountBalance, accountEntryCount }) => ({ id, accountBalance, accountEntryCount })) };
+        },
       }),
       queryKey: () => ["suppliersAccountSummaries"],
     },
@@ -141,6 +154,8 @@ beforeEach(() => {
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
   racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
+  suppliersListUsed = false;
+  accountsShouldFail = false;
   queryClient = null;
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -1114,6 +1129,24 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  it("never loads the full party list — the conflict check rides the names-only seam (#183)", async () => {
+    render();
+    await settle();
+    expect(suppliersListUsed).toBe(false);
+    // the table rendered from the two lean reads
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')).toHaveLength(BASE_SUPPLIERS.length);
+  });
+
+  it("blocks the save when the account summary fails instead of skipping the confirmation gate (#183)", async () => {
+    accountsShouldFail = true;
+    render();
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    clickOn("opening-balance-save");
+    expect(captured).toBeNull();
+  });
+
   it("folds a typed name onto an existing supplier from the names-only list (#183)", async () => {
     render();
     await settle();
@@ -1272,6 +1305,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // page can recover instead of repeating the same refusal forever
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
+    // the write changes supplier accounts, so the full list other screens read is still refreshed
+    expect(keys).toContain(JSON.stringify(["suppliersList"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
   });
 

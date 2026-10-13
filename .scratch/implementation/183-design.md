@@ -39,8 +39,9 @@ check a **names-only** seam:
 ### Store (`apps/api/src/store/`)
 
 - `port.ts`
-  - `export type PartyName = { id: string; name: string }`
-  - `export type SupplierAccountSummary = { id: string; accountBalance: number; accountEntryCount: number }`
+  - `PartyName` and `SupplierAccountSummary` are the contract types
+    (`packages/contracts/src/core.ts`), imported and re-exported by the store port
+    rather than re-declared, so the wire and the port cannot drift.
   - `listPartyNames(role: PartyRole): Promise<PartyName[]>` — `SELECT id, name
     FROM <party table> ORDER BY name`. No invoices, no aggregates, no phone.
   - `listSupplierAccountSummaries(): Promise<SupplierAccountSummary[]>` —
@@ -72,7 +73,13 @@ Two read-only handlers (`guarded`), next to `suppliersList`.
   `matchByNormalizedName`, the folded-name `typedNameConflict`) reads the
   names-only list. The table's balance/entry columns read the account summary.
 - Loading/error state is the OR of the two reads. A refusal/refresh invalidates
-  both keys instead of `suppliersList`.
+  both keys instead of `suppliersList`; the full `suppliersList` key is *also*
+  invalidated because the write changes supplier accounts and other screens
+  (`parties.tsx`, `party-picker.tsx`) still read that seam.
+- A failed read **blocks the save** (`listFailed`): with only the account summary
+  failing, the merge would still yield rows with `accountEntryCount: 0` and
+  silently skip the confirmation gate the full list powered. The base page
+  blocked via its empty list; this restores that intent explicitly.
 - `suppliersList` is **removed** from the page: no unconditional full-party load.
 
 ## Planned tests
@@ -94,10 +101,14 @@ Two read-only handlers (`guarded`), next to `suppliersList`.
 
 - **Losing the conflict warnings the full list powered.** The names-only list
   still carries every supplier name, and the merge preserves `accountEntryCount`
-  for the confirmation gate. A test asserts the fold conflict still blocks.
+  for the confirmation gate. A test asserts the fold conflict still blocks, and
+  a failed read now blocks the save instead of degrading the gate.
 - **Two reads instead of one.** Both are strictly cheaper than the invoice join;
-  they run in parallel through React Query.
+  they run in parallel through React Query. They are not one snapshot, so a
+  row landing between the two fetches could show 0/0 until the next refetch; the
+  server's `OPENING_BALANCE_EXISTS` refusal is the money-path backstop, and the
+  save-block above stops a *failed* read from skipping confirmation.
 - **#184 rebase.** #184 edits the same page and still references `suppliersList`;
   it will need to rebase onto this. Out of scope here (parent owns landing).
 - **Sign drift.** The account summary reuses `supplierSignedAmountSql`, and a
-  store test pins it against `listParties`.
+  store test pins it against `listParties`, including a net-zero account.

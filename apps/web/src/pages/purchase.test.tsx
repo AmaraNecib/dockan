@@ -731,6 +731,8 @@ describe("PurchasePage quantity draft (#146)", () => {
 
   const quantityField = (container: HTMLElement) => container.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
   const totalText = (container: HTMLElement) => container.querySelector('[data-testid="purchase-total"]')?.textContent ?? "";
+  /** the rendered total as a number, so a zero check cannot pass on a substring */
+  const totalAmount = (container: HTMLElement) => Number(totalText(container).match(/\d+/)?.[0] ?? Number.NaN);
   const save = async (container: HTMLElement) => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
@@ -749,7 +751,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(quantityField(container).value).toBe("");
     // the line is still there and resolves to zero, like sale
     expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
-    expect(totalText(container)).toContain("0");
+    expect(totalAmount(container)).toBe(0);
 
     await save(container);
     expect(container.querySelector('[data-testid="purchase-error"]')?.textContent).toContain("أدخل كمية صحيحة");
@@ -768,7 +770,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     for (const draft of ["abc", "2.5", "-3", "0"]) {
       await act(async () => setValue(quantityField(container), draft));
       expect(quantityField(container).value).toBe(draft);
-      expect(totalText(container)).toContain("0");
+      expect(totalAmount(container)).toBe(0);
       await save(container);
       expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
       expect(lastPurchaseInput).toBeNull();

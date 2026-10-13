@@ -17,7 +17,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { percentageDraftInvalid } from "@/lib/amount-parse";
-import { firstUnusableQuantity, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstLineError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -122,11 +122,12 @@ export function PurchasePage() {
       setError(t("purchasesInvalidPaid"));
       return;
     }
-    // #146 - the quantity field is the shared draft now, so an unusable draft is
+    // #146: the quantity field is the shared draft now, so an unusable draft is
     // refused instead of silently keeping a stale quantity (the old
     // `Number(event.target.value)` handler dropped the keystroke)
-    if (firstUnusableQuantity(lines) !== undefined) {
-      setError(t("purchasesInvalidQuantity"));
+    const lineError = firstLineError(lines, (line) => (quantityDraftInvalid(line.quantityDraft) ? t("purchasesInvalidQuantity") : null));
+    if (lineError !== null) {
+      setError(lineError);
       return;
     }
     void createInvoice.mutate({

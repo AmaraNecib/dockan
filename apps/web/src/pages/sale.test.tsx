@@ -1091,6 +1091,8 @@ describe("SalePage party picker (issue 120)", () => {
 describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
   const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
   const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
+  /** the rendered total as a number, so a zero check cannot pass on a substring */
+  const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
 
   it("keeps a cleared draft cleared, zeroes the line, and refuses the save", async () => {
     const host = await mountSale();
@@ -1102,7 +1104,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     expect(quantityField(host).value).toBe("");
     // the line stays, resolves to zero, and the total follows
     expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
-    expect(totalText(host)).toContain("0");
+    expect(totalAmount(host)).toBe(0);
 
     await act(async () => saveButton(host).click());
     expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("saleInvalidQuantity"));
@@ -1111,7 +1113,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     // an unreadable draft behaves the same way
     await act(async () => setElementValue(quantityField(host), "abc"));
     expect(quantityField(host).value).toBe("abc");
-    expect(totalText(host)).toContain("0");
+    expect(totalAmount(host)).toBe(0);
   });
 
   it("pins a discounted cart total through the shared totals path", async () => {
@@ -1119,7 +1121,9 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     await scan("111"); // 1 x 1000
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (trigger === null) throw new Error("missing discount select");
-    await chooseOption(trigger, "نسبة مئوية");
+    await act(async () => {
+      await chooseOption(trigger, "نسبة مئوية");
+    });
     await act(async () => setInput(host, "sale-discount-value", "10"));
 
     expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1000");

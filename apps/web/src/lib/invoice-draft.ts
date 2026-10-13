@@ -86,12 +86,18 @@ export function lineQuantity(line: DraftLine): number {
 }
 
 /**
- * The first line whose quantity draft cannot be committed, or undefined when
- * every line is usable. Both pages refuse a save on the same rule; only the
- * error copy differs.
+ * The first line error message in draft order, or null when every line is
+ * commit-ready. The caller supplies the per-kind message for a single line, so
+ * the pages keep their own copy while the ordering rule lives here. This also
+ * keeps one line's override and quantity checks adjacent, which preserves the
+ * message an already-invalid multi-line cart used to surface.
  */
-export function firstUnusableQuantity<T extends DraftLine>(lines: readonly T[]): T | undefined {
-  return lines.find((line) => quantityDraftInvalid(line.quantityDraft));
+export function firstLineError<T extends DraftLine>(lines: readonly T[], errorFor: (line: T) => string | null): string | null {
+  for (const line of lines) {
+    const message = errorFor(line);
+    if (message !== null) return message;
+  }
+  return null;
 }
 
 /** A non-negative numeric draft, or `fallback` when it is unreadable. */
@@ -237,8 +243,9 @@ export interface DraftTotals {
 }
 
 /**
- * The one path both screens use to turn draft lines into the checkout numbers.
- * Purchase passes an empty discount type and gets its subtotal straight back.
+ * The sale screen's totals path. Purchase passes no discount, so it reads the
+ * hook's `subtotal` directly; the subtraction and the discount cap still live
+ * here, once.
  */
 export function draftTotals<T extends DraftLine>(
   lines: readonly T[],

@@ -83,7 +83,7 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
 parseQuantityDraft(draft): number
 quantityDraftInvalid(draft): boolean
 lineQuantity(line): number
-firstUnusableQuantity(lines): T | undefined
+firstLineError(lines, errorFor): string | null   // the first error in draft order
 
 // purchase line unit cost: a controlled money field, not a draft
 nextUnitCost(value, previous): number
@@ -196,13 +196,20 @@ schema change.
 
 ## 6. Tests
 
+**New, `apps/web/src/lib/use-invoice-draft.test.tsx`:** the adapter's own
+coverage, which the pure tests cannot reach: the line list through
+`useInvoiceDraft` (add, merge, re-price, remove, reset, subtotal), the
+quick-add's seed and reset policy for both kinds, the create-then-land-the-line
+flow, the refusal path, and the payment pair following the reference total.
+
 **New, `apps/web/src/lib/invoice-draft.test.ts` (pure):**
 - the quantity parse table: `""`, `"   "`, `"0"`, `"-3"`, `"2.5"`, `"abc"`,
   `"12x"`, `"0042"`, `"1e3"`, `"٥"`, `"1000000"`, `"1000001"`, overflow.
 - `nextUnitCost`: cleared reads 0, digits read their value, unreadable keeps the
   previous value, and the pre-#146 generous spellings are pinned.
 - line list: add new, add repeat merges and repairs a cleared draft, the cap
-  clamp, set quantity, patch, remove, `firstUnusableQuantity` order.
+  clamp, the repair of an over-cap or unreadable draft, set quantity, patch,
+  remove, and `firstLineError`'s draft order and per-line precedence.
 - `draftReducer`, one case per action.
 - totals: subtotals for both kinds, the discount cap and rounding, `total =
   subtotal − discountAmount`.
@@ -238,25 +245,51 @@ is intact after a fresh value.
 | sale: 100% discount | total 0, never negative |
 | purchase: 2 × 1200 + 3 × 900, no discount | subtotal 5100, total 5100 |
 | purchase: cleared quantity draft | line 0, the other lines unchanged |
+| both: a repeat pick on a line at the cap | stays 1,000,000, never 1,000,001 |
 | both: `initialPaid` | 0 reads as `undefined`, partial reads as that number, over total is refused |
 
 ## 8. Review outcomes and follow-ups
 
-- `nextUnitCost` keeps the old `Number` reader on purpose, so no reachable money
-  input changes the billed number. A strict reader for this field is a
-  **follow-up**, not part of this lane.
-- The quick-add markup split is a **`decisionRequest`** (see 4.1).
-- **Deferred, pre-existing:** an amount-typed initial payment is not cleared when
-  a discount zeroes the total, so the amount-source case can be refused by the
-  over-total check until the operator clears it. The percentage-source case is
-  handled. This behaviour is unchanged by the extraction and needs its own
-  decision about what the operator meant when the reference disappears.
-- **Deferred, pre-existing:** purchase's line quantity and unit-cost inputs are
-  not disabled while a save is in flight, unlike sale's. Parity change, out of
-  scope here.
-- **Deferred, test hygiene:** `purchase.test.tsx` declares its input-driving
-  helper in several describes. Hoisting one file-level helper is a test-only
-  cleanup for another lane.
+Round 1 and round 2 each ran a critic and defender pair, a three-agent test
+audit, and a two-axis code review. The findings that were accepted are fixed
+and pinned:
+
+- `draftTotals` is on sale's production path; purchase reads the hook's
+  `subtotal`, because a purchase has no discount to subtract.
+- `firstLineError` owns the "first error in draft order" rule, so an invalid
+  multi-line cart surfaces the same message it used to while the pages keep only
+  their own copy.
+- `nextUnitCost` keeps the old `Number` reader on purpose, including the
+  generous spellings, so no reachable money input changes the billed number.
+  A strict reader for this field is a **follow-up**, and
+  `invoice-draft.test.ts` labels the precision quirk as inherited rather than
+  intended.
+- Merging a repeat pick clamps at `MAX_DRAFT_QUANTITY`. This is the one place
+  the extraction changes a reachable value on purpose: a maxed line used to
+  become `1000001`, resolve to zero and block the save. It now stays billable.
+- Purchase's quick-add quantity goes through the shared parser, so an over-cap
+  value is refused client side instead of arriving as a server error, and an
+  unreadable spelling is refused instead of silently becoming a different
+  number.
+
+**Open decision.** The quick-add markup split in section 4.1 narrows the issue's
+decision 3 and is raised to the parent as a `decisionRequest`: either accept
+behaviour-only sharing, or commission a shared markup form.
+
+**Deferred, pre-existing.**
+
+- An amount-typed initial payment is not cleared when a discount zeroes the
+  total, so that pair is refused by the over-total check until the operator
+  clears it. The percentage-source case is handled. This needs its own decision
+  about what the operator meant when the reference disappears.
+- Purchase's line quantity and unit-cost inputs are not disabled while a save is
+  in flight, unlike sale's. A parity change, out of scope here.
+- `nonNegativeOr`, `saleUnitPrice` and `saleOverrideInvalid` keep `Number()`, and
+  the quick-add payloads parse their money fields with `Number`. That is the
+  pre-existing sale behaviour and the brief asks for it to be preserved.
+- `purchase.test.tsx` declares its input-driving helper in several describes,
+  and some tests tear their root down inline as well as in `afterEach`. Test
+  hygiene for another lane.
 
 ## 9. Risks
 

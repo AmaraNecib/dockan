@@ -16,10 +16,11 @@ import { cn } from "@/lib/utils";
 import { parseGroupedAmount, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
   draftTotals,
-  firstUnusableQuantity,
+  firstLineError,
   lineQuantity,
   nonNegativeOr,
   parseQuantityDraft,
+  quantityDraftInvalid,
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
@@ -261,14 +262,13 @@ export function SalePage() {
         return;
       }
     }
-    for (const line of lines) {
-      if (saleOverrideInvalid(line)) {
-        setError(t("saleInvalidOverride"));
-        return;
-      }
-    }
-    if (firstUnusableQuantity(lines) !== undefined) {
-      setError(t("saleInvalidQuantity"));
+    const lineError = firstLineError(lines, (line) => {
+      if (saleOverrideInvalid(line)) return t("saleInvalidOverride");
+      if (quantityDraftInvalid(line.quantityDraft)) return t("saleInvalidQuantity");
+      return null;
+    });
+    if (lineError !== null) {
+      setError(lineError);
       return;
     }
     const invoiceLines = lines.map((line) => {

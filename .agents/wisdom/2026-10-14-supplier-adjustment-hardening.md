@@ -59,17 +59,21 @@ Follow-ups from #176. The lessons the debate/test-audit/code-review caught:
    "same string, two numbers" bug. Move the field reader and every validator that
    reads the same draft, and keep quantities on the strict reader.
 
-9. **A confirmation gate derived from a stale client list must MOVE the draft, not
-   just re-send it.** The bulk opening-balance dialog confirmed rows by existing id;
-   when the typed supplier raced into existence the new-name row could not be
-   confirmed and the save silently dropped it. Resolve the typed name to the
-   existing supplier with the same `normalizeTextKey` fold the server uses and move
-   the amount+direction onto that row. Do the move BEFORE the confirmation (an
-   effect) and keep a synchronous fallback in the save, or a same-tick save can still
-   drop the row. Gate the effect on the name field being unfocused, or an owner
-   typing a new name that starts like an existing one loses the amount mid-word.
-   Removing the now-dead duplicate-name error also orphans its i18n key and testid;
-   delete them.
+9. **Do not let the client resolve an identity the server owns.** The bulk screen
+   once moved a typed name onto an existing supplier's row and the server
+   re-resolved the name at save time, so the account shown and the account written
+   could differ (Greptile rounds 2–4 patched symptoms; round 5 deleted the
+   mechanism). The durable design: a typed name is a NAME and travels as
+   `newSupplierName`; an owner-picked row travels as an explicit `supplierId`; the
+   server is the only resolver. Two consequences to keep:
+   - a pre-submit guard must scan EVERY outgoing row — a typed name that folds onto
+     a picked row (by folded name or by resolved id) is a visible conflict, never a
+     server refusal after pressing save;
+   - `confirmExisting` is forwarded per row only when the cached count shows history,
+     and the confirm dialog names every account the batch will write to, or a
+     confirmed save can still land on an unnamed account.
+   The old advice to "move the draft onto the existing row" was removed with the
+   mechanism.
 
 10. **When a name can fold to several rows, resolve by SIGNATURE before any
     tie-break — and do it only on the NAME-resolved path.** The bulk batch preferred

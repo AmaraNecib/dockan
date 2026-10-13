@@ -2,7 +2,7 @@
 
 - **Issue:** #183 — Names-only supplier lookup for the opening-balance conflict check
 - **Base:** `da44b502d39c79a1368e9848542d9a25fac301fc`
-- **Head:** `3f814b13fdb96fd0578b3151804b6b55ad095e1f`
+- **Head:** `63be998c6df1af02676e14614419bd50ea5d074a`
 - **Commits:** `f590c32` (implement), `45ae313` (failed-read gate + invalidation),
   `2594889` (dialog gate + contract `.pick` + tighten), `d7e1663` (invalidation
   list), `3f814b1` (read-key array resolved at render)

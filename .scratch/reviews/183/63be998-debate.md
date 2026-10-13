@@ -3,9 +3,13 @@
 - **Issue:** #183 — Names-only supplier lookup for the opening-balance conflict check
 - **Tier:** Standard (read path feeding a money screen; debate run because the brief mandates it)
 - **Base:** `origin/develop` @ `da44b502d39c79a1368e9848542d9a25fac301fc`
-- **Head:** `3f814b13fdb96fd0578b3151804b6b55ad095e1f` (see `git rev-parse HEAD`)
+- **Head:** `63be998c6df1af02676e14614419bd50ea5d074a` (see `git rev-parse HEAD`)
 - **Critic/defender rounds:** `f590c32` (round 1), `45ae313` (round 2), `2594889` (round 3)
 - **Verdict:** no blockers; every finding fixed or dismissed with a reason.
+
+> The reviews below were run on `3f814b1`. `63be998` differs from it only by the
+> added wisdom doc `.agents/wisdom/2026-10-14-split-list-read-money-gate.md`;
+> every app/contract/root test file is byte-identical, so the verdicts apply.
 
 ## What was reviewed
 

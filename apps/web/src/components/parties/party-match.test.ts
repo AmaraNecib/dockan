@@ -173,6 +173,15 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("علي علي", "0555123456", [variant, exact])?.id).toBe("exact");
   });
 
+  it("warns when an exact spelling is held with a different phone, in any list order", () => {
+    const exactPhoneless = party({ id: "exact-phoneless", name: "علي علي", phone: null });
+    const exactPhone = party({ id: "exact-phone", name: "علي علي", phone: "+213555123456" });
+    // the exact spelling with a different phone is a real duplicate, whether it
+    // comes before or after the phoneless record of the same spelling
+    expect(duplicateNameParty("علي علي", null, [exactPhone, exactPhoneless])?.id).toBe("exact-phone");
+    expect(duplicateNameParty("علي علي", null, [exactPhoneless, exactPhone])?.id).toBe("exact-phone");
+  });
+
   it("still warns about a differently spelled duplicate when the exact record is one identity", () => {
     // the exact record shares the candidate's phone, so it is skipped as this
     // identity — but the OTHER spelling is still a likely second debtor

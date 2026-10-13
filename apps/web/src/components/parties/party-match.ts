@@ -85,12 +85,14 @@ const nameVariantKey = (name: string): string => foldArabicVariants(name)[1];
  *   spelled duplicate of it still warns, or
  * - the candidate's exact spelling is already stored with no phone: a walk-in
  *   re-typing her own name, which the picker's `needsChoice` gate already
- *   refuses. That one clears the whole list of duplicates, because the warning's
- *   one-click pick must never offer a DIFFERENT debtor than the one typed
- *   (#189 review).
+ *   refuses. That one clears the whole list of variant matches, because the
+ *   warning's one-click pick must never offer a DIFFERENT debtor than the one
+ *   typed (#189 review). An exact spelling held with a DIFFERENT phone still
+ *   warns — that is a real duplicate — whatever the list order.
  *
  * Otherwise the identical spelling is preferred over a variant of the name, so
  * the warning (and its one-click pick) points at the record the owner typed.
+ * The result never depends on the list order.
  *
  * Identity (storage, the store's unique phone, `needsChoice`) keeps
  * `normalizeTextKey` (ADR-0007); folding identity would merge two people's
@@ -102,15 +104,27 @@ export function duplicateNameParty(name: string, phone: string | null, parties: 
   const strictKey = normalizeTextKey(name);
   const canonical = normalizePartyPhone(phone);
   let variantMatch: PartyLike | undefined;
+  let exactPhonelessStored = false;
   for (const party of parties) {
     if (nameVariantKey(party.name) !== foldedKey) continue;
     const storedPhone = normalizePartyPhone(party.phone);
-    if (canonical === null && storedPhone === null && normalizeTextKey(party.name) === strictKey) return undefined;
+    const exactSpelling = normalizeTextKey(party.name) === strictKey;
+    if (exactSpelling) {
+      // the candidate's own spelling with no phone is this identity, not a
+      // duplicate; it also clears any variant the loop already found (#189)
+      if (canonical === null && storedPhone === null) {
+        exactPhonelessStored = true;
+        continue;
+      }
+      // a shared phone is one identity; a DIFFERENT phone on the exact spelling
+      // is the duplicate worth warning about, in any list order
+      if (canonical !== null && storedPhone === canonical) continue;
+      return party;
+    }
     if (canonical !== null && storedPhone === canonical) continue;
-    if (normalizeTextKey(party.name) === strictKey) return party;
     variantMatch ??= party;
   }
-  return variantMatch;
+  return exactPhonelessStored ? undefined : variantMatch;
 }
 
 /** The party that already owns a present phone (identity when present). */

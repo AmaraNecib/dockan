@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { normalizeTextKey } from "@dokan/contracts";
+
 import type { PartyLike } from "./party-match";
 import { duplicateNameParty, filterParties, partyQueryLooksLikePhone, phoneMatchParty } from "./party-match";
 
@@ -94,5 +96,70 @@ describe("phoneMatchParty", () => {
     expect(phoneMatchParty(null, LIST)).toBeUndefined();
     expect(phoneMatchParty("", LIST)).toBeUndefined();
     expect(phoneMatchParty("0555999999", LIST)).toBeUndefined();
+  });
+});
+
+/**
+ * #165 — the search fold is separate from the identity key (ADR-0007). These
+ * tests pin both halves so a later refactor cannot quietly merge the two.
+ */
+describe("arabic search fold (#165)", () => {
+  const LYOUS = party({ id: "lyous", name: "ليوز" });
+  const AHMED_FOLDED = party({ id: "ahmed-alef", name: "أحمد", phone: "+213555000111" });
+  const AHMED_PLAIN = party({ id: "ahmed-plain", name: "احمد" });
+  const MOSTAFA = party({ id: "mostafa", name: "مصطفى" });
+  const FOLD_LIST = [LYOUS, AHMED_FOLDED, AHMED_PLAIN, MOSTAFA];
+
+  it("finds a bare name through a typed article and letter variants", () => {
+    expect(filterParties(FOLD_LIST, "اليوز").map((p) => p.id)).toEqual(["lyous"]);
+    expect(filterParties(FOLD_LIST, "احمد").map((p) => p.id)).toEqual(["ahmed-alef", "ahmed-plain"]);
+    expect(filterParties(FOLD_LIST, "مصطفي").map((p) => p.id)).toEqual(["mostafa"]);
+  });
+
+  it("still finds a record when the typed name carries the article", () => {
+    const list = [party({ id: "art", name: "البطارية" })];
+    expect(filterParties(list, "بطارية").map((p) => p.id)).toEqual(["art"]);
+  });
+
+  it("keeps identity matching on the unchanged strict key", () => {
+    // «أحمد» and «احمد» are the SAME search hit but DIFFERENT debtors: folding
+    // identity would merge two people's balances (ADR-0007).
+    expect(normalizeTextKey("أحمد")).not.toBe(normalizeTextKey("احمد"));
+    // no same-name warning between the two spellings...
+    expect(duplicateNameParty("احمد", null, [AHMED_FOLDED])).toBeUndefined();
+    expect(duplicateNameParty("أحمد", null, [AHMED_PLAIN])).toBeUndefined();
+    // ...but the SAME spelling still warns and the phone identity is untouched
+    expect(duplicateNameParty("أحمد", null, [AHMED_FOLDED])?.id).toBe("ahmed-alef");
+    expect(phoneMatchParty("0555123456", LIST)?.id).toBe("ali");
+  });
+
+  it("falls back to typo tolerance only when the strict pass finds nothing", () => {
+    const list = [party({ id: "battery", name: "بطارية" })];
+    expect(filterParties(list, "بطلرية").map((p) => p.id)).toEqual(["battery"]);
+    // the fallback never replaces a strict hit, and a phone-looking query
+    // never runs the name fallback
+    expect(filterParties(FOLD_LIST, "مصطفي").map((p) => p.id)).toEqual(["mostafa"]);
+    expect(filterParties(list, "0000")).toEqual([]);
+  });
+
+  it("does not fall back to near-misses that are not typos", () => {
+    expect(filterParties([party({ id: "oil", name: "زيوت" })], "زيت")).toEqual([]);
+    expect(filterParties(FOLD_LIST, "لا يوجد")).toEqual([]);
+  });
+
+  it("does not fuzzy-match a related but different name", () => {
+    expect(filterParties([party({ id: "mahmoud", name: "محمود" })], "محمد")).toEqual([]);
+    expect(filterParties([party({ id: "karasi", name: "كراسي" })], "كرسي")).toEqual([]);
+  });
+
+  it("never strips a short article word into an everything-match", () => {
+    // «الي» folds to «الي», so it is an ordinary (and absent) substring here
+    expect(filterParties(FOLD_LIST, "الي")).toEqual([]);
+  });
+
+  it("treats a stored hyphen as a word break", () => {
+    const list = [party({ id: "hyphen", name: "ليوز-زبون" })];
+    expect(filterParties(list, "ليوز زبون").map((p) => p.id)).toEqual(["hyphen"]);
+    expect(filterParties(list, "اليوز").map((p) => p.id)).toEqual(["hyphen"]);
   });
 });

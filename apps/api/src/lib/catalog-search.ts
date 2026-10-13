@@ -1,4 +1,4 @@
-import { normalizeTextKey, type Category, type CatalogMatch, type CatalogMatchKind, type Item } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, foldArabic, fuzzySearchScore, normalizeTextKey, type Category, type CatalogMatch, type CatalogMatchKind, type Item } from "@dokan/contracts";
 
 export const DEFAULT_CATALOG_LIMIT = 20;
 
@@ -12,7 +12,8 @@ export interface CatalogSearchResult {
 /**
  * Match tiers; lower sorts first. BARCODE_EXACT never lands in `matches`
  * (it is reported through `exact`), and the two partial-barcode sub-tiers
- * collapse to the single BARCODE_PARTIAL kind in the output.
+ * collapse to the single BARCODE_PARTIAL kind in the output. FUZZY is the
+ * typo-tolerance fallback: it always ranks after every strict tier.
  */
 type Tier = "EXACT" | "BARCODE_PREFIX" | "BARCODE_CONTAINS" | "NAME" | "CATEGORY";
 
@@ -23,6 +24,10 @@ const tierRank = {
   NAME: 3,
   CATEGORY: 4,
 } satisfies Record<Tier, number>;
+
+/** Typo-fallback rank: always one past the worst strict tier, so adding a
+ * strict tier cannot let a fuzzy hit interleave with it. */
+const FUZZY_RANK = Math.max(...Object.values(tierRank)) + 1;
 
 const tierKind = {
   EXACT: "BARCODE_EXACT",
@@ -48,9 +53,11 @@ export function rankCatalog(
   const query = normalizeTextKey(rawQuery);
   if (query === "") return { exact: null, matches: [] };
   const upper = query.toUpperCase();
+  const searchKey = foldArabic(rawQuery);
 
   const categoryById = new Map(categories.map((category) => [category.id, category]));
-  const scored: Array<{ match: CatalogMatch; rank: number }> = [];
+  const scored: Array<{ match: CatalogMatch; rank: number; score: number }> = [];
+  const matchedIds = new Set<string>();
   let exact: CatalogMatch | null = null;
 
   for (const item of items) {
@@ -59,12 +66,13 @@ export function rankCatalog(
     if (barcode !== null && barcode === upper) tier = "EXACT";
     else if (barcode !== null && barcode.startsWith(upper)) tier = "BARCODE_PREFIX";
     else if (barcode !== null && barcode.includes(upper)) tier = "BARCODE_CONTAINS";
-    else if (normalizeTextKey(item.name).includes(query)) tier = "NAME";
+    else if (searchKey !== "" && foldArabic(item.name).includes(searchKey)) tier = "NAME";
     else {
       const category = categoryById.get(item.categoryId);
-      if (category !== undefined && normalizeTextKey(category.name).includes(query)) tier = "CATEGORY";
+      if (category !== undefined && searchKey !== "" && foldArabic(category.name).includes(searchKey)) tier = "CATEGORY";
     }
     if (tier === null) continue;
+    matchedIds.add(item.id);
 
     const category = categoryById.get(item.categoryId) ?? null;
     const match: CatalogMatch = { item, category, matchedBy: tierKind[tier] };
@@ -73,9 +81,25 @@ export function rankCatalog(
       if (exact === null) exact = match;
       continue;
     }
-    scored.push({ match, rank: tierRank[tier] });
+    scored.push({ match, rank: tierRank[tier], score: 0 });
   }
 
-  scored.sort((a, b) => a.rank - b.rank || a.match.item.name.localeCompare(b.match.item.name, "ar"));
+  // Typo tolerance, as a fallback only: when the strict pass leaves room,
+  // append edit-distance/subsequence hits AFTER every strict match. Strict
+  // ranking is never altered.
+  if (scored.length < limit && searchKey !== "") {
+    for (const item of items) {
+      if (matchedIds.has(item.id)) continue;
+      const category = categoryById.get(item.categoryId) ?? null;
+      const nameScore = fuzzySearchScore(item.name, rawQuery);
+      const categoryScore = category === null ? 0 : fuzzySearchScore(category.name, rawQuery);
+      const score = Math.max(nameScore, categoryScore);
+      if (score <= FUZZY_MATCH_MIN_SCORE) continue;
+      const matchedBy: CatalogMatchKind = nameScore >= categoryScore ? "NAME" : "CATEGORY";
+      scored.push({ match: { item, category, matchedBy }, rank: FUZZY_RANK, score });
+    }
+  }
+
+  scored.sort((a, b) => a.rank - b.rank || b.score - a.score || a.match.item.name.localeCompare(b.match.item.name, "ar"));
   return { exact, matches: scored.slice(0, limit).map((entry) => entry.match) };
 }

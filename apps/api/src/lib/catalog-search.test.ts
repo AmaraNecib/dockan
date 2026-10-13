@@ -125,6 +125,49 @@ describe("rankCatalog", () => {
     expect(exact.matches.length).toBeLessThanOrEqual(5);
   });
 
+  it("folds alef/ya variants and the definite article in the query", () => {
+    const folded = [
+      item("i-lyo", "ليوز"),
+      item("i-ahmed", "أحمد"),
+      item("i-mustafa", "مصطفى"),
+    ];
+    expect(rankCatalog(folded, [], "اليوز").matches.map((m) => m.item.id)).toEqual(["i-lyo"]);
+    expect(rankCatalog(folded, [], "احمد").matches.map((m) => m.item.id)).toEqual(["i-ahmed"]);
+    expect(rankCatalog(folded, [], "مصطفي").matches.map((m) => m.item.id)).toEqual(["i-mustafa"]);
+  });
+
+  it("folds the stored name too: a bare query finds an article-prefixed name", () => {
+    const items = [item("i-art", "البطارية"), item("i-plain", "بطارية")];
+    expect(rankCatalog(items, [], "بطارية").matches.map((m) => m.item.id)).toEqual(["i-art", "i-plain"]);
+  });
+
+  it("ranks strict matches before the typo fallback", () => {
+    const items = [item("i-fuzzy", "بطلرية"), item("i-strict", "بطارية 60 أمبير")];
+    const result = rankCatalog(items, [], "بطارية");
+    // the strict substring match stays first; the edit-distance hit is appended
+    expect(result.matches.map((m) => m.item.id)).toEqual(["i-strict", "i-fuzzy"]);
+  });
+
+  it("does not add fallback noise when the strict hits already fill the limit", () => {
+    const items = [item("i-strict", "بطارية"), item("i-fuzzy", "بطلرية")];
+    const result = rankCatalog(items, [], "بطارية", 1);
+    expect(result.matches.map((m) => m.item.id)).toEqual(["i-strict"]);
+  });
+
+  it("does not append a related-but-different name beside the strict hit", () => {
+    const items = [item("i-mohamed", "محمد"), item("i-mahmoud", "محمود")];
+    const result = rankCatalog(items, [], "محمد");
+    expect(result.matches.map((m) => m.item.id)).toEqual(["i-mohamed"]);
+  });
+
+  it("falls back to an edit-distance hit when the strict pass finds nothing", () => {
+    const items = [item("i-battery", "بطارية")];
+    const result = rankCatalog(items, [], "بطلرية");
+    expect(result.exact).toBeNull();
+    expect(result.matches.map((m) => m.item.id)).toEqual(["i-battery"]);
+    expect(result.matches[0]?.matchedBy).toBe("NAME");
+  });
+
   it("returns empty for blank queries", () => {
     expect(rankCatalog(items, CATEGORIES, "   ")).toEqual({ exact: null, matches: [] });
   });

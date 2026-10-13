@@ -45,7 +45,7 @@ import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expen
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
-import { stampSchemaVersionLocked } from "../lib/schema-version";
+import { CURRENT_SCHEMA_VERSION, readSchemaVersion, stampSchemaVersionLocked } from "../lib/schema-version";
 import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierAdjustmentSignature, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
 import { PartyError, SupplierAdjustmentError } from "./port";
 
@@ -916,7 +916,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (tableExists && !rows.some((row) => row.name === "dedup_key")) {
         conn.raw.exec("ALTER TABLE supplier_account_entries ADD COLUMN dedup_key TEXT");
       }
-      if (tableExists) {
+      // Only scan while upgrading an older format: a current-version database can
+      // carry a NULL key only on a deliberate pre-#177 duplicate, so steady-state
+      // boots skip the ledger scan and its key set entirely. The crash window
+      // leaves the stored version below the current one, so the heal still runs.
+      if (tableExists && readSchemaVersion(conn.raw) < CURRENT_SCHEMA_VERSION) {
         // SAFETY: the SELECT names dedup_key, so each row has that nullable column
         const keyed = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE dedup_key IS NOT NULL").all() as Array<{ dedupKey: string }>;
         const used = new Set(keyed.map((row) => row.dedupKey));

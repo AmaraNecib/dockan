@@ -107,7 +107,9 @@ Why both arms of the keyed branch:
 - `dedup_key = key:` matches the same key at **any** shape, which is the gap-1
   fix — a changed `occurredAt` (or any field) is still the same logical request.
 - the signature arm refuses a keyed retry of a request whose first attempt was
-  sent **without** a key, so dropping or adding the key cannot double-post.
+  sent **without** a key, so a same-signature retry that drops the key cannot
+  double-post (only a retry that also changes the timestamp escapes; see the D2
+  boundary).
 
 The no-key path is the exact #177 predicate, so every existing behaviour
 (including the `serverStamped` wildcard) is preserved for unkeyed callers and
@@ -121,6 +123,12 @@ request compute the identical key and the index refuses the loser.
 stable ORPC `DUPLICATE_ADJUSTMENT` the guard produces. Cross-shape requests (a
 stamped retry against an explicit row) are still caught by the column predicate
 before the index is reached.
+
+The index covers identical **keys** (a `key:` value for a keyed row, a `sig:`
+value otherwise), not identical *requests* in every shape: a same-shape logical
+duplicate written under a different key, or a keyed row duplicated through the
+signature path, is caught by the guard's signature arm, not by the index. The
+index is the cross-process net for two writers that compute the **same** key.
 
 ### D4 — DB backstop
 
@@ -144,24 +152,30 @@ non-adjustment row and any legacy duplicate deliberately left unkeyed.
 1. If `supplier_account_entries` exists and has no `dedup_key`, one
    `BEGIN IMMEDIATE` unit does `ALTER TABLE ... ADD COLUMN dedup_key TEXT` and the
    backfill.
-2. Backfill: every existing `ADJUSTMENT` row gets the **time-inclusive** signature
-   key (`serverStamped: false`) computed from its stored columns, in `rowid` order.
-   A key already used by an earlier row is left `NULL` — a pre-#177 duplicate is
-   preserved and exempt from the index; the guard's column fallback still matches
-   it. A row created by #177's weaker guard is keyed like any other.
+2. Backfill: every existing `ADJUSTMENT` row with a NULL key gets the
+   **time-inclusive** signature key (`serverStamped: false`) computed from its
+   stored columns, in `rowid` order. A key already used by an earlier row is left
+   `NULL` — a pre-#177 duplicate is preserved and exempt from the index; the
+   guard's signature arm still matches it. A row created by #177's weaker guard is
+   keyed like any other. The backfill is **self-healing**: it runs whenever the
+   stored version is below 4, not only when the column is missing, so a boot that
+   died between the `ALTER` and the version stamp is repaired on the next open.
 3. Opening the DB stamps version 4 (`stampSchemaVersionLocked`). A version-3 build
    refuses it (`assertSchemaVersionSupported`), because it has no `dedup_key` and
-   would insert duplicate signatures the new index forbids. Re-opening is
-   idempotent: the column exists, the backfill is skipped, rows are untouched.
-
-An older build refusing the new DB is the required behaviour (ADR-0008 §4.5).
+   would write NULL-keyed adjustments that escape the new dedup. On a
+   current-version database the backfill scan is skipped and every row keeps its
+   key, so re-opening is idempotent. An older build refusing the new DB is the
+   required behaviour (ADR-0008 §4.5).
 
 ### D6 — the deliberate bulk-vs-manual overlap stays
 
 The bulk `رصيد افتتاحي` and the manual panel produce the same signature for the
 same logical entry, so a repeat through either is refused. That is money-safe and
-unchanged. The escape hatch for a genuinely-wanted identical re-entry remains a
-different `ref`/reason/date — never a weakened guard.
+unchanged. The escape hatch for a genuinely-wanted identical re-entry is a wider
+signature (a different `ref`/reason/date) when no key is sent, or a **different
+key** (or no key) when one is — a request that keeps its key is that key's
+request, and re-shaping its other fields does not release it. Neither path
+weakens the guard.
 
 ### D7 — not user-facing
 

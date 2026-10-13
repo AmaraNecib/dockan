@@ -23,12 +23,18 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   never weaken the #177 money-safe rule that an identical repeat is refused. A
   caller that drops the key *and* changes the timestamp between attempts is
   re-shaping its request, not retrying it, and is outside the contract. The
-  escape hatch for a genuinely-wanted identical entry stays "separate the
-  signature by reason/date/ref", not a weakened guard.
+  escape hatch for a genuinely-wanted identical entry is a wider signature (a
+  different reason/date/ref) when no key is sent, or a **different key** (or no
+  key) when one is: a request that keeps its key is that key's request, and
+  re-shaping its other fields does not release it. Neither path weakens the
+  guard.
 - The key is written by the one guarded write path and enforced by a partial
   unique index, so a second process that races the identical request loses at
   the database, and the unique violation is mapped back to the same stable
-  `DUPLICATE_ADJUSTMENT` refusal.
+  `DUPLICATE_ADJUSTMENT` refusal. The index covers identical **keys** (a `key:`
+  value for a keyed row, a `sig:` value otherwise); a same-shape duplicate
+  written under a different key, or through the signature path, is caught by the
+  guard's signature arm, not by the index.
 
 **Considered options**
 
@@ -52,10 +58,11 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   and a pre-#177 duplicate (two rows with one signature) keeps a `NULL` key so the
   index stays creatable and the duplicate is preserved. Re-opening is idempotent.
 - A version-3 build does not know the column, so it writes each new ADJUSTMENT
-  with a NULL `dedup_key` — exempt from the partial index and never re-keyed (the
-  v4 backfill runs only when the column is missing). Those rows would silently
-  escape the new dedup, so a version-3 build MUST refuse the version-4 database
-  (ADR-0008 §4.5).
+  with a NULL `dedup_key` — exempt from the partial index until the next v4 boot
+  re-keys it (the backfill self-heals whenever the stored version is below 4, so
+  a crash between the `ALTER` and the version stamp is repaired). Those rows would
+  otherwise escape the new dedup, so a version-3 build MUST refuse the version-4
+  database (ADR-0008 §4.5).
 - A stamped request and an explicit request are now different requests (the key
   encodes the request shape); this narrows, not widens, what is refused, and no
   caller that retries changes shape between attempts.

@@ -1,0 +1,65 @@
+# #179 controlled experiment — a 10 s server delay on the write under test
+# Generated 2026-10-13T17:16:59Z; throwaway specs deleted after the run.
+
+===== tests/e2e/zz-old-arabic-latency.spec.ts =====
+$ DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bunx playwright test tests/e2e/zz-old-arabic-latency.spec.ts --reporter=list
+    Received string:    "لا توجد نتائج مطابقة"
+    Timeout: 5000ms
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByTestId('search-results')
+        3 × locator resolved to <ul class="mt-2" data-testid="search-results">…</ul>
+          - unexpected value "ليوز-1791911827562بالاسم"
+        11 × locator resolved to <ul class="mt-2" data-testid="search-results">…</ul>
+           - unexpected value "لا توجد نتائج مطابقة"
+      61 |   // 3. «احمد» finds «أحمد»; «مصطفي» finds «مصطفى»
+      62 |   await search.fill("احمد");
+    > 63 |   await expect(page.getByTestId("search-results")).toContainText(ahmedItem);
+         |                                                    ^
+      64 |   await search.fill("مصطفي");
+      65 |   await expect(page.getByTestId("search-results")).toContainText(mustafaItem);
+      66 |
+        at D:\projects\mani-worktrees\fix-179-e2e-flake\tests\e2e\zz-old-arabic-latency.spec.ts:63:52
+    Error Context: test-results\zz-old-arabic-latency-arab-129ce-rticle-in-items-and-parties\error-context.md
+  1 failed
+    tests\e2e\zz-old-arabic-latency.spec.ts:13:1 › arabic search folds alef/ya and the definite article in items and parties 
+playwright exit=0
+
+===== tests/e2e/zz-new-arabic-latency.spec.ts =====
+$ DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bunx playwright test tests/e2e/zz-new-arabic-latency.spec.ts --reporter=list
+Running 1 test using 1 worker
+  ok 1 tests\e2e\zz-new-arabic-latency.spec.ts:14:1 › arabic search folds alef/ya and the definite article in items and parties (19.1s)
+  1 passed (22.8s)
+playwright exit=0
+
+===== tests/e2e/zz-old-receipts-latency.spec.ts =====
+$ DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bunx playwright test tests/e2e/zz-old-receipts-latency.spec.ts --reporter=list
+  1) tests\e2e\zz-old-receipts-latency.spec.ts:21:1 › invoice print button → receipt document with identity, totals and payments 
+    Error: expect(locator).toContainText(expected) failed
+    Locator: getByTestId('sale-saved-number')
+    Expected substring: "INV-"
+    Timeout: 5000ms
+    Error: element(s) not found
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByTestId('sale-saved-number')
+      62 |   await expect(page.getByTestId("sale-total")).toContainText("900");
+      63 |   await page.getByTestId("sale-save").click();
+    > 64 |   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+         |                                                       ^
+      65 |   // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+      66 |   const number = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
+      67 |
+        at D:\projects\mani-worktrees\fix-179-e2e-flake\tests\e2e\zz-old-receipts-latency.spec.ts:64:55
+    Error Context: test-results\zz-old-receipts-latency-in-3f177-dentity-totals-and-payments\error-context.md
+  1 failed
+    tests\e2e\zz-old-receipts-latency.spec.ts:21:1 › invoice print button → receipt document with identity, totals and payments 
+playwright exit=0
+
+===== tests/e2e/zz-new-receipts-latency.spec.ts =====
+$ DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bunx playwright test tests/e2e/zz-new-receipts-latency.spec.ts --reporter=list
+Running 1 test using 1 worker
+  ok 1 tests\e2e\zz-new-receipts-latency.spec.ts:22:1 › invoice print button → receipt document with identity, totals and payments (15.6s)
+  1 passed (19.1s)
+playwright exit=0
+

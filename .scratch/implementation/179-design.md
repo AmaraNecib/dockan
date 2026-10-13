@@ -70,6 +70,9 @@ export async function expectRpcOk(response: Promise<Response>, procedure: string
 
 /** Set up the ack, run the action, assert the write was accepted (oRPC envelope `{ json }`). */
 export async function actAndAck(page: Page, procedure: string, action: () => Promise<void>): Promise<Response>;
+
+/** Parse the `{ json: <output> }` success envelope of an acked response. */
+export async function rpcOutput<T>(response: Response): Promise<T>;
 ```
 
 `actAndAck` makes the "arm the wait before firing the action" ordering impossible
@@ -98,6 +101,18 @@ No timeout increases, no app change, no `workers`/config change.
   `--repeat-each`, ≥3 clean full-suite runs at the shipped `workers: 1`, and a
   contended run at `--workers=2`, all green, logs under
   `.scratch/reviews/179/<sha>-*`.
+
+## Deferred
+
+- **Helper failure-path test.** `expectRpcOk`'s non-2xx branch and `rpcOutput`'s
+  envelope parse are exercised only on success. A focused routed-500 test of
+  `actAndAck`/`expectRpcOk` was deferred: it needs a new spec file, which expands
+  the reviewed surface beyond the brief's "flaky specs and shared helpers" scope
+  and forces the whole acceptance baseline to be re-run. The branch is a single
+  `expect(ok())` and is exercised by any real refusal in the suite.
+- **Same-class unwrapped UI polls** on non-reported writes (`settings-save`,
+  category create, quick-add item, `pmt-submit`) could adopt the same ack helper
+  in a follow-up.
 
 ## Risks
 

@@ -53,7 +53,7 @@ const DETAIL_OPTIONS = ({ input }: { input: { id: string } }) => ({
 });
 // #174 — the tab reads page over the same party detail the money reads use
 const PARTY_INVOICES_OPTIONS = ({ input }: { input: { id: string; unpaidOnly?: boolean } }) => ({
-  queryKey: ["partyInvoices", input],
+  queryKey: [["partyInvoices"], input],
   queryFn: async () => {
     const found = details.get(input.id);
     const invoices = (found?.invoices ?? []).filter((invoice) => input.unpaidOnly !== true || invoice.remainingAmount > 0);
@@ -61,14 +61,14 @@ const PARTY_INVOICES_OPTIONS = ({ input }: { input: { id: string; unpaidOnly?: b
   },
 });
 const PARTY_PAYMENTS_OPTIONS = ({ input }: { input: { id: string } }) => ({
-  queryKey: ["partyPayments", input],
+  queryKey: [["partyPayments"], input],
   queryFn: async () => {
     const found = details.get(input.id);
     return { items: found?.payments ?? [], total: found?.payments.length ?? 0 };
   },
 });
 const SUPPLIER_ENTRIES_OPTIONS = ({ input }: { input: { id: string } }) => ({
-  queryKey: ["supplierEntries", input],
+  queryKey: [["supplierEntries"], input],
   queryFn: async () => {
     const found = details.get(input.id);
     const entries = found?.account?.entries ?? [];

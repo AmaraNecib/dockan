@@ -22,6 +22,8 @@ let failPayAt = 0;
 let payCalls = 0;
 /** a gate held over the customersGet REFETCH, to widen the post-payment window */
 let detailCalls = 0;
+/** #174 — the invoices tab served from the paginated read */
+let invoiceTabCalls = 0;
 let detailGate: Promise<void> | null = null;
 let releaseDetailGate: (() => void) | null = null;
 let partyDetail: PartyDetail;
@@ -87,8 +89,9 @@ mock.module("@/lib/rpc", () => ({
     // #174 — the tabs page over the same party detail
     partyInvoices: {
       queryOptions: (options?: { input?: { unpaidOnly?: boolean; limit?: number; offset?: number } }) => ({
-        queryKey: ["partyInvoices", options?.input],
+        queryKey: [["partyInvoices"], options?.input],
         queryFn: async () => {
+          invoiceTabCalls += 1;
           const filtered = options?.input?.unpaidOnly === true ? partyDetail.invoices.filter((entry) => entry.remainingAmount > 0) : partyDetail.invoices;
           const limit = options?.input?.limit ?? 10;
           const offset = options?.input?.offset ?? 0;
@@ -98,13 +101,13 @@ mock.module("@/lib/rpc", () => ({
     },
     partyPayments: {
       queryOptions: () => ({
-        queryKey: ["partyPayments", PARTY_ID],
+        queryKey: [["partyPayments"], PARTY_ID],
         queryFn: async () => ({ items: partyDetail.payments, total: partyDetail.payments.length }),
       }),
     },
     supplierEntries: {
       queryOptions: () => ({
-        queryKey: ["supplierEntries", PARTY_ID],
+        queryKey: [["supplierEntries"], PARTY_ID],
         queryFn: async () => ({ items: partyDetail.account?.entries ?? [], total: partyDetail.account?.entries.length ?? 0 }),
       }),
     },
@@ -143,6 +146,7 @@ beforeEach(() => {
   failPayAt = 0;
   payCalls = 0;
   detailCalls = 0;
+  invoiceTabCalls = 0;
   detailGate = null;
   releaseDetailGate = null;
 });
@@ -306,12 +310,17 @@ describe("customer settle in place (#164)", () => {
     await renderCustomer();
     click("party-settle");
     typeInto("party-settle-amount", "40000");
+    const tabCallsBefore = invoiceTabCalls;
     click("party-settle-confirm");
     await flushAsync();
     expect(payInputs).toEqual([
       { invoiceId: "old", amount: 30_000, method: "CASH" },
       { invoiceId: "new", amount: 10_000, method: "CASH" },
     ]);
+    // #174 — onDone invalidates the tab query with the correct oRPC prefix, so
+    // the invoices tab refetches once the money moves (a string-first key would
+    // be a silent no-op)
+    await waitFor(() => invoiceTabCalls > tabCallsBefore);
     expect(host.querySelector('[data-testid="party-detail-notice"]')?.textContent).toContain("تم توزيع الدفعة");
   });
 

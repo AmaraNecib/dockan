@@ -19,3 +19,12 @@ export const INVOICES_LIST_QUERY_KEY = [["invoicesList"]] as const;
 
 /** every activities-list page result */
 export const ACTIVITIES_LIST_QUERY_KEY = [["activitiesList"]] as const;
+
+/** every party-invoices tab page result (issue 174) */
+export const PARTY_INVOICES_QUERY_KEY = [["partyInvoices"]] as const;
+
+/** every customer party-payments tab page result (issue 174) */
+export const PARTY_PAYMENTS_QUERY_KEY = [["partyPayments"]] as const;
+
+/** every supplier account-entries tab page result (issue 174) */
+export const SUPPLIER_ENTRIES_QUERY_KEY = [["supplierEntries"]] as const;

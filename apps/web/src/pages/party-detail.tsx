@@ -19,6 +19,7 @@ import { Pager } from "@/components/ui/pager";
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { formatDate, formatDateTime } from "../lib/dates";
+import { PARTY_INVOICES_QUERY_KEY, PARTY_PAYMENTS_QUERY_KEY, SUPPLIER_ENTRIES_QUERY_KEY } from "../lib/query-keys";
 import { usePagination } from "../hooks/use-pagination";
 import { orpc } from "../lib/rpc";
 import { tError } from "../lib/i18n";
@@ -207,11 +208,12 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   });
 
   // the shared panels invalidate customersGet/suppliersGet; the tab queries
-  // carry their own keys, so refresh them here after money moves
+  // carry their own keys, so refresh them here after money moves. The constants
+  // are the double-nested oRPC path prefix (a string-first key is a no-op).
   function refreshTabQueries() {
-    void queryClient.invalidateQueries({ queryKey: ["partyInvoices"] });
-    void queryClient.invalidateQueries({ queryKey: ["partyPayments"] });
-    void queryClient.invalidateQueries({ queryKey: ["supplierEntries"] });
+    void queryClient.invalidateQueries({ queryKey: PARTY_INVOICES_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: PARTY_PAYMENTS_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: SUPPLIER_ENTRIES_QUERY_KEY });
   }
 
   const backLabel = role === "customer" ? t("partyBackToCustomers") : t("partyBackToSuppliers");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { ACTIVITIES_LIST_QUERY_KEY, DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY } from "./query-keys";
+import { ACTIVITIES_LIST_QUERY_KEY, DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, PARTY_INVOICES_QUERY_KEY, PARTY_PAYMENTS_QUERY_KEY, SUPPLIER_ENTRIES_QUERY_KEY } from "./query-keys";
 
 /**
  * These are PREFIX keys for React Query's non-exact `invalidateQueries`: the
@@ -21,6 +21,17 @@ describe("supplier-money query key prefixes", () => {
 
     expect(prefixMatches(INVOICES_LIST_QUERY_KEY, [["invoicesList"], { input: { limit: 10 }, type: "query" }])).toBe(true);
     expect(prefixMatches(ACTIVITIES_LIST_QUERY_KEY, [["activitiesList"], { input: { limit: 20 }, type: "query" }])).toBe(true);
+
+    // the #174 party-detail tab families match a key that carries the tab input
+    expect(prefixMatches(PARTY_INVOICES_QUERY_KEY, [["partyInvoices"], { input: { role: "customer", id: "p-1" }, type: "query" }])).toBe(true);
+    expect(prefixMatches(PARTY_PAYMENTS_QUERY_KEY, [["partyPayments"], { input: { id: "p-1" }, type: "query" }])).toBe(true);
+    expect(prefixMatches(SUPPLIER_ENTRIES_QUERY_KEY, [["supplierEntries"], { input: { id: "s-1" }, type: "query" }])).toBe(true);
+    // and never a differently-named family
+    expect(prefixMatches(PARTY_INVOICES_QUERY_KEY, [["partyPayments"], { input: {}, type: "query" }])).toBe(false);
+  });
+
+  it("do not match the string-first literal that was a silent no-op", () => {
+    expect(prefixMatches(["partyInvoices"], [["partyInvoices"], { input: {}, type: "query" }])).toBe(false);
   });
 
   it("do not match the old dead literal", () => {

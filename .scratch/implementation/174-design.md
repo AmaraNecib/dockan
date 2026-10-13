@@ -128,10 +128,13 @@ already failed on.
   hidden by the component while `total <= pageSize`.
 - The stats strip, unpaid total, settle cap, supplier balance, delete guard,
   and all panels still read the full `detail.data` / `account`.
-- After a panel `onDone`, the page invalidates the three tab query keys
-  (`["partyInvoices"]`, `["partyPayments"]`, `["supplierEntries"]`), since the
-  shared panels only invalidate `customersGet`/`suppliersGet`. Keeps the tab
-  fresh after money moves without editing the shared supplier components.
+- After a panel `onDone`, the page invalidates the three tab query families
+  through the `PARTY_INVOICES_QUERY_KEY` / `PARTY_PAYMENTS_QUERY_KEY` /
+  `SUPPLIER_ENTRIES_QUERY_KEY` constants in `lib/query-keys.ts` (the
+  double-nested oRPC path prefix `[["partyInvoices"]]`, not the string-first
+  form that is a silent no-op). The shared panels only invalidate
+  `customersGet`/`suppliersGet`, so this is what keeps the tabs fresh after
+  money moves without editing the shared supplier components.
 
 ## Dependencies
 

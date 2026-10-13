@@ -15,17 +15,16 @@ import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
 import { parseGroupedAmount, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
-  discountAmountFor,
+  draftTotals,
+  firstUnusableQuantity,
   lineQuantity,
   nonNegativeOr,
   parseQuantityDraft,
-  quantityDraftInvalid,
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
-  toDiscountType,
-  toOverrideType,
-  type DiscountType,
+  toAmountKind,
+  type AmountKind,
   type SaleDraftLine,
 } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
@@ -41,14 +40,12 @@ import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { resolveOpeningStock } from "../lib/numeric-input";
 
-type SaleLine = SaleDraftLine;
-
 /**
  * Whether a pre-commit paid draft is usable, and the debt it leaves.
  *
- * #146 moved the quantity parser, the totals, and the amount ⇄ percentage pair
- * into `@/lib/invoice-draft`; this preview stays sale-only (a purchase has no
- * customer debt notice).
+ * #146 moved the quantity parser, the totals, and the amount and percentage
+ * pair into `@/lib/invoice-draft`. This preview stays sale-only: a purchase has
+ * no customer debt notice.
  */
 export interface SaleDebt {
   valid: boolean;
@@ -58,7 +55,7 @@ export interface SaleDebt {
 /**
  * Debt a pending SALE will carry: `total` minus whatever the raw paid draft
  * records as the initial payment. Mirrors the commit invariant
- * `initialPaid: paid === 0 ? undefined : paid` — an empty or zero draft leaves
+ * `initialPaid: paid === 0 ? undefined : paid`, an empty or zero draft leaves
  * the whole total unpaid (carried as customer debt), a partial payment leaves
  * the remainder, and a draft covering the total leaves none. Invalid drafts
  * report `valid: false` so the pre-commit preview can stay hidden while
@@ -75,7 +72,7 @@ export function saleDebt(total: number, paidDraft: string): SaleDebt {
 
 /** The per-kind draft rules; module scope keeps the config identity stable. */
 const SALE_DRAFT = {
-  emptyLine: (item: Item): SaleLine => ({ item, quantityDraft: "1", overrideType: "", overrideValue: "" }),
+  emptyLine: (item: Item): SaleDraftLine => ({ item, quantityDraft: "1", overrideType: "", overrideValue: "" }),
   unitPrice: saleUnitPrice,
 };
 
@@ -94,7 +91,7 @@ export function SalePage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unknownCode, setUnknownCode] = useState<string | null>(null);
   const [customer, setCustomer] = useState<PartySelection>({ id: null, name: "", needsChoice: false });
-  const [discountType, setDiscountType] = useState<DiscountType>("");
+  const [discountType, setDiscountType] = useState<AmountKind>("");
   const [discountValue, setDiscountValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   /** the saved sale whose completion card is shown; the server's response is
@@ -157,10 +154,9 @@ export function SalePage() {
   // The invoice total must be known before the payment pair (its reference) and
   // before the dirty flag reads the payment amount, so the totals are computed
   // first. This is the only ordering constraint the hooks have.
-  const subtotal = draft.subtotal;
   const enteredDiscount = nonNegativeOr(discountValue, 0);
-  const discountAmount = discountAmountFor(subtotal, discountType, discountValue);
-  const total = subtotal - discountAmount;
+  // one totals path for both screens; purchase passes no discount
+  const { subtotal, discountAmount, total } = draftTotals(lines, saleUnitPrice, discountType, discountValue);
   const payment = usePaymentPair(total);
 
   const createItem = useMutation(orpc.itemsCreate.mutationOptions());
@@ -251,7 +247,7 @@ export function SalePage() {
     }
     // runs the shared percentage/amount/over-total checks and maps a zero draft
     // to «nothing paid now» (the api requires a positive initialPaid)
-    const paid = resolveInitialPaid(total, { amount: payment.amount, percentage: payment.percentage, source: payment.source });
+    const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
     if (!paid.ok) {
       setError(t("saleInvalidPaid"));
       return;
@@ -270,10 +266,10 @@ export function SalePage() {
         setError(t("saleInvalidOverride"));
         return;
       }
-      if (quantityDraftInvalid(line.quantityDraft)) {
-        setError(t("saleInvalidQuantity"));
-        return;
-      }
+    }
+    if (firstUnusableQuantity(lines) !== undefined) {
+      setError(t("saleInvalidQuantity"));
+      return;
     }
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {
@@ -478,7 +474,7 @@ export function SalePage() {
             ) : (
               <table className="w-full" data-testid="sale-lines">
                 <thead><tr className="border-b text-right text-sm text-muted-foreground"><th className="p-2">{t("itemsName")}</th><th className="p-2">{t("saleQuantity")}</th><th className="p-2">{t("saleDefaultPrice")}</th><th className="p-2">{t("saleActualPrice")}</th><th className="p-2">{t("saleLineTotal")}</th><th className="p-2" /></tr></thead>
-                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toOverrideType(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
+                <tbody>{lines.map((line) => { const price = saleUnitPrice(line); const quantity = lineQuantity(line); return <tr key={line.item.id} className="border-b last:border-0"><td className="p-2">{line.item.name}</td><td className="p-2"><input className={cn(inputClass, "w-16 px-2 py-1")} name={`quantity-${line.item.id}`} autoComplete="off" inputMode="numeric" value={line.quantityDraft} onChange={(event) => draft.setQuantity(line.item.id, event.target.value)} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleQuantity")}`} /></td><td className="p-2"><Amount value={line.item.sellingPrice} /></td><td className="p-2"><div className="flex gap-1"><Select value={line.overrideType} onValueChange={(value) => { const next = toAmountKind(value ?? ""); if (next === line.overrideType) return; draft.patch(line.item.id, { overrideType: next, overrideValue: "" }); }} disabled={createInvoice.isPending} items={[{ value: "", label: t("saleDefault") }, { value: "AMOUNT", label: t("saleOverrideAmount") }, { value: "PERCENTAGE", label: t("saleOverridePercentage") }]}><SelectTrigger className="w-28" aria-label={`${line.item.name}: ${t("saleOverrideType")}`}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleDefault")}</SelectItem><SelectItem value="AMOUNT">{t("saleOverrideAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleOverridePercentage")}</SelectItem></SelectContent></Select>{line.overrideType !== "" && <input className={cn(inputClass, "w-20 px-2 py-1")} inputMode="numeric" value={line.overrideValue} onChange={(event) => draft.patch(line.item.id, { overrideValue: event.target.value })} disabled={createInvoice.isPending} aria-label={`${line.item.name}: ${t("saleOverrideValue")}`} />}</div><span className="text-xs text-muted-foreground"><Amount value={price} /></span></td><td className="p-2"><Amount value={quantity * price} /></td><td className="p-2"><button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => { const last = lines.length === 1; draft.remove(line.item.id); if (last) { setDiscountType(""); setDiscountValue(""); } }} disabled={createInvoice.isPending}><X size={16} aria-hidden="true" /></button></td></tr>; })}</tbody>
               </table>
             )}
           </div>
@@ -492,7 +488,7 @@ export function SalePage() {
       {lines.length > 0 && (
         <CheckoutBar testId="sale-checkout-bar" className="mt-4">
             <div className="flex flex-wrap items-end gap-3">
-              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => setDiscountType(toDiscountType(value ?? ""))} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
+              <label className="grid gap-1 text-sm font-medium">{t("saleDiscountType")}<Select value={discountType} onValueChange={(value) => setDiscountType(toAmountKind(value ?? ""))} disabled={createInvoice.isPending} name="discountType" items={[{ value: "", label: t("saleNoDiscount") }, { value: "AMOUNT", label: t("saleDiscountAmount") }, { value: "PERCENTAGE", label: t("saleDiscountPercentage") }]}><SelectTrigger className="w-40" data-testid="sale-discount-type"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="">{t("saleNoDiscount")}</SelectItem><SelectItem value="AMOUNT">{t("saleDiscountAmount")}</SelectItem><SelectItem value="PERCENTAGE">{t("saleDiscountPercentage")}</SelectItem></SelectContent></Select></label>
               <label className="grid gap-1 text-sm font-medium">{t("saleDiscountValue")}<input className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm" name="discountValue" autoComplete="off" inputMode="numeric" value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} disabled={discountType === "" || createInvoice.isPending} data-testid="sale-discount-value" /></label>
               <dl className="ms-auto flex items-center gap-6 text-sm"><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleSubtotal")}</dt><dd data-testid="sale-subtotal"><Amount value={subtotal} /></dd></div><div className="flex items-baseline gap-2"><dt className="text-muted-foreground">{t("saleDiscount")}</dt><dd data-testid="sale-discount"><Amount value={discountAmount > 0 ? -discountAmount : 0} /></dd></div><div className="flex items-baseline gap-2 text-lg font-bold"><dt>{t("saleTotal")}</dt><dd data-testid="sale-total"><Amount value={total} /></dd></div></dl>
             </div>

@@ -9,6 +9,7 @@ import {
   draftReducer,
   draftSubtotal,
   draftTotals,
+  firstUnusableQuantity,
   lineQuantity,
   nextPaymentPair,
   nextUnitCost,
@@ -110,6 +111,7 @@ describe("parseQuantityDraft (the one quantity parser both screens use)", () => 
 describe("nextUnitCost (the purchase line's controlled money field)", () => {
   it("treats a cleared field as an explicit zero, matching the previous contract", () => {
     expect(nextUnitCost("", 1200)).toBe(0);
+    // Number("   ") === 0, so a whitespace-only field is the same explicit zero
     expect(nextUnitCost("   ", 1200)).toBe(0);
   });
 
@@ -123,7 +125,17 @@ describe("nextUnitCost (the purchase line's controlled money field)", () => {
     expect(nextUnitCost("abc", 1200)).toBe(1200);
     expect(nextUnitCost("-5", 1200)).toBe(1200);
     expect(nextUnitCost("1.5", 1200)).toBe(1200);
-    expect(nextUnitCost("1e3", 1200)).toBe(1200);
+  });
+
+  it("pins the pre-#146 reachable reader exactly, including its generous spellings", () => {
+    // The page used `Number(event.target.value)` with an integer >= 0 guard.
+    // #146 moved that reader behind `nextUnitCost` so the page holds no number
+    // parsing; it deliberately does NOT tighten the reader, because the brief
+    // requires the money path to be unchanged. "1e3" and "0x10" therefore still
+    // resolve to their numeric value rather than being ignored.
+    expect(nextUnitCost("1e3", 1200)).toBe(1000);
+    expect(nextUnitCost("0x10", 1200)).toBe(16);
+    expect(nextUnitCost("9007199254740993", 1200)).toBe(9_007_199_254_740_992);
   });
 });
 
@@ -137,8 +149,11 @@ describe("sale line pricing", () => {
   it("bills a whole amount override and a percentage of the default price", () => {
     expect(saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
     expect(saleUnitPrice({ ...saleLine("a", "1", 500), overrideType: "PERCENTAGE", overrideValue: "80" })).toBe(400);
-    // 500 × 33% = 165 exactly; a rounding case rounds to whole DZD
+    // a rounding case rounds to whole DZD: 101 x 50% = 50.5
     expect(saleUnitPrice({ ...saleLine("a", "1", 101), overrideType: "PERCENTAGE", overrideValue: "50" })).toBe(51);
+    // the preview does not clamp a percentage override; submit refuses it
+    expect(saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "PERCENTAGE", overrideValue: "150" })).toBe(1500);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "150" })).toBe(true);
   });
 
   it("rejects an empty override value once a type is chosen (Number('') === 0 would bill the line free)", () => {
@@ -156,6 +171,7 @@ describe("sale line pricing", () => {
     expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "-5" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "abc" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "80" })).toBe(false);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "100" })).toBe(false);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "0" })).toBe(false);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "101" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "-1" })).toBe(true);
@@ -190,6 +206,15 @@ describe("draft line list", () => {
     expect(merged[0]!.quantityDraft).toBe("3");
   });
 
+  it("clamps a repeat add at the cap instead of zeroing a maxed line", () => {
+    // a line already at MAX_DRAFT_QUANTITY must stay valid when the same item is
+    // scanned again; an unbumped "1000001" would resolve to 0 and block the save
+    const sale = addDraftLine([saleLine("a", "1000000")], saleLine("a"));
+    expect(lineQuantity(sale[0]!)).toBe(1_000_000);
+    const purchase = addDraftLine([purchaseLine("a", "1000000")], purchaseLine("a"));
+    expect(lineQuantity(purchase[0]!)).toBe(1_000_000);
+  });
+
   it("sets a line's raw draft without rewriting it", () => {
     const lines = setDraftQuantity([saleLine("a"), saleLine("b")], "b", "abc");
     expect(lines[0]!.quantityDraft).toBe("1");
@@ -202,6 +227,14 @@ describe("draft line list", () => {
     const lines = removeDraftLine([saleLine("a"), saleLine("b")], "a");
     expect(lines.map((line) => line.item.id)).toEqual(["b"]);
     expect(removeDraftLine(lines, "missing")).toEqual(lines);
+  });
+
+  it("reports the first line whose quantity cannot be committed", () => {
+    expect(firstUnusableQuantity([saleLine("a", "2"), saleLine("b", "3")])).toBeUndefined();
+    expect(firstUnusableQuantity([saleLine("a", ""), saleLine("b", "3")])?.item.id).toBe("a");
+    // the first offender wins, not the last
+    expect(firstUnusableQuantity([saleLine("a", "2"), saleLine("b", "abc")])?.item.id).toBe("b");
+    expect(firstUnusableQuantity([])).toBeUndefined();
   });
 
   it("applies every reducer action in order (the React surface)", () => {
@@ -355,32 +388,30 @@ describe("nextPaymentPair (the shared #162 amount ⇄ percentage link)", () => {
 });
 
 describe("resolveInitialPaid (what the invoice carries)", () => {
-  const pair = (over: Partial<PaymentPair>): PaymentPair => ({ ...EMPTY_PAYMENT_PAIR, ...over });
-
   it("treats an empty or zero draft as nothing paid now (the whole total becomes debt)", () => {
-    expect(resolveInitialPaid(1000, EMPTY_PAYMENT_PAIR)).toEqual({ ok: true, paid: undefined });
-    expect(resolveInitialPaid(1000, pair({ amount: "0", percentage: "0", source: "amount" }))).toEqual({ ok: true, paid: undefined });
+    expect(resolveInitialPaid(1000, "", "")).toEqual({ ok: true, paid: undefined });
+    expect(resolveInitialPaid(1000, "0", "0")).toEqual({ ok: true, paid: undefined });
   });
 
   it("carries a partial payment and a full one", () => {
-    expect(resolveInitialPaid(1000, pair({ amount: "400", percentage: "40", source: "amount" }))).toEqual({ ok: true, paid: 400 });
-    expect(resolveInitialPaid(1000, pair({ amount: "1000", percentage: "100", source: "amount" }))).toEqual({ ok: true, paid: 1000 });
+    expect(resolveInitialPaid(1000, "400", "40")).toEqual({ ok: true, paid: 400 });
+    expect(resolveInitialPaid(1000, "1000", "100")).toEqual({ ok: true, paid: 1000 });
   });
 
   it("reads a grouped amount with the shared parser (#180)", () => {
-    expect(resolveInitialPaid(2000, pair({ amount: "1 000", percentage: "50", source: "amount" }))).toEqual({ ok: true, paid: 1000 });
-    expect(resolveInitialPaid(1000, pair({ amount: "1,000", percentage: "100", source: "amount" }))).toEqual({ ok: true, paid: 1000 });
+    expect(resolveInitialPaid(2000, "1 000", "50")).toEqual({ ok: true, paid: 1000 });
+    expect(resolveInitialPaid(1000, "1,000", "100")).toEqual({ ok: true, paid: 1000 });
   });
 
   it("refuses an over-total payment instead of letting the api reject it", () => {
-    expect(resolveInitialPaid(1000, pair({ amount: "1500", percentage: "100", source: "amount" }))).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "1500", "100")).toEqual({ ok: false });
   });
 
   it("refuses an invalid percentage, an unreadable amount, and a malformed grouping", () => {
-    expect(resolveInitialPaid(1000, pair({ amount: "500", percentage: "12.5", source: "percentage" }))).toEqual({ ok: false });
-    expect(resolveInitialPaid(1000, pair({ amount: "-5", percentage: "", source: "amount" }))).toEqual({ ok: false });
-    expect(resolveInitialPaid(1000, pair({ amount: "abc", percentage: "", source: "amount" }))).toEqual({ ok: false });
-    expect(resolveInitialPaid(1000, pair({ amount: "1 000,00", percentage: "", source: "amount" }))).toEqual({ ok: false });
-    expect(resolveInitialPaid(1000, pair({ amount: "1,5", percentage: "", source: "amount" }))).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "500", "12.5")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "-5", "")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "abc", "")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "1 000,00", "")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "1,5", "")).toEqual({ ok: false });
   });
 });

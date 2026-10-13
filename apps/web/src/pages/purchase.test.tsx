@@ -665,15 +665,26 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
  */
 describe("PurchasePage quantity draft (#146)", () => {
   let queryClient: QueryClient;
+  /** roots created by this block, so a test that throws still tears down */
+  let mounted: Array<{ root: ReturnType<typeof createRoot>; container: HTMLElement }> = [];
 
   beforeEach(() => {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     document.body.innerHTML = "";
     lastPurchaseInput = null;
+    mounted = [];
     purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    const entries = mounted;
+    mounted = [];
+    for (const entry of entries) {
+      // a test that already tore down its own root is fine; React tolerates the
+      // second unmount, and this guarantees cleanup when the body threw
+      await act(async () => entry.root.unmount());
+      entry.container.remove();
+    }
     queryClient.clear();
   });
 
@@ -688,6 +699,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
+    mounted.push({ root, container });
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -707,7 +719,9 @@ describe("PurchasePage quantity draft (#146)", () => {
       setValue(quickForm.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    await act(async () => {
+      await chooseOption(quickForm.querySelector<HTMLElement>("button")!, "تصنيف");
+    });
     await act(async () => {
       quickForm.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -771,5 +785,33 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-1", quantity: 2, unitPrice: 1200 }]);
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("keeps the unit-cost field's previous value for an unreadable draft and reads a cleared field as zero", async () => {
+    const { container } = await mountWithLine("2", "1200");
+    const cost = container.querySelector<HTMLInputElement>('input[aria-label*="تكلفة"]')!;
+    expect(cost.value).toBe("1200");
+    expect(totalText(container)).toContain("2400");
+
+    // a cleared cost is an explicit zero, exactly as before #146
+    await act(async () => setValue(cost, ""));
+    expect(cost.value).toBe("0");
+    expect(totalText(container)).toContain("0");
+
+    await act(async () => setValue(cost, "900"));
+    expect(cost.value).toBe("900");
+    expect(totalText(container)).toContain("1800");
+
+    // an unreadable draft keeps the previous cost instead of billing zero
+    await act(async () => setValue(cost, "abc"));
+    expect(cost.value).toBe("900");
+    expect(totalText(container)).toContain("1800");
+  });
+
+  it("refuses an over-cap quick-add quantity instead of landing a line that resolves to zero", async () => {
+    const { container } = await mountWithLine("1000001", "1200");
+    expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(0);
+    expect(lastPurchaseInput).toBeNull();
   });
 });

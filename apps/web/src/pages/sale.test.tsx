@@ -1082,3 +1082,48 @@ describe("SalePage party picker (issue 120)", () => {
     expect(lastInvoiceInput).toBeNull();
   });
 });
+
+/**
+ * #146 — sale is the reference behaviour the purchase drift fix is compared
+ * against, so the extraction must not lose it. These pin the shared quantity
+ * rule and one discounted cart total on the rendered sale screen.
+ */
+describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
+  const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+  const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
+
+  it("keeps a cleared draft cleared, zeroes the line, and refuses the save", async () => {
+    const host = await mountSale();
+    await scan("111"); // sellingPrice 1000
+    expect(quantityField(host).value).toBe("1");
+    expect(totalText(host)).toContain("1000");
+
+    await act(async () => setElementValue(quantityField(host), ""));
+    expect(quantityField(host).value).toBe("");
+    // the line stays, resolves to zero, and the total follows
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(totalText(host)).toContain("0");
+
+    await act(async () => saveButton(host).click());
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("saleInvalidQuantity"));
+    expect(lastInvoiceInput).toBeNull();
+
+    // an unreadable draft behaves the same way
+    await act(async () => setElementValue(quantityField(host), "abc"));
+    expect(quantityField(host).value).toBe("abc");
+    expect(totalText(host)).toContain("0");
+  });
+
+  it("pins a discounted cart total through the shared totals path", async () => {
+    const host = await mountSale();
+    await scan("111"); // 1 x 1000
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await chooseOption(trigger, "نسبة مئوية");
+    await act(async () => setInput(host, "sale-discount-value", "10"));
+
+    expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1000");
+    expect(host.querySelector('[data-testid="sale-discount"]')?.textContent).toContain("100");
+    expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("900");
+  });
+});

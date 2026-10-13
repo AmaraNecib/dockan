@@ -15,8 +15,8 @@ import {
 } from "@/lib/invoice-draft";
 
 /**
- * #146 — the React side of the invoice-draft module. Each hook wraps a pure rule
- * from `invoice-draft.ts`; the pages keep only their kind-specific fields.
+ * #146, the React side of the invoice-draft module. Each hook wraps a pure rule
+ * from `invoice-draft.ts`, so the pages keep only their kind-specific fields.
  */
 
 /** Per-kind configuration. Define these at module scope so identity is stable. */
@@ -32,6 +32,7 @@ export interface InvoiceDraft<T extends DraftLine> {
   /** Add an item, merging a repeat pick into its existing line. */
   addItem(item: Item, extras?: Partial<T>): void;
   setQuantity(itemId: string, draft: string): void;
+  /** Merge kind-specific fields (price override, unit cost) into one line. */
   patch(itemId: string, patch: Partial<T>): void;
   remove(itemId: string): void;
   reset(): void;
@@ -39,9 +40,9 @@ export interface InvoiceDraft<T extends DraftLine> {
 }
 
 /**
- * The line list behind both invoice screens. Wraps the pure reducer so the
- * add/merge/remove/set-quantity rules live in one place and are unit-tested
- * without React.
+ * The line list behind both invoice screens. Wraps the pure reducer, so the
+ * add, merge, remove and set-quantity rules live in one place and are
+ * unit-tested without React.
  */
 export function useInvoiceDraft<T extends DraftLine>(config: InvoiceDraftConfig<T>): InvoiceDraft<T> {
   const [lines, dispatch] = useReducer(
@@ -84,8 +85,9 @@ export interface PaymentPairState {
 }
 
 /**
- * The #162 amount ⇄ percentage pair shared by both screens. The link runs on
- * the pure `nextPaymentPair` transition whenever the reference total changes.
+ * The #162 amount and percentage pair shared by both screens. The link runs on
+ * the pure `nextPaymentPair` transition whenever the reference total changes;
+ * the input itself owns the link between edits.
  */
 export function usePaymentPair(total: number): PaymentPairState {
   const [pair, setPair] = useState<PaymentPair>(EMPTY_PAYMENT_PAIR);
@@ -119,7 +121,7 @@ export interface QuickAddSpec<F extends Record<string, string>> {
 }
 
 export interface QuickAddOptions<F> {
-  /** Land the created item on the draft (sale: add/merge; purchase: replace). */
+  /** Land the created item on the draft (sale adds or merges; purchase replaces). */
   onCreated(item: Item, fields: F): void;
   /** The page's error setter, so the quick-add shares the one error surface. */
   setError(message: string | null): void;
@@ -128,21 +130,20 @@ export interface QuickAddOptions<F> {
 export interface QuickAdd<F extends Record<string, string>> {
   open: boolean;
   fields: F;
-  pending: boolean;
   setField<K extends keyof F & string>(key: K, value: F[K]): void;
   /** Open the form, optionally seeding fields (a scanned barcode, a category). */
   openForm(seed?: Partial<F>): void;
   close(): void;
   toggle(): void;
-  /** Validate + create through the caller's `create`, then land the line. */
+  /** Validate and create through the caller's `create`, then land the line. */
   submit(create: (fields: F) => Promise<QuickAddOutcome>): Promise<void>;
 }
 
 /**
- * The quick-add item form's behaviour: open/close, the typed field bag, the
+ * The quick-add item form's behaviour: open and close, the typed field bag, the
  * create-then-land-the-line flow, and error routing. The caller owns the
- * fields' validation and copy (`create`) and the markup — the two forms have
- * different fields, labels, and defaults by intent, so only the rules are
+ * fields, their validation and copy (`create`), and the markup. The two forms
+ * have different fields, labels and defaults by intent, so only the rules are
  * shared.
  */
 export function useQuickAdd<F extends Record<string, string>>(
@@ -151,11 +152,10 @@ export function useQuickAdd<F extends Record<string, string>>(
 ): QuickAdd<F> {
   const [open, setOpen] = useState(false);
   const [fields, setFields] = useState<F>(() => spec.empty());
-  const [pending, setPending] = useState(false);
 
   const openForm = useCallback(
     (seed?: Partial<F>) => {
-      if (spec.resetOnOpen) setFields({ ...spec.empty(), ...seed });
+      setFields((current) => (spec.resetOnOpen ? { ...spec.empty(), ...seed } : { ...current, ...seed }));
       setOpen(true);
     },
     [spec],
@@ -169,9 +169,7 @@ export function useQuickAdd<F extends Record<string, string>>(
   const submit = useCallback(
     async (create: (fields: F) => Promise<QuickAddOutcome>) => {
       options.setError(null);
-      setPending(true);
       const outcome = await create(fields);
-      setPending(false);
       if (!outcome.ok) {
         options.setError(outcome.error);
         return;
@@ -183,5 +181,5 @@ export function useQuickAdd<F extends Record<string, string>>(
     [fields, options, spec],
   );
 
-  return { open, fields, pending, setField, openForm, close, toggle, submit };
+  return { open, fields, setField, openForm, close, toggle, submit };
 }

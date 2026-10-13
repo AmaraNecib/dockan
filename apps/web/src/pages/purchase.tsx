@@ -17,7 +17,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { percentageDraftInvalid } from "@/lib/amount-parse";
-import { lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstUnusableQuantity, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -35,11 +35,9 @@ import { orpc } from "../lib/rpc";
  * invoice-draft module; this page adds only the fields a purchase has.
  */
 
-type DraftLine = PurchaseDraftLine;
-
 /** The per-kind draft rules; module scope keeps the config identity stable. */
 const PURCHASE_DRAFT = {
-  emptyLine: (item: Item): DraftLine => ({ item, quantityDraft: "1", unitCost: item.costPrice }),
+  emptyLine: (item: Item): PurchaseDraftLine => ({ item, quantityDraft: "1", unitCost: item.costPrice }),
   unitPrice: purchaseUnitPrice,
 };
 
@@ -97,7 +95,10 @@ export function PurchasePage() {
       // so the freshly created item lands as a line immediately, replacing any
       // line the same item already had
       draft.remove(item.id);
-      draft.addItem(item, { quantityDraft: String(Number(fields.qty)), unitCost: Number(fields.unitCost) });
+      // SAFETY: quickSubmit rejects any quantity the shared parser cannot read
+      // as a whole 1..MAX_DRAFT_QUANTITY, so the resolved number is always a
+      // valid draft here.
+      draft.addItem(item, { quantityDraft: String(parseQuantityDraft(fields.qty)), unitCost: Number(fields.unitCost) });
     },
     setError,
   });
@@ -116,19 +117,17 @@ export function PurchasePage() {
     }
     // runs the shared percentage/amount/over-total checks and maps a zero draft
     // to «nothing paid now» (the api requires a positive initialPaid)
-    const paid = resolveInitialPaid(total, { amount: payment.amount, percentage: payment.percentage, source: payment.source });
+    const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
     if (!paid.ok) {
       setError(t("purchasesInvalidPaid"));
       return;
     }
-    // #146 — the quantity field is the shared draft now, so an unusable draft is
+    // #146 - the quantity field is the shared draft now, so an unusable draft is
     // refused instead of silently keeping a stale quantity (the old
     // `Number(event.target.value)` handler dropped the keystroke)
-    for (const line of lines) {
-      if (quantityDraftInvalid(line.quantityDraft)) {
-        setError(t("purchasesInvalidQuantity"));
-        return;
-      }
+    if (firstUnusableQuantity(lines) !== undefined) {
+      setError(t("purchasesInvalidQuantity"));
+      return;
     }
     void createInvoice.mutate({
       kind: "PURCHASE",
@@ -146,9 +145,11 @@ export function PurchasePage() {
   function quickSubmit() {
     void quick.submit(async (fields) => {
       if (fields.categoryId === "") return { ok: false, error: t("itemsChooseCategory") };
-      const qty = Number(fields.qty);
+      // the shared draft rule bounds the quick quantity too: an over-cap value
+      // would land a line that resolves to zero and could never be saved
+      const qty = parseQuantityDraft(fields.qty);
       const unitCost = Number(fields.unitCost);
-      if (!Number.isInteger(qty) || qty < 1) return { ok: false, error: t("purchasesInvalidQuantity") };
+      if (qty < 1) return { ok: false, error: t("purchasesInvalidQuantity") };
       if (!Number.isInteger(unitCost) || unitCost <= 0) return { ok: false, error: t("purchasesInvalidCost") };
       return await new Promise<QuickAddOutcome>((resolve) => {
         createItem.mutate(

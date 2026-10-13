@@ -7,37 +7,31 @@ import {
   percentageDraftInvalid,
   percentageFromAmount,
 } from "@/lib/amount-parse";
-import { parseWholeNumber } from "@/lib/numeric-input";
 
 /**
- * #146 — one invoice-draft module behind the sale and purchase screens.
+ * #146, one invoice-draft module behind the sale and purchase screens.
  *
  * `sale.tsx` and `purchase.tsx` had drifted: sale parsed a quantity *draft*
  * (a transient empty field is legal, an invalid draft resolves to 0 and stays
  * visible), purchase wrote `Number(event.target.value)` and silently kept the
- * previous value. This module owns the shared draft mechanics — the line list,
- * one quantity parser, line/invoice totals, the initial-payment pair, and the
- * per-kind pricing rule callers supply — so a draft bug is fixed once and both
+ * previous value. This module owns the shared draft mechanics: the line list,
+ * one quantity parser, line and invoice totals, the initial-payment pair, and
+ * the per-kind pricing rule callers supply. A draft bug is fixed once and both
  * screens behave the same for the same owner action.
  *
- * Everything here is pure and React-free: the reducer and the rules are
- * unit-tested without a render. `use-invoice-draft.ts` wraps them for React.
+ * Everything here is pure and React-free. The reducer and the rules are
+ * unit-tested without a render; `use-invoice-draft.ts` wraps them for React.
  */
-
-/** Which screen owns the draft. The kind changes copy and the pricing rule only. */
-export type DraftKind = "SALE" | "PURCHASE";
 
 /**
  * A share-of-a-reference value: an invoice discount or a per-line negotiated
  * price. Both inputs share this shape and both spell «nothing chosen» as "".
  */
 export type AmountKind = "" | "AMOUNT" | "PERCENTAGE";
-export type DiscountType = AmountKind;
-export type OverrideType = AmountKind;
 
 /**
  * One draft line: the item plus the raw quantity text the owner is typing.
- * Empty is a valid transient while typing — see `parseQuantityDraft`.
+ * Empty is a valid transient while typing. See `parseQuantityDraft`.
  */
 export interface DraftLine {
   item: Item;
@@ -46,13 +40,13 @@ export interface DraftLine {
 
 /** A SALE line: the base draft plus an optional negotiated unit price. */
 export interface SaleDraftLine extends DraftLine {
-  overrideType: OverrideType;
+  overrideType: AmountKind;
   overrideValue: string;
 }
 
 /**
  * A PURCHASE line: the base draft plus the unit cost actually paid. The cost is
- * a resolved number, not a draft — see `nextUnitCost`.
+ * a resolved number, not a draft. See `nextUnitCost`.
  */
 export interface PurchaseDraftLine extends DraftLine {
   unitCost: number;
@@ -68,11 +62,11 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
 
 /**
  * Resolve a cart quantity draft to its effective line quantity. Empty,
- * non-integer, zero, or over-cap drafts yield 0 (invalid); the input never
+ * non-integer, zero, or over-cap drafts yield 0 (invalid). The input never
  * rewrites the draft, so clearing it stays visually empty instead of snapping
  * back to the previous value (the field is NOT a controlled number). Only an
- * explicit add-line action (scan / duplicate picker entry) repairs a cleared
- * draft to a single unit.
+ * explicit add-line action (scan or duplicate picker entry) repairs a cleared
+ * draft, by bumping it to one unit.
  */
 export function parseQuantityDraft(draft: string): number {
   const trimmed = draft.trim();
@@ -81,14 +75,23 @@ export function parseQuantityDraft(draft: string): number {
   return Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAFT_QUANTITY ? value : 0;
 }
 
-/** True when the draft cannot form a sellable/purchasable line (empty, zero, or garbage). */
+/** True when the draft cannot form a sellable or purchasable line. */
 export function quantityDraftInvalid(draft: string): boolean {
   return parseQuantityDraft(draft) < 1;
 }
 
-/** The quantity a draft line currently bills at; 0 while the draft is unusable. */
+/** The quantity a draft line bills at; 0 while the draft is unusable. */
 export function lineQuantity(line: DraftLine): number {
   return parseQuantityDraft(line.quantityDraft);
+}
+
+/**
+ * The first line whose quantity draft cannot be committed, or undefined when
+ * every line is usable. Both pages refuse a save on the same rule; only the
+ * error copy differs.
+ */
+export function firstUnusableQuantity<T extends DraftLine>(lines: readonly T[]): T | undefined {
+  return lines.find((line) => quantityDraftInvalid(line.quantityDraft));
 }
 
 /** A non-negative numeric draft, or `fallback` when it is unreadable. */
@@ -112,7 +115,7 @@ export function saleUnitPrice(line: SaleDraftLine): number {
 
 /**
  * A chosen price override must carry a usable value: empty input parses to 0
- * (Number("") === 0) and would bill the line as free while the preview still
+ * (`Number("") === 0`) and would bill the line as free while the preview still
  * shows the default price, so it is rejected before submission.
  */
 export function saleOverrideInvalid(line: Pick<SaleDraftLine, "overrideType" | "overrideValue">): boolean {
@@ -132,37 +135,37 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
 /**
  * Read the edited unit-cost text for a PURCHASE line. This field is a
  * controlled money field, not a quantity draft: a cleared field is an explicit
- * zero (as it always was — `Number("") === 0`), digits are that whole number,
- * and an unreadable draft keeps the previous value rather than transiently
- * billing the line at zero mid-edit. The reader is the repo's strict
- * `parseWholeNumber`, so a stray `1e3` / `0x10` can never persist a value the
- * operator never typed (the old `Number()` reader accepted both).
+ * zero (as it always was, `Number("") === 0`), a whole non-negative number is
+ * that value, and anything else keeps the previous value instead of
+ * transiently billing the line at zero mid-edit. The reader is deliberately
+ * the same `Number` check the page used before #146, so no reachable input
+ * changes which number the line bills.
  */
 export function nextUnitCost(value: string, previous: number): number {
-  if (value.trim() === "") return 0;
-  const parsed = parseWholeNumber(value);
-  return parsed === null ? previous : parsed;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : previous;
 }
 
 /** Accept only the two real amount kinds; anything else means «none chosen». */
 export function toAmountKind(value: string): AmountKind {
   return value === "AMOUNT" || value === "PERCENTAGE" ? value : "";
 }
-export const toDiscountType = toAmountKind;
-export const toOverrideType = toAmountKind;
 
 // --- line list --------------------------------------------------------------
 
 /**
  * Add an item to the draft, merging a repeat pick into the existing line. The
- * merge bumps the effective quantity by one, which repairs a cleared/invalid
- * draft to a single unit (a scan or picker entry is an explicit add action).
+ * merge bumps the effective quantity by one, which repairs a cleared or invalid
+ * draft to a single unit. It clamps at `MAX_DRAFT_QUANTITY`, so a scan on a
+ * line already at the cap keeps that line valid instead of zeroing it.
  */
 export function addDraftLine<T extends DraftLine>(lines: readonly T[], line: T): T[] {
   const existing = lines.find((entry) => entry.item.id === line.item.id);
   if (existing === undefined) return [...lines, line];
   return lines.map((entry) =>
-    entry.item.id === line.item.id ? { ...entry, quantityDraft: String(lineQuantity(entry) + 1) } : entry,
+    entry.item.id === line.item.id
+      ? { ...entry, quantityDraft: String(Math.min(lineQuantity(entry) + 1, MAX_DRAFT_QUANTITY)) }
+      : entry,
   );
 }
 
@@ -216,10 +219,10 @@ export function draftSubtotal<T extends DraftLine>(lines: readonly T[], unitPric
 
 /**
  * The invoice discount in whole DZD. An amount is capped at the subtotal; a
- * percentage rounds like every other money figure and is capped at the
- * subtotal too, so a 100% discount can never make the total negative.
+ * percentage rounds like every other money figure and is capped at the subtotal
+ * too, so a 100% discount can never make the total negative.
  */
-export function discountAmountFor(subtotal: number, type: DiscountType, draft: string): number {
+export function discountAmountFor(subtotal: number, type: AmountKind, draft: string): number {
   if (type === "") return 0;
   const value = nonNegativeOr(draft, 0);
   if (type === "AMOUNT") return Math.min(value, subtotal);
@@ -233,10 +236,14 @@ export interface DraftTotals {
   total: number;
 }
 
+/**
+ * The one path both screens use to turn draft lines into the checkout numbers.
+ * Purchase passes an empty discount type and gets its subtotal straight back.
+ */
 export function draftTotals<T extends DraftLine>(
   lines: readonly T[],
   unitPrice: (line: T) => number,
-  discountType: DiscountType,
+  discountType: AmountKind,
   discountValue: string,
 ): DraftTotals {
   const subtotal = draftSubtotal(lines, unitPrice);
@@ -244,7 +251,7 @@ export function draftTotals<T extends DraftLine>(
   return { subtotal, discountAmount, total: subtotal - discountAmount };
 }
 
-// --- initial payment (amount ⇄ percentage pair, #162) -----------------------
+// --- initial payment (amount to percentage pair, #162) ----------------------
 
 export type PaymentSource = "amount" | "percentage" | null;
 
@@ -257,7 +264,8 @@ export interface PaymentPair {
 
 export const EMPTY_PAYMENT_PAIR: PaymentPair = { amount: "", percentage: "", source: null };
 
-function samePair(a: PaymentPair, b: PaymentPair): boolean {
+/** Whether two pair states are the same, so a hook can keep object identity. */
+export function paymentPairUnchanged(a: PaymentPair, b: PaymentPair): boolean {
   return a.amount === b.amount && a.percentage === b.percentage && a.source === b.source;
 }
 
@@ -292,24 +300,19 @@ export function nextPaymentPair(total: number, current: PaymentPair): PaymentPai
   };
 }
 
-/** Whether `nextPaymentPair` would change anything; lets the hook keep identity. */
-export function paymentPairUnchanged(a: PaymentPair, b: PaymentPair): boolean {
-  return samePair(a, b);
-}
-
 /**
  * Resolve a pre-commit payment pair to the `initialPaid` the invoice carries.
- * `paid: undefined` means «nothing paid now» (the whole total becomes debt): an
- * empty or zero draft, or a percentage that rounds to zero. Invalid drafts — a
- * non-whole percentage, an unreadable amount, or an amount above the total —
- * report `ok: false` so the caller surfaces its own message; the api rejects an
- * overpayment, so an over-total draft is not a zero-debt commit.
+ * `paid: undefined` means «nothing paid now»: an empty or zero draft, or a
+ * percentage that rounds to zero, so the whole total becomes debt. Invalid
+ * drafts (a non-whole percentage, an unreadable amount, or an amount above the
+ * total) report `ok: false` so the caller surfaces its own message. The api
+ * rejects an overpayment, so an over-total draft is not a zero-debt commit.
  */
 export type InitialPaidResolution = { ok: true; paid: number | undefined } | { ok: false };
 
-export function resolveInitialPaid(total: number, pair: PaymentPair): InitialPaidResolution {
-  if (percentageDraftInvalid(pair.percentage)) return { ok: false };
-  const paid = pair.amount.trim() === "" ? undefined : parseGroupedAmount(pair.amount);
+export function resolveInitialPaid(total: number, amountDraft: string, percentageDraft: string): InitialPaidResolution {
+  if (percentageDraftInvalid(percentageDraft)) return { ok: false };
+  const paid = amountDraft.trim() === "" ? undefined : parseGroupedAmount(amountDraft);
   if (paid === null) return { ok: false };
   if (paid !== undefined && paid > total) return { ok: false };
   return { ok: true, paid: paid === 0 ? undefined : paid };

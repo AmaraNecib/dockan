@@ -179,6 +179,16 @@ export function SupplierOpeningBalancePage() {
     setTypedResolution(null);
   }
 
+  /** The dialog's OWN Cancel. The page-level `leave()` already invalidated an
+   * in-flight attempt (review round 1), but the dialog's Cancel did not: a second
+   * Save while the dialog was open left a live attempt whose late answer
+   * re-opened the dialog the owner had just dismissed (review round 2 finding 1).
+   * Cancel stays enabled — a hung lookup must not trap the owner. */
+  function cancelConfirm() {
+    invalidateAttempt();
+    closeConfirm();
+  }
+
   /** Remember the server's answer under the exact lookup key it answered for. */
   function rememberResolution(supplier: ResolvedSupplier | null) {
     setTypedResolution(resolveKey === null ? null : { key: resolveKey, supplier });
@@ -566,10 +576,10 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
-                <Button type="button" variant="outline" onClick={closeConfirm} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
+                <Button type="button" variant="outline" onClick={cancelConfirm} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
                   {t("partyCancel")}
                 </Button>
               </div>

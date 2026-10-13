@@ -586,6 +586,48 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(resolveCalls).toBe(1);
   });
 
+  it("does not re-open the dialog when its own cancel lands while a re-submit's lookup is pending (review round 2 finding 1)", async () => {
+    // the typed name resolves to an account with entries, so the first submit
+    // opens the confirmation dialog instead of writing directly
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
+
+    // a second main Save starts a NEW lookup for the same fields; hold it open
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(2);
+
+    // the dialog's OWN Cancel lands while that lookup runs
+    await act(async () => {
+      clickOn("opening-balance-confirm-cancel");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the dismissed dialog must not re-open and nothing
+    // may be written by the abandoned attempt
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
   it("does not write when the page unmounts while the lookup is pending (review round 1 finding 1)", async () => {
     resolveHold = new Promise((resolve) => {
       releaseResolveHold = resolve;

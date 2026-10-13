@@ -32,6 +32,25 @@ async function rpc<T>(page: Page, procedure: string, json: RpcInput): Promise<T>
 }
 
 /**
+ * Assert that no opening-balance write lands during a bounded window after the
+ * page's next steps have run. `wrote` starts false, so a single immediate read
+ * passes vacuously and would miss a late write (review round 2 finding 2);
+ * sample the flag for a real interval and require every sample false. The
+ * sample count proves the window was observed rather than skipped.
+ */
+async function expectNoWriteDuring(page: Page, wrote: () => boolean, windowMs = 1500): Promise<void> {
+  const deadline = Date.now() + windowMs;
+  let samples = 0;
+  while (Date.now() < deadline) {
+    expect(wrote(), `an opening-balance write landed ${samples * 100}ms into the no-write window`).toBe(false);
+    samples += 1;
+    await page.waitForTimeout(100);
+  }
+  expect(samples, "the no-write window must be sampled, not skipped").toBeGreaterThan(5);
+  expect(wrote()).toBe(false);
+}
+
+/**
  * #176 — supplier adjustments (تسوية) and the bulk opening-balance screen
  * (رصيد افتتاحي). Records an opening balance from the bulk screen, then an
  * invoice-linked خصم on the supplier page, and checks that the account balance
@@ -219,14 +238,69 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await page.getByTestId("opening-balance-cancel").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 
-  // let the held lookup answer: the abandoned attempt must not write
+  // let the held lookup answer: the abandoned attempt must not write over the
+  // window that follows the response, not just at the instant it lands
   await lookup;
   await page.unroute("**/api/rpc/suppliersResolveName");
-  expect(wrote).toBe(false);
+  await expectNoWriteDuring(page, () => wrote);
 
   // and the name never materialized
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-table")).not.toContainText(name);
+});
+
+/**
+ * Review round 2, finding 1: the dialog's OWN Cancel must invalidate the
+ * in-flight attempt. Round 1 fixed the page-level Cancel; this path was left
+ * live, so a second main Save (the dialog still open) followed by the dialog's
+ * Cancel let the late lookup answer re-open the dismissed dialog.
+ */
+test("cancelling the dialog during a re-submit's lookup does not re-open it (issue 184 review round 2)", async ({ page }) => {
+  await signIn(page);
+  const stamp = Date.now().toString();
+  const carriedName = `مورد حوار-${stamp}`;
+
+  // an entry-carrying account so the first resolve opens the dialog
+  const carried = await rpc<{ id: string }>(page, "suppliersCreate", { name: carriedName });
+  await rpc(page, "suppliersAdjust", { supplierId: carried.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+  // delay only the SECOND lookup: the first must answer so the dialog opens
+  let lookups = 0;
+  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+    lookups += 1;
+    if (lookups >= 2) await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  let wrote = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) wrote = true;
+  });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(carriedName);
+  await page.getByTestId("opening-balance-new-amount").fill("500");
+
+  // the first submit resolves and opens the dialog naming the carried account
+  await page.getByTestId("opening-balance-save").click();
+  await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
+
+  // a second main Save starts a NEW held lookup while the dialog stays open
+  const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  await page.getByTestId("opening-balance-save").click();
+
+  // the DIALOG's own Cancel lands while that lookup runs
+  await page.getByTestId("opening-balance-confirm-cancel").click();
+  await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
+
+  // the held lookup settles: the abandoned attempt must neither write nor
+  // re-open the dismissed dialog over a bounded window
+  await secondLookup;
+  expect(lookups).toBeGreaterThanOrEqual(2); // positive control: a second resolve ran
+  await page.unroute("**/api/rpc/suppliersResolveName");
+  await expectNoWriteDuring(page, () => wrote);
+  await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
 });
 
 /**
@@ -259,7 +333,7 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
 
   await lookup;
   await page.unroute("**/api/rpc/suppliersResolveName");
-  expect(wrote).toBe(false);
+  await expectNoWriteDuring(page, () => wrote);
 });
 
 /**
@@ -291,7 +365,7 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await page.goBack(); // router-driven unmount, no page onClick
   await lookup;
   await page.unroute("**/api/rpc/suppliersResolveName");
-  await expect.poll(() => wrote, { timeout: 2000 }).toBe(false);
+  await expectNoWriteDuring(page, () => wrote);
 });
 
 /**

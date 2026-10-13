@@ -185,3 +185,65 @@ next submit re-resolves the edited row.
 - e2e (4): route-delayed lookup + Cancel, + back link, + browser back each assert no
   `suppliersOpeningBalances` request follows; the field-edit flow asserts the dialog
   closes, the batch saves, and both balances land.
+
+---
+
+## Review-fix round 2 (PR #190, Greptile 4/5)
+
+Two new findings, both valid; two re-reported round-0 findings verified already
+fixed and left untouched.
+
+### Finding 1 — a canceled dialog re-opens
+
+The dialog's own Cancel called `closeConfirm()`, which only hid the dialog and
+dropped the snapshot. It did **not** invalidate the in-flight attempt. The
+page-level `leave()` fixed in round 1 covered the page Cancel, not this path.
+
+**Repro:** open the dialog for a typed supplier with history, click the main Save
+again (a new resolve starts; the dialog stays open), click the dialog's Cancel
+while that lookup runs. The attempt was never invalidated, so the late answer
+passed the `attemptRef` check and `setConfirming(true)` re-opened the dismissed
+dialog.
+
+**Fix:** a dedicated `cancelConfirm()` wired to the dialog's Cancel button —
+`invalidateAttempt()` then `closeConfirm()`, exactly like `leave()` minus the
+navigation. Cancel stays enabled (a hung lookup must not trap the owner).
+`confirm-save` also disables while `resolving`, so a confirm cannot run against
+the snapshot while a re-submit's lookup is still deciding the destination — the
+same race from the other side.
+
+**Tests:** web `does not re-open the dialog when its own cancel lands while a
+re-submit's lookup is pending` (held second resolve, asserts the dialog stays
+gone and `mutationCalls === 0`); e2e `cancelling the dialog during a re-submit's
+lookup does not re-open it` (route-delayed second lookup, bounded no-write window,
+asserts the dialog stays gone). Both fail on the pre-fix source.
+
+### Finding 2 — the no-write E2E tests could pass vacuously
+
+`wrote` starts `false`, so `expect(wrote).toBe(false)` — and even
+`expect.poll(...).toBe(false)`, which returns on its first `false` sample — could
+pass before the page's continuation ran. The response was awaited, but not the
+continuation.
+
+**Fix:** the spec shares `expectNoWriteDuring(page, wrote, windowMs = 1500)`: it
+samples the flag every 100 ms for a fixed window after the held response, asserts
+every sample `false`, and requires `> 5` samples so the window cannot be skipped.
+Applied to all three leave tests (Cancel, back link, browser back).
+
+### Re-reported findings 3 & 4 — verified already fixed at round 1
+
+- **"Cancel still writes balances"** — the page Cancel (`leave()`, now
+  `supplier-opening-balance.tsx:190`), the back `<Link>` (`onClick={invalidateAttempt}`,
+  line 369) and the unmount cleanup (line 147) all invalidate. Tests: web
+  `does not write when the owner cancels while the lookup is pending`,
+  `does not write when the page unmounts while the lookup is pending`; e2e
+  `cancelling while the name lookup is pending writes nothing`, `leaving via the
+  back link while the lookup is pending writes nothing`, `browser back while the
+  name lookup is pending writes nothing`. The only residual was the dialog's
+  Cancel — finding 1 above — fixed now.
+- **"Old destination blocks valid edits"** — `typedDestination` is keyed by
+  `resolveKey`, `confirmStale` hides the dialog for a mismatched key, and the
+  `resolveKey` effect (lines 129-139) drops the snapshot and invalidates the
+  attempt. Tests: web `lets a valid batch save after the typed name moves to
+  another supplier`; e2e `editing the typed name away from the confirmed one keeps
+  the batch saveable`. No residual path found; not re-implemented.

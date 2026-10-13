@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { actAndAck, rpcOutput } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
 /**
@@ -52,10 +53,16 @@ test("invoice print button → receipt document with identity, totals and paymen
   await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   await page.getByTestId("sale-paid").fill("500");
   await expect(page.getByTestId("sale-total")).toContainText("900");
-  await page.getByTestId("sale-save").click();
-  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  // Wait on the api acknowledgement, not a 5 s UI poll: under CI load the write
+  // can outlast the default expect window even though it lands (issue 179).
+  // The number asserted below is the one the server actually allocated.
+  const saved = await rpcOutput<{ invoiceNumber: string }>(
+    await actAndAck(page, "invoicesCreate", () => page.getByTestId("sale-save").click()),
+  );
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>
-  const number = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
+  const number = saved.invoiceNumber;
+  expect(number).toMatch(/^INV-\d+$/);
+  await expect(page.getByTestId("sale-saved-number")).toContainText(number);
 
   // 3. open the invoice detail, settle the remaining 400 → fully paid
   await page.getByRole("link", { name: "الفواتير" }).click();

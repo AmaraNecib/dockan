@@ -1,11 +1,14 @@
 # Issue 174 — Debate evidence (High-assurance)
 
-Base: `8bf2a81` (origin/develop merge-base). Reviewed HEAD: `2c8f885`.
+Base: `8bf2a81` (origin/develop merge-base). Evidence anchor: `830679a`.
+The production code under review is `2c8f885`; every commit after it is
+docs/evidence only (`48f8683` tests, `2c8f885` the code-review refactor, then
+`.scratch/` + wisdom).
 
 The debate ran against the first commit `984df76`; the one blocker it found was
 fixed in `1655152`; the test-audit additions (`48f8683`) and the code-review
 refactor (`2c8f885`) that followed do not touch the debate's conclusions or the
-money path, so this file is anchored to the final HEAD `2c8f885`.
+money path.
 
 Two `reviewer` sub-agents ran in opposite directions on
 `git diff 8bf2a81...HEAD`: a harsh Critic (find every flaw) and a charitable

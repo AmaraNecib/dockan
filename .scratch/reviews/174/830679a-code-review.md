@@ -1,6 +1,8 @@
 # Issue 174 — Code-review evidence
 
-Base: `8bf2a81` (origin/develop merge-base; three-dot diff). HEAD: `2c8f885`.
+Base: `8bf2a81` (origin/develop merge-base; three-dot diff). Evidence anchor:
+`830679a`. Production code reviewed: `2c8f885` (the commits after it are
+test/docs/evidence only).
 
 Two read-only `reviewer` sub-agents reviewed `git diff 8bf2a81...HEAD` on
 opposite axes. Standards sources: `AGENTS.md`, `CONTEXT.md`,

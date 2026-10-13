@@ -1,8 +1,9 @@
 # Issue 174 — Test-audit evidence
 
-Base: `8bf2a81`. HEAD audited: `2c8f885` (the audit ran against `1655152`;
-its findings were applied as `48f8683` and the code-review refactor `2c8f885`.
-No production money behavior changed; this file is anchored to the final HEAD).
+Base: `8bf2a81`. Evidence anchor: `830679a`. Production code: `2c8f885` (the
+audit ran against `1655152`; its findings were applied as `48f8683` and the
+code-review refactor `2c8f885`. No production money behavior changed after the
+audit).
 
 Three read-only `reviewer` sub-agents ran in parallel: Edge Case Hunter,
 Coverage Analyst, Quality Reviewer.

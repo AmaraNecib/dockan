@@ -199,7 +199,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
     enabled: detail.data !== undefined,
   });
   const paymentList = useQuery({
-    ...orpc.partyPayments.queryOptions({ input: { role, id: partyId, ...paymentPager.pagination } }),
+    ...orpc.partyPayments.queryOptions({ input: { id: partyId, ...paymentPager.pagination } }),
     enabled: detail.data !== undefined && role === "customer",
   });
   const entryList = useQuery({
@@ -406,7 +406,11 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                 />
               </div>
             )}
-            {invoiceList.isPending ? (
+            {invoiceList.isError ? (
+              <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="party-invoices-error">
+                {tError(invoiceList.error.message)}
+              </p>
+            ) : invoiceList.isPending ? (
               <div className="grid gap-2" data-testid="party-invoices-loading">
                 <Skeleton className="h-6 w-full" />
                 <Skeleton className="h-6 w-full" />
@@ -449,7 +453,11 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
 
           <div role="tabpanel" id="party-panel-payments" aria-labelledby="party-tab-payments" hidden={tab !== "payments"} className="mt-4" data-testid="party-panel-payments">
             {role === "supplier" && account !== null ? (
-              entryList.isPending ? (
+              entryList.isError ? (
+                <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="supplier-account-error">
+                  {tError(entryList.error.message)}
+                </p>
+              ) : entryList.isPending ? (
                 <div className="grid gap-2" data-testid="supplier-account-loading">
                   <Skeleton className="h-6 w-full" />
                   <Skeleton className="h-6 w-full" />
@@ -484,6 +492,10 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   />
                 </>
               )
+            ) : paymentList.isError ? (
+              <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="party-payments-error">
+                {tError(paymentList.error.message)}
+              </p>
             ) : paymentList.isPending ? (
               <div className="grid gap-2" data-testid="party-payments-loading">
                 <Skeleton className="h-6 w-full" />

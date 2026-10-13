@@ -297,6 +297,11 @@ function mapRecentInvoices(rows: Array<typeof invoices.$inferSelect>): Invoice[]
   }
 }
 
+/** Party payment rows with the joined invoice number normalized to the
+ * contract's non-empty string (the driver hands back a nullable scalar). */
+const mapPartyPayments = <T extends { invoiceNumber: string | null }>(rows: T[]) =>
+  rows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) }));
+
 const toCustomer = (r: typeof customers.$inferSelect): Customer =>
   ({ id: r.id, name: r.name, phone: r.phone, createdAt: r.createdAt }) satisfies Customer;
 const toSupplier = (r: typeof suppliers.$inferSelect): Supplier =>
@@ -1610,7 +1615,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         party,
         stats: safePartyStats(stats),
         invoices: detailInvoices,
-        payments: paymentRows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })),
+        payments: mapPartyPayments(paymentRows),
         account: role === "supplier" ? { balance: supplierBalance(entries), entries } : null,
       } satisfies PartyDetail;
     },
@@ -1619,35 +1624,24 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // Additive to `partyDetail`, which stays the full read the money paths
     // need. Only the tab tables call these; they never feed a settle/pay
     // distribution or the delete guard.
-    async partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination?: PaginationInput) {
+    async partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination: PaginationInput) {
       const unpaidOnly = filters.unpaidOnly === true;
-      const query = partyInvoiceSelect(role, partyId, unpaidOnly);
-      if (pagination === undefined) {
-        const rows = await query;
-        return { items: mapRecentInvoices(rows) ?? [], total: rows.length };
-      }
       const { limit, offset } = resolvePagination(pagination);
       const [rows, total] = await Promise.all([
-        query.limit(limit).offset(offset),
+        partyInvoiceSelect(role, partyId, unpaidOnly).limit(limit).offset(offset),
         db.$count(invoices, partyInvoiceWhere(role, partyId, unpaidOnly)),
       ]);
       return { items: mapRecentInvoices(rows) ?? [], total };
     },
-    async partyPayments(role: PartyRole, partyId: string, pagination?: PaginationInput) {
-      const query = partyPaymentSelect(role, partyId);
-      if (pagination === undefined) {
-        const rows = await query;
-        return { items: rows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })), total: rows.length };
-      }
+    async partyPayments(partyId: string, pagination: PaginationInput) {
       const { limit, offset } = resolvePagination(pagination);
-      const [rows, total] = await Promise.all([query.limit(limit).offset(offset), partyPaymentCount(role, partyId)]);
-      return { items: rows.map((row) => ({ ...row, invoiceNumber: String(row.invoiceNumber) })), total };
+      const [rows, total] = await Promise.all([
+        partyPaymentSelect("customer", partyId).limit(limit).offset(offset),
+        partyPaymentCount("customer", partyId),
+      ]);
+      return { items: mapPartyPayments(rows), total };
     },
-    async supplierEntries(supplierId: string, pagination?: PaginationInput) {
-      if (pagination === undefined) {
-        const rows = await supplierEntrySelect(supplierId);
-        return { items: rows.map(toSupplierEntry), total: rows.length };
-      }
+    async supplierEntries(supplierId: string, pagination: PaginationInput) {
       const { limit, offset } = resolvePagination(pagination);
       const [rows, total] = await Promise.all([
         supplierEntrySelect(supplierId).limit(limit).offset(offset),

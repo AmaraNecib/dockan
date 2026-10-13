@@ -722,7 +722,7 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
     partyPayments: os.partyPayments.handler(
-      guardedInput(async (input) => deps.store.partyPayments(input.role, input.id, resolvePagination(input))),
+      guardedInput(async (input) => deps.store.partyPayments(input.id, resolvePagination(input))),
     ),
     supplierEntries: os.supplierEntries.handler(
       guardedInput(async (input) => deps.store.supplierEntries(input.id, resolvePagination(input))),

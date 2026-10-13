@@ -714,16 +714,16 @@ export const supplierReturnsListOutputSchema = pagedOutputSchema(supplierReturnS
 /** Invoices tab. `unpaidOnly` matches `unpaidInvoices` (remaining > 0), the
  * customer tab's default filter; suppliers pass it false/omitted. */
 export const partyInvoicesInputSchema = paginationInputSchema.extend({
-  role: z.enum(["customer", "supplier"]),
+  role: partyRoleSchema,
   id: idSchema,
   unpaidOnly: z.boolean().optional(),
 });
 export const partyInvoicesOutputSchema = pagedOutputSchema(invoiceSchema);
 
-/** Payments tab: the customer half (a supplier's payments tab is the signed
- * account ledger, read through `supplierEntries`). */
+/** Payments tab: the customer payments list. A supplier's payments tab is the
+ * signed account ledger, read through `supplierEntries`, so this read takes no
+ * role. */
 export const partyPaymentsInputSchema = paginationInputSchema.extend({
-  role: z.enum(["customer", "supplier"]),
   id: idSchema,
 });
 export const partyPaymentsOutputSchema = pagedOutputSchema(partyPaymentSchema);

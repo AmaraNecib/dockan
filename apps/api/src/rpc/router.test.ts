@@ -1726,10 +1726,10 @@ describe("party-detail tab pagination (issue 174)", () => {
         lines: [{ itemId: item.id, quantity: 1 }],
       });
     }
-    const first = await client.partyPayments({ role: "customer", id: customer.id, limit: 5, offset: 0 });
+    const first = await client.partyPayments({ id: customer.id, limit: 5, offset: 0 });
     expect(first.items).toHaveLength(5);
     expect(first.total).toBe(12);
-    const last = await client.partyPayments({ role: "customer", id: customer.id, limit: 5, offset: 10 });
+    const last = await client.partyPayments({ id: customer.id, limit: 5, offset: 10 });
     expect(last.items).toHaveLength(2);
     expect(last.total).toBe(12);
     expect(last.items.every((payment) => payment.invoiceNumber.length > 0)).toBe(true);
@@ -1780,7 +1780,7 @@ describe("party-detail tab pagination (issue 174)", () => {
   it("returns an empty page for an unknown party and never crosses roles", async () => {
     const ghost = "00000000-0000-4000-8000-0000000000ff";
     expect(await client.partyInvoices({ role: "customer", id: ghost })).toEqual({ items: [], total: 0 });
-    expect(await client.partyPayments({ role: "customer", id: ghost })).toEqual({ items: [], total: 0 });
+    expect(await client.partyPayments({ id: ghost })).toEqual({ items: [], total: 0 });
     expect(await client.supplierEntries({ id: ghost })).toEqual({ items: [], total: 0 });
 
     const customer = await client.customersCreate({ name: "زبون ترقيم الأدوار" });

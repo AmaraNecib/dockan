@@ -299,12 +299,12 @@ export interface StorePort {
    * Issue 174 — the party-detail TAB reads. `partyDetail` stays the full,
    * unpaginated read the settle/pay money distribution and the delete guard
    * need; only the tables page. `unpaidOnly` matches the customer tab's
-   * `unpaidInvoices` (remaining > 0). Omitting `pagination` returns every row
-   * (internal full read).
+   * `unpaidInvoices` (remaining > 0). The router always resolves concrete
+   * pagination, so it is required here.
    */
-  partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination?: PaginationInput): Promise<{ items: Invoice[]; total: number }>;
+  partyInvoices(role: PartyRole, partyId: string, filters: { unpaidOnly?: boolean }, pagination: PaginationInput): Promise<{ items: Invoice[]; total: number }>;
   /** the customer payments tab (a supplier's tab is `supplierEntries`) */
-  partyPayments(role: PartyRole, partyId: string, pagination?: PaginationInput): Promise<{ items: PartyPayment[]; total: number }>;
+  partyPayments(partyId: string, pagination: PaginationInput): Promise<{ items: PartyPayment[]; total: number }>;
 
   // --- supplier account (issue 161) ----------------------------------------
   /** append-only signed entry; never updated or deleted. A linked ADJUSTMENT
@@ -330,7 +330,7 @@ export interface StorePort {
   /** issue 174 — the account-entries tab: same select as `listSupplierEntries`,
    * sliced, with `total` the whole filtered count. The unpaginated read above
    * stays for the money paths (balance derivation). */
-  supplierEntries(supplierId: string, pagination?: PaginationInput): Promise<{ items: SupplierAccountEntry[]; total: number }>;
+  supplierEntries(supplierId: string, pagination: PaginationInput): Promise<{ items: SupplierAccountEntry[]; total: number }>;
   /** outstanding PURCHASE invoices of one supplier, oldest first (allocation) */
   listOutstandingPurchaseInvoices(supplierId: string): Promise<Invoice[]>;
   allocateSupplierReturnNumber(): Promise<string>;

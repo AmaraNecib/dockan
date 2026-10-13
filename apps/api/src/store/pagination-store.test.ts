@@ -232,8 +232,8 @@ describe("party-detail tab pagination (issue 174)", () => {
     expect(past.items).toHaveLength(0);
     expect(past.total).toBe(12);
 
-    // no page keys: an internal full read
-    const all = await store.partyInvoices("customer", party.id, {});
+    // a large limit still reads the whole set in one page
+    const all = await store.partyInvoices("customer", party.id, {}, { limit: 100, offset: 0 });
     expect(all.items).toHaveLength(12);
     expect(all.total).toBe(12);
   });
@@ -260,10 +260,10 @@ describe("party-detail tab pagination (issue 174)", () => {
     for (let i = 0; i < 12; i++) {
       await store.insertPayment({ invoiceId, amount: 100, method: "CASH", note: null, paidAt: localDateTime() });
     }
-    const first = await store.partyPayments("customer", party.id, { limit: 5, offset: 0 });
+    const first = await store.partyPayments(party.id, { limit: 5, offset: 0 });
     expect(first.items).toHaveLength(5);
     expect(first.total).toBe(12);
-    const second = await store.partyPayments("customer", party.id, { limit: 5, offset: 5 });
+    const second = await store.partyPayments(party.id, { limit: 5, offset: 5 });
     expect(second.items).toHaveLength(5);
     expect(second.total).toBe(12);
     const seen = [...first.items, ...second.items].map((payment) => payment.id);
@@ -285,9 +285,9 @@ describe("party-detail tab pagination (issue 174)", () => {
     const seen = [...first.items, ...second.items].map((entry) => entry.id);
     expect(new Set(seen).size).toBe(12);
 
-    // the money reads still return every entry
+    // the money read still returns every entry; the tab read pages
     expect(await store.listSupplierEntries(supplier.id)).toHaveLength(12);
-    expect((await store.supplierEntries(supplier.id)).items).toHaveLength(12);
+    expect((await store.supplierEntries(supplier.id, { limit: 100, offset: 0 })).items).toHaveLength(12);
   });
 
   it("still returns every party invoice and account entry from partyDetail (money read untouched)", async () => {
@@ -309,7 +309,7 @@ describe("party-detail tab pagination (issue 174)", () => {
   it("returns an empty page for a party with no rows and never crosses roles", async () => {
     const customer = await store.createParty("customer", { name: "زبون بلا فواتير" });
     expect(await store.partyInvoices("customer", customer.id, { unpaidOnly: true }, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
-    expect(await store.partyPayments("customer", customer.id, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
+    expect(await store.partyPayments(customer.id, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
     const supplier = await store.createParty("supplier", { name: "مورد بلا حركات" });
     expect(await store.supplierEntries(supplier.id, { limit: 10, offset: 0 })).toEqual({ items: [], total: 0 });
     // the role picks the invoice kind: a supplier read of a customer id is empty

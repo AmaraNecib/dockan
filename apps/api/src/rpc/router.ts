@@ -712,6 +712,22 @@ export function createRpcRouter(deps: RpcDeps) {
       ),
     ),
 
+    // --- party-detail tab pagination (issue 174) -----------------------------
+    // Additive to customersGet/suppliersGet, which keep the FULL invoice set
+    // (and the supplier account) because the settle/pay panels and the delete
+    // guard distribute money over every row. These reads only feed the tabs.
+    partyInvoices: os.partyInvoices.handler(
+      guardedInput(async (input) =>
+        deps.store.partyInvoices(input.role, input.id, { unpaidOnly: input.unpaidOnly }, resolvePagination(input)),
+      ),
+    ),
+    partyPayments: os.partyPayments.handler(
+      guardedInput(async (input) => deps.store.partyPayments(input.role, input.id, resolvePagination(input))),
+    ),
+    supplierEntries: os.supplierEntries.handler(
+      guardedInput(async (input) => deps.store.supplierEntries(input.id, resolvePagination(input))),
+    ),
+
     // --- supplier account (issue 161) ----------------------------------------
     // Every money path is ONE BEGIN IMMEDIATE unit: the signed entry and the
     // invoice's paid/remaining cache move together, and the DB-level conditional

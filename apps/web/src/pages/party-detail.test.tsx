@@ -84,6 +84,30 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({ queryKey: ["suppliersGet", PARTY_ID], queryFn: async () => partyDetail, enabled: false }),
       queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id],
     },
+    // #174 — the tabs page over the same party detail
+    partyInvoices: {
+      queryOptions: (options?: { input?: { unpaidOnly?: boolean; limit?: number; offset?: number } }) => ({
+        queryKey: ["partyInvoices", options?.input],
+        queryFn: async () => {
+          const filtered = options?.input?.unpaidOnly === true ? partyDetail.invoices.filter((entry) => entry.remainingAmount > 0) : partyDetail.invoices;
+          const limit = options?.input?.limit ?? 10;
+          const offset = options?.input?.offset ?? 0;
+          return { items: filtered.slice(offset, offset + limit), total: filtered.length };
+        },
+      }),
+    },
+    partyPayments: {
+      queryOptions: () => ({
+        queryKey: ["partyPayments", PARTY_ID],
+        queryFn: async () => ({ items: partyDetail.payments, total: partyDetail.payments.length }),
+      }),
+    },
+    supplierEntries: {
+      queryOptions: () => ({
+        queryKey: ["supplierEntries", PARTY_ID],
+        queryFn: async () => ({ items: partyDetail.account?.entries ?? [], total: partyDetail.account?.entries.length ?? 0 }),
+      }),
+    },
     invoicesPay: {
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["invoicesPay"],
@@ -172,6 +196,17 @@ async function flushAsync() {
   });
 }
 
+/** #174 — the tab rows now arrive from a server page read, so poll. */
+async function waitFor(check: () => boolean) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (check()) return;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  throw new Error("condition did not settle");
+}
+
 describe("customer detail unpaid view (#164)", () => {
   beforeEach(() => {
     partyDetail = makeDetail([
@@ -184,23 +219,48 @@ describe("customer detail unpaid view (#164)", () => {
     await renderCustomer();
     const filter = host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')!;
     expect(filter.checked).toBe(true);
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 1);
     expect(host.querySelectorAll('[data-testid="party-invoice-row"]')).toHaveLength(1);
     expect(host.querySelector('[data-testid="party-unpaid-total"]')?.textContent).toContain("30000");
   });
 
   it("shows every invoice once the unpaid filter is cleared", async () => {
     await renderCustomer();
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 1);
     act(() => {
       host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')?.click();
     });
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 2);
     expect(host.querySelectorAll('[data-testid="party-invoice-row"]')).toHaveLength(2);
   });
 
   it("shows a teaching empty state when nothing is owed", async () => {
     partyDetail = makeDetail([invoice({ id: "paid", invoiceDate: "2026-09-01", remainingAmount: 0, paidAmount: 500, totalAmount: 500 })]);
     await renderCustomer();
+    await waitFor(() => host.querySelector('[data-testid="party-invoices-empty"]') !== null);
     expect(host.querySelector('[data-testid="party-invoices-empty"]')?.textContent).toContain("لا توجد فواتير غير مدفوعة");
     expect(host.querySelector('[data-testid="party-settle"]')).toBeNull();
+  });
+
+  it("pages the invoices tab and resets to page 1 when the unpaid filter changes (#174)", async () => {
+    const many = Array.from({ length: 12 }, (_, index) => invoice({ id: `p${index}`, invoiceDate: "2026-09-01", remainingAmount: 1_000 }));
+    // one paid row so clearing the filter changes the total too
+    many.push(invoice({ id: "paid", invoiceDate: "2026-09-02", remainingAmount: 0, paidAmount: 500, totalAmount: 500 }));
+    partyDetail = makeDetail(many);
+    await renderCustomer();
+    // default page size 10: ten rows and a pager over the 12 unpaid invoices
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 10);
+    expect(host.querySelector('[data-testid="party-invoices-pager"]')).not.toBeNull();
+    click("party-invoices-pager-page-2");
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 2);
+    expect(host.querySelector('[data-testid="party-invoices-pager-page-2"]')?.getAttribute("aria-current")).toBe("page");
+
+    // a filter change invalidates the old offset: back to page 1
+    act(() => {
+      host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')?.click();
+    });
+    await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 10);
+    expect(host.querySelector('[data-testid="party-invoices-pager-page-1"]')?.getAttribute("aria-current")).toBe("page");
   });
 });
 

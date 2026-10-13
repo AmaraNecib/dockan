@@ -189,3 +189,120 @@ describe("store pagination (issue 163)", () => {
     expect(second.total).toBe(3);
   });
 });
+
+describe("party-detail tab pagination (issue 174)", () => {
+  // the store is shared across this file, so invoice numbers must be unique
+  let invoiceSeq = 0;
+  async function makePartyInvoices(partyId: string, partyName: string, count: number, remaining: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const invoice = await store.insertInvoice({
+        invoiceNumber: `INV-PARTY-${String(invoiceSeq++).padStart(4, "0")}`,
+        kind: "SALE",
+        counterpartyId: partyId,
+        counterpartyName: partyName,
+        invoiceDate: localDate(),
+        totalAmount: remaining === 0 ? 1_000 : remaining,
+        paidAmount: remaining === 0 ? 1_000 : 0,
+        remainingAmount: remaining,
+        notes: null,
+      });
+      ids.push(invoice.id);
+    }
+    return ids;
+  }
+
+  it("pages a party's invoices and keeps total independent of the page", async () => {
+    const party = await store.createParty("customer", { name: "زبون ترقيم المتجر" });
+    const ids = await makePartyInvoices(party.id, party.name, 12, 1_000);
+
+    const first = await store.partyInvoices("customer", party.id, {}, { limit: 10, offset: 0 });
+    expect(first.items).toHaveLength(10);
+    expect(first.total).toBe(12);
+    const second = await store.partyInvoices("customer", party.id, {}, { limit: 10, offset: 10 });
+    expect(second.items).toHaveLength(2);
+    expect(second.total).toBe(12);
+    // pages never overlap and together cover the created rows (the rowid tie
+    // break keeps same-second rows from repeating across the page boundary)
+    const seen = [...first.items, ...second.items].map((invoice) => invoice.id);
+    expect(new Set(seen).size).toBe(12);
+    for (const id of ids) expect(seen).toContain(id);
+
+    const past = await store.partyInvoices("customer", party.id, {}, { limit: 10, offset: 10_000 });
+    expect(past.items).toHaveLength(0);
+    expect(past.total).toBe(12);
+
+    // no page keys: an internal full read
+    const all = await store.partyInvoices("customer", party.id, {});
+    expect(all.items).toHaveLength(12);
+    expect(all.total).toBe(12);
+  });
+
+  it("filters party invoices to unpaid rows and counts only those", async () => {
+    const party = await store.createParty("customer", { name: "زبون ترقيم غير مدفوع" });
+    await makePartyInvoices(party.id, party.name, 8, 1_000);
+    await makePartyInvoices(party.id, party.name, 4, 0);
+
+    const unpaid = await store.partyInvoices("customer", party.id, { unpaidOnly: true }, { limit: 5, offset: 0 });
+    expect(unpaid.total).toBe(8);
+    expect(unpaid.items).toHaveLength(5);
+    expect(unpaid.items.every((invoice) => invoice.remainingAmount > 0)).toBe(true);
+
+    const all = await store.partyInvoices("customer", party.id, {}, { limit: 100, offset: 0 });
+    expect(all.total).toBe(12);
+    expect(all.items).toHaveLength(12);
+  });
+
+  it("pages a party's payments with a stable total", async () => {
+    const party = await store.createParty("customer", { name: "زبون ترقيم الدفعات المتجر" });
+    const invoiceId = (await makePartyInvoices(party.id, party.name, 1, 12_000))[0];
+    if (invoiceId === undefined) throw new Error("expected an invoice");
+    for (let i = 0; i < 12; i++) {
+      await store.insertPayment({ invoiceId, amount: 100, method: "CASH", note: null, paidAt: localDateTime() });
+    }
+    const first = await store.partyPayments("customer", party.id, { limit: 5, offset: 0 });
+    expect(first.items).toHaveLength(5);
+    expect(first.total).toBe(12);
+    const second = await store.partyPayments("customer", party.id, { limit: 5, offset: 5 });
+    expect(second.items).toHaveLength(5);
+    expect(second.total).toBe(12);
+    const seen = [...first.items, ...second.items].map((payment) => payment.id);
+    expect(new Set(seen).size).toBe(10);
+    expect(second.items.every((payment) => payment.invoiceNumber.length > 0)).toBe(true);
+  });
+
+  it("pages supplier account entries with a stable total", async () => {
+    const supplier = await store.createParty("supplier", { name: "مورد ترقيم الحساب المتجر" });
+    for (let i = 0; i < 12; i++) {
+      await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 100, invoiceId: null, occurredAt: localDateTime() });
+    }
+    const first = await store.supplierEntries(supplier.id, { limit: 10, offset: 0 });
+    expect(first.items).toHaveLength(10);
+    expect(first.total).toBe(12);
+    const second = await store.supplierEntries(supplier.id, { limit: 10, offset: 10 });
+    expect(second.items).toHaveLength(2);
+    expect(second.total).toBe(12);
+    const seen = [...first.items, ...second.items].map((entry) => entry.id);
+    expect(new Set(seen).size).toBe(12);
+
+    // the money reads still return every entry
+    expect(await store.listSupplierEntries(supplier.id)).toHaveLength(12);
+    expect((await store.supplierEntries(supplier.id)).items).toHaveLength(12);
+  });
+
+  it("still returns every party invoice and account entry from partyDetail (money read untouched)", async () => {
+    const customer = await store.createParty("customer", { name: "زبون ترقيم الكامل" });
+    await makePartyInvoices(customer.id, customer.name, 12, 1_000);
+    const detail = await store.partyDetail("customer", customer.id);
+    expect(detail?.invoices).toHaveLength(12);
+    expect(detail?.stats.invoiceCount).toBe(12);
+
+    const supplier = await store.createParty("supplier", { name: "مورد ترقيم الكامل" });
+    for (let i = 0; i < 12; i++) {
+      await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 100, invoiceId: null, occurredAt: localDateTime() });
+    }
+    const supplierDetail = await store.partyDetail("supplier", supplier.id);
+    expect(supplierDetail?.account?.entries).toHaveLength(12);
+    expect(supplierDetail?.account?.balance).toBe(1200);
+  });
+});

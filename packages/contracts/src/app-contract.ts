@@ -41,7 +41,11 @@ import {
   partyCreateInputSchema,
   partyDeleteOutputSchema,
   partyDetailOutputSchema,
+  partyInvoicesInputSchema,
+  partyInvoicesOutputSchema,
   partyListOutputSchema,
+  partyPaymentsInputSchema,
+  partyPaymentsOutputSchema,
   partySchema,
   partyUpdateInputSchema,
   preferencesGetOutputSchema,
@@ -71,6 +75,8 @@ import {
   stockMovementSchema,
   supplierAccountSchema,
   supplierAdjustInputSchema,
+  supplierEntriesInputSchema,
+  supplierEntriesOutputSchema,
   supplierOpeningBalancesInputSchema,
   supplierOpeningBalancesOutputSchema,
   supplierPayInputSchema,
@@ -123,6 +129,14 @@ export const dokanContract = {
   suppliersCreate: oc.input(partyCreateInputSchema).output(partySchema),
   suppliersUpdate: oc.input(partyUpdateInputSchema).output(partySchema),
   suppliersDelete: oc.input(z.object({ id: z.string().uuid() })).output(partyDeleteOutputSchema),
+  // --- party-detail tab pagination (issue 174) -----------------------------
+  /** the invoices tab; `partyDetail` still carries the full set for the
+   * settle/pay panels and the delete guard */
+  partyInvoices: oc.input(partyInvoicesInputSchema).output(partyInvoicesOutputSchema),
+  /** the customer payments tab */
+  partyPayments: oc.input(partyPaymentsInputSchema).output(partyPaymentsOutputSchema),
+  /** the supplier account-entries tab (issue 161 ledger) */
+  supplierEntries: oc.input(supplierEntriesInputSchema).output(supplierEntriesOutputSchema),
   // --- supplier account (issue 161) ---------------------------------------
   /** pay a supplier: oldest-first default, a named invoice, or leave as credit */
   suppliersPay: oc.input(supplierPayInputSchema).output(supplierAccountSchema),

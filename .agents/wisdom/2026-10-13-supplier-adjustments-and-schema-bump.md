@@ -44,3 +44,24 @@ kind `ADJUSTMENT` with a `WE_OWE` / `THEY_OWE` direction. Lessons worth carrying
    The bulk screen's stale-expectation confirmation set `confirming = true` in
    the catch and `finally { setConfirming(false) }` wiped it. Clear dialog state
    on the success path, not in `finally`.
+
+7. **A flat `["someQuery"]` is NOT a valid invalidation key for oRPC.**
+   `@orpc/tanstack-query` generates `[path, { input?, type }]` where `path` is an
+   array, so the real key starts with `[["someQuery"], …]`. Invalidating
+   `["debtsData"]` (or even `["invoicesList"]`) marks nothing stale. Use the
+   generated `orpc.x.queryKey()` for no-input procedures, and a
+   `[["path"]]` prefix for a family with a required input. Keep those constants
+   in a module tests do not `mock.module` wholesale. (This bug was live in
+   several panels long before #176; the fix moved the two touched files.)
+
+8. **Bun's `mock.module` is process-global, so a shared export must not live in
+   a module that tests mock wholesale.** Adding `DEBTS_BY_PARTY_QUERY_KEY` to
+   `@/lib/rpc` broke any run where `debts.test.tsx` (which mocks `@/lib/rpc`
+   without it) loaded first — the export vanished. Move cross-cutting constants
+   out of the mocked module, or re-export them from every mock.
+
+9. **A tolerant amount reader stops a silent money drop; blocking beats
+   guessing.** `parseWholeAmount` rejects `"1,000"`, so a bulk row was filtered
+   out and the batch saved one amount short. Read grouping separators and
+   Arabic-Indic digits, and BLOCK an invalid/incomplete row with a visible error
+   rather than dropping it.

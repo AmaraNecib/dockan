@@ -80,6 +80,56 @@ describe("duplicateNameParty", () => {
     expect(duplicateNameParty("اسم آخر", "0555123456", LIST)).toBeUndefined();
     expect(duplicateNameParty("   ", "0555123456", LIST)).toBeUndefined();
   });
+
+  /**
+   * #130 — the warning folds alef/ya name variants (the #165 search fold), so a
+   * differently spelled record of the same person is flagged before the owner
+   * creates a second debtor. Advisory only: identity stays on
+   * `normalizeTextKey` (ADR-0007) and the owner can still create the record.
+   */
+  it("warns across alef, ya and alef-maqsura spellings of the same name", () => {
+    const ALI_MAQSURA = party({ id: "ali-maqsura", name: "على علي", phone: "+213555123456" });
+    const AHMED_HAMZA = party({ id: "ahmed-hamza", name: "أحمد بنين", phone: "+213555000111" });
+    const MOSTAFA_MAQSURA = party({ id: "mostafa-maqsura", name: "مصطفى", phone: "+213555000222" });
+    const OMAR_TA = party({ id: "omar-ta", name: "عماره", phone: "+213555000444" });
+    const variants = [ALI_MAQSURA, AHMED_HAMZA, MOSTAFA_MAQSURA, OMAR_TA];
+
+    // «على علي» vs «علي علي» — the issue's own case (ى vs ي)
+    expect(duplicateNameParty("علي علي", null, variants)?.id).toBe("ali-maqsura");
+    // «أحمد» vs «احمد»
+    expect(duplicateNameParty("احمد بنين", null, variants)?.id).toBe("ahmed-hamza");
+    // «مصطفى» vs «مصطفي»
+    expect(duplicateNameParty("مصطفي", null, variants)?.id).toBe("mostafa-maqsura");
+    // the reused fold also covers the ta-marbuta pair «عمارة»/«عماره»
+    expect(duplicateNameParty("عمارة", null, variants)?.id).toBe("omar-ta");
+    // the stored spelling is reported, whatever the candidate's was
+    expect(duplicateNameParty("أحمد بنين", "0555000999", variants)?.id).toBe("ahmed-hamza");
+  });
+
+  it("keeps names that differ by a real letter apart", () => {
+    const variants = [
+      party({ id: "ali-maqsura", name: "على علي", phone: "+213555123456" }),
+      party({ id: "mahmoud", name: "محمود", phone: "+213555000333" }),
+      party({ id: "mostafa", name: "مصطفى", phone: "+213555000222" }),
+    ];
+
+    // a real letter differs in each case: over-folding would merge two people
+    expect(duplicateNameParty("محمد", null, variants)).toBeUndefined();
+    expect(duplicateNameParty("علا علي", null, variants)).toBeUndefined();
+    expect(duplicateNameParty("مصطفى نور", "0555000111", variants)).toBeUndefined();
+    expect(duplicateNameParty("عماد", null, variants)).toBeUndefined();
+  });
+
+  it("treats a variant spelling with the same phone as one identity, not a duplicate", () => {
+    const ali = party({ id: "ali-maqsura", name: "على علي", phone: "+213555123456" });
+    expect(duplicateNameParty("علي علي", "0555123456", [ali])).toBeUndefined();
+    expect(duplicateNameParty("على علي", "+213555123456", [ali])).toBeUndefined();
+  });
+
+  it("never warns for a candidate that folds to nothing", () => {
+    expect(duplicateNameParty("   ", null, LIST)).toBeUndefined();
+    expect(duplicateNameParty("---", null, LIST)).toBeUndefined();
+  });
 });
 
 describe("phoneMatchParty", () => {
@@ -121,14 +171,15 @@ describe("arabic search fold (#165)", () => {
     expect(filterParties(list, "بطارية").map((p) => p.id)).toEqual(["art"]);
   });
 
-  it("keeps identity matching on the unchanged strict key", () => {
-    // «أحمد» and «احمد» are the SAME search hit but DIFFERENT debtors: folding
-    // identity would merge two people's balances (ADR-0007).
+  it("keeps the identity key strict while the duplicate warning folds (#130)", () => {
+    // «أحمد» and «احمد» are two identity keys: folding identity would merge two
+    // people's balances (ADR-0007).
     expect(normalizeTextKey("أحمد")).not.toBe(normalizeTextKey("احمد"));
-    // no same-name warning between the two spellings...
-    expect(duplicateNameParty("احمد", null, [AHMED_FOLDED])).toBeUndefined();
-    expect(duplicateNameParty("أحمد", null, [AHMED_PLAIN])).toBeUndefined();
-    // ...but the SAME spelling still warns and the phone identity is untouched
+    // #130 — the ADVISORY duplicate warning folds the two spellings instead, so
+    // the owner is asked before a second record splits the debtor...
+    expect(duplicateNameParty("احمد", null, [AHMED_FOLDED])?.id).toBe("ahmed-alef");
+    expect(duplicateNameParty("أحمد", "0555000000", [AHMED_PLAIN])?.id).toBe("ahmed-plain");
+    // ...while the same spelling still warns and the phone identity is untouched
     expect(duplicateNameParty("أحمد", null, [AHMED_FOLDED])?.id).toBe("ahmed-alef");
     expect(phoneMatchParty("0555123456", LIST)?.id).toBe("ali");
   });

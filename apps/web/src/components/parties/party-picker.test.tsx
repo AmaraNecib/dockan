@@ -191,6 +191,29 @@ describe("PartyPicker (issue 120)", () => {
     expect(selection(host)).toBe("omar|عماره");
   });
 
+  it("warns for a variant spelling of a stored name and still creates the second record (#130)", async () => {
+    const host = await mount();
+    // «على علي» is the stored «علي علي» with an alef maqsura (ى vs ي)
+    await type(host, "picker", "على علي");
+
+    // a variant spelling is the advisory warning, never the exact-name gate
+    expect(choiceState(host)).toBe("ok");
+
+    await click(host, "picker-create");
+    const warning = host.querySelector('[data-testid="picker-duplicate"]');
+    expect(warning).not.toBeNull();
+    // the warning names the STORED spelling and its phone, not the typed text
+    expect(warning?.textContent).toContain("علي علي");
+    expect(warning?.textContent).toContain("0555123456");
+
+    // the owner can still proceed: the save stays enabled and creates the variant
+    const save = host.querySelector<HTMLButtonElement>('[data-testid="picker-create-save"]');
+    expect(save?.disabled).toBe(false);
+    await click(host, "picker-create-save");
+    expect(created).toEqual([{ name: "على علي" }]);
+    expect(selection(host)).toBe("new-1|على علي");
+  });
+
   it("blocks creating with a phone another record owns and offers that record instead", async () => {
     const host = await mount();
     await type(host, "picker", "شخص جديد");

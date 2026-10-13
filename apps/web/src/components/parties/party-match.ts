@@ -1,4 +1,4 @@
-import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabicDigits, fuzzySearchScore, normalizePartyPhone, normalizeTextKey, type Party } from "@dokan/contracts";
+import { FUZZY_MATCH_MIN_SCORE, arabicIncludes, foldArabic, foldArabicDigits, fuzzySearchScore, normalizePartyPhone, type Party } from "@dokan/contracts";
 
 /**
  * The picker only reads identity and phone; a full Party (or a list row)
@@ -30,9 +30,9 @@ function phoneSearchKey(raw: string | null | undefined): string | null {
  * ranks edit-distance/subsequence name hits. An empty query shows the whole
  * list.
  *
- * Name matching uses the search fold; the picker's identity decisions
- * (`duplicateNameParty`, the exact-name `needsChoice` check) stay on
- * `normalizeTextKey` (ADR-0007).
+ * Name matching uses the search fold; the picker's exact-name `needsChoice`
+ * check stays on `normalizeTextKey` (ADR-0007). The duplicate-name warning
+ * folds the same way (#130), so a variant spelling still warns.
  */
 export function filterParties<T extends PartyLike>(parties: readonly T[], query: string): T[] {
   const trimmed = query.trim();
@@ -61,16 +61,25 @@ export function partyQueryLooksLikePhone(query: string): boolean {
 }
 
 /**
- * A same-name party whose phone differs from the candidate's. The picker warns
- * before it creates a second debtor (ADR-0007). A same-name party with the
- * SAME phone is the same identity — `phoneMatchParty` covers that case, because
- * the store refuses a duplicate phone.
+ * A likely-same party whose folded name matches the candidate's but whose phone
+ * differs; the picker warns before it creates a second debtor (#130).
+ *
+ * Matching reuses the #165 search fold, so alef forms (`ا أ إ آ`) and ya/alef
+ * maqsura (`ي ى`) spellings of one name collide: «على علي» warns against
+ * «علي علي». It is exact folded equality, never edit distance, and it is a
+ * WARNING only — the owner can still create the record deliberately. Identity
+ * (storage, the store's unique phone, `needsChoice`) keeps `normalizeTextKey`
+ * (ADR-0007); folding identity would merge two people's balances.
+ *
+ * A same-folded-name party with the SAME phone is the same identity —
+ * `phoneMatchParty` covers that case, because the store refuses a duplicate
+ * phone.
  */
 export function duplicateNameParty(name: string, phone: string | null, parties: readonly PartyLike[]): PartyLike | undefined {
-  const nameKey = normalizeTextKey(name);
+  const nameKey = foldArabic(name);
   if (nameKey === "") return undefined;
   const canonical = normalizePartyPhone(phone);
-  return parties.find((party) => normalizeTextKey(party.name) === nameKey && normalizePartyPhone(party.phone) !== canonical);
+  return parties.find((party) => foldArabic(party.name) === nameKey && normalizePartyPhone(party.phone) !== canonical);
 }
 
 /** The party that already owns a present phone (identity when present). */

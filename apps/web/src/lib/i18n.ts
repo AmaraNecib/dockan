@@ -722,7 +722,7 @@ const resources = {
       partyCreating: "جاري الإنشاء…",
       partyNameRequired: "أدخل الاسم",
       partyPhoneTaken: "رقم الهاتف مسجّل لـ «{{name}}»",
-      partyDuplicateName: "يوجد سجل بالاسم نفسه «{{name}}» برقم مختلف ({{phone}}). إن لم يكن الشخص نفسه فأنشئ سجلاً ثانياً.",
+      partyDuplicateName: "يوجد سجل باسم مشابه «{{name}}» برقم مختلف ({{phone}}). إن لم يكن الشخص نفسه فأنشئ سجلاً ثانياً.",
       partyPickRecord: "اختيار «{{name}}»",
       partyChooseExisting: "هذا الاسم مسجّل — اختر السجل من القائمة أو غيّر الاسم",
       partiesSearchPlaceholder: "ابحث بالاسم أو الهاتف…",

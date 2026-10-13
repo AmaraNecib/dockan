@@ -327,7 +327,10 @@ export function customCashError(draft: string, valueTotal: number): "INVALID" | 
 export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const returnsQuery = useQuery(orpc.returnsList.queryOptions({ input: { invoiceId: invoice.id } }));
+  // complete per-invoice history: the form's remaining quantity and refund
+  // preview need EVERY prior return, so this read is unpaginated (the review
+  // screen's returnsList stays paged)
+  const returnsQuery = useQuery(orpc.returnsForInvoice.queryOptions({ input: { invoiceId: invoice.id } }));
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
@@ -473,7 +476,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setError(null);
         setSavedReturn(record);
         void Promise.all([
-          queryClient.invalidateQueries({ queryKey: orpc.returnsList.queryKey({ input: { invoiceId: invoice.id } }) }),
+          queryClient.invalidateQueries({ queryKey: orpc.returnsForInvoice.queryKey({ input: { invoiceId: invoice.id } }) }),
           // the shell badge and dashboard notice read this aggregate (issue #118)
           queryClient.invalidateQueries({ queryKey: orpc.returnsPendingCount.queryKey() }),
           queryClient.invalidateQueries({ queryKey: orpc.invoicesGet.queryKey({ input: { id: invoice.id } }) }),

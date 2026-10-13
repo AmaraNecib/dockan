@@ -1,4 +1,4 @@
-import { useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 
 import { usePreference } from "../lib/preferences";
 import { DEFAULT_PAGE_SIZE, paginationReducer, parsePageSize, serializePageSize } from "../lib/pagination";
@@ -20,6 +20,18 @@ export const PAGE_SIZE_PREFERENCE_KEY = "ui.pageSize";
 export function usePagination() {
   const size = usePreference(PAGE_SIZE_PREFERENCE_KEY, DEFAULT_PAGE_SIZE, parsePageSize, serializePageSize);
   const [offset, dispatch] = useReducer(paginationReducer, 0);
+
+  // Every hook shares the `ui.pageSize` preference, so a size change made in
+  // one list must reset the offset of every OTHER live list too. Reacting to
+  // the observed value (not only to this hook's own setPageSize call) closes
+  // the cross-tab bug where one list kept an old offset under the new size and
+  // highlighted page one while showing the wrong rows (issue #163 review).
+  const observedSize = useRef(size.value);
+  useEffect(() => {
+    if (observedSize.current === size.value) return;
+    observedSize.current = size.value;
+    dispatch({ type: "reset" });
+  }, [size.value]);
 
   return {
     /** request input for the list query */

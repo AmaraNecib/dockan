@@ -2398,6 +2398,49 @@ describe("returns & refunds", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_RETURNABLE" });
   });
 
+  it("returnsForInvoice serves the complete history while returnsList pages (issue #163 review)", async () => {
+    const item = await makeReturnItem("مرجوع-ترقيم-الكل", 100, 300);
+    await client.stockAddManual({ itemId: item.id, delta: 15, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 15 }] });
+    const lineId = sale.lines[0]!.id;
+    for (let i = 0; i < 11; i++) {
+      await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: lineId, quantity: 1 }] });
+    }
+
+    const page = await client.returnsList({ invoiceId: sale.id, limit: 10, offset: 0 });
+    expect(page.items).toHaveLength(10);
+    expect(page.total).toBe(11);
+
+    // the invoice panel's form read must not truncate: every prior return is
+    // visible so the remaining quantity and the refund preview are correct
+    const full = await client.returnsForInvoice({ invoiceId: sale.id });
+    expect(full.items).toHaveLength(11);
+    expect(full.items.reduce((sum, record) => sum + record.lines.reduce((lineSum, line) => lineSum + line.quantity, 0), 0)).toBe(11);
+  });
+
+  it("reads one supplier voucher by id even past the list's first page (issue #163 review)", async () => {
+    const supplier = await client.suppliersCreate({ name: "مورد ترقيم مرتجع" });
+    const category = await client.categoriesCreate({ name: "تصنيف ترقيم مرتجع" });
+    const item = await client.itemsCreateWithStock({ name: "صنف ترقيم مرتجع", categoryId: category.id, costPrice: 100, sellingPrice: 100, stockOnHand: 20 });
+    for (let i = 0; i < 11; i++) {
+      await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 100 });
+    }
+
+    const firstPage = await client.suppliersReturnsList({ supplierId: supplier.id, limit: 10, offset: 0 });
+    expect(firstPage.items).toHaveLength(10);
+    expect(firstPage.total).toBe(11);
+    const secondPage = await client.suppliersReturnsList({ supplierId: supplier.id, limit: 10, offset: 10 });
+    expect(secondPage.items).toHaveLength(1);
+    const oldest = secondPage.items[0]!;
+    expect(firstPage.items.some((row) => row.id === oldest.id)).toBe(false);
+
+    // the voucher print page's by-id read resolves the oldest voucher directly
+    const voucher = await client.suppliersReturnGet({ returnId: oldest.id });
+    expect(voucher.id).toBe(oldest.id);
+    expect(voucher.returnNumber).toBe(oldest.returnNumber);
+    expect(voucher.lines).toHaveLength(1);
+  });
+
   it("returned units join normal FIFO cost layers — a later sale consumes oldest layers first and replay stays valid", async () => {
     const item = await makeReturnItem("مرجوع-ففو", 100, 300);
     await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE" });

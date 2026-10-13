@@ -58,6 +58,8 @@ import {
   firstTimeSetupOutputSchema,
   returnDetailSchema,
   returnsCreateInputSchema,
+  returnsForInvoiceInputSchema,
+  returnsForInvoiceOutputSchema,
   returnsGetInputSchema,
   returnsListInputSchema,
   returnsListOutputSchema,
@@ -70,7 +72,9 @@ import {
   supplierAccountSchema,
   supplierPayInputSchema,
   supplierRefundInputSchema,
+  supplierReturnGetInputSchema,
   supplierReturnInputSchema,
+  supplierReturnSchema,
   supplierReturnsListInputSchema,
   supplierReturnsListOutputSchema,
 } from "./core";
@@ -125,6 +129,8 @@ export const dokanContract = {
   suppliersRefund: oc.input(supplierRefundInputSchema).output(supplierAccountSchema),
   /** supplier purchase-return history (plain list, no review state) */
   suppliersReturnsList: oc.input(supplierReturnsListInputSchema).output(supplierReturnsListOutputSchema),
+  /** one purchase-return voucher by id; the print page never scans a page */
+  suppliersReturnGet: oc.input(supplierReturnGetInputSchema).output(supplierReturnSchema),
 
   // --- invoices ------------------------------------------------------------
   invoicesCreate: oc.input(invoiceCreateInputSchema).output(invoiceDetailSchema),
@@ -138,6 +144,9 @@ export const dokanContract = {
   returnsCreate: oc.input(returnsCreateInputSchema).output(returnDetailSchema),
   /** all returns, optionally scoped to one invoice (review page + invoice panel) */
   returnsList: oc.input(returnsListInputSchema).output(returnsListOutputSchema),
+  /** complete (unpaginated) return history for one invoice: the review panel's
+   * form derives the remaining returnable quantity from every prior return */
+  returnsForInvoice: oc.input(returnsForInvoiceInputSchema).output(returnsForInvoiceOutputSchema),
   /** pending-review count for the sidebar badge and dashboard notice (issue 118) */
   returnsPendingCount: oc.output(returnsPendingCountOutputSchema),
   /** owner confirms the returned goods: consumes the pending stock mark */

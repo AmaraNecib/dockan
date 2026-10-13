@@ -889,6 +889,15 @@ export function createRpcRouter(deps: RpcDeps) {
     suppliersReturnsList: os.suppliersReturnsList.handler(
       guardedInput(async (input) => deps.store.listSupplierReturns({ supplierId: input.supplierId }, resolvePagination(input))),
     ),
+    // the voucher print page reads one return by id: scanning a paginated list
+    // for the requested row would fail for a supplier with more than one page
+    suppliersReturnGet: os.suppliersReturnGet.handler(
+      guardedInput(async ({ returnId }) => {
+        const record = await deps.store.getSupplierReturn(returnId);
+        if (record === undefined) throw new ORPCError("NOT_FOUND", { message: "RETURN_NOT_FOUND" });
+        return record;
+      }),
+    ),
 
     // --- invoices (ticket 29: PURCHASE; ticket #30: SALE) ---------------------
     invoicesCreate: os.invoicesCreate.handler(
@@ -1381,6 +1390,15 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     returnsList: os.returnsList.handler(
       guardedInput(async (input) => deps.store.listReturns({ invoiceId: input.invoiceId }, resolvePagination(input))),
+    ),
+    // the invoice panel's form needs EVERY prior return (remaining quantity and
+    // the refund preview), so it uses this unpaginated per-invoice read while
+    // the review screen keeps paging through returnsList
+    returnsForInvoice: os.returnsForInvoice.handler(
+      guardedInput(async ({ invoiceId }) => {
+        const { items } = await deps.store.listReturns({ invoiceId });
+        return { items };
+      }),
     ),
     returnsPendingCount: os.returnsPendingCount.handler(guarded(async () => ({ count: await deps.store.pendingReturnsCount() }))),
     // Review accept: consumes the pending stock mark — the returned goods are

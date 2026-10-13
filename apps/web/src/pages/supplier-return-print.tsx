@@ -16,12 +16,13 @@ import { orpc } from "@/lib/rpc";
  */
 export function SupplierReturnPrintPage() {
   const { t } = useTranslation();
-  const { partyId, returnId } = useParams({ from: "/suppliers/$partyId/returns/$returnId/print" });
+  const { returnId } = useParams({ from: "/suppliers/$partyId/returns/$returnId/print" });
 
-  const returns = useQuery(orpc.suppliersReturnsList.queryOptions({ input: { supplierId: partyId } }));
+  // read the voucher by id: a paginated list scan would miss an older return
+  // once the supplier has more than one page of them (issue #163 review)
+  const voucher = useQuery(orpc.suppliersReturnGet.queryOptions({ input: { returnId } }));
   const settings = useQuery(orpc.settingsGet.queryOptions());
-  const record = returns.data?.items.find((item) => item.id === returnId);
-  const ready = returns.isSuccess && settings.isSuccess;
+  const ready = voucher.isSuccess && settings.isSuccess;
   const printTriggered = useRef<string | null>(null);
 
   useEffect(() => {
@@ -34,11 +35,11 @@ export function SupplierReturnPrintPage() {
     return () => clearTimeout(timer);
   }, [ready, returnId]);
 
-  if (returns.isPending || settings.isPending) {
+  if (voucher.isPending || settings.isPending) {
     return <p className="text-sm text-muted-foreground" data-testid="supplier-return-voucher-loading">{t("expensesLoading")}</p>;
   }
-  if (returns.isError || settings.isError || settings.data === undefined || record === undefined) {
-    const message = returns.error instanceof Error ? returns.error.message : settings.error instanceof Error ? settings.error.message : undefined;
+  if (voucher.isError || settings.isError || settings.data === undefined || voucher.data === undefined) {
+    const message = voucher.error instanceof Error ? voucher.error.message : settings.error instanceof Error ? settings.error.message : undefined;
     return (
       <section className="grid gap-4" data-testid="supplier-return-voucher-error">
         <h1 className="text-xl font-bold">{t("supplierReturnVoucher")}</h1>
@@ -47,6 +48,7 @@ export function SupplierReturnPrintPage() {
       </section>
     );
   }
+  const record = voucher.data;
 
   return (
     <section className="print-page grid gap-3" data-testid="supplier-return-voucher-page">

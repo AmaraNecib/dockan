@@ -681,6 +681,10 @@ export const supplierReturnsListInputSchema = paginationInputSchema.extend({
 
 export const supplierReturnsListOutputSchema = pagedOutputSchema(supplierReturnSchema);
 
+/** Read one purchase-return voucher by id. The print page must never scan a
+ * paginated list for the requested row (issue #163 review). */
+export const supplierReturnGetInputSchema = z.object({ returnId: idSchema });
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------
@@ -1011,6 +1015,12 @@ export const returnsListInputSchema = paginationInputSchema.extend({
   invoiceId: idSchema.optional(),
 });
 
+/** Complete return history for one invoice. The review panel's form needs every
+ * prior return to compute the remaining returnable quantity and the refund
+ * preview, so this read is deliberately unpaginated while `returnsList` (the
+ * review screen) pages. */
+export const returnsForInvoiceInputSchema = z.object({ invoiceId: idSchema });
+
 export const returnsReviewInputSchema = z.object({
   returnId: idSchema,
   /** rejection note appended to the standard damaged-return reason */
@@ -1147,6 +1157,8 @@ export const entityListOutputSchema = z.object({
 export const invoiceListOutputSchema = pagedOutputSchema(invoiceSchema);
 
 export const returnsListOutputSchema = pagedOutputSchema(returnDetailSchema);
+
+export const returnsForInvoiceOutputSchema = z.object({ items: z.array(returnDetailSchema) });
 
 /**
  * Lightweight pending-return count (issue 118) for the shell badge and the

@@ -12,6 +12,7 @@ import "@/lib/i18n";
 import type { Invoice, SupplierReturn } from "@dokan/contracts";
 
 const submitted: unknown[] = [];
+const doneCalls: string[] = [];
 mock.module("@/lib/rpc", () => ({
   orpc: {
     suppliersReturn: {
@@ -34,7 +35,12 @@ mock.module("@/lib/rpc", () => ({
         }),
       }),
     },
-    itemsAll: { queryOptions: () => ({ queryKey: ["itemsAll"], queryFn: async () => ({ items: [{ id: "item-1", name: "هدية" }] }) }) },
+    itemsAll: {
+      queryOptions: () => ({ queryKey: ["itemsAll"], queryFn: async () => ({ items: [{ id: "item-1", name: "هدية" }] }) }),
+      // refresh() calls this after a successful save; without it the save throws
+      // in the success path and onDone never runs (issue #163 review)
+      queryKey: () => ["itemsAll"],
+    },
     suppliersGet: { queryKey: ({ input }: { input: { id: string } }) => ["suppliersGet", input.id] },
     suppliersReturnsList: { queryKey: () => ["suppliersReturnsList"] },
   },
@@ -67,6 +73,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   submitted.length = 0;
+  doneCalls.length = 0;
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -85,7 +92,7 @@ async function render() {
   act(() => {
     root!.render(
       <QueryClientProvider client={client}>
-        <SupplierReturnPanel supplierId="sup-1" invoices={[invoice]} onDone={() => undefined} onCancel={() => undefined} />
+        <SupplierReturnPanel supplierId="sup-1" invoices={[invoice]} onDone={() => doneCalls.push("done")} onCancel={() => undefined} />
       </QueryClientProvider>,
     );
   });
@@ -177,6 +184,10 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
       lines: [{ invoiceLineId: "l1", quantity: 2 }],
       cashBack: 100,
     });
+    // the success path must finish: refresh() ran, so onDone fired and no error
+    // is shown (a missing itemsAll queryKey used to swallow this)
+    expect(host.querySelector('[data-testid="supplier-return-error"]')).toBeNull();
+    expect(doneCalls).toHaveLength(1);
   });
 
   it("clears a hidden invoice quantity error after switching to free-standing, then submits (round-2 finding)", async () => {
@@ -196,6 +207,8 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     await submit();
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 2, amount: 300 });
+    expect(host.querySelector('[data-testid="supplier-return-error"]')).toBeNull();
+    expect(doneCalls).toHaveLength(1);
   });
 
   it("still shows a bad cash-back error in free-standing (shared check)", async () => {

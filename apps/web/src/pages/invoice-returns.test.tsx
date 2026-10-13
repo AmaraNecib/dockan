@@ -31,10 +31,21 @@ mock.module("@/lib/rpc", () => ({
     },
     invoicesList: { queryKey: () => ["invoicesList"] },
     activitiesList: { queryKey: () => ["activitiesList"] },
+    returnsForInvoice: {
+      // the panel's form needs the COMPLETE per-invoice history; this fixture
+      // serves it unpaginated (issue #163 review)
+      queryOptions: () => ({
+        queryKey: ["returnsForInvoice"],
+        queryFn: async () => ({ items: returnsData }),
+      }),
+      queryKey: ({ input }: { input: { invoiceId: string } }) => ["returnsForInvoice", input],
+    },
     returnsList: {
+      // the paginated review-screen list: deliberately only page one here, so a
+      // panel that regressed to it would see a truncated history
       queryOptions: () => ({
         queryKey: ["returnsList"],
-        queryFn: async () => ({ items: returnsData }),
+        queryFn: async () => ({ items: returnsData.slice(0, 10), total: returnsData.length }),
       }),
       queryKey: ({ input }: { input: { invoiceId: string } }) => ["returnsList", input],
     },
@@ -277,6 +288,37 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(row?.textContent).toContain("900 دج");
     expect(row?.textContent).toContain("قيد المراجعة");
     expect(host.querySelector('[data-testid="return-print-RTN-0001"]')).toBeTruthy();
+  });
+
+  it("uses the complete history beyond one page for the remaining quantity (issue #163 review)", async () => {
+    const line = saleLine({ quantity: 20, netTotal: 18_000, total: 18_000 });
+    // 11 one-unit returns: one more than a default page of ten
+    returnsData = Array.from({ length: 11 }, (_, index) => {
+      const id = `00000000-0000-4000-8000-0000000001${String(index).padStart(2, "0")}`;
+      return returnRecord({
+        id,
+        returnNumber: `RTN-${String(index + 1).padStart(4, "0")}`,
+        lines: [{ ...returnRecord().lines[0]!, id: `rl-${index}`, returnId: id, quantity: 1, refundAmount: 900 }],
+      });
+    });
+    renderPanel(makeInvoice([line]));
+    await flushAsync();
+    // 20 sold − 11 returned = 9 left, not 10 (a truncated page of ten)
+    expect(host.textContent).toContain("(المتبقي: 9)");
+
+    const form = host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!;
+    const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    // 10 must be refused client-side with the true remaining, so the form never
+    // accepts a quantity the server would reject
+    typeInto(input, "10");
+    submitForm(form);
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("9");
+    expect(lastCreateInput).toBeNull();
+
+    // 9 is accepted and the preview prices the full remaining
+    typeInto(input, "9");
+    await flushAsync();
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("8100");
   });
 
   it("flags a pending return and separates it from the reviewed ones (issue #118)", async () => {

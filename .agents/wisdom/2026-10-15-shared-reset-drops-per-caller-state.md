@@ -31,9 +31,19 @@ never populated again.
 **Always**: when a shared lifecycle step (reset, close, clear, retry) replaces
 per-caller code, write out a field-by-field table of old handler versus new
 behaviour for every caller before you believe the extraction is done. Then make
-the policy declarative and required, so the next caller has to answer it:
-`keepOnCreate: readonly (keyof F)[]` on the spec, with the reset built as
-`{ ...empty(), ...declared }`. Pair the reset with a test that does the owner's
-action twice in a row (create two items from one pick) and one that falsifies it
-by emptying the keep list. A required declaration only forces an answer, so the
-test is what actually holds the behaviour.
+the policy declarative and required, so the next caller has to answer it, with
+the reset built as `{ ...empty(), ...declared }`:
+
+```ts
+type QuickAddSpec<F extends Record<string, string>> =
+  | { empty(): F; resetOnOpen: true;  keepOnCreate: readonly [] }
+  | { empty(): F; resetOnOpen: false; keepOnCreate: readonly (keyof F & string)[] };
+```
+
+Pair the reset with a test that does the owner's action twice in a row (create
+two items from one pick) and one that falsifies it by emptying the keep list. A
+required declaration only forces an answer, so the test is what actually holds
+the behaviour. Two traps in the test itself: give the kept field a non-empty
+`empty()` default, or "the cleared value stayed cleared" passes when the keep is
+ignored entirely; and make the mock hand back a distinct id per distinct input,
+or "two items landed" cannot be told from "the second replaced the first".

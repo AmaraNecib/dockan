@@ -150,7 +150,10 @@ useQuickAdd(spec, options): {
 //   )
 //   keepOnCreate is REQUIRED, and the two arms are exclusive: a spec that resets
 //   on every open cannot also claim to keep a field, because the next open would
-//   drop it again without a word.
+//   drop it again without a word. The union cannot express every mistake: a
+//   non-literal `resetOnOpen: boolean` with an empty keep list still compiles,
+//   because it satisfies the resetting arm. The escape needs an empty keep list,
+//   so no self-contradictory spec is reachable.
 ```
 
 `draftReducer` is exported pure, so the line-list rules are unit-tested without
@@ -212,11 +215,13 @@ so the accounting is written out here and the declaration is required.
 
 Sale is not affected by the shared reset. Its handler never preserved anything:
 every open rebuilt the bag and re-seeded the category default, so the next form
-the owner sees is `empty()` plus the seed in both the old and the new code. That
-leaves the field state itself as the only difference, and it is not observable:
-a sale quick-add always lands a line, which already marks the draft dirty, and
-every open rebuilds the bag. Clearing the fields at create time changes nothing
-the owner can see or act on.
+the owner sees is `empty()` plus the seed in both the old and the new code. One
+path did change, and it is the path the old code got wrong: a sale quick-add
+always lands a line, so the draft is dirty while the cart holds it. If the owner
+then removed that line, the stale typed values used to keep the draft marked
+dirty, and the header's New Sale action warned about work that no longer existed.
+Clearing the fields at create time removes that stale warning. Nothing else is
+observable.
 
 Purchase keeps `categoryId` because it requires an explicit pick: an owner
 stocking several items in one sitting would otherwise re-pick the destination
@@ -321,16 +326,27 @@ the second create is refused with `itemsChooseCategory`.
 - The spec type became a discriminated union, so `resetOnOpen: true` can only
   keep nothing. The previous shape allowed a self-contradictory spec whose keep
   list the next open would silently discard.
-- `nextBag` copies `empty()`'s result before writing to it, so a spec that hands
-  back a cached object can never be mutated through this path.
+- `nextBag` copies `empty()`'s result before writing to it, and the hook copies
+  it once more when it seeds the mount state, so a spec that hands back a cached
+  or frozen object can never be mutated through this hook.
 - The success reset uses the state updater, matching the pre-#146 handlers, which
   left state alone and therefore kept a field the owner edited while the create
   was in flight.
+- The two page call sites pin `F` with an explicit type argument, so a later edit
+  to the `onCreated` callback cannot widen the bag and switch off key checking.
 - Tests added for the invariants the reviews asked for: a refused create does not
-  touch the bag, a cleared kept field stays cleared, a later `openForm` seed wins
-  over a kept field (the keep list governs the create, not the open), and the
-  page test now uses a distinct item id per create so it proves two draft lines
-  landed and that the other fields still reset.
+  touch the bag, a cleared kept field stays cleared (against a spec whose
+  `empty()` default for that field is non-empty, so the test discriminates), a
+  field edited mid-flight is kept, a spec handing back a frozen object is never
+  written into, and a later `openForm` seed wins over a kept field. The page test
+  now uses one item id per distinct name, so it proves two draft lines landed,
+  that the non-kept fields still reset, and that re-adding the same name replaces
+  its line rather than appending a third.
+
+**Non-vacuity of the round-3 tests.** Each new hook test fails when its fix is
+removed: the mid-flight and frozen-object tests fail with the copy and the
+snapshot reset restored, and all five quick-add tests fail when the keep list is
+ignored.
 
 **Sale.** Not affected, and section 4.2 says why: sale preserved nothing before
 this change either, because every open rebuilt the bag and re-seeded the

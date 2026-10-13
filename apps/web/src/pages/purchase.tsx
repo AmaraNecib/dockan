@@ -93,7 +93,9 @@ export function PurchasePage() {
     }),
   );
 
-  const quick = useQuickAdd(PURCHASE_QUICK, {
+  // the explicit type argument pins F, so a later edit to the callbacks cannot
+  // widen the bag and quietly disable key checking
+  const quick = useQuickAdd<PurchaseQuickFields>(PURCHASE_QUICK, {
     onCreated: (item, fields) => {
       // straight back to the line: the purchase line itself is the stock event,
       // so the freshly created item lands as a line immediately, replacing any

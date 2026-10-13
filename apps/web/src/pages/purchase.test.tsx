@@ -46,7 +46,7 @@ function clearPurchaseRecorder() {
   lastPurchaseInput = null;
 }
 /** every itemsCreate the mocked quick-add performed, in order (issue #146) */
-let createdItems: Array<{ name: string; categoryId: string }> = [];
+const createdItems: Array<{ name: string; categoryId: string }> = [];
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -92,8 +92,10 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: (opts?: PanelMutationOptions) => ({
         mutationFn: async (input: { name: string; categoryId: string }) => {
           createdItems.push({ name: input.name, categoryId: input.categoryId });
-          // one item per distinct name: re-adding the same name replaces that
-          // line (like the real page), and two names give two distinct lines
+          // Fixture fiction: one item id per distinct name. The real server has no
+          // name uniqueness, so a same-name quick-add creates a second item. Here
+          // it lets a test say "re-adding the same name replaces that line" while
+          // two names give two distinct lines.
           return { id: `item-${input.name}`, name: input.name, costPrice: 100, sellingPrice: 150 };
         },
         ...opts,
@@ -154,9 +156,10 @@ mock.module("@/lib/rpc", () => ({
 }));
 
 // the mocked quick-add records every create, so clear it before every test:
-// a test that asserts create counts or item ids must not see another test's calls
+// a test that asserts create counts or item ids must not see another test's
+// calls. Clearing in place keeps any alias valid.
 beforeEach(() => {
-  createdItems = [];
+  createdItems.length = 0;
 });
 
 const { LinkProposalPanel, PurchasePage } = await import("./purchase");
@@ -893,5 +896,13 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
     // no itemsChooseCategory: the second create never asked for a pick
     expect(container.querySelector('[data-testid="purchase-error"]')).toBeNull();
+
+    // re-creating the SAME name is the same item, so it replaces its line
+    // instead of appending a third
+    await toggleQuick(container);
+    await fillQuick(container, "منتج واحد", "1", "100");
+    await submitQuick(container);
+    expect(createdItems).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
   });
 });

@@ -10,6 +10,7 @@ import {
   usePaymentPair,
   useQuickAdd,
   type PaymentPairState,
+  type QuickAddOutcome,
   type QuickAddSpec,
 } from "./use-invoice-draft";
 
@@ -97,6 +98,25 @@ const RETAINING_QUICK: QuickAddSpec<{ name: string; barcode: string }> = {
 /** purchase's create policy: the destination category survives a successful create */
 const KEEPING_QUICK: QuickAddSpec<{ name: string; barcode: string; categoryId: string }> = {
   empty: () => ({ name: "", barcode: "", categoryId: "" }),
+  resetOnOpen: false,
+  keepOnCreate: ["categoryId"],
+};
+
+/**
+ * The same policy with a NON-empty default for the kept field, so a test can
+ * tell "the cleared value was carried forward" from "the keep was ignored and
+ * empty() was used instead".
+ */
+const KEEPING_DEFAULT_QUICK: QuickAddSpec<{ name: string; barcode: string; categoryId: string }> = {
+  empty: () => ({ name: "", barcode: "", categoryId: "cat-default" }),
+  resetOnOpen: false,
+  keepOnCreate: ["categoryId"],
+};
+
+/** A keeping spec that hands back the SAME frozen object on every call. */
+const FROZEN_EMPTY = Object.freeze({ name: "", barcode: "", categoryId: "cat-default" });
+const FROZEN_KEEPING: QuickAddSpec<{ name: string; barcode: string; categoryId: string }> = {
+  empty: () => FROZEN_EMPTY,
   resetOnOpen: false,
   keepOnCreate: ["categoryId"],
 };
@@ -208,16 +228,55 @@ describe("useQuickAdd (the quick-add form's behaviour)", () => {
     expect(hook.get().fields).toEqual({ name: "", barcode: "", categoryId: "cat-1" });
   });
 
-  it("keeps a cleared declared field cleared rather than resurrecting it", async () => {
-    const { hook } = mountQuick(KEEPING_QUICK);
+  it("keeps a cleared declared field cleared rather than falling back to empty()", async () => {
+    const { hook } = mountQuick(KEEPING_DEFAULT_QUICK);
     act(() => hook.get().openForm({ categoryId: "cat-1" }));
     act(() => hook.get().setField("categoryId", ""));
 
     await act(async () => {
       await hook.get().submit(async () => ({ ok: true, item: item("a") }));
     });
-    // the owner cleared it, so the next create asks for a pick again
+    // an empty() fallback would resurrect "cat-default", so this only passes
+    // when the cleared value is what the kept field carries forward
     expect(hook.get().fields.categoryId).toBe("");
+  });
+
+  it("keeps a declared field the owner edits while the create is in flight", async () => {
+    const { hook } = mountQuick(KEEPING_QUICK);
+    act(() => hook.get().openForm({ categoryId: "cat-1" }));
+
+    let release: (outcome: QuickAddOutcome) => void = () => undefined;
+    const create = () =>
+      new Promise<QuickAddOutcome>((resolve) => {
+        release = resolve;
+      });
+    let settled: Promise<void> = Promise.resolve();
+    await act(async () => {
+      settled = hook.get().submit(create);
+    });
+
+    // the create has not settled, so the form is still live: the owner retargets
+    // the kept field, and that newer value must be what the next form keeps
+    act(() => hook.get().setField("categoryId", "cat-2"));
+    await act(async () => {
+      release({ ok: true, item: item("a") });
+      await settled;
+    });
+    expect(hook.get().fields.categoryId).toBe("cat-2");
+  });
+
+  it("never mutates the object a spec hands back from empty()", async () => {
+    const { hook } = mountQuick(FROZEN_KEEPING);
+    act(() => hook.get().openForm({ name: "x" }));
+    act(() => hook.get().setField("categoryId", "cat-1"));
+
+    await act(async () => {
+      await hook.get().submit(async () => ({ ok: true, item: item("a") }));
+    });
+    // writing into the frozen default would throw during submit, so reaching
+    // this assertion is itself the proof that the bag was copied
+    expect(FROZEN_EMPTY).toEqual({ name: "", barcode: "", categoryId: "cat-default" });
+    expect(hook.get().fields).toEqual({ name: "", barcode: "", categoryId: "cat-1" });
   });
 
   it("does not touch the bag when the create is refused", async () => {
@@ -242,9 +301,12 @@ describe("useQuickAdd (the quick-add form's behaviour)", () => {
     expect(hook.get().fields.categoryId).toBe("cat-1");
 
     // resetOnOpen false merges into the retained bag, so a seed overwrites a
-    // kept field on purpose; the keep list governs the create, not the open
+    // kept field on purpose; the keep list governs the create, not the open. The
+    // leftover barcode proves the bag was RETAINED and not rebuilt from empty()
+    // and then merged, which would drop it.
+    act(() => hook.get().setField("barcode", "leftover"));
     act(() => hook.get().openForm({ name: "next", categoryId: "cat-2" }));
-    expect(hook.get().fields).toEqual({ name: "next", barcode: "", categoryId: "cat-2" });
+    expect(hook.get().fields).toEqual({ name: "next", barcode: "leftover", categoryId: "cat-2" });
   });
 
   it("re-seeds from empty on the next open when the spec keeps nothing", async () => {

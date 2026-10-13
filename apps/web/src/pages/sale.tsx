@@ -153,7 +153,9 @@ export function SalePage() {
   }
   useBarcodeScanner((code) => void handleScan(code));
 
-  const quick = useQuickAdd(SALE_QUICK, { onCreated: (item) => addLine(item), setError });
+  // the explicit type argument pins F, so a later edit to the callbacks cannot
+  // widen the bag and quietly disable key checking
+  const quick = useQuickAdd<SaleQuickFields>(SALE_QUICK, { onCreated: (item) => addLine(item), setError });
 
   // The invoice total must be known before the payment pair (its reference) and
   // before the dirty flag reads the payment amount, so the totals are computed

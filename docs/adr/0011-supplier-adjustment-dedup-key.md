@@ -1,4 +1,4 @@
-# A تسوية carries one dedup key: the client's key when sent, else the signature
+# A تسوية carries one dedup key: the signature, plus the client's key when sent
 
 Issue #177 made every manual adjustment go through one guarded store path that
 refused a duplicate **request signature** `(supplierId, direction, amount, note,
@@ -12,10 +12,11 @@ invoiceId, occurredAt)`. Two holes survived:
 We gave the adjustment one canonical **dedup key**, stored on the row as
 `supplier_account_entries.dedup_key` and covered by a partial unique index.
 
-- **When the caller sends an `idempotencyKey`**, that key is the identity of the
-  request: a stored row with the same key (scoped to the supplier) is the same
-  logical request, whatever its other fields. A changed timestamp therefore no
-  longer defeats the retry guard.
+- **When the caller sends an `idempotencyKey`**, that key is the *primary*
+  identity of the request: a stored row with the same key (scoped to the
+  supplier) is the same logical request, whatever its other fields. A changed
+  timestamp therefore no longer defeats the retry guard. The signature arm below
+  remains an independent backstop.
 - **When no key is sent** the #177 signature remains the key, unchanged, so the
   server-stamped-timestamp rule still protects omitted-date retries.
 - The key is **additive to** the signature, never a replacement: a duplicate is
@@ -35,13 +36,17 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   not enough while the signature is unchanged, and dropping the key is not enough
   either because the signature arm stays active. `supplierId` differs only across
   accounts. Neither path weakens the guard.
-- The key is written by the one guarded write path and enforced by a partial
-  unique index, so a second process that races the identical request loses at
-  the database, and the unique violation is mapped back to the same stable
-  `DUPLICATE_ADJUSTMENT` refusal. The index covers identical **keys** (a `key:`
-  value for a keyed row, a `sig:` value otherwise); a same-shape duplicate
-  written under a different key, or through the signature path, is caught by the
-  guard's signature arm, not by the index.
+- The key is computed by the same `adjustmentDedupKey` from both the guarded
+  adjustment write and the raw `insertSupplierEntry` seam (which has no
+  server-stamped flag, so it uses the time-inclusive signature), and enforced by
+  a partial unique index. A second process that races the identical request loses
+  at the database, and the unique violation is mapped back to the same stable
+  `DUPLICATE_ADJUSTMENT` refusal. The index covers identical `dedup_key` values
+  (a `key:` value for a keyed row, a `sig:` value otherwise): two identical
+  *unkeyed* requests compute the same `sig:` key and are index-covered. A
+  same-shape request written under a *different* key, or a keyed row duplicated
+  by a signature-path (unkeyed) request, produces a different stored key and is
+  caught by the guard's signature arm instead.
 
 **Considered options**
 
@@ -50,11 +55,11 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   backstop would be switched off exactly when a caller opted into a key.
 - **(B) Keep the guard in the store only.** Rejected by the issue: no
   cross-process backstop.
-- **(C) A partial unique index over the signature columns.** Rejected: it cannot
-  express the server-stamped wildcard (the timestamp is dropped from the key at
-  query time, not stored per row), and SQLite treats `NULL` note/invoice columns
-  as distinct in a plain multi-column unique index. A single canonical key column
-  makes the guard and the index read the same value.
+- **(C) A partial unique index over the raw signature columns.** Rejected: the
+  #177 server-stamped rule is a *query-time* wildcard (an omitted date matches any
+  stored time), which a raw-column index cannot express; and SQLite treats `NULL`
+  note/invoice columns as distinct in a plain multi-column unique index. A single
+  derived key column materialises the guard's rule as one comparable value.
 
 **Consequences**
 
@@ -74,7 +79,9 @@ We gave the adjustment one canonical **dedup key**, stored on the row as
   request that omits `occurredAt` is refused by any existing `ADJUSTMENT` with
   the same `(supplierId, direction, amount, reason, invoiceId)`, at any stored
   time — an explicit row included. An explicit request is time-sensitive and
-  matches only a row with the same `occurredAt`. The *stored* key differs between
-  a stamped row (`sig:[…, null]`) and an explicit one (`sig:[…, timestamp]`),
-  which is what the index compares; the guard's column arm remains the authority
-  for a stamped incoming request.
+  matches only a row with the same `occurredAt`. A newly written stamped row
+  stores `sig:[…, null]` and a newly written explicit row stores
+  `sig:[…, timestamp]`; a *legacy* row is backfilled time-inclusive (the old
+  shape did not record whether the caller omitted the date), so the two only
+  differ for rows written since v4. The index compares the stored values; the
+  guard's column arm remains the authority for a stamped incoming request.

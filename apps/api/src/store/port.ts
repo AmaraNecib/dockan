@@ -165,8 +165,9 @@ export type SupplierAdjustmentInsert = {
    * #177 — true when the router stamped `occurredAt` because the caller omitted
    * it. A retry then cannot be told apart by time, so the duplicate signature
    * ignores `occurredAt` (same supplier/direction/amount/reason/invoiceId at any
-   * time is a duplicate). A caller that wants two genuinely distinct identical
-   * adjustments must send its own `occurredAt`.
+   * time is a duplicate). A caller that wants a genuinely distinct entry must
+   * change the signature (direction/amount/reason/invoiceId, or a *different*
+   * explicit `occurredAt`) and, when it sends a key, also a new key.
    */
   serverStamped?: boolean;
   /**

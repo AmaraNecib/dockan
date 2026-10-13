@@ -280,7 +280,10 @@ describe("adjustmentDedupKey (issue 181)", () => {
 
   it("ignores ref, which is in neither form (issue 181 review)", () => {
     const withRef: AdjustmentDedupInput & { ref: string } = { ...signature, ref: "REF-B" };
-    expect(adjustmentDedupKey(withRef)).toBe(adjustmentDedupKey(signature));
+    // pinned against the golden format, not just self-equality
+    expect(adjustmentDedupKey(withRef)).toBe('sig:["sup-1","WE_OWE",500,"رصيد افتتاحي",null,"2026-10-13T12:00:00"]');
+    const keyedWithRef: AdjustmentDedupInput & { ref: string } = { ...signature, idempotencyKey: "key-1", ref: "REF-B" };
+    expect(adjustmentDedupKey(keyedWithRef)).toBe('key:["sup-1","key-1"]');
   });
 
   it("cannot be forged by crafted text (JSON encoding)", () => {

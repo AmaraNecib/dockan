@@ -100,7 +100,7 @@ so the index backstop remains the same-shape cross-process net.
 adds one branch:
 
 ```
-if (idempotencyKey) {
+if (hasExplicitIdempotencyKey(input)) {
   kind = 'ADJUSTMENT' AND (dedup_key = adjustmentDedupKey(input)
                            OR <the #177 column conditions>)
 } else {
@@ -196,7 +196,7 @@ no new Playwright flow; the full existing suite still runs as a gate.
 
 - `packages/contracts/src/core.ts`: `supplierAdjustInputSchema` gains
   `idempotencyKey: z.string().trim().min(1).max(200).optional()`.
-- `apps/api/src/lib/supplier-ledger.ts`: `AdjustmentDedupInput`, `adjustmentDedupKey`.
+- `apps/api/src/lib/supplier-ledger.ts`: `AdjustmentDedupInput`, `adjustmentDedupKey`, `hasExplicitIdempotencyKey`.
 - `apps/api/src/store/port.ts`: `SupplierAdjustmentInsert.idempotencyKey`,
   `SupplierAdjustmentSignature` picks it up; `insertEntryRow` takes the key.
 - `apps/api/src/db/schema.ts`: `supplierAccountEntries.dedupKey` + DDL + index.
@@ -224,7 +224,8 @@ no new Playwright flow; the full existing suite still runs as a gate.
 - `rpc/router.test.ts`: the gap-1 flow — explicit date + key, retry with a changed
   date is `DUPLICATE_ADJUSTMENT` and posts once; no key still allows two distinct
   dates; empty key is an input-validation error; a key change with the same
-  signature is allowed.
+  signature is still refused (the signature arm is a backstop), while a key
+  change **with a changed signature** is allowed.
 
 ## Risks
 

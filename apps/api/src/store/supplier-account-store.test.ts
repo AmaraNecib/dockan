@@ -549,19 +549,31 @@ describe("supplier account store", () => {
     await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-A" }));
     // ref is in neither the signature nor the key, so it cannot release an entry
     await expect(store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, ref: "REF-B" }))).rejects.toThrow(/DUPLICATE/);
-    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    const entries = (await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT");
+    expect(entries).toHaveLength(1);
+    // the first write is the one that landed
+    expect(entries[0]?.ref).toBe("REF-A");
   });
 
-  it("matches any stored timestamp when the request omits the date (issue 181 review)", async () => {
+  it("treats a server-stamped request as time-insensitive against a stored explicit row (issue 181 review)", async () => {
     const supplier = await makeSupplier("مورد طابع مقابل صريح");
     const base = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 250, reason: "رصيد", invoiceId: null };
     await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2026-10-13T12:00:00" }));
-    // the incoming request omits occurredAt, so its signature drops the time and
+    // the incoming request is server-stamped, so its signature drops the time and
     // matches the explicit row at a different stored time
     await expect(
       store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, occurredAt: "2099-01-01T00:00:00", serverStamped: true })),
     ).rejects.toThrow(/DUPLICATE/);
     expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+  });
+
+  it("accepts a changed direction as a distinct adjustment (issue 181 review)", async () => {
+    const supplier = await makeSupplier("مورد اتجاه مفتاح");
+    const base = { supplierId: supplier.id, amount: 300, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, direction: "WE_OWE" }));
+    // direction is a signature dimension, so the opposite direction is a new entry
+    await store.withTransactionImmediate(async (tx) => tx.insertSupplierAdjustment({ ...base, direction: "THEY_OWE" }));
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
   });
 
   it("refuses a fresh key while the signature is unchanged, and allows one with a changed signature (issue 181 review)", async () => {

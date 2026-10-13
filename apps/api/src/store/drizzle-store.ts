@@ -1345,8 +1345,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
   /** True when an ADJUSTMENT with this key or signature already exists. Without
    * an explicit idempotency key the #177 signature decides (unchanged). With
    * one the key is the primary match — it matches the stored `dedup_key` at any
-   * shape — and the signature stays in force, so a fresh key on an unchanged
-   * signature, or a keyed retry of a request first sent unkeyed, is refused. */
+   * shape — and the signature stays in force: a fresh key on an unchanged
+   * signature is refused, and a keyed retry of a request first sent unkeyed is
+   * refused while its signature is unchanged (changing an explicit `occurredAt`
+   * escapes; see design D2 boundary). */
   const hasSupplierAdjustment = async (input: SupplierAdjustmentSignature): Promise<boolean> => {
     const bySignature = and(...adjustmentSignatureConditions(input));
     // the keyed arm carries the kind predicate too: only an ADJUSTMENT row can

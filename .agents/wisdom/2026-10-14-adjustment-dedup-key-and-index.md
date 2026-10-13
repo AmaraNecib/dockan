@@ -64,3 +64,25 @@
    Before a full run, kill listeners on the API/web ports and wipe `.e2e-data`;
    to prove flakiness is pre-existing, run the same suite on the base commit
    (it failed 10 specs there while the clean branch run passed 53).
+
+8. **Derive a dedup "escape hatch" from the predicate, and test it — docs about
+   money behaviour drift silently.** ADR-0011 told callers to separate an
+   identical repeat by changing `ref`; `ref` is in neither `adjustmentDedupKey`
+   nor `adjustmentSignatureConditions`, so the documented workaround was
+   impossible, and the same text claimed a stamped request and an explicit one
+   "are different requests" when a stamped query drops the timestamp entirely
+   and matches any stored row. Greptile caught it at 4/5. Rules that hold for
+   this shape of guard:
+   - enumerate the exact fields each match arm compares; anything not listed
+     (`ref`, and the client key inside the signature arm) is not an override;
+   - a new client key is **not** enough while the signature is unchanged, and
+     dropping the key is **not** enough either because the signature arm stays
+     active — a distinct entry needs a changed signature *and*, when keyed, a
+     new key;
+   - a query-side wildcard is directional: an omitted-date request matches any
+     stored time, an explicit request only its own; the *stored* key
+     (`sig:[…, null]` vs `sig:[…, timestamp]`) is a different fact;
+   - pin each corrected claim with a test at a real seam (a `ref`-only change is
+     still `DUPLICATE`; a stamped request refuses against an explicit row; a
+     fresh key on an unchanged signature is still `DUPLICATE`). Prose alone is
+     how this round happened.

@@ -1,0 +1,16 @@
+# #179 contended run — the two affected specs at --workers=2, repeated 3× (6 tests, 2 at a time)
+# HEAD aa2cbe8d553267025d986e749805a1a3c8d4cafc · generated 2026-10-13T17:55:29Z
+
+$ DOKAN_PORT=5417 DOKAN_WEB_PORT=6273 bunx playwright test tests/e2e/receipts.spec.ts tests/e2e/arabic-search.spec.ts --workers=2 --repeat-each=3 --reporter=list
+
+Running 6 tests using 2 workers
+
+  ok 2 tests\e2e\receipts.spec.ts:22:1 › invoice print button → receipt document with identity, totals and payments (8.6s)
+  ok 1 tests\e2e\arabic-search.spec.ts:14:1 › arabic search folds alef/ya and the definite article in items and parties (11.6s)
+  ok 4 tests\e2e\receipts.spec.ts:22:1 › invoice print button → receipt document with identity, totals and payments (5.5s)
+  ok 3 tests\e2e\arabic-search.spec.ts:14:1 › arabic search folds alef/ya and the definite article in items and parties (9.1s)
+  ok 6 tests\e2e\receipts.spec.ts:22:1 › invoice print button → receipt document with identity, totals and payments (5.9s)
+  ok 5 tests\e2e\arabic-search.spec.ts:14:1 › arabic search folds alef/ya and the definite article in items and parties (10.0s)
+
+  6 passed (36.7s)
+playwright exit=0

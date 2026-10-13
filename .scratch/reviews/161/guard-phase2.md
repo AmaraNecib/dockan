@@ -1,4 +1,4 @@
-# Guard — issue #161, Greptile round-1 fix commit
+# Guard — issue #161, Greptile round-2 fix commit
 
 ## Phase 1 — pre-commit (Husky `oxlint` hook ran on the commit)
 
@@ -6,41 +6,42 @@
 |---|---|---|
 | typecheck | `bun run typecheck` | 3/3 workspaces pass |
 | lint | `bun run lint` | 0 errors |
-| unit + store tests | `bun run test` | api 751 pass / 0 fail; web 757 pass / 0 fail |
+| unit + store tests | `bun run test` | api 752 pass / 0 fail; web 759 pass / 0 fail |
 
-## Phase 2 — pre-push (HEAD `86bd4935c6d7aa2388b419611d7e32b4d92ba72d`)
+## Phase 2 — pre-push (HEAD `0e56e48a6ff2b09bd273b7b1001df8fe4c584857`)
 
 | Check | Command | Result |
 |---|---|---|
 | typecheck | `bun run typecheck` | 3/3 pass |
 | lint | `bun run lint` | 0 errors |
-| tests | `bun run test` | api 751 pass; web 757 pass; 0 fail |
-| e2e (UI changed) | `bun run test:e2e` | 51 passed (2.9m) |
+| tests | `bun run test` | api 752 pass; web 759 pass; 0 fail |
+| e2e (UI changed) | `bun run test:e2e` | 51 passed (3.0m) |
 | working tree | `git status --short` | only `.scratch/` evidence (non-reviewable) |
-| evidence | `.scratch/reviews/161/<sha>-{debate,test-audit,code-review}.md` | present for `86bd493`; older round archived under `superseded/` |
+| evidence | `.scratch/reviews/161/<sha>-{test-audit,code-review}.md` | present for `0e56e48`; older rounds archived under `superseded/` |
+
+Note: the test-audit reviewer's isolation experiment damaged this worktree's
+`node_modules` and deleted `packages/contracts/**`; the lane restored the
+sources with `git restore`, re-ran `bun install`, and re-ran every gate above
+green. No tracked source was changed by the reviewer.
 
 ## Review evidence
 
-- Reviewed implementation SHA: `86bd4935c6d7aa2388b419611d7e32b4d92ba72d`
-- Debate: no blocker; two additive coverage follow-ups (v1→v2 migration test,
-  server-side zero-value invoice-linked return test).
-- Test-audit: all 8 Greptile findings have a regression test that fails without
-  its fix; the global-history render of the supplier name is covered by the
-  store join + voucher tests.
-- Code-review: all 8 findings fixed; non-goals and do-not-touch respected.
+- Reviewed implementation SHA: `0e56e48a6ff2b09bd273b7b1001df8fe4c584857`
+- Test-audit: the round-2 regression test drives the real panel and fails
+  without the one-line gate (empirically verified at the exact assertion);
+  `cashInvalid` stays shared and is guarded in free-standing.
+- Code-review: both axes pass; the gate matches `disabled` in each mode and the
+  free-standing submit never reads the hidden invoice drafts.
 
-## Greptile round-1 findings → fix
+## Greptile round-2 finding → fix
 
-1. schema-version bump to 2 (+ refusal test) — `apps/api/src/lib/schema-version.ts`
-2. zero-amount purchase skips the charge entry — `apps/api/src/rpc/router.ts`
-3. return draft validation rejects, never drops — `supplier-return-panel.tsx` + `supplier-return-draft.ts`
-4. pay preview passes the full amount — `supplier-pay-panel.tsx`
-5. free-standing voucher omits the stock cost as unit price — `supplier-return-print.tsx`
-6. voucher + history name the supplier — `drizzle-store.ts` join, `core.ts`, `returns.tsx`
-7. Arabic activity cases — `activity.tsx` + `i18n.ts`
-8. free-goods invoice-linked return submits on valid quantities — `supplier-return-panel.tsx`
+Hidden invoice quantity drafts warned in free-standing mode. The warning is now
+gated on `mode === "INVOICE_LINKED"`; `cashInvalid` stays shared
+(`supplier-return-panel.tsx:235`). Regression test in
+`supplier-return-panel.test.tsx`.
 
-## Deferred (non-blocking, additive coverage)
+## Deferred (non-blocking)
 
-- v1→v2 forward-migration test.
-- Server-side test for a zero-value invoice-linked return (safe by `> 0` guards today).
+- Assertion-width notes from the test-audit (N1/N3): the free-standing cash test
+  could also assert the confirm button is disabled; `openSelect` could assert the
+  committed value.

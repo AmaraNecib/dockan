@@ -146,7 +146,12 @@ export function SupplierOpeningBalancePage() {
   }, [suppliers, newName, newAmount, newDirection, nameFocused, amountFocused, drafts]);
 
   async function save(confirmExisting: boolean) {
-    if (occurredAt === null || blockedReason !== null) return;
+    if (occurredAt === null) return;
+    // surface the reason on the dialog path too, instead of silently no-op'ing
+    if (blockedReason !== null) {
+      setError(blockedReason);
+      return;
+    }
     const resolved = resolveNewName();
     if (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId)) {
       setError(t("supplierOpeningRowHasAmount"));

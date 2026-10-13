@@ -49,6 +49,10 @@ let resolveFails = false;
 let resolveCalls = 0;
 /** when true, the next save is refused as a stale named destination */
 let rejectTargetChanged = false;
+/** when set, the resolve waits on this promise before answering, so a test can
+ * cancel while the lookup is still pending (review round 1 finding 1) */
+let resolveHold: Promise<void> | null = null;
+let releaseResolveHold: (() => void) | null = null;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -84,6 +88,7 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => {
           resolveCalls += 1;
           if (resolveFails) throw new Error("NETWORK");
+          if (resolveHold !== null) await resolveHold;
           return { supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null };
         },
       }),
@@ -108,6 +113,8 @@ beforeEach(() => {
   resolveFails = false;
   resolveCalls = 0;
   rejectTargetChanged = false;
+  resolveHold = null;
+  releaseResolveHold = null;
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
   racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
@@ -532,6 +539,75 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
     expect(confirmNames()).toContain("مورد بديل");
     expect(confirmNames()).not.toContain("مورد له حركات");
+  });
+
+  it("does not write when the owner cancels while the lookup is pending (review round 1 finding 1)", async () => {
+    // a new supplier with no rows filled: without the guard the late resolve
+    // reaches save(false, null) and posts the balance after Cancel
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+
+    // leave while the lookup is still running
+    await act(async () => {
+      clickOn("opening-balance-cancel");
+    });
+
+    // the lookup finally answers: the abandoned attempt must not write
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
+  });
+
+  it("lets a valid batch save after the typed name moves to another supplier (review round 1 finding 2)", async () => {
+    resolveByKey.set(normalizeTextKey("مورد آخر"), { id: "s-9", name: "مورد آخر", accountEntryCount: 0 });
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    setInput(nameInput, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    // the confirmation opens naming s-1
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the owner edits the typed name to a DIFFERENT supplier while the dialog is
+    // open, then fills s-1's existing row: the old destination must not block
+    setInput(nameInput, "مورد آخر");
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+
+    // saving re-resolves the edited row and writes both accounts
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 700, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد آخر")).toMatchObject({ amount: 500, expectedSupplierId: "s-9" });
   });
 
   it("names the destination supplier in the confirmation dialog (round 5)", async () => {

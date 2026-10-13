@@ -184,3 +184,96 @@ test("a folded opening-balance name lands on the supplier the dialog names (issu
   expect(landed.account?.balance).toBe(800);
   expect(twin.account?.balance).toBe(0);
 });
+
+/**
+ * Review round 1, finding 1 (money): leaving while the name lookup is pending
+ * must not write. The resolve is held open with a route delay so Cancel lands
+ * mid-lookup; no opening-balance request may follow. Cancel stays enabled — a
+ * hung lookup must never trap the owner.
+ */
+test("cancelling while the name lookup is pending writes nothing (issue 184 review round 1)", async ({ page }) => {
+  await signIn(page);
+  const name = `مورد معلّق-${Date.now()}`;
+
+  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  let wrote = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) wrote = true;
+  });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(name);
+  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-save").click();
+
+  // leave while the lookup is still running
+  await page.getByTestId("opening-balance-cancel").click();
+  await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
+
+  // let the held lookup answer: the abandoned attempt must not write
+  await page.waitForTimeout(2000);
+  await page.unroute("**/api/rpc/suppliersResolveName");
+  expect(wrote).toBe(false);
+
+  // and the name never materialized
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-table")).not.toContainText(name);
+});
+
+/**
+ * Review round 1, finding 2: editing the typed name to a different supplier
+ * while the confirmation is open must clear the stale destination, so filling
+ * the previously-confirmed supplier's row is a valid batch, not a conflict.
+ */
+test("editing the typed name away from the confirmed one keeps the batch saveable (issue 184 review round 1)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const carriedName = `مورد  متغير-${stamp}`; // double space: carries an entry
+  const foldedName = `مورد متغير-${stamp}`; // single space: folds to the same key
+  const typedName = `مورد   متغير-${stamp}`; // triple space: what the owner types first
+  const freshName = `مورد مستقل-${stamp}`; // a genuinely different supplier
+
+  const carried = await rpc<{ id: string }>(page, "suppliersCreate", { name: carriedName });
+  await rpc<{ id: string }>(page, "suppliersCreate", { name: foldedName });
+  await rpc(page, "suppliersAdjust", { supplierId: carried.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  const nameField = page.getByTestId("opening-balance-new-name");
+  await nameField.fill(typedName);
+  await page.getByTestId("opening-balance-new-amount").fill("300");
+  await page.getByTestId("opening-balance-save").click();
+  await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
+
+  // edit the typed name to a DIFFERENT supplier while the dialog is open: the
+  // confirmation must close and its destination snapshot must be dropped
+  await nameField.fill(freshName);
+  await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
+
+  // fill the carried supplier's existing row; the raw aria-label prefix
+  // disambiguates the folded twin whose rendered text is identical
+  await page.locator(`[data-testid="opening-balance-amount"][aria-label^="${carriedName}:"]`).fill("200");
+  await expect(page.getByTestId("opening-balance-blocked")).toHaveCount(0);
+  await expect(page.getByTestId("opening-balance-save")).toBeEnabled();
+
+  // saving re-resolves the edited row and writes both accounts
+  await page.getByTestId("opening-balance-save").click();
+  await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
+  await page.getByTestId("opening-balance-confirm-save").click();
+  await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
+
+  const carriedAfter = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: carried.id });
+  expect(carriedAfter.account?.balance).toBe(700);
+
+  await page.getByTestId("opening-balance-done").click();
+  await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
+  await page.getByRole("link", { name: freshName }).click();
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("300 دج");
+});

@@ -127,3 +127,44 @@ supplierResolveNameOutputSchema = z.object({
   the full signature so it cannot disagree with the write.
 - #183 (names-only lookup) is **not** included; this query resolves one name to one
   destination and returns no list.
+
+---
+
+## Review-fix round 1 (PR #190, Greptile 4/5)
+
+Two findings, both valid; the first is money-critical.
+
+### Finding 1 — Cancel still writes balances
+
+`submit` awaited `resolveForSubmit()` and then unconditionally reached
+`save(false, destination)`. The main Cancel button was enabled while the lookup ran
+and only navigated, so a late resolve could post the batch after the owner left.
+
+**Fix:** a monotonic `attemptRef`. Every `submit` owns `attempt = ++attemptRef.current`
+and returns without writing when `attempt !== attemptRef.current` after the await.
+`leave()` (the Cancel handler) bumps the attempt before navigating, and an unmount
+effect bumps it too (any route out of the screen). Cancel stays **enabled** and is
+never blocked on `resolving` — a hung lookup must not trap the owner. Late results
+also skip their `setError`/`setResolving` via `mountedRef`.
+
+### Finding 2 — The old destination blocks valid edits
+
+`typedDestination` outlived a field edit: after changing the typed name from A to a
+different supplier B while the confirmation was open, the duplicate check still
+compared against A and disabled both save buttons.
+
+**Fix:** the snapshot is now `typedResolution = { key, supplier }`. `resolveKey` is
+the serialized lookup tuple `(name, direction, amount, occurredAt, reason)`; the
+destination is only used when `typedResolution.key === resolveKey`. A `useEffect`
+on `resolveKey` change additionally **closes the confirmation**, clears the
+snapshot, and bumps `attemptRef` (so a submit started for the old fields cannot
+land), and the next submit re-resolves the edited row.
+
+### Added tests
+
+- web: cancelling a held lookup writes nothing (mock resolve gate); editing the
+  name to another supplier then filling the old row's row leaves the save enabled
+  and writes both accounts.
+- e2e: a route-delayed `suppliersResolveName` + Cancel asserts no
+  `suppliersOpeningBalances` request follows and the name never materializes; the
+  field-edit flow asserts the dialog closes, the batch saves, and both balances land.

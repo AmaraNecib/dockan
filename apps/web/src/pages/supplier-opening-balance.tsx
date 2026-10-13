@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -47,9 +47,9 @@ export function SupplierOpeningBalancePage() {
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
   const [confirming, setConfirming] = useState(false);
-  // the destination the server named when the dialog last opened; the dialog
-  // renders it verbatim (issue 184)
-  const [typedDestination, setTypedDestination] = useState<ResolvedSupplier | null>(null);
+  // the destination the server named, tagged with the exact lookup key it answered
+  // for; the dialog renders it verbatim and an edit invalidates it (issue 184)
+  const [typedResolution, setTypedResolution] = useState<{ key: string; supplier: ResolvedSupplier | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -58,6 +58,10 @@ export function SupplierOpeningBalancePage() {
    * same-task double-fire that React has not yet re-rendered. */
   const [resolving, setResolving] = useState(false);
   const resolvingRef = useRef(false);
+  /** Monotonic attempt id: leaving the page or editing the typed row's lookup
+   * fields invalidates an in-flight submit so a late resolve cannot write. */
+  const attemptRef = useRef(0);
+  const mountedRef = useRef(true);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
 
   const suppliers = list.data?.items ?? [];
@@ -98,6 +102,15 @@ export function SupplierOpeningBalancePage() {
     typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
       ? { name: newName.trim(), direction: newDirection, amount: typedAmount, occurredAt, reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim() }
       : null;
+  // the typed row's lookup fields, serialized: any change invalidates the cached
+  // destination and closes the confirmation (review round 1 finding 2)
+  const resolveKey =
+    typedNameKey !== null && typedAmount !== null && typedAmount > 0 && occurredAt !== null
+      ? [newName.trim(), newDirection, typedAmount, occurredAt, reasonDraft.trim()].join("\u0000")
+      : null;
+  // the destination snapshot is only used while it belongs to the CURRENT lookup
+  // fields, so a stale snapshot can never block a valid edited batch
+  const typedDestination = typedResolution !== null && typedResolution.key === resolveKey ? typedResolution.supplier : null;
   // guard: a typed name that folds onto a row the owner already picked must not be
   // sent (the same account twice). Folded names are a local, tie-break-free
   // check; the resolved id comes from the server. One function so the render-time
@@ -106,6 +119,29 @@ export function SupplierOpeningBalancePage() {
   const conflictsWithFilled = (destination: ResolvedSupplier | null) =>
     typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
   const typedNameConflict = conflictsWithFilled(typedDestination);
+
+  // a change to the typed row's lookup fields means the confirmation named an
+  // account for a now-outdated row: close it, drop the snapshot, and invalidate
+  // any in-flight submit for the old fields
+  const lastResolveKeyRef = useRef(resolveKey);
+  useEffect(() => {
+    if (lastResolveKeyRef.current === resolveKey) return;
+    lastResolveKeyRef.current = resolveKey;
+    attemptRef.current += 1;
+    setConfirming(false);
+    setTypedResolution(null);
+  }, [resolveKey]);
+
+  // leaving the page (by any route) invalidates every in-flight attempt, so a late
+  // resolve can never reach save() after the owner left. Re-arming on mount keeps
+  // a StrictMode double-invoke from leaving it permanently false.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      attemptRef.current += 1;
+    };
+  }, []);
 
   const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
   const overLimit = isOpeningBatchOverLimit(totalRows);
@@ -134,7 +170,20 @@ export function SupplierOpeningBalancePage() {
    * be judged against the account a previous dialog named (issue 184). */
   function closeConfirm() {
     setConfirming(false);
-    setTypedDestination(null);
+    setTypedResolution(null);
+  }
+
+  /** Remember the server's answer under the exact lookup key it answered for. */
+  function rememberResolution(supplier: ResolvedSupplier | null) {
+    setTypedResolution(resolveKey === null ? null : { key: resolveKey, supplier });
+  }
+
+  /** Leave the screen: invalidate any in-flight attempt first so its late resolve
+   * cannot write (review round 1 finding 1). Cancel is never blocked — a hung
+   * lookup must not trap the owner. */
+  function leave() {
+    attemptRef.current += 1;
+    void navigate({ to: "/suppliers" });
   }
 
   /** Ask the server which account this typed name resolves to (issue 184). The
@@ -159,6 +208,9 @@ export function SupplierOpeningBalancePage() {
       setError(blockedReason);
       return;
     }
+    // the attempt this write belongs to: a leave or a lookup-field edit bumps
+    // `attemptRef`, and any state a late continuation would set is then skipped
+    const saveAttempt = attemptRef.current;
     setError(null);
     setSubmitting(true);
     try {
@@ -211,17 +263,18 @@ export function SupplierOpeningBalancePage() {
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
         try {
           const destination = await resolveTypedDestination();
-          setTypedDestination(destination);
+          if (!mountedRef.current || saveAttempt !== attemptRef.current) return;
+          rememberResolution(destination);
           setConfirming(true);
         } catch (resolveError) {
-          setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
+          if (mountedRef.current && saveAttempt === attemptRef.current) setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
         }
       }
     } finally {
       // NOTE: do NOT reset `confirming` here — the catch may have just set it to
       // surface the dialog after a stale-expectation refusal. It is cleared on
       // success above and by the dialog's own cancel button.
-      setSubmitting(false);
+      if (mountedRef.current) setSubmitting(false);
     }
   }
 
@@ -236,10 +289,15 @@ export function SupplierOpeningBalancePage() {
       setError(t("supplierOpeningNothing"));
       return;
     }
+    // every submit owns an attempt id: leaving the page or editing the lookup
+    // fields invalidates it, so a late resolve can never reach save()
+    const attempt = attemptRef.current + 1;
+    attemptRef.current = attempt;
     // the server's resolution is the only source of the typed row's destination
     // (issue 184): ask it before deciding what the dialog must name. A batch with
     // no typed name stays synchronous — there is nothing to resolve.
-    const destination = resolveInput === null ? null : await resolveForSubmit();
+    const destination = resolveInput === null ? null : await resolveForSubmit(attempt);
+    if (attempt !== attemptRef.current) return; // left or the lookup fields changed
     if (destination === undefined) return; // resolve failed; the error is already shown
     const conflict = conflictsWithFilled(destination);
     if (conflict) {
@@ -248,7 +306,7 @@ export function SupplierOpeningBalancePage() {
     }
     const existingNeedsConfirm = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0);
     if (existingNeedsConfirm || (destination?.accountEntryCount ?? 0) > 0) {
-      setTypedDestination(destination);
+      rememberResolution(destination);
       setConfirming(true);
       return;
     }
@@ -258,17 +316,17 @@ export function SupplierOpeningBalancePage() {
   /** `submit`'s resolve with the UI guards a bare read needs: a pending flag so
    * a double-click cannot run two, and an error surface instead of an unhandled
    * rejection. `undefined` means it failed and the error is shown. */
-  async function resolveForSubmit(): Promise<ResolvedSupplier | null | undefined> {
+  async function resolveForSubmit(attempt: number): Promise<ResolvedSupplier | null | undefined> {
     resolvingRef.current = true;
     setResolving(true);
     try {
       return await resolveTypedDestination();
     } catch (err) {
-      setError(tError(err instanceof Error ? err.message : undefined));
+      if (attempt === attemptRef.current && mountedRef.current) setError(tError(err instanceof Error ? err.message : undefined));
       return undefined;
     } finally {
       resolvingRef.current = false;
-      setResolving(false);
+      if (mountedRef.current) setResolving(false);
     }
   }
 
@@ -451,7 +509,7 @@ export function SupplierOpeningBalancePage() {
             <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
-            <Button type="button" variant="outline" onClick={() => void navigate({ to: "/suppliers" })} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
+            <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
               {t("partyCancel")}
             </Button>
           </div>

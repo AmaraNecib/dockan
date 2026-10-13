@@ -520,6 +520,58 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
   });
 
+  it("blocks two same-name rows adopted onto different siblings instead of sending both (Greptile round 4)", async () => {
+    const name = "مورد مكرر";
+    const twinA = { id: "twin-a", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 };
+    const twinB = { ...twinA, id: "twin-b", name: name.replace(" ", "  ") };
+    suppliers = [twinA, twinB];
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+
+    // the first typed name adopts onto the lowest-id twin
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, name);
+    await act(async () => {
+      nameInput.blur();
+      amountInput.focus();
+    });
+    setInput(amountInput, "100");
+    await act(async () => {
+      amountInput.blur();
+    });
+
+    // the refetch gives the OTHER twin more entries, so a second typed name would
+    // resolve to it; the page must block, never emit two same-name rows
+    suppliers = [twinA, { ...twinB, accountEntryCount: 3 }];
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
+    });
+    await settle();
+
+    await act(async () => {
+      nameInput.focus();
+    });
+    setInput(nameInput, name);
+    await act(async () => {
+      nameInput.blur();
+      amountInput.focus();
+    });
+    setInput(amountInput, "200");
+    await act(async () => {
+      amountInput.blur();
+    });
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+  });
+
   it("resolves duplicate folded names to the entry-carrying supplier, like the server (Greptile round 2)", async () => {
     const name = "مورد ازدواج";
     // two suppliers fold to one normalizeTextKey; the server prefers the one

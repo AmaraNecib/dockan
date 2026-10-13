@@ -133,6 +133,18 @@ export function SupplierOpeningBalancePage() {
     return { supplierId: match.id, direction: newDirection, amount, needsConfirm: (match.accountEntryCount ?? 0) > 0 };
   }
 
+  /** True when the typed name duplicates a name already adopted onto another row.
+   * Two rows folding to one name would be refused by the server's batch check, so
+   * the page must block instead of sending them (round 4 review). */
+  function typedNameConflictsWithAdopted(): boolean {
+    const key = newName.trim() === "" ? null : normalizeTextKey(newName);
+    if (key === null) return false;
+    return filledExisting.some((row) => {
+      const adopted = namedTargets[row.supplier.id];
+      return adopted !== undefined && normalizeTextKey(adopted) === key;
+    });
+  }
+
   // Greptile round 2 — the typed new name may now match an existing supplier (a
   // concurrent create landed after this page loaded, or a background refetch
   // brought one in). Move the draft onto that supplier's row once the owner has
@@ -150,6 +162,9 @@ export function SupplierOpeningBalancePage() {
     // error instead of being silently overwritten. The inline draft is left for
     // submit/save to flag as a conflict.
     if (openingRowStatus(drafts[resolved.supplierId]).status !== "untouched") return;
+    // another row already carries this name: leave the inline draft for the
+    // conflict guard, never emit two same-name rows the server would refuse
+    if (typedNameConflictsWithAdopted()) return;
     const typedName = newName.trim();
     setRow(resolved.supplierId, { direction: resolved.direction, amount: newAmount });
     setNamedTargets((current) => ({ ...current, [resolved.supplierId]: typedName }));
@@ -165,7 +180,7 @@ export function SupplierOpeningBalancePage() {
       return;
     }
     const resolved = resolveNewName();
-    if (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId)) {
+    if (resolved !== undefined && (filledExisting.some((row) => row.supplier.id === resolved.supplierId) || typedNameConflictsWithAdopted())) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }
@@ -231,7 +246,7 @@ export function SupplierOpeningBalancePage() {
     // inline row still shows it (a focused duplicate name never blurs before an
     // Enter submit)
     const resolved = resolveNewName();
-    if (resolved !== undefined && filledExisting.some((row) => row.supplier.id === resolved.supplierId)) {
+    if (resolved !== undefined && (filledExisting.some((row) => row.supplier.id === resolved.supplierId) || typedNameConflictsWithAdopted())) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }

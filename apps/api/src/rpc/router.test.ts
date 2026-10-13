@@ -1731,6 +1731,43 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.suppliersGet({ id: supplier.id })).account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
   });
 
+  it("rejects a duplicate adjustment submission so a retry cannot double-post (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تكرار تسوية", 10);
+    const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" };
+
+    const first = await client.suppliersAdjust(payload);
+    expect(first.balance).toBe(1400);
+
+    // the same signature (supplier, direction, amount, reason, timestamp) is
+    // refused: one entry, one balance move
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+    const account = await client.suppliersGet({ id: supplier.id });
+    expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
+    expect(account.account?.balance).toBe(1400);
+  });
+
+  it("does not reduce a linked invoice twice on a duplicate submission (issue 177)", async () => {
+    const { supplier, invoice } = await setupSupplier("مورد تكرار رابط", 50);
+    const payload = { supplierId: supplier.id, direction: "THEY_OWE" as const, amount: 500, reason: "خصم", occurredAt: "2026-10-13T12:00:00", invoiceId: invoice.id };
+
+    await client.suppliersAdjust(payload);
+    await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
+
+    // the entry and the reduction both moved exactly once
+    const detail = await client.invoicesGet({ id: invoice.id });
+    expect(detail.remainingAmount).toBe(4500);
+    expect(detail.returnCreditAmount).toBe(500);
+    expect(detail.remainingAmount).toBe(detail.totalAmount - detail.paidAmount - detail.returnCreditAmount);
+  });
+
+  it("accepts the same amount on a different date (not a duplicate) (issue 177)", async () => {
+    const { supplier } = await setupSupplier("مورد تواريخ تسوية", 10);
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-13T12:00:00" });
+    const second = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-14T12:00:00" });
+    expect(second.balance).toBe(1400);
+    expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
+  });
+
   it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);

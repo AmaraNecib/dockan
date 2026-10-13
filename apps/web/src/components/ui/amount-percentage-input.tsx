@@ -3,7 +3,13 @@ import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
 import { inputClass } from "@/components/ui/input";
+import { parseGroupedAmount, parseWholeAmount, parseWholePercentage } from "@/lib/amount-parse";
 import { cn } from "@/lib/utils";
+
+// #180 — the low-level readers live in @/lib/amount-parse so every money input
+// shares one grouped-amount parser. Re-exported here so existing importers keep
+// their import site; new money fields import from the lib directly.
+export { parseGroupedAmount, parseWholeAmount, parseWholePercentage };
 
 /**
  * #162 — the shared amount-or-percentage input (CONTEXT.md: مبلغ أو نسبة).
@@ -37,23 +43,6 @@ export function percentageFromAmount(referenceTotal: number, amount: number): nu
   return Math.min(100, Math.max(0, Math.round(raw)));
 }
 
-/** A digits-only whole-DZD draft, or null when it is not a usable integer. */
-export function parseWholeAmount(draft: string): number | null {
-  const trimmed = draft.trim();
-  if (trimmed === "" || !/^\d+$/u.test(trimmed)) return null;
-  const value = Number(trimmed);
-  return Number.isSafeInteger(value) ? value : null;
-}
-
-/** A digits-only 0..100 whole-percentage draft, or null when unusable. */
-export function parseWholePercentage(draft: string): number | null {
-  const trimmed = draft.trim();
-  if (trimmed === "" || !/^\d+$/u.test(trimmed)) return null;
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value > 100) return null;
-  return value;
-}
-
 /**
  * True when a non-empty percentage draft is not a whole 0..100 percent (e.g.
  * "12.5", "abc"). Callers must reject this BEFORE saving: the component clears
@@ -68,7 +57,7 @@ export function percentageDraftInvalid(draft: string): boolean {
 /** The link when the owner edits the amount: percentage follows. */
 export function amountEdited(referenceTotal: number | null | undefined, amountDraft: string): AmountPercentageValue {
   if (!hasReference(referenceTotal)) return { amount: amountDraft, percentage: "" };
-  const parsed = parseWholeAmount(amountDraft);
+  const parsed = parseGroupedAmount(amountDraft);
   return { amount: amountDraft, percentage: parsed === null ? "" : String(percentageFromAmount(referenceTotal, parsed)) };
 }
 

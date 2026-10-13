@@ -222,8 +222,11 @@ describe("supplier account store", () => {
     const supplier = await makeSupplier("مورد تسوية خصم");
     const invoice = await makePurchase(supplier.id, 5000);
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 5000, invoiceId: invoice.id, occurredAt: now() });
-    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 500, invoiceId: invoice.id, note: "خصم", occurredAt: now() });
-    expect(await store.applyDebtOffsetToInvoice(invoice.id, 500)).toBe(true);
+    // #177 — the guarded path applies the reduction with the entry in one unit;
+    // the raw insertSupplierEntry now refuses a linked ADJUSTMENT.
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500, invoiceId: invoice.id, reason: "خصم", occurredAt: now() });
+    });
 
     const detail = await store.getInvoiceDetail(invoice.id);
     expect(detail?.remainingAmount).toBe(4500);
@@ -288,5 +291,44 @@ describe("supplier account store", () => {
       store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", amount: 100, invoiceId: null, occurredAt: now() }),
     ).rejects.toThrow(/direction/);
     expect(await store.listSupplierEntries(supplier.id)).toHaveLength(0);
+  });
+
+  it("refuses a linked ADJUSTMENT through the raw entry seam (issue 177)", async () => {
+    // the raw seam must not let a caller write the entry without the invoice
+    // reduction; the guarded adjustment path is the only way in
+    const supplier = await makeSupplier("مورد مسار رابط");
+    const invoice = await makePurchase(supplier.id, 1000);
+    await expect(
+      store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 100, invoiceId: invoice.id, occurredAt: now() }),
+    ).rejects.toThrow(/LINKED_NEEDS_ATOMIC_PATH/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(0);
+    expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(1000);
+  });
+
+  it("writes an account-only adjustment with a null invoice and touches no invoice (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد حساب فقط");
+    const invoice = await makePurchase(supplier.id, 1000);
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح", occurredAt: now(), invoiceId: null });
+    });
+    const detail = await store.getInvoiceDetail(invoice.id);
+    expect(detail?.remainingAmount).toBe(1000);
+    expect(detail?.returnCreditAmount).toBe(0);
+    const entry = (await store.listSupplierEntries(supplier.id)).find((row) => row.kind === "ADJUSTMENT");
+    expect(entry?.invoiceId).toBeNull();
+  });
+
+  it("refuses a duplicate adjustment signature at the store seam (issue 177)", async () => {
+    const supplier = await makeSupplier("مورد تكرار مخزن");
+    const signature = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 100, reason: "رصيد", occurredAt: "2026-10-13T12:00:00", invoiceId: null };
+    await store.withTransactionImmediate(async (tx) => {
+      await tx.insertSupplierAdjustment(signature);
+    });
+    await expect(
+      store.withTransactionImmediate(async (tx) => {
+        await tx.insertSupplierAdjustment(signature);
+      }),
+    ).rejects.toThrow(/DUPLICATE/);
+    expect((await store.listSupplierEntries(supplier.id)).filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
   });
 });

@@ -5,7 +5,8 @@ import { useTranslation } from "react-i18next";
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -69,13 +70,13 @@ export function SupplierPayPanel({
         const percentage = parseWholePercentage(current.percentage);
         return percentage === null ? current : { amount: String(amountFromPercentage(owed, percentage)), percentage: current.percentage };
       }
-      const amount = parseWholeAmount(current.amount);
+      const amount = parseGroupedAmount(current.amount);
       return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(owed, amount)) };
     });
   }, [owed]);
 
   const percentageInvalid = percentageDraftInvalid(value.percentage);
-  const amount = parseWholeAmount(value.amount);
+  const amount = parseGroupedAmount(value.amount);
   const amountInvalid = amount === null || amount <= 0;
   // #161 — a payment may exceed what is owed: the excess becomes supplier
   // credit (the api splits it), so over-owed is NOT an error here. Only a

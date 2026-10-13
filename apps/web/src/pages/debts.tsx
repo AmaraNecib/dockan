@@ -146,7 +146,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   );
 }
 
-function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, openSignature, onToggle }: {
+function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, openSignature, onToggle, creditLabel }: {
   title: string;
   rows: DebtSummary[];
   label: string;
@@ -155,6 +155,8 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
   emptyAction: ReactNode;
   openSignature: string | null;
   onToggle: (party: PartyIdentity) => void;
+  /** #180 — shown instead of the plain total when the group nets in credit */
+  creditLabel?: string;
 }) {
   const { t } = useTranslation();
   const groupTotal = rows.reduce((sum, row) => sum + (row.kind === "PURCHASE" ? (row.accountBalance ?? row.remainingTotal) : row.remainingTotal), 0);
@@ -166,7 +168,17 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
         <h2 id={`${label}-title`} className="font-semibold">{title}</h2>
         {rows.length > 0 && (
           <p className="text-sm text-muted-foreground">
-            {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={groupTotal} /></span>
+            {groupTotal < 0 && creditLabel !== undefined ? (
+              // #180 — a supplier group can net in credit: label it like the
+              // dashboard (never a bare negative number)
+              <>
+                <span className="text-success" data-testid={`${label}-credit`}>{creditLabel}</span>: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={Math.abs(groupTotal)} /></span>
+              </>
+            ) : (
+              <>
+                {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={groupTotal} /></span>
+              </>
+            )}
             {" · "}
             {t("debtsInvoiceCount")}: <span data-testid={`${label}-count`} className="font-semibold text-foreground">{groupCount}</span>
           </p>
@@ -238,6 +250,7 @@ export function DebtsPage() {
             title={t("debtsWeOwe")}
             label="debts-group-weowe"
             rows={weOwe}
+            creditLabel={t("dashboardSupplierCredit")}
             emptyLabel={t("debtsEmpty")}
             emptyHint={t("debtsEmptyWeOweHint")}
             emptyAction={

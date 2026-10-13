@@ -6,13 +6,14 @@ import { ScanBarcode, X } from "lucide-react";
 
 import type { InvoiceCreate, InvoiceDetail, Item } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 
 import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
@@ -110,11 +111,10 @@ export interface SaleDebt {
  * commit.
  */
 export function saleDebt(total: number, paidDraft: string): SaleDebt {
-  const paid = paidDraft === "" ? undefined : Number(paidDraft);
-  const valid = paid === undefined || (Number.isInteger(paid) && paid >= 0 && paid <= total);
-  if (!valid) return { valid: false, debt: 0 };
-  const effectivePaid = paid !== undefined && paid > 0 ? paid : 0;
-  return { valid: true, debt: Math.max(total - effectivePaid, 0) };
+  if (paidDraft.trim() === "") return { valid: true, debt: Math.max(total, 0) };
+  const paid = parseGroupedAmount(paidDraft);
+  if (paid === null || paid > total) return { valid: false, debt: 0 };
+  return { valid: true, debt: Math.max(total - paid, 0) };
 }
 
 export function SalePage() {
@@ -302,7 +302,7 @@ export function SalePage() {
       if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
       return;
     }
-    const amount = parseWholeAmount(paidNow);
+    const amount = parseGroupedAmount(paidNow);
     setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
   }, [total, paidNow, paidPercentage]);
 
@@ -331,14 +331,14 @@ export function SalePage() {
       setError(t("partyChooseExisting"));
       return;
     }
-    const paid = paidNow === "" ? undefined : Number(paidNow);
+    const paid = paidNow.trim() === "" ? undefined : parseGroupedAmount(paidNow);
     // an invalid percentage draft clears the amount, which would otherwise take
     // the intentional "unpaid" path and save silently
     if (percentageDraftInvalid(paidPercentage)) {
       setError(t("saleInvalidPaid"));
       return;
     }
-    if (paid !== undefined && (!Number.isInteger(paid) || paid < 0)) {
+    if (paid === null) {
       setError(t("saleInvalidPaid"));
       return;
     }

@@ -7,7 +7,8 @@ import { computeReturnRefund } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -32,10 +33,8 @@ import { debtOffsetDisplay } from "../lib/return-voucher";
  * Client-side mirror of the api guard: digits only (no "1e3"/"0x10" forms),
  * a whole DA integer, within the safe-integer range, at most the remaining. */
 export function paymentAmountError(amount: string, remaining: number): "INVALID" | "EXCEEDS" | null {
-  const trimmed = amount.trim();
-  if (!/^\d+$/u.test(trimmed)) return "INVALID";
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value <= 0) return "INVALID";
+  const value = parseGroupedAmount(amount);
+  if (value === null || value <= 0) return "INVALID";
   if (value > remaining) return "EXCEEDS";
   return null;
 }
@@ -136,7 +135,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
         const percentage = parseWholePercentage(current.percentage);
         return percentage === null ? current : { amount: String(amountFromPercentage(remaining, percentage)), percentage: current.percentage };
       }
-      const amount = parseWholeAmount(current.amount);
+      const amount = parseGroupedAmount(current.amount);
       return { amount: current.amount, percentage: amount === null ? "" : String(percentageFromAmount(remaining, amount)) };
     });
   }, [remaining]);
@@ -154,9 +153,14 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
       setError(remainingMessage === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining }) : t("pmtInvalidAmount"));
       return;
     }
+    const amount = parseGroupedAmount(paid.amount);
+    if (amount === null || amount <= 0) {
+      setError(t("pmtInvalidAmount"));
+      return;
+    }
     void pay.mutate({
       invoiceId: invoice.id,
-      amount: Number(paid.amount),
+      amount,
       method,
       note: note.trim() === "" ? undefined : note.trim(),
     });
@@ -317,9 +321,8 @@ export type ReturnSettlementPreset = "ALL_CASH" | "ALL_DEBT" | "CUSTOM";
 export function customCashError(draft: string, valueTotal: number): "INVALID" | "EXCEEDS" | null {
   const trimmed = draft.trim();
   if (trimmed === "") return null; // untouched = all-debt
-  if (!/^\d+$/u.test(trimmed)) return "INVALID";
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value < 0) return "INVALID";
+  const value = parseGroupedAmount(trimmed);
+  if (value === null) return "INVALID";
   if (value > valueTotal) return "EXCEEDS";
   return null;
 }
@@ -434,11 +437,11 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       if (percentage !== null) setCashDraft(String(amountFromPercentage(valueTotal, percentage)));
       return;
     }
-    const amount = parseWholeAmount(cashDraft);
+    const amount = parseGroupedAmount(cashDraft);
     setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
   }, [valueTotal, cashDraft, cashPercentage]);
   const requestedCash =
-    settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : Number(cashDraft.trim() === "" ? "" : cashDraft);
+    settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
   // an invalid percentage draft clears the derived amount, and an empty amount
   // is the legitimate "all debt" choice — so it must be rejected explicitly or
   // "12.5%" would silently be recorded as zero cash

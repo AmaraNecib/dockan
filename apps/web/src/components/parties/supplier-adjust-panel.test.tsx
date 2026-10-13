@@ -173,6 +173,26 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  it("accepts the same grouped amount as the bulk opening-balance screen (#180)", async () => {
+    render();
+    clickOn("supplier-adjust-direction-they-owe");
+    typeInto("supplier-adjust-amount", "1 000");
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+
+    // the shared grouped parser: `1 000` is 1000 here, exactly as in the bulk rows
+    expect(captured).toMatchObject({ supplierId: "sup-1", direction: "THEY_OWE", amount: 1000 });
+  });
+
+  it("rejects a decimal-grouped amount instead of guessing 100x (#180)", () => {
+    render();
+    typeInto("supplier-adjust-amount", "1 000,00");
+    expect(host.querySelector('[data-testid="supplier-adjust-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
   it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
     render();
     typeInto("supplier-adjust-amount", "500");

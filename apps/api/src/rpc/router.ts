@@ -9,7 +9,7 @@ import type { DrizzleDb } from "../db/connection";
 import { users, accounts } from "../db/schema";
 import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
-import { PartyError } from "../store/port";
+import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
 import { fifoOutflowCost, historyWithRemaining, projectLedger, saleMovementTime, StockLedgerError, weightedAverageCost, COST_CORRECTION_REASON } from "../lib/stock-ledger";
 import { calculateSaleTotals } from "../lib/sale-calculations";
@@ -165,6 +165,18 @@ async function alreadyAttributed(store: StorePort, invoiceId: string, itemId: st
   }
   return total;
 }
+
+/**
+ * #177 — a typed store refusal from the guarded adjustment path maps to a
+ * stable ORPC error. The router's friendly pre-checks (invoice ownership,
+ * amount vs remaining) still run first; these cover the store's backstop.
+ */
+const ADJUSTMENT_REFUSAL = {
+  DUPLICATE: { status: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" },
+  EXCEEDS_REMAINING: { status: "BAD_REQUEST", message: "ADJUSTMENT_EXCEEDS_REMAINING" },
+  LINKED_DIRECTION: { status: "BAD_REQUEST", message: "ADJUSTMENT_INVOICE_DIRECTION" },
+  LINKED_NEEDS_ATOMIC_PATH: { status: "BAD_REQUEST", message: "ADJUSTMENT_LINK_INVALID" },
+} satisfies Record<SupplierAdjustmentError["code"], { status: "CONFLICT" | "BAD_REQUEST"; message: string }>;
 
 /**
  * The merged Dokan router: ticket 02 owns auth (session guard), ticket 03 owns
@@ -886,10 +898,11 @@ export function createRpcRouter(deps: RpcDeps) {
         }),
       ),
     ),
-    // #176 — a manual adjustment: append-only, account-only unless the
+    // #176/#177 — a manual adjustment: append-only, account-only unless the
     // owner links a purchase invoice, in which case it reduces THAT invoice's
     // remaining with the same conditional UPDATE returns use. One BEGIN
-    // IMMEDIATE unit; the DB is the boundary (never check-then-act).
+    // IMMEDIATE unit; the guarded store path refuses a duplicate signature and
+    // keeps the entry and the reduction together (never check-then-act).
     suppliersAdjust: os.suppliersAdjust.handler(
       guardedInput(async (input) =>
         deps.store.withTransactionImmediate(async (tx) => {
@@ -899,8 +912,8 @@ export function createRpcRouter(deps: RpcDeps) {
           const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
 
           if (input.invoiceId !== undefined) {
-            // the contract requires THEY_OWE; re-check so a direct store-seam
-            // caller can never sign a linked reduction the other way
+            // the contract requires THEY_OWE; re-check so a direct caller can
+            // never sign a linked reduction the other way
             if (input.direction !== "THEY_OWE") throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_INVOICE_DIRECTION" });
             const detail = await tx.getInvoiceDetail(input.invoiceId);
             if (detail === undefined || detail.kind !== "PURCHASE" || detail.counterpartyId !== input.supplierId) {
@@ -911,28 +924,22 @@ export function createRpcRouter(deps: RpcDeps) {
             if (input.amount > detail.remainingAmount) {
               throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_EXCEEDS_REMAINING" });
             }
-            await tx.insertSupplierEntry({
+          }
+          try {
+            await tx.insertSupplierAdjustment({
               supplierId: input.supplierId,
-              kind: "ADJUSTMENT",
-              direction: "THEY_OWE",
-              amount: input.amount,
-              invoiceId: detail.id,
-              note: reason,
-              occurredAt,
-            });
-            if (!(await tx.applyDebtOffsetToInvoice(detail.id, input.amount))) {
-              throw new ORPCError("BAD_REQUEST", { message: "ADJUSTMENT_DEBT_OFFSET_REFUSED" });
-            }
-          } else {
-            await tx.insertSupplierEntry({
-              supplierId: input.supplierId,
-              kind: "ADJUSTMENT",
               direction: input.direction,
               amount: input.amount,
-              invoiceId: null,
-              note: reason,
+              reason,
               occurredAt,
+              invoiceId: input.invoiceId ?? null,
             });
+          } catch (error) {
+            if (error instanceof SupplierAdjustmentError) {
+              const refusal = ADJUSTMENT_REFUSAL[error.code];
+              throw new ORPCError(refusal.status, { message: refusal.message });
+            }
+            throw error;
           }
           await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_ADJUSTMENT ${input.direction} ${input.amount} ${supplier.name}`, ref: supplier.id });
           const entries = await tx.listSupplierEntries(input.supplierId);
@@ -965,16 +972,23 @@ export function createRpcRouter(deps: RpcDeps) {
             }
           }
           for (const row of plan) {
-            await tx.insertSupplierEntry({
-              supplierId: row.supplierId,
-              kind: "ADJUSTMENT",
-              direction: row.direction,
-              amount: row.amount,
-              invoiceId: null,
-              note: reason,
-              ref: "OPENING_BALANCE",
-              occurredAt: input.occurredAt,
-            });
+            try {
+              await tx.insertSupplierAdjustment({
+                supplierId: row.supplierId,
+                direction: row.direction,
+                amount: row.amount,
+                reason,
+                occurredAt: input.occurredAt,
+                invoiceId: null,
+                ref: "OPENING_BALANCE",
+              });
+            } catch (error) {
+              if (error instanceof SupplierAdjustmentError) {
+                const refusal = ADJUSTMENT_REFUSAL[error.code];
+                throw new ORPCError(refusal.status, { message: refusal.message });
+              }
+              throw error;
+            }
             await tx.insertActivity({ type: "ADJUSTMENT_RECORDED", summary: `SUPPLIER_OPENING_BALANCE ${row.direction} ${row.amount} ${row.name}`, ref: row.supplierId });
           }
           const accounts: Array<{ supplierId: string; name: string; balance: number }> = [];

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import type {
   Activity,
   Category,
@@ -46,8 +46,8 @@ import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
 import { stampSchemaVersionLocked } from "../lib/schema-version";
-import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
-import { PartyError } from "./port";
+import type { DashboardAggregates, InvoiceInsert, InvoiceLineInsert, PartyDeleteResult, ProfitSaleLine, ReturnInsert, ReturnLineInsert, StockLink, StoreLogger, StorePort, SupplierAdjustmentInsert, SupplierEntryInsert, SupplierReturnInsert, SupplierReturnLineInsert } from "./port";
+import { PartyError, SupplierAdjustmentError } from "./port";
 
 /**
  * The signed-amount SQL for one supplier-ledger alias. Kept in one place
@@ -654,6 +654,7 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "applyPaymentToInvoice",
   "setInvoicePaidAmounts",
   "insertSupplierEntry",
+  "insertSupplierAdjustment",
   "allocateSupplierReturnNumber",
   "insertSupplierReturn",
   "insertSupplierReturnLine",
@@ -1167,6 +1168,31 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       .where(eq(supplierAccountEntries.supplierId, supplierId))
       .orderBy(desc(supplierAccountEntries.occurredAt), sql`supplier_account_entries.rowid DESC`);
     return rows.map(toSupplierEntry);
+  };
+
+  /** Raw append-only ledger insert. `insertSupplierEntry` and the #177 guarded
+   * adjustment path share it. The caller owns the surrounding unit. */
+  const insertEntryRow = async (entry: SupplierEntryInsert): Promise<SupplierAccountEntry> => {
+    const row = firstRowOf(
+      await db
+        .insert(supplierAccountEntries)
+        .values({
+          id: id(),
+          supplierId: entry.supplierId,
+          kind: entry.kind,
+          amount: entry.amount,
+          direction: entry.direction ?? null,
+          invoiceId: entry.invoiceId,
+          method: entry.method ?? null,
+          note: entry.note ?? null,
+          ref: entry.ref ?? null,
+          occurredAt: entry.occurredAt,
+          createdAt: now(),
+        })
+        .returning(),
+    );
+    // returning() has no joined invoice number; the caller only needs the id
+    return { ...toSupplierEntry({ ...row, invoiceNumber: null }) };
   };
 
   const store: StorePort = {
@@ -1729,26 +1755,64 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // --- supplier account (issue 161) ----------------------------------------
     async insertSupplierEntry(entry: SupplierEntryInsert) {
       assertAdjustmentDirection(entry.kind, entry.direction);
-      const row = firstRowOf(
-        await db
-          .insert(supplierAccountEntries)
-          .values({
-            id: id(),
-            supplierId: entry.supplierId,
-            kind: entry.kind,
-            amount: entry.amount,
-            direction: entry.direction ?? null,
-            invoiceId: entry.invoiceId,
-            method: entry.method ?? null,
-            note: entry.note ?? null,
-            ref: entry.ref ?? null,
-            occurredAt: entry.occurredAt,
-            createdAt: now(),
-          })
-          .returning(),
-      );
-      // returning() has no joined invoice number; the caller only needs the id
-      return { ...toSupplierEntry({ ...row, invoiceNumber: null }) };
+      // #177 — a linked ADJUSTMENT must go through insertSupplierAdjustment,
+      // which applies the invoice reduction in the same unit. Allowing it here
+      // would let a direct seam caller write the entry without the reduction and
+      // diverge the account from the invoice.
+      if (entry.kind === "ADJUSTMENT" && entry.invoiceId !== null) {
+        throw new SupplierAdjustmentError("LINKED_NEEDS_ATOMIC_PATH");
+      }
+      return insertEntryRow(entry);
+    },
+    /**
+     * #177 — the one guarded write path for a manual adjustment. In order:
+     *   1. the duplicate signature (supplier, direction, amount, reason,
+     *      occurredAt) is refused before any write — a retry cannot double-post;
+     *   2. a linked entry must be THEY_OWE;
+     *   3. the linked invoice's conditional reduction runs before the entry is
+     *      inserted, so the two can only commit together (the caller's BEGIN
+     *      IMMEDIATE rolls both back when either fails).
+     * Account-only (null invoiceId) writes the entry with a null invoice and
+     * touches no invoice.
+     */
+    async insertSupplierAdjustment(input: SupplierAdjustmentInsert) {
+      assertAdjustmentDirection("ADJUSTMENT", input.direction);
+      if (input.invoiceId !== null && input.direction !== "THEY_OWE") {
+        throw new SupplierAdjustmentError("LINKED_DIRECTION");
+      }
+      const duplicates = await db
+        .select({ id: supplierAccountEntries.id })
+        .from(supplierAccountEntries)
+        .where(
+          and(
+            eq(supplierAccountEntries.supplierId, input.supplierId),
+            eq(supplierAccountEntries.kind, "ADJUSTMENT"),
+            eq(supplierAccountEntries.direction, input.direction),
+            eq(supplierAccountEntries.amount, input.amount),
+            input.reason === null ? isNull(supplierAccountEntries.note) : eq(supplierAccountEntries.note, input.reason),
+            eq(supplierAccountEntries.occurredAt, input.occurredAt),
+          ),
+        )
+        .limit(1);
+      if (duplicates[0] !== undefined) throw new SupplierAdjustmentError("DUPLICATE");
+      if (input.invoiceId !== null) {
+        // same conditional write returns use: never push an invoice's remaining
+        // below zero; the excess is refused, never silently moved to credit
+        const result = conn.raw
+          .query(`UPDATE invoices SET remaining_amount = remaining_amount - ?, updated_at = ? WHERE id = ? AND remaining_amount >= ?`)
+          .run(input.amount, now(), input.invoiceId, input.amount);
+        if (Number(result.changes) === 0) throw new SupplierAdjustmentError("EXCEEDS_REMAINING");
+      }
+      return insertEntryRow({
+        supplierId: input.supplierId,
+        kind: "ADJUSTMENT",
+        direction: input.direction,
+        amount: input.amount,
+        invoiceId: input.invoiceId,
+        note: input.reason,
+        ref: input.ref ?? null,
+        occurredAt: input.occurredAt,
+      });
     },
     listSupplierEntries(supplierId: string) {
       return listEntries(supplierId);

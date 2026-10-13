@@ -10,12 +10,13 @@ import { ItemPickerDialog } from "@/components/catalog/item-picker-dialog";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { PartyPicker, type PartySelection } from "@/components/parties/party-picker";
 import { Amount } from "@/components/ui/amount";
-import { AmountPercentageInput, amountFromPercentage, parseWholeAmount, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
+import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { parseGroupedAmount } from "@/lib/amount-parse";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
 
@@ -112,7 +113,7 @@ export function PurchasePage() {
       if (percentage !== null) setPaidNow(String(amountFromPercentage(total, percentage)));
       return;
     }
-    const amount = parseWholeAmount(paidNow);
+    const amount = parseGroupedAmount(paidNow);
     setPaidPercentage(amount === null ? "" : String(percentageFromAmount(total, amount)));
   }, [total, paidNow, paidPercentage]);
 
@@ -128,14 +129,14 @@ export function PurchasePage() {
       setError(t("partyChooseExisting"));
       return;
     }
-    const paid = paidNow === "" ? undefined : Number(paidNow);
+    const paid = paidNow.trim() === "" ? undefined : parseGroupedAmount(paidNow);
     // an invalid percentage draft clears the amount, which would otherwise take
     // the intentional "unpaid" path and save silently
     if (percentageDraftInvalid(paidPercentage)) {
       setError(t("purchasesInvalidPaid"));
       return;
     }
-    if (paid !== undefined && (!Number.isSafeInteger(paid) || paid < 0)) {
+    if (paid === null) {
       setError(t("purchasesInvalidPaid"));
       return;
     }

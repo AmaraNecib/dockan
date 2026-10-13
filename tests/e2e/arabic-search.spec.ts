@@ -14,11 +14,11 @@ test("arabic search folds alef/ya and the definite article in items and parties"
   await signIn(page);
 
   const stamp = Date.now().toString();
-  const categoryName = `بحث-${stamp}`;
+  const categoryName = `ك-بحث-${stamp}`;
   const lyousItem = `ليوز-${stamp}`;
   const ahmedItem = `أحمد-${stamp}`;
   const mustafaItem = `مصطفى-${stamp}`;
-  const batteryItem = `بطارية-${stamp}`;
+  const batteryItem = `بطاريه-${stamp}`;
   const unrelatedItem = `مفتاح-${stamp}`;
   const lyousParty = `ليوز-زبون-${stamp}`;
   const unrelatedParty = `مفتاح-زبون-${stamp}`;

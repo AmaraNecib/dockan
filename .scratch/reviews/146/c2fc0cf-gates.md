@@ -42,9 +42,10 @@ Both were reverted; the tests pass on the final tree.
 ## Guard Phase 2 evidence checks
 
 Every file in `.scratch/reviews/146/` carries `c2fc0cf`, the code SHA.
-`git diff --name-only c2fc0cf HEAD` after the evidence commit lists only the four
-evidence files under `.scratch/reviews/146/`, which the guard treats as
-non-reviewable, so the evidence is valid for the branch.
+`git diff --name-only c2fc0cf HEAD` after the evidence commits lists only files
+under `.scratch/reviews/146/` (the four `c2fc0cf-*` added and the four superseded
+`41c5fcd-*` removed), which the guard treats as non-reviewable, so the evidence is
+valid for the branch.
 
 - `c2fc0cf-debate.md` (critic + defender; the discount finding)
 - `c2fc0cf-test-audit.md` (edge cases, coverage, test quality)

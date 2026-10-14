@@ -164,90 +164,12 @@ mock.module("@/lib/rpc", () => ({
   },
 }));
 
-const { SalePage, overrideInputInvalid, parseQuantityDraft, quantityDraftInvalid, saleDebt } = await import("./sale");
+const { SalePage, saleDebt } = await import("./sale");
 
-describe("cart quantity draft (cleared state + deterministic parse)", () => {
-  it("parses a cleared or whitespace draft to 0 (invalid, never stuck)", () => {
-    expect(parseQuantityDraft("")).toBe(0);
-    expect(parseQuantityDraft("   ")).toBe(0);
-    expect(quantityDraftInvalid("")).toBe(true);
-  });
-
-  it("parses positive integers and rejects zero, negatives, fractions, and garbage", () => {
-    expect(parseQuantityDraft("1")).toBe(1);
-    expect(parseQuantityDraft("12")).toBe(12);
-    expect(parseQuantityDraft(" 7 ")).toBe(7);
-    expect(parseQuantityDraft("0")).toBe(0);
-    expect(parseQuantityDraft("-3")).toBe(0);
-    expect(parseQuantityDraft("2.5")).toBe(0);
-    expect(parseQuantityDraft("abc")).toBe(0);
-    expect(parseQuantityDraft("12x")).toBe(0);
-    expect(quantityDraftInvalid("0")).toBe(true);
-    expect(quantityDraftInvalid("2.5")).toBe(true);
-  });
-
-  it("accepts a whole multi-digit value and trims surrounding spaces", () => {
-    expect(quantityDraftInvalid("42")).toBe(false);
-    expect(parseQuantityDraft("0042")).toBe(42);
-  });
-
-  it("rejects drafts above the RPC quantity cap instead of surfacing a server error", () => {
-    expect(parseQuantityDraft("9999999999")).toBe(0);
-    expect(parseQuantityDraft("1000001")).toBe(0);
-    expect(parseQuantityDraft("1000000")).toBe(1_000_000);
-    expect(quantityDraftInvalid("9999999999")).toBe(true);
-  });
-
-  it("is deterministic and pins each input's exact resolution (no self-equality)", () => {
-    const cases: Array<[string, number]> = [
-      ["", 0],
-      ["0", 0],
-      ["1", 1],
-      ["999", 999],
-      ["-1", 0],
-      ["1e3", 0],
-      ["1.5", 0],
-      ["٥", 0],
-      ["1_000", 0],
-      ["1000000", 1_000_000],
-      ["1000001", 0],
-    ];
-    for (const [input, expected] of cases) {
-      expect(parseQuantityDraft(input)).toBe(expected);
-    }
-  });
-});
-describe("overrideInputInvalid (sale line price override)", () => {
-  it("accepts lines without a chosen override type", () => {
-    expect(overrideInputInvalid({ overrideType: "", overrideValue: "" })).toBe(false);
-    expect(overrideInputInvalid({ overrideType: "", overrideValue: "900" })).toBe(false);
-  });
-
-  it("rejects an empty override value once a type is chosen (regression: Number('') === 0 would bill the line free)", () => {
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "" })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "   " })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "" })).toBe(true);
-  });
-
-  it("accepts whole nonnegative amount overrides, including an explicit zero", () => {
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "900" })).toBe(false);
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "0" })).toBe(false);
-  });
-
-  it("rejects fractional, negative, or non-numeric amount overrides", () => {
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "12.5" })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "-5" })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "AMOUNT", overrideValue: "abc" })).toBe(true);
-  });
-
-  it("binds percentage overrides to whole 0-100 values", () => {
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "80" })).toBe(false);
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "0" })).toBe(false);
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "101" })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "-1" })).toBe(true);
-    expect(overrideInputInvalid({ overrideType: "PERCENTAGE", overrideValue: "12.5" })).toBe(true);
-  });
-});
+// The quantity parser and the sale price-override rule moved to the shared
+// invoice-draft module (#146); their tables now live in
+// `../lib/invoice-draft.test.ts` so every stage of the extraction is covered
+// once. This file keeps the rendered sale-screen behaviour.
 
 describe("saleDebt (pre-commit customer debt preview)", () => {
   it("treats an empty or zero paid draft as the whole total becoming debt", () => {
@@ -1158,5 +1080,102 @@ describe("SalePage party picker (issue 120)", () => {
     await act(async () => saveButton(host).click());
     expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain("هذا الاسم مسجّل");
     expect(lastInvoiceInput).toBeNull();
+  });
+});
+
+/**
+ * #146 — sale is the reference behaviour the purchase drift fix is compared
+ * against, so the extraction must not lose it. These pin the shared quantity
+ * rule and one discounted cart total on the rendered sale screen.
+ */
+describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
+  const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+  const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
+  /** the rendered total as a number, so a zero check cannot pass on a substring */
+  const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
+
+  it("keeps a cleared draft cleared, zeroes the line, and refuses the save", async () => {
+    const host = await mountSale();
+    await scan("111"); // sellingPrice 1000
+    expect(quantityField(host).value).toBe("1");
+    expect(totalText(host)).toContain("1000");
+
+    await act(async () => setElementValue(quantityField(host), ""));
+    expect(quantityField(host).value).toBe("");
+    // the line stays, resolves to zero, and the total follows
+    expect(host.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(totalAmount(host)).toBe(0);
+
+    await act(async () => saveButton(host).click());
+    expect(host.querySelector('[data-testid="sale-error"]')?.textContent).toContain(i18n.t("saleInvalidQuantity"));
+    expect(lastInvoiceInput).toBeNull();
+
+    // an unreadable draft behaves the same way
+    await act(async () => setElementValue(quantityField(host), "abc"));
+    expect(quantityField(host).value).toBe("abc");
+    expect(totalAmount(host)).toBe(0);
+  });
+
+  it("blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    // a typed payment pins the pair's source to "amount", so clearing the
+    // quantity keeps 500 in the amount field while the total falls to zero
+    await act(async () => setInput(host, "sale-paid", "500"));
+    expect(totalAmount(host)).toBe(1000);
+    await act(async () => setElementValue(quantityField(host), ""));
+    expect(quantityField(host).value).toBe("");
+    expect(totalAmount(host)).toBe(0);
+
+    await act(async () => {
+      saveButton(host).click();
+    });
+    // the quantity is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «saleInvalidPaid» here.
+    const message = host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+    expect(message).toContain(i18n.t("saleInvalidQuantity"));
+    expect(message).not.toContain(i18n.t("saleInvalidPaid"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("blames the unusable discount, not the payment, when a typed payment survives an over-100% discount (greptile round 2)", async () => {
+    const host = await mountSale();
+    await scan("111"); // total 1000
+    // a typed payment pins the pair's source to "amount", so it survives the
+    // total collapsing to zero
+    await act(async () => setInput(host, "sale-paid", "500"));
+    expect(totalAmount(host)).toBe(1000);
+
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount type");
+    await chooseOption(trigger, "نسبة مئوية");
+    // the capped discount zeroes the total while the typed amount survives
+    await act(async () => setInput(host, "sale-discount-value", "150"));
+    expect(totalAmount(host)).toBe(0);
+
+    await act(async () => {
+      saveButton(host).click();
+    });
+    // the discount is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «saleInvalidPaid» here.
+    const message = host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+    expect(message).toContain(i18n.t("saleInvalidDiscount"));
+    expect(message).not.toContain(i18n.t("saleInvalidPaid"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("pins a discounted cart total through the shared totals path", async () => {
+    const host = await mountSale();
+    await scan("111"); // 1 x 1000
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await act(async () => {
+      await chooseOption(trigger, "نسبة مئوية");
+    });
+    await act(async () => setInput(host, "sale-discount-value", "10"));
+
+    expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1000");
+    expect(host.querySelector('[data-testid="sale-discount"]')?.textContent).toContain("100");
+    expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("900");
   });
 });

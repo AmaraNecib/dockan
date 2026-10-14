@@ -3,13 +3,27 @@ import { useTranslation } from "react-i18next";
 
 import { Amount } from "@/components/ui/amount";
 import { inputClass } from "@/components/ui/input";
-import { parseGroupedAmount, parseWholeAmount, parseWholePercentage } from "@/lib/amount-parse";
+import {
+  amountFromPercentage,
+  parseGroupedAmount,
+  parseWholeAmount,
+  parseWholePercentage,
+  percentageDraftInvalid,
+  percentageFromAmount,
+} from "@/lib/amount-parse";
 import { cn } from "@/lib/utils";
 
 // #180 — the low-level readers live in @/lib/amount-parse so every money input
 // shares one grouped-amount parser. Re-exported here so existing importers keep
 // their import site; new money fields import from the lib directly.
-export { parseGroupedAmount, parseWholeAmount, parseWholePercentage };
+export {
+  amountFromPercentage,
+  parseGroupedAmount,
+  parseWholeAmount,
+  parseWholePercentage,
+  percentageDraftInvalid,
+  percentageFromAmount,
+};
 
 /**
  * #162 — the shared amount-or-percentage input (CONTEXT.md: مبلغ أو نسبة).
@@ -27,31 +41,6 @@ export { parseGroupedAmount, parseWholeAmount, parseWholePercentage };
 export interface AmountPercentageValue {
   amount: string;
   percentage: string;
-}
-
-/** Whole-DZD amount for `percentage` percent of `referenceTotal` (p clamped 0..100). */
-export function amountFromPercentage(referenceTotal: number, percentage: number): number {
-  const capped = Math.min(100, Math.max(0, percentage));
-  return Math.round((referenceTotal * capped) / 100);
-}
-
-/** Whole-percent share `amount` is of `referenceTotal` (clamped 0..100). */
-export function percentageFromAmount(referenceTotal: number, amount: number): number {
-  if (referenceTotal <= 0) return 0;
-  const raw = (amount / referenceTotal) * 100;
-  if (!Number.isFinite(raw)) return 0;
-  return Math.min(100, Math.max(0, Math.round(raw)));
-}
-
-/**
- * True when a non-empty percentage draft is not a whole 0..100 percent (e.g.
- * "12.5", "abc"). Callers must reject this BEFORE saving: the component clears
- * the derived amount for such a draft, and an empty amount is the legitimate
- * "unpaid / zero cash" choice — so an invalid percentage would otherwise be
- * silently recorded as that choice.
- */
-export function percentageDraftInvalid(draft: string): boolean {
-  return draft.trim() !== "" && parseWholePercentage(draft) === null;
 }
 
 /** The link when the owner edits the amount: percentage follows. */

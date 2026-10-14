@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 import { chooseOption } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
@@ -40,11 +40,13 @@ let fixture: ProposalFixture = { invoiceId: "inv-1", items: [] };
 let lastLinkAllocation: { itemId: string; quantity: number } | null = null;
 /** the picker's loaded supplier list and the last invoice input (issue 120) */
 let supplierFixtures: Array<{ id: string; name: string; phone: string | null; createdAt: string; stats: { invoiceCount: number; totalAmount: number; paidAmount: number; remainingAmount: number } }> = [];
-let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number } | null = null;
+let lastPurchaseInput: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number; notes?: string; lines?: Array<{ itemId: string; quantity: number; unitPrice: number }> } | null = null;
 /** clears the recorder without narrowing the module variable at the call site */
 function clearPurchaseRecorder() {
   lastPurchaseInput = null;
 }
+/** every itemsCreate the mocked quick-add performed, in order (issue #146) */
+const createdItems: Array<{ name: string; categoryId: string }> = [];
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -88,7 +90,14 @@ mock.module("@/lib/rpc", () => ({
     itemsCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
-        mutationFn: async () => ({ id: "item-1", name: "منتج", costPrice: 100, sellingPrice: 150 }),
+        mutationFn: async (input: { name: string; categoryId: string }) => {
+          createdItems.push({ name: input.name, categoryId: input.categoryId });
+          // Fixture fiction: one item id per distinct name. The real server has no
+          // name uniqueness, so a same-name quick-add creates a second item. Here
+          // it lets a test say "re-adding the same name replaces that line" while
+          // two names give two distinct lines.
+          return { id: `item-${input.name}`, name: input.name, costPrice: 100, sellingPrice: 150 };
+        },
         ...opts,
       }),
     },
@@ -145,6 +154,13 @@ mock.module("@/lib/rpc", () => ({
   },
   rpcClient: {},
 }));
+
+// the mocked quick-add records every create, so clear it before every test:
+// a test that asserts create counts or item ids must not see another test's
+// calls. Clearing in place keeps any alias valid.
+beforeEach(() => {
+  createdItems.length = 0;
+});
 
 const { LinkProposalPanel, PurchasePage } = await import("./purchase");
 
@@ -654,5 +670,262 @@ describe("PurchasePage amount/percentage payment (#162/#171)", () => {
     expect(lastPurchaseInput).toBeNull();
     await act(async () => root.unmount());
     container.remove();
+  });
+});
+
+/**
+ * #146 — the purchase quantity field is the shared quantity *draft* now, so it
+ * behaves exactly like sale's: a cleared or unreadable draft stays visible and
+ * resolves to zero, and submit refuses it instead of silently keeping the
+ * previous number (the drift this ticket fixes).
+ */
+describe("PurchasePage quantity draft (#146)", () => {
+  let queryClient: QueryClient;
+  /** roots created by this block, so a test that throws still tears down */
+  let mounted: Array<{ root: ReturnType<typeof createRoot>; container: HTMLElement }> = [];
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    document.body.innerHTML = "";
+    lastPurchaseInput = null;
+    mounted = [];
+    purchaseInvoiceResult = { id: "inv-1", invoiceNumber: "INV-1", remainingAmount: 0, counterpartyName: null };
+  });
+
+  afterEach(async () => {
+    const entries = mounted;
+    mounted = [];
+    for (const entry of entries) {
+      // a test that already tore down its own root is fine; React tolerates the
+      // second unmount, and this guarantees cleanup when the body threw
+      await act(async () => entry.root.unmount());
+      entry.container.remove();
+    }
+    queryClient.clear();
+  });
+
+  const setValue = (input: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  /** mount the page with the category list resolved */
+  async function mountPage() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    mounted.push({ root, container });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <PurchasePage />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    return { container, root };
+  }
+
+  const quickForm = (container: HTMLElement) => container.querySelector<HTMLFormElement>('[data-testid="purchase-quick-form"]');
+  /** the quick-add category control; its rendered label shows the current pick */
+  const categoryTrigger = (container: HTMLElement) => quickForm(container)?.querySelector<HTMLElement>('[data-slot="select-trigger"]') ?? null;
+
+  /** open the inline create form */
+  async function toggleQuick(container: HTMLElement) {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-toggle-quick"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  /** fill the open form's item fields; the category is left exactly as it is */
+  async function fillQuick(container: HTMLElement, name: string, qty: string, cost: string) {
+    const form = quickForm(container);
+    if (form === null) throw new Error("the quick-add form is not open");
+    await act(async () => {
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-name"]')!, name);
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')!, qty);
+      setValue(form.querySelector<HTMLInputElement>('[data-testid="quick-cost"]')!, cost);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  async function submitQuick(container: HTMLElement) {
+    await act(async () => {
+      quickForm(container)?.querySelector<HTMLButtonElement>('button[type="submit"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+
+  /** mount the page and land one purchase line through the quick-add */
+  async function mountWithLine(qty: string, cost: string) {
+    const page = await mountPage();
+    await toggleQuick(page.container);
+    await fillQuick(page.container, "منتج", qty, cost);
+    await act(async () => {
+      await chooseOption(categoryTrigger(page.container)!, "تصنيف");
+    });
+    await submitQuick(page.container);
+    return page;
+  }
+
+  const quantityField = (container: HTMLElement) => container.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+  const totalText = (container: HTMLElement) => container.querySelector('[data-testid="purchase-total"]')?.textContent ?? "";
+  /** the rendered total as a number, so a zero check cannot pass on a substring */
+  const totalAmount = (container: HTMLElement) => Number(totalText(container).match(/\d+/)?.[0] ?? Number.NaN);
+  const save = async (container: HTMLElement) => {
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  };
+
+  it("keeps a cleared draft cleared and refuses to save it, instead of silently keeping the stale quantity", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(quantityField(container).value).toBe("2");
+    expect(totalText(container)).toContain("2400");
+
+    // the drift: the field must stay empty, exactly like sale — the old
+    // `Number(event.target.value)` handler snapped it back to "2"
+    await act(async () => setValue(quantityField(container), ""));
+    expect(quantityField(container).value).toBe("");
+    // the line is still there and resolves to zero, like sale
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(1);
+    expect(totalAmount(container)).toBe(0);
+
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')?.textContent).toContain("أدخل كمية صحيحة");
+    expect(lastPurchaseInput).toBeNull();
+
+    // typing a fresh value after the cleared draft still works
+    await act(async () => setValue(quantityField(container), "3"));
+    expect(quantityField(container).value).toBe("3");
+    expect(totalText(container)).toContain("3600");
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2)", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(totalText(container)).toContain("2400");
+
+    // type a valid payment: the pair's source becomes "amount", so clearing the
+    // quantity keeps 1200 in the amount field while the total falls to zero
+    await act(async () => setValue(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')!, "1200"));
+    expect(totalAmount(container)).toBe(2400);
+    await act(async () => setValue(quantityField(container), ""));
+    expect(quantityField(container).value).toBe("");
+    expect(totalAmount(container)).toBe(0);
+
+    await save(container);
+    // the quantity is the real problem; the payment-vs-zero-total check must not
+    // shadow it. Without the fix the page says «purchasesInvalidPaid» here.
+    const message = container.querySelector('[data-testid="purchase-error"]')?.textContent ?? "";
+    expect(message).toContain(i18n.t("purchasesInvalidQuantity"));
+    expect(message).not.toContain(i18n.t("purchasesInvalidPaid"));
+    expect(lastPurchaseInput).toBeNull();
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("keeps an unreadable or zero draft visible and resolves it to zero, exactly like sale", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    for (const draft of ["abc", "2.5", "-3", "0"]) {
+      await act(async () => setValue(quantityField(container), draft));
+      expect(quantityField(container).value).toBe(draft);
+      expect(totalAmount(container)).toBe(0);
+      await save(container);
+      expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+      expect(lastPurchaseInput).toBeNull();
+    }
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("sends a valid draft as a whole number and keeps the per-line unitPrice (money math pinned)", async () => {
+    const { container, root } = await mountWithLine("2", "1200");
+    expect(totalText(container)).toContain("2400");
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("keeps the unit-cost field's previous value for an unreadable draft and reads a cleared field as zero", async () => {
+    const { container } = await mountWithLine("2", "1200");
+    const cost = container.querySelector<HTMLInputElement>('input[aria-label*="تكلفة"]')!;
+    expect(cost.value).toBe("1200");
+    expect(totalText(container)).toContain("2400");
+
+    // a cleared cost is an explicit zero, exactly as before #146
+    await act(async () => setValue(cost, ""));
+    expect(cost.value).toBe("0");
+    expect(totalText(container)).toContain("0");
+
+    await act(async () => setValue(cost, "900"));
+    expect(cost.value).toBe("900");
+    expect(totalText(container)).toContain("1800");
+
+    // an unreadable draft keeps the previous cost instead of billing zero
+    await act(async () => setValue(cost, "abc"));
+    expect(cost.value).toBe("900");
+    expect(totalText(container)).toContain("1800");
+  });
+
+  it("refuses an over-cap quick-add quantity instead of landing a line that resolves to zero", async () => {
+    const { container } = await mountWithLine("1000001", "1200");
+    expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(0);
+    expect(lastPurchaseInput).toBeNull();
+  });
+
+  it("creates two items in a row from a single category pick (greptile round 1)", async () => {
+    const { container } = await mountPage();
+    await toggleQuick(container);
+    await fillQuick(container, "منتج واحد", "1", "100");
+    // the one category pick that must serve both creates
+    await act(async () => {
+      await chooseOption(categoryTrigger(container)!, "تصنيف");
+    });
+    await submitQuick(container);
+
+    expect(createdItems).toHaveLength(1);
+    expect(createdItems[0]!.categoryId).toBe("cat-1");
+    // a successful create closes the form
+    expect(quickForm(container)).toBeNull();
+
+    // reopen and create a second item without touching the category, which the
+    // old handler kept and the first shared reset dropped
+    await toggleQuick(container);
+    // the trigger carries only the selected label plus its chevron, so this
+    // fails if the pick was dropped back to the «—» placeholder
+    const trigger = categoryTrigger(container);
+    expect(trigger).not.toBeNull();
+    expect(trigger?.textContent).toContain("تصنيف");
+    expect(trigger?.textContent).not.toContain("—");
+    // and the fields that must NOT survive are still cleared: the quantity is
+    // back to its seed and the previous name is gone
+    expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-qty"]')?.value).toBe("1");
+    expect(quickForm(container)?.querySelector<HTMLInputElement>('[data-testid="quick-name"]')?.value).toBe("");
+
+    await fillQuick(container, "منتج ثانٍ", "1", "100");
+    await submitQuick(container);
+
+    // two distinct items landed as two draft lines
+    expect(createdItems).toHaveLength(2);
+    expect(createdItems[1]).toEqual({ name: "منتج ثانٍ", categoryId: "cat-1" });
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
+    // no itemsChooseCategory: the second create never asked for a pick
+    expect(container.querySelector('[data-testid="purchase-error"]')).toBeNull();
+
+    // re-creating the SAME name is the same item, so it replaces its line
+    // instead of appending a third
+    await toggleQuick(container);
+    await fillQuick(container, "منتج واحد", "1", "100");
+    await submitQuick(container);
+    expect(createdItems).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
   });
 });

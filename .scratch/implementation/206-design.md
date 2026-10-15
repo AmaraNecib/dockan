@@ -95,14 +95,20 @@ and the reason it is not in CI.
 - Guard 1 + Guard 2: `bun run typecheck`, `bun run lint`, `bun run test`, full
   Playwright.
 
-## Outcome (2026-10-15)
+## Outcome (2026-10-15, final head 7caa6b6)
 
-- Unit tests: 21 pass (`@dokan/e2e-support`), added to `bun run test`.
-- Full `bun run test:e2e` at the final HEAD: 57 passed, including vault 3/3 and
-  `backups.spec.ts` with the default `.e2e-data` path (also verified separately
-  with `E2E_DATA_DIR` set). Earlier attempts on the same code flaked only on
-  host-saturation timeouts in a different spec each run (91% CPU, sibling lanes);
-  the green run had the sibling e2e finished.
+- Unit tests: 22 pass (`@dokan/e2e-support`), added to `bun run test`. Round 2
+  (test-audit + code-review) strengthened the rejection tests from substring
+  `toThrow(string)` to exact `toThrow(new Error(...))`, and pinned the documented
+  `Number()` parsing with hex/exponent cases.
+- Guard 1 at 7caa6b6: typecheck, lint and unit all exit 0.
+- Guard 2 full `bun run test:e2e` on four isolated ports (4871/5871 shared,
+  4872/5872 vault) with the default `E2E_DATA_DIR`: 69 passed in 11.2 m, including
+  vault 3/3 and `backups.spec.ts` on the default `.e2e-data` path. A separate
+  `E2E_DATA_DIR=$PWD/.e2e-data/206-custom` run passed and wrote its backup under
+  the custom dir, proving the new branch (the default run exercised only the `??`
+  fallback). No flakes; the run was slower than the earlier 6.0 m green run
+  because sibling lanes were active.
 - Two concurrent vault runs were executed on disjoint pairs. Both reached and
   passed the gate and first-run tests on their own servers (no cross-talk), then
   both timed out at test 3's 5 s post-KDF assertion. The trace shows

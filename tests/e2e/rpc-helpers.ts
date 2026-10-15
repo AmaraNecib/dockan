@@ -58,14 +58,14 @@ export async function actAndAck<T = unknown>(
   action: () => Promise<void>,
 ): Promise<T> {
   const output = readEnvelope<T>(waitForRpc(page, procedure), procedure);
-  try {
-    await action();
-  } catch (error) {
-    // the action failed before its request could be matched; swallow the armed
-    // read so its teardown rejection cannot mask the real failure
-    void output.catch(() => undefined);
-    throw error;
-  }
+  // Attach the rejection handler NOW: the action runs while the read is already
+  // armed, so the server can refuse the RPC before the action ends. Without a
+  // handler at that moment Node reports that refusal as an unhandled rejection
+  // — a second failure that masks the action's own error. `output` keeps its
+  // rejection (a second handler does not consume it), so a refusal the action
+  // does not outlive is still what the awaited call reports.
+  void output.catch(() => undefined);
+  await action();
   return output;
 }
 

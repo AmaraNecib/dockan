@@ -1,8 +1,13 @@
-# Test audit — #198 at `e601e70`
+# Test audit — #198 at `cb01879`
 
 **Method:** `test-audit` skill — three independent read-only sub-agents (edge
-case hunter, coverage analyst, test quality reviewer) against
-`git diff 21dbc13...HEAD`, the changed tests, and the changed source.
+case hunter, coverage analyst, test quality reviewer) against the changed tests
+and source.
+
+**Rebased:** the audit originally ran at `699483d` (base `21dbc13`). The branch
+was rebased cleanly onto `origin/develop` @ `3c3abcf` (#184, #196) with no code
+change; the dispositions below describe the rebased code `cb01879`. Findings
+fixed after the audit are in `f3b21eb` (test gaps) and `cb01879` (review fixes).
 
 ## Edge case hunter
 
@@ -63,6 +68,3 @@ equality; the Arabic-Indic table has strong negative space.
 | Q5 | Describe placement drift (purchase #198 tests live in the #146 describe). | **Recorded** — they exercise the same quantity-draft contract |
 | Q6 | Near-vacuous extra assertions. | **Dismissed** — cheap documentation of the definitional link |
 | Q7 | Async-pattern asymmetry (sale clicks in `act`, purchase awaits 20 ms). | **Dismissed** — matches existing per-file practice |
-
-> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
-> note (no `apps/` change), so this evidence still describes the reviewed code.

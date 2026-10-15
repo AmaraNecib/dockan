@@ -1,7 +1,8 @@
 # #198, one commit order for the invoice-draft screens (follow-up to #146 / #188)
 
 - **Tier:** High-assurance — the checkout path computes money.
-- **Base:** `origin/develop` @ `21dbc13f13d1889646f4466e610decf5a077253b`
+- **Base:** `origin/develop` @ `3c3abcfcdc4773a50a94ad5029a5fc541253d46a`
+  (rebase; original base `21dbc13f13d1889646f4466e610decf5a077253b`)
   (= branch HEAD).
 - **Source:** GitHub issue #198 (follow-up to #146 / PR #188).
 - **Constraint from the brief:** behaviour-preserving de-duplication plus test
@@ -193,7 +194,8 @@ under Guard 1 and 2.
 
 ## 9. Debate outcomes (High-assurance)
 
-Critic and defender ran in parallel against `21dbc13...663fb71` (evidence:
+Critic and defender ran in parallel against the branch head at the time,
+`65920c4...cb01879` on the rebased base `3c3abcf` (evidence:
 `.scratch/reviews/198/<head>-debate.md`).
 
 | finding | sev | disposition |
@@ -212,7 +214,7 @@ quantity typed `٥` is refused while a sale/purchase quantity bills it. Out of
 
 ## 10. Test-audit outcomes
 
-Three test-audit agents ran against `21dbc13...cb6e0a3` (evidence:
+Three test-audit agents ran against `3c3abcf...f3b21eb` (evidence:
 `.scratch/reviews/198/<head>-test-audit.md`).
 
 | finding | disposition |
@@ -227,7 +229,7 @@ Three test-audit agents ran against `21dbc13...cb6e0a3` (evidence:
 
 ## 11. Code-review outcomes
 
-Standards and Spec axes ran against `21dbc13...<head>` (evidence:
+Standards and Spec axes ran against `3c3abcf...cb01879` (evidence:
 `.scratch/reviews/198/<head>-code-review.md`).
 
 | finding | axis | disposition |

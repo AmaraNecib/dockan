@@ -1,8 +1,13 @@
-# Code review — #198 at `e601e70`
+# Code review — #198 at `cb01879`
 
 **Method:** `code-review` skill — Standards and Spec axes run as independent
-read-only sub-agents against `git diff 21dbc13...HEAD` (base `21dbc13`), plus
-the Standards smell baseline and the issue/design-doc spec.
+read-only sub-agents, against the Standards smell baseline and the
+issue/design-doc spec.
+
+**Rebased:** the review originally ran at `699483d` (base `21dbc13`). The branch
+was rebased cleanly onto `origin/develop` @ `3c3abcf` (#184, #196) with no code
+change; the findings and dispositions below describe the rebased code
+`cb01879`. Findings fixed after the review are in `cb01879`.
 
 ## Standards axis
 
@@ -58,6 +63,3 @@ server/contract/schema change.
 
 Standards: 5 findings (2 fixed, 3 dismissed). Spec: 3 findings (1 recorded
 deferred, 2 accepted scope notes), no missing ask.
-
-> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
-> note (no `apps/` change), so this evidence still describes the reviewed code.

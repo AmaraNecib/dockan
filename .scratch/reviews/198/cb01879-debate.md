@@ -1,10 +1,16 @@
-# Debate — #198 at `e601e70` (High-assurance)
+# Debate — #198 at `cb01879` (High-assurance)
 
 **Method:** `debate` skill — a harsh critic and a charitable defender ran as
-independent read-only sub-agents against `git diff 21dbc13...HEAD` (base
-`21dbc13`), the full changed files, `gh issue view 198`, and
-`.scratch/implementation/198-design.md`. Test quality is covered by the
-test-audit evidence.
+independent read-only sub-agents against `git diff <base>...HEAD`, the full
+changed files, `gh issue view 198`, and `.scratch/implementation/198-design.md`.
+
+**Rebased:** the review originally ran against the pre-rebase head `699483d`
+(base `21dbc13`). The branch was then rebased onto `origin/develop` @
+`3c3abcf` (#184, #196). The rebase was clean — no conflict, no code change — so
+the findings and dispositions below still apply to the rebased code `cb01879`.
+Reviewed files: `apps/web/src/lib/invoice-draft.ts`,
+`apps/web/src/lib/amount-parse.ts`, `apps/web/src/pages/sale.tsx`,
+`apps/web/src/pages/purchase.tsx`.
 
 ## Critic (verbatim findings)
 
@@ -52,15 +58,11 @@ test-audit evidence.
 
 ## Synthesis
 
-All Fast-fix findings (F1, F2, F3, F5) were applied and committed in
-`cb6e0a3`; F4 and F6 were considered and dismissed with the rationale above.
-The one deferred item — `parseWholeAmount` (supplier-return quantities) still
-rejecting Arabic-Indic digits — is recorded in design §9/§11 and needs its own
-ticket.
+All Fast-fix findings (F1, F2, F3, F5) were applied and committed in `236fecd`;
+F4 and F6 were considered and dismissed with the rationale above. The one
+deferred item — `parseWholeAmount` (supplier-return quantities) still rejecting
+Arabic-Indic digits — is recorded in design §9/§11 and needs its own ticket.
 
 Evidence for the return on fixing: the F3 guard duplication was itself caught
 again by the code-review axis and consolidated into `resolvedInitialPaid`
-(`699483d`).
-
-> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
-> note (no `apps/` change), so this evidence still describes the reviewed code.
+(`cb01879`).

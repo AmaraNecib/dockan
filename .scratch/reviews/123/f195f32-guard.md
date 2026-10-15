@@ -52,6 +52,11 @@ The substantive reviews ran at `d0e56e1`. Two commits landed after them:
 A final independent pre-merge re-check at `f195f32` returned **"No issues
 found."** So the evidence is current for this HEAD.
 
+The commit after `f195f32` adds only `.scratch/reviews/123/` evidence; the one
+after that adds only `.agents/wisdom/` process notes. `git diff f195f32..HEAD --
+apps/ tests/ packages/` is empty, so the code under review is unchanged and the
+three reviews stand.
+
 ## Phase 3 — pre-report
 
 - Local checks green (above).

@@ -33,9 +33,10 @@ unchanged. The spec still spawns the same two children; it now *resolves* the
 ports once at module load and every consumer (spawn env, health poll, status
 poll, navigation) reads those resolved constants.
 
-Resolution rule mirrors `playwright.config.ts`: `Number(process.env.X ?? default)`.
-No app code reads these variables — they exist only so the spec can be pointed
-at a free pair.
+Resolution rule: blank means unset (the repo's env convention), then a validated
+integer in 1-65535, otherwise the run fails with a named error — a typo must not
+become port `0`/`NaN` and a silent 20 s poll timeout. No app code reads these
+variables — they exist only so the spec can be pointed at a free pair.
 
 ### #193 — no interface change
 

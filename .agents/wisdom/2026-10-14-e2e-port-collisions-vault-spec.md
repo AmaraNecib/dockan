@@ -32,10 +32,11 @@ The vault spec spawns its own API + web in `beforeAll` and waits for
 That symptom reads like a vault/bootstrap regression. It is not: the vault spec
 passes 3/3 in isolation and in a full run once the port is free.
 
-**Always**: pick E2E ports that avoid `4399` and `5174` as well as `4317`/`5173`
-— e.g. `DOKAN_PORT=4387 DOKAN_WEB_PORT=5187`. If a full run fails only in
-`vault.spec.ts` on the create-vault heading, check `netstat -ano | grep 4399`
-and re-run the spec alone before suspecting app code.
+**Always** (superseded by #202, see banner): pick E2E ports that avoid `4399`
+and `5174` as well as `4317`/`5173` — e.g. `DOKAN_PORT=4387 DOKAN_WEB_PORT=5187`.
+Since #202 you can instead give the lane its own vault pair. If a full run fails
+only in `vault.spec.ts` on the create-vault heading, check `netstat -ano | grep
+4399` and re-run the spec alone before suspecting app code.
 
 ## The failure mode is not a flake — it is a deterministic collision
 Unlike a timing flake it reproduces whenever 4399 is held, and it can be caused

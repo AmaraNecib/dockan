@@ -106,13 +106,17 @@ async function settle() {
   });
 }
 
-/** happy-dom exposes the native value setter; assigning `.value` directly does
- * not notify React, so tests must go through this. */
-const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+/** happy-dom's native value setter; assigning `.value` directly does not notify
+ * React, so tests must go through this. */
+function setNativeValue(el: HTMLInputElement, text: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  if (setter === undefined) throw new Error("happy-dom exposes no native input value setter");
+  setter.call(el, text);
+}
 
 function setInput(el: HTMLInputElement, text: string) {
   act(() => {
-    nativeValueSetter?.call(el, text);
+    setNativeValue(el, text);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
@@ -133,7 +137,7 @@ function setInput(el: HTMLInputElement, text: string) {
 function fillAmounts(inputs: readonly HTMLInputElement[], valueFor: (index: number) => string): void {
   act(() => {
     inputs.forEach((input, index) => {
-      nativeValueSetter?.call(input, valueFor(index));
+      setNativeValue(input, valueFor(index));
       const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
       // SAFETY: React stores the element's props bag under `__reactProps$…`;
       // the single widening cast just reaches it, and the page's handler reads

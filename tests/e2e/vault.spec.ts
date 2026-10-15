@@ -16,8 +16,20 @@ import path from "node:path";
 // is unchanged. Resolved once here and read by every consumer below: the spawn
 // env, the health poll, the vault-status poll and the page navigations, so the
 // servers we start and the servers we talk to can never be different ports.
-const API_PORT = Number(process.env.DOKAN_VAULT_PORT ?? 4399);
-const WEB_PORT = Number(process.env.DOKAN_VAULT_WEB_PORT ?? 5174);
+// Blank means unset (the repo's env convention); a typo fails loudly instead of
+// spawning and polling a nonsense port (0 from "" or NaN from "abc").
+function vaultPort(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`${name} must be a port number, got ${JSON.stringify(raw)}`);
+  }
+  return port;
+}
+
+const API_PORT = vaultPort("DOKAN_VAULT_PORT", 4399);
+const WEB_PORT = vaultPort("DOKAN_VAULT_WEB_PORT", 5174);
 const ROOT = process.cwd();
 const PASSPHRASE = "shop vault passphrase";
 const NEW_PASSPHRASE = "brand new shop passphrase";

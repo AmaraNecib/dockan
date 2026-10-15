@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>crew</title>
+<style>
+  :root {
+    --bg: #14161a; --side: #171a1f; --panel: #1b1e24; --panel-2: #21252c; --line: #2c313a;
+    --ink: #e6e8ec; --dim: #8b93a1; --faint: #5b6373;
+    --work: #e3b341; --idle: #4c9f70; --bad: #d9534f; --accent: #6aa3e8; --you: #7fb2ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink); display: flex; overflow: hidden;
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+
+  /* ---------- sidebar ---------- */
+  aside {
+    width: 268px; flex: 0 0 268px; background: var(--side); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; transition: margin-left .18s ease;
+  }
+  aside.hidden { margin-left: -268px; }
+  .side-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+  .side-head h1 { font-size: 14px; margin: 0; letter-spacing: .03em; }
+  .side-head .count { color: var(--faint); font-size: 12px; margin-left: auto; }
+  .section { padding: 10px 0 4px; }
+  .section > h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint);
+    margin: 0; padding: 0 14px 6px; font-weight: 600;
+  }
+  .row {
+    display: flex; align-items: center; gap: 9px; padding: 7px 14px; cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  .row:hover { background: #1d2128; }
+  .row.active { background: #232833; border-left-color: var(--accent); }
+  .row .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
+  .row .txt { min-width: 0; }
+  .row .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .sub { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .s-working { background: var(--work); } .s-idle { background: var(--idle); }
+  .s-aborted, .s-blocked, .s-dead { background: var(--bad); } .s-starting { background: var(--faint); }
+  .side-foot { margin-top: auto; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+
+  /* ---------- main ---------- */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .top { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .top button.icon { background: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer; color: var(--ink); }
+  .top .title { font-weight: 600; }
+  .top .meta { color: var(--dim); font-size: 12px; }
+  .top .spacer { margin-left: auto; }
+  .badge { font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+
+  .log { flex: 1; overflow-y: auto; padding: 18px 20px; }
+  .msg { max-width: 860px; margin: 0 auto 14px; }
+  .msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-bottom: 3px; }
+  .msg .body { white-space: pre-wrap; word-break: break-word; }
+  .msg.user .body { color: var(--you); }
+  .msg.assistant .body { color: #dfe5ee; }
+  .msg.tool .body { color: var(--faint); font: 12px/1.5 ui-monospace, Consolas, monospace; }
+  .msg.tool .body::first-line { color: #8fa3c0; }
+  .msg.thinking .body { color: #7d879a; font-style: italic; border-left: 2px solid #333a46; padding-left: 10px; }
+  .empty { color: var(--dim); text-align: center; padding: 40px 20px; }
+
+  .composer { border-top: 1px solid var(--line); padding: 12px 20px; display: flex; gap: 10px; align-items: flex-end; }
+  .composer textarea {
+    flex: 1; min-height: 46px; max-height: 200px; resize: vertical; background: var(--panel-2);
+    color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+    font: 13px/1.5 ui-monospace, Consolas, monospace;
+  }
+  .composer button {
+    background: var(--accent); color: #0f1216; border: 0; border-radius: 8px; padding: 11px 18px;
+    font-weight: 600; cursor: pointer;
+  }
+  .composer button:disabled { opacity: .5; cursor: default; }
+  .banner { display: none; padding: 9px 20px; background: #3a2323; border-bottom: 1px solid var(--bad); color: #f0c9c9; font-size: 13px; }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<aside id="side">
+  <div class="side-head">
+    <h1>crew</h1>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="section">
+    <h2>parents</h2>
+    <div id="parents"></div>
+  </div>
+  <div class="section">
+    <h2>lanes</h2>
+    <div id="lanes"></div>
+  </div>
+  <div class="side-foot" id="slots">e2e slots: —</div>
+</aside>
+
+<main>
+  <div class="top">
+    <button class="icon" id="toggle" title="show/hide the sidebar">☰</button>
+    <span class="title" id="title">select an agent</span>
+    <span class="badge" id="kind" style="display:none"></span>
+    <span class="meta" id="meta"></span>
+    <span class="spacer"></span>
+    <label class="meta" style="display:flex;gap:5px;align-items:center;cursor:pointer">
+      <input type="checkbox" id="show-thinking" /> thinking
+    </label>
+    <span class="meta" id="host"></span>
+  </div>
+  <div class="banner" id="banner"></div>
+  <div class="log" id="log"><div class="empty">Pick a parent or a lane on the left.</div></div>
+  <form class="composer" id="composer">
+    <textarea id="text" placeholder="message…  (Enter to send, Shift+Enter for a newline)"></textarea>
+    <button type="submit" id="send">Send</button>
+  </form>
+</main>
+
+<script>
+// Opened from disk (file://) the page's relative URLs would resolve to file://
+// and every call would fail. Point them at the host explicitly.
+const BASE = location.protocol === 'http:' || location.protocol === 'https:' ? '' : 'http://127.0.0.1:8900';
+const api = (name) => `${BASE}/api/${name}`;
+
+let targets = { parents: [], lanes: [] };
+let selected = null;
+let lastTranscript = '';
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+function banner(message) {
+  const el = $('banner');
+  el.innerHTML = message || '';
+  el.style.display = message ? 'block' : 'none';
+}
+
+async function post(name, body) {
+  try {
+    const res = await fetch(api(name), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) banner(`${name} rejected (${res.status}): <b>${esc(data.error ?? 'no message')}</b>`);
+    else banner('');
+    return res.ok;
+  } catch {
+    banner(`cannot reach crew-host at ${BASE || location.origin} — start it with <code>bun .scratch/scripts/crew.ts start</code>`);
+    return false;
+  }
+}
+
+/* ---------- sidebar ---------- */
+function rowFor(item) {
+  const el = document.createElement('div');
+  el.className = `row${selected === item.lane ? ' active' : ''}`;
+  el.innerHTML = `
+    <span class="dot s-${item.status}"></span>
+    <span class="txt">
+      <div class="name">${esc(item.lane)}</div>
+      <div class="sub">${esc(item.kind === 'parent' ? 'parent · ' + item.cwd : (item.status ?? '') + (item.cwd ? ' · ' + item.cwd.split(/[\\/]/).pop() : ''))}</div>
+    </span>`;
+  el.onclick = () => select(item.lane);
+  return el;
+}
+
+function renderSidebar() {
+  $('parents').replaceChildren(...targets.parents.map(rowFor));
+  $('lanes').replaceChildren(...(targets.lanes.length ? targets.lanes.map(rowFor) : [Object.assign(document.createElement('div'), { className: 'row', innerHTML: '<span class="sub">no open lanes</span>' })]));
+  $('count').textContent = `${targets.parents.length + targets.lanes.length}`;
+}
+
+/* ---------- conversation ---------- */
+function renderTranscript(messages) {
+  const log = $('log');
+  const showThinking = $('show-thinking').checked;
+  const visible = messages.filter(m => showThinking || m.role !== 'thinking');
+  if (!visible.length) { log.innerHTML = '<div class="empty">No messages yet.</div>'; return; }
+  log.innerHTML = visible.map(m => `
+    <div class="msg ${esc(m.role)}">
+      <div class="who">${m.role === 'tool' ? 'tool' : m.role}</div>
+      <div class="body">${esc(m.text)}</div>
+    </div>`).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function select(label) {
+  selected = label;
+  renderSidebar();
+  const item = [...targets.parents, ...targets.lanes].find(i => i.lane === label);
+  $('title').textContent = label;
+  $('kind').textContent = item?.kind ?? '';
+  $('kind').style.display = item?.kind ? 'inline-block' : 'none';
+  $('meta').textContent = item?.cwd ?? '';
+  await loadTranscript();
+  $('text').focus();
+}
+
+async function loadTranscript() {
+  if (!selected) return;
+  try {
+    const res = await fetch(`${api('transcript')}?target=${encodeURIComponent(selected)}`);
+    const data = await res.json();
+    const json = JSON.stringify(data.messages ?? []);
+    if (json === lastTranscript) return;   // no repaint when nothing changed
+    lastTranscript = json;
+    renderTranscript(data.messages ?? []);
+  } catch {}
+}
+
+async function refreshTargets() {
+  try {
+    const res = await fetch(api('list'));
+    const data = await res.json();
+    targets = { parents: data.parents ?? [], lanes: data.lanes ?? [] };
+    $('host').textContent = `${targets.lanes.length} lane(s)`;
+    banner('');
+    renderSidebar();
+    // The selection can disappear (a lane closed); fall back to the parent.
+    const all = [...targets.parents, ...targets.lanes].map(i => i.lane);
+    if (!selected || !all.includes(selected)) select(targets.parents[0]?.lane ?? all[0]);
+  } catch {
+    banner(`cannot reach crew-host at ${BASE || location.origin} — start it with <code>bun .scratch/scripts/crew.ts start</code>`);
+  }
+}
+
+async function refreshSlots() {
+  try {
+    const s = await (await fetch(api('slots'))).json();
+    $('slots').textContent = `e2e slots: ${s.text}`;
+  } catch {}
+}
+
+/* ---------- actions ---------- */
+$('composer').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const box = $('text');
+  const text = box.value.trim();
+  if (!text || !selected) return;
+  const item = [...targets.parents, ...targets.lanes].find(i => i.lane === selected);
+  // A parent or a herdr lane is a separate pi process: reach it by typing into
+  // its pane. Only this host's own SDK lanes use the session API.
+  const endpoint = item?.kind === 'sdk' ? 'send' : 'herdr-send';
+  $('send').disabled = true;
+  const ok = await post(endpoint, { lane: selected, text });
+  $('send').disabled = false;
+  if (ok) { box.value = ''; setTimeout(loadTranscript, 1200); }
+};
+
+$('text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); }
+});
+
+$('toggle').onclick = () => $('side').classList.toggle('hidden');
+// Repaint, not refetch: the transcript is already in hand.
+$('show-thinking').onchange = () => { lastTranscript = ''; loadTranscript(); };
+
+/* ---------- loop ---------- */
+const es = new EventSource(`${BASE}/events`);
+es.onmessage = (m) => { try { const ev = JSON.parse(m.data); if (ev.ev === 'settled' || ev.ev === 'text') setTimeout(loadTranscript, 500); } catch {} };
+
+refreshTargets();
+refreshSlots();
+setInterval(refreshTargets, 5000);
+// Near-live: a finalized message lands in the session file as soon as it is
+// written, so a short poll reads close to a stream without any agent help.
+setInterval(loadTranscript, 1500);
+setInterval(refreshSlots, 30000);
+</script>
+</body>
+</html>

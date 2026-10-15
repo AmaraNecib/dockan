@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, MAX_PAGE_SIZE, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -16,6 +16,7 @@ import { AppLogger } from "../lib/logger";
 import { ensureSessionSecret } from "../lib/session-secret";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { createRpcRouter } from "./router";
+import { pickOpeningSupplier } from "./opening-balance-resolver";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
 import { weightedAverageCost } from "../lib/stock-ledger";
@@ -2414,6 +2415,105 @@ describe("supplier adjustments (issue 176)", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
     // nothing half-saved, even for the valid first row
     expect((await client.suppliersGet({ id: fresh.id })).account?.entries ?? []).toHaveLength(0);
+  });
+});
+
+describe("suppliersResolveName uses the lean reads (issue 213)", () => {
+  it("resolves from listPartyNames + listSupplierAccountSummaries, never listParties (issue 213)", async () => {
+    const name = `مورد-قراءة-رقيقة-${Date.now()}`;
+    const supplier = await client.suppliersCreate({ name });
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 120, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    // count the reads the resolve path performs: a regression back to
+    // `listParties` re-joins every invoice and re-introduces the aggregate #183
+    // removed, so the assertion that it is never called is the whole point.
+    let listPartiesCalls = 0;
+    const reads: string[] = [];
+    const countingStore: StorePort = {
+      ...store,
+      listParties: (role) => {
+        listPartiesCalls += 1;
+        return store.listParties(role);
+      },
+      listPartyNames: (role) => {
+        reads.push(`names:${role}`);
+        return store.listPartyNames(role);
+      },
+      listSupplierAccountSummaries: () => {
+        reads.push("summaries");
+        return store.listSupplierAccountSummaries();
+      },
+    };
+    const countingClient = clientForStore(countingStore);
+
+    const resolved = await countingClient.suppliersResolveName({ name, direction: "WE_OWE", amount: 120, occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي" });
+    expect(resolved.supplier?.id).toBe(supplier.id);
+    expect(resolved.supplier?.accountEntryCount).toBe(1);
+    expect(listPartiesCalls).toBe(0);
+    // both lean reads, each exactly once, in any order (`Promise.all` order is
+    // an implementation detail; the contract is the set of reads)
+    expect(reads).toHaveLength(2);
+    expect(new Set(reads)).toEqual(new Set(["names:supplier", "summaries"]));
+  });
+
+  it("names the same destination the listParties read would, including a net-zero account (issue 213)", async () => {
+    const name = `مورد-تكافؤ-${Date.now()}`;
+    const emptyTwin = await client.suppliersCreate({ name });
+    const netZero = await client.suppliersCreate({ name: name.replace(" ", "  ") });
+    // a net-zero account (two entries that cancel) still carries a count; a
+    // balance-keyed regression would drop it and report 0, silently disabling
+    // the confirmation gate
+    await client.suppliersAdjust({ supplierId: netZero.id, direction: "WE_OWE", amount: 400, reason: "أ" });
+    await client.suppliersAdjust({ supplierId: netZero.id, direction: "THEY_OWE", amount: 400, reason: "ب" });
+
+    const row = { direction: "WE_OWE" as const, amount: 90, occurredAt: "2026-10-13T12:00:00" };
+    const resolved = await client.suppliersResolveName({ name, ...row });
+
+    // the candidates the old read would have built; the resolver must name the
+    // same account and the same count, so the composition is byte-identical
+    const classic = (await store.listParties("supplier"))
+      .filter((party) => normalizeTextKey(party.name) === normalizeTextKey(name))
+      .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
+    const expected = pickOpeningSupplier(classic);
+    expect(expected?.id).toBe(netZero.id);
+    // the two rows really do fold to one key; without that the fixture proves nothing
+    expect(normalizeTextKey(emptyTwin.name)).toBe(normalizeTextKey(netZero.name));
+    expect(resolved.supplier?.id).toBe(expected?.id);
+    expect(resolved.supplier?.accountEntryCount).toBe(expected?.entries);
+    expect(resolved.supplier?.accountEntryCount).toBe(2);
+  });
+
+  it("returns null from an empty store without touching the aggregate (issue 213)", async () => {
+    // zero suppliers: both lean reads are empty and `listParties` is booby-trapped
+    // so a regression fails loudly instead of merely costing more. Count the
+    // reads too, so an early `null` return cannot pass vacuously.
+    let namesReads = 0;
+    let summaryReads = 0;
+    const emptyStore: StorePort = {
+      ...store,
+      listPartyNames: async () => {
+        namesReads += 1;
+        return [];
+      },
+      listSupplierAccountSummaries: async () => {
+        summaryReads += 1;
+        return [];
+      },
+      listParties: async () => {
+        throw new Error("suppliersResolveName must not call listParties");
+      },
+    };
+    const emptyClient = clientForStore(emptyStore);
+
+    const resolved = await emptyClient.suppliersResolveName({ name: `مورد-فارغ-${Date.now()}`, direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
+    expect(namesReads).toBe(1);
+    expect(summaryReads).toBe(1);
+  });
+
+  it("resolves a no-match name to null through the lean filter (issue 213)", async () => {
+    const resolved = await client.suppliersResolveName({ name: `مورد-بلا-مطابقة-${Date.now()}`, direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
   });
 });
 

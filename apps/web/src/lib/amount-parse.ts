@@ -16,6 +16,19 @@ const STRIP_GROUPING = /[,\s\u066C\u00A0]/gu;
 const ARABIC_INDIC_DIGITS = /[\u0660-\u0669]/gu;
 const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
 
+/**
+ * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
+ * form and leave every other character untouched. One normalizer for the amount
+ * and invoice-draft readers, so a digit one accepts the other cannot reject (the
+ * #198 quantity/amount mismatch). It does NOT widen the readers that stay
+ * ASCII-only on purpose (`parseWholeAmount`, `parseWholePercentage`).
+ */
+export function normalizeArabicIndicDigits(draft: string): string {
+  return draft
+    .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
+    .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
+}
+
 /** A digits-only whole-DZD draft, or null when it is not a usable integer. */
 export function parseWholeAmount(draft: string): number | null {
   const trimmed = draft.trim();
@@ -40,10 +53,7 @@ export function parseWholePercentage(draft: string): number | null {
  * instead of deleting the separator and returning a different number.
  */
 export function parseGroupedAmount(draft: string): number | null {
-  const normalized = draft
-    .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
-    .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0))
-    .trim();
+  const normalized = normalizeArabicIndicDigits(draft).trim();
   if (normalized === "") return null;
   // valid grouping: an optional 1-3 digit lead, then groups of exactly 3
   const plain = /^\d+$/u.test(normalized);

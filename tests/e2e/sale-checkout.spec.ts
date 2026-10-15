@@ -87,6 +87,44 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
 });
 
+test("sale checkout: an invalid price override outranks the payment it invalidates (#198)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `ترتيب-تصنيف-${stamp}`;
+  const itemName = `ترتيب-منتج-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("sale-quick-stock").fill("5");
+  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+
+  // A payment the override will invalidate: 999 is not the 1000 default, so the
+  // pair's source pins to the amount and survives the total dropping to 13.
+  await page.getByTestId("sale-paid").fill("999");
+  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("12.5");
+  await expect(page.getByTestId("sale-total")).toContainText("13");
+
+  // the fractional override is the real problem; the payment-vs-total check
+  // must not shadow it, which is what the order invariant prevents
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
+  await expect(page.getByTestId("sale-error")).not.toContainText("أدخل مبلغاً صحيحاً غير سالب");
+  await expect(page.getByTestId("sale-saved")).toHaveCount(0);
+});
+
 test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", async ({ page }) => {
   await signIn(page);
 

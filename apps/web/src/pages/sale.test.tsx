@@ -285,6 +285,15 @@ function saveButton(host: HTMLElement): HTMLButtonElement {
   return button;
 }
 
+/** the sale row quantity input (a draft: it stays exactly as typed) */
+const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
+/** the rendered total as a number, so a zero check cannot pass on a substring */
+const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
+const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
+const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+
 describe("SalePage commit states (greptile round-2)", () => {
   it("words a pending remainder as unattributed until a customer is named", async () => {
     const host = await mountSale();
@@ -1089,11 +1098,6 @@ describe("SalePage party picker (issue 120)", () => {
  * rule and one discounted cart total on the rendered sale screen.
  */
 describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
-  const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
-  const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
-  /** the rendered total as a number, so a zero check cannot pass on a substring */
-  const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
-
   it("keeps a cleared draft cleared, zeroes the line, and refuses the save", async () => {
     const host = await mountSale();
     await scan("111"); // sellingPrice 1000
@@ -1177,5 +1181,102 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1000");
     expect(host.querySelector('[data-testid="sale-discount"]')?.textContent).toContain("100");
     expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("900");
+  });
+});
+
+describe("SalePage commit order (#198)", () => {
+  it("blames the unusable override, not the payment, when the override drops the total below the typed payment", async () => {
+    const host = await mountSale();
+    await scan("198"); // 1 x 1000
+    // a typed payment pins the pair's source to "amount", so it survives the
+    // total the override produces (999 is deliberately not the 1000 default)
+    await act(async () => setInput(host, "sale-paid", "999"));
+
+    await act(async () => {
+      await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    });
+    const value = lineOverrideValue(host);
+    if (value === null) throw new Error("missing override value");
+    // a fractional amount override is invalid, yet it still prices the line at
+    // 13, so the typed payment (999) is now above the total. Checking the
+    // payment first would surface «saleInvalidPaid» and shadow the override.
+    await act(async () => setElementValue(value, "12.5"));
+    expect(totalAmount(host)).toBe(13);
+    // the amount survived the total change, so the payment really is invalid now
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("999");
+
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidOverride"));
+    expect(errorText(host)).not.toContain(i18n.t("saleInvalidPaid"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("blames the first line's override before a later line's quantity, one line at a time", async () => {
+    const host = await mountSale();
+    await scan("1981"); // line 1
+    await scan("1982"); // line 2
+
+    // line 1: a chosen amount override with an empty value is invalid
+    await act(async () => {
+      await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    });
+    // line 2: a cleared quantity is invalid
+    const quantities = host.querySelectorAll<HTMLInputElement>('input[aria-label*="الكمية"]');
+    await act(async () => setElementValue(quantities[1]!, ""));
+
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidOverride"));
+    expect(errorText(host)).not.toContain(i18n.t("saleInvalidQuantity"));
+    expect(lastInvoiceInput).toBeNull();
+
+    // fix line 1: the later line's quantity is the next offender
+    const value = lineOverrideValue(host);
+    if (value === null) throw new Error("missing override value");
+    await act(async () => setElementValue(value, "900"));
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidQuantity"));
+    expect(lastInvoiceInput).toBeNull();
+  });
+
+  it("saves a line at the quantity cap and refuses one above it, pinning the payload", async () => {
+    const host = await mountSale();
+    await scan("1983"); // 1 x 1000
+
+    // above the RPC cap: the draft resolves to zero and the save is refused
+    await act(async () => setElementValue(quantityField(host), "1000001"));
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidQuantity"));
+    expect(lastInvoiceInput).toBeNull();
+
+    // exactly the cap: accepted, and the checkout payload carries it
+    await act(async () => setElementValue(quantityField(host), "1000000"));
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-1983", quantity: 1_000_000 }]);
+  });
+
+  it("bills an Arabic-Indic quantity the same as its ASCII value (#198 decision)", async () => {
+    const host = await mountSale();
+    await scan("1984"); // 1 x 1000
+    await act(async () => setElementValue(quantityField(host), "٥"));
+    expect(quantityField(host).value).toBe("٥");
+    await act(async () => saveButton(host).click());
+    expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-1984", quantity: 5 }]);
+  });
+
+  it("keeps the discount reader ASCII-only while the quantity accepts Arabic-Indic (#198 scope)", async () => {
+    const host = await mountSale();
+    await scan("1985"); // 1 x 1000
+    // the quantity draft accepts the digit...
+    await act(async () => setElementValue(quantityField(host), "٥"));
+    // ...but the discount draft reads `Number`, so «٥» is not a number to it
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await act(async () => {
+      await chooseOption(trigger, "مبلغ");
+    });
+    await act(async () => setInput(host, "sale-discount-value", "٥"));
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidDiscount"));
+    expect(lastInvoiceInput).toBeNull();
   });
 });

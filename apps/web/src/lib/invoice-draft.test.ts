@@ -9,6 +9,7 @@ import {
   draftReducer,
   draftSubtotal,
   draftTotals,
+  firstCommitError,
   firstLineError,
   lineQuantity,
   nextPaymentPair,
@@ -18,11 +19,13 @@ import {
   purchaseUnitPrice,
   quantityDraftInvalid,
   removeDraftLine,
+  resolvedInitialPaid,
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
   setDraftQuantity,
   toAmountKind,
+  type CommitChecks,
   type PaymentPair,
   type PurchaseDraftLine,
   type SaleDraftLine,
@@ -83,6 +86,27 @@ describe("parseQuantityDraft (the one quantity parser both screens use)", () => 
     expect(quantityDraftInvalid("9999999999")).toBe(true);
   });
 
+  it("accepts Arabic-Indic and Extended Arabic-Indic digits (#198 decision)", () => {
+    // the owner's Arabic keyboard may produce these; the amount fields already
+    // accept them, so the quantity reader shares the same normalizer
+    expect(parseQuantityDraft("٥")).toBe(5);
+    expect(parseQuantityDraft("٤٢")).toBe(42);
+    expect(parseQuantityDraft(" ٥ ")).toBe(5);
+    expect(parseQuantityDraft("۵")).toBe(5);
+    expect(parseQuantityDraft("۵۰")).toBe(50);
+    expect(quantityDraftInvalid("٥")).toBe(false);
+    // still digits-only: a grouping separator or a decimal stays invalid
+    expect(parseQuantityDraft("١٬٠٠٠")).toBe(0);
+    expect(parseQuantityDraft("٥.٥")).toBe(0);
+    // mixed scripts normalize like the amount reader does
+    expect(parseQuantityDraft("٥5")).toBe(55);
+    // the cap applies after normalization
+    expect(parseQuantityDraft("١٠٠٠٠٠٠")).toBe(1_000_000);
+    expect(parseQuantityDraft("١٠٠٠٠٠١")).toBe(0);
+    // and the widened reader bills the line: 5 × 900
+    expect(draftSubtotal([saleLine("a", "٥", 900)], saleUnitPrice)).toBe(4500);
+  });
+
   it("is deterministic and pins each input's exact resolution (no self-equality)", () => {
     const cases: Array<[string, number]> = [
       ["", 0],
@@ -92,7 +116,7 @@ describe("parseQuantityDraft (the one quantity parser both screens use)", () => 
       ["-1", 0],
       ["1e3", 0],
       ["1.5", 0],
-      ["٥", 0],
+      ["٥", 5],
       ["1_000", 0],
       ["1000000", 1_000_000],
       ["1000001", 0],
@@ -182,6 +206,15 @@ describe("sale line pricing", () => {
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "101" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "-1" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "12.5" })).toBe(true);
+  });
+
+  it("keeps the override reader ASCII-only while the quantity reader accepts Arabic-Indic (#198 scope)", () => {
+    // the #198 decision widened quantities only. `Number("٥")` is NaN, so the
+    // price-override reader still refuses it, exactly as before.
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "٥" })).toBe(true);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "٥٠" })).toBe(true);
+    // the same digit in a quantity now resolves
+    expect(parseQuantityDraft("٥")).toBe(5);
   });
 });
 
@@ -284,6 +317,111 @@ describe("draft line list", () => {
     expect(lines.map((line) => line.item.id)).toEqual(["b"]);
 
     expect(draftReducer(lines, { type: "reset" })).toEqual([]);
+  });
+});
+
+describe("firstCommitError (the one commit order both screens share)", () => {
+  const pass = () => ({ invalid: () => false, message: "" });
+  const fail = (message: string) => ({ invalid: () => true, message });
+  const valid = { invalid: false, message: "" };
+  const invalid = (message: string) => ({ invalid: true, message });
+
+  const checks = (over: Partial<CommitChecks<SaleDraftLine>> = {}) => ({
+    lines: [saleLine("a", "2")],
+    linesEmpty: "empty",
+    partyNeedsChoice: false,
+    partyNeedsChoiceMessage: "party",
+    override: pass(),
+    quantity: pass(),
+    discount: valid,
+    payment: valid,
+    ...over,
+  });
+
+  it("returns null when every check passes", () => {
+    expect(firstCommitError(checks())).toBeNull();
+  });
+
+  it("blames the empty cart first, whatever else is wrong", () => {
+    expect(
+      firstCommitError(
+        checks({
+          lines: [],
+          partyNeedsChoice: true,
+          override: fail("override"),
+          quantity: fail("quantity"),
+          discount: invalid("discount"),
+          payment: invalid("payment"),
+        }),
+      ),
+    ).toBe("empty");
+  });
+
+  it("blames the unpicked party before the lines", () => {
+    expect(firstCommitError(checks({ partyNeedsChoice: true, override: fail("override"), quantity: fail("quantity") }))).toBe("party");
+  });
+
+  it("blames a line before the discount and the payment derived from it", () => {
+    expect(firstCommitError(checks({ quantity: fail("quantity"), discount: invalid("discount"), payment: invalid("payment") }))).toBe("quantity");
+  });
+
+  it("checks a line's override before its quantity, and the first offender first", () => {
+    expect(firstCommitError(checks({ override: fail("override"), quantity: fail("quantity") }))).toBe("override");
+    // line 1's override beats line 2's quantity (draft order, one line at a time)
+    const twoLines = [saleLine("a", "1"), saleLine("b", "")];
+    expect(
+      firstCommitError(
+        checks({
+          lines: twoLines,
+          override: { invalid: (line) => line.item.id === "a", message: "override" },
+          quantity: { invalid: (line) => line.quantityDraft.trim() === "", message: "quantity" },
+        }),
+      ),
+    ).toBe("override");
+    // make line 1 valid: the second line's quantity is next
+    expect(
+      firstCommitError(
+        checks({
+          lines: twoLines,
+          override: { invalid: () => false, message: "override" },
+          quantity: { invalid: (line) => line.quantityDraft.trim() === "", message: "quantity" },
+        }),
+      ),
+    ).toBe("quantity");
+    // the mirror: line 1's quantity beats line 2's override. Checking every
+    // override before any quantity (column-major) would return "override" here.
+    const reversed = [saleLine("a", ""), saleLine("b", "2")];
+    expect(
+      firstCommitError(
+        checks({
+          lines: reversed,
+          override: { invalid: (line) => line.item.id === "b", message: "override" },
+          quantity: { invalid: (line) => line.quantityDraft.trim() === "", message: "quantity" },
+        }),
+      ),
+    ).toBe("quantity");
+  });
+
+  it("blames the discount before the payment it can zero", () => {
+    expect(firstCommitError(checks({ discount: invalid("discount"), payment: invalid("payment") }))).toBe("discount");
+  });
+
+  it("blames the payment last, only when everything it derives from is valid", () => {
+    expect(firstCommitError(checks({ payment: invalid("payment") }))).toBe("payment");
+  });
+
+  it("shares the order with a purchase-shaped input (no override, no discount)", () => {
+    const purchase = {
+      lines: [purchaseLine("a", "")],
+      linesEmpty: "empty",
+      partyNeedsChoice: false,
+      partyNeedsChoiceMessage: "party",
+      quantity: fail("quantity"),
+      payment: invalid("payment"),
+    };
+    expect(firstCommitError(purchase)).toBe("quantity");
+    expect(firstCommitError({ ...purchase, lines: [purchaseLine("a", "2")], quantity: pass() })).toBe("payment");
+    expect(firstCommitError({ ...purchase, lines: [purchaseLine("a", "2")], quantity: pass(), payment: valid })).toBeNull();
   });
 });
 
@@ -469,5 +607,17 @@ describe("resolveInitialPaid (what the invoice carries)", () => {
     expect(resolveInitialPaid(1000, "abc", "")).toEqual({ ok: false });
     expect(resolveInitialPaid(1000, "1 000,00", "")).toEqual({ ok: false });
     expect(resolveInitialPaid(1000, "1,5", "")).toEqual({ ok: false });
+  });
+});
+
+describe("resolvedInitialPaid (the commit-ready payload value)", () => {
+  it("carries the accepted resolution, including 'nothing paid now'", () => {
+    expect(resolvedInitialPaid({ ok: true, paid: 400 })).toBe(400);
+    expect(resolvedInitialPaid({ ok: true, paid: undefined })).toBeUndefined();
+  });
+
+  it("throws on a rejected resolution, which firstCommitError would have refused", () => {
+    // the guard lives beside the helper whose contract it protects
+    expect(() => resolvedInitialPaid({ ok: false })).toThrow("firstCommitError did not refuse an invalid initial payment");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { parseGroupedAmount, parseWholeAmount, parseWholePercentage } from "./amount-parse";
+import { normalizeArabicIndicDigits, parseGroupedAmount, parseWholeAmount, parseWholePercentage } from "./amount-parse";
 
 /**
  * #180 — the single grouped-amount parser. Both the bulk opening-balance rows
@@ -63,5 +63,20 @@ describe("parseGroupedAmount", () => {
     expect(parseGroupedAmount("١٬٠٠")).toBeNull();
     // a valid mixed-script grouped amount still parses
     expect(parseGroupedAmount("1٬000")).toBe(1000);
+  });
+});
+
+/**
+ * #198 — the one digit normalizer, shared by the amount reader and the quantity
+ * reader so a digit one accepts the other cannot reject.
+ */
+describe("normalizeArabicIndicDigits", () => {
+  it("maps both Arabic digit ranges to ASCII and leaves everything else alone", () => {
+    expect(normalizeArabicIndicDigits("٠١٢٣٤٥٦٧٨٩")).toBe("0123456789");
+    expect(normalizeArabicIndicDigits("۰۱۲۳۴۵۶۷۸۹")).toBe("0123456789");
+    expect(normalizeArabicIndicDigits("٤٢")).toBe("42");
+    expect(normalizeArabicIndicDigits("1٬000")).toBe("1٬000");
+    expect(normalizeArabicIndicDigits("abc 5")).toBe("abc 5");
+    expect(normalizeArabicIndicDigits("")).toBe("");
   });
 });

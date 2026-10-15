@@ -301,4 +301,35 @@ describe("vault settings takes over native validation (issue #109)", () => {
     expect(resetCalls).toBe(0);
     expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("vaultPassphraseTooShort"));
   });
+
+  it("a failed recovery-key action never keeps the empty-passphrase field blamed, and editing it cannot hide the server error", async () => {
+    // the recovery-key POST fails with a server error that names no input
+    routes.set("/api/vault/recovery-keys", (init) => {
+      if (init?.method === "POST") {
+        return Response.json({ error: { code: "VAULT_RECOVERY_LIMIT" } }, { status: 400 });
+      }
+      return Response.json({ keys });
+    });
+    const host = await mount();
+
+    // an empty current passphrase blames that field
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    setValue(host, "vault-confirm-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+    const current = host.querySelector<HTMLInputElement>('[data-testid="vault-current-passphrase"]');
+    expect(current?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+
+    // a recovery-key failure names no field, so the password field must drop
+    // the now-unrelated blame rather than keep it
+    await click(host, "vault-add-recovery");
+    await flush();
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
+    expect(current?.getAttribute("aria-describedby")).toBeNull();
+    expect(current?.getAttribute("aria-invalid")).toBe("false");
+
+    // editing the password field must not swallow the unrelated server error
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
+  });
 });

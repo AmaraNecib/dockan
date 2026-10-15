@@ -39,13 +39,17 @@ export function VaultSettings() {
   const [newPassphrase, setNewPassphrase] = useState("");
   const [confirmPassphrase, setConfirmPassphrase] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A failure and the field it blames are ONE value: setting one always sets
+  // the other, so a server error that names no field can never strand a stale
+  // field blame (and edit-clear can never swallow an unrelated message).
+  const [failure, setFailure] = useState<{ message: string; field: VaultSettingsField } | null>(null);
+  const error = failure?.message ?? null;
+  const errorField = failure?.field ?? null;
   const [newKey, setNewKey] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [showRecoveryReset, setShowRecoveryReset] = useState(false);
   const [resetRecoveryKey, setResetRecoveryKey] = useState("");
   const [resetNewPassphrase, setResetNewPassphrase] = useState("");
-  const [errorField, setErrorField] = useState<VaultSettingsField>(null);
   const currentRef = useRef<HTMLInputElement>(null);
   const newRef = useRef<HTMLInputElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
@@ -58,12 +62,12 @@ export function VaultSettings() {
       // a credential change rotates the session; keep the current window alive
       storeVaultSessionToken(sessionToken);
       setMessage(t("vaultChanged"));
-      setError(null);
+      setFailure(null);
       setCurrentPassphrase("");
       setNewPassphrase("");
       setConfirmPassphrase("");
     },
-    onError: (err) => setError(vaultErrorCopy(err)),
+    onError: (err) => setFailure({ message: vaultErrorCopy(err), field: null }),
   });
 
   const createKey = useMutation({
@@ -72,7 +76,7 @@ export function VaultSettings() {
       setNewKey(created.code);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
     },
-    onError: (err) => setError(vaultErrorCopy(err)),
+    onError: (err) => setFailure({ message: vaultErrorCopy(err), field: null }),
   });
 
   const deleteKey = useMutation({
@@ -83,7 +87,7 @@ export function VaultSettings() {
       setPendingDelete(null);
       void queryClient.invalidateQueries({ queryKey: ["vault", "recovery-keys"] });
     },
-    onError: (err) => setError(vaultErrorCopy(err)),
+    onError: (err) => setFailure({ message: vaultErrorCopy(err), field: null }),
   });
 
   const recoveryReset = useMutation({
@@ -92,12 +96,12 @@ export function VaultSettings() {
     onSuccess: (sessionToken) => {
       storeVaultSessionToken(sessionToken);
       setMessage(t("vaultChanged"));
-      setError(null);
+      setFailure(null);
       setShowRecoveryReset(false);
       setResetRecoveryKey("");
       setResetNewPassphrase("");
     },
-    onError: (err) => setError(vaultErrorCopy(err)),
+    onError: (err) => setFailure({ message: vaultErrorCopy(err), field: null }),
   });
 
   // the legacy plaintext build has no vault section at all
@@ -105,8 +109,7 @@ export function VaultSettings() {
 
   /** Refuse a field in Arabic, focus it, and tie the alert to it (#109). */
   const showError = (message: string, field: VaultSettingsField): void => {
-    setError(message);
-    setErrorField(field);
+    setFailure({ message, field });
     const target =
       field === "current"
         ? currentRef.current
@@ -124,9 +127,7 @@ export function VaultSettings() {
 
   /** Drop a field-blamed failure as soon as that field is edited (#100 pattern). */
   const clearFieldError = (field: Exclude<VaultSettingsField, null>): void => {
-    if (errorField !== field) return;
-    setError(null);
-    setErrorField(null);
+    setFailure((current) => (current !== null && current.field === field ? null : current));
   };
 
   const mismatch = newPassphrase.length > 0 && confirmPassphrase.length > 0 && confirmPassphrase !== newPassphrase;
@@ -156,7 +157,9 @@ export function VaultSettings() {
             return;
           }
           setMessage(null);
-          setErrorField(null);
+          // re-submitting drops the old field blame; the message travels in the
+          // same value, so keep it visible until this attempt resolves
+          setFailure((current) => (current === null ? null : { message: current.message, field: null }));
           changePassphrase.mutate();
         }}
       >
@@ -245,7 +248,7 @@ export function VaultSettings() {
               return;
             }
             setMessage(null);
-            setErrorField(null);
+            setFailure((current) => (current === null ? null : { message: current.message, field: null }));
             recoveryReset.mutate();
           }}
           data-testid="vault-recovery-reset"

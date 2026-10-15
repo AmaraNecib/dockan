@@ -162,6 +162,7 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
   ] as const;
 
   it("gives every refusal its own Arabic key, never the silent fallback", () => {
+    const copies: string[] = [];
     for (const key of OPENING_BALANCE_REFUSALS) {
       expect(serverErrorKey(key), `missing i18n key for ${key}`).toBe(key);
       expect(serverErrorKey(key), `${key} fell back to errorGeneric`).not.toBe("errorGeneric");
@@ -169,7 +170,11 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
       expect(copy, `missing copy for ${key}`).not.toBe(key);
       expect(copy.length, `empty copy for ${key}`).toBeGreaterThan(0);
       expect(copy, `non-Arabic copy for ${key}`).toMatch(/[\u0600-\u06FF]/);
+      copies.push(copy);
     }
+    // distinctness: two refusals sharing one sentence would still pass existence
+    // checks while telling the owner the wrong thing
+    expect(new Set(copies).size, "duplicate Arabic copy across refusals").toBe(copies.length);
   });
 });
 

@@ -317,7 +317,9 @@ export function SupplierOpeningBalancePage() {
           rememberResolution(destination);
           setConfirming(true);
         } catch (resolveError) {
-          if (mountedRef.current && resolveKeyRef.current === saveResolveKey) setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
+          // a dismissal must survive a FAILED recovery too: otherwise the error the
+          // owner just dismissed is silently replaced (review round 3, class fix)
+          if (mountedRef.current && resolveKeyRef.current === saveResolveKey && dismissalRef.current === saveDismissal) setError(tError(resolveError instanceof Error ? resolveError.message : undefined));
         }
       }
     } finally {
@@ -382,7 +384,7 @@ export function SupplierOpeningBalancePage() {
 
   return (
     <section data-testid="opening-balance-page">
-      <Link to="/suppliers" onClick={invalidateAttempt} className="text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="opening-balance-back">
+      <Link to="/suppliers" onClick={abandonAttempt} className="text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="opening-balance-back">
         {t("supplierOpeningBack")}
       </Link>
       <h1 className="mt-3 text-xl font-bold">{t("supplierOpeningTitle")}</h1>
@@ -404,7 +406,21 @@ export function SupplierOpeningBalancePage() {
           </div>
         </div>
       ) : (
-        <form className="mt-4 grid gap-4" onSubmit={submit} data-testid="opening-balance-form">
+        <form
+          className="mt-4 grid gap-4"
+          onSubmit={submit}
+          // Escape is the keyboard equivalent of the dialog's Cancel — the same
+          // `abandonAttempt` so it invalidates any in-flight submit too. It lives
+          // on the FORM, not the dialog, because the dialog is inline and does not
+          // trap focus: an Escape pressed in an input behind it must still dismiss
+          // (Web Interface Guidelines: interactive elements need keyboard
+          // handlers). Guarded on `confirming` so Escape elsewhere in the form
+          // does not abandon an unrelated attempt.
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && confirming) abandonAttempt();
+          }}
+          data-testid="opening-balance-form"
+        >
           <div className="flex flex-wrap items-end gap-3">
             <label className="grid gap-1 text-sm">
               {t("supplierOpeningDate")}
@@ -587,13 +603,6 @@ export function SupplierOpeningBalancePage() {
               className="rounded border border-warning/40 bg-warning/10 p-4"
               role="alertdialog"
               aria-label={t("supplierOpeningConfirmTitle")}
-              // Escape is the keyboard equivalent of the dialog's Cancel — the same
-              // `abandonAttempt` so it invalidates any in-flight submit too
-              // (Web Interface Guidelines: interactive elements need keyboard
-              // handlers).
-              onKeyDown={(event) => {
-                if (event.key === "Escape") abandonAttempt();
-              }}
               data-testid="opening-balance-confirm"
             >
               <p className="font-semibold">{t("supplierOpeningConfirmTitle")}</p>

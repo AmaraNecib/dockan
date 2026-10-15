@@ -647,6 +647,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveHold = new Promise((resolve) => {
       releaseResolveHold = resolve;
     });
+    // a synchronous act + microtask flush, NOT `await act(async …)`: the async
+    // form deadlocks on the held resolve promise (the act callback never settles)
     act(() => {
       clickOn("opening-balance-confirm-save");
     });
@@ -663,7 +665,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
 
     // the held lookup settles: the explicit dismissal must survive the refusal
-    // recovery, so the dialog names the moved account but stays CLOSED
+    // recovery, so the dialog stays CLOSED (it is not re-opened with the moved name)
     await act(async () => {
       releaseResolveHold?.();
       await Promise.resolve();
@@ -671,6 +673,74 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    // positive control: the recovery lookup really ran, so "stays closed" is not
+    // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+    expect(resolveCalls).toBe(2);
+  });
+
+  it("dismisses on Escape from an input behind the open dialog (review round 3 class fix)", async () => {
+    // the inline dialog has no focus trap: Escape must be handled at the form so
+    // an owner who tabbed back into an amount field can still dismiss it
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // Focus is outside the dialog subtree, in an input behind it
+    const amount = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    amount.focus();
+    await act(async () => {
+      amount.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
+  it("does not suppress a legitimate dialog after an earlier dismissal (review round 3)", async () => {
+    // a dismissal must not become a permanent latch: a later submit for the moved
+    // destination still re-opens the dialog and names it
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    // refuse the confirmed save and dismiss the dialog while recovery is held
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    act(() => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      host.querySelector<HTMLElement>('[data-testid="opening-balance-confirm"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    await act(async () => {
+      releaseResolveHold?.();
+      resolveHold = null;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // a NEW submit for the same (now moved) name must open the dialog again
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(names).toContain("مورد بديل");
   });
 
   it("disables the confirm button while a re-submit's lookup is pending (review round 2)", async () => {

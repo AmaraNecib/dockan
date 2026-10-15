@@ -37,6 +37,9 @@ function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> 
     // success envelope is `{ json: <declared output> }` and `ok()` above
     // rejected a refusal, so the caller's T names the value at `json`.
     const body = (await response.json()) as { json: T };
+    if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+      throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+    }
     return body.json;
   });
 }
@@ -154,8 +157,14 @@ export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
   const body = await page.evaluate(async (name) => {
     const headers = new Headers({ "content-type": "application/json" });
     // the same unlocked-owner header apps/web/src/lib/rpc.ts attaches; read the
-    // one storage key vault-client.ts writes (empty/null means no session)
-    const vaultToken = sessionStorage.getItem("dokan.vault.session");
+    // one storage key vault-client.ts writes (empty/null means no session). A
+    // blocked storage throws there too and must not fail the read.
+    let vaultToken: string | null = null;
+    try {
+      vaultToken = sessionStorage.getItem("dokan.vault.session");
+    } catch {
+      /* storage can be blocked by the webview; proceed without a vault session */
+    }
     if (vaultToken !== null && vaultToken !== "") headers.set("x-vault-session", vaultToken);
     const response = await fetch(`/api/rpc/${name}`, {
       method: "POST",
@@ -166,6 +175,9 @@ export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
     if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
     return response.json();
   }, procedure);
+  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+  }
   // SAFETY: page.evaluate cannot carry a generic across the browser boundary;
   // the oRPC StandardRPCSerializer answers a successful call with
   // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),

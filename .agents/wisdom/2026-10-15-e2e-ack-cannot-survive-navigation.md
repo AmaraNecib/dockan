@@ -27,7 +27,9 @@ later over the protocol. `actAndAck`'s action was a full-document `goto`:
    way.
 
 **Always**: never arm an ack around a `page.goto` (or any full-document
-navigation). A read the page issues on mount has no safe ack there.
+navigation). A read the page issues on mount has no safe ack there. The helper
+cannot detect a navigating action, so this stays a review rule; `readRpc` is the
+shape that makes it moot.
 
 **Always**: use two shapes deliberately.
 - Action that stays on the page → `actAndAck`, with the body read eagerly
@@ -42,11 +44,12 @@ navigation). A read the page issues on mount has no safe ack there.
 ## Assert the envelope, not just `ok()`
 
 `response.json()` is untyped and `ok()` only proves the server accepted the
-call. The helpers trust the oRPC `StandardRPCSerializer` envelope (`{ json }`)
-and name the invariant in a `SAFETY` comment; they do **not** re-check the shape
-at runtime, because this repo's oxlint forbids `typeof` narrowing and `zod` is
-not importable from `tests/e2e`. If the serializer ever moves, the symptom is
-`expected undefined to be …` at the assertion site — pin the protocol with a
-focused helper test rather than a hand-rolled guard.
+call. Both helpers also check that the body carries a `json` field and throw
+`<procedure>: unexpected oRPC envelope` otherwise. That check uses
+`Object.prototype.hasOwnProperty.call`, not `typeof`: this repo's oxlint forbids
+runtime `typeof` narrowing and `zod` is not importable from `tests/e2e`, so a
+schema parse is not available at this boundary. Without the check, a serializer
+drift surfaces far away — `expected undefined to be …` for `readEnvelope`, and
+`Cannot read properties of undefined` for `readRpc`.
 
 `body: "{}"` is only correct for a no-input procedure.

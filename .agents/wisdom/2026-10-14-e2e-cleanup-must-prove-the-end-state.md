@@ -16,10 +16,9 @@ the same disease**: the spec passed while proving nothing.
 
 **Always**: take presence from the **acked RPC payload**, not from the DOM
 (`await actAndAck<T>(page, "<procedure>", …)` for an action, or
-`readRpc<T>(page, "<procedure>")` for a read the page issues around a
-navigation — see `tests/e2e/rpc-helpers.ts`), then let `toHaveCount(1)` give the
-render its auto-wait. Never decide "the record is not there" from a bare
-`count()`.
+`readRpc<T>(page, "<procedure>")` for a read you issue after a navigation — see
+`tests/e2e/rpc-helpers.ts`), then let `toHaveCount(1)` give the render its
+auto-wait. Never decide "the record is not there" from a bare `count()`.
 
 **Always**: after a delete, await that write's own acknowledgement *and* assert
 the row disappears (`toHaveCount(0)`); then, in the hook, re-read the list and

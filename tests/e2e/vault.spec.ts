@@ -33,6 +33,12 @@ const WEB_PORT = vaultPort("DOKAN_VAULT_WEB_PORT", 5174);
 const ROOT = process.cwd();
 const PASSPHRASE = "shop vault passphrase";
 const NEW_PASSPHRASE = "brand new shop passphrase";
+/**
+ * The Argon2id setup/unlock KDF sits above OWASP's floor (m=32 MiB, t=3), which
+ * measures ~1s idle but ~10s on a machine loaded by sibling lanes. Playwright's
+ * 5s expect default is shorter than the KDF, so those assertions name a bound.
+ */
+const VAULT_KDF_TIMEOUT_MS = 20_000;
 
 let api: ChildProcess | undefined;
 let web: ChildProcess | undefined;
@@ -40,7 +46,7 @@ let dataDir: string;
 /** shown exactly once by the first test, used by the recovery test after a restart */
 let recoveryKey = "";
 
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "serial", timeout: 120_000 });
 
 async function waitForOk(url: string, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -180,6 +186,27 @@ test("the passphrase fields share one app-controlled reveal, pinned to the left 
   await expect(firstToggle).toBeVisible();
 });
 
+test("an empty vault passphrase shows Arabic, never the browser bubble", async ({ page }) => {
+  await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
+  await expect(page.getByRole("heading", { name: "إنشاء الخزنة" })).toBeVisible();
+
+  // the browser's own constraint UI is switched off; the app speaks instead
+  await expect(page.locator("form")).toHaveAttribute("novalidate", "");
+
+  await page.getByTestId("vault-setup-submit").click();
+
+  await expect(page.getByTestId("vault-error")).toHaveText("كلمة مرور الخزنة قصيرة جداً. استعمل ٨ أحرف على الأقل.");
+  const passphrase = page.getByTestId("vault-passphrase");
+  await expect(passphrase).toBeFocused();
+  await expect(passphrase).toHaveAttribute("aria-invalid", "true");
+  expect(
+    await passphrase.evaluate((el) => {
+      // SAFETY: the locator resolves to the required vault passphrase <input>
+      return (el as HTMLInputElement).validity.valueMissing;
+    }),
+  ).toBe(true);
+});
+
 test("first run: passphrase → recovery key shown once → owner setup → the app opens", async ({ page }) => {
   await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
 
@@ -193,7 +220,7 @@ test("first run: passphrase → recovery key shown once → owner setup → the 
 
   // the recovery key is shown once and gated on an explicit acknowledgment
   const keyElement = page.getByTestId("vault-recovery-key");
-  await expect(keyElement).toBeVisible();
+  await expect(keyElement).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
   const shownKey = (await keyElement.innerText()).trim();
   expect(shownKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
   recoveryKey = shownKey;
@@ -209,7 +236,7 @@ test("first run: passphrase → recovery key shown once → owner setup → the 
   await page.getByLabel("اسم المتجر").fill("متجر الاختبار");
   await page.getByLabel("رقم الهاتف").fill("0550123123");
   await page.getByRole("button", { name: "إنشاء الحساب" }).click();
-  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 });
 
 test("after a restart the vault is locked; recovery unlocks it and sets a new working passphrase", async ({ page }) => {
@@ -221,15 +248,20 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
   await expect(page.getByRole("heading", { name: "فتح الخزنة" })).toBeVisible();
 
+  // an empty passphrase is refused by the app, not the browser
+  await expect(page.locator("form")).toHaveAttribute("novalidate", "");
+  await page.getByTestId("vault-unlock-submit").click();
+  await expect(page.getByTestId("vault-error")).toHaveText("أدخل كلمة مرور الخزنة.");
+
   await page.getByTestId("vault-passphrase").fill("wrong passphrase");
   await page.getByTestId("vault-unlock-submit").click();
-  await expect(page.getByTestId("vault-error")).toHaveText("كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.");
+  await expect(page.getByTestId("vault-error")).toHaveText("كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.", { timeout: VAULT_KDF_TIMEOUT_MS });
 
   // the recovery key opens the vault without the forgotten passphrase
   await page.getByTestId("vault-use-recovery").click();
   await page.getByTestId("vault-recovery-input").fill(recoveryKey);
   await page.getByTestId("vault-recovery-submit").click();
-  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 
   // ... and sets a brand-new passphrase from settings, no current one needed
   await page.getByRole("link", { name: "الإعدادات" }).click();
@@ -238,7 +270,7 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await page.getByTestId("vault-reset-recovery-key").fill(recoveryKey);
   await page.getByTestId("vault-reset-new-passphrase").fill(NEW_PASSPHRASE);
   await page.getByTestId("vault-reset-submit").click();
-  await expect(page.getByTestId("vault-settings-saved")).toBeVisible();
+  await expect(page.getByTestId("vault-settings-saved")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 
   // a further restart only accepts the NEW passphrase
   await stopAndWait(api);
@@ -247,5 +279,5 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await page.goto(`http://127.0.0.1:${WEB_PORT}/`);
   await page.getByTestId("vault-passphrase").fill(NEW_PASSPHRASE);
   await page.getByTestId("vault-unlock-submit").click();
-  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible({ timeout: VAULT_KDF_TIMEOUT_MS });
 });

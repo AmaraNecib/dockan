@@ -533,6 +533,10 @@ describe("setup names the field (issue #100)", () => {
     needsSetup = true;
     const host = await mountAuthGate();
 
+    // names valid: the password is the first failing rule, which is what this
+    // test pins (the names have their own #109 coverage)
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
     setInputValue(inputByName(host, "phone"), "0550123123");
     setInputValue(inputByName(host, "password"), "abc");
     await submitForm(host);
@@ -558,6 +562,105 @@ describe("setup names the field (issue #100)", () => {
 
     expect(firstTimeSetupCalls).toBe(1);
     expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("auth forms take over the browser's validation (issue #109)", () => {
+  it("login: the form is noValidate and an empty phone shows Arabic without a request", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+    expect(host.querySelector("form")?.noValidate).toBe(true);
+
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(signInCalls).toBe(0);
+    const phone = inputByName(host, "username");
+    expect(phone.getAttribute("aria-invalid")).toBe("true");
+    expect(phone.getAttribute("aria-describedby")).toBe("login-error");
+    expect(document.activeElement).toBe(phone);
+  });
+
+  it("login: an empty password shows the Arabic short-password message without a request", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "username"), "0550123123");
+    await submitForm(host);
+
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(signInCalls).toBe(0);
+    const password = inputByName(host, "password");
+    expect(password.getAttribute("aria-invalid")).toBe("true");
+    expect(password.getAttribute("aria-describedby")).toBe("login-error");
+    expect(document.activeElement).toBe(password);
+  });
+
+  it("setup: empty and whitespace names are refused in Arabic before any request", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+    expect(host.querySelector("form")?.noValidate).toBe(true);
+
+    // phone and password valid: only the names are missing
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    let alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe("اكتب اسم المالك.");
+    const owner = inputByName(host, "ownerName");
+    expect(owner.getAttribute("aria-invalid")).toBe("true");
+    expect(owner.getAttribute("aria-describedby")).toBe("setup-error");
+    expect(document.activeElement).toBe(owner);
+    expect(firstTimeSetupCalls).toBe(0);
+
+    // a whitespace-only owner name is still empty (the api trims it)
+    setInputValue(owner, "   ");
+    await submitForm(host);
+    alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe("اكتب اسم المالك.");
+    expect(firstTimeSetupCalls).toBe(0);
+
+    // filling the owner moves the blame to the store name
+    setInputValue(owner, "مالك");
+    await submitForm(host);
+    alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe("اكتب اسم المتجر.");
+    const store = inputByName(host, "storeName");
+    expect(store.getAttribute("aria-invalid")).toBe("true");
+    expect(store.getAttribute("aria-describedby")).toBe("setup-error");
+    expect(document.activeElement).toBe(store);
+    expect(firstTimeSetupCalls).toBe(0);
+  });
+
+  it("setup: a whitespace-only store name is refused too", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "   ");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe("اكتب اسم المتجر.");
+    expect(firstTimeSetupCalls).toBe(0);
+  });
+
+  it("setup: the valid path still reaches the api", async () => {
+    needsSetup = true;
+    const host = await mountAuthGate();
+
+    setInputValue(inputByName(host, "ownerName"), "مالك");
+    setInputValue(inputByName(host, "storeName"), "متجر");
+    setInputValue(inputByName(host, "phone"), "0550123123");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(firstTimeSetupCalls).toBe(1);
   });
 });
 

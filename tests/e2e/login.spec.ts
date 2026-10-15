@@ -53,3 +53,29 @@ test("a malformed phone names the phone, not the password", async ({ page }) => 
   // the phone is the field to fix, so focus lands there
   await expect(page.getByLabel("رقم الهاتف")).toBeFocused();
 });
+
+test("an empty login field shows Arabic copy, never the browser bubble", async ({ page }) => {
+  await provisionOwner(page);
+
+  // the browser would normally pop its own locale bubble on these fields; the
+  // form opts out and the app owns every message
+  await expect(page.locator("form")).toHaveAttribute("novalidate", "");
+
+  await page.getByTestId("login-submit").click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText("رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل \u20660550123123\u2069 أو \u2066+213550123123\u2069.");
+  await expect(page.getByLabel("رقم الهاتف")).toBeFocused();
+  // the native rule still holds (required → valueMissing), but noValidate means
+  // the browser never gets to render its bubble
+  expect(
+    await page.getByLabel("رقم الهاتف").evaluate((el) => {
+      // SAFETY: the locator resolves to the required <input name="username">
+      return (el as HTMLInputElement).validity.valueMissing;
+    }),
+  ).toBe(true);
+
+  await page.getByLabel("رقم الهاتف").fill(OWNER_PHONE);
+  await page.getByTestId("login-submit").click();
+  await expect(alert).toHaveText("كلمة السر قصيرة جداً. استعمل 4 أحرف على الأقل.");
+  await expect(page.getByLabel("كلمة السر")).toBeFocused();
+});

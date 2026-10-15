@@ -261,6 +261,10 @@ const resources = {
       INVALID_PHONE_NUMBER: `رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل ${ltrIsolate(PHONE_EXAMPLE_LOCAL)} أو ${ltrIsolate(PHONE_EXAMPLE_INTL)}.`,
       AUTH_TOO_MANY_ATTEMPTS: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
       AUTH_PASSWORD_TOO_SHORT: `كلمة السر قصيرة جداً. استعمل ${MIN_PASSWORD_LENGTH} أحرف على الأقل.`,
+      // issue #109 — the names the native `required` used to guard; validated in
+      // the app so the message is Arabic, not the browser's locale
+      AUTH_OWNER_NAME_REQUIRED: "اكتب اسم المالك.",
+      AUTH_STORE_NAME_REQUIRED: "اكتب اسم المتجر.",
       SETUP_ALREADY_DONE: "تم إعداد المتجر مسبقاً. سجّل الدخول برقم هاتفك وكلمة السر.",
       SETUP_DATABASE_NOT_EMPTY: "قاعدة البيانات تحتوي على بيانات متجر بدون حساب مالك، فلا يمكن إنشاء حساب جديد. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
       SETUP_LOCKED: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
@@ -296,6 +300,9 @@ const resources = {
       vaultPassphraseRule: "٨ أحرف على الأقل. احفظها في مكان آمن — لا توجد استعادة سحابية.",
       vaultPassphraseMismatch: "كلمتا المرور غير متطابقتين.",
       vaultPassphraseTooShort: "كلمة مرور الخزنة قصيرة جداً. استعمل ٨ أحرف على الأقل.",
+      // issue #109 — the empty-field cases the native `required` used to guard
+      vaultPassphraseRequired: "أدخل كلمة مرور الخزنة.",
+      vaultRecoveryRequired: "أدخل مفتاح الاسترداد.",
       vaultSetupTitle: "إنشاء الخزنة",
       vaultSetupHint: "كلمة المرور هذه تفتح بيانات المتجر وتدخلك إلى التطبيق في خطوة واحدة.",
       vaultSetupCreate: "إنشاء الخزنة",

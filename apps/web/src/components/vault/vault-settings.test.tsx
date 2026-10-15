@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "@/lib/i18n";
+import i18n from "@/lib/i18n";
 import { VaultSettings } from "./vault-settings";
 import { readVaultSessionToken, storeVaultSessionToken } from "@/lib/vault-client";
 
@@ -121,6 +121,32 @@ async function click(host: HTMLElement, testId: string): Promise<void> {
   });
 }
 
+/** The field inputs the settings section can mount. */
+const FIELD_INPUT_TEST_IDS = [
+  "vault-current-passphrase",
+  "vault-new-passphrase",
+  "vault-confirm-passphrase",
+  "vault-reset-recovery-key",
+  "vault-reset-new-passphrase",
+] as const;
+
+/**
+ * A failure that names no field must leave EVERY field unassociated with the
+ * alert, not just the one that was blamed before: a regression that reassigns
+ * the blame to a different input must not slip through. Also pins the alert's
+ * `id`, so a dangling `aria-describedby` cannot survive.
+ */
+function expectNoFieldBlamed(host: HTMLElement): void {
+  const alert = host.querySelector("[data-testid='vault-settings-error']");
+  expect(alert?.getAttribute("id")).toBe("vault-settings-error");
+  for (const testId of FIELD_INPUT_TEST_IDS) {
+    const input = host.querySelector<HTMLInputElement>(`[data-testid="${testId}"]`);
+    if (input === null) continue;
+    expect(input.getAttribute("aria-describedby")).not.toBe("vault-settings-error");
+    expect(input.getAttribute("aria-invalid")).not.toBe("true");
+  }
+}
+
 describe("VaultSettings", () => {
   it("changes the passphrase and adopts the rotated session token", async () => {
     storeVaultSessionToken("stored-token");
@@ -187,5 +213,180 @@ describe("VaultSettings", () => {
     expect(resetToggle?.type).toBe("button");
     await click(host, "vault-reset-new-passphrase-toggle");
     expect(host.querySelector<HTMLInputElement>('[data-testid="vault-reset-new-passphrase"]')?.type).toBe("text");
+  });
+});
+
+describe("vault settings takes over native validation (issue #109)", () => {
+  it("the change form is noValidate and refuses an empty current passphrase in Arabic", async () => {
+    let changeCalls = 0;
+    routes.set("/api/vault/change-passphrase", () => {
+      changeCalls += 1;
+      return Response.json({ ok: true, sessionToken: changedToken });
+    });
+    const host = await mount();
+    expect(host.querySelector<HTMLFormElement>('[data-testid="vault-settings"] form')?.noValidate).toBe(true);
+
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    setValue(host, "vault-confirm-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+
+    expect(changeCalls).toBe(0);
+    const current = host.querySelector<HTMLInputElement>('[data-testid="vault-current-passphrase"]');
+    expect(current?.getAttribute("aria-invalid")).toBe("true");
+    expect(current?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+    expect(document.activeElement).toBe(current);
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe("أدخل كلمة مرور الخزنة.");
+  });
+
+  it("associates the change-form error with the blamed field and clears it on edit", async () => {
+    const host = await mount();
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+
+    const confirm = host.querySelector<HTMLInputElement>('[data-testid="vault-confirm-passphrase"]');
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe("كلمتا المرور غير متطابقتين.");
+    expect(confirm?.getAttribute("aria-invalid")).toBe("true");
+    expect(confirm?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+    // the blame is exclusive: the other fields must not carry it too
+    const current = host.querySelector<HTMLInputElement>('[data-testid="vault-current-passphrase"]');
+    expect(current?.getAttribute("aria-describedby")).toBeNull();
+    expect(host.querySelector<HTMLInputElement>('[data-testid="vault-new-passphrase"]')?.getAttribute("aria-describedby")).toBeNull();
+    expect(document.activeElement).toBe(confirm);
+
+    setValue(host, "vault-confirm-passphrase", "a brand new passphrase");
+    expect(host.querySelector('[data-testid="vault-settings-error"]')).toBeNull();
+    expect(confirm?.getAttribute("aria-invalid")).toBe("false");
+  });
+
+  it("editing the new passphrase clears a confirm-blamed mismatch", async () => {
+    const host = await mount();
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    setValue(host, "vault-confirm-passphrase", "a different passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe("كلمتا المرور غير متطابقتين.");
+
+    // making the new passphrase match the confirm is a fix too, so the stale
+    // mismatch must go with it
+    setValue(host, "vault-new-passphrase", "a different passphrase");
+    expect(host.querySelector('[data-testid="vault-settings-error"]')).toBeNull();
+  });
+
+  it("the change form refuses an empty confirm in Arabic without a request", async () => {
+    let changeCalls = 0;
+    routes.set("/api/vault/change-passphrase", () => {
+      changeCalls += 1;
+      return Response.json({ ok: true, sessionToken: changedToken });
+    });
+    const host = await mount();
+    // current and new are valid: with `noValidate` the native `required` on the
+    // confirm field is gone, so the app must refuse the blank confirmation
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+
+    expect(changeCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe("كلمتا المرور غير متطابقتين.");
+  });
+
+  it("the reset form is noValidate and refuses an empty recovery key in Arabic", async () => {
+    let resetCalls = 0;
+    routes.set("/api/vault/reset-passphrase", () => {
+      resetCalls += 1;
+      return Response.json({ ok: true, sessionToken: resetToken });
+    });
+    const host = await mount();
+    await click(host, "vault-show-recovery-reset");
+    expect(host.querySelector<HTMLFormElement>('[data-testid="vault-recovery-reset"]')?.noValidate).toBe(true);
+
+    setValue(host, "vault-reset-new-passphrase", "a brand new passphrase");
+    await click(host, "vault-reset-submit");
+    await flush();
+
+    expect(resetCalls).toBe(0);
+    const key = host.querySelector<HTMLInputElement>('[data-testid="vault-reset-recovery-key"]');
+    expect(key?.getAttribute("aria-invalid")).toBe("true");
+    expect(key?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+    expect(document.activeElement).toBe(key);
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe("أدخل مفتاح الاسترداد.");
+  });
+
+  it("the reset form refuses an empty new passphrase in Arabic", async () => {
+    let resetCalls = 0;
+    routes.set("/api/vault/reset-passphrase", () => {
+      resetCalls += 1;
+      return Response.json({ ok: true, sessionToken: resetToken });
+    });
+    const host = await mount();
+    await click(host, "vault-show-recovery-reset");
+    setValue(host, "vault-reset-recovery-key", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BC");
+    await click(host, "vault-reset-submit");
+    await flush();
+
+    expect(resetCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("vaultPassphraseTooShort"));
+  });
+
+  it("a failed recovery-key action never keeps the empty-passphrase field blamed, and editing it cannot hide the server error", async () => {
+    // the recovery-key POST fails with a server error that names no input
+    routes.set("/api/vault/recovery-keys", (init) => {
+      if (init?.method === "POST") {
+        return Response.json({ error: { code: "VAULT_RECOVERY_LIMIT" } }, { status: 400 });
+      }
+      return Response.json({ keys });
+    });
+    const host = await mount();
+
+    // an empty current passphrase blames that field
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    setValue(host, "vault-confirm-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+    const current = host.querySelector<HTMLInputElement>('[data-testid="vault-current-passphrase"]');
+    expect(current?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+
+    // a recovery-key failure names no field, so NO field may keep the blame —
+    // not just the one that was blamed before
+    await click(host, "vault-add-recovery");
+    await flush();
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
+    expectNoFieldBlamed(host);
+
+    // editing the password field must not swallow the unrelated server error
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
+  });
+
+  it("a failed recovery-key deletion never keeps the empty-passphrase field blamed either", async () => {
+    // the DELETE fails with a server error that names no input
+    routes.set("/api/vault/recovery-keys/key-1", (init) => {
+      if (init?.method === "DELETE") {
+        return Response.json({ error: { code: "VAULT_UNEXPECTED" } }, { status: 500 });
+      }
+      return Response.json({ keys });
+    });
+    const host = await mount();
+
+    setValue(host, "vault-new-passphrase", "a brand new passphrase");
+    setValue(host, "vault-confirm-passphrase", "a brand new passphrase");
+    await click(host, "vault-change-submit");
+    await flush();
+    const current = host.querySelector<HTMLInputElement>('[data-testid="vault-current-passphrase"]');
+    expect(current?.getAttribute("aria-describedby")).toBe("vault-settings-error");
+
+    await click(host, "vault-delete-key-1");
+    await click(host, "vault-delete-confirm-key-1");
+    await flush();
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_UNEXPECTED"));
+    expectNoFieldBlamed(host);
+
+    // editing the password field must not swallow the deletion failure
+    setValue(host, "vault-current-passphrase", "correct horse battery");
+    expect(host.querySelector('[data-testid="vault-settings-error"]')?.textContent).toBe(i18n.t("VAULT_UNEXPECTED"));
   });
 });

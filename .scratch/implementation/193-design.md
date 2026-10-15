@@ -67,9 +67,11 @@ bound is only a bet on the host's CPU share. The robust fix is therefore to
 
 ### Chosen fix
 
-Fill the 200 rows through React's own change handler inside a single `act`, so
-React batches the 200 state updates into **one** render (~0.1 s measured for the
-loop, <1 s for the whole test). The helper:
+Two tests in this file hit the cap and filled every row (the 200-row contract
+limit and the 201-supplier round-5 case) — both are fixed. They fill the rows
+through React's own change handler inside a single `act`, so React batches the
+200 state updates into **one** render (~0.1 s measured for the loop, ~1-2 s for
+the whole test). The helper:
 
 - sets the input's value with the native setter,
 - invokes the element's React `onChange` prop (the page's real handler, so the
@@ -84,10 +86,13 @@ re-running React's discrete-event flush 200 times.
 
 ### Deliberate timeout, not a bigger one
 
-The test keeps its existing `60_000` budget, now via a named constant with the
-rationale inline. After the fix the test costs <1 s of CPU, so 60 s is ~60×
-headroom even before considering that the loop no longer does 200 renders — the
-bound is a safety net, not the mechanism. The bound is **not increased**.
+The test keeps its existing `60_000` budget (now on both cap tests), via a named
+constant with the rationale inline. After the fix each test costs ~1-2 s of CPU,
+so 60 s is >20× headroom even before considering that the loops no longer do 200
+renders — the bound is a safety net, not the mechanism. The bound is **not
+increased**. A fixed bound could not be made safe here anyway: the fill loop is
+synchronous, so Bun cannot pre-empt it at the bound (300+ s observed under
+synthetic load), and reducing the render count is the only robust fix.
 
 ## Planned tests / evidence
 

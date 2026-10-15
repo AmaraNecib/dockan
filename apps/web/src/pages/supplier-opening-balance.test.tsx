@@ -106,10 +106,13 @@ async function settle() {
   });
 }
 
+/** happy-dom exposes the native value setter; assigning `.value` directly does
+ * not notify React, so tests must go through this. */
+const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+
 function setInput(el: HTMLInputElement, text: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   act(() => {
-    setter?.call(el, text);
+    nativeValueSetter?.call(el, text);
     el.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
@@ -118,18 +121,19 @@ function setInput(el: HTMLInputElement, text: string) {
  * Fill many controlled amount inputs in a single React render.
  *
  * A real DOM `input` event is a React *discrete* event, which React flushes
- * synchronously. Filling 200 rows that way re-renders the 201-row table 200
+ * synchronously. Filling 200 rows that way re-renders the 200+ row table 200
  * times — the load-sensitive cost behind #193 (~15 s isolated, and a 60 s
- * timeout under contention). Invoking each input's React change handler inside
- * one `act` lets React batch all 200 updates into one render while still
- * running the page's real `setRow` handler. If React's props binding is absent
- * (a future rename), this degrades to a real DOM event: correct, just slow.
+ * timeout under contention, reproduced). Invoking each input's React change
+ * handler inside one `act` lets React batch all 200 updates into one render
+ * while still running the page's real `setRow` handler. `valueFor` receives the
+ * input's index so a caller can give each row a distinct amount. If React's
+ * props binding is absent (a future rename), this degrades to a real DOM event:
+ * correct, just slow.
  */
-function fillAmounts(inputs: readonly HTMLInputElement[], text: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+function fillAmounts(inputs: readonly HTMLInputElement[], valueFor: (index: number) => string): void {
   act(() => {
-    for (const input of inputs) {
-      setter?.call(input, text);
+    inputs.forEach((input, index) => {
+      nativeValueSetter?.call(input, valueFor(index));
       const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
       // SAFETY: React stores the element's props bag under `__reactProps$…`;
       // the single widening cast just reaches it, and the page's handler reads
@@ -137,10 +141,10 @@ function fillAmounts(inputs: readonly HTMLInputElement[], text: string): void {
       const props = propsKey === undefined ? undefined : (input as HTMLInputElement & Record<string, { onChange?: (event: { target: HTMLInputElement }) => void }>)[propsKey];
       if (props?.onChange === undefined) {
         input.dispatchEvent(new Event("input", { bubbles: true }));
-        continue;
+        return;
       }
       props.onChange({ target: input });
-    }
+    });
   });
 }
 
@@ -158,11 +162,11 @@ function clickOn(testId: string) {
 }
 
 /**
- * #193 — the 201-supplier case is the only test here that touches all 201 rows,
- * so it carries an explicit budget. This is a safety net, not a load-sensitive
- * wait: the fill is batched into one render (see `fillAmounts`), so the test
- * costs <1 s of CPU and 60 s is ~60× headroom even on a contended turbo run.
- * If this ever times out again, fix the cost — do not raise the bound.
+ * #193 — the two batch-limit cases below fill every row of a 200+ row table,
+ * so they carry an explicit budget. This is a safety net, not a load-sensitive
+ * wait: the fills are batched into one render (see `fillAmounts`), so each test
+ * costs ~1-2 s of CPU and 60 s leaves >20x headroom even on a contended turbo
+ * run. If one of these ever times out again, fix the cost — do not raise it.
  */
 const BATCH_LIMIT_TEST_TIMEOUT_MS = 60_000;
 
@@ -317,13 +321,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
     expect(inputs).toHaveLength(200);
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      inputs.forEach((input, index) => {
-        setter?.call(input, String(index + 1));
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    });
+    // batched into one render for the same #193 reason as the round-5 case below
+    fillAmounts(Array.from(inputs), (index) => String(index + 1));
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
 
@@ -331,7 +330,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
     clickOn("opening-balance-save");
     expect(captured).toBeNull();
-  });
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
   it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
     render();
@@ -562,7 +561,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // and make this test's wall-clock depend on host contention (#193).
     const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
     expect(inputs).toHaveLength(201);
-    fillAmounts(Array.from(inputs).slice(0, 200), "1");
+    fillAmounts(Array.from(inputs).slice(0, 200), () => "1");
 
     // the typed name matches the 201st supplier, so the batch is 201 rows
     const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;

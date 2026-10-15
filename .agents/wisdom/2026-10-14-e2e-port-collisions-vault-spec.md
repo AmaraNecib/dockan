@@ -1,5 +1,13 @@
 # Wisdom — 2026-10-14 · E2E isolated ports must dodge the vault spec's hardcoded 4399/5174 (#123)
 
+> **Superseded by #202 (2026-10-15).** The vault pair is no longer hardcoded: it
+> reads `DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` (defaults 4399/5174). Set both
+> the shared pair (`DOKAN_PORT`/`DOKAN_WEB_PORT`) **and** the vault pair per lane
+> and vault runs coexist, so the old "always avoid 4399/5174" rule no longer
+> applies to a lane that has claimed its own pair. The failure *mode* below is
+> still worth knowing: a wrong/foreign server on a shared port answers
+> `/api/vault/status` and reads as a vault regression.
+
 ## The failure looks like an app bug, not a port clash
 Lane briefs say "use isolated ports (`DOKAN_PORT`/`DOKAN_WEB_PORT`) — sibling
 lanes share 4317/5173", so `DOKAN_PORT=4399` looks like a safe isolated choice.

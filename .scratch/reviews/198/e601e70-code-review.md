@@ -1,4 +1,4 @@
-# Code review — #198 at `699483d`
+# Code review — #198 at `e601e70`
 
 **Method:** `code-review` skill — Standards and Spec axes run as independent
 read-only sub-agents against `git diff 21dbc13...HEAD` (base `21dbc13`), plus
@@ -58,3 +58,6 @@ server/contract/schema change.
 
 Standards: 5 findings (2 fixed, 3 dismissed). Spec: 3 findings (1 recorded
 deferred, 2 accepted scope notes), no missing ask.
+
+> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
+> note (no `apps/` change), so this evidence still describes the reviewed code.

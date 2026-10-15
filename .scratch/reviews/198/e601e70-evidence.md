@@ -94,3 +94,6 @@ to its committed value `4317`; it is not part of the change.
 - No browser-level Arabic-Indic quantity fill (page + lib pins only).
 - `CommitChecks` slot combinations other than (both optional present) and (both
   absent) are unexercised; no caller uses them.
+
+> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
+> note (no `apps/` change), so this evidence still describes the reviewed code.

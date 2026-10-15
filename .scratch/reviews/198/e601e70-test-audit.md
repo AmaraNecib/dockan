@@ -1,4 +1,4 @@
-# Test audit — #198 at `699483d`
+# Test audit — #198 at `e601e70`
 
 **Method:** `test-audit` skill — three independent read-only sub-agents (edge
 case hunter, coverage analyst, test quality reviewer) against
@@ -63,3 +63,6 @@ equality; the Arabic-Indic table has strong negative space.
 | Q5 | Describe placement drift (purchase #198 tests live in the #146 describe). | **Recorded** — they exercise the same quantity-draft contract |
 | Q6 | Near-vacuous extra assertions. | **Dismissed** — cheap documentation of the definitional link |
 | Q7 | Async-pattern asymmetry (sale clicks in `act`, purchase awaits 20 ms). | **Dismissed** — matches existing per-file practice |
+
+> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
+> note (no `apps/` change), so this evidence still describes the reviewed code.

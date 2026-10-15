@@ -1,4 +1,4 @@
-# Debate — #198 at `699483d` (High-assurance)
+# Debate — #198 at `e601e70` (High-assurance)
 
 **Method:** `debate` skill — a harsh critic and a charitable defender ran as
 independent read-only sub-agents against `git diff 21dbc13...HEAD` (base
@@ -61,3 +61,6 @@ ticket.
 Evidence for the return on fixing: the F3 guard duplication was itself caught
 again by the code-review axis and consolidated into `resolvedInitialPaid`
 (`699483d`).
+
+> Code frozen at `699483d`; `e601e70` adds this lane only a `.agents/wisdom/`
+> note (no `apps/` change), so this evidence still describes the reviewed code.

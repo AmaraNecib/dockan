@@ -50,7 +50,6 @@ const resolveRoot = (): string => {
 }
 
 const paths = (root: string) => ({
-  root,
   agentsDir: join(root, '.agents', 'skills'),
   claudeDir: join(root, '.claude', 'skills'),
   lockFile: join(root, 'skills-lock.json'),
@@ -184,8 +183,16 @@ export const compare = (
   return problems
 }
 
-/** A lock key becomes a path segment under the skills roots. */
-const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9._-]*$/i
+/**
+ * A lock key becomes a path segment under the skills roots, so refuse a name
+ * that escapes the directory: a separator, a drive/stream colon, `.` or `..`.
+ */
+const isSafeSkillName = (name: string): boolean =>
+  name !== '.' &&
+  name !== '..' &&
+  !name.includes('/') &&
+  !name.includes('\\') &&
+  !name.includes(':')
 
 const readLock = (lockFile: string): SkillsLock => {
   // SAFETY: skills-lock.json is a checked-in repo file with this schema, so the
@@ -196,9 +203,7 @@ const readLock = (lockFile: string): SkillsLock => {
   const skills = lock?.skills
   if (skills === null || skills === undefined)
     throw new Error('skills-lock.json has no `skills` object')
-  const unsafe = Object.keys(skills).filter(
-    (name) => !SAFE_SKILL_NAME.test(name),
-  )
+  const unsafe = Object.keys(skills).filter((name) => !isSafeSkillName(name))
   if (unsafe.length > 0)
     throw new Error(
       `skills-lock.json has unsafe skill name(s): ${unsafe.join(', ')}`,
@@ -256,15 +261,9 @@ export const runCheck = (root: string): CheckResult => {
         const source = join(agentsDir, name)
         const dest = join(claudeDir, name)
         // An `existsSync` guard first would call a dangling link "missing";
-        // check the link itself so the remedy names the real problem.
-        if (isSymlink(source)) {
-          problems.push(`.agents/skills/${name} is a symlink (mirror source)`)
-          continue
-        }
-        if (isSymlink(dest)) {
-          problems.push(
-            `.claude/skills/${name} is a symlink (npx skills add writes absolute links)`,
-          )
+        // `compare` sees a link via `lstat` and owns the link messages.
+        if (isSymlink(source) || isSymlink(dest)) {
+          problems.push(...compare(name, source, dest))
           continue
         }
         if (!existsSync(source)) {
@@ -398,7 +397,6 @@ const main = () => {
     )
     process.exit(1)
   }
-  process.exit(0)
 }
 
 if (import.meta.main) main()

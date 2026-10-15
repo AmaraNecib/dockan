@@ -352,6 +352,7 @@ const withTempRoot = (run: (root: string) => void) => {
 }
 
 const SCRIPT = join(import.meta.dir, 'sync-claude-skills.ts')
+const REPO_ROOT = join(import.meta.dir, '..')
 
 /** Run the real CLI against `root`; pass `[]` to exercise `sync`. */
 const runCli = (root: string, args: string[] = ['--check']) =>
@@ -580,6 +581,45 @@ describe('skills:check CLI — hardening edges', () => {
       const result = runCli(root, [])
       expect(result.status).toBe(1)
       expect(result.stderr).toContain('skills mirror sync failed')
+    })
+  })
+
+  it('fails closed on a link two levels into a non-locked tree', () => {
+    withTempRoot((root) => {
+      mkdirSync(join(root, '.agents', 'skills', 'guard', 'rules'), {
+        recursive: true,
+      })
+      symlinkSync(
+        join(root, '.agents', 'skills', 'demo', 'SKILL.md'),
+        join(root, '.agents', 'skills', 'guard', 'rules', 'linked.md'),
+        'junction',
+      )
+      const result = runCli(root)
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(
+        '.agents/skills/guard/rules/linked.md is a symlink',
+      )
+    })
+  })
+
+  it('drives the wired `bun run skills:check` against a temp root', () => {
+    withTempRoot((root) => {
+      symlinkSync(
+        join(root, '.agents', 'skills', 'demo', 'SKILL.md'),
+        join(root, '.agents', 'skills', 'guard', 'linked.md'),
+        'junction',
+      )
+      const result = spawnSync(process.execPath, ['run', 'skills:check'], {
+        cwd: REPO_ROOT,
+        env: { ...process.env, SKILLS_MIRROR_ROOT: root },
+        encoding: 'utf8',
+      })
+      expect(result.status).toBe(1)
+      // A CLI that ignored the override would pass the real tree, so the link
+      // path in the output proves the env var reached the wired command.
+      expect(result.stderr + result.stdout).toContain(
+        '.agents/skills/guard/linked.md is a symlink',
+      )
     })
   })
 })

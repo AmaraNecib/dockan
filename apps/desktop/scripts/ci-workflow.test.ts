@@ -28,6 +28,15 @@ const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/gu, "
 
 const RUST_JOB = "rust";
 const CRATE_DIR = "apps/desktop/src-tauri";
+/**
+ * Minutes the e2e job must keep beyond the run step's own limit, covering SETUP
+ * (checkout + two installs; ~30s warm, minutes cold — `playwright install
+ * --with-deps` is the bulk) plus the failure-evidence upload. The job budget is
+ * shared with all of them, so with no slack a cold setup pushes the job past its
+ * ceiling FIRST: the job is cancelled, no later step runs, and the upload is
+ * lost — the one case it exists for (#197).
+ */
+const E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES = 10;
 
 /** The `rust` job's steps, or a loud failure when the job was removed. */
 function rustSteps(): ReturnType<typeof parseSteps> {
@@ -92,8 +101,9 @@ describe("PR CI workflow", () => {
     // a job-level timeout cancels the job, and a cancelled job runs no later
     // step — including the upload.
     const jobTimeout = Number(jobField(WORKFLOW_SOURCE, "e2e", "timeout-minutes"));
-    expect(jobTimeout).toBeGreaterThan(Number(runE2e.timeoutMinutes));
-    expect(Number(runE2e.timeoutMinutes)).toBeGreaterThan(0);
+    const runTimeout = Number(runE2e.timeoutMinutes);
+    expect(runTimeout).toBeGreaterThan(0);
+    expect(jobTimeout - runTimeout).toBeGreaterThanOrEqual(E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES);
   });
 
   it("uploads the evidence a red e2e run leaves behind (#197)", () => {

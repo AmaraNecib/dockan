@@ -73,7 +73,12 @@ jobs:
   e2e:
     name: playwright e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The job budget has to cover SETUP + the run step's own limit + the upload,
+    # or a step timeout never fires: the job would cancel first and the evidence
+    # would depend on cancellation semantics. Measured setup is ~30s warm, and
+    # minutes cold (`playwright install --with-deps` is the bulk), so
+    # 6 (cold setup) + 15 (run step) + 4 (upload) = 25 with nothing to spare.
+    timeout-minutes: 25
     env:
       # CI-only ports. Never the developer defaults (4317/5173), which other
       # worktrees occupy; an explicit DOKAN_WEB_PORT also makes Vite
@@ -111,10 +116,11 @@ jobs:
         # (`stdout: "pipe"`), so one file holds the Playwright log and the two
         # Playwright-managed server logs.
         shell: bash
-        # Below the job's 20 minutes on purpose: a job-level timeout cancels the
-        # job, and a cancelled job runs no further steps — the failure evidence
-        # would be lost, which is exactly the hang case this upload exists for.
-        # Stopping the step first lets the upload below still run.
+        # Below the JOB's 25 minutes, and deliberately smaller than the room
+        # left after setup: a job-level timeout cancels the job, and a cancelled
+        # job runs no further steps — the failure evidence would be lost, which
+        # is exactly the hang case this upload exists for. Stopping the step
+        # first is what lets the upload below still run.
         timeout-minutes: 15
         run: |
           set -o pipefail

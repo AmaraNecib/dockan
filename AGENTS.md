@@ -5,9 +5,8 @@
 `DOKAN_PORT`/`DOKAN_WEB_PORT` isolate the shared api/web pair, and the vault
 spec honours `DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` (defaults 4399/5174) for
 its dedicated pair. Set both pairs per lane and vault-touching e2e runs coexist:
-they no longer have to be serialized across lanes. (The one-lane constraint that
-PR #199 documents is relaxed by #202, which made the vault pair configurable;
-do not reintroduce it when #199 rebases onto this branch.)
+they no longer have to be serialized across lanes (#202).
+
 ## Lanes
 
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
@@ -37,11 +36,6 @@ the MAIN repo (owner complaint, same day).
 Why the lane limit is hard: five lanes went up at once on 2026-10-13, so finished
 lanes sat idle while new ones spawned, and sibling lanes fought over the shared
 dev ports 4317/5173 — each failing its own e2e run against the other's server.
-
-`DOKAN_PORT`/`DOKAN_WEB_PORT` isolate the *shared* pair only. `tests/e2e/vault.spec.ts`
-hardcodes the vault pair at 4399/5174, so **vault-touching e2e runs are one lane at
-a time**; a second lane's run reaches the first lane's vault servers. (Making that
-pair configurable is a separate change.)
 
 ## Vendored skills
 

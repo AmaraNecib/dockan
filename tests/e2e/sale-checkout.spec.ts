@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Sale checkout through the existing catalog seams. The flow uses
@@ -71,7 +72,14 @@ test("scan create-with-stock refuses a blank or zero quantity and focuses it on 
 
   // a positive quantity records the opening movement and lines the item up
   await page.getByTestId("sale-quick-stock").fill("3");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 
   // and that stock is real: the sale against it passes the stock check
@@ -109,7 +117,14 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 
   // A known exact scan adds immediately (rather than merely showing a toast).
@@ -152,7 +167,14 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByLabel("سعر البيع (دج)").fill("500");
   await page.getByTestId("sale-quick-barcode").fill(`SALE2-${stamp}`);
   await page.getByTestId("sale-quick-stock").fill("2");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName: secondName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(secondName);
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${secondName}: نوع تعديل السعر`), "نسبة %");
   await page.getByTestId("sale-lines").getByLabel(`${secondName}: قيمة تعديل السعر`).fill("80");
@@ -172,8 +194,15 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await page.getByLabel("سعر الشراء (دج)").fill("100");
   await page.getByLabel("سعر البيع (دج)").fill("200");
   await page.getByTestId("sale-quick-stock").fill("1");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
   const oversellName = `بيع-تجاوز-${stamp}`;
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName: oversellName,
+    quantityLabel: "الكمية",
+  });
   const oversellQty = page.getByTestId("sale-lines").getByLabel(`${oversellName}: الكمية`);
   await oversellQty.fill("2");
   await page.getByTestId("sale-save").click();

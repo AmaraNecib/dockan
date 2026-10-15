@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Issue #98 — items flow. One-step item + opening stock, inline price
@@ -159,7 +160,16 @@ test("a zero-price item from sale quick-add stays editable", async ({ page }) =>
   await chooseSelectOption(page, quickCategory, categoryName);
   await quick.getByLabel("سعر الشراء (دج)").fill("50");
   await quick.getByLabel("سعر البيع (دج)").fill("0");
-  await quick.getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  // a blank opening quantity takes the plain create path, so the procedure is
+  // itemsCreate — arming itemsCreateWithStock here would never fire
+  await saveQuickAdd(page, {
+    procedure: "itemsCreate",
+    save: quick.getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 
   // a name-only correction saves without touching the zero price

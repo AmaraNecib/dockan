@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Later payments on an invoice, in instalments.
@@ -32,7 +33,14 @@ test("invoice payments: instalments, overpay refusal, history, and audit", async
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("2");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   await expect(page.getByTestId("sale-total")).toContainText("900");
   // #162: the payment now defaults to the full total, so zero it to record no

@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Returns & refunds e2e: a sale is recorded, the customer returns the unit on
@@ -39,7 +40,14 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("2");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   expect(await page.getByTestId("sale-total").textContent()).toContain("900"); // 1 × 900
   // #162: zero the default full payment so the sale carries the full 900 debt
@@ -151,7 +159,14 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("1");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   await page.getByTestId("sale-paid").fill("200");
   await page.getByTestId("sale-save").click();

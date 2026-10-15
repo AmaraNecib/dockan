@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Issue #94 — learnability. A fresh profile reads the nav in words, the empty
@@ -28,7 +29,14 @@ async function addStockedLine(
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("5");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
 }
 
@@ -75,7 +83,15 @@ async function addQuickStockLine(
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("quick-qty").fill("2");
   await page.getByTestId("quick-cost").fill("400");
-  await page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }).click();
+  // the purchase quick-add has no with-stock path: it always calls itemsCreate
+  await saveQuickAdd(page, {
+    procedure: "itemsCreate",
+    save: page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }),
+    error: page.getByTestId("purchase-error"),
+    lines: page.getByTestId("purchase-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("purchase-lines")).toContainText(itemName);
 }
 

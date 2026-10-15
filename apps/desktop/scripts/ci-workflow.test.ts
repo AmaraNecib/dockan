@@ -73,7 +73,45 @@ describe("PR CI workflow", () => {
     expect(stepNamed(checks, "Tests").run).toBe("bun run test");
 
     const e2e = parseSteps(WORKFLOW_SOURCE, "e2e");
-    expect(stepNamed(e2e, "Run Playwright e2e").run).toBe("bun run test:e2e");
+    const runE2e = stepNamed(e2e, "Run Playwright e2e");
+    // The suite must still be invoked by a real command line. A substring check
+    // would be satisfied by `echo bun run test:e2e` or a comment, which run
+    // nothing; only a line whose argv starts `bun run test:e2e` executes it.
+    expect(
+      commandArgvs(runE2e.run).some(
+        (argv) => argv[0] === "bun" && argv[1] === "run" && argv[2] === "test:e2e",
+      ),
+      `Run Playwright e2e must invoke the suite, got: ${runE2e.run}`,
+    ).toBe(true);
+    // #197 teed the run into a log so the server output survives. A pipeline
+    // reports tee's status unless pipefail is set — so without these two lines a
+    // RED suite would report green and the evidence upload would never fire.
+    expect(runE2e.run).toContain("set -o pipefail");
+    expect(runE2e.shell).toBe("bash");
+    // Evidence survives a hang only when the step gives up before the job does:
+    // a job-level timeout cancels the job, and a cancelled job runs no later
+    // step — including the upload.
+    const jobTimeout = Number(jobField(WORKFLOW_SOURCE, "e2e", "timeout-minutes"));
+    expect(jobTimeout).toBeGreaterThan(Number(runE2e.timeoutMinutes));
+    expect(Number(runE2e.timeoutMinutes)).toBeGreaterThan(0);
+  });
+
+  it("uploads the evidence a red e2e run leaves behind (#197)", () => {
+    const upload = stepNamed(parseSteps(WORKFLOW_SOURCE, "e2e"), "Upload e2e failure evidence");
+    // success is the one outcome with nothing worth keeping, and a cancellation
+    // (superseded run, step timeout) must still leave the trace behind
+    expect(upload.condition).toContain("failure()");
+    expect(upload.condition).toContain("cancelled()");
+    // same pinned-SHA convention as every other `uses:` in this repo
+    expect(upload.uses).toMatch(/^actions\/upload-artifact@[0-9a-f]{40}/u);
+    // test-results/ is Playwright's output dir (trace, screenshot, context) and
+    // e2e-logs/ is the tee'd run + server logs
+    expect(upload.with.get("path")).toContain("test-results/");
+    expect(upload.with.get("path")).toContain("e2e-logs/");
+    expect(upload.with.get("retention-days")).toBe("5");
+    // keyed on the attempt: a re-run must not overwrite the trace from the
+    // attempt that actually failed
+    expect(upload.with.get("name")).toContain("github.run_attempt");
   });
 
   it("actually runs cargo test in the desktop crate on every PR", () => {

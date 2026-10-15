@@ -16,6 +16,8 @@ export type WorkflowStep = {
   readonly uses: string;
   readonly condition: string;
   readonly workingDirectory: string;
+  readonly shell: string;
+  readonly timeoutMinutes: string;
   readonly with: ReadonlyMap<string, string>;
   readonly env: ReadonlyMap<string, string>;
 };
@@ -26,6 +28,8 @@ type MutableStep = {
   uses: string;
   condition: string;
   workingDirectory: string;
+  shell: string;
+  timeoutMinutes: string;
   with: Map<string, string>;
   env: Map<string, string>;
 };
@@ -114,6 +118,8 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
       uses: step.uses,
       condition: step.condition,
       workingDirectory: step.workingDirectory,
+      shell: step.shell,
+      timeoutMinutes: step.timeoutMinutes,
       with: normaliseMap(step.with),
       env: normaliseMap(step.env),
     });
@@ -136,6 +142,8 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
         uses: "",
         condition: "",
         workingDirectory: "",
+        shell: "",
+        timeoutMinutes: "",
         with: new Map(),
         env: new Map(),
       };
@@ -170,6 +178,8 @@ export function parseSteps(source: string, jobName: string): readonly WorkflowSt
       else if (key === "uses") current.uses = value;
       else if (key === "if") current.condition = value;
       else if (key === "working-directory") current.workingDirectory = value;
+      else if (key === "shell") current.shell = value;
+      else if (key === "timeout-minutes") current.timeoutMinutes = value;
       else if (key === "run") {
         if (value.startsWith("|") || value.startsWith(">")) {
           block = { target: "run", key: "run", indent };

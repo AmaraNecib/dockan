@@ -751,9 +751,11 @@ describe("purchase intake (ticket 29)", () => {
     expect(listed.find((i) => i.id === a.id)!.stockOnHand).toBe(5);
     expect(listed.find((i) => i.id === b.id)!.costPrice).toBe(300);
 
-    // invoicesGet / invoicesList round-trip
+    // invoicesGet / invoicesList round-trip. invoicesList answers ONE page
+    // (DEFAULT_PAGE_SIZE = 10), so asserting membership on the default page is a
+    // coin-flip once the shared test DB holds more than a page of purchases.
     expect((await client.invoicesGet({ id: invoice.id })).id).toBe(invoice.id);
-    const list = await client.invoicesList({ kind: "PURCHASE" });
+    const list = await client.invoicesList({ kind: "PURCHASE", limit: MAX_PAGE_SIZE });
     expect(list.items.some((i) => i.id === invoice.id)).toBe(true);
   });
 
@@ -2755,12 +2757,20 @@ describe("invoice payments (ticket 8)", () => {
 
   it("accepts an exact-remaining payment (boundary) and marks the invoice PAID", async () => {
     const invoice = await unpaidSaleInvoice("دفعة-حد-المتبقي");
+    // invoicesList answers ONE page (DEFAULT_PAGE_SIZE = 10) and orders by
+    // (invoiceDate, createdAt), which ties for rows written in the same second —
+    // so asserting membership in the returned page is a coin-flip once the
+    // shared test DB holds more than a page of PAID invoices, and no limit fixes
+    // that for good. `total` counts the whole filtered set regardless of the
+    // page and ordering, so a +1 is the stable proof the PAID filter picked this
+    // invoice up.
+    const paidBefore = (await client.invoicesList({ status: "PAID", limit: 1 })).total;
+
     const paid = await client.invoicesPay({ invoiceId: invoice.id, amount: 800 });
 
     expect(paid.remainingAmount).toBe(0);
     expect(paid.paidAmount).toBe(800);
-    const listed = await client.invoicesList({ status: "PAID" });
-    expect(listed.items.some((i) => i.id === invoice.id)).toBe(true);
+    expect((await client.invoicesList({ status: "PAID", limit: 1 })).total).toBe(paidBefore + 1);
   });
 
   it("refuses a +1 DA overpayment with PAYMENT_EXCEEDS_REMAINING and writes nothing", async () => {

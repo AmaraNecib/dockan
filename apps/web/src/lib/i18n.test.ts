@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
@@ -175,6 +176,49 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
     // distinctness: two refusals sharing one sentence would still pass existence
     // checks while telling the owner the wrong thing
     expect(new Set(copies).size, "duplicate Arabic copy across refusals").toBe(copies.length);
+  });
+});
+
+/**
+ * Issue #113 — every refusal the router can send must be a translatable key.
+ * `serverErrorKey` gates on SCREAMING_SNAKE plus a resource entry and returns
+ * `errorGeneric` silently otherwise, so a missing or non-conforming code is
+ * invisible without a scan that reads the router itself. Precedent for reading
+ * real source in a test: `cell-ltr.test.ts`.
+ */
+describe("every router refusal stays translatable (issue #113)", () => {
+  const routerSource = new URL("../../../api/src/rpc/router.ts", import.meta.url);
+  const messageField = /message:\s*"([^"]+)"/g;
+  const screamingSnake = /^[A-Z][A-Z0-9_]*$/;
+
+  function routerRefusals(): string[] {
+    const source = readFileSync(routerSource, "utf8");
+    const codes = new Set<string>();
+    for (const match of source.matchAll(messageField)) {
+      const code = match[1];
+      if (code !== undefined) codes.add(code);
+    }
+    return [...codes].sort();
+  }
+
+  it("scans the real router, not an empty list", () => {
+    // a moved file or a broken regex would otherwise pass every check below
+    expect(routerRefusals().length).toBeGreaterThan(40);
+  });
+
+  it("gives every refusal its own Arabic key, never the silent fallback", () => {
+    for (const code of routerRefusals()) {
+      // the regex `serverErrorKey` gates on; a new non-conforming code fails
+      // here instead of quietly rendering `errorGeneric`
+      expect(code, `${code} is not a SCREAMING_SNAKE server key`).toMatch(screamingSnake);
+      // `toBe` would demand the static key union; the scan is dynamic, so pin
+      // the resolution with equality instead
+      expect(serverErrorKey(code) === code, `${code} fell back to errorGeneric`).toBe(true);
+      const copy = tError(code);
+      expect(copy, `missing copy for ${code}`).not.toBe(code);
+      expect(copy, `empty copy for ${code}`).not.toBe("");
+      expect(copy, `non-Arabic copy for ${code}`).toMatch(/[\u0600-\u06FF]/);
+    }
   });
 });
 

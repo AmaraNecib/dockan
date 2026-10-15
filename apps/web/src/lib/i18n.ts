@@ -269,6 +269,9 @@ const resources = {
       SETUP_DATABASE_NOT_EMPTY: "قاعدة البيانات تحتوي على بيانات متجر بدون حساب مالك، فلا يمكن إنشاء حساب جديد. استعد نسخة احتياطية سليمة أو تواصل مع الدعم.",
       SETUP_LOCKED: "محاولات كثيرة خلال وقت قصير. انتظر قليلاً ثم أعد المحاولة.",
       SETUP_TOKEN_REQUIRED: "تعذّر التحقق من نافذة التطبيق. افتح شاشة الإعداد من نافذة دكان نفسها ثم أعد المحاولة.",
+      // issue #113 — a client asked to write a derived/completion preference;
+      // the api's refusal is stable and must never render as the generic copy
+      PREFERENCE_NOT_WRITABLE: "هذا الإعداد غير قابل للتعديل.",
       // ADR-0008 §4.6 — the unified vault gate
       VAULT_WRONG_PASSPHRASE: "كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.",
       VAULT_WRONG_RECOVERY: "مفتاح الاسترداد غير صحيح. تحقّق منه ثم أعد المحاولة.",

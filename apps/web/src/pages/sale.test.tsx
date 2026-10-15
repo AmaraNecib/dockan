@@ -1264,4 +1264,21 @@ describe("SalePage commit order (#198)", () => {
     await act(async () => saveButton(host).click());
     expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-1984", quantity: 5 }]);
   });
+
+  it("keeps the discount reader ASCII-only while the quantity accepts Arabic-Indic (#198 scope)", async () => {
+    const host = await mountSale();
+    await scan("1985"); // 1 x 1000
+    // the quantity draft accepts the digit...
+    await act(async () => setElementValue(quantityField(host), "٥"));
+    // ...but the discount draft reads `Number`, so «٥» is not a number to it
+    const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
+    if (trigger === null) throw new Error("missing discount select");
+    await act(async () => {
+      await chooseOption(trigger, "مبلغ");
+    });
+    await act(async () => setInput(host, "sale-discount-value", "٥"));
+    await act(async () => saveButton(host).click());
+    expect(errorText(host)).toContain(i18n.t("saleInvalidDiscount"));
+    expect(lastInvoiceInput).toBeNull();
+  });
 });

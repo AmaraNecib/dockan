@@ -269,9 +269,10 @@ export function SalePage() {
       setError(commitError);
       return;
     }
-    // `firstCommitError` already refused a `!paid.ok` resolution, so this takes
-    // the ok arm; the ternary keeps the payload typed without an assertion.
-    const initialPaid = paid.ok ? paid.paid : undefined;
+    // `firstCommitError` refused `!paid.ok`, so this is unreachable; the guard
+    // keeps the type narrowing and fails loudly if that coupling ever breaks,
+    // instead of silently sending no initial payment (the whole invoice debt).
+    if (!paid.ok) throw new Error("firstCommitError did not refuse an invalid initial payment");
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {
         itemId: line.item.id,
@@ -287,7 +288,7 @@ export function SalePage() {
       // the picker keeps the picked record's id; a typed-only name stays null
       counterpartyId: customer.id === null ? undefined : customer.id,
       counterpartyName: customer.name.trim() === "" ? undefined : customer.name.trim(),
-      initialPaid,
+      initialPaid: paid.paid,
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };

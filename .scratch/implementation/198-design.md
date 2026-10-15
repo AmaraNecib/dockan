@@ -107,13 +107,19 @@ digits, deliberately and with tests.**
   refused with «invalid quantity» for a value that looks valid to the owner —
   the mismatch the issue flags.
 - The fix shares one exported `normalizeArabicIndicDigits` between
-  `parseGroupedAmount` and `parseQuantityDraft`, so the two readers cannot drift
-  again.
+  `parseGroupedAmount` and `parseQuantityDraft`, so those two readers cannot
+  drift again.
 
 **What deliberately does NOT change.** Quantities stay digits-only (no grouping
 separators); `parseWholePercentage` stays ASCII-only, so the initial-payment
 percentage path and every `resolveInitialPaid` number are byte-identical. Money
-math (formulas, rounding, caps) is unchanged.
+math (formulas, rounding, caps) is unchanged. The sale price-override and
+invoice-discount drafts still read `Number` and reject Arabic-Indic digits, and
+`parseWholeAmount` (supplier-return quantities: `supplier-return-draft.ts`,
+`supplier-return-panel.tsx`) also stays ASCII-only. The decision is scoped to
+checkout quantities on purpose: widening the other readers changes money paths
+the brief freezes. A test pins the override/discount asymmetry, and the
+supplier-return quantity gap is recorded as a follow-up rather than smuggled in.
 
 **The one intended input delta, pinned:** a draft that used to resolve to `0`
 and be refused (`٥`) now resolves to `5` and is charged. This is the same kind
@@ -128,7 +134,8 @@ subtotal.
   message, then each stage is made valid in turn and the next one surfaces;
   the per-line override-before-quantity precedence; multi-line first-offender.
 - `parseQuantityDraft` Arabic-Indic table (Arabic-Indic, Extended Arabic-Indic,
-  over-cap, mixed-digit rejection) plus a subtotal pin.
+  over-cap, mixed-script acceptance, grouping/decimal rejection) plus a subtotal
+  pin and a test that the override reader stays ASCII-only.
 
 **Page (`sale.test.tsx`), new:**
 - **override-vs-payment**: a typed payment that survives an invalid (negative
@@ -176,3 +183,22 @@ its drift proof; both are run in full under Guard 1 and 2.
 | Eager `resolveInitialPaid` changes behaviour | the function is pure and total; it was only *moved* earlier in `submit`, not altered |
 | The Arabic-Indic widening touches money | formulas untouched; only the digit class widens; the percentage reader and `resolveInitialPaid` are frozen and pinned |
 | A reorder in one page slips past the other | the order has one home; `firstCommitError` is the only place the sequence exists |
+
+## 9. Debate outcomes (High-assurance)
+
+Critic and defender ran in parallel against `21dbc13...663fb71` (evidence:
+`.scratch/reviews/198/<head>-debate.md`).
+
+| finding | sev | disposition |
+|---|---|---|
+| The "one normalizer" comment overstated consistency: `parseWholeAmount` (supplier-return quantities) stays ASCII-only | 5 | **Fixed** — comment and this doc name the readers covered; the supplier-return gap is a recorded follow-up |
+| The sale override/discount readers stay ASCII-only while the quantity widens; nothing pinned it | 5 | **Fixed** — a lib test pins the override reader and a page test pins the discount reader |
+| The `paid.ok ? paid.paid : undefined` ternary traded a compile-time guarantee for a comment; a weakened payment slot could send no initial payment | 3 | **Fixed** — both pages guard `if (!paid.ok) throw`, restoring narrowing and failing loudly |
+| `CommitChecks` returns strings, so a copy/predicate pair could be swapped | 3 | **Dismissed** — each message sits beside its predicate, page tests pin the copy, and a stage union would push copy back into the helper |
+| Rename `normalizeArabicIndicDigits` (it also maps Extended Arabic-Indic) | 2 | **Dismissed** — both ranges are the Arabic-Indic family; the docstring names both |
+
+### Deferred follow-up
+
+`parseWholeAmount` still rejects Arabic-Indic digits, so a supplier-return
+quantity typed `٥` is refused while a sale/purchase quantity bills it. Out of
+#198's scope (it would touch a money input) — needs its own ticket.

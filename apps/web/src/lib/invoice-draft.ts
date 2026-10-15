@@ -69,10 +69,13 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
  * explicit add-line action (scan or duplicate picker entry) repairs a cleared
  * draft, by bumping it to one unit.
  *
- * Digits are normalized through the same reader the amount fields use, so an
+ * Digits are normalized with the same reader the amount fields use, so an
  * Arabic-Indic `٥` bills five units instead of refusing a number the owner can
- * plainly read (#198 decision). The reader stays digits-only: no grouping
- * separators, exactly as before.
+ * plainly read (#198 decision). This is the quantity draft only: the sale
+ * price-override and discount inputs still read `Number` and reject
+ * Arabic-Indic digits, and the initial-payment percentage reader stays
+ * ASCII-only. The reader stays digits-only: no grouping separators, exactly as
+ * before.
  */
 export function parseQuantityDraft(draft: string): number {
   const trimmed = normalizeArabicIndicDigits(draft).trim();

@@ -134,9 +134,10 @@ export function PurchasePage() {
       setError(commitError);
       return;
     }
-    // `firstCommitError` already refused a `!paid.ok` resolution, so this takes
-    // the ok arm; the ternary keeps the payload typed without an assertion.
-    const initialPaid = paid.ok ? paid.paid : undefined;
+    // `firstCommitError` refused `!paid.ok`, so this is unreachable; the guard
+    // keeps the type narrowing and fails loudly if that coupling ever breaks,
+    // instead of silently sending no initial payment (the whole invoice debt).
+    if (!paid.ok) throw new Error("firstCommitError did not refuse an invalid initial payment");
     void createInvoice.mutate({
       kind: "PURCHASE",
       // the picker keeps the picked record's id; a typed-only name stays null
@@ -145,7 +146,7 @@ export function PurchasePage() {
       notes: notes.trim() === "" ? undefined : notes.trim(),
       // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
       // percentage that rounds to 0) means "nothing paid now"
-      initialPaid,
+      initialPaid: paid.paid,
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost })),
     });
   }

@@ -206,6 +206,15 @@ describe("sale line pricing", () => {
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "-1" })).toBe(true);
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "12.5" })).toBe(true);
   });
+
+  it("keeps the override reader ASCII-only while the quantity reader accepts Arabic-Indic (#198 scope)", () => {
+    // the #198 decision widened quantities only. `Number("٥")` is NaN, so the
+    // price-override reader still refuses it, exactly as before.
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "٥" })).toBe(true);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "٥٠" })).toBe(true);
+    // the same digit in a quantity now resolves
+    expect(parseQuantityDraft("٥")).toBe(5);
+  });
 });
 
 describe("draft line list", () => {

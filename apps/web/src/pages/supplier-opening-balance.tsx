@@ -61,6 +61,13 @@ export function SupplierOpeningBalancePage() {
   /** Monotonic attempt id: leaving the page or editing the typed row's lookup
    * fields invalidates an in-flight submit so a late resolve cannot write. */
   const attemptRef = useRef(0);
+  /** Monotonic generation of an EXPLICIT dismissal (Escape, either Cancel,
+   * leaving the page, a lookup-field edit). `attemptRef` cannot serve this: an
+   * existing-row edit bumps it but the dialog must still refresh after a
+   * refusal, so the recovery path has to tell a changed batch apart from a
+   * dismissed dialog. Bumped only by `abandonAttempt`, so every dismissal route
+   * is honoured uniformly (review round 3 finding 1). */
+  const dismissalRef = useRef(0);
   const mountedRef = useRef(true);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
 
@@ -191,6 +198,7 @@ export function SupplierOpeningBalancePage() {
    * owner. The success path uses the bare `closeConfirm()` because the write is
    * done and there is nothing left to abandon. */
   function abandonAttempt() {
+    dismissalRef.current += 1;
     invalidateAttempt();
     closeConfirm();
   }
@@ -250,6 +258,9 @@ export function SupplierOpeningBalancePage() {
     // account and loop on refusals), but a typed-field edit must (the effect has
     // already closed the dialog for fields this write no longer represents).
     const saveResolveKey = resolveKey;
+    // an explicit dismissal after this write starts must survive the refusal
+    // recovery below; `abandonAttempt` is the one primitive that records it
+    const saveDismissal = dismissalRef.current;
     setError(null);
     setSubmitting(true);
     try {
@@ -302,7 +313,7 @@ export function SupplierOpeningBalancePage() {
         await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
         try {
           const destination = await resolveTypedDestination();
-          if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey) return;
+          if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey || dismissalRef.current !== saveDismissal) return;
           rememberResolution(destination);
           setConfirming(true);
         } catch (resolveError) {

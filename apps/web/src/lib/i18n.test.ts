@@ -49,6 +49,15 @@ describe("authErrorKey / serverErrorKey / tError (issue #100)", () => {
     expect(tError("SETUP_DATABASE_NOT_EMPTY")).toBe(i18n.t("SETUP_DATABASE_NOT_EMPTY"));
   });
 
+  it("names the moved opening-balance destination instead of the silent fallback (#184 round 3)", () => {
+    // the page passes this refusal to tError(); while the key was missing the
+    // owner got errorGeneric and never learned the destination had changed
+    expect(serverErrorKey("OPENING_BALANCE_TARGET_CHANGED")).toBe("OPENING_BALANCE_TARGET_CHANGED");
+    const copy = tError("OPENING_BALANCE_TARGET_CHANGED");
+    expect(copy).not.toBe(i18n.t("errorGeneric"));
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+  });
+
   it("falls back to raw validator sentences only when no code arrives", () => {
     expect(serverErrorKey("expected an Algerian mobile, e.g. +213550123123 or 0550123123")).toBe("INVALID_PHONE_NUMBER");
     expect(serverErrorKey("Too many requests. Please try again later.")).toBe("AUTH_TOO_MANY_ATTEMPTS");
@@ -127,6 +136,39 @@ describe("vault error codes stay translatable (round 6)", () => {
       expect(copy, `missing copy for ${code}`).not.toBe(code);
       expect(copy.length, `empty copy for ${code}`).toBeGreaterThan(0);
       expect(copy, `non-Arabic copy for ${code}`).toMatch(/[\u0600-\u06FF]/);
+    }
+  });
+});
+
+describe("opening-balance refusals stay translatable (review round 3)", () => {
+  /** Every refusal `suppliersOpeningBalances` / `suppliersResolveName` can
+   * surface to the opening-balance screen, plus the session gate they both run
+   * behind. `serverErrorKey` falls back to `errorGeneric` SILENTLY, so a missing
+   * key is invisible unless the whole family is enumerated like this. */
+  const OPENING_BALANCE_REFUSALS = [
+    "OPENING_BALANCE_EXISTS",
+    "OPENING_BALANCE_TARGET_CHANGED",
+    "DUPLICATE_OPENING_BALANCE_ROW",
+    "DUPLICATE_ADJUSTMENT",
+    "PARTY_NOT_FOUND",
+    "ADJUSTMENT_EXCEEDS_REMAINING",
+    "ADJUSTMENT_INVOICE_DIRECTION",
+    "ADJUSTMENT_LINK_INVALID",
+    "ADJUSTMENT_INVALID_AMOUNT",
+    "ADJUSTMENT_NOT_TRANSACTIONAL",
+    "INVOICE_NOT_PURCHASE",
+    "AUTH_REQUIRED",
+    "FORBIDDEN",
+  ] as const;
+
+  it("gives every refusal its own Arabic key, never the silent fallback", () => {
+    for (const key of OPENING_BALANCE_REFUSALS) {
+      expect(serverErrorKey(key), `missing i18n key for ${key}`).toBe(key);
+      expect(serverErrorKey(key), `${key} fell back to errorGeneric`).not.toBe("errorGeneric");
+      const copy = tError(key);
+      expect(copy, `missing copy for ${key}`).not.toBe(key);
+      expect(copy.length, `empty copy for ${key}`).toBeGreaterThan(0);
+      expect(copy, `non-Arabic copy for ${key}`).toMatch(/[\u0600-\u06FF]/);
     }
   });
 });

@@ -887,6 +887,7 @@ const resources = {
       DUPLICATE_ADJUSTMENT: "سبق تسجيل هذه التسوية بنفس السبب والتاريخ",
       DUPLICATE_OPENING_BALANCE_ROW: "هذا المورّد مكرّر في الدفعة بنفس المبلغ والاتجاه",
       OPENING_BALANCE_EXISTS: "لهذا المورّد حركات سابقة؛ أكّد قبل الإضافة",
+      OPENING_BALANCE_TARGET_CHANGED: "تغيّرت وجهة الاسم؛ تحقّق من المورّد المذكور حديثاً قبل التأكيد",
       supplierEntry_ADJUSTMENT: "تسوية",
       activityType_ADJUSTMENT_RECORDED: "تسوية حساب مورّد",
       supplierOpeningTitle: "رصيد افتتاحي للموردين",

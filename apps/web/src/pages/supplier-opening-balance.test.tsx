@@ -628,6 +628,51 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(mutationCalls).toBe(0);
   });
 
+  it("keeps the dialog closed when Escape lands while a refusal's recovery lookup is pending (review round 3 finding 1)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    // the typed name resolves to an account with entries: the first submit opens
+    // the confirmation dialog instead of writing directly
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the confirmed save is refused as a stale destination; hold the recovery
+    // lookup the refusal starts so the owner can dismiss while it runs
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    act(() => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const confirm = host.querySelector<HTMLElement>('[data-testid="opening-balance-confirm"]');
+    expect(confirm).not.toBeNull();
+
+    // Escape dismisses while the recovery lookup is still pending
+    await act(async () => {
+      confirm!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the explicit dismissal must survive the refusal
+    // recovery, so the dialog names the moved account but stays CLOSED
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
   it("disables the confirm button while a re-submit's lookup is pending (review round 2)", async () => {
     render();
     await settle();

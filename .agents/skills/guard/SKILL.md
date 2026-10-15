@@ -77,7 +77,7 @@ get the docs-only exemption.
 [ ] Code-review evidence exists and is not stale
 ```
 
-**High-assurance** (auth/RBAC, backup/restore, invoice and debt money math):
+**High-assurance** (auth/RBAC, backup/restore, invoice and debt money math, a schema-version bump):
 ```
 [ ] Debate evidence exists and is not stale
 [ ] Test-audit evidence exists and is not stale

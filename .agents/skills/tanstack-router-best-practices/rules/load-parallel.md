@@ -21,21 +21,14 @@ export const Route = createFileRoute('/dashboard')({
   },
 })
 
-// Or nesting data dependencies incorrectly
-// routes/posts.tsx
-export const Route = createFileRoute('/posts')({
+// Or awaiting independent requests one after another inside one loader
+// routes/dashboard.tsx
+export const Route = createFileRoute('/dashboard')({
   loader: async () => {
-    const posts = await fetchPosts()  // 300ms
-    return { posts }
-  },
-})
-
-// routes/posts/$postId.tsx
-export const Route = createFileRoute('/posts/$postId')({
-  loader: async ({ params }) => {
-    // Waits for parent to complete first - waterfall!
-    const post = await fetchPost(params.postId)  // +200ms
-    return { post }
+    const stats = await fetchStats()        // 200ms
+    const activity = await fetchActivity()  // 200ms - could have run with stats
+    // Total: 400ms (sequential)
+    return { stats, activity }
   },
 })
 ```
@@ -165,25 +158,25 @@ function PostPage() {
 ```
 Navigation to /posts/123
 
-Without parallelization:
+Without parallelization (sequential loaders):
 ├─ beforeLoad (parent)  ████████
-├─ loader (parent)              ████████
-├─ beforeLoad (child)                   ████
+├─ beforeLoad (child)           ████
+├─ loader (parent)                  ████████
 ├─ loader (child)                           ████████
 └─ Render                                           █
 
 With parallelization:
 ├─ beforeLoad (parent)  ████████
-├─ beforeLoad (child)   ████
-├─ loader (parent)      ████████
-├─ loader (child)       ████████████
-└─ Render                           █
+├─ beforeLoad (child)           ████
+├─ loader (parent)                  ████████████
+├─ loader (child)                   ████████████
+└─ Render                                       █
 ```
 
 ## Context
 
-- Nested route loaders run in parallel by default
-- `beforeLoad` runs before `loader` (for auth, context setup)
+- `beforeLoad` runs serially from parent to child (for auth, context setup)
+- After every `beforeLoad` finishes, the loaders for all matched routes run in parallel
 - Use `Promise.all` for parallel fetches within a single loader
 - Parent context is available in child loaders (after beforeLoad)
 - Prefetch non-critical data without awaiting for streaming

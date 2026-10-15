@@ -37,8 +37,11 @@ the MAIN repo (owner complaint, same day).
 Why the lane limit is hard: five lanes went up at once on 2026-10-13, so finished
 lanes sat idle while new ones spawned, and sibling lanes fought over the shared
 dev ports 4317/5173 — each failing its own e2e run against the other's server.
-Give lanes isolated ports (`DOKAN_PORT`/`DOKAN_WEB_PORT`, avoiding 4399/5174,
-which the vault spec hardcodes).
+
+`DOKAN_PORT`/`DOKAN_WEB_PORT` isolate the *shared* pair only. `tests/e2e/vault.spec.ts`
+hardcodes the vault pair at 4399/5174, so **vault-touching e2e runs are one lane at
+a time**; a second lane's run reaches the first lane's vault servers. (Making that
+pair configurable is a separate change.)
 
 ## Merging
 

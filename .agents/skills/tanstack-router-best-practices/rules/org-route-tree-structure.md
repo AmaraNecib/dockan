@@ -90,7 +90,7 @@ routes/
 ## Context
 
 - Parent route components must render `<Outlet />` for children to appear
-- Layout routes run `beforeLoad` and `loader` before any child route
+- `beforeLoad` runs serially from parent to child; after that, loaders for all matched routes run in parallel
 - Search params, context, and error boundaries are inherited by child routes
 - Use flat (`.` separator) or directory style interchangeably — they produce the same tree
 - Use `route.tsx` inside a directory to define the parent route's configuration

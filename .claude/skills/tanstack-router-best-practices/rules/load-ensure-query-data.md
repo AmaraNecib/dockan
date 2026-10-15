@@ -45,10 +45,13 @@ const postQueryOptions = (postId: string) =>
 export const Route = createFileRoute('/posts/$postId')({
   loader: async ({ params, context: { queryClient } }) => {
     // ensureQueryData:
-    // - Returns cached data if fresh
-    // - Fetches and caches if missing or stale
-    // - Awaits completion
+    // - Returns cached data immediately, even if it is stale
+    // - Fetches and caches only when the cache is missing
+    // - Awaits that fetch when it does have to fetch
     // - Throws on error (caught by error boundary)
+    // It is a cache lookup, not a freshness check: pass revalidateIfStale:
+    // true for a background refresh, or use fetchQuery when the loader must
+    // wait for fresh data.
     await queryClient.ensureQueryData(postQueryOptions(params.postId))
   },
   component: PostPage,
@@ -141,11 +144,13 @@ export const router = createRouter({
 |--------|---------|--------|--------|----------|
 | `ensureQueryData` | Data | Yes | Yes | Route loaders (recommended) |
 | `prefetchQuery` | void | No | Yes | Background prefetching |
-| `fetchQuery` | Data | Yes | Yes | When you need data immediately |
+| `fetchQuery` | Data | Yes | Yes | When the loader must wait for fresh data |
 
 ## Context
 
 - `ensureQueryData` is the recommended method for route loaders
+- `ensureQueryData` returns cached data even when it is stale; it never waits for a stale entry to refresh
+- Pass `revalidateIfStale: true` for a background refresh, or use `fetchQuery` when the loader must await fresh data
 - Respects `staleTime` - won't refetch fresh cached data
 - Errors propagate to route error boundaries
 - Use `queryOptions()` factory for type-safe, reusable query definitions

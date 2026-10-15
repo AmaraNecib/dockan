@@ -81,7 +81,7 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) | Guard Phase 1 → quality check → report |
 | Standard | Code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → test-audit → code-review → guard 2 → Greptile → guard 3 |
-| High-assurance | Auth/RBAC, backup/restore, invoice & debt money calculations, security | Standard plus debate |
+| High-assurance | Auth/RBAC, backup/restore, invoice & debt money calculations, security, a schema-version bump | Standard plus debate |
 
 High-assurance examples in Dokan: stock quantity going below zero, average-cost recomputation,
 payment amounts exceeding invoice totals, debt direction (who owes whom), auth login.

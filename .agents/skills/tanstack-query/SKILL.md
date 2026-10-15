@@ -178,11 +178,13 @@ useQuery({
   // Conditional
   enabled: !!userId,          // Only run when truthy
 
-  // Initial/placeholder data
+  // Initial/placeholder data (choose one — each key appears once)
   initialData: () => cachedData,
   initialDataUpdatedAt: Date.now() - 10000,
-  placeholderData: (previousData) => previousData, // keepPreviousData pattern
-  placeholderData: initialTodos,
+  // Keep the previous page visible while the next page loads:
+  placeholderData: (previousData) => previousData,
+  // ...or seed the first render with local data:
+  // placeholderData: initialTodos,
 
   // Transform
   select: (data) => data.filter(todo => !todo.done),
@@ -209,15 +211,21 @@ function AddTodo() {
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
-    mutationFn: (newTodo: { title: string }) => {
-      return fetch('/api/todos', {
+    mutationFn: async (newTodo: { title: string }) => {
+      const res = await fetch('/api/todos', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newTodo),
-      }).then(res => res.json())
+      })
+      // fetch resolves for HTTP errors too, so check the status before parsing
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
+      return res.json()
     },
     // Lifecycle callbacks
     onMutate: async (variables) => {
       // Called before mutationFn
+      // Snapshot the current value so onError can roll back
+      const previousTodos = queryClient.getQueryData(['todos'])
       // Good for optimistic updates
       return { previousTodos } // context for onError
     },
@@ -347,6 +355,9 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 function InfiniteList() {
   const {
     data,
+    error,
+    isPending,
+    isError,
     fetchNextPage,
     fetchPreviousPage,
     hasNextPage,
@@ -368,6 +379,9 @@ function InfiniteList() {
     },
     maxPages: 3, // Keep max 3 pages in cache (for performance)
   })
+
+  if (isPending) return <Spinner />
+  if (isError) return <Error message={error.message} />
 
   return (
     <div>
@@ -435,11 +449,14 @@ function UserPosts({ userId }) {
 function PaginatedList() {
   const [page, setPage] = useState(1)
 
-  const { data, isPlaceholderData } = useQuery({
+  const { data, error, isPending, isError, isPlaceholderData } = useQuery({
     queryKey: ['todos', page],
     queryFn: () => fetchTodos(page),
     placeholderData: (previousData) => previousData, // Keep showing old data
   })
+
+  if (isPending) return <Spinner />
+  if (isError) return <Error message={error.message} />
 
   return (
     <div style={{ opacity: isPlaceholderData ? 0.5 : 1 }}>

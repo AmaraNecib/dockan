@@ -28,10 +28,16 @@ import JSURL from 'jsurl2'
 
 const router = createRouter({
   routeTree,
-  search: {
-    // Custom serializer for compact, URL-safe encoding
-    serialize: (search) => JSURL.stringify(search),
-    parse: (searchString) => JSURL.parse(searchString) || {},
+  // Top-level callbacks: stringifySearch returns the query string *with* its
+  // leading '?', and parseSearch receives it with the leading '?'.
+  stringifySearch: (search) => {
+    if (Object.keys(search).length === 0) return ''
+    const query = JSURL.stringify(search)
+    return query ? `?${query}` : ''
+  },
+  parseSearch: (searchString) => {
+    const query = searchString.replace(/^\?/, '')
+    return query ? JSURL.parse(query) || {} : {}
   },
 })
 
@@ -47,19 +53,20 @@ import queryString from 'query-string'
 
 const router = createRouter({
   routeTree,
-  search: {
-    serialize: (search) =>
-      queryString.stringify(search, {
-        arrayFormat: 'bracket',
-        skipNull: true,
-      }),
-    parse: (searchString) =>
-      queryString.parse(searchString, {
-        arrayFormat: 'bracket',
-        parseBooleans: true,
-        parseNumbers: true,
-      }),
+  stringifySearch: (search) => {
+    const query = queryString.stringify(search, {
+      arrayFormat: 'bracket',
+      skipNull: true,
+    })
+    return query ? `?${query}` : ''
   },
+  parseSearch: (searchString) =>
+    // query-string strips a leading '?' for us
+    queryString.parse(searchString, {
+      arrayFormat: 'bracket',
+      parseBooleans: true,
+      parseNumbers: true,
+    }),
 })
 
 // URL: /products?category=electronics&inStock=true&tags[]=sale&tags[]=new
@@ -74,24 +81,25 @@ import qs from 'qs'
 
 const router = createRouter({
   routeTree,
-  search: {
-    serialize: (search) =>
-      qs.stringify(search, {
-        encodeValuesOnly: true,
-        arrayFormat: 'brackets',
-      }),
-    parse: (searchString) =>
-      qs.parse(searchString, {
-        ignoreQueryPrefix: true,
-        decoder(value) {
-          // Parse booleans and numbers
-          if (value === 'true') return true
-          if (value === 'false') return false
-          if (/^-?\d+$/.test(value)) return parseInt(value, 10)
-          return value
-        },
-      }),
+  stringifySearch: (search) => {
+    const query = qs.stringify(search, {
+      encodeValuesOnly: true,
+      arrayFormat: 'brackets',
+    })
+    return query ? `?${query}` : ''
   },
+  parseSearch: (searchString) =>
+    qs.parse(searchString, {
+      // ignoreQueryPrefix drops the leading '?'
+      ignoreQueryPrefix: true,
+      decoder(value) {
+        // Parse booleans and numbers
+        if (value === 'true') return true
+        if (value === 'false') return false
+        if (/^-?\d+$/.test(value)) return parseInt(value, 10)
+        return value
+      },
+    }),
 })
 
 // URL: /products?filters[category]=electronics&filters[price][min]=100&filters[price][max]=500
@@ -104,25 +112,32 @@ import { createRouter } from '@tanstack/react-router'
 
 const router = createRouter({
   routeTree,
-  search: {
-    serialize: (search) => {
-      if (Object.keys(search).length === 0) return ''
-      const json = JSON.stringify(search)
-      return btoa(json)  // Base64 encode
-    },
-    parse: (searchString) => {
-      if (!searchString) return {}
-      try {
-        return JSON.parse(atob(searchString))  // Base64 decode
-      } catch {
-        return {}
-      }
-    },
+  stringifySearch: (search) => {
+    if (Object.keys(search).length === 0) return ''
+    // btoa only accepts byte-valued characters, so encode the JSON to UTF-8
+    // bytes first: this keeps non-Latin text (e.g. Arabic) intact.
+    const json = JSON.stringify(search)
+    const bytes = new TextEncoder().encode(json)
+    let binary = ''
+    for (const byte of bytes) binary += String.fromCharCode(byte)
+    return `?${btoa(binary)}`
+  },
+  parseSearch: (searchString) => {
+    // Reverse the UTF-8 -> Base64 step before parsing the JSON
+    const encoded = searchString.replace(/^\?/, '')
+    if (!encoded) return {}
+    try {
+      const binary = atob(encoded)
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+      return JSON.parse(new TextDecoder().decode(bytes))
+    } catch {
+      return {}
+    }
   },
 })
 
 // URL: /products?eyJjYXRlZ29yeSI6ImVsZWN0cm9uaWNzIn0
-// Opaque but compact
+// Opaque but compact, and reversible for any Unicode payload
 ```
 
 ## Good Example: Hybrid Approach
@@ -133,49 +148,49 @@ import { createRouter } from '@tanstack/react-router'
 
 const router = createRouter({
   routeTree,
-  search: {
-    serialize: (search) => {
-      const { filters, ...simple } = search
-      const params = new URLSearchParams()
+  stringifySearch: (search) => {
+    const { filters, ...simple } = search
+    const params = new URLSearchParams()
 
-      // Simple values as regular params
-      Object.entries(simple).forEach(([key, value]) => {
-        if (value !== undefined) {
-          params.set(key, String(value))
-        }
-      })
-
-      // Complex filters as JSON
-      if (filters && Object.keys(filters).length > 0) {
-        params.set('filters', JSON.stringify(filters))
+    // Simple values as regular params
+    Object.entries(simple).forEach(([key, value]) => {
+      if (value !== undefined) {
+        params.set(key, String(value))
       }
+    })
 
-      return params.toString()
-    },
-    parse: (searchString) => {
-      const params = new URLSearchParams(searchString)
-      const result: Record<string, unknown> = {}
+    // Complex filters as JSON
+    if (filters && Object.keys(filters).length > 0) {
+      params.set('filters', JSON.stringify(filters))
+    }
 
-      params.forEach((value, key) => {
-        if (key === 'filters') {
-          result.filters = JSON.parse(value)
-        } else if (value === 'true') {
-          result[key] = true
-        } else if (value === 'false') {
-          result[key] = false
-        } else if (/^-?\d+$/.test(value)) {
-          result[key] = parseInt(value, 10)
-        } else {
-          result[key] = value
-        }
-      })
+    const query = params.toString()
+    return query ? `?${query}` : ''
+  },
+  parseSearch: (searchString) => {
+    // URLSearchParams tolerates a leading '?'
+    const params = new URLSearchParams(searchString)
+    const result: Record<string, unknown> = {}
 
-      return result
-    },
+    params.forEach((value, key) => {
+      if (key === 'filters') {
+        result.filters = JSON.parse(value)
+      } else if (value === 'true') {
+        result[key] = true
+      } else if (value === 'false') {
+        result[key] = false
+      } else if (/^-?\d+$/.test(value)) {
+        result[key] = parseInt(value, 10)
+      } else {
+        result[key] = value
+      }
+    })
+
+    return result
   },
 })
 
-// URL: /products?page=1&sort=price&filters={"category":"electronics","inStock":true}
+// URL: /products?page=1&sort=price&filters=%7B%22category%22%3A%22electronics%22%2C%22inStock%22%3Atrue%7D
 ```
 
 ## Serializer Comparison
@@ -191,6 +206,8 @@ const router = createRouter({
 ## Context
 
 - Custom serializers apply globally to all routes
+- `stringifySearch` must return the query string *including* the leading `?`; `parseSearch` receives the string *including* the `?`
+- The `stringifySearchWith`/`parseSearchWith` helpers from `@tanstack/react-router` handle the `?` and URL-encoding if you would rather not do it by hand
 - Route-level `validateSearch` still works after parsing
 - Consider URL length limits (~2000 chars for safe cross-browser)
 - SEO: Search engines may not understand custom formats

@@ -425,17 +425,13 @@ throw redirect({
 ```tsx
 import { useBlocker } from '@tanstack/react-router'
 
+// Custom UI: withResolver returns { proceed, reset, status }
 function FormComponent() {
   const [isDirty, setIsDirty] = useState(false)
 
-  useBlocker({
-    shouldBlockFn: () => isDirty,
-    withResolver: true, // Shows confirm dialog
-  })
-
-  // Or with custom UI
   const { proceed, reset, status } = useBlocker({
     shouldBlockFn: () => isDirty,
+    withResolver: true,
   })
 
   if (status === 'blocked') {
@@ -447,6 +443,15 @@ function FormComponent() {
       </div>
     )
   }
+}
+
+// Simple confirmation: resolve the decision inside shouldBlockFn
+function ConfirmComponent() {
+  const [isDirty, setIsDirty] = useState(false)
+
+  useBlocker({
+    shouldBlockFn: () => isDirty && !window.confirm('Discard unsaved changes?'),
+  })
 }
 ```
 
@@ -590,15 +595,12 @@ export const Route = createFileRoute('/_authenticated/dashboard')({
 ```tsx
 const router = createRouter({
   routeTree,
-  // Enable scroll restoration
-  defaultScrollRestoration: true,
-})
-
-// Or per-route
-export const Route = createFileRoute('/posts')({
-  // Scroll to top on navigation
+  // Restore scroll position on back/forward navigation
   scrollRestoration: true,
 })
+
+// To scroll to the top on a specific navigation instead
+navigate({ to: '/posts', resetScroll: true })
 
 // Custom scroll restoration key
 <ScrollRestoration

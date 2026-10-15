@@ -68,7 +68,7 @@ the clean 502dfdd run is.
 
 Prose-only, so no test-audit was regenerated: no test file changed since
 7caa6b6, and the prior test-audit's conclusions stand. The delta review of this
-edit is `502dfdd-review.md` (standards + spec axes).
+edit is `502dfdd-code-review.md` (standards + spec axes).
 
 ## Not run / deferred
 

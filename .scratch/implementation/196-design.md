@@ -79,10 +79,15 @@ Hardcoding `itemsCreateWithStock` would hang `items-flow`, `learnability`,
 | `purchase-intake` | 1 | `itemsCreate` | kept |
 | `returns` | 2 | `itemsCreateWithStock` | kept |
 | `settings` | 1 | `itemsCreate` | kept |
+| `completion-screens` | 1 | `itemsCreateWithStock` | kept |
 
 Not converted: the sale-checkout validation refusals (blank/0/-1 stock) — these
 send nothing by design, already assert their Arabic message by name, and arming
 an ack there would hang.
+
+`completion-screens` was added after the parent accepted the deviation analysis
+and confirmed it is issue-listed (it was not in the lane brief's eight). Its
+sale quick-add fills stock 3, so it takes the with-stock path.
 
 ## Preserved assertions
 

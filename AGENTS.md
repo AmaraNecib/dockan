@@ -43,6 +43,15 @@ hardcodes the vault pair at 4399/5174, so **vault-touching e2e runs are one lane
 a time**; a second lane's run reaches the first lane's vault servers. (Making that
 pair configurable is a separate change.)
 
+## Vendored skills
+
+`.agents/skills/<x>` is the single source of truth; `.claude/skills/<x>` is
+generated from it with `bun run skills:sync` and checked with
+`bun run skills:check` (wired into pre-commit and CI). Never edit
+`.claude/skills` by hand. The vendored TanStack skills carry local fixes, so an
+upstream sync must not clobber them: their pinned upstream commits, divergence
+count and re-apply checklist are in `docs/skills-vendoring.md`.
+
 ## Merging
 
 **Merge only when the owner says to merge.** The agent never merges on its own

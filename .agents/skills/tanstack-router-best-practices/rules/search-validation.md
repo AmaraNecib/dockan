@@ -30,9 +30,9 @@ function ProductsPage() {
 ```tsx
 export const Route = createFileRoute('/products')({
   validateSearch: (search: Record<string, unknown>) => {
-    // Keep a legitimate 0, drop empty values and non-numeric junk (NaN)
+    // Keep a legitimate 0, drop empty/whitespace values and non-numeric junk (NaN)
     const numberOrDefault = (value: unknown) => {
-      if (value === undefined || value === '') return undefined
+      if (value === undefined || (typeof value === 'string' && value.trim() === '')) return undefined
       const parsed = Number(value)
       return Number.isFinite(parsed) ? parsed : undefined
     }

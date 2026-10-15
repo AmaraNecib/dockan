@@ -108,7 +108,8 @@ export const Route = createFileRoute('/posts/$postId')({
   // Search params validation
   validateSearch: (search: Record<string, unknown>) => {
     return {
-      page: Number(search.page ?? 1),
+      // `|| 1` also catches an empty/whitespace page, which Number() would turn into 0
+      page: Number(search.page) || 1,
       filter: (search.filter as string) || '',
     }
   },

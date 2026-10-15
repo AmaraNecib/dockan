@@ -13,7 +13,7 @@ import { actAndAck } from "./rpc-helpers";
  * the awaited call.
  */
 
-/** One event-loop turn is enough for a rejection report to be emitted. */
+/** Comfortably past the turn in which Node reports a pending rejection. */
 const SETTLE_MS = 50;
 
 /** A throwaway customer name; the refusals below never write it. */
@@ -88,7 +88,13 @@ test("actAndAck reports the action error, not a refused RPC, with no unhandled r
     expect(refused()).toBe(1);
     // one more turn so a delayed rejection report surfaces before asserting
     await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
-    expect(unhandled, `unhandled rejections: ${unhandled.join(" | ")}`).toEqual([]);
+    // The listener observes the whole worker process, and workers: 1 means every
+    // spec file shares it: scope the assertion to the armed read under test so
+    // another file's late rejection cannot fail this test for the wrong reason.
+    // The full list is still reported, and test 2 pins the message text this
+    // filter matches on.
+    const fromHelper = unhandled.filter((message) => message.includes("customersCreate"));
+    expect(fromHelper, `unhandled rejections: ${unhandled.join(" | ")}`).toEqual([]);
   } finally {
     stop();
     await page.unroute(rpcUrl);

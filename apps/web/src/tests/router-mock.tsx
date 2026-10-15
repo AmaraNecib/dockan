@@ -24,9 +24,13 @@ export function routerMock(params: Record<string, string> = {}) {
       className?: string;
       "data-testid"?: string;
       params?: Record<string, string>;
+      search?: boolean;
       to?: string;
     }) => {
-      const { children, params: linkParams, to, ...rest } = props;
+      const { children, params: linkParams, search, to, ...rest } = props;
+      // a router `search` flag has no DOM form; strip it so it is not spread
+      // onto the anchor as an invalid attribute
+      void search;
       return <a href={`${to ?? ""}?${new URLSearchParams(linkParams ?? {}).toString()}`} {...rest}>{children}</a>;
     },
     useParams: () => params,

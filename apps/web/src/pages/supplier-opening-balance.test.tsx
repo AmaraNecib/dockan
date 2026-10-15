@@ -658,6 +658,24 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(confirmSave()?.disabled).toBe(false);
   });
 
+  it("cancels the open confirmation on Escape (review round 2 / web interface guidelines)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // Escape from a button inside the dialog is the keyboard equivalent of Cancel
+    const confirmSave = host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')!;
+    await act(async () => {
+      confirmSave.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
   it("does not write when the page unmounts while the lookup is pending (review round 1 finding 1)", async () => {
     resolveHold = new Promise((resolve) => {
       releaseResolveHold = resolve;

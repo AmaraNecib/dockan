@@ -238,6 +238,24 @@ back link keeps its own `onClick` as an immediate second guard.
 nothing`; the round-1 web unmount test and the browser-back e2e cover the same
 guard.
 
+### Skill-guided hardening
+
+- **Vercel React `advanced-use-latest`.** `resolveKeyRef` is now synced in a
+  `useLayoutEffect` (latest-ref pattern) instead of the passive effect that did
+  the reset, so a late continuation reads the key of the render on screen rather
+  than the previous commit.
+- **TanStack Query.** `fetchQuery` is kept rather than `ensureQueryData`
+  (`pf-ensure-query-data`): the resolve must be the server's live answer, and
+  `ensureQueryData` returns cached-stale data that could name the wrong account.
+  `query-cancellation` is deliberately not applied: the generation guard already
+  prevents any effect, aborting an oRPC call logs `AbortError` through the rpc
+  interceptor, and aborting the held request would break the leave E2E tests that
+  release the response after the page is left.
+- **Web Interface Guidelines / accessibility.** The confirmation dialog closes on
+  Escape (`onKeyDown`), the keyboard equivalent of its Cancel, reusing
+  `abandonAttempt` so an in-flight submit is invalidated too. Unit test:
+  `cancels the open confirmation on Escape`.
+
 ### Finding 2 — the no-write E2E tests could pass vacuously
 
 `wrote` starts `false`, so `expect(wrote).toBe(false)` — and even
@@ -273,6 +291,10 @@ Applied to all four leave tests (Cancel, back link, browser back, sidebar).
 ### Accepted residuals (dismissed, documented)
 
 - The resolve request is invalidated, not aborted; a late result is discarded.
+- The `useLayoutEffect` unmount guard narrows the un-instrumented-exit window to
+  the unmount commit but does not eliminate it (React still schedules the
+  commit); no test discriminates the layout-effect timing, and the round-2 E2E
+  suite is deliberately wall-clock for the four leave paths.
 - The refusal-recovery resolve still holds `submitting`, so the two Cancel
   buttons are briefly disabled; the back link and browser back stay available.
 - A `suppliers` list refetch mid-resolve is not an "edit" and does not bump the
@@ -280,3 +302,5 @@ Applied to all four leave tests (Cancel, back link, browser back, sidebar).
   are the backstop.
 - The bounded window is a fixed interval, not a proof; a write after the window
   would still be missed.
+- The four no-write E2E tests share ~15 lines of route/listener setup; extracting
+  a fixture is deferred as test-only duplication.

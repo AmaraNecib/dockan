@@ -127,23 +127,25 @@ export function SupplierOpeningBalancePage() {
   // any in-flight submit for the old fields
   const lastResolveKeyRef = useRef(resolveKey);
   // the live lookup key, for a late continuation to compare against the key it was
-  // started for (a ref, so it is current after the edit's render)
+  // started for. A layout effect keeps it current at commit, before any async
+  // continuation can read it — a passive effect would lag a render behind.
   const resolveKeyRef = useRef(resolveKey);
-  useEffect(() => {
+  useLayoutEffect(() => {
     resolveKeyRef.current = resolveKey;
+  }, [resolveKey]);
+  useEffect(() => {
     if (lastResolveKeyRef.current === resolveKey) return;
     lastResolveKeyRef.current = resolveKey;
     abandonAttempt();
   }, [resolveKey]);
 
   // leaving the page (by any route) invalidates every in-flight attempt, so a late
-  // resolve can never reach save() after the owner left. `useLayoutEffect` so the
-  // cleanup runs synchronously in the unmount commit: a route change the page
-  // does not own (the app-shell sidebar, a programmatic nav) has no click handler
-  // to invalidate on, and a deferred passive cleanup could lose the race to a
-  // resolve continuation. Re-arming on mount keeps a StrictMode double-invoke
-  // from leaving it permanently false. The back link also invalidates in its
-  // `onClick` as a second, immediate guard.
+  // resolve can never reach save() after the owner left. `useLayoutEffect` runs
+  // the cleanup synchronously in the unmount commit rather than in a deferred
+  // passive flush, so the exit the page does not own (the app-shell sidebar, a
+  // programmatic nav — no click handler to invalidate on) narrows to the commit
+  // itself. The back link invalidates in its `onClick` as an immediate guard.
+  // Re-arming on mount keeps a StrictMode double-invoke from leaving it false.
   useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -570,7 +572,19 @@ export function SupplierOpeningBalancePage() {
           </div>
 
           {confirming && !confirmStale && (
-            <div className="rounded border border-warning/40 bg-warning/10 p-4" role="alertdialog" aria-label={t("supplierOpeningConfirmTitle")} data-testid="opening-balance-confirm">
+            <div
+              className="rounded border border-warning/40 bg-warning/10 p-4"
+              role="alertdialog"
+              aria-label={t("supplierOpeningConfirmTitle")}
+              // Escape is the keyboard equivalent of the dialog's Cancel — the same
+              // `abandonAttempt` so it invalidates any in-flight submit too
+              // (Web Interface Guidelines: interactive elements need keyboard
+              // handlers).
+              onKeyDown={(event) => {
+                if (event.key === "Escape") abandonAttempt();
+              }}
+              data-testid="opening-balance-confirm"
+            >
               <p className="font-semibold">{t("supplierOpeningConfirmTitle")}</p>
               <p className="mt-1 text-sm">{t("supplierOpeningConfirmBody")}</p>
               <ul className="mt-2 grid gap-1 text-sm">

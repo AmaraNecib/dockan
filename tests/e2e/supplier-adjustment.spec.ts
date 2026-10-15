@@ -39,14 +39,15 @@ async function rpc<T>(page: Page, procedure: string, json: RpcInput): Promise<T>
  * sample count proves the window was observed rather than skipped.
  */
 async function expectNoWriteDuring(page: Page, wrote: () => boolean, windowMs = 1500): Promise<void> {
+  const sampleMs = 100;
   const deadline = Date.now() + windowMs;
   let samples = 0;
   while (Date.now() < deadline) {
-    expect(wrote(), `an opening-balance write landed ${samples * 100}ms into the no-write window`).toBe(false);
+    expect(wrote(), `an opening-balance write landed ${samples * sampleMs}ms into the no-write window`).toBe(false);
     samples += 1;
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(sampleMs);
   }
-  const minSamples = Math.max(1, Math.ceil(windowMs / 200));
+  const minSamples = Math.max(1, Math.ceil(windowMs / (sampleMs * 2)));
   expect(samples, "the no-write window must be sampled, not skipped").toBeGreaterThanOrEqual(minSamples);
   expect(wrote()).toBe(false);
 }
@@ -390,8 +391,10 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
 
 /**
  * A navigation the page does not own: the app-shell sidebar has no page-level
- * click handler, so only the (synchronous, layout-effect) unmount guard can
- * invalidate the in-flight lookup (issue 184 review round 2).
+ * click handler, so only the layout-effect unmount guard invalidates the
+ * in-flight lookup (issue 184 review round 2). This is a path guard, not a
+ * discriminator of the layout-effect timing: the held response arrives well after
+ * the unmount commit, so it would also pass on a deferred passive cleanup.
  */
 test("leaving via the sidebar while the name lookup is pending writes nothing (issue 184 review round 2)", async ({ page }) => {
   await signIn(page);

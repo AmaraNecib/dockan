@@ -14,8 +14,13 @@ and the CI `checks` job run the drift check and fail on any divergence.
 
 ```sh
 bun run skills:sync    # regenerate .claude/skills from .agents/skills
-bun run skills:check   # fail on missing/extra/differing entries or symlinks
+bun run skills:check   # fail on missing/extra/differing entries, or a symlink
+                       # anywhere under .agents/skills (Pi-only trees included)
 ```
+
+`skills:sync` refuses to run when a mirrored source holds a symlink, since a
+copy would carry the link into `.claude`. Replace the link with a real file
+first. Set `SKILLS_MIRROR_ROOT` to point either command at another tree.
 
 ## Upstream pins
 

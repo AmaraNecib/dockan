@@ -29,6 +29,8 @@ Thumbs.db
 # tests
 playwright-report/
 test-results/
+# server/runner logs teed out by the CI e2e step (issue 197)
+e2e-logs/
 coverage/
 # agent artifacts (never source)
 .pi-subagents/

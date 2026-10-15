@@ -102,7 +102,48 @@ jobs:
         run: bunx playwright install --with-deps chromium
 
       - name: Run Playwright e2e
-        run: bun run test:e2e
+        # pipefail is load-bearing: without it the step exits with tee's status
+        # (0), so a red suite would report green and the upload below would not
+        # fire. GitHub's default shell is `bash -e {0}`; `-o pipefail` only
+        # comes with an explicit `shell: bash`, so the explicit `set` is kept as
+        # well — a future edit to `shell:` cannot silently reopen the hole.
+        # webServer stdout is piped into this stream by playwright.config.ts
+        # (`stdout: "pipe"`), so one file holds the Playwright log and the two
+        # Playwright-managed server logs.
+        shell: bash
+        # Below the job's 20 minutes on purpose: a job-level timeout cancels the
+        # job, and a cancelled job runs no further steps — the failure evidence
+        # would be lost, which is exactly the hang case this upload exists for.
+        # Stopping the step first lets the upload below still run.
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          mkdir -p e2e-logs
+          bun run test:e2e 2>&1 | tee e2e-logs/playwright.log
+
+      # Evidence, not a report: a green suite leaves nothing worth 5 days of
+      # storage, so success is the one outcome that skips this. #197.
+      - name: Upload e2e failure evidence
+        # failure() || cancelled(), not bare failure(): GitHub documents that a
+        # timeout "kills the process" but not whether the stopped step is then
+        # reported as failed or cancelled, and the run step above relies on this
+        # firing either way. cancelled() also covers a superseded run.
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # keyed on the attempt: re-running a failed job must not overwrite the
+          # evidence from the attempt that actually failed (a build artifact may
+          # be replaced by a newer one; a trace may not)
+          name: playwright-e2e-failure-${{ github.run_attempt }}
+          # test-results/ is Playwright's default output dir: trace.zip, the
+          # failure screenshot and error-context.md per failed test.
+          path: |
+            test-results/
+            e2e-logs/
+          # a failure before the suite starts leaves nothing here; that step's
+          # own error must stay the headline, so a warning beats a second error
+          if-no-files-found: warn
+          retention-days: 5
 
   # The Rust capability/permission guards (issue 154). The desktop crate's
   # tests include the guard added in #153: it drives the real tauri-utils

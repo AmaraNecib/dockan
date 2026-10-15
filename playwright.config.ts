@@ -25,6 +25,15 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     locale: "ar-DZ",
+    // Failure evidence for CI (#197): the e2e job uploads test-results/ when a
+    // step fails. retain-on-failure, not on-first-retry: retries are 0 above, so
+    // on-first-retry would record nothing. The trace carries the DOM snapshots
+    // and the /api/rpc request/response bodies that a bare 30s timeout cannot
+    // attribute (wisdom 2026-10-14-e2e-ack-vs-test-budget); the screenshot and
+    // error-context.md land beside it. No video: it adds per-test encoding cost
+    // on a sequential suite without answering anything the trace leaves open.
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: [
     {
@@ -32,6 +41,10 @@ export default defineConfig({
       url: `http://127.0.0.1:${API_PORT}/health`,
       reuseExistingServer: false,
       timeout: 30_000,
+      // stdout defaults to "ignore", which would discard the API log the e2e job
+      // uploads on failure (#197). "pipe" forwards it to Playwright's stdout,
+      // where the CI step tees it into e2e-logs/. stderr already defaults here.
+      stdout: "pipe",
       env: {
         DOKAN_PORT: String(API_PORT),
         DOKAN_DATA_DIR: e2eData,
@@ -47,6 +60,7 @@ export default defineConfig({
       url: `http://127.0.0.1:${WEB_PORT}`,
       reuseExistingServer: false,
       timeout: 30_000,
+      stdout: "pipe", // see the API entry above
       env: {
         DOKAN_WEB_PORT: String(WEB_PORT),
         DOKAN_PORT: String(API_PORT),

@@ -7,11 +7,32 @@ in `engineering-workflow.md`.
 | Job | Steps |
 | --- | --- |
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun audit` |
-| `e2e` | `bunx playwright install --with-deps chromium`, `bun run test:e2e` on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`) |
+| `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
 | `rust` | `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 
 The three jobs are independent. A typecheck/lint/test failure and a Playwright
 flake are visible without one hiding the other.
+
+## e2e failure evidence
+
+`playwright.config.ts` sets `trace: "retain-on-failure"` and
+`screenshot: "only-on-failure"`, so a failed test leaves `trace.zip`, the
+failure screenshot and `error-context.md` in `test-results/`, while a passing
+test leaves nothing. The `e2e` job tees its own stdout — which includes the two
+Playwright-managed servers, `stdout: "pipe"` in the config because Playwright's
+`stdout` default is `ignore` — into `e2e-logs/playwright.log`, then uploads both
+directories for any non-success outcome (`if: failure() || cancelled()`),
+`retention-days: 5`, named with `github.run_attempt` so re-running a failed job
+cannot overwrite the evidence from the attempt that failed.
+
+The run step also carries `timeout-minutes: 15`, below the job's 20: a job-level
+timeout *cancels* the job, and a cancelled job runs no further steps, so a hang
+would upload nothing — the exact case this evidence exists for. Stopping the suite
+step first, at 15 minutes, lets the upload still run. The `cancelled()` arm is
+there because GitHub documents a step timeout as killing the process but not
+whether the stopped step is then reported failed or cancelled; either way the
+upload fires. Added by #197, after `gh run 38464745468` failed with no trace and
+no screenshot to read.
 
 ## Audit policy
 

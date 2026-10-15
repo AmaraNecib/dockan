@@ -47,6 +47,8 @@ let suppliers = BASE_SUPPLIERS;
 let suppliersListUsed = false;
 /** when true, the account summary read rejects */
 let accountsShouldFail = false;
+/** when true, the names-only read rejects */
+let namesShouldFail = false;
 /** when true, the next resolve rejects (a failed read) */
 let resolveFails = false;
 /** count of resolve calls, to assert a no-op path never asks the server */
@@ -78,7 +80,13 @@ mock.module("@/lib/rpc", () => ({
       queryKey: () => ["suppliersList"],
     },
     suppliersListNames: {
-      queryOptions: () => ({ queryKey: ["suppliersListNames"], queryFn: async () => ({ items: suppliers.map(({ id, name }) => ({ id, name })) }) }),
+      queryOptions: () => ({
+        queryKey: ["suppliersListNames"],
+        queryFn: async () => {
+          if (namesShouldFail) throw new Error("NAMES_FAILED");
+          return { items: suppliers.map(({ id, name }) => ({ id, name })) };
+        },
+      }),
       queryKey: () => ["suppliersListNames"],
     },
     suppliersAccountSummaries: {
@@ -156,6 +164,7 @@ beforeEach(() => {
   suppliers = BASE_SUPPLIERS;
   suppliersListUsed = false;
   accountsShouldFail = false;
+  namesShouldFail = false;
   queryClient = null;
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -390,21 +399,20 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // the cached list says this supplier has no entries, but the server disagrees
     typeIntoRow(1, "200");
+    // the server has already recorded history the cached account summary does not
+    // show. The page's OWN refusal handler must refresh the counts; the test never
+    // invalidates them, so a page that skips the account refresh keeps s-2 at 0
+    // entries and the confirmed save would not forward confirmExisting.
+    suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
     await act(async () => {
       clickOn("opening-balance-save");
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    // the refusal refreshes the counts: the supplier really does have history
-    suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
-    await act(async () => {
-      await Promise.all([
-        queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] }),
-        queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] }),
-      ]);
-    });
     await settle();
 
+    // the refusal's own refresh surfaced the history: the dialog names the
+    // supplier, and the confirmed save carries confirmExisting for it
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain("مورد بلا حركات");
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
@@ -505,6 +513,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).toContain(JSON.stringify([["activitiesList"]]));
     expect(keys).toContain(JSON.stringify([["invoicesList"]]));
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
+    // the save changes supplier accounts, so all three supplier reads refresh —
+    // including the account summary the confirmation gate reads
+    expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
+    expect(keys).toContain(JSON.stringify(["suppliersAccountSummaries"]));
+    expect(keys).toContain(JSON.stringify(["suppliersList"]));
   });
 
   it("sends a typed name as newSupplierName with the named id as a consistency check (round 5 / #184)", async () => {
@@ -1143,7 +1156,23 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    // requestSubmit bypasses the disabled button, so this proves the guard in
+    // save()/submit() blocks, not just the disabled attribute
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+  });
+
+  it("blocks the save when the names read fails instead of skipping the conflict check (#183)", async () => {
+    namesShouldFail = true;
+    render();
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
@@ -1289,6 +1318,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
     expect(confirmNames()).toContain(typedName);
 
+    // the raced supplier exists on the server, but the client has not seen it yet:
+    // the mocked refusal injects it into the next resolve, and the page's OWN
+    // refusal handler refreshes the lean reads without the test invalidating them.
+
     // the client still thinks the name is new, so the first confirm does not
     // forward confirmExisting; the server refuses and the catch re-asks for the
     // destination
@@ -1329,6 +1362,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // page can recover instead of repeating the same refusal forever
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
     expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
+    // the entries the confirmation gate reads live in the account summary: a
+    // refusal that refreshed only the names would leave the owner retrying with
+    // stale counts and looping on the same refusal
+    expect(keys).toContain(JSON.stringify(["suppliersAccountSummaries"]));
     // the write changes supplier accounts, so the full list other screens read is still refreshed
     expect(keys).toContain(JSON.stringify(["suppliersList"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();

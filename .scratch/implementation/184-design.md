@@ -205,18 +205,38 @@ while that lookup runs. The attempt was never invalidated, so the late answer
 passed the `attemptRef` check and `setConfirming(true)` re-opened the dismissed
 dialog.
 
-**Fix:** a dedicated `cancelConfirm()` wired to the dialog's Cancel button —
-`invalidateAttempt()` then `closeConfirm()`, exactly like `leave()` minus the
-navigation. Cancel stays enabled (a hung lookup must not trap the owner).
+**Fix:** `abandonAttempt()` — `invalidateAttempt()` then `closeConfirm()` — one
+primitive shared by the dialog Cancel, the page Cancel (`leave()`), and the
+lookup-field edit effect, so the generation bump and the dismissal cannot drift
+apart. Cancel stays enabled (a hung lookup must not trap the owner).
 `confirm-save` also disables while `resolving`, so a confirm cannot run against
-the snapshot while a re-submit's lookup is still deciding the destination — the
-same race from the other side.
+the snapshot while a re-submit's lookup is still deciding the destination.
 
 **Tests:** web `does not re-open the dialog when its own cancel lands while a
-re-submit's lookup is pending` (held second resolve, asserts the dialog stays
-gone and `mutationCalls === 0`); e2e `cancelling the dialog during a re-submit's
-lookup does not re-open it` (route-delayed second lookup, bounded no-write window,
-asserts the dialog stays gone). Both fail on the pre-fix source.
+re-submit's lookup is pending` (held second resolve; asserts the dialog stays gone
+and `mutationCalls === 0`); web `disables the confirm button while a re-submit's
+lookup is pending` (pins the new `resolving` guard); e2e `cancelling the dialog
+during a re-submit's lookup does not re-open it` (the second resolve is held on a
+gate the test releases *after* the Cancel, then a bounded no-write window and a
+dialog-still-gone assertion, plus a real confirmed save as a positive control that
+the write listener fires). Both web tests and the e2e fail on the pre-fix source.
+
+### Debate follow-up — the un-instrumented exit (same class as finding 1)
+
+The delta review pointed out that finding 1's fix was a call site, not the class:
+the app-shell sidebar and any programmatic route change have no page-level
+`onClick`, so they relied on the unmount cleanup, which React runs in a deferred
+passive flush that a resolve continuation can outrun.
+
+**Fix:** the unmount guard is now a `useLayoutEffect`, whose cleanup React runs
+synchronously in the unmount commit — before any microtask scheduled by the
+resolve can run — so any exit that unmounts the page invalidates first. This
+covers the sidebar and programmatic nav without the page needing router APIs. The
+back link keeps its own `onClick` as an immediate second guard.
+
+**Test:** e2e `leaving via the sidebar while the name lookup is pending writes
+nothing`; the round-1 web unmount test and the browser-back e2e cover the same
+guard.
 
 ### Finding 2 — the no-write E2E tests could pass vacuously
 
@@ -226,24 +246,37 @@ pass before the page's continuation ran. The response was awaited, but not the
 continuation.
 
 **Fix:** the spec shares `expectNoWriteDuring(page, wrote, windowMs = 1500)`: it
-samples the flag every 100 ms for a fixed window after the held response, asserts
-every sample `false`, and requires `> 5` samples so the window cannot be skipped.
-Applied to all three leave tests (Cancel, back link, browser back).
+samples the flag every 100 ms for a fixed window, asserts every sample `false`,
+and requires `ceil(windowMs / 200)` samples so the window cannot be skipped.
+Applied to all four leave tests (Cancel, back link, browser back, sidebar).
 
 ### Re-reported findings 3 & 4 — verified already fixed at round 1
 
-- **"Cancel still writes balances"** — the page Cancel (`leave()`, now
-  `supplier-opening-balance.tsx:190`), the back `<Link>` (`onClick={invalidateAttempt}`,
-  line 369) and the unmount cleanup (line 147) all invalidate. Tests: web
-  `does not write when the owner cancels while the lookup is pending`,
-  `does not write when the page unmounts while the lookup is pending`; e2e
-  `cancelling while the name lookup is pending writes nothing`, `leaving via the
-  back link while the lookup is pending writes nothing`, `browser back while the
-  name lookup is pending writes nothing`. The only residual was the dialog's
-  Cancel — finding 1 above — fixed now.
+- **"Cancel still writes balances"** — the page Cancel (`leave()`,
+  `supplier-opening-balance.tsx:204`), the back `<Link>`
+  (`onClick={invalidateAttempt}`, line 372) and the synchronous layout-effect
+  unmount cleanup (line 147) all invalidate. Tests: web `does not write when the
+  owner cancels while the lookup is pending`, `does not write when the page
+  unmounts while the lookup is pending`; e2e `cancelling while the name lookup is
+  pending writes nothing`, `leaving via the back link while the lookup is pending
+  writes nothing`, `browser back while the name lookup is pending writes
+  nothing`. The only residual was the dialog's Cancel — finding 1 above — fixed
+  now.
 - **"Old destination blocks valid edits"** — `typedDestination` is keyed by
-  `resolveKey`, `confirmStale` hides the dialog for a mismatched key, and the
-  `resolveKey` effect (lines 129-139) drops the snapshot and invalidates the
-  attempt. Tests: web `lets a valid batch save after the typed name moves to
-  another supplier`; e2e `editing the typed name away from the confirmed one keeps
-  the batch saveable`. No residual path found; not re-implemented.
+  `resolveKey` (line 111), `confirmStale` hides the dialog for a mismatched key
+  (line 115), and the `resolveKey` effect (lines 132-137) drops the snapshot and
+  invalidates the attempt. Tests: web `lets a valid batch save after the typed
+  name moves to another supplier`; e2e `editing the typed name away from the
+  confirmed one keeps the batch saveable`. No residual path found; not
+  re-implemented.
+
+### Accepted residuals (dismissed, documented)
+
+- The resolve request is invalidated, not aborted; a late result is discarded.
+- The refusal-recovery resolve still holds `submitting`, so the two Cancel
+  buttons are briefly disabled; the back link and browser back stay available.
+- A `suppliers` list refetch mid-resolve is not an "edit" and does not bump the
+  attempt; the server's `expectedSupplierId` / `OPENING_BALANCE_EXISTS` refusals
+  are the backstop.
+- The bounded window is a fixed interval, not a proof; a write after the window
+  would still be missed.

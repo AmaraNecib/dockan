@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -133,15 +133,18 @@ export function SupplierOpeningBalancePage() {
     resolveKeyRef.current = resolveKey;
     if (lastResolveKeyRef.current === resolveKey) return;
     lastResolveKeyRef.current = resolveKey;
-    invalidateAttempt();
-    setConfirming(false);
-    setTypedResolution(null);
+    abandonAttempt();
   }, [resolveKey]);
 
   // leaving the page (by any route) invalidates every in-flight attempt, so a late
-  // resolve can never reach save() after the owner left. Re-arming on mount keeps
-  // a StrictMode double-invoke from leaving it permanently false.
-  useEffect(() => {
+  // resolve can never reach save() after the owner left. `useLayoutEffect` so the
+  // cleanup runs synchronously in the unmount commit: a route change the page
+  // does not own (the app-shell sidebar, a programmatic nav) has no click handler
+  // to invalidate on, and a deferred passive cleanup could lose the race to a
+  // resolve continuation. Re-arming on mount keeps a StrictMode double-invoke
+  // from leaving it permanently false. The back link also invalidates in its
+  // `onClick` as a second, immediate guard.
+  useLayoutEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
@@ -179,12 +182,13 @@ export function SupplierOpeningBalancePage() {
     setTypedResolution(null);
   }
 
-  /** The dialog's OWN Cancel. The page-level `leave()` already invalidated an
-   * in-flight attempt (review round 1), but the dialog's Cancel did not: a second
-   * Save while the dialog was open left a live attempt whose late answer
-   * re-opened the dialog the owner had just dismissed (review round 2 finding 1).
-   * Cancel stays enabled — a hung lookup must not trap the owner. */
-  function cancelConfirm() {
+  /** Abandon any in-flight submit AND dismiss the confirmation. One primitive so
+   * the generation bump and the dialog dismissal cannot drift apart: the dialog's
+   * OWN Cancel (review round 2 finding 1), the page Cancel, and a lookup-field
+   * edit all need both. Cancel stays enabled — a hung lookup must not trap the
+   * owner. The success path uses the bare `closeConfirm()` because the write is
+   * done and there is nothing left to abandon. */
+  function abandonAttempt() {
     invalidateAttempt();
     closeConfirm();
   }
@@ -194,12 +198,11 @@ export function SupplierOpeningBalancePage() {
     setTypedResolution(resolveKey === null ? null : { key: resolveKey, supplier });
   }
 
-  /** Leave the screen: invalidate any in-flight attempt and drop the confirmation
+  /** Leave the screen: abandon any in-flight attempt and drop the confirmation
    * before navigating, so a late resolve cannot write (review round 1 finding 1).
    * Cancel is never blocked — a hung lookup must not trap the owner. */
   function leave() {
-    invalidateAttempt();
-    closeConfirm();
+    abandonAttempt();
     void navigate({ to: "/suppliers" });
   }
 
@@ -579,7 +582,7 @@ export function SupplierOpeningBalancePage() {
                 <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
-                <Button type="button" variant="outline" onClick={cancelConfirm} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
+                <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">
                   {t("partyCancel")}
                 </Button>
               </div>

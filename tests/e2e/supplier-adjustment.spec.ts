@@ -46,7 +46,8 @@ async function expectNoWriteDuring(page: Page, wrote: () => boolean, windowMs = 
     samples += 1;
     await page.waitForTimeout(100);
   }
-  expect(samples, "the no-write window must be sampled, not skipped").toBeGreaterThan(5);
+  const minSamples = Math.max(1, Math.ceil(windowMs / 200));
+  expect(samples, "the no-write window must be sampled, not skipped").toBeGreaterThanOrEqual(minSamples);
   expect(wrote()).toBe(false);
 }
 
@@ -264,11 +265,20 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   const carried = await rpc<{ id: string }>(page, "suppliersCreate", { name: carriedName });
   await rpc(page, "suppliersAdjust", { supplierId: carried.id, direction: "WE_OWE", amount: 500, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
 
-  // delay only the SECOND lookup: the first must answer so the dialog opens
+  // hold only the SECOND lookup on a gate the test releases AFTER the cancel, so
+  // the cancel provably lands while that resolve is unanswered (not a wall-clock
+  // race that a slow CI could lose in the wrong direction)
   let lookups = 0;
+  let releaseSecond: () => void = () => undefined;
+  let markSecondOnWire: () => void = () => undefined;
+  const secondOnWire = new Promise<void>((resolve) => { markSecondOnWire = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
   await page.route("**/api/rpc/suppliersResolveName", async (route) => {
     lookups += 1;
-    if (lookups >= 2) await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (lookups === 2) {
+      markSecondOnWire();
+      await secondGate;
+    }
     await route.continue();
   });
   let wrote = false;
@@ -286,13 +296,15 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
 
-  // a second main Save starts a NEW held lookup while the dialog stays open
+  // a second main Save starts a NEW lookup while the dialog stays open
   const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
   await page.getByTestId("opening-balance-save").click();
+  await secondOnWire; // the second resolve is on the wire and unanswered
 
-  // the DIALOG's own Cancel lands while that lookup runs
+  // the DIALOG's own Cancel lands while that lookup is still pending
   await page.getByTestId("opening-balance-confirm-cancel").click();
   await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
+  releaseSecond();
 
   // the held lookup settles: the abandoned attempt must neither write nor
   // re-open the dismissed dialog over a bounded window
@@ -301,6 +313,14 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   await page.unroute("**/api/rpc/suppliersResolveName");
   await expectNoWriteDuring(page, () => wrote);
   await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
+
+  // positive control for the write listener: a real confirmed save IS observed,
+  // so the no-write window above cannot pass on a broken request matcher
+  await page.getByTestId("opening-balance-save").click();
+  await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
+  await page.getByTestId("opening-balance-confirm-save").click();
+  await expect(page.getByTestId("opening-balance-saved")).toContainText(carriedName);
+  expect(wrote).toBe(true);
 });
 
 /**
@@ -363,6 +383,44 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await page.getByTestId("opening-balance-save").click();
 
   await page.goBack(); // router-driven unmount, no page onClick
+  await lookup;
+  await page.unroute("**/api/rpc/suppliersResolveName");
+  await expectNoWriteDuring(page, () => wrote);
+});
+
+/**
+ * A navigation the page does not own: the app-shell sidebar has no page-level
+ * click handler, so only the (synchronous, layout-effect) unmount guard can
+ * invalidate the in-flight lookup (issue 184 review round 2).
+ */
+test("leaving via the sidebar while the name lookup is pending writes nothing (issue 184 review round 2)", async ({ page }) => {
+  await signIn(page);
+  const name = `مورد قائمة-${Date.now()}`;
+
+  // hold the lookup open across the navigation, like the back-link / browser-back
+  // tests; the sidebar has no page-level onClick to invalidate on
+  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  let wrote = false;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) wrote = true;
+  });
+
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  await page.getByTestId("opening-balance-new-name").fill(name);
+  await page.getByTestId("opening-balance-new-amount").fill("500");
+
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  await page.getByTestId("opening-balance-save").click();
+
+  // a sidebar link, not a page control: the unmount guard must invalidate
+  await page.getByRole("link", { name: "المشتريات" }).click();
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+
   await lookup;
   await page.unroute("**/api/rpc/suppliersResolveName");
   await expectNoWriteDuring(page, () => wrote);

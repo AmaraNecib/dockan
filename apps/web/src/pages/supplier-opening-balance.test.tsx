@@ -628,6 +628,36 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(mutationCalls).toBe(0);
   });
 
+  it("disables the confirm button while a re-submit's lookup is pending (review round 2)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const confirmSave = () => host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]');
+    expect(confirmSave()?.disabled).toBe(false);
+
+    // a second main Save puts a lookup in flight: the dialog must not be
+    // confirmable against the snapshot that lookup is still deciding
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(confirmSave()?.disabled).toBe(true);
+
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(confirmSave()?.disabled).toBe(false);
+  });
+
   it("does not write when the page unmounts while the lookup is pending (review round 1 finding 1)", async () => {
     resolveHold = new Promise((resolve) => {
       releaseResolveHold = resolve;

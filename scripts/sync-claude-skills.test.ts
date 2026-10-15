@@ -88,6 +88,26 @@ const withMirrorTrees = (run: (source: string, dest: string) => void) => {
   }
 }
 
+/**
+ * A file symlink is the genuine `Dirent` case the linked-`SKILL.md` test
+ * needs, and Windows without Developer Mode cannot create one (EPERM). Probe
+ * once so that test SKIPS there instead of returning early — an early return
+ * still reports `(pass)` with zero assertions, so the coverage row lies.
+ */
+const canSymlinkFiles = (() => {
+  const dir = mkdtempSync(join(tmpdir(), 'skills-symlink-probe-'))
+  try {
+    const target = join(dir, 'target')
+    writeFileSync(target, 'probe')
+    symlinkSync(target, join(dir, 'link'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})()
+
 describe('walkTree', () => {
   it('reports a link at any depth and never lists it as a file', () => {
     const skill = join(tmpdir(), 'fake-skill')
@@ -131,6 +151,33 @@ describe('compare', () => {
     })
   })
 
+  it('flags differing content', () => {
+    withMirrorTrees((source, dest) => {
+      writeFileSync(join(dest, 'SKILL.md'), '# changed\n')
+      expect(compare('demo', source, dest)).toEqual([
+        'demo/SKILL.md: content differs',
+      ])
+    })
+  })
+
+  it('flags a file that only the mirror has', () => {
+    withMirrorTrees((source, dest) => {
+      writeFileSync(join(dest, 'extra.md'), '# extra\n')
+      expect(compare('demo', source, dest)).toEqual([
+        '.claude/skills/demo/extra.md has no source',
+      ])
+    })
+  })
+
+  it('flags a file that only the source has', () => {
+    withMirrorTrees((source, dest) => {
+      writeFileSync(join(source, 'extra.md'), '# extra\n')
+      expect(compare('demo', source, dest)).toEqual([
+        '.agents/skills/demo/extra.md is missing from .claude',
+      ])
+    })
+  })
+
   it('rejects a linked SKILL.md whose content matches', () => {
     withMirrorTrees((source, dest) => {
       // The premise of the test name; a fixture edit would otherwise turn it
@@ -147,23 +194,19 @@ describe('compare', () => {
     })
   })
 
-  it('rejects a real linked SKILL.md with matching content', () => {
-    withMirrorTrees((source, dest) => {
-      rmSync(join(dest, 'SKILL.md'))
-      try {
+  it.skipIf(!canSymlinkFiles)(
+    'rejects a real linked SKILL.md with matching content',
+    () => {
+      withMirrorTrees((source, dest) => {
+        rmSync(join(dest, 'SKILL.md'))
         symlinkSync(join(source, 'SKILL.md'), join(dest, 'SKILL.md'), 'file')
-      } catch (error) {
-        // Windows without developer mode cannot create file symlinks. CI runs
-        // on Linux, where this exercises the genuine `Dirent` path.
-        if ((error as NodeJS.ErrnoException).code === 'EPERM') return
-        throw error
-      }
 
-      expect(compare('demo', source, dest)).toEqual([
-        '.claude/skills/demo/SKILL.md is a symlink',
-      ])
-    })
-  })
+        expect(compare('demo', source, dest)).toEqual([
+          '.claude/skills/demo/SKILL.md is a symlink',
+        ])
+      })
+    },
+  )
 
   it('rejects a nested linked file with no same-named source', () => {
     withMirrorTrees((source, dest) => {

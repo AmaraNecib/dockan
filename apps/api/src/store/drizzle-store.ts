@@ -23,6 +23,7 @@ import type {
   PartyCreate,
   PartyDetail,
   PartyListItem,
+  PartyName,
   PartyRole,
   PartyStats,
   PartyUpdate,
@@ -35,6 +36,7 @@ import type {
   StockMovement,
   Supplier,
   SupplierAccountEntry,
+  SupplierAccountSummary,
   SupplierAdjustmentDirection,
   SupplierEntryKind,
   SupplierReturnRecord,
@@ -1625,6 +1627,32 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         GROUP BY p.id
         ORDER BY p.name`)) as PartyAggregateRow[];
       return rows.map(toPartyListItem);
+    },
+    // #183 — the names-only seam and the supplier account summary. Both skip the
+    // invoice LEFT JOIN + GROUP BY `listParties` needs for its stats, so the
+    // opening-balance screen stops paying for the invoice aggregate to compare
+    // two names.
+    async listPartyNames(role: PartyRole) {
+      // SAFETY: the table name comes from a closed literal map (never input).
+      const rows = (await db.all(sql`SELECT p.id, p.name FROM ${sql.raw(PARTY_TABLES[role])} p ORDER BY p.name`)) as Array<{ id: SqlScalar; name: SqlScalar }>;
+      return rows.map((row): PartyName => ({ id: String(row.id), name: String(row.name) }));
+    },
+    async listSupplierAccountSummaries() {
+      // Only suppliers that carry an entry; the caller defaults a missing id to
+      // 0/0. The signed-amount expression is the one `listParties` and
+      // `supplierBalance` use, so the list and the detail cannot disagree.
+      // SAFETY: the alias is a literal, never input.
+      const rows = (await db.all(sql`
+        SELECT e.supplier_id AS id,
+               SUM(${sql.raw(supplierSignedAmountSql("e"))}) AS accountBalance,
+               COUNT(*) AS accountEntryCount
+        FROM supplier_account_entries e
+        GROUP BY e.supplier_id`)) as Array<{ id: SqlScalar; accountBalance: SqlScalar; accountEntryCount: SqlScalar }>;
+      return rows.map((row): SupplierAccountSummary => ({
+        id: String(row.id),
+        accountBalance: safeSignedWhole(row.accountBalance),
+        accountEntryCount: safeWhole(row.accountEntryCount),
+      }));
     },
     async getParty(role: PartyRole, partyId: string) {
       return fetchParty(role, partyId);

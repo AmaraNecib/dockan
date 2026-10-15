@@ -1581,6 +1581,24 @@ describe("parties (issue 120)", () => {
     await expect(client.customersUpdate({ id: "00000000-0000-4000-8000-000000000000", name: "لا أحد" })).rejects.toThrow(/PARTY_NOT_FOUND/);
   });
 
+  it("exposes a names-only supplier list and a lean account summary (#183)", async () => {
+    const supplier = await client.suppliersCreate({ name: `مورد-أسماء-${Date.now()}` });
+
+    // the conflict-check seam is identity only
+    const names = await client.suppliersListNames();
+    const row = names.items.find((item) => item.id === supplier.id);
+    expect(row).toEqual({ id: supplier.id, name: supplier.name });
+    expect(Object.keys(row!).sort()).toEqual(["id", "name"]);
+
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 750 });
+    const summaries = await client.suppliersAccountSummaries();
+    expect(summaries.items.find((item) => item.id === supplier.id)).toMatchObject({ accountBalance: 750, accountEntryCount: 1 });
+    // the full list seam agrees with the lean summary
+    const listRow = (await client.suppliersList()).items.find((item) => item.id === supplier.id);
+    expect(listRow?.accountBalance).toBe(750);
+    expect(listRow?.accountEntryCount).toBe(1);
+  });
+
   it("maps the phone identity rule to the role-specific CONFLICT key", async () => {
     await client.suppliersCreate({ name: "مورد-هاتف", phone: "0770111222" });
     await expect(client.suppliersCreate({ name: "مورد-آخر", phone: "0770111222" })).rejects.toThrow(/SUPPLIER_PHONE_EXISTS/);

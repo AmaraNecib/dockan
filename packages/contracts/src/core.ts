@@ -484,6 +484,29 @@ export const partyListItemSchema = partySchema.extend({
 });
 export const partyListOutputSchema = z.object({ items: z.array(partyListItemSchema) });
 
+/**
+ * #183 — names-only party identity, for name-conflict checks that must not pay
+ * for the list seam above (no invoice aggregates, no phone). The bulk
+ * opening-balance screen folds typed names against this list; only `{ id, name }`
+ * ever crosses the wire.
+ */
+export const partyNameSchema = partySchema.pick({ id: true, name: true });
+export const partyNamesOutputSchema = z.object({ items: z.array(partyNameSchema) });
+
+/**
+ * #183 — the bulk opening-balance screen's supplier account summary: the signed
+ * balance and the entry count the screen renders, keyed by supplier id. Leaner
+ * than `listParties`: it reads only `supplier_account_entries`, never the
+ * invoice join. A supplier with no entry is absent and the caller defaults to
+ * 0/0. Uses the same sign expression as `listParties` and the supplier detail.
+ */
+export const supplierAccountSummarySchema = z.object({
+  id: idSchema,
+  accountBalance: z.number().int(),
+  accountEntryCount: z.number().int().min(0),
+});
+export const supplierAccountSummariesOutputSchema = z.object({ items: z.array(supplierAccountSummarySchema) });
+
 /** Payments tab row: the invoice number is joined at this seam so the page
  * never renders a raw invoiceId. */
 export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string().min(1) });
@@ -1455,6 +1478,8 @@ export type PartyInvoiceKind = (typeof partyInvoiceKind)[PartyRole];
 export type Party = z.infer<typeof partySchema>;
 export type PartyStats = z.infer<typeof partyStatsSchema>;
 export type PartyListItem = z.infer<typeof partyListItemSchema>;
+export type PartyName = z.infer<typeof partyNameSchema>;
+export type SupplierAccountSummary = z.infer<typeof supplierAccountSummarySchema>;
 export type PartyPayment = z.infer<typeof partyPaymentSchema>;
 export type PartyDetail = z.infer<typeof partyDetailOutputSchema>;
 export type InvoiceKind = z.infer<typeof invoiceKindSchema>;

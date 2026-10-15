@@ -82,6 +82,15 @@ mock.module("@/lib/rpc", () => ({
       queryOptions: () => ({ queryKey: ["suppliers"], queryFn: async () => ({ items: [] }) }),
       queryKey: () => ["suppliers"],
     },
+    // #183 — the opening-balance screen's two lean reads
+    suppliersListNames: {
+      queryOptions: () => ({ queryKey: ["suppliersListNames"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["suppliersListNames"],
+    },
+    suppliersAccountSummaries: {
+      queryOptions: () => ({ queryKey: ["suppliersAccountSummaries"], queryFn: async () => ({ items: [] }) }),
+      queryKey: () => ["suppliersAccountSummaries"],
+    },
     customersCreate: {
       mutationOptions: (opts?: PartyCreateMutationOptions) => ({ mutationFn: async () => ({ id: "c-1", name: "زبون", phone: null, createdAt: "" }), ...opts }),
     },

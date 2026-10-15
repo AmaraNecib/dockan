@@ -59,7 +59,11 @@ export function SupplierOpeningBalancePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const list = useQuery(orpc.suppliersList.queryOptions());
+  // #183 — two lean reads replace the full party list. `suppliersListNames` is
+  // the names-only seam the conflict check folds against; the account summary
+  // carries only the balance + entry count the table renders.
+  const namesQuery = useQuery(orpc.suppliersListNames.queryOptions());
+  const accountsQuery = useQuery(orpc.suppliersAccountSummaries.queryOptions());
 
   const [dateDraft, setDateDraft] = useState(() => nowDateTimeText().slice(0, 10));
   const [reasonDraft, setReasonDraft] = useState(() => t("supplierAdjustPresetOpening"));
@@ -91,8 +95,45 @@ export function SupplierOpeningBalancePage() {
   const dismissalRef = useRef(0);
   const mountedRef = useRef(true);
   const bulk = useMutation(orpc.suppliersOpeningBalances.mutationOptions());
+  // #183 — the reads this screen owns. A write changes supplier identities and
+  // accounts, so all three are refreshed; `suppliersList` is kept because other
+  // screens still read the full list. Computed in the component (not at module
+  // load) so importing the page never depends on the full rpc surface existing.
+  const supplierReadQueryKeys = [orpc.suppliersListNames.queryKey(), orpc.suppliersAccountSummaries.queryKey(), orpc.suppliersList.queryKey()];
 
-  const suppliers = list.data?.items ?? [];
+  // merge by id into the rows the table renders; a supplier with no account
+  // entry is absent from the summary and defaults to 0/0, exactly as the list
+  // seam's supplier-only nulls used to
+  const suppliers = useMemo(() => {
+    const accountsById = new Map((accountsQuery.data?.items ?? []).map((account) => [account.id, account]));
+    return (namesQuery.data?.items ?? []).map((supplier) => {
+      const account = accountsById.get(supplier.id);
+      return { id: supplier.id, name: supplier.name, accountBalance: account?.accountBalance ?? 0, accountEntryCount: account?.accountEntryCount ?? 0 };
+    });
+  }, [namesQuery.data, accountsQuery.data]);
+  const listPending = namesQuery.isPending || accountsQuery.isPending;
+  const listError = namesQuery.isError ? namesQuery.error : accountsQuery.isError ? accountsQuery.error : null;
+  // #183 — a failed read must block the save. If only the account summary fails,
+  // the merge would still yield rows with accountEntryCount 0, silently skipping
+  // the confirmation gate the full list used to power; the base page blocked
+  // because its empty list made the batch look empty. Refuse explicitly.
+  const listFailed = listError !== null;
+  /** The SAME read failure, but read live from the query cache at the moment a
+   * continuation consults it. `save`/`submit` can resume after the render that
+   * started them, so a captured `listFailed` can be false while a read has since
+   * failed and the page already shows the failure banner; the write would land
+   * behind that banner (Greptile round 3). The cache flips to `error` the instant
+   * a read rejects — before React commits — so this cannot lag the read the way a
+   * render value can. `null` means no failure; a `{ message: undefined }` failure
+   * (an error status with no error object) still blocks, it just shows the
+   * generic message. */
+  function liveListFailure(): { message: string | undefined } | null {
+    for (const queryKey of [orpc.suppliersListNames.queryKey(), orpc.suppliersAccountSummaries.queryKey()]) {
+      const state = queryClient.getQueryState(queryKey);
+      if (state?.status === "error") return { message: state.error?.message };
+    }
+    return null;
+  }
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
 
@@ -264,6 +305,15 @@ export function SupplierOpeningBalancePage() {
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
     if (occurredAt === null) return;
+    // a failed read must block the dialog path too, and it must be the failure
+    // AT WRITE TIME: this function can run from a continuation that outlived the
+    // render which started it, so `listFailed` is a captured value the read can
+    // have overtaken (Greptile round 3). Consult the live cache, not the closure.
+    const readFailure = liveListFailure();
+    if (readFailure !== null) {
+      setError(tError(readFailure.message));
+      return;
+    }
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
@@ -315,7 +365,7 @@ export function SupplierOpeningBalancePage() {
         ],
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() }),
+        ...supplierReadQueryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
         queryClient.invalidateQueries({ queryKey: orpc.reportsDebts.queryKey() }),
         queryClient.invalidateQueries({ queryKey: DEBTS_BY_PARTY_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: orpc.dashboardSummary.queryKey() }),
@@ -333,7 +383,7 @@ export function SupplierOpeningBalancePage() {
       // server for the destination, then re-open the dialog so what it names is
       // what the confirmed write will touch. Do this on the CONFIRMED path too.
       if (err instanceof Error && (err.message.includes("OPENING_BALANCE_EXISTS") || err.message.includes("OPENING_BALANCE_TARGET_CHANGED"))) {
-        await queryClient.invalidateQueries({ queryKey: orpc.suppliersList.queryKey() });
+        await Promise.all(supplierReadQueryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
         try {
           const destination = await resolveTypedDestination();
           if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey || dismissalRef.current !== saveDismissal) return;
@@ -355,7 +405,7 @@ export function SupplierOpeningBalancePage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (submitting || resolvingRef.current || bulk.isPending || dateInvalid) return;
+    if (submitting || resolvingRef.current || bulk.isPending || dateInvalid || listFailed) return;
     if (blockedReason !== null) {
       setError(blockedReason);
       return;
@@ -374,6 +424,12 @@ export function SupplierOpeningBalancePage() {
     const destination = resolveInput === null ? null : await resolveForSubmit(attempt);
     if (attempt !== attemptRef.current) return; // left or the lookup fields changed
     if (destination === undefined) return; // resolve failed; the error is already shown
+    // a read that failed while the lookup was in flight must not name a dialog
+    // either: the counts `confirmNames` would show, and the gate `save` applies,
+    // come from the same render this continuation outlived (Greptile round 3
+    // class fix). The failure banner is already on screen, so stop silently the
+    // way the entry guard does.
+    if (liveListFailure() !== null) return;
     const conflict = conflictsWithFilled(destination);
     if (conflict) {
       setError(t("supplierOpeningRowHasAmount"));
@@ -483,14 +539,14 @@ export function SupplierOpeningBalancePage() {
             </label>
           </div>
 
-          {list.isPending ? (
+          {listPending ? (
             <div className="grid gap-2" data-testid="opening-balance-loading">
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
             </div>
-          ) : list.isError ? (
+          ) : listError !== null ? (
             <p className="rounded border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive" role="alert" data-testid="opening-balance-error">
-              {tError(list.error.message)}
+              {tError(listError.message)}
             </p>
           ) : (
             <table className="w-full text-sm" data-testid="opening-balance-table">
@@ -622,7 +678,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || blockedReason !== null} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
@@ -645,7 +701,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || blockedReason !== null} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

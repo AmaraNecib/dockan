@@ -667,6 +667,37 @@ describe("parties", () => {
     expect(customers.some((x) => x.id === c.id && x.phone === "+213550123123")).toBe(true);
     expect(suppliers.some((x) => x.id === s.id && x.name === "مخزن الحاج")).toBe(true);
   });
+
+  it("reads names-only party identities and a lean supplier account summary (#183)", async () => {
+    const supplier = await store.createParty("supplier", { name: "مورد-الأسماء" });
+    const netZero = await store.createParty("supplier", { name: "مورد-صفر" });
+    await store.createParty("customer", { name: "عميل-الأسماء" });
+
+    // the conflict-check seam returns identity only: no invoice aggregate, no phone
+    const supplierNames = await store.listPartyNames("supplier");
+    const nameRow = supplierNames.find((row) => row.id === supplier.id);
+    expect(nameRow?.name).toBe("مورد-الأسماء");
+    expect(Object.keys(nameRow!).sort()).toEqual(["id", "name"]);
+    // same order as the list seam (ORDER BY name), so paging/permutation cannot drift
+    expect(supplierNames.map((row) => row.name)).toEqual((await store.listParties("supplier")).map((row) => row.name));
+    // customers are a separate identity space
+    expect((await store.listPartyNames("customer")).some((row) => row.name === "عميل-الأسماء")).toBe(true);
+
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 500, invoiceId: null, occurredAt: localDateTime() });
+    await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 200, invoiceId: null, method: "CASH", occurredAt: localDateTime() });
+    // a NET-ZERO account still carries an entry count: the confirmation gate must
+    // key on the count, never on a non-zero balance
+    await store.insertSupplierEntry({ supplierId: netZero.id, kind: "PURCHASE", amount: 400, invoiceId: null, occurredAt: localDateTime() });
+    await store.insertSupplierEntry({ supplierId: netZero.id, kind: "PAYMENT", amount: 400, invoiceId: null, method: "CASH", occurredAt: localDateTime() });
+
+    const summary = (await store.listSupplierAccountSummaries()).find((row) => row.id === supplier.id);
+    expect(summary).toMatchObject({ accountBalance: 300, accountEntryCount: 2 });
+    expect((await store.listSupplierAccountSummaries()).find((row) => row.id === netZero.id)).toMatchObject({ accountBalance: 0, accountEntryCount: 2 });
+    // the same sign expression as the list seam, so the two cannot disagree
+    const listRow = (await store.listParties("supplier")).find((party) => party.id === supplier.id);
+    expect(listRow?.accountBalance).toBe(summary?.accountBalance);
+    expect(listRow?.accountEntryCount).toBe(summary?.accountEntryCount);
+  });
 });
 
 describe("parties (issue 120): identity, delete rule, detail, backfill", () => {

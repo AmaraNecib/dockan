@@ -38,11 +38,17 @@ let resolveByKey = new Map<string, ResolvedSupplier>();
  * the name, so the next resolve answers with this destination */
 let racedAfterRefusal: { key: string; supplier: ResolvedSupplier } | null = null;
 const BASE_SUPPLIERS = [
-  { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
-  { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
-  { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
+  { id: "s-1", name: "مورد له حركات", accountBalance: 5000, accountEntryCount: 3 },
+  { id: "s-2", name: "مورد بلا حركات", accountBalance: 0, accountEntryCount: 0 },
+  { id: "s-3", name: "مورد رصيد سالب", accountBalance: -300, accountEntryCount: 1 },
 ];
 let suppliers = BASE_SUPPLIERS;
+/** #183 — set when the page reads the full party list; it must never do so. */
+let suppliersListUsed = false;
+/** when true, the account summary read rejects */
+let accountsShouldFail = false;
+/** when true, the names-only read rejects */
+let namesShouldFail = false;
 /** when true, the next resolve rejects (a failed read) */
 let resolveFails = false;
 /** count of resolve calls, to assert a no-op path never asks the server */
@@ -59,11 +65,39 @@ let releaseResolveHold: (() => void) | null = null;
 let mutationHold: Promise<void> | null = null;
 let releaseMutationHold: (() => void) | null = null;
 
+// #183 — the page reads two lean seams: names-only (the conflict-check list)
+// and the supplier account summary (the balance/entry columns). The mock mirrors
+// the server: the summary omits suppliers with no entry, and the page defaults
+// a missing id to 0/0. The full `suppliersList` seam is still mocked, but only to
+// prove the page never touches it.
 mock.module("@/lib/rpc", () => ({
   orpc: {
     suppliersList: {
-      queryOptions: () => ({ queryKey: ["suppliersList"], queryFn: async () => ({ items: suppliers }) }),
+      queryOptions: () => {
+        suppliersListUsed = true;
+        return { queryKey: ["suppliersList"], queryFn: async () => ({ items: suppliers }) };
+      },
       queryKey: () => ["suppliersList"],
+    },
+    suppliersListNames: {
+      queryOptions: () => ({
+        queryKey: ["suppliersListNames"],
+        queryFn: async () => {
+          if (namesShouldFail) throw new Error("NAMES_FAILED");
+          return { items: suppliers.map(({ id, name }) => ({ id, name })) };
+        },
+      }),
+      queryKey: () => ["suppliersListNames"],
+    },
+    suppliersAccountSummaries: {
+      queryOptions: () => ({
+        queryKey: ["suppliersAccountSummaries"],
+        queryFn: async () => {
+          if (accountsShouldFail) throw new Error("ACCOUNT_SUMMARY_FAILED");
+          return { items: suppliers.filter((supplier) => supplier.accountEntryCount > 0).map(({ id, accountBalance, accountEntryCount }) => ({ id, accountBalance, accountEntryCount })) };
+        },
+      }),
+      queryKey: () => ["suppliersAccountSummaries"],
     },
     suppliersOpeningBalances: {
       mutationOptions: () => ({
@@ -128,6 +162,9 @@ beforeEach(() => {
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
   racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
+  suppliersListUsed = false;
+  accountsShouldFail = false;
+  namesShouldFail = false;
   queryClient = null;
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -152,9 +189,10 @@ function render() {
   });
 }
 
-/** Flush the suppliersList query so the rows exist before the test reads them. */
+/** Flush the two supplier reads so the rows exist before the test reads them. */
 async function settle() {
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -361,18 +399,20 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // the cached list says this supplier has no entries, but the server disagrees
     typeIntoRow(1, "200");
+    // the server has already recorded history the cached account summary does not
+    // show. The page's OWN refusal handler must refresh the counts; the test never
+    // invalidates them, so a page that skips the account refresh keeps s-2 at 0
+    // entries and the confirmed save would not forward confirmExisting.
+    suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
     await act(async () => {
       clickOn("opening-balance-save");
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    // the refusal refreshes the counts: the supplier really does have history
-    suppliers = BASE_SUPPLIERS.map((supplier) => (supplier.id === "s-2" ? { ...supplier, accountEntryCount: 2 } : supplier));
-    await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
-    });
     await settle();
 
+    // the refusal's own refresh surfaced the history: the dialog names the
+    // supplier, and the confirmed save carries confirmExisting for it
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain("مورد بلا حركات");
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
@@ -402,34 +442,49 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks the save and marks the row when an amount draft is invalid (Greptile finding 1)", async () => {
     render();
     await settle();
-    typeIntoRow(1, "abc");
+    // a valid row on s-2 (no entries) beside the invalid one keeps totalRows > 0,
+    // so the empty-batch check cannot mask the block: the invalid-row guard itself
+    // must stop the request, and without it the valid row would be sent
+    typeIntoRow(1, "300");
+    typeIntoRow(0, "abc");
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
   it("rejects a decimal-grouped amount with a row error instead of saving 100x (Greptile round 2)", async () => {
     render();
     await settle();
-    typeIntoRow(1, "1 000,00");
+    // a valid row on s-2 beside the rejected one, so the empty-batch check cannot
+    // mask the block and a dropped guard would send the valid row
+    typeIntoRow(1, "300");
+    typeIntoRow(0, "1 000,00");
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
   it("blocks an incomplete inline supplier instead of dropping it (Greptile finding 1)", async () => {
     render();
     await settle();
+    // a valid row so the empty-batch check cannot mask the incomplete-name block
+    typeIntoRow(1, "300");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ");
 
     expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
@@ -437,9 +492,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     suppliers = Array.from({ length: 200 }, (_value, index) => ({
       id: `bulk-${index}`,
       name: `مورد ${index}`,
-      phone: null,
-      createdAt: "2026-01-01T10:00:00",
-      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
       accountBalance: 0,
       accountEntryCount: 0,
     }));
@@ -455,7 +507,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
@@ -476,6 +530,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).toContain(JSON.stringify([["activitiesList"]]));
     expect(keys).toContain(JSON.stringify([["invoicesList"]]));
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
+    // the save changes supplier accounts, so all three supplier reads refresh —
+    // including the account summary the confirmation gate reads
+    expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
+    expect(keys).toContain(JSON.stringify(["suppliersAccountSummaries"]));
+    expect(keys).toContain(JSON.stringify(["suppliersList"]));
   });
 
   it("sends a typed name as newSupplierName with the named id as a consistency check (round 5 / #184)", async () => {
@@ -1089,15 +1148,222 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks two outgoing rows folding to one name before the server (round 5)", async () => {
     render();
     await settle();
-    // an explicit row for s-1 plus a typed name that folds to the same name
-    typeIntoRow(0, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  له حركات");
+    // an explicit row for s-2 (no entries, so no confirmation can mask the guard)
+    // plus a typed name that folds to the same name
+    typeIntoRow(1, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
+  });
+
+  it("never loads the full party list — the conflict check rides the names-only seam (#183)", async () => {
+    render();
+    await settle();
+    expect(suppliersListUsed).toBe(false);
+    // the table rendered from the two lean reads
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')).toHaveLength(BASE_SUPPLIERS.length);
+  });
+
+  it("blocks the save when the account summary fails instead of skipping the confirmation gate (#183)", async () => {
+    render();
+    await settle();
+    // a valid typed-name row on s-2 (no cached entries). Filling it first keeps
+    // totalRows > 0, so the empty-batch check cannot be what blocks the request:
+    // only the failed-read guard can, and without it this row would be sent.
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+
+    // the summary read now fails on refetch: its counts are no longer trustworthy
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    // requestSubmit bypasses the disabled button, so this proves the guard in
+    // save()/submit() blocks, not just the disabled attribute
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+  });
+
+  it("blocks the save when the names read fails instead of skipping the conflict check (#183)", async () => {
+    render();
+    await settle();
+    // a valid typed-name row on s-2 (no cached entries), so totalRows > 0 and the
+    // empty-batch check cannot be what blocks the request; without the guard the
+    // row would be sent with the conflict list unknown
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+
+    // the names read now fails on refetch: the conflict list is no longer trusted
+    namesShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+  });
+
+  it("blocks the confirm-save when the account summary fails after the dialog opens (#183)", async () => {
+    render();
+    await settle();
+    // s-1 carries entries, so filling its row opens the confirmation dialog
+    typeIntoRow(0, "100");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // a later refetch of the account summary fails while the dialog is open
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
+    await settle();
+
+    // the same `listFailed` flag disables the control and backs the guard in save():
+    // the disabled assertion is what proves the owner cannot fire this write
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+  });
+
+  /** Greptile round 3 — the two supplier reads that gate the save. A waiting
+   * submission must consult the read failure that exists when it writes, not the
+   * one the render that started it saw. */
+  const WAITING_READ_FAILURES: Array<{ label: string; queryKey: string[]; fail: () => void; recover: () => void }> = [
+    { label: "names read", queryKey: ["suppliersListNames"], fail: () => { namesShouldFail = true; }, recover: () => { namesShouldFail = false; } },
+    { label: "account summary read", queryKey: ["suppliersAccountSummaries"], fail: () => { accountsShouldFail = true; }, recover: () => { accountsShouldFail = false; } },
+  ];
+  for (const { label, queryKey, fail, recover } of WAITING_READ_FAILURES) {
+    it(`does not write when the ${label} fails while the name lookup is held (#183, Greptile round 3)`, async () => {
+      // park submit() inside its resolve await, then fail the read WHILE it
+      // waits. Failing the read before submit() starts would pass even against
+      // the defect: the render that started submit() would already carry
+      // `listFailed === true`.
+      resolveHold = new Promise((resolve) => {
+        releaseResolveHold = resolve;
+      });
+      render();
+      await settle();
+      // a new supplier (the resolver answers null) with no entries: this row
+      // takes the direct-save path the finding names
+      setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+      setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+      await act(async () => {
+        clickOn("opening-balance-save");
+      });
+      expect(resolveCalls).toBe(1);
+
+      fail();
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey });
+      });
+      await settle();
+      // the read really failed while the lookup was still held
+      expect(clickTarget("opening-balance-error")).not.toBeNull();
+
+      // release the held lookup: the waiting continuation must not write
+      await act(async () => {
+        releaseResolveHold?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await settle();
+      expect(captured).toBeNull();
+      expect(mutationCalls).toBe(0);
+      expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
+
+      // recovery: clearing the failure must unblock the owner, and a fresh
+      // write proves the released continuation really resumed (a dropped one
+      // would also show no write above)
+      recover();
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey });
+      });
+      await settle();
+      await act(async () => {
+        clickOn("opening-balance-save");
+      });
+      await settle();
+      expect(mutationCalls).toBe(1);
+      expect(captured).not.toBeNull();
+    });
+  }
+
+  it("does not open the confirmation off a read that failed while the name lookup was held (#183, Greptile round 3)", async () => {
+    // the typed name resolves to an account that already carries an entry, so a
+    // healthy read would open the dialog; a read failing during the held lookup
+    // must not let the continuation name counts the failed read no longer backs
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    // beforeEach resolves "مورد له حركات" to s-1 (accountEntryCount 3)
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(1);
+
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
+    await settle();
+    expect(clickTarget("opening-balance-error")).not.toBeNull();
+
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("resolves a folded typed name to the server's existing account and confirms it (#183/#184)", async () => {
+    // the server is the only resolver (issue 184): the fold maps to s-3, whose
+    // account already carries an entry, so the dialog asks before writing
+    resolveByKey.set(normalizeTextKey("مورد  رصيد سالب"), { id: "s-3", name: "مورد رصيد سالب", accountEntryCount: 1 });
+    render();
+    await settle();
+    // "مورد  رصيد سالب" (double space) folds to s-3's "مورد رصيد سالب"
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  رصيد سالب");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "250");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    // the dialog names the server's stored text, not the typed string
+    expect(host.querySelector('[data-testid="opening-balance-confirm-name"]')?.textContent).toBe("مورد رصيد سالب");
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد  رصيد سالب", amount: 250, confirmExisting: true, expectedSupplierId: "s-3" });
   });
 
   it("does not cut off an owner still typing a new name that starts like an existing one (round 5)", async () => {
@@ -1158,10 +1424,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks a typed name whose supplier already has a filled row instead of double-posting (round 5)", async () => {
     render();
     await settle();
-    const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+    const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[1]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
 
-    typeIntoRow(0, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    // s-2 has no entries, so no confirmation dialog can mask the conflict guard
+    typeIntoRow(1, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
 
     // the row keeps the owner's earlier 700; the inline draft is left for the
@@ -1173,7 +1440,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // conflict is visible and blocks the save before any request.
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
@@ -1197,6 +1466,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     const confirmNames = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
     expect(confirmNames()).toContain(typedName);
+
+    // the raced supplier exists on the server, but the client has not seen it yet:
+    // the mocked refusal injects it into the next resolve, and the page's OWN
+    // refusal handler refreshes the lean reads without the test invalidating them.
 
     // the client still thinks the name is new, so the first confirm does not
     // forward confirmExisting; the server refuses and the catch re-asks for the
@@ -1237,6 +1510,12 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // a refusal on the already-confirmed path must still refresh the list so the
     // page can recover instead of repeating the same refusal forever
     const keys = spy.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["suppliersListNames"]));
+    // the entries the confirmation gate reads live in the account summary: a
+    // refusal that refreshed only the names would leave the owner retrying with
+    // stale counts and looping on the same refusal
+    expect(keys).toContain(JSON.stringify(["suppliersAccountSummaries"]));
+    // the write changes supplier accounts, so the full list other screens read is still refreshed
     expect(keys).toContain(JSON.stringify(["suppliersList"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
   });
@@ -1245,9 +1524,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     suppliers = Array.from({ length: 201 }, (_value, index) => ({
       id: `bulk-${index}`,
       name: `مورد ${index}`,
-      phone: null,
-      createdAt: "2026-01-01T10:00:00",
-      stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 },
       accountBalance: 0,
       accountEntryCount: 0,
     }));

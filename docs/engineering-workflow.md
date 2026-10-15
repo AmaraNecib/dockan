@@ -46,7 +46,9 @@ Code-review — Standards + Spec axes against pinned base SHA
     ↓
 Guard Phase 2 — pre-push gate
     ↓
-Push + PR (user approves)
+── parent-owned from here ──
+    ↓
+Push + PR
     ↓
 Greptile review (cli-review skill or @greptile-apps on the PR)
     ↓
@@ -55,7 +57,23 @@ Guard Phase 3 — pre-report gate
 Capture wisdom + report
 ```
 
+A **worker lane stops at Guard Phase 2** and reports (`crew_report`); the parent
+session pushes, opens the PR, drives the review rounds and merges. A lane that
+pushes is breaking its authority boundary, not helping.
+
 Do not run a later phase without recording the earlier gate, its commands, and its result.
+
+## Review invariants
+
+- **Verify a finding before fixing it.** Greptile edits its comment in place and
+  re-lists findings a later commit already fixed. Read the cited lines first; if
+  the finding is stale, close it on the PR with the line evidence rather than
+  re-implementing a fix that exists.
+- **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
+  separate sub-agents. A child that reports "I ran the gates in-lane" has not run
+  them — re-run the lenses where the tool exists, and record the disclosure.
+- **A green suite is not a review.** Every gate names the commands it ran and
+  their exit codes; an unstated gate is an unrun gate.
 
 ## Review tiers
 
@@ -90,5 +108,15 @@ Stage named source/config/test/evidence files only. Never use `git add -A`.
 
 ## Merge rules
 
-The agent never merges on its own initiative. Merge requires: explicit user instruction, all local
-gates green, CI green when the branch has CI, and a clean Greptile result. Squash merges only.
+Standing rule (owner, 2026-10-13): **a PR may be merged once Greptile is 5/5 with
+no findings left to fix, its review is anchored to the current head SHA, and every
+CI check is green.** No separate "ok" is needed for that case. Ask the owner when
+Greptile reports a finding, when the review sits on an older commit, or when a
+check is red or pending. Squash merges only.
+
+A **CI change** (anything under `.github/`) goes to the owner for the diff before
+it merges, whatever Greptile says. Merge order matters when two PRs share a
+store/router: land the one that owns the write path first and rebase the other
+onto the new `develop`.
+
+Merge command: `gh pr merge <num> --squash --subject "<title> (closes #<issue>)"`.

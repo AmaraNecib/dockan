@@ -1009,7 +1009,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     await ui.blur("expense-custom-from");
 
     expect(from.getAttribute("aria-invalid")).toBe("true");
-    expect(ui.query("expense-custom-from-error")).not.toBeNull();
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
     expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
     expect(lastListInput?.offset).toBe(laterOffset);
 
@@ -1032,7 +1032,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     await ui.type("expense-custom-from", "31/02/2020 00:00");
     await ui.blur("expense-custom-from");
     expect(from.getAttribute("aria-invalid")).toBe("true");
-    expect(ui.query("expense-custom-from-error")).not.toBeNull();
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
 
     // leave CUSTOM: the field unmounts, but the page keeps the text and bound
     await openSelect(ui.query("expense-range-preset")!);
@@ -1100,6 +1100,44 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     await ui.type("expense-custom-from", "");
     expect(await ui.waitFor(() => lastListInput?.customFrom === undefined)).toBe(true);
     expect(lastListInput?.offset).toBe(0);
+
+    await ui.unmount();
+  });
+
+  it("does not reset a later page when a filter is re-applied unchanged", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    expect(await ui.waitFor(() => ui.query("expenses-pager-next") !== null)).toBe(true);
+
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    // the already-active "all categories" pill is a plain button: re-clicking it
+    // changes no filter, so it must not throw the list back to page one
+    await ui.click("expense-filter-all");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    // Base UI fires onValueChange when the selected option is re-picked; the
+    // guard must ignore it because the query input is unchanged
+    await openSelect(ui.query("expense-range-preset")!);
+    const samePreset = await findOption(i18n.t("rangePreset_CURRENT_MONTH"));
+    expect(samePreset).not.toBeNull();
+    await activateOption(samePreset!);
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await openSelect(ui.query("expense-sort-by")!);
+    const sameSortBy = await findOption(i18n.t("expensesSortByDate"));
+    expect(sameSortBy).not.toBeNull();
+    await activateOption(sameSortBy!);
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await openSelect(ui.query("expense-sort-dir")!);
+    const sameSortDir = await findOption(i18n.t("expensesSortDesc"));
+    expect(sameSortDir).not.toBeNull();
+    await activateOption(sameSortDir!);
+    expect(lastListInput?.offset).toBe(laterOffset);
 
     await ui.unmount();
   });

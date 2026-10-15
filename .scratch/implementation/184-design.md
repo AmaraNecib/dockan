@@ -333,3 +333,36 @@ Guard 1+2 on the rebased head: `bun run test` 974 pass / 0 fail; full Playwright
 64 pass / 0 fail on isolated ports (4829/5284). Feature preservation: #143
 `stock-posting.test.ts` + `router.test.ts` 249 pass; #174 web 39 pass + the 3 e2e
 pagination tests.
+
+---
+
+## Rebase round 2 onto develop (#197, #193, #202)
+
+The branch was rebased from base `f757211` onto `origin/develop` @ `21dbc13`
+(which took #197's e2e failure evidence, #193/#202's configurable vault ports and
+load-proof 201-supplier test). One conflict, in
+`apps/web/src/pages/supplier-opening-balance.test.tsx` — the same test file both
+sides edit; every other file auto-merged. Git stopped twice, both inside that one
+file, on this branch's round-4 commits.
+
+- **develop (#202/#193)** added `setNativeValue`, the batched `fillAmounts`
+  helper and the named `BATCH_LIMIT_TEST_TIMEOUT_MS`, and converted both
+  batch-limit tests (200-row and 201-supplier) to `fillAmounts`. **Kept**: the
+  merged file uses develop's single fill helper and named budget for both tests.
+- **this branch** had rewritten the file across rounds 1–4 (the `clickTarget` /
+  `clickOn` / `dispatchClickOn` helpers, `NEW_TAB_ACTIVATIONS`, the five new-tab
+  cases, the plain-click control and the `target="_blank"` case). **Kept** in
+  full; `modifiedClickOn` is absent because this branch's own next commit
+  (`76ac83e`) had already replaced it.
+
+Verified by reading the merged file: a single fill helper; both batch-limit tests
+carry `BATCH_LIMIT_TEST_TIMEOUT_MS`; all seven round-4 new-tab tests present. The
+file diff against the pre-rebase branch is exactly develop's #202 additions, so
+no test was dropped or weakened. `origin/develop` is an ancestor of the rebased
+head.
+
+Guard 1+2 on the rebased head: `bun run typecheck` 0, `bun run lint` 0,
+`bun run test` 986 pass / 0 fail, full Playwright 64 pass / 0 fail on isolated
+ports (api/web 5417/6273, vault 4599/5274). Both proof sets pass in one run: the
+200-row and 201-supplier load-proof tests (1204 ms / 1124 ms) and the seven
+round-4 new-tab cases.

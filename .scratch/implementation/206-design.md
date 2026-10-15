@@ -94,6 +94,22 @@ and the reason it is not in CI.
 - Guard 1 + Guard 2: `bun run typecheck`, `bun run lint`, `bun run test`, full
   Playwright.
 
+## Outcome (2026-10-15)
+
+- Unit tests: 21 pass (`@dokan/e2e-support`), added to `bun run test`.
+- Full `bun run test:e2e` at the final HEAD: 57 passed, including vault 3/3 and
+  `backups.spec.ts` with the default `.e2e-data` path (also verified separately
+  with `E2E_DATA_DIR` set). Earlier attempts on the same code flaked only on
+  host-saturation timeouts in a different spec each run (91% CPU, sibling lanes);
+  the green run had the sibling e2e finished.
+- Two concurrent vault runs were executed on disjoint pairs. Both reached and
+  passed the gate and first-run tests on their own servers (no cross-talk), then
+  both timed out at test 3's 5 s post-KDF assertion. The trace shows
+  `reset-passphrase` never completed while `unlock` took 3.2 s and
+  `unlock-recovery` 2.1 s — pure-TS Argon2id (32 MiB × 3) under doubled load,
+  not a port collision. `docs/ci.md` now states that signature; the lesson is in
+  `.agents/wisdom/2026-10-15-vault-concurrent-runs-are-kdf-bound.md`.
+
 ## Risks
 
 - **New workspace package changes `bun.lock`.** Committed; CI's

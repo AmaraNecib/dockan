@@ -68,9 +68,19 @@ Both must exit 0. All four ports must be disjoint, and each run needs its own
 pair, which is wiped and reseeded from that variable (a path under the ignored
 `.e2e-data/` keeps the runs clean). The vault pair itself makes its own temp data
 dir (`mkdtemp`), so it does not need `E2E_DATA_DIR`.
+
 Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair and at least
-one run fails at the create-vault heading — the isolation is what makes the
-positive case pass, not luck.
+one run fails at the first test's create-vault heading (`إنشاء الخزنة`), because
+a shared pair answers with another run's gate. That failure is the cross-talk
+signature, and it is what the isolation removes.
+
+Run this on an otherwise-idle host. Two runs boot the config's shared pair *and*
+the vault spec's own pair (eight servers) and perform two Argon2id derivations
+(32 MiB × 3 iterations, pure TS); the post-KDF UI assertions use Playwright's 5 s
+default, so a CPU-saturated host can time a run out at `vault-recovery-key` or
+`vault-settings-saved`. That is KDF contention, not cross-talk — measured in
+#206 at `unlock` 3.2 s, `unlock-recovery` 2.1 s and `reset-passphrase` >5 s with
+two runs plus other lanes on a 12-core host.
 
 ## Audit policy
 

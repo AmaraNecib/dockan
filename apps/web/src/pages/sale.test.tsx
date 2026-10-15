@@ -285,6 +285,15 @@ function saveButton(host: HTMLElement): HTMLButtonElement {
   return button;
 }
 
+/** the sale row quantity input (a draft: it stays exactly as typed) */
+const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
+const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
+/** the rendered total as a number, so a zero check cannot pass on a substring */
+const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
+const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
+const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
+const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
+
 describe("SalePage commit states (greptile round-2)", () => {
   it("words a pending remainder as unattributed until a customer is named", async () => {
     const host = await mountSale();
@@ -1089,11 +1098,6 @@ describe("SalePage party picker (issue 120)", () => {
  * rule and one discounted cart total on the rendered sale screen.
  */
 describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
-  const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
-  const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
-  /** the rendered total as a number, so a zero check cannot pass on a substring */
-  const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
-
   it("keeps a cleared draft cleared, zeroes the line, and refuses the save", async () => {
     const host = await mountSale();
     await scan("111"); // sellingPrice 1000
@@ -1181,12 +1185,6 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
 });
 
 describe("SalePage commit order (#198)", () => {
-  const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
-  const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
-  const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
-  const overrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
-  const overrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
-
   it("blames the unusable override, not the payment, when the override drops the total below the typed payment", async () => {
     const host = await mountSale();
     await scan("198"); // 1 x 1000
@@ -1195,15 +1193,15 @@ describe("SalePage commit order (#198)", () => {
     await act(async () => setInput(host, "sale-paid", "999"));
 
     await act(async () => {
-      await chooseOption(overrideType(host, 0), "مبلغ");
+      await chooseOption(lineOverrideType(host, 0), "مبلغ");
     });
-    const value = overrideValue(host);
+    const value = lineOverrideValue(host);
     if (value === null) throw new Error("missing override value");
     // a fractional amount override is invalid, yet it still prices the line at
     // 13, so the typed payment (999) is now above the total. Checking the
     // payment first would surface «saleInvalidPaid» and shadow the override.
     await act(async () => setElementValue(value, "12.5"));
-    expect(totalText(host)).toContain("13");
+    expect(totalAmount(host)).toBe(13);
     // the amount survived the total change, so the payment really is invalid now
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("999");
 
@@ -1220,7 +1218,7 @@ describe("SalePage commit order (#198)", () => {
 
     // line 1: a chosen amount override with an empty value is invalid
     await act(async () => {
-      await chooseOption(overrideType(host, 0), "مبلغ");
+      await chooseOption(lineOverrideType(host, 0), "مبلغ");
     });
     // line 2: a cleared quantity is invalid
     const quantities = host.querySelectorAll<HTMLInputElement>('input[aria-label*="الكمية"]');
@@ -1232,7 +1230,7 @@ describe("SalePage commit order (#198)", () => {
     expect(lastInvoiceInput).toBeNull();
 
     // fix line 1: the later line's quantity is the next offender
-    const value = overrideValue(host);
+    const value = lineOverrideValue(host);
     if (value === null) throw new Error("missing override value");
     await act(async () => setElementValue(value, "900"));
     await act(async () => saveButton(host).click());

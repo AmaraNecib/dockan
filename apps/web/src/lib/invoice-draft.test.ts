@@ -387,6 +387,18 @@ describe("firstCommitError (the one commit order both screens share)", () => {
         }),
       ),
     ).toBe("quantity");
+    // the mirror: line 1's quantity beats line 2's override. Checking every
+    // override before any quantity (column-major) would return "override" here.
+    const reversed = [saleLine("a", ""), saleLine("b", "2")];
+    expect(
+      firstCommitError(
+        checks({
+          lines: reversed,
+          override: { invalid: (line) => line.item.id === "b", message: "override" },
+          quantity: { invalid: (line) => line.quantityDraft.trim() === "", message: "quantity" },
+        }),
+      ),
+    ).toBe("quantity");
   });
 
   it("blames the discount before the payment it can zero", () => {

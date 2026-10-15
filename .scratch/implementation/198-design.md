@@ -132,16 +132,21 @@ subtotal.
 **Lib (`invoice-draft.test.ts`), new:**
 - `firstCommitError` ordering table: all-invalid returns the first stage's
   message, then each stage is made valid in turn and the next one surfaces;
-  the per-line override-before-quantity precedence; multi-line first-offender.
+  the per-line override-before-quantity precedence in BOTH directions (line 1's
+  override vs line 2's quantity and the reverse), and multi-line first-offender.
 - `parseQuantityDraft` Arabic-Indic table (Arabic-Indic, Extended Arabic-Indic,
   over-cap, mixed-script acceptance, grouping/decimal rejection) plus a subtotal
-  pin and a test that the override reader stays ASCII-only.
+  pin, the purchase-side payload pin, and a test that the override reader stays
+  ASCII-only.
 
 **Page (`sale.test.tsx`), new:**
-- **override-vs-payment**: a typed payment that survives an invalid (negative
-  amount) override whose negative unit price drives the total below zero. The
-  override message must surface, not `saleInvalidPaid`; nothing is sent. This is
-  the sale path the round-2 fix repaired but no page test pinned.
+- **override-vs-payment**: a typed payment that survives an invalid amount
+  override. The override is fractional (`12.5`), which `saleUnitPrice` still
+  prices at 13, so the surviving 999 payment is above the total. The override
+  message must surface, not `saleInvalidPaid`; nothing is sent. This is the sale
+  path the round-2 fix repaired but no page test pinned.
+- a scope pin: the quantity draft accepts Arabic-Indic while the discount draft
+  (which reads `Number`) refuses it.
 - **quantity boundary**: `1000000` saves and the payload carries `1000000`;
   `1000001` is refused with nothing sent.
 - **multi-line**: two lines, the first with an empty override value and the
@@ -152,8 +157,10 @@ subtotal.
 same quantity boundary, so both screens pin the shared order from their side.
 
 **E2E:** `tests/e2e/sale-checkout.spec.ts` gains a browser-level ordering
-assertion (invalid override + typed payment) and `purchase-intake.spec.ts` keeps
-its drift proof; both are run in full under Guard 1 and 2.
+assertion (invalid override + typed payment). `purchase-intake.spec.ts` keeps
+its pre-existing #146 stale-quantity drift proof, not a commit-order assertion —
+purchase ordering is pinned at the page and lib layers. Both specs run in full
+under Guard 1 and 2.
 
 ## 6. Dependencies
 
@@ -202,3 +209,18 @@ Critic and defender ran in parallel against `21dbc13...663fb71` (evidence:
 `parseWholeAmount` still rejects Arabic-Indic digits, so a supplier-return
 quantity typed `٥` is refused while a sale/purchase quantity bills it. Out of
 #198's scope (it would touch a money input) — needs its own ticket.
+
+## 10. Test-audit outcomes
+
+Three test-audit agents ran against `21dbc13...cb6e0a3` (evidence:
+`.scratch/reviews/198/<head>-test-audit.md`).
+
+| finding | disposition |
+|---|---|
+| Multi-line precedence pinned in only one direction | **Fixed** — the reverse permutation (line 1 quantity beats line 2 override) is now a lib test |
+| `toContain("13")` could match `1300` | **Fixed** — the page test uses the numeric `totalAmount` helper |
+| Sale helper duplication across the two describes | **Fixed** — `quantityField`, `totalText`, `totalAmount`, `errorText`, line-override helpers hoisted to module scope |
+| No purchase-side Arabic-Indic payload pin | **Fixed** — a purchase page test pins quantity `٥` → 5 |
+| Purchase multi-line title overclaimed "first unusable line" | **Fixed** — retitled to match what it proves |
+| No browser-level Arabic-Indic quantity fill | **Deferred** — the page payload pin plus the lib table is proportionate; the input is a text field with `inputMode`, so browsers do not reject the digits |
+| `firstCommitError` slot-combination holes, Extended-range cap variants, `CommitChecks` string pairing | **Recorded, not fixed** — no reachable caller exercises them, and page tests pin the copy |

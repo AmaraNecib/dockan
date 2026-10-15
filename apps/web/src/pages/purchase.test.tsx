@@ -942,7 +942,14 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 1_000_000, unitPrice: 1200 }]);
   });
 
-  it("refuses a multi-line cart on its first unusable line and saves once it is fixed", async () => {
+  it("bills an Arabic-Indic quantity the same as its ASCII value (#198 decision)", async () => {
+    const { container } = await mountWithLine("2", "1200");
+    await act(async () => setValue(quantityField(container), "٥"));
+    await save(container);
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 5, unitPrice: 1200 }]);
+  });
+
+  it("refuses a multi-line cart with an emptied line and saves once it is fixed", async () => {
     const { container } = await mountPage();
     await toggleQuick(container);
     await fillQuick(container, "منتج أ", "2", "1200");

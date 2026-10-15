@@ -1244,24 +1244,28 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
-  it("folds a typed name onto an existing supplier from the names-only list (#183)", async () => {
+  it("resolves a folded typed name to the server's existing account and confirms it (#183/#184)", async () => {
+    // the server is the only resolver (issue 184): the fold maps to s-3, whose
+    // account already carries an entry, so the dialog asks before writing
+    resolveByKey.set(normalizeTextKey("مورد  رصيد سالب"), { id: "s-3", name: "مورد رصيد سالب", accountEntryCount: 1 });
     render();
     await settle();
     // "مورد  رصيد سالب" (double space) folds to s-3's "مورد رصيد سالب"
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  رصيد سالب");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "250");
 
-    // s-3 already carries an entry, so the fold is detected and the dialog asks
     await act(async () => {
       clickOn("opening-balance-save");
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    // the dialog names the server's stored text, not the typed string
+    expect(host.querySelector('[data-testid="opening-balance-confirm-name"]')?.textContent).toBe("مورد رصيد سالب");
 
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(1);
-    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد  رصيد سالب", amount: 250, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد  رصيد سالب", amount: 250, confirmExisting: true, expectedSupplierId: "s-3" });
   });
 
   it("does not cut off an owner still typing a new name that starts like an existing one (round 5)", async () => {

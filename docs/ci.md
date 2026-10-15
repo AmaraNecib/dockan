@@ -77,9 +77,9 @@ runs can pass the create-vault heading (`إنشاء الخزنة`) before either
 test 2, and the wrong gate (`فتح الخزنة`) appears only after one run has
 initialized the vault. A green negative control therefore proves nothing, and a
 red one does not by itself pin the cause. What would prove isolation is each run
-completing its *own* vault flow on disjoint pairs — its own recovery key
-unlocking its own restarted server — or an explicit ownership check on the
-server; a heading is neither.
+completing its *own* vault flow on disjoint pairs, so that its own recovery key
+unlocks its own restarted server, or an explicit ownership check on the server.
+A heading is neither.
 
 Run this on an otherwise-idle host. Two runs boot the config's shared pair *and*
 the vault spec's own pair (eight servers) and perform two Argon2id derivations

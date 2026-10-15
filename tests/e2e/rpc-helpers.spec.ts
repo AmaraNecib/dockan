@@ -71,6 +71,10 @@ test("actAndAck reports the action error, not a refused RPC, with no unhandled r
         // observe the refusal independently of the helper, so the action cannot
         // finish before the armed read has had a chance to reject
         const refusal = page.waitForResponse(rpcUrl);
+        // handle the abandoned wait at creation too (see the next test): a fill
+        // or click that throws before `await refusal` must not surface the
+        // wait's own rejection on top of the action's error
+        void refusal.catch(() => undefined);
         await page.getByTestId("party-form-name").fill(customerName("action"));
         await page.getByTestId("party-form-phone").fill("0567000000");
         await page.getByTestId("party-form-save").click();

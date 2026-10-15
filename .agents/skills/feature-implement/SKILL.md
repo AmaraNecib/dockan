@@ -184,11 +184,13 @@ Report to the user: PR link, check status (local + CI), Greptile verdict, any de
 
 ## Merge rules
 
-**Standing rule (owner, 2026-10-13): merge a PR once Greptile is 5/5 with no
-findings left to fix, its review is anchored to the current head SHA, and every
-CI check is green.** No separate "ok" is needed for that case. Ask the owner when
-Greptile reports a finding, when the review sits on an older commit, or when a
-check is red or pending.
+**Merge only when the owner says to merge.** The agent never merges on its own
+initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
+anchored to the current head SHA, and every CI check green is the **bar to ask** —
+not permission to proceed.
+
+Ask, and wait. Do not treat a clean review as consent, and do not merge "since it
+is green anyway".
 
 Merge command:
 ```bash

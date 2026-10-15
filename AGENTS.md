@@ -42,14 +42,12 @@ which the vault spec hardcodes).
 
 ## Merging
 
-Standing rule (owner, 2026-10-13): **a PR may be merged once Greptile is 5/5 with
-no findings left to fix, its review is anchored to the current head SHA, and
-every CI check is green** — no separate "ok" needed. Any finding, a review
-anchored to an older commit, or a red/pending check still needs the owner. A
-**CI change** (anything under `.github/`) goes to the owner for the diff before it
-merges, whatever Greptile says. Merge order matters when two PRs share a
-store/router: land the one that owns the write path first and rebase the other
-onto the new develop.
+**Merge only when the owner says to merge.** The agent never merges on its own
+initiative, whatever the review says — 5/5 with no findings and every check green
+is the *bar to ask*, not permission. A **CI change** (anything under `.github/`)
+additionally goes to the owner for the diff. Merge order matters when two PRs
+share a store/router: land the one that owns the write path first and rebase the
+other onto the new develop.
 
 ## Waiting on CI / Greptile
 

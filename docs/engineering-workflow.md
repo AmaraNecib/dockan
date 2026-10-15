@@ -108,11 +108,10 @@ Stage named source/config/test/evidence files only. Never use `git add -A`.
 
 ## Merge rules
 
-Standing rule (owner, 2026-10-13): **a PR may be merged once Greptile is 5/5 with
-no findings left to fix, its review is anchored to the current head SHA, and every
-CI check is green.** No separate "ok" is needed for that case. Ask the owner when
-Greptile reports a finding, when the review sits on an older commit, or when a
-check is red or pending. Squash merges only.
+**Merge only when the owner says to merge.** The agent never merges on its own
+initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
+anchored to the current head SHA, and every CI check green is the **bar to ask** —
+not permission to proceed. Squash merges only.
 
 A **CI change** (anything under `.github/`) goes to the owner for the diff before
 it merges, whatever Greptile says. Merge order matters when two PRs share a

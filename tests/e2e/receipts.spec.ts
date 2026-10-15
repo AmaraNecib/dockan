@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { actAndAck, rpcOutput } from "./rpc-helpers";
+import { actAndAck, rpcOutput, saveQuickAdd } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
 /**
@@ -50,22 +50,21 @@ test("invoice print button → receipt document with identity, totals and paymen
   await page.getByLabel("سعر الشراء (دج)").fill("200");
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("sale-quick-stock").fill("2");
-  // Ack the quick-add's own write (issue 191). The form takes the
+  // Ack the quick-add's own write (issue 191) through the shared helper every
+  // other quick-add site now uses (issue 196). The form takes the
   // create-with-stock path whenever a quantity is given, so the procedure is
   // itemsCreateWithStock — an ack armed for itemsCreate would never fire. The
-  // cart line is added only from this response, so the ack is what makes the
-  // saved item's id a server fact instead of a render guess, and it is the last
-  // writer of sale-save's disabled state before the save click below.
-  const created = await rpcOutput<{ id: string }>(
-    await actAndAck(page, "itemsCreateWithStock", async () => {
-      await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
-      // quickSubmit refuses before sending anything (unpicked category, bad
-      // price, rejected stock) and records that refusal synchronously, so assert
-      // it away here: otherwise a regression would hang the armed ack above for
-      // the rest of the test budget instead of failing by name in this window
-      await expect(page.getByTestId("sale-error")).toHaveCount(0);
-    }),
-  );
+  // cart line is added only from this response and keyed on the id it issues,
+  // and it is the last writer of sale-save's disabled state before the save
+  // click below.
+  const created = await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await page.getByTestId("sale-paid").fill("500");
   await expect(page.getByTestId("sale-total")).toContainText("900");
   // The row the sale will send is the one the api just created — keyed on the

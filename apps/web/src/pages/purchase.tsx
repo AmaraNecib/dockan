@@ -17,7 +17,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { percentageDraftInvalid } from "@/lib/amount-parse";
-import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -134,10 +134,6 @@ export function PurchasePage() {
       setError(commitError);
       return;
     }
-    // `firstCommitError` refused `!paid.ok`, so this is unreachable; the guard
-    // keeps the type narrowing and fails loudly if that coupling ever breaks,
-    // instead of silently sending no initial payment (the whole invoice debt).
-    if (!paid.ok) throw new Error("firstCommitError did not refuse an invalid initial payment");
     void createInvoice.mutate({
       kind: "PURCHASE",
       // the picker keeps the picked record's id; a typed-only name stays null
@@ -146,7 +142,7 @@ export function PurchasePage() {
       notes: notes.trim() === "" ? undefined : notes.trim(),
       // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
       // percentage that rounds to 0) means "nothing paid now"
-      initialPaid: paid.paid,
+      initialPaid: resolvedInitialPaid(paid),
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost })),
     });
   }

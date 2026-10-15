@@ -200,7 +200,7 @@ Critic and defender ran in parallel against `21dbc13...663fb71` (evidence:
 |---|---|---|
 | The "one normalizer" comment overstated consistency: `parseWholeAmount` (supplier-return quantities) stays ASCII-only | 5 | **Fixed** — comment and this doc name the readers covered; the supplier-return gap is a recorded follow-up |
 | The sale override/discount readers stay ASCII-only while the quantity widens; nothing pinned it | 5 | **Fixed** — a lib test pins the override reader and a page test pins the discount reader |
-| The `paid.ok ? paid.paid : undefined` ternary traded a compile-time guarantee for a comment; a weakened payment slot could send no initial payment | 3 | **Fixed** — both pages guard `if (!paid.ok) throw`, restoring narrowing and failing loudly |
+| The `paid.ok ? paid.paid : undefined` ternary traded a compile-time guarantee for a comment; a weakened payment slot could send no initial payment | 3 | **Fixed** — `resolvedInitialPaid` throws beside the helper, so the guard lives once and narrowing is preserved |
 | `CommitChecks` returns strings, so a copy/predicate pair could be swapped | 3 | **Dismissed** — each message sits beside its predicate, page tests pin the copy, and a stage union would push copy back into the helper |
 | Rename `normalizeArabicIndicDigits` (it also maps Extended Arabic-Indic) | 2 | **Dismissed** — both ranges are the Arabic-Indic family; the docstring names both |
 
@@ -224,3 +224,17 @@ Three test-audit agents ran against `21dbc13...cb6e0a3` (evidence:
 | Purchase multi-line title overclaimed "first unusable line" | **Fixed** — retitled to match what it proves |
 | No browser-level Arabic-Indic quantity fill | **Deferred** — the page payload pin plus the lib table is proportionate; the input is a text field with `inputMode`, so browsers do not reject the digits |
 | `firstCommitError` slot-combination holes, Extended-range cap variants, `CommitChecks` string pairing | **Recorded, not fixed** — no reachable caller exercises them, and page tests pin the copy |
+
+## 11. Code-review outcomes
+
+Standards and Spec axes ran against `21dbc13...<head>` (evidence:
+`.scratch/reviews/198/<head>-code-review.md`).
+
+| finding | axis | disposition |
+|---|---|---|
+| The throw guard was copy-pasted into both pages (Duplicated Code) | Standards | **Fixed** — `resolvedInitialPaid` holds it once, beside `firstCommitError` |
+| `discount`/`payment` repeated the same anonymous `{ invalid; message }` literal type | Standards | **Fixed** — one named `Check` type |
+| Commit subjects use `(#198)` where history uses `(closes #N)` | Standards | **Dismissed** — the branch is squash-merged; the parent sets the PR subject. Local commits only |
+| `firstCommitError` vs the pages' `submit()` naming | Standards | **Dismissed** — "commit" is this codebase's term for saving an invoice (`commitRef`, "a commit is in flight") |
+| Hoisted test helpers use `!` where `saveButton` throws | Standards | **Dismissed** — matches the pre-existing style of the surrounding helpers |
+| Point 3 fully satisfied only for checkout; supplier-return quantities still reject Arabic-Indic | Spec | **Recorded** — same deferred ticket as §9 |

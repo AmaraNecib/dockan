@@ -115,6 +115,12 @@ export interface LineCheck<T> {
   message: string;
 }
 
+/** A check with no per-line predicate: whether it failed and its message. */
+export interface Check {
+  invalid: boolean;
+  message: string;
+}
+
 /**
  * The inputs one invoice screen hands to `firstCommitError`. The five slots are
  * the canonical checks in canonical order; a screen omits only the checks it
@@ -133,9 +139,9 @@ export interface CommitChecks<T extends DraftLine> {
   /** the per-line quantity */
   quantity: LineCheck<T>;
   /** sale's invoice discount, a second input to the total */
-  discount?: { invalid: boolean; message: string };
+  discount?: Check;
   /** the initial payment, derived from the total the checks above can zero */
-  payment: { invalid: boolean; message: string };
+  payment: Check;
 }
 
 /**
@@ -390,4 +396,16 @@ export function resolveInitialPaid(total: number, amountDraft: string, percentag
   if (paid === null) return { ok: false };
   if (paid !== undefined && paid > total) return { ok: false };
   return { ok: true, paid: paid === 0 ? undefined : paid };
+}
+
+/**
+ * The `initialPaid` a commit-ready draft carries, from a resolution
+ * `firstCommitError` accepted. The helper returns null only when
+ * `payment.invalid` is false, and both pages derive that from `!paid.ok`; a
+ * rejected resolution here means the two drifted, so fail loudly instead of
+ * sending no initial payment (which would book the whole invoice as debt).
+ */
+export function resolvedInitialPaid(paid: InitialPaidResolution): number | undefined {
+  if (!paid.ok) throw new Error("firstCommitError did not refuse an invalid initial payment");
+  return paid.paid;
 }

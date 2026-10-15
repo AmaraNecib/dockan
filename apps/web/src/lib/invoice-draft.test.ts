@@ -19,6 +19,7 @@ import {
   purchaseUnitPrice,
   quantityDraftInvalid,
   removeDraftLine,
+  resolvedInitialPaid,
   resolveInitialPaid,
   saleOverrideInvalid,
   saleUnitPrice,
@@ -606,5 +607,17 @@ describe("resolveInitialPaid (what the invoice carries)", () => {
     expect(resolveInitialPaid(1000, "abc", "")).toEqual({ ok: false });
     expect(resolveInitialPaid(1000, "1 000,00", "")).toEqual({ ok: false });
     expect(resolveInitialPaid(1000, "1,5", "")).toEqual({ ok: false });
+  });
+});
+
+describe("resolvedInitialPaid (the commit-ready payload value)", () => {
+  it("carries the accepted resolution, including 'nothing paid now'", () => {
+    expect(resolvedInitialPaid({ ok: true, paid: 400 })).toBe(400);
+    expect(resolvedInitialPaid({ ok: true, paid: undefined })).toBeUndefined();
+  });
+
+  it("throws on a rejected resolution, which firstCommitError would have refused", () => {
+    // the guard lives beside the helper whose contract it protects
+    expect(() => resolvedInitialPaid({ ok: false })).toThrow("firstCommitError did not refuse an invalid initial payment");
   });
 });

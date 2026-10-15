@@ -20,11 +20,12 @@ const toArabicDigits = (value: string): string =>
 type CustomerListPayload = { items: Array<{ name: string; phone: string | null }> };
 
 /**
- * Load /customers and return the ACKED list payload. Presence and stored
- * identity are taken from the payload, never from the DOM: the list renders
- * while the query is still pending and a row count has no auto-wait, so either
- * could read a saved customer as absent (and skip it) or as normalised (when
- * `displayAlgerianPhone` folded the raw value at render) (#189, #209 review).
+ * Load the list route and return the server's `customersList` payload. Presence
+ * and stored identity are taken from a server read, never from the DOM: the
+ * list renders while the query is still pending, and a negative DOM check
+ * (`toHaveCount(0)`, `toBe(false)`) can pass while that pending query would
+ * still find the row — and `displayAlgerianPhone` folds the raw value at
+ * render, so the DOM cannot prove normalisation either (#189, #209 review).
  */
 async function readCustomers(page: Page): Promise<CustomerListPayload> {
   // Navigate first, then read the server list directly. Arming an ack around

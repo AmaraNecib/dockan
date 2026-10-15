@@ -40,9 +40,9 @@ write can legitimately disable, unmount or replace it (`sale-save` becomes
 failure. Assert the **outcome** instead — the confirmation the write produces.
 
 ## An ack whose value is discarded proves nothing
-`await rpcOutput<{ id: string }>(await actAndAck(…))` reads the envelope and throws
-the payload away; `rpcOutput` is a bare cast, so it validates nothing. Bind it and
-assert it against the UI (`name="quantity-<id>"`), or drop the wrapper.
+`await actAndAck<{ id: string }>(…)` reads the envelope and returns it; throwing
+the return value away means it validates nothing. Bind it and assert it against
+the UI (`name="quantity-<id>"`), or drop the type argument.
 
 **Always**: an ack should be consumed. If the design says "server-confirmed id",
 assert something with that id.

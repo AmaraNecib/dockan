@@ -23,20 +23,19 @@ export function waitForRpc(page: Page, procedure: string): Promise<Response> {
  * Read an armed ack's body and unwrap the `{ json }` envelope.
  *
  * The `.then` is attached to the *armed promise*, not to an awaited response,
- * so `response.json()` runs as soon as the headers land. Playwright throws
- * `Network.getResponseBody: No resource with given identifier found — Response
- * body is not available for a response that was navigated away from` when a
- * body is read after a navigation discarded it, so this is the safe default for
- * every caller. (A read the page issues *around* a `page.goto` still belongs in
- * `readRpc` below: there the matching response can come from the document being
- * replaced, and even an eager read races the protocol round-trip.)
+ * so `response.json()` runs as soon as the headers land. That makes the window
+ * in which a later navigation can discard the body negligible, which is the
+ * safe default for every `actAndAck` caller. It does not close that window
+ * entirely: an action that navigates can still lose the body between the
+ * headers and the body round-trip. Reads the page issues *around* a navigation
+ * must use `readRpc` below, which has no response for a navigation to discard.
  */
 function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> {
   return ack.then(async (response) => {
     expect(response.ok(), `${procedure} failed with HTTP ${response.status()}`).toBe(true);
-    // SAFETY: the oRPC fetch link (StandardRPCSerializer) answers a successful
-    // procedure call with the `{ json: <declared output> }` envelope; the
-    // caller's T names that output, and `ok()` was already asserted above.
+    // SAFETY: `response.json()` is untyped; the oRPC StandardRPCSerializer's
+    // success envelope is `{ json: <declared output> }` and `ok()` above
+    // rejected a refusal, so the caller's T names the value at `json`.
     const body = (await response.json()) as { json: T };
     return body.json;
   });
@@ -46,6 +45,9 @@ function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> 
  * Run `action` and return the server-acknowledged output of the RPC it
  * triggered. Arm-then-act in one call so the wait can never be set up after the
  * request, and read the body eagerly so a later navigation cannot discard it.
+ *
+ * `action` must not navigate: a navigating read belongs in `readRpc`, whose
+ * response cannot be lost to the document swap.
  */
 export async function actAndAck<T = unknown>(
   page: Page,
@@ -131,37 +133,42 @@ export async function rpcOutput<T>(response: Response): Promise<T> {
 }
 
 /**
- * Read a procedure's output directly, with no response for a navigation to
- * discard.
+ * Read a no-input procedure's output directly, with no response for a
+ * navigation to discard.
  *
  * `actAndAck` is right for RPCs the page issues in response to an action that
  * does not navigate. A *read* the page issues on mount (e.g. `customersList`
  * after `page.goto`) is different: arming an ack before the `goto` can match a
  * response issued by the document being replaced, and Playwright then refuses
  * to hand over that body — "No resource with given identifier found …
- * navigated away from". Awaiting the navigation and reading through
- * `page.evaluate` asks the same endpoint for the same value with no
- * navigation-raceable body.
+ * navigated away from" — even with an eager read. Awaiting the navigation and
+ * reading through `page.evaluate` asks the same endpoint for the same value
+ * with no navigation-raceable body.
  *
  * `/api/rpc/<procedure>` accepts an empty JSON body for a no-input procedure
  * and answers the same `{ json }` envelope the page's client reads, so this is
- * the server value the UI renders.
+ * the server value the UI renders. It mirrors the app's RPC link headers
+ * (`x-vault-session`), so it stays faithful if a vault-mode spec ever adopts it.
  */
 export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
-  const envelope = await page.evaluate(async (name) => {
+  const body = await page.evaluate(async (name) => {
+    const headers = new Headers({ "content-type": "application/json" });
+    // the same unlocked-owner header apps/web/src/lib/rpc.ts attaches; read the
+    // one storage key vault-client.ts writes (empty/null means no session)
+    const vaultToken = sessionStorage.getItem("dokan.vault.session");
+    if (vaultToken !== null && vaultToken !== "") headers.set("x-vault-session", vaultToken);
     const response = await fetch(`/api/rpc/${name}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: "{}",
       credentials: "include",
     });
     if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
-    // SAFETY: the oRPC endpoint answers a successful procedure call with the
-    // `{ json: <declared output> }` envelope; `ok()` was asserted just above.
-    return (await response.json()) as { json: unknown };
+    return response.json();
   }, procedure);
-  // SAFETY: page.evaluate cannot carry a generic across the browser boundary,
-  // so the envelope's `json` is named by the caller's T; the shape was just
-  // checked to be the oRPC envelope.
-  return envelope.json as T;
+  // SAFETY: page.evaluate cannot carry a generic across the browser boundary;
+  // the oRPC StandardRPCSerializer answers a successful call with
+  // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),
+  // so the caller's T names the value at `json`.
+  return (body as { json: T }).json;
 }

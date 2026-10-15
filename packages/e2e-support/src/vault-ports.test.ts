@@ -6,6 +6,12 @@ import {
   VAULT_WEB_PORT_DEFAULT,
 } from "./vault-ports";
 
+/** Put an env var back the way the test found it (unset stays unset). */
+function restoreEnv(name: string, saved: string | undefined): void {
+  if (saved === undefined) delete process.env[name];
+  else process.env[name] = saved;
+}
+
 describe("resolveVaultPorts", () => {
   it("pins the historical defaults (existing runs must not move)", () => {
     expect(VAULT_API_PORT_DEFAULT).toBe(4399);
@@ -39,14 +45,20 @@ describe("resolveVaultPorts", () => {
     });
   });
 
+  it("accepts surrounding whitespace around a set value (Number trims)", () => {
+    expect(resolveVaultPorts({ DOKAN_VAULT_PORT: " 4510 " }).api).toBe(4510);
+  });
+
   it("defaults to process.env when no environment is injected", () => {
-    const saved = process.env.DOKAN_VAULT_PORT;
+    const savedApi = process.env.DOKAN_VAULT_PORT;
+    const savedWeb = process.env.DOKAN_VAULT_WEB_PORT;
     process.env.DOKAN_VAULT_PORT = "4511";
+    process.env.DOKAN_VAULT_WEB_PORT = "5411";
     try {
-      expect(resolveVaultPorts().api).toBe(4511);
+      expect(resolveVaultPorts()).toEqual({ api: 4511, web: 5411 });
     } finally {
-      if (saved === undefined) delete process.env.DOKAN_VAULT_PORT;
-      else process.env.DOKAN_VAULT_PORT = saved;
+      restoreEnv("DOKAN_VAULT_PORT", savedApi);
+      restoreEnv("DOKAN_VAULT_WEB_PORT", savedWeb);
     }
   });
 

@@ -63,9 +63,11 @@ E2E_DATA_DIR="$PWD/.e2e-data/lane-b" \
 bun run test:e2e tests/e2e/vault.spec.ts
 ```
 
-Both must exit 0. All four ports and the data dir must be disjoint: selecting
-only the vault spec still boots the config's shared pair and wipes its
-`E2E_DATA_DIR` (a path under the ignored `.e2e-data/` keeps the runs clean).
+Both must exit 0. All four ports must be disjoint, and each run needs its own
+`E2E_DATA_DIR`: selecting only the vault spec still boots the config's shared
+pair, which is wiped and reseeded from that variable (a path under the ignored
+`.e2e-data/` keeps the runs clean). The vault pair itself makes its own temp data
+dir (`mkdtemp`), so it does not need `E2E_DATA_DIR`.
 Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair and at least
 one run fails at the create-vault heading — the isolation is what makes the
 positive case pass, not luck.

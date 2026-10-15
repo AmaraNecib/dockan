@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 
 // #202/#206 — the vault pair is configurable so two lanes can run vault suites
-// side by side; the resolver (and its unit tests) live in @dokan/e2e-support.
+// side by side; the resolver (and its unit tests) live in packages/e2e-support
+// (imported by path, because Playwright only transpiles TS outside node_modules)
+// and are unit-tested by `bun run test`.
 // Resolved once here and read by every consumer below: the spawn env, the health
 // poll, the vault-status poll and the page navigations, so the servers we start
 // and the servers we talk to can never be different ports.

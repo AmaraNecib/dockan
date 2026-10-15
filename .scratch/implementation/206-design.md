@@ -43,8 +43,9 @@ export function resolveVaultPorts(env?: NodeJS.ProcessEnv): VaultPorts;
 
 - `resolveVaultPorts` returns both ports in one call; the env names, defaults and
   validation live inside the module, not at call sites.
-- `env` is an injected dependency (defaults to `process.env`), so the unit tests
-  do not mutate global state.
+- `env` is an injected dependency (defaults to `process.env`), so nearly every
+  test exercises an explicit environment; the single default-argument test
+  saves and restores both variables.
 - Per-name parsing stays exactly as shipped in #202: blank/undefined → default;
   otherwise `Number.isInteger` and `1 <= port <= 65535`, else a named throw.
   Defaults and error text are byte-for-byte unchanged; every existing run and

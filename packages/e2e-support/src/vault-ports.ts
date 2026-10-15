@@ -6,8 +6,10 @@
  * env-driven; this module is the single place the variable names, the defaults
  * and the validation live, so the spec and its unit tests cross the same seam.
  *
- * Repo env convention: blank means unset. A set-but-invalid value throws
- * instead of resolving to port 0/NaN and a silent 20 s poll timeout.
+ * Repo env convention: blank means unset. A set-but-invalid value (non-numeric,
+ * fractional, or outside 1..65535) throws instead of resolving to port 0/NaN
+ * and a silent 20 s poll timeout. Parsing is `Number()`, matching the api's own
+ * DOKAN_PORT handling, so hex/exponent strings resolve as numbers.
  */
 
 /** The port pair every existing run has used; changing these moves live runs. */

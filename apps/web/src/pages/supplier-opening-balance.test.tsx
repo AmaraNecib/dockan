@@ -213,10 +213,12 @@ function typeIntoRow(rowIndex: number, text: string) {
   setInput(input, text);
 }
 
-function clickOn(testId: string) {
-  const el = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+/** Find a test-id element or fail loudly; one place so every click helper shares
+ * the same null handling. */
+function clickTarget<T extends HTMLElement = HTMLElement>(testId: string): T {
+  const el = host.querySelector<T>(`[data-testid="${testId}"]`);
   if (el === null) throw new Error(`missing ${testId}`);
-  act(() => el.click());
+  return el;
 }
 
 /**
@@ -228,13 +230,70 @@ function clickOn(testId: string) {
  */
 const BATCH_LIMIT_TEST_TIMEOUT_MS = 60_000;
 
-/** Dispatch a click carrying modifier flags (e.g. Ctrl/Cmd) on a test-id element,
- * to model the browser's new-tab activation of a link without a real browser. */
-function modifiedClickOn(testId: string, init: MouseEventInit) {
-  const el = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
-  if (el === null) throw new Error(`missing ${testId}`);
-  act(() => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init })));
+function clickOn(testId: string) {
+  act(() => clickTarget(testId).click());
 }
+
+/** Dispatch a click carrying explicit mouse flags on a test-id element. A plain
+ * `.click()` cannot express a Ctrl/Cmd-click (which the browser turns into a new
+ * tab) or a non-primary button, so the new-tab tests use this. */
+function dispatchClickOn(testId: string, init: MouseEventInit) {
+  act(() => clickTarget(testId).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init })));
+}
+
+/** Render, type a supplier that already carries entries, open the confirmation,
+ * then refuse the confirmed save as a stale destination and park the recovery
+ * lookup that refusal starts. Callers decide which gesture lands while the lookup
+ * is held and assert after releasing it via the module-level `releaseResolveHold`.
+ * The synchronous act + microtask flush for the refused save is deliberate:
+ * `await act(async ...)` deadlocks on the held resolve promise (review round 3 T4). */
+async function openConfirmWithRefusedSaveHeld() {
+  render();
+  await settle();
+  setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
+  setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+  await act(async () => {
+    clickOn("opening-balance-save");
+  });
+  expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+
+  rejectTargetChanged = true;
+  racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+  resolveHold = new Promise((resolve) => {
+    releaseResolveHold = resolve;
+  });
+  act(() => {
+    clickOn("opening-balance-confirm-save");
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+}
+
+/** Release the lookup `openConfirmWithRefusedSaveHeld` parked and let its
+ * continuation flush. */
+async function releaseHeldRecovery() {
+  await act(async () => {
+    releaseResolveHold?.();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await settle();
+}
+
+/** Every activation a browser turns into a NEW tab rather than a current-tab
+ * navigation. One case per predicate term, so dropping any of `!metaKey`,
+ * `!shiftKey`, `!altKey`, or `button === 0` fails a test. `button: 1` is
+ * synthetic here — real browsers emit `auxclick`, which React's onClick never
+ * sees — but it still pins the predicate's button term. */
+const NEW_TAB_ACTIVATIONS: Array<[string, MouseEventInit]> = [
+  ["Ctrl-click", { ctrlKey: true }],
+  ["Cmd-click", { metaKey: true }],
+  ["Shift-click", { shiftKey: true }],
+  ["Alt-click", { altKey: true }],
+  ["middle-click", { button: 1 }],
+];
 
 describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("writes one row per filled amount plus an inline new supplier", async () => {
@@ -637,144 +696,51 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("keeps the dialog closed when Escape lands while a refusal's recovery lookup is pending (review round 3 finding 1)", async () => {
-    render();
-    await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
-    // the typed name resolves to an account with entries: the first submit opens
-    // the confirmation dialog instead of writing directly
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    // the confirmed save is refused as a stale destination; hold the recovery
-    // lookup the refusal starts so the owner can dismiss while it runs
-    rejectTargetChanged = true;
-    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
-    resolveHold = new Promise((resolve) => {
-      releaseResolveHold = resolve;
-    });
-    // a synchronous act + microtask flush, NOT `await act(async …)`: the async
-    // form deadlocks on the held resolve promise (the act callback never settles)
-    act(() => {
-      clickOn("opening-balance-confirm-save");
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    const confirm = host.querySelector<HTMLElement>('[data-testid="opening-balance-confirm"]');
-    expect(confirm).not.toBeNull();
+    await openConfirmWithRefusedSaveHeld();
 
     // Escape dismisses while the recovery lookup is still pending
     await act(async () => {
-      confirm!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      clickTarget("opening-balance-confirm").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
 
     // the held lookup settles: the explicit dismissal must survive the refusal
     // recovery, so the dialog stays CLOSED (it is not re-opened with the moved name)
-    await act(async () => {
-      releaseResolveHold?.();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await settle();
+    await releaseHeldRecovery();
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
     // positive control: the recovery lookup really ran, so "stays closed" is not
     // passing vacuously (1 initial submit resolve + 1 recovery resolve)
     expect(resolveCalls).toBe(2);
   });
 
-  it("keeps the dialog open when a new-tab click hits the back link while a refusal's recovery lookup is pending (review round 4)", async () => {
-    // Ctrl/Cmd-click opens the supplier list in a NEW tab: the owner never leaves
-    // THIS tab, so the confirmation must survive the click and the pending
-    // recovery must still restore it (Greptile round 4).
-    render();
-    await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+  // one case per new-tab activation: the confirmation must survive every one of
+  // them, because none of them leaves THIS tab (Greptile round 4)
+  for (const [label, activation] of NEW_TAB_ACTIVATIONS) {
+    it(`keeps the dialog open when a ${label} hits the back link while a refusal's recovery lookup is pending (review round 4)`, async () => {
+      await openConfirmWithRefusedSaveHeld();
+      dispatchClickOn("opening-balance-back", activation);
 
-    // the confirmed save is refused as a stale destination; hold the recovery
-    // lookup the refusal starts so the click lands while it runs
-    rejectTargetChanged = true;
-    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
-    resolveHold = new Promise((resolve) => {
-      releaseResolveHold = resolve;
+      // the held lookup settles: because the owner never left this tab, the
+      // recovery must still re-open the dialog, now naming the moved account
+      await releaseHeldRecovery();
+      expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+      const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+      expect(names).toContain("مورد بديل");
+      // positive control: the recovery lookup really ran, so "still there" is not
+      // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+      expect(resolveCalls).toBe(2);
     });
-    // a synchronous act + microtask flush, NOT `await act(async …)`: the async
-    // form deadlocks on the held resolve promise (the act callback never settles)
-    act(() => {
-      clickOn("opening-balance-confirm-save");
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    // a Ctrl-click on the back link: the browser opens a new tab, this one stays
-    await act(async () => {
-      modifiedClickOn("opening-balance-back", { ctrlKey: true });
-    });
-
-    // the held lookup settles: because the owner never left this tab, the
-    // recovery must still re-open the dialog, now naming the moved account
-    await act(async () => {
-      releaseResolveHold?.();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await settle();
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
-    expect(names).toContain("مورد بديل");
-    // positive control: the recovery lookup really ran, so "still there" is not
-    // passing vacuously (1 initial submit resolve + 1 recovery resolve)
-    expect(resolveCalls).toBe(2);
-  });
+  }
 
   it("abandons the dialog on a plain back-link click while a refusal's recovery lookup is pending (review round 4 control)", async () => {
-    // the control for the test above: a plain click DOES navigate this tab, so it
-    // must abandon — otherwise the new-tab test could pass by never abandoning.
-    render();
-    await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    rejectTargetChanged = true;
-    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
-    resolveHold = new Promise((resolve) => {
-      releaseResolveHold = resolve;
-    });
-    act(() => {
-      clickOn("opening-balance-confirm-save");
-    });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
-
-    // a plain (unmodified) click on the back link navigates THIS tab
-    await act(async () => {
-      modifiedClickOn("opening-balance-back", { button: 0 });
-    });
+    // the control for the new-tab cases: a plain click DOES navigate this tab, so
+    // it must abandon — otherwise they could all pass by never abandoning.
+    await openConfirmWithRefusedSaveHeld();
+    dispatchClickOn("opening-balance-back", { button: 0 });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
 
     // the held lookup settles: the dismissal must survive the refusal recovery
-    await act(async () => {
-      releaseResolveHold?.();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    await settle();
+    await releaseHeldRecovery();
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
     // positive control: the recovery lookup still ran; only its re-open was dropped
     expect(resolveCalls).toBe(2);

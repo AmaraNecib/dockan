@@ -28,13 +28,14 @@ type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
 
 /** A dismissal hung off a navigation gesture must fire only when the gesture
- * actually navigates THIS tab. A modified activation (Ctrl/Cmd/Shift/Alt) or a
- * non-primary button (middle) tells the browser to open the destination in a NEW
- * tab, so the owner never leaves: abandoning here would close the confirmation in
- * the tab they are still looking at and stop a pending refusal recovery from
- * restoring it (Greptile round 4). One predicate, applied to every dismissal
- * route that hangs off a navigation gesture, so the rule cannot drift. */
-function navigatesCurrentTab(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+ * actually navigates THIS tab. A modified mouse activation (Ctrl/Cmd/Shift/Alt) or
+ * a non-primary button (middle) tells the browser to open the destination in a NEW
+ * tab, so the owner never leaves: abandoning would close the confirmation in the
+ * tab they are still looking at and stop a pending refusal recovery from
+ * restoring it (Greptile round 4). Today the back link is the only dismissal route
+ * that hangs off a navigation gesture; keeping the rule in one predicate means a
+ * future one calls it instead of growing a second, drift-prone check. */
+function navigatesCurrentTab(event: ReactMouseEvent): boolean {
   return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
 }
 

@@ -15,7 +15,7 @@ import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The field an auth error points the owner back to; null means the summary. */
-type AuthErrorField = "phone" | "password" | null;
+type AuthErrorField = "phone" | "password" | "ownerName" | "storeName" | null;
 
 /** The longest accepted login name: "+213550123123". */
 const PHONE_MAX_LENGTH = 13;
@@ -63,6 +63,9 @@ function authErrorField(key: MessageKey): AuthErrorField {
   // a short password is a password problem; "credentials" names both fields in
   // its copy, so blaming one of them would contradict the message
   if (key === "AUTH_PASSWORD_TOO_SHORT") return "password";
+  // issue #109 — the two names the native `required` used to guard
+  if (key === "AUTH_OWNER_NAME_REQUIRED") return "ownerName";
+  if (key === "AUTH_STORE_NAME_REQUIRED") return "storeName";
   return null;
 }
 
@@ -78,12 +81,42 @@ function authFieldKey(phone: string, password: string): MessageKey | null {
 }
 
 /**
+ * The setup name rules (`firstTimeSetupInputSchema`: `z.string().trim().min(1)`),
+ * checked before the request so an empty or whitespace-only name is named in
+ * Arabic instead of reaching the API and reading as a generic failure.
+ */
+function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
+  if (ownerName.trim() === "") return "AUTH_OWNER_NAME_REQUIRED";
+  if (storeName.trim() === "") return "AUTH_STORE_NAME_REQUIRED";
+  return null;
+}
+
+/** The input a blamed field points at, or null for the alert summary. */
+function authTarget(
+  field: AuthErrorField,
+  refs: {
+    phone: RefObject<HTMLInputElement | null>;
+    password: RefObject<HTMLInputElement | null>;
+    ownerName?: RefObject<HTMLInputElement | null>;
+    storeName?: RefObject<HTMLInputElement | null>;
+  },
+): HTMLElement | null {
+  if (field === "phone") return refs.phone.current;
+  if (field === "password") return refs.password.current;
+  if (field === "ownerName") return refs.ownerName?.current ?? null;
+  if (field === "storeName") return refs.storeName?.current ?? null;
+  return null;
+}
+
+/**
  * The shared wiring for an auth form's failures: the alert state plus a
  * reporter that translates a resolved key and focuses the field it blames.
  */
 function useAuthReporter(
   phoneRef: RefObject<HTMLInputElement | null>,
   passwordRef: RefObject<HTMLInputElement | null>,
+  ownerNameRef?: RefObject<HTMLInputElement | null>,
+  storeNameRef?: RefObject<HTMLInputElement | null>,
 ) {
   const { t } = useTranslation();
   const authError = useAuthError();
@@ -93,10 +126,9 @@ function useAuthReporter(
   const report = useCallback(
     (key: MessageKey): void => {
       const field = authErrorField(key);
-      const target = field === "phone" ? phoneRef.current : field === "password" ? passwordRef.current : null;
-      show(t(key), field, target);
+      show(t(key), field, authTarget(field, { phone: phoneRef, password: passwordRef, ownerName: ownerNameRef, storeName: storeNameRef }));
     },
-    [show, t, phoneRef, passwordRef],
+    [show, t, phoneRef, passwordRef, ownerNameRef, storeNameRef],
   );
   return { authError, report };
 }
@@ -398,14 +430,23 @@ function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  const ownerNameRef = useRef<HTMLInputElement>(null);
+  const storeNameRef = useRef<HTMLInputElement>(null);
   const phoneRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-  const { authError, report } = useAuthReporter(phoneRef, passwordRef);
+  const { authError, report } = useAuthReporter(phoneRef, passwordRef, ownerNameRef, storeNameRef);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     // the disabled button does not stop an implicit Enter submit
     if (busyRef.current) return;
+    // the native `required` is off (noValidate), so the same non-empty rule has
+    // to be written here — empty or whitespace-only names included
+    const nameKey = setupNameKey(ownerName, storeName);
+    if (nameKey !== null) {
+      report(nameKey);
+      return;
+    }
     // same rules the contracts enforce, checked before the request so the owner
     // is told which field is wrong instead of seeing a generic failure. In
     // vault mode the passphrase already exists, so only the phone is checked.
@@ -454,7 +495,7 @@ function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey
 
   return (
     <main className="grid min-h-screen place-items-center bg-background p-4">
-      <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm" dir="rtl">
+      <form onSubmit={submit} noValidate className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm" dir="rtl">
         <h1 className="text-center text-2xl font-bold">{t("appTitle")}</h1>
         <p className="mt-1 text-center text-sm text-muted-foreground">{t("appSub")}</p>
 
@@ -462,11 +503,11 @@ function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey
 
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupOwnerName")}
-          <input className="rounded border border-input bg-background px-3 py-2" name="ownerName" autoComplete="name" value={ownerName} onChange={(e) => setOwnerName(e.target.value)} required />
+          <input ref={ownerNameRef} className="rounded border border-input bg-background px-3 py-2" name="ownerName" autoComplete="name" value={ownerName} onChange={(e) => { setOwnerName(e.target.value); authError.clearField("ownerName"); }} required aria-invalid={authError.state?.field === "ownerName"} aria-describedby={authError.state?.field === "ownerName" ? "setup-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupStoreName")}
-          <input className="rounded border border-input bg-background px-3 py-2" name="storeName" autoComplete="organization" value={storeName} onChange={(e) => setStoreName(e.target.value)} required />
+          <input ref={storeNameRef} className="rounded border border-input bg-background px-3 py-2" name="storeName" autoComplete="organization" value={storeName} onChange={(e) => { setStoreName(e.target.value); authError.clearField("storeName"); }} required aria-invalid={authError.state?.field === "storeName"} aria-describedby={authError.state?.field === "storeName" ? "setup-error" : undefined} />
         </label>
         <label className="mt-3 grid gap-1 text-sm">
           {t("setupStoreAddress")}
@@ -527,6 +568,12 @@ function LoginPage({ notice, onNoticeConsumed }: { notice: MessageKey | null; on
       report("INVALID_PHONE_NUMBER");
       return;
     }
+    // the native `required`/`minLength` are off (noValidate): an empty or short
+    // password is refused here rather than posting a request that cannot pass
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      report("AUTH_PASSWORD_TOO_SHORT");
+      return;
+    }
     busyRef.current = true;
     setBusy(true);
     authError.clear();
@@ -549,7 +596,7 @@ function LoginPage({ notice, onNoticeConsumed }: { notice: MessageKey | null; on
 
   return (
     <main className="grid min-h-screen place-items-center bg-background p-4">
-      <form onSubmit={signIn} className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm" dir="rtl">
+      <form onSubmit={signIn} noValidate className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm" dir="rtl">
         <h1 className="text-center text-2xl font-bold">{t("appTitle")}</h1>
         <p className="mt-1 text-center text-sm text-muted-foreground">{t("appSub")}</p>
 

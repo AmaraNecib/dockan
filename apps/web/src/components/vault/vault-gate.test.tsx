@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 // SAFETY: only this flag is written; globalThis keeps every other property
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "@/lib/i18n";
+import i18n from "@/lib/i18n";
 import { VaultGate } from "./vault-gate";
 import type { BrokerInvokeArgs, BrokerReply } from "@/lib/vault-broker";
 import type { VaultStatus } from "@/lib/vault-client";
@@ -85,6 +85,94 @@ async function submit(host: HTMLElement, testId: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   });
 }
+
+describe("vault gate takes over native validation (issue #109)", () => {
+  it("setup: noValidate, and an empty passphrase shows Arabic without a request", async () => {
+    let setupCalls = 0;
+    routes.set("/api/vault/setup", () => {
+      setupCalls += 1;
+      return Response.json({ ok: true, recoveryKey: "x", sessionToken: "y" });
+    });
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    expect(host.querySelector("form")?.noValidate).toBe(true);
+
+    await submit(host, "vault-setup-submit");
+
+    expect(setupCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("vaultPassphraseTooShort"));
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("true");
+    expect(passphrase?.getAttribute("aria-describedby")).toBe("vault-error");
+    expect(document.activeElement).toBe(passphrase);
+  });
+
+  it("unlock: noValidate, and an empty passphrase shows Arabic without a request", async () => {
+    let unlockCalls = 0;
+    routes.set("/api/vault/unlock", () => {
+      unlockCalls += 1;
+      return Response.json({ ok: true, sessionToken: "s" });
+    });
+    const host = await mount(statusFor("locked"), () => undefined);
+    expect(host.querySelector("form")?.noValidate).toBe(true);
+
+    await submit(host, "vault-unlock-submit");
+
+    expect(unlockCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe("أدخل كلمة مرور الخزنة.");
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("true");
+    expect(passphrase?.getAttribute("aria-describedby")).toBe("vault-error");
+    expect(document.activeElement).toBe(passphrase);
+  });
+
+  it("recovery unlock: noValidate, and an empty key shows Arabic without a request", async () => {
+    let recoveryCalls = 0;
+    routes.set("/api/vault/unlock-recovery", () => {
+      recoveryCalls += 1;
+      return Response.json({ ok: true, sessionToken: "s" });
+    });
+    const host = await mount(statusFor("locked"), () => undefined);
+    await submit(host, "vault-use-recovery");
+    expect(host.querySelector("form")?.noValidate).toBe(true);
+
+    await submit(host, "vault-recovery-submit");
+
+    expect(recoveryCalls).toBe(0);
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe("أدخل مفتاح الاسترداد.");
+    const input = host.querySelector<HTMLInputElement>('[data-testid="vault-recovery-input"]');
+    expect(input?.getAttribute("aria-invalid")).toBe("true");
+    expect(input?.getAttribute("aria-describedby")).toBe("vault-error");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("editing a blamed field clears the Arabic error and aria-invalid", async () => {
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    await submit(host, "vault-setup-submit");
+
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("true");
+    expect(host.querySelector('[data-testid="vault-error"]')).not.toBeNull();
+
+    setValue(host, "vault-passphrase", "long enough passphrase");
+
+    expect(host.querySelector('[data-testid="vault-error"]')).toBeNull();
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("false");
+    expect(passphrase?.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("editing the passphrase clears a confirm-blamed mismatch", async () => {
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    setValue(host, "vault-passphrase", "long enough passphrase");
+    setValue(host, "vault-passphrase-confirm", "a different passphrase");
+    await submit(host, "vault-setup-submit");
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("vaultPassphraseMismatch"));
+
+    // making the passphrase match the confirm is a fix too, so the confirm's
+    // stale refusal must go with it
+    setValue(host, "vault-passphrase", "a different passphrase");
+    expect(host.querySelector('[data-testid="vault-error"]')).toBeNull();
+  });
+});
 
 describe("VaultGate", () => {
   it("creates the vault, shows the recovery key once, and requires the save acknowledgement", async () => {

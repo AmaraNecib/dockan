@@ -74,14 +74,16 @@ export function useVaultStatus(): VaultHook {
 }
 
 /** A form-level error announced through role="alert". */
-function VaultAlert({ message }: { message: string | null }) {
+function VaultAlert({ message, focus }: { message: string | null; focus: boolean }) {
   const ref = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
-    if (message !== null) ref.current?.focus();
-  }, [message]);
+    // a field-blamed failure moves focus to that field; the alert only takes
+    // focus when the failure names no single field
+    if (message !== null && focus) ref.current?.focus();
+  }, [message, focus]);
   if (message === null) return null;
   return (
-    <p ref={ref} tabIndex={-1} role="alert" className="mt-3 text-sm text-destructive" data-testid="vault-error">
+    <p id="vault-error" ref={ref} tabIndex={-1} role="alert" className="mt-3 text-sm text-destructive" data-testid="vault-error">
       {message}
     </p>
   );
@@ -114,6 +116,10 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [lockedUntil, setLockedUntil] = useState(status.lockedForMs > 0 ? Date.now() + status.lockedForMs : 0);
   const busyRef = useRef(false);
   const passphraseRef = useRef<HTMLInputElement>(null);
+  /** which field a failed validation blames; null = the form-level alert */
+  const [errorField, setErrorField] = useState<"passphrase" | "confirm" | "recovery" | null>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+  const recoveryRef = useRef<HTMLInputElement>(null);
 
   const lockedRemainingMs = Math.max(0, lockedUntil - Date.now());
 
@@ -123,6 +129,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
       if (Date.now() >= lockedUntil) {
         setLockedUntil(0);
         setError(null);
+        setErrorField(null);
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -132,9 +139,24 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
     passphraseRef.current?.focus();
   }, [screen]);
 
-  const fail = (message: string, retryAfterMs?: number): void => {
+  const fail = (
+    message: string,
+    field: "passphrase" | "confirm" | "recovery" | null = null,
+    retryAfterMs?: number,
+  ): void => {
     setError(message);
+    setErrorField(field);
+    if (field === "passphrase") passphraseRef.current?.focus();
+    if (field === "confirm") confirmRef.current?.focus();
+    if (field === "recovery") recoveryRef.current?.focus();
     if (retryAfterMs !== undefined && retryAfterMs > 0) setLockedUntil(Date.now() + retryAfterMs);
+  };
+
+  /** Drop a field-blamed failure as soon as that field is edited (#100 pattern). */
+  const clearFieldError = (field: "passphrase" | "confirm" | "recovery"): void => {
+    if (errorField !== field) return;
+    setError(null);
+    setErrorField(null);
   };
 
   const run = async (action: () => Promise<void>): Promise<void> => {
@@ -142,11 +164,12 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
     busyRef.current = true;
     setBusy(true);
     setError(null);
+    setErrorField(null);
     try {
       await action();
     } catch (err) {
       // the API ships codes, not copy: translate here (round-6)
-      fail(vaultErrorCopy(err instanceof Error ? err : undefined), err instanceof VaultRequestError ? err.retryAfterMs : undefined);
+      fail(vaultErrorCopy(err instanceof Error ? err : undefined), null, err instanceof VaultRequestError ? err.retryAfterMs : undefined);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -156,7 +179,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   if (status.state === "invalid") {
     return (
       <VaultFrame>
-        <VaultAlert message={t("vaultInvalid")} />
+        <VaultAlert message={t("vaultInvalid")} focus />
       </VaultFrame>
     );
   }
@@ -235,8 +258,13 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
         <p className="mt-2 text-sm text-muted-foreground">{t("vaultRecoveryUnlockHint")}</p>
         <form
           className="mt-4 grid gap-3"
+          noValidate
           onSubmit={(event) => {
             event.preventDefault();
+            if (recoveryInput === "") {
+              fail(t("vaultRecoveryRequired"), "recovery");
+              return;
+            }
             void run(async () => {
               const token = await vaultUnlockWithRecovery(recoveryInput, status.broker);
               storeVaultSessionToken(token);
@@ -247,21 +275,27 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           <label className="grid gap-1 text-sm">
             {t("vaultRecoveryField")}
             <input
+              ref={recoveryRef}
               className="rounded border border-input bg-background px-3 py-2 font-mono"
               dir="ltr"
               autoComplete="off"
               spellCheck={false}
               value={recoveryInput}
-              onChange={(event) => setRecoveryInput(event.target.value)}
+              onChange={(event) => {
+                setRecoveryInput(event.target.value);
+                clearFieldError("recovery");
+              }}
               data-testid="vault-recovery-input"
               required
+              aria-invalid={errorField === "recovery"}
+              aria-describedby={errorField === "recovery" ? "vault-error" : undefined}
             />
           </label>
-          <VaultAlert message={error} />
+          <VaultAlert message={error} focus={errorField === null} />
           <button type="submit" className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" disabled={busy} data-testid="vault-recovery-submit">
             {busy ? t("vaultWorking") : t("vaultUnlock")}
           </button>
-          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setError(null); }}>
+          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setError(null); setErrorField(null); }}>
             {t("vaultBackToPassphrase")}
           </button>
         </form>
@@ -278,14 +312,15 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
         <p className="mt-2 text-sm text-muted-foreground">{t("vaultSetupHint")}</p>
         <form
           className="mt-4 grid gap-3"
+          noValidate
           onSubmit={(event) => {
             event.preventDefault();
             if (!isVaultPassphraseLongEnough(passphrase)) {
-              setError(t("vaultPassphraseTooShort"));
+              fail(t("vaultPassphraseTooShort"), "passphrase");
               return;
             }
             if (passphrase !== confirm) {
-              setError(t("vaultPassphraseMismatch"));
+              fail(t("vaultPassphraseMismatch"), "confirm");
               return;
             }
             void run(async () => {
@@ -319,8 +354,15 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
               ref={passphraseRef}
               autoComplete="new-password"
               value={passphrase}
-              onChange={(event) => setPassphrase(event.target.value)}
-              aria-invalid={tooShort}
+              onChange={(event) => {
+                setPassphrase(event.target.value);
+                // a mismatch blames the confirm field, but fixing the passphrase
+                // to match is equally a fix; drop either stale refusal
+                clearFieldError("passphrase");
+                clearFieldError("confirm");
+              }}
+              aria-invalid={tooShort || errorField === "passphrase"}
+              aria-describedby={errorField === "passphrase" ? "vault-error" : undefined}
               data-testid="vault-passphrase"
               required
             />
@@ -328,16 +370,21 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           <label className="grid gap-1 text-sm">
             {t("vaultPassphraseConfirm")}
             <PasswordInput
+              ref={confirmRef}
               autoComplete="new-password"
               value={confirm}
-              onChange={(event) => setConfirm(event.target.value)}
-              aria-invalid={mismatch}
+              onChange={(event) => {
+                setConfirm(event.target.value);
+                clearFieldError("confirm");
+              }}
+              aria-invalid={mismatch || errorField === "confirm"}
+              aria-describedby={errorField === "confirm" ? "vault-error" : undefined}
               data-testid="vault-passphrase-confirm"
               required
             />
           </label>
           <p className="text-xs text-muted-foreground">{t("vaultPassphraseRule")}</p>
-          <VaultAlert message={error} />
+          <VaultAlert message={error} focus={errorField === null} />
           <button type="submit" className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" disabled={busy} data-testid="vault-setup-submit">
             {busy ? t("vaultWorking") : t("vaultSetupCreate")}
           </button>
@@ -352,8 +399,13 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
       <h2 className="mt-6 font-semibold">{t("vaultUnlockTitle")}</h2>
       <form
         className="mt-4 grid gap-3"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
+          if (passphrase === "") {
+            fail(t("vaultPassphraseRequired"), "passphrase");
+            return;
+          }
           void run(async () => {
             const token = await vaultUnlock(passphrase, status.broker);
             storeVaultSessionToken(token);
@@ -367,12 +419,17 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
             ref={passphraseRef}
             autoComplete="current-password"
             value={passphrase}
-            onChange={(event) => setPassphrase(event.target.value)}
+            onChange={(event) => {
+              setPassphrase(event.target.value);
+              clearFieldError("passphrase");
+            }}
+            aria-invalid={errorField === "passphrase"}
+            aria-describedby={errorField === "passphrase" ? "vault-error" : undefined}
             data-testid="vault-passphrase"
             required
           />
         </label>
-        <VaultAlert message={locked ? t("vaultLockedWait", { seconds: Math.ceil(lockedRemainingMs / 1000) }) : error} />
+        <VaultAlert message={locked ? t("vaultLockedWait", { seconds: Math.ceil(lockedRemainingMs / 1000) }) : error} focus={locked || errorField === null} />
         <button
           type="submit"
           className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50"
@@ -387,6 +444,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           onClick={() => {
             setScreen("recovery-unlock");
             setError(null);
+            setErrorField(null);
           }}
           data-testid="vault-use-recovery"
         >

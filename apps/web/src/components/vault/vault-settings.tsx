@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { PasswordInput } from "@/components/ui/password-input";
@@ -20,6 +20,10 @@ import {
  * rotate the recovery keys while the vault is open. A new key is shown exactly
  * once; deleting one never touches the others.
  */
+
+/** The input a settings-side refusal points at; null means the summary. */
+type VaultSettingsField = "current" | "newPassphrase" | "confirm" | "recoveryKey" | "resetPassphrase" | null;
+
 export function VaultSettings() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -41,6 +45,12 @@ export function VaultSettings() {
   const [showRecoveryReset, setShowRecoveryReset] = useState(false);
   const [resetRecoveryKey, setResetRecoveryKey] = useState("");
   const [resetNewPassphrase, setResetNewPassphrase] = useState("");
+  const [errorField, setErrorField] = useState<VaultSettingsField>(null);
+  const currentRef = useRef<HTMLInputElement>(null);
+  const newRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLInputElement>(null);
+  const recoveryKeyRef = useRef<HTMLInputElement>(null);
+  const resetPassphraseRef = useRef<HTMLInputElement>(null);
 
   const changePassphrase = useMutation({
     mutationFn: () => changeVaultPassphrase(currentPassphrase, newPassphrase),
@@ -93,7 +103,33 @@ export function VaultSettings() {
   // the legacy plaintext build has no vault section at all
   if (status.data?.mode !== "vault") return null;
 
-  const mismatch = confirmPassphrase.length > 0 && confirmPassphrase !== newPassphrase;
+  /** Refuse a field in Arabic, focus it, and tie the alert to it (#109). */
+  const showError = (message: string, field: VaultSettingsField): void => {
+    setError(message);
+    setErrorField(field);
+    const target =
+      field === "current"
+        ? currentRef.current
+        : field === "newPassphrase"
+          ? newRef.current
+          : field === "confirm"
+            ? confirmRef.current
+            : field === "recoveryKey"
+              ? recoveryKeyRef.current
+              : field === "resetPassphrase"
+                ? resetPassphraseRef.current
+                : null;
+    target?.focus();
+  };
+
+  /** Drop a field-blamed failure as soon as that field is edited (#100 pattern). */
+  const clearFieldError = (field: Exclude<VaultSettingsField, null>): void => {
+    if (errorField !== field) return;
+    setError(null);
+    setErrorField(null);
+  };
+
+  const mismatch = newPassphrase.length > 0 && confirmPassphrase.length > 0 && confirmPassphrase !== newPassphrase;
 
   return (
     <section className="mt-8" data-testid="vault-settings">
@@ -102,17 +138,25 @@ export function VaultSettings() {
 
       <form
         className="mt-4 grid gap-3 rounded border bg-card p-4"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          if (!isVaultPassphraseLongEnough(newPassphrase)) {
-            setError(t("vaultPassphraseTooShort"));
+          if (currentPassphrase === "") {
+            showError(t("vaultPassphraseRequired"), "current");
             return;
           }
-          if (mismatch) {
-            setError(t("vaultPassphraseMismatch"));
+          if (!isVaultPassphraseLongEnough(newPassphrase)) {
+            showError(t("vaultPassphraseTooShort"), "newPassphrase");
+            return;
+          }
+          // compare directly, not via `mismatch`: with `noValidate` the native
+          // `required` is gone, so an empty confirm must be refused here too
+          if (confirmPassphrase !== newPassphrase) {
+            showError(t("vaultPassphraseMismatch"), "confirm");
             return;
           }
           setMessage(null);
+          setErrorField(null);
           changePassphrase.mutate();
         }}
       >
@@ -120,9 +164,15 @@ export function VaultSettings() {
         <label className="grid gap-1 text-sm">
           {t("vaultCurrentPassphrase")}
           <PasswordInput
+            ref={currentRef}
             autoComplete="current-password"
             value={currentPassphrase}
-            onChange={(event) => setCurrentPassphrase(event.target.value)}
+            onChange={(event) => {
+              setCurrentPassphrase(event.target.value);
+              clearFieldError("current");
+            }}
+            aria-invalid={errorField === "current"}
+            aria-describedby={errorField === "current" ? "vault-settings-error" : undefined}
             required
             data-testid="vault-current-passphrase"
           />
@@ -130,10 +180,17 @@ export function VaultSettings() {
         <label className="grid gap-1 text-sm">
           {t("vaultNewPassphrase")}
           <PasswordInput
+            ref={newRef}
             autoComplete="new-password"
             value={newPassphrase}
-            onChange={(event) => setNewPassphrase(event.target.value)}
-            aria-invalid={newPassphrase.length > 0 && !isVaultPassphraseLongEnough(newPassphrase)}
+            onChange={(event) => {
+              setNewPassphrase(event.target.value);
+              // a mismatch blames confirm; making new match it is a fix too
+              clearFieldError("newPassphrase");
+              clearFieldError("confirm");
+            }}
+            aria-invalid={errorField === "newPassphrase" || (newPassphrase.length > 0 && !isVaultPassphraseLongEnough(newPassphrase))}
+            aria-describedby={errorField === "newPassphrase" ? "vault-settings-error" : undefined}
             required
             data-testid="vault-new-passphrase"
           />
@@ -141,10 +198,15 @@ export function VaultSettings() {
         <label className="grid gap-1 text-sm">
           {t("vaultPassphraseConfirm")}
           <PasswordInput
+            ref={confirmRef}
             autoComplete="new-password"
             value={confirmPassphrase}
-            onChange={(event) => setConfirmPassphrase(event.target.value)}
-            aria-invalid={mismatch}
+            onChange={(event) => {
+              setConfirmPassphrase(event.target.value);
+              clearFieldError("confirm");
+            }}
+            aria-invalid={mismatch || errorField === "confirm"}
+            aria-describedby={errorField === "confirm" ? "vault-settings-error" : undefined}
             required
             data-testid="vault-confirm-passphrase"
           />
@@ -171,13 +233,19 @@ export function VaultSettings() {
       {showRecoveryReset && (
         <form
           className="mt-4 grid gap-3 rounded border bg-card p-4"
+          noValidate
           onSubmit={(event) => {
             event.preventDefault();
+            if (resetRecoveryKey === "") {
+              showError(t("vaultRecoveryRequired"), "recoveryKey");
+              return;
+            }
             if (!isVaultPassphraseLongEnough(resetNewPassphrase)) {
-              setError(t("vaultPassphraseTooShort"));
+              showError(t("vaultPassphraseTooShort"), "resetPassphrase");
               return;
             }
             setMessage(null);
+            setErrorField(null);
             recoveryReset.mutate();
           }}
           data-testid="vault-recovery-reset"
@@ -187,11 +255,17 @@ export function VaultSettings() {
           <label className="grid gap-1 text-sm">
             {t("vaultRecoveryField")}
             <input
+              ref={recoveryKeyRef}
               className="rounded border px-3 py-2 font-mono"
               dir="ltr"
               autoComplete="off"
               value={resetRecoveryKey}
-              onChange={(event) => setResetRecoveryKey(event.target.value)}
+              onChange={(event) => {
+                setResetRecoveryKey(event.target.value);
+                clearFieldError("recoveryKey");
+              }}
+              aria-invalid={errorField === "recoveryKey"}
+              aria-describedby={errorField === "recoveryKey" ? "vault-settings-error" : undefined}
               required
               data-testid="vault-reset-recovery-key"
             />
@@ -199,9 +273,15 @@ export function VaultSettings() {
           <label className="grid gap-1 text-sm">
             {t("vaultNewPassphrase")}
             <PasswordInput
+              ref={resetPassphraseRef}
               autoComplete="new-password"
               value={resetNewPassphrase}
-              onChange={(event) => setResetNewPassphrase(event.target.value)}
+              onChange={(event) => {
+                setResetNewPassphrase(event.target.value);
+                clearFieldError("resetPassphrase");
+              }}
+              aria-invalid={errorField === "resetPassphrase"}
+              aria-describedby={errorField === "resetPassphrase" ? "vault-settings-error" : undefined}
               required
               data-testid="vault-reset-new-passphrase"
             />
@@ -289,7 +369,7 @@ export function VaultSettings() {
         </p>
       )}
       {error !== null && (
-        <p className="mt-3 text-sm text-destructive" role="alert" data-testid="vault-settings-error">
+        <p id="vault-settings-error" className="mt-3 text-sm text-destructive" role="alert" data-testid="vault-settings-error">
           {error}
         </p>
       )}

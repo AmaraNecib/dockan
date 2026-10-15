@@ -61,6 +61,10 @@ let rejectTargetChanged = false;
  * cancel while the lookup is still pending (review round 1 finding 1) */
 let resolveHold: Promise<void> | null = null;
 let releaseResolveHold: (() => void) | null = null;
+/** when set, the names read waits on this promise, so a test can hold a reset
+ * query's replacement read in flight (review round 5 finding 2) */
+let namesHold: Promise<void> | null = null;
+let releaseNamesHold: (() => void) | null = null;
 /** when set, an opening-balance write parks until released (review round 1 follow-up) */
 let mutationHold: Promise<void> | null = null;
 let releaseMutationHold: (() => void) | null = null;
@@ -84,6 +88,7 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["suppliersListNames"],
         queryFn: async () => {
           if (namesShouldFail) throw new Error("NAMES_FAILED");
+          if (namesHold !== null) await namesHold;
           return { items: suppliers.map(({ id, name }) => ({ id, name })) };
         },
       }),
@@ -157,6 +162,8 @@ beforeEach(() => {
   rejectTargetChanged = false;
   resolveHold = null;
   releaseResolveHold = null;
+  namesHold = null;
+  releaseNamesHold = null;
   mutationHold = null;
   releaseMutationHold = null;
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
@@ -1644,23 +1651,27 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(resolveCalls).toBe(1);
 
-    // the removal lands while the lookup is still unanswered
+    // the names refetch finishes and publishes the fresh list while the lookup is
+    // still unanswered. `setQueryData` is that refetch's synchronous cache write;
+    // React Query schedules the re-render (and so the removal effect) on a
+    // macrotask, so the resumed save() observes the fresh cache BEFORE the effect
+    // commits. Releasing the held lookup in the same tick pins that ordering; the
+    // old test's `settle()`-then-release let the effect win first, which is the
+    // window that hid the bug.
     suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    const freshNames = suppliers.map(({ id, name }) => ({ id, name }));
     await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
-    });
-    await settle();
-    expect(clickTarget("opening-balance-removed")).not.toBeNull();
-
-    // release the held lookup: the abandoned attempt must not write the removed row
-    await act(async () => {
+      queryClient!.setQueryData(["suppliersListNames"], { items: freshNames });
       releaseResolveHold?.();
       await Promise.resolve();
       await Promise.resolve();
     });
     await settle();
+
     expect(captured).toBeNull();
     expect(mutationCalls).toBe(0);
+    // the loss is still surfaced, never silently swallowed
+    expect(clickTarget("opening-balance-removed")).not.toBeNull();
   });
 
   it("closes the confirmation when a refresh removes a row it named (#204 review)", async () => {
@@ -1703,6 +1714,52 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
     // the failed read still blocks on its own existing reason
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+  });
+
+  it("keeps filled drafts when the supplier query is reset and its replacement read is held (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "other", name: "مورد ثان", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+
+    // reset the names query while its replacement read is held, then let the
+    // reset render while `data` is undefined: an undefined list must NOT read as
+    // "every supplier vanished"
+    namesHold = new Promise((resolve) => {
+      releaseNamesHold = resolve;
+    });
+    await act(async () => {
+      void queryClient!.resetQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+    // no phantom removal while the read carries no data, and the page is on the
+    // loading state — this is the window the previous test never reached
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-loading"]')).not.toBeNull();
+
+    // release the replacement read: the typed draft survived the null window and
+    // the batch still carries the owner's amount
+    await act(async () => {
+      releaseNamesHold?.();
+      namesHold = null;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("100");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "keep")).toMatchObject({ amount: 100 });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد جديد تماما")).toMatchObject({ amount: 50 });
   });
 
   it("counts a typed name toward the batch limit and blocks before the server (round 5)", async () => {

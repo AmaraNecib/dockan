@@ -362,11 +362,51 @@ export function SupplierOpeningBalancePage() {
     setRemovedFilled([]);
   }
 
+  /** #204 review — the supplier ids the cache holds RIGHT NOW. `save` is reached
+   * from a continuation that can outlive the render which started it, so the
+   * supplier set behind `filledExisting` may already be stale: the names refetch
+   * can have written its fresh list to the cache while React has not yet
+   * committed the removal effect. Reading the cache here closes exactly that
+   * window — the refetch finished, the effect has not run — independent of
+   * whether the effect or the resumed lookup wins. (A refetch still in flight has
+   * not written a new list; nothing can know the row is gone until it lands, so
+   * this is not a claim about that window.) `null` means the names read has no
+   * data (never loaded, or reset mid-read), which must not be read as "every
+   * supplier vanished". */
+  function livePresentSupplierIds(): string[] | null {
+    const data = queryClient.getQueryData<{ items: Array<{ id: string }> }>(orpc.suppliersListNames.queryKey());
+    return data === undefined ? null : data.items.map((item) => item.id);
+  }
+
   /** Whether a dropped amount still needs acknowledgement before a write. Reads
-   * the live ref, not a captured render value, so a removal during an in-flight
-   * resolve cannot slip past `save` (issue 204 review). */
+   * the live ref AND the live cache, never a captured render value: a refetch
+   * that has written a supplier out of the cache can reach here before the
+   * reconciliation effect commits, and the removed supplier would otherwise
+   * travel in the batch (the server rejects the WHOLE batch, losing the surviving
+   * balances — the exact silent-loss class #204 exists to stop). On a live
+   * removal this surfaces the loss, drops the vanished drafts, and refuses the
+   * write, exactly as the effect would have. */
   function removalBlocksSave(): boolean {
-    return removedFilledRef.current.length > 0;
+    if (removedFilledRef.current.length > 0) return true;
+    const present = livePresentSupplierIds();
+    if (present === null) return false;
+    const dropped = droppedFilledDrafts({ drafts: draftsRef.current, presentSupplierIds: present });
+    if (dropped.length === 0) return false;
+    // the outgoing batch changed: abandon any in-flight submit (a late resolve
+    // must not write the removed row) and close the confirmation that named the
+    // now-shrunk batch, exactly as the refresh effect does
+    abandonAttempt();
+    setRemovedFilled((current) => {
+      const known = new Set(current.map((row) => row.supplierId));
+      const added = dropped.filter((row) => !known.has(row.supplierId));
+      return added.length === 0 ? current : [...current, ...added];
+    });
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const row of dropped) delete next[row.supplierId];
+      return next;
+    });
+    return true;
   }
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {

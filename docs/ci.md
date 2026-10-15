@@ -54,13 +54,13 @@ timing-based version would race, so it stays a manual procedure:
 DOKAN_PORT=4617 DOKAN_WEB_PORT=5473 \
 DOKAN_VAULT_PORT=4399 DOKAN_VAULT_WEB_PORT=5174 \
 E2E_DATA_DIR="$PWD/.e2e-data/lane-a" \
-bun run test:e2e tests/e2e/vault.spec.ts
+bun run test:e2e --output=.e2e-data/lane-a/test-results tests/e2e/vault.spec.ts
 
 # terminal B
 DOKAN_PORT=4618 DOKAN_WEB_PORT=5474 \
 DOKAN_VAULT_PORT=4400 DOKAN_VAULT_WEB_PORT=5175 \
 E2E_DATA_DIR="$PWD/.e2e-data/lane-b" \
-bun run test:e2e tests/e2e/vault.spec.ts
+bun run test:e2e --output=.e2e-data/lane-b/test-results tests/e2e/vault.spec.ts
 ```
 
 Both must exit 0. All four ports must be disjoint, and each run needs its own
@@ -68,6 +68,13 @@ Both must exit 0. All four ports must be disjoint, and each run needs its own
 pair, which is wiped and reseeded from that variable (a path under the ignored
 `.e2e-data/` keeps the runs clean). The vault pair itself makes its own temp data
 dir (`mkdtemp`), so it does not need `E2E_DATA_DIR`.
+
+Each run also needs its own `--output` dir. Playwright clears its output
+directory at startup and writes failed-test traces, screenshots, and
+`error-context.md` into it by path, so two runs left on the default
+`test-results/` would delete or overwrite each other's failure evidence. That is
+worst exactly when these runs are being used to explain a failure, which is the
+point of the pair.
 
 Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair. It is
 timing-dependent and only *may* catch a shared server, so it does not prove

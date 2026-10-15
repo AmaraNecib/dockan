@@ -160,6 +160,40 @@ describe('compare', () => {
     })
   })
 
+  it('flags a changed binary whose bytes decode to the same replacement characters', () => {
+    withMirrorTrees((source, dest) => {
+      // The locked `shadcn` skill ships PNGs. `0x89` and `0x88` are both
+      // invalid UTF-8 and decode to U+FFFD, so comparing these as strings
+      // reported no difference and a changed image passed the gate.
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      writeFileSync(join(source, 'logo.png'), png)
+      writeFileSync(join(dest, 'logo.png'), png)
+      expect(compare('demo', source, dest)).toEqual([])
+
+      writeFileSync(join(dest, 'logo.png'), Buffer.concat([Buffer.from([0x88]), png.subarray(1)]))
+      expect(compare('demo', source, dest)).toEqual([
+        'demo/logo.png: content differs',
+      ])
+    })
+  })
+
+  it('still normalises CRLF for text and flags a binary against text', () => {
+    withMirrorTrees((source, dest) => {
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+      writeFileSync(join(source, 'logo.png'), png)
+      writeFileSync(join(dest, 'logo.png'), png)
+      // A Windows checkout of a text file must still compare equal.
+      writeFileSync(join(dest, 'SKILL.md'), '# demo\r\n')
+      expect(compare('demo', source, dest)).toEqual([])
+
+      // Same path, one side bytes and the other text: not equal.
+      writeFileSync(join(source, 'logo.png'), '# demo\n')
+      expect(compare('demo', source, dest)).toEqual([
+        'demo/logo.png: content differs',
+      ])
+    })
+  })
+
   it('flags a file that only the mirror has', () => {
     withMirrorTrees((source, dest) => {
       writeFileSync(join(dest, 'extra.md'), '# extra\n')

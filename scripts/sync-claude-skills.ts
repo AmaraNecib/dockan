@@ -43,9 +43,27 @@ const LOCK_FILE = join(ROOT, 'skills-lock.json')
 type LockedSkill = { source: string; skillPath: string }
 type SkillsLock = { version: number; skills: Record<string, LockedSkill> }
 
-/** Normalise CRLF so a Windows checkout compares equal to a Unix one. */
-const readNormalised = (file: string) =>
-  readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
+/**
+ * A text file with CRLF normalised so a Windows checkout compares equal to a
+ * Unix one — or the raw bytes when the file is not valid UTF-8.
+ *
+ * Decoding a binary as a string is lossy: the locked `shadcn` skill ships PNGs,
+ * and `0x89` and `0x88` both decode to U+FFFD, so a changed image compared
+ * equal and passed the gate. Only a lossless UTF-8 round-trip is text.
+ */
+const readNormalised = (file: string): string | Buffer => {
+  const bytes = readFileSync(file)
+  const text = bytes.toString('utf8')
+  if (!Buffer.from(text, 'utf8').equals(bytes)) return bytes
+  return text.replace(/\r\n/g, '\n')
+}
+
+/** Byte equality for binaries, string equality for normalised text. */
+const sameContent = (a: string | Buffer, b: string | Buffer): boolean => {
+  if (Buffer.isBuffer(a) !== Buffer.isBuffer(b)) return false
+  if (Buffer.isBuffer(a) && Buffer.isBuffer(b)) return a.equals(b)
+  return a === b
+}
 
 /** The `Dirent` fields the walk reads; a test supplies a fake for links. */
 export type WalkEntry = {
@@ -132,7 +150,10 @@ export const compare = (
       if (!destLinks.has(file))
         problems.push(`.agents/skills/${name}/${file} is missing from .claude`)
     } else if (
-      readNormalised(join(source, file)) !== readNormalised(join(dest, file))
+      !sameContent(
+        readNormalised(join(source, file)),
+        readNormalised(join(dest, file)),
+      )
     )
       problems.push(`${name}/${file}: content differs`)
   }

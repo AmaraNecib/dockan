@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { normalizeTextKey } from "@dokan/contracts";
 
 // SAFETY: React 19 act() requires the environment flag to be set explicitly
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -18,7 +19,10 @@ type CapturedRow = {
   direction: "WE_OWE" | "THEY_OWE";
   amount: number;
   confirmExisting?: boolean;
+  expectedSupplierId?: string | null;
 };
+
+type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
 
 let captured: { rows: CapturedRow[] } | null = null;
 /** when true, the first unconfirmed save is refused as if the cached entry
@@ -27,12 +31,33 @@ let rejectUnconfirmed = false;
 /** when true, the next save is refused even when confirmed (a stale confirmed
  * attempt) */
 let rejectOnce = false;
+/** the server's answer for `suppliersResolveName`, keyed by normalized name.
+ * The page must render this verbatim (issue 184). */
+let resolveByKey = new Map<string, ResolvedSupplier>();
+/** when set, the unconfirmed refusal models a raced account: the server gains
+ * the name, so the next resolve answers with this destination */
+let racedAfterRefusal: { key: string; supplier: ResolvedSupplier } | null = null;
 const BASE_SUPPLIERS = [
   { id: "s-1", name: "مورد له حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 5000, paidAmount: 0, remainingAmount: 5000 }, accountBalance: 5000, accountEntryCount: 3 },
   { id: "s-2", name: "مورد بلا حركات", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: 0, accountEntryCount: 0 },
   { id: "s-3", name: "مورد رصيد سالب", phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 0, totalAmount: 0, paidAmount: 0, remainingAmount: 0 }, accountBalance: -300, accountEntryCount: 1 },
 ];
 let suppliers = BASE_SUPPLIERS;
+/** when true, the next resolve rejects (a failed read) */
+let resolveFails = false;
+/** count of resolve calls, to assert a no-op path never asks the server */
+let resolveCalls = 0;
+/** count of opening-balance writes the mock was asked to perform, whatever branch */
+let mutationCalls = 0;
+/** when true, the next save is refused as a stale named destination */
+let rejectTargetChanged = false;
+/** when set, the resolve waits on this promise before answering, so a test can
+ * cancel while the lookup is still pending (review round 1 finding 1) */
+let resolveHold: Promise<void> | null = null;
+let releaseResolveHold: (() => void) | null = null;
+/** when set, an opening-balance write parks until released (review round 1 follow-up) */
+let mutationHold: Promise<void> | null = null;
+let releaseMutationHold: (() => void) | null = null;
 
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -44,7 +69,15 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({
         mutationKey: ["suppliersOpeningBalances"],
         mutationFn: async (input: { rows: CapturedRow[] }) => {
+          mutationCalls += 1;
+          if (mutationHold !== null) await mutationHold;
+          if (rejectTargetChanged) {
+            rejectTargetChanged = false;
+            if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
+            throw new Error("OPENING_BALANCE_TARGET_CHANGED");
+          }
           if (rejectUnconfirmed && !input.rows.every((row) => row.confirmExisting === true)) {
+            if (racedAfterRefusal !== null) resolveByKey.set(racedAfterRefusal.key, racedAfterRefusal.supplier);
             throw new Error("OPENING_BALANCE_EXISTS");
           }
           if (rejectOnce) {
@@ -53,6 +86,17 @@ mock.module("@/lib/rpc", () => ({
           }
           captured = input;
           return { created: input.rows.length, accounts: input.rows.map((_row, index) => ({ supplierId: `s-${index}`, name: `مورد ${index}`, balance: 0 })) };
+        },
+      }),
+    },
+    suppliersResolveName: {
+      queryOptions: ({ input }: { input: { name: string; direction: string; amount: number; occurredAt: string; reason?: string } }) => ({
+        queryKey: ["suppliersResolveName", input.name, input.direction, input.amount, input.occurredAt, input.reason ?? ""],
+        queryFn: async () => {
+          resolveCalls += 1;
+          if (resolveFails) throw new Error("NETWORK");
+          if (resolveHold !== null) await resolveHold;
+          return { supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null };
         },
       }),
     },
@@ -73,6 +117,16 @@ beforeEach(() => {
   captured = null;
   rejectUnconfirmed = false;
   rejectOnce = false;
+  resolveFails = false;
+  resolveCalls = 0;
+  mutationCalls = 0;
+  rejectTargetChanged = false;
+  resolveHold = null;
+  releaseResolveHold = null;
+  mutationHold = null;
+  releaseMutationHold = null;
+  resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
+  racedAfterRefusal = null;
   suppliers = BASE_SUPPLIERS;
   queryClient = null;
   host = document.createElement("div");
@@ -159,10 +213,12 @@ function typeIntoRow(rowIndex: number, text: string) {
   setInput(input, text);
 }
 
-function clickOn(testId: string) {
-  const el = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+/** Find a test-id element or fail loudly; one place so every click helper shares
+ * the same null handling. */
+function clickTarget<T extends HTMLElement = HTMLElement>(testId: string): T {
+  const el = host.querySelector<T>(`[data-testid="${testId}"]`);
   if (el === null) throw new Error(`missing ${testId}`);
-  act(() => el.click());
+  return el;
 }
 
 /**
@@ -173,6 +229,71 @@ function clickOn(testId: string) {
  * run. If one of these ever times out again, fix the cost — do not raise it.
  */
 const BATCH_LIMIT_TEST_TIMEOUT_MS = 60_000;
+
+function clickOn(testId: string) {
+  act(() => clickTarget(testId).click());
+}
+
+/** Dispatch a click carrying explicit mouse flags on a test-id element. A plain
+ * `.click()` cannot express a Ctrl/Cmd-click (which the browser turns into a new
+ * tab) or a non-primary button, so the new-tab tests use this. */
+function dispatchClickOn(testId: string, init: MouseEventInit) {
+  act(() => clickTarget(testId).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init })));
+}
+
+/** Render, type a supplier that already carries entries, open the confirmation,
+ * then refuse the confirmed save as a stale destination and park the recovery
+ * lookup that refusal starts. Callers decide which gesture lands while the lookup
+ * is held and assert after releasing it via the module-level `releaseResolveHold`.
+ * The synchronous act + microtask flush for the refused save is deliberate:
+ * `await act(async ...)` deadlocks on the held resolve promise (review round 3 T4). */
+async function openConfirmWithRefusedSaveHeld() {
+  render();
+  await settle();
+  setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
+  setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+  await act(async () => {
+    clickOn("opening-balance-save");
+  });
+  expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+
+  rejectTargetChanged = true;
+  racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+  resolveHold = new Promise((resolve) => {
+    releaseResolveHold = resolve;
+  });
+  act(() => {
+    clickOn("opening-balance-confirm-save");
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+}
+
+/** Release the lookup `openConfirmWithRefusedSaveHeld` parked and let its
+ * continuation flush. */
+async function releaseHeldRecovery() {
+  await act(async () => {
+    releaseResolveHold?.();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await settle();
+}
+
+/** Every activation a browser turns into a NEW tab rather than a current-tab
+ * navigation. One case per predicate term, so dropping any of `!metaKey`,
+ * `!shiftKey`, `!altKey`, or `button === 0` fails a test. `button: 1` is
+ * synthetic here — real browsers emit `auxclick`, which React's onClick never
+ * sees — but it still pins the predicate's button term. */
+const NEW_TAB_ACTIVATIONS: Array<[string, MouseEventInit]> = [
+  ["Ctrl-click", { ctrlKey: true }],
+  ["Cmd-click", { metaKey: true }],
+  ["Shift-click", { shiftKey: true }],
+  ["Alt-click", { altKey: true }],
+  ["middle-click", { button: 1 }],
+];
 
 describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("writes one row per filled amount plus an inline new supplier", async () => {
@@ -191,6 +312,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", direction: "WE_OWE", amount: 300 });
     expect(captured?.rows[0]?.confirmExisting).toBeUndefined();
     expect(captured?.rows[1]).toMatchObject({ newSupplierName: "مورد جملة", direction: "WE_OWE", amount: 800 });
+    // the server answered null (new supplier): the named destination is "create"
+    expect(captured?.rows[1]?.expectedSupplierId).toBeNull();
   });
 
   it("asks for confirmation before adding an opening balance to a supplier that already has entries", async () => {
@@ -355,7 +478,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(keys).not.toContain(JSON.stringify(["debtsData"]));
   });
 
-  it("sends a typed name as newSupplierName, never a pre-resolved id (round 5)", async () => {
+  it("sends a typed name as newSupplierName with the named id as a consistency check (round 5 / #184)", async () => {
     render();
     await settle();
     const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
@@ -367,7 +490,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("");
     expect(amountInput.value).toBe("500");
 
-    // s-1 has entries, so the dialog asks; confirming posts the NAME
+    // s-1 has entries, so the dialog asks; confirming posts the NAME plus the
+    // server-named id, which the write only uses to detect drift
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -376,7 +500,559 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(1);
-    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات", direction: "WE_OWE", amount: 500, confirmExisting: true });
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد له حركات", direction: "WE_OWE", amount: 500, confirmExisting: true, expectedSupplierId: "s-1" });
+  });
+
+  it("blocks a typed name that resolves to an already-picked supplier, even when the names differ (#184)", async () => {
+    // the server folds a different-looking name onto s-1, which row 0 already targets
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    typeIntoRow(0, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    // the folded names differ, so the local banner cannot see it; the submit
+    // still refuses to send two rows to one account
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
+  it("re-blocks the open dialog when a row is edited onto the named account (#184)", async () => {
+    // the dialog will name s-1 for this differently-spelled name
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the owner edits row 0 (s-1) while the dialog is open: the resolved-id
+    // conflict is visible again and must stop the confirm from posting two rows
+    // to the account the dialog named once
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    // the conflict is visible again (banner) and the confirm button is disabled
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
+  });
+
+  it("drops the dialog destination on cancel so it cannot block a later name (#184)", async () => {
+    resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    const nameField = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    setInput(nameField, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-cancel");
+    });
+
+    // a new name plus a row for s-1: the cancelled dialog's destination must not
+    // linger and report a false conflict
+    setInput(nameField, "مورد جديد تماما");
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+  });
+
+  it("writes nothing and surfaces the error when the resolve read fails (#184)", async () => {
+    resolveFails = true;
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+    // resolving was reset in `finally`, so the owner can retry
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+  });
+
+  it("re-resolves and re-opens the dialog when the named destination moved (#184)", async () => {
+    const typed = "مورد انزاح";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    rejectTargetChanged = true;
+    // the refusal reveals the drifted account
+    racedAfterRefusal = { key: normalizeTextKey(typed), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const confirmNames = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(confirmNames()).toContain("مورد له حركات");
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    // the dialog re-opened naming the moved account, never the stale one
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(confirmNames()).toContain("مورد بديل");
+    expect(confirmNames()).not.toContain("مورد له حركات");
+  });
+
+  it("does not write when the owner cancels while the lookup is pending (review round 1 finding 1)", async () => {
+    // a new supplier with no rows filled: without the guard the late resolve
+    // reaches save(false, null) and posts the balance after Cancel
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured).toBeNull();
+
+    // leave while the lookup is still running
+    await act(async () => {
+      clickOn("opening-balance-cancel");
+    });
+
+    // the lookup finally answers: the abandoned attempt must not write
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
+    // the lookup did run; only its result was ignored
+    expect(resolveCalls).toBe(1);
+  });
+
+  it("does not re-open the dialog when its own cancel lands while a re-submit's lookup is pending (review round 2 finding 1)", async () => {
+    // the typed name resolves to an account with entries, so the first submit
+    // opens the confirmation dialog instead of writing directly
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
+
+    // a second main Save starts a NEW lookup for the same fields; hold it open
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(2);
+
+    // the dialog's OWN Cancel lands while that lookup runs
+    await act(async () => {
+      clickOn("opening-balance-confirm-cancel");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the dismissed dialog must not re-open and nothing
+    // may be written by the abandoned attempt
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("keeps the dialog closed when Escape lands while a refusal's recovery lookup is pending (review round 3 finding 1)", async () => {
+    await openConfirmWithRefusedSaveHeld();
+
+    // Escape dismisses while the recovery lookup is still pending
+    await act(async () => {
+      clickTarget("opening-balance-confirm").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the explicit dismissal must survive the refusal
+    // recovery, so the dialog stays CLOSED (it is not re-opened with the moved name)
+    await releaseHeldRecovery();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    // positive control: the recovery lookup really ran, so "stays closed" is not
+    // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+    expect(resolveCalls).toBe(2);
+  });
+
+  // one case per new-tab activation: the confirmation must survive every one of
+  // them, because none of them leaves THIS tab (Greptile round 4)
+  for (const [label, activation] of NEW_TAB_ACTIVATIONS) {
+    it(`keeps the dialog open when a ${label} hits the back link while a refusal's recovery lookup is pending (review round 4)`, async () => {
+      await openConfirmWithRefusedSaveHeld();
+      dispatchClickOn("opening-balance-back", activation);
+
+      // the held lookup settles: because the owner never left this tab, the
+      // recovery must still re-open the dialog, now naming the moved account
+      await releaseHeldRecovery();
+      expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+      const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+      expect(names).toContain("مورد بديل");
+      // positive control: the recovery lookup really ran, so "still there" is not
+      // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+      expect(resolveCalls).toBe(2);
+    });
+  }
+
+  it("abandons the dialog on a plain back-link click while a refusal's recovery lookup is pending (review round 4 control)", async () => {
+    // the control for the new-tab cases: a plain click DOES navigate this tab, so
+    // it must abandon — otherwise they could all pass by never abandoning.
+    await openConfirmWithRefusedSaveHeld();
+    dispatchClickOn("opening-balance-back", { button: 0 });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the dismissal must survive the refusal recovery
+    await releaseHeldRecovery();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    // positive control: the recovery lookup still ran; only its re-open was dropped
+    expect(resolveCalls).toBe(2);
+  });
+
+  it("keeps the dialog open when the back link targets a new tab while a refusal's recovery lookup is pending (review round 4 debate)", async () => {
+    // a plain click on a `target="_blank"` link opens a new tab: the predicate must
+    // not treat it as a current-tab navigation just because the click is unmodified
+    // (debate critic: the guard must not be a weaker copy of the router's own).
+    await openConfirmWithRefusedSaveHeld();
+    clickTarget("opening-balance-back").setAttribute("target", "_blank");
+    dispatchClickOn("opening-balance-back", { button: 0 });
+
+    await releaseHeldRecovery();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    // positive control: the recovery lookup really ran (1 submit + 1 recovery)
+    expect(resolveCalls).toBe(2);
+  });
+
+  it("dismisses on Escape from an input behind the open dialog (review round 3 class fix)", async () => {
+    // the inline dialog has no focus trap: Escape must be handled at the form so
+    // an owner who tabbed back into an amount field can still dismiss it
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // Focus is outside the dialog subtree, in an input behind it
+    const amount = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    amount.focus();
+    await act(async () => {
+      amount.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
+  it("does not suppress a legitimate dialog after an earlier dismissal (review round 3)", async () => {
+    // a dismissal must not become a permanent latch: a later submit for the moved
+    // destination still re-opens the dialog and names it
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    // refuse the confirmed save and dismiss the dialog while recovery is held
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    act(() => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      host.querySelector<HTMLElement>('[data-testid="opening-balance-confirm"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    await act(async () => {
+      releaseResolveHold?.();
+      resolveHold = null;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // a NEW submit for the same (now moved) name must open the dialog again
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(names).toContain("مورد بديل");
+  });
+
+  it("disables the confirm button while a re-submit's lookup is pending (review round 2)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const confirmSave = () => host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]');
+    expect(confirmSave()?.disabled).toBe(false);
+
+    // a second main Save puts a lookup in flight: the dialog must not be
+    // confirmable against the snapshot that lookup is still deciding
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(confirmSave()?.disabled).toBe(true);
+
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(confirmSave()?.disabled).toBe(false);
+  });
+
+  it("cancels the open confirmation on Escape (review round 2 / web interface guidelines)", async () => {
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // Escape from a button inside the dialog is the keyboard equivalent of Cancel
+    const confirmSave = host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')!;
+    await act(async () => {
+      confirmSave.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+  });
+
+  it("does not write when the page unmounts while the lookup is pending (review round 1 finding 1)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إغلاق تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // leave by unmounting (browser back / a route change) rather than the button
+    act(() => root!.unmount());
+    root = null;
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
+  });
+
+  it("abandons a pending save when an existing row changes before the lookup answers (review round 1 finding 1 follow-up)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the owner fills an existing row while the lookup is running: the submit was
+    // for the previous batch, so it must not write a batch missing this row
+    await act(async () => {
+      typeIntoRow(1, "500");
+    });
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+
+    // the owner can recover: the corrected batch saves in full
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "s-2")).toMatchObject({ amount: 500 });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد جديد تماما")).toMatchObject({ amount: 300 });
+  });
+
+  it("abandons a pending save when a typed lookup field changes before the lookup answers (review round 1 finding 2 follow-up)", async () => {
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد ميدان تماما");
+    setInput(amountInput, "300");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the owner changes the amount while the lookup for the old amount runs
+    setInput(amountInput, "450");
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(resolveCalls).toBe(1);
+  });
+
+  it("re-aligns the dialog after a refusal even when a row edit landed during the write (review round 1 follow-up)", async () => {
+    const typed = "مورد انزاح كتابة";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey(typed), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    mutationHold = new Promise((resolve) => {
+      releaseMutationHold = resolve;
+    });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const names = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(names()).toContain("مورد له حركات");
+
+    // the confirmed write parks; a row edit lands while it is in flight
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      typeIntoRow(1, "250");
+    });
+    await act(async () => {
+      releaseMutationHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+
+    // the refusal still re-aligns the dialog to the moved account, never a stale one
+    expect(captured).toBeNull();
+    expect(names()).toContain("مورد بديل");
+    expect(names()).not.toContain("مورد له حركات");
+  });
+
+  it("refuses to confirm an empty batch after the last confirmed row is cleared (review round 1 finding 2 follow-up)", async () => {
+    render();
+    await settle();
+    typeIntoRow(0, "800"); // s-1 has entries -> the dialog opens
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // clear the only filled row: the dialog no longer names an account
+    await act(async () => {
+      typeIntoRow(0, "");
+    });
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')).not.toBeNull();
+  });
+
+  it("lets a valid batch save after the typed name moves to another supplier (review round 1 finding 2)", async () => {
+    resolveByKey.set(normalizeTextKey("مورد آخر"), { id: "s-9", name: "مورد آخر", accountEntryCount: 0 });
+    render();
+    await settle();
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    setInput(nameInput, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    // the confirmation opens naming s-1
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the owner edits the typed name to a DIFFERENT supplier while the dialog is
+    // open, then fills s-1's existing row: the old destination must not block
+    setInput(nameInput, "مورد آخر");
+    await act(async () => {
+      typeIntoRow(0, "700");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+
+    // saving re-resolves the edited row and writes both accounts
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 700, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد آخر")).toMatchObject({ amount: 500, expectedSupplierId: "s-9" });
   });
 
   it("names the destination supplier in the confirmation dialog (round 5)", async () => {
@@ -391,6 +1067,23 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the dialog names the account the amount will land on
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain("مورد له حركات");
     expect(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).toHaveLength(1);
+  });
+
+  it("renders the server-resolved destination name, not the typed text (issue 184)", async () => {
+    // the server folds the typed text onto s-1 and answers with s-1's stored name
+    const typed = "مورد   له حركات";
+    resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent);
+    expect(names).toEqual(["مورد له حركات"]);
+    expect(names).not.toContain(typed);
   });
 
   it("blocks two outgoing rows folding to one name before the server (round 5)", async () => {
@@ -484,45 +1177,46 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
-  it("names and confirms a raced named row only after the refusal refreshes it (round 5)", async () => {
+  it("names and confirms a raced named row only after the refusal refreshes it (round 5 / #184)", async () => {
     rejectUnconfirmed = true;
+    const typedName = "مورد ظهر مرتين";
+    // folds to the same key as the typed text, but is a different string: the
+    // dialog must switch to the server's stored text after the refresh
+    const racedName = "مورد  ظهر مرتين";
+    racedAfterRefusal = { key: normalizeTextKey(typedName), supplier: { id: "s-raced2", name: racedName, accountEntryCount: 2 } };
     render();
     await settle();
 
-    const name = "مورد ظهر مرتين";
     typeIntoRow(0, "800"); // s-1 has entries, so the batch needs confirmation
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, name);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typedName);
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
 
     await act(async () => {
       clickOn("opening-balance-save");
     });
+    const confirmNames = () => Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    expect(confirmNames()).toContain(typedName);
 
     // the client still thinks the name is new, so the first confirm does not
-    // forward confirmExisting; the server refuses and the catch refreshes
+    // forward confirmExisting; the server refuses and the catch re-asks for the
+    // destination
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured).toBeNull();
 
-    // the refresh shows the raced supplier with entries; the dialog now names it
-    suppliers = [
-      ...BASE_SUPPLIERS,
-      { id: "s-raced2", name, phone: null, createdAt: "2026-01-01T10:00:00", stats: { invoiceCount: 1, totalAmount: 900, paidAmount: 0, remainingAmount: 900 }, accountBalance: 900, accountEntryCount: 2 },
-    ];
-    await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersList"] });
-    });
-    await settle();
-    expect(host.querySelector('[data-testid="opening-balance-confirm"]')?.textContent).toContain(name);
+    // the refused resolve now answers with the raced account: the dialog names
+    // the server's text, not the typed string
+    expect(confirmNames()).toContain(racedName);
+    expect(confirmNames()).not.toContain(typedName);
 
     await act(async () => {
       clickOn("opening-balance-confirm-save");
     });
     expect(captured?.rows).toHaveLength(2);
     expect(captured?.rows.find((row) => row.supplierId === "s-1")).toMatchObject({ amount: 800, confirmExisting: true });
-    expect(captured?.rows.find((row) => row.newSupplierName === name)).toMatchObject({ amount: 400, confirmExisting: true });
+    expect(captured?.rows.find((row) => row.newSupplierName === typedName)).toMatchObject({ amount: 400, confirmExisting: true, expectedSupplierId: "s-raced2" });
   });
 
   it("refreshes suppliers after a confirmed refusal too (Greptile round 3)", async () => {

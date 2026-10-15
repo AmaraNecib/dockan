@@ -1088,12 +1088,23 @@ export const supplierOpeningBalanceRowInputSchema = z
     direction: supplierAdjustmentDirectionSchema,
     amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
     confirmExisting: z.boolean().optional(),
+    /** #184 — the destination the confirmation dialog named for a typed name
+     * (`suppliersResolveName`'s answer). `null` means the dialog named a NEW
+     * supplier. The write never uses this as its target; it refuses when its
+     * own resolution differs, so the dialog can never name account A while the
+     * amount lands on B. Omitted by callers that did not show a dialog. */
+    expectedSupplierId: idSchema.nullable().optional(),
   })
   .superRefine((value, ctx) => {
     const hasExisting = value.supplierId !== undefined;
     const hasNew = value.newSupplierName !== undefined;
     if (hasExisting === hasNew) {
       ctx.addIssue({ code: "custom", message: "a row names either an existing supplierId or a new supplierName" });
+    }
+    // #184 — the consistency check belongs to a resolved typed name only; on an
+    // explicit id it would be silently ignored, so refuse it instead
+    if (value.expectedSupplierId !== undefined && !hasNew) {
+      ctx.addIssue({ code: "custom", message: "expectedSupplierId is only valid with newSupplierName" });
     }
   });
 
@@ -1110,6 +1121,28 @@ export const supplierOpeningBalancesOutputSchema = z.object({
   created: z.number().int().min(0),
   /** the suppliers touched, with their balance after the batch */
   accounts: z.array(z.object({ supplierId: idSchema, name: z.string(), balance: z.number().int() })),
+});
+
+/** #184 — resolve a typed supplier name to the account the server would write
+ * an opening-balance row to, WITHOUT writing. The row signature is part of the
+ * input so the resolver can reproduce both arms of the server rule: the account
+ * already holding the signature (a retry), then the entry-count/lowest-id
+ * tie-break. The confirmation dialog renders the result instead of mirroring
+ * the rule on the client. */
+export const supplierResolveNameInputSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  direction: supplierAdjustmentDirectionSchema,
+  amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+  occurredAt: localDateTimeSchema,
+  reason: z.string().trim().max(500).nullable().optional(),
+});
+
+export const supplierResolveNameOutputSchema = z.object({
+  /** the supplier a write would land on, or null when the name is new and a
+   * write would create one */
+  supplier: z
+    .object({ id: idSchema, name: z.string(), accountEntryCount: z.number().int().min(0) })
+    .nullable(),
 });
 
 export const returnLineInputSchema = z.object({
@@ -1485,6 +1518,8 @@ export type SupplierAdjust = z.infer<typeof supplierAdjustInputSchema>;
 export type SupplierOpeningBalanceRow = z.infer<typeof supplierOpeningBalanceRowInputSchema>;
 export type SupplierOpeningBalances = z.infer<typeof supplierOpeningBalancesInputSchema>;
 export type SupplierOpeningBalancesResult = z.infer<typeof supplierOpeningBalancesOutputSchema>;
+export type SupplierResolveName = z.infer<typeof supplierResolveNameInputSchema>;
+export type SupplierResolveNameResult = z.infer<typeof supplierResolveNameOutputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ItemListInput = z.infer<typeof itemListInputSchema>;
 export type ItemHistoryInput = z.infer<typeof itemHistoryInputSchema>;

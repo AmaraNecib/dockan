@@ -79,6 +79,8 @@ import {
   supplierEntriesOutputSchema,
   supplierOpeningBalancesInputSchema,
   supplierOpeningBalancesOutputSchema,
+  supplierResolveNameInputSchema,
+  supplierResolveNameOutputSchema,
   supplierPayInputSchema,
   supplierRefundInputSchema,
   supplierReturnGetInputSchema,
@@ -149,6 +151,9 @@ export const dokanContract = {
   suppliersAdjust: oc.input(supplierAdjustInputSchema).output(supplierAccountSchema),
   /** #176 — the bulk رصيد افتتاحي screen: one account-only adjustment per row */
   suppliersOpeningBalances: oc.input(supplierOpeningBalancesInputSchema).output(supplierOpeningBalancesOutputSchema),
+  /** #184 — the server's own resolution of a typed supplier name for the
+   * opening-balance dialog; the client never mirrors the tie-break */
+  suppliersResolveName: oc.input(supplierResolveNameInputSchema).output(supplierResolveNameOutputSchema),
   /** supplier purchase-return history (plain list, no review state) */
   suppliersReturnsList: oc.input(supplierReturnsListInputSchema).output(supplierReturnsListOutputSchema),
   /** one purchase-return voucher by id; the print page never scans a page */

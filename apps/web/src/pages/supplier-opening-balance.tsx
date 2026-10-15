@@ -15,9 +15,9 @@ import { parseGroupedAmount } from "@/lib/amount-parse";
 import { tError } from "@/lib/i18n";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
-import { MAX_OPENING_BALANCE_ROWS, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus } from "@/lib/supplier-opening-draft";
+import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus, type RemovedFilledDraft } from "@/lib/supplier-opening-draft";
 
-type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
+type RowDraft = { direction: SupplierAdjustmentDirection; amount: string; name?: string };
 
 /** The server's resolved destination for a typed name (issue 184). Never
  * computed here: the client renders exactly what `suppliersResolveName` returns. */
@@ -68,6 +68,10 @@ export function SupplierOpeningBalancePage() {
   const [dateDraft, setDateDraft] = useState(() => nowDateTimeText().slice(0, 10));
   const [reasonDraft, setReasonDraft] = useState(() => t("supplierAdjustPresetOpening"));
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
+  // #204 — filled drafts whose supplier a background refresh removed. Kept apart
+  // from `drafts`: the draft is gone, but the loss must stay visible (and block
+  // the save) until the owner acknowledges it.
+  const [removedFilled, setRemovedFilled] = useState<RemovedFilledDraft[]>([]);
   const [newName, setNewName] = useState("");
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
@@ -111,6 +115,49 @@ export function SupplierOpeningBalancePage() {
       return { id: supplier.id, name: supplier.name, accountBalance: account?.accountBalance ?? 0, accountEntryCount: account?.accountEntryCount ?? 0 };
     });
   }, [namesQuery.data, accountsQuery.data]);
+  // #204 — the refresh seam. `presentSupplierIds` only changes when the fresh
+  // supplier list changes, so reconciliation runs on a refresh (never per
+  // keystroke) and a filled draft whose supplier vanished is handed to the
+  // notice instead of disappearing with the row. `null` guards the not-yet-loaded
+  // (and cache-reset) case: an undefined list must never look like "every supplier
+  // vanished" and flag every draft.
+  const presentSupplierIds = useMemo(
+    () => (namesQuery.data === undefined ? null : suppliers.map((supplier) => supplier.id)),
+    [namesQuery.data, suppliers],
+  );
+  /** The latest drafts, so the reconciliation effect can read them without taking
+   * `drafts` as a dependency (which would run it on every keystroke). */
+  const draftsRef = useRef(drafts);
+  useLayoutEffect(() => {
+    draftsRef.current = drafts;
+  }, [drafts]);
+  /** The same removal, live at write time. `save`/`submit` can resume after the
+   * render that started them (the stale-closure class Greptile round 3 fixed for
+   * the read failure), so a captured `hasRemovedFilled` can be false while a
+   * removal landed during the in-flight resolve. */
+  const removedFilledRef = useRef(removedFilled);
+  useLayoutEffect(() => {
+    removedFilledRef.current = removedFilled;
+  }, [removedFilled]);
+  useEffect(() => {
+    if (presentSupplierIds === null) return;
+    const dropped = droppedFilledDrafts({ drafts: draftsRef.current, presentSupplierIds });
+    if (dropped.length === 0) return;
+    // the outgoing batch changed: abandon any in-flight submit (a late resolve
+    // must not write the removed row) and close the confirmation that named the
+    // now-shrunk batch, exactly as a typed-field edit would
+    abandonAttempt();
+    setRemovedFilled((current) => {
+      const known = new Set(current.map((row) => row.supplierId));
+      const added = dropped.filter((row) => !known.has(row.supplierId));
+      return added.length === 0 ? current : [...current, ...added];
+    });
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const row of dropped) delete next[row.supplierId];
+      return next;
+    });
+  }, [presentSupplierIds]);
   const listPending = namesQuery.isPending || accountsQuery.isPending;
   const listError = namesQuery.isError ? namesQuery.error : accountsQuery.isError ? accountsQuery.error : null;
   // #183 — a failed read must block the save. If only the account summary fails,
@@ -237,6 +284,9 @@ export function SupplierOpeningBalancePage() {
       : typedNameConflict
         ? t("supplierOpeningRowHasAmount")
         : newRowError;
+  // #204 — an unacknowledged dropped amount blocks the save on its own, so the
+  // owner cannot confirm a batch while still believing the removed row is in it.
+  const hasRemovedFilled = removedFilled.length > 0;
   // the confirmation dialog names every account the batch will write to, including
   // the server's resolved name for the typed row, so a confirmed save never lands
   // on an unnamed account
@@ -299,8 +349,64 @@ export function SupplierOpeningBalancePage() {
     invalidateAttempt();
     setDrafts((current) => {
       const existing = current[supplierId] ?? { direction: "WE_OWE", amount: "" };
-      return { ...current, [supplierId]: { ...existing, ...patch } };
+      // remember the supplier this draft is typed against, so a refresh that
+      // removes it can still name the lost row (issue 204)
+      const name = suppliers.find((supplier) => supplier.id === supplierId)?.name ?? existing.name;
+      return { ...current, [supplierId]: { ...existing, ...patch, name } };
     });
+  }
+
+  /** Acknowledge the removed rows: the loss has been shown and read, so the save
+   * unblocks and only the surviving rows remain (issue 204). */
+  function dismissRemoved() {
+    setRemovedFilled([]);
+  }
+
+  /** #204 review — the supplier ids the cache holds RIGHT NOW. `save` is reached
+   * from a continuation that can outlive the render which started it, so the
+   * supplier set behind `filledExisting` may already be stale: the names refetch
+   * can have written its fresh list to the cache while React has not yet
+   * committed the removal effect. Reading the cache here closes exactly that
+   * window — the refetch finished, the effect has not run — independent of
+   * whether the effect or the resumed lookup wins. (A refetch still in flight has
+   * not written a new list; nothing can know the row is gone until it lands, so
+   * this is not a claim about that window.) `null` means the names read has no
+   * data (never loaded, or reset mid-read), which must not be read as "every
+   * supplier vanished". */
+  function livePresentSupplierIds(): string[] | null {
+    const data = queryClient.getQueryData<{ items: Array<{ id: string }> }>(orpc.suppliersListNames.queryKey());
+    return data === undefined ? null : data.items.map((item) => item.id);
+  }
+
+  /** Whether a dropped amount still needs acknowledgement before a write. Reads
+   * the live ref AND the live cache, never a captured render value: a refetch
+   * that has written a supplier out of the cache can reach here before the
+   * reconciliation effect commits, and the removed supplier would otherwise
+   * travel in the batch (the server rejects the WHOLE batch, losing the surviving
+   * balances — the exact silent-loss class #204 exists to stop). On a live
+   * removal this surfaces the loss, drops the vanished drafts, and refuses the
+   * write, exactly as the effect would have. */
+  function removalBlocksSave(): boolean {
+    if (removedFilledRef.current.length > 0) return true;
+    const present = livePresentSupplierIds();
+    if (present === null) return false;
+    const dropped = droppedFilledDrafts({ drafts: draftsRef.current, presentSupplierIds: present });
+    if (dropped.length === 0) return false;
+    // the outgoing batch changed: abandon any in-flight submit (a late resolve
+    // must not write the removed row) and close the confirmation that named the
+    // now-shrunk batch, exactly as the refresh effect does
+    abandonAttempt();
+    setRemovedFilled((current) => {
+      const known = new Set(current.map((row) => row.supplierId));
+      const added = dropped.filter((row) => !known.has(row.supplierId));
+      return added.length === 0 ? current : [...current, ...added];
+    });
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const row of dropped) delete next[row.supplierId];
+      return next;
+    });
+    return true;
   }
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
@@ -317,6 +423,11 @@ export function SupplierOpeningBalancePage() {
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
+      return;
+    }
+    // the dropped amount must be acknowledged before any write is attempted
+    if (removalBlocksSave()) {
+      setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
     // a dialog can outlive the rows it named (the owner clears them): never post
@@ -408,6 +519,10 @@ export function SupplierOpeningBalancePage() {
     if (submitting || resolvingRef.current || bulk.isPending || dateInvalid || listFailed) return;
     if (blockedReason !== null) {
       setError(blockedReason);
+      return;
+    }
+    if (removalBlocksSave()) {
+      setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
     if (totalRows === 0) {
@@ -665,6 +780,29 @@ export function SupplierOpeningBalancePage() {
             </table>
           )}
 
+          {hasRemovedFilled && (
+            <div className="rounded border border-destructive/30 bg-destructive/10 p-3 text-sm" data-testid="opening-balance-removed">
+              {/* the statement is the live region; the dismiss button stays OUTSIDE it,
+                  so the control is not announced as part of the alert (a11y review) */}
+              <div role="alert">
+                <p className="font-semibold text-destructive">{t("supplierOpeningRemovedTitle")}</p>
+                <ul className="mt-2 grid gap-1">
+                  {removedFilled.map((row) => (
+                    <li key={row.supplierId} className="flex flex-wrap items-center gap-1" data-testid="opening-balance-removed-row">
+                      <span>{t("supplierOpeningRemovedRow", { name: row.name })}</span>
+                      <Amount value={row.amount} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="mt-3">
+                <Button type="button" variant="outline" onClick={dismissRemoved} data-testid="opening-balance-removed-dismiss">
+                  {t("supplierOpeningRemovedDismiss")}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {blockedReason !== null && (
             <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="opening-balance-blocked">
               {blockedReason}
@@ -678,7 +816,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
@@ -701,7 +839,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

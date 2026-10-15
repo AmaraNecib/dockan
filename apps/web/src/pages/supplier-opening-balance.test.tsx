@@ -7,7 +7,7 @@ import { normalizeTextKey } from "@dokan/contracts";
 // SAFETY: React 19 act() requires the environment flag to be set explicitly
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n";
+import i18n from "../lib/i18n";
 
 import { routerMock } from "../tests/router-mock";
 
@@ -61,6 +61,10 @@ let rejectTargetChanged = false;
  * cancel while the lookup is still pending (review round 1 finding 1) */
 let resolveHold: Promise<void> | null = null;
 let releaseResolveHold: (() => void) | null = null;
+/** when set, the names read waits on this promise, so a test can hold a reset
+ * query's replacement read in flight (review round 5 finding 2) */
+let namesHold: Promise<void> | null = null;
+let releaseNamesHold: (() => void) | null = null;
 /** when set, an opening-balance write parks until released (review round 1 follow-up) */
 let mutationHold: Promise<void> | null = null;
 let releaseMutationHold: (() => void) | null = null;
@@ -84,6 +88,7 @@ mock.module("@/lib/rpc", () => ({
         queryKey: ["suppliersListNames"],
         queryFn: async () => {
           if (namesShouldFail) throw new Error("NAMES_FAILED");
+          if (namesHold !== null) await namesHold;
           return { items: suppliers.map(({ id, name }) => ({ id, name })) };
         },
       }),
@@ -157,6 +162,8 @@ beforeEach(() => {
   rejectTargetChanged = false;
   resolveHold = null;
   releaseResolveHold = null;
+  namesHold = null;
+  releaseNamesHold = null;
   mutationHold = null;
   releaseMutationHold = null;
   resolveByKey = new Map([[normalizeTextKey("مورد له حركات"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 }]]);
@@ -1518,6 +1525,241 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the write changes supplier accounts, so the full list other screens read is still refreshed
     expect(keys).toContain(JSON.stringify(["suppliersList"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+  });
+
+  it("tells the owner and blocks the save when a refresh removes a filled row's supplier (#204)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+
+    // both rows are filled before the refresh drops one supplier
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "300");
+
+    // a background refresh removes `gone`
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // the owner is named the supplier and the amount, in i18n copy — never silent
+    const notice = clickTarget("opening-balance-removed");
+    expect(notice.textContent).toContain(i18n.t("supplierOpeningRemovedTitle"));
+    const removedRow = clickTarget("opening-balance-removed-row");
+    expect(removedRow.textContent).toContain(i18n.t("supplierOpeningRemovedRow", { name: "مورد زائل" }));
+    expect(removedRow.textContent).toContain("300");
+
+    // the save is blocked: the button is disabled and the form guard refuses too
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    // the programmatic path still names the reason, so a bypassed disabled button
+    // is not a silent no-op
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain(i18n.t("supplierOpeningRemovedBlocked"));
+
+    // acknowledging the loss re-enables the save, and the surviving row still goes
+    clickOn("opening-balance-removed-dismiss");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "keep", amount: 100 });
+  });
+
+  it("drops an untouched row silently when its supplier vanishes on a refresh (#204 negative)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+
+    // only the surviving row is filled; the removed one stays empty
+    typeIntoRow(0, "100");
+
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // no warning for the ordinary case: an unfilled row may drop without noise
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "keep", amount: 100 });
+  });
+
+  it("names every filled row a single refresh removes, then saves only the survivors (#204)", async () => {
+    suppliers = [
+      { id: "a", name: "مورد أ", accountBalance: 0, accountEntryCount: 0 },
+      { id: "b", name: "مورد ب", accountBalance: 0, accountEntryCount: 0 },
+      { id: "c", name: "مورد ج", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "200");
+    typeIntoRow(2, "300");
+
+    // one refresh removes two filled rows
+    suppliers = suppliers.filter((supplier) => supplier.id === "c");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // both losses are named, not just the first
+    expect(host.querySelectorAll('[data-testid="opening-balance-removed-row"]')).toHaveLength(2);
+
+    clickOn("opening-balance-removed-dismiss");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "c", amount: 300 });
+  });
+
+  it("never writes a supplier removed during the submit's async name lookup (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    // park submit() inside its resolver await, the window a captured render value
+    // would miss
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "300");
+    // a typed name forces the resolver to be awaited before save() runs
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(1);
+
+    // the names refetch finishes and publishes the fresh list while the lookup is
+    // still unanswered. `setQueryData` is that refetch's synchronous cache write;
+    // React Query schedules the re-render (and so the removal effect) on a
+    // macrotask, so the resumed save() observes the fresh cache BEFORE the effect
+    // commits. Releasing the held lookup in the same tick pins that ordering; the
+    // old test's `settle()`-then-release let the effect win first, which is the
+    // window that hid the bug.
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    const freshNames = suppliers.map(({ id, name }) => ({ id, name }));
+    await act(async () => {
+      queryClient!.setQueryData(["suppliersListNames"], { items: freshNames });
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    // the loss is still surfaced, never silently swallowed
+    expect(clickTarget("opening-balance-removed")).not.toBeNull();
+  });
+
+  it("closes the confirmation when a refresh removes a row it named (#204 review)", async () => {
+    render();
+    await settle();
+    // s-1 carries entries: filling it opens the confirmation
+    typeIntoRow(0, "800");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+
+    suppliers = BASE_SUPPLIERS.filter((supplier) => supplier.id !== "s-1");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // the dialog named a batch that changed: it must close, and the loss surfaced
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(clickTarget("opening-balance-removed").textContent).toContain("مورد له حركات");
+  });
+
+  it("keeps the drafts when a refetch of the supplier read fails, never flagging a phantom removal (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "other", name: "مورد ثان", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+
+    namesShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // a failed refetch keeps the previous data: no phantom removal notice
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    // the failed read still blocks on its own existing reason
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
+  });
+
+  it("keeps filled drafts when the supplier query is reset and its replacement read is held (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "other", name: "مورد ثان", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+
+    // reset the names query while its replacement read is held, then let the
+    // reset render while `data` is undefined: an undefined list must NOT read as
+    // "every supplier vanished"
+    namesHold = new Promise((resolve) => {
+      releaseNamesHold = resolve;
+    });
+    await act(async () => {
+      void queryClient!.resetQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+    // no phantom removal while the read carries no data, and the page is on the
+    // loading state — this is the window the previous test never reached
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-loading"]')).not.toBeNull();
+
+    // release the replacement read: the typed draft survived the null window and
+    // the batch still carries the owner's amount
+    await act(async () => {
+      releaseNamesHold?.();
+      namesHold = null;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("100");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(2);
+    expect(captured?.rows.find((row) => row.supplierId === "keep")).toMatchObject({ amount: 100 });
+    expect(captured?.rows.find((row) => row.newSupplierName === "مورد جديد تماما")).toMatchObject({ amount: 50 });
   });
 
   it("counts a typed name toward the batch limit and blocks before the server (round 5)", async () => {

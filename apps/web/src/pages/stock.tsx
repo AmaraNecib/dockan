@@ -274,7 +274,10 @@ function recordedAfter(above: PrecedenceRow, row: PrecedenceRow): boolean {
  * superseded row on a later one and a same-second tie is ordered by `seq`. When
  * the annotation is present it is the answer; only a response cached before
  * issue 215 falls back to the page-local recording-order comparison of issue
- * 151 (which prefers `seq` when the page carries it, else `createdAt`).
+ * 151 (which prefers `seq` when the page carries it, else `createdAt`). A page
+ * that carries the annotation on only some rows is treated as fully annotated:
+ * a partial payload under-annotates rather than mixing the two rules, and so
+ * never over-annotates (issue 151's rule).
  */
 export function supersededByCorrection(rows: readonly PrecedenceRow[]): Set<number> {
   if (rows.some((row) => row.supersededBySeq !== undefined)) {

@@ -454,8 +454,11 @@ describe("supersededByCorrectionSeq (issue 215)", () => {
     expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
   });
 
-  it("handles an empty ledger and does not mutate its input", () => {
+  it("handles an empty ledger", () => {
     expect(supersededByCorrectionSeq([])).toEqual([]);
+  });
+
+  it("does not mutate its input", () => {
     const rows = [correction("2026-10-15T10:00:00", 3), row(10, 200, "2999-01-01T00:00:00", 1)];
     const snapshot = structuredClone(rows);
     supersededByCorrectionSeq(rows);

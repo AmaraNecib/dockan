@@ -1358,9 +1358,10 @@ export const itemHistoryInputSchema = z.object({
  * cached before they existed still parses, and an old client ignores them.
  *
  * `seq` is the store rowid (the ledger's append order). `supersededBySeq` is
- * the `seq` of the cost correction that supersedes this row, resolved by the
- * api over the WHOLE ledger so the badge survives pagination; `null` means the
- * row is not superseded.
+ * the recording order of the nearest correction the date-ordered view draws
+ * above this row and that was recorded after it — resolved by the api over the
+ * WHOLE ledger, so the badge survives pagination. `null` means no such
+ * correction supersedes the row.
  */
 export const itemHistoryMovementSchema = stockMovementWithBalanceSchema.extend({
   seq: z.number().int().min(1).optional(),

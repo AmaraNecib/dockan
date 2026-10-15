@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient, stockMovementWithBalanceSchema } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -4526,8 +4526,11 @@ describe("item history recording order (issue 215)", () => {
     const page1 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 0 });
     const page2 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 2 });
     expect(page1.total).toBe(3);
+    const ordinary = page1.movements[0]!;
     const correction = page1.movements[1]!;
+    expect(page2.movements).toHaveLength(1);
     const future = page2.movements[0]!;
+    expect(ordinary.supersededBySeq).toBeNull();
     expect(correction.reason).toBe("COST_CORRECTION");
     expect(correction.supersededBySeq).toBeNull();
     // recording order is on the wire and the page-2 row names the page-1
@@ -4536,6 +4539,18 @@ describe("item history recording order (issue 215)", () => {
     expect(correction.seq).toBeNumber();
     expect(future.supersededBySeq).toBe(correction.seq);
     expect(correction.seq!).toBeGreaterThan(future.seq!);
+  });
+
+  it("stays additive for an old client: the pre-215 row schema ignores the new fields", async () => {
+    const item = await makeItem(`ترتيب-عميل-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
+    const { movements } = await client.itemsHistory({ itemId: item.id });
+    // `stockMovementWithBalanceSchema` is the pre-issue-215 row schema: a
+    // non-strict zod object drops the unknown keys, so an old client that only
+    // knows that shape still parses a new payload
+    const parsed = stockMovementWithBalanceSchema.safeParse(movements[0]!);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data).not.toHaveProperty("supersededBySeq");
   });
 
   it("keeps the output additive: a row without the recording-order fields still parses", async () => {

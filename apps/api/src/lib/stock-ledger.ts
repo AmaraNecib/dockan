@@ -219,9 +219,8 @@ function isCostCorrection(movement: LedgerMovement): movement is LedgerMovement 
 }
 
 /**
- * Recording order of the cost correction that supersedes each date-ordered
- * history row (issue 215), aligned by index; `null` when the row is not
- * superseded.
+ * Recording order of the correction that supersedes each date-ordered history
+ * row (issue 215), aligned by index; `null` when no correction supersedes it.
  *
  * A row `r` is superseded when a correction `c` is drawn ABOVE it in the
  * date-ordered list (`j < i`) and was RECORDED after it (`c.seq > r.seq`).
@@ -230,6 +229,13 @@ function isCostCorrection(movement: LedgerMovement): movement is LedgerMovement 
  * average even though the view draws the row below it. Only inflows
  * (`delta > 0`) can move the average, so outflows and the correction rows
  * themselves are never flagged (issue 151 invariant).
+ *
+ * The reported `seq` is the NEAREST qualifying correction drawn above the row,
+ * matching issue 151's fallback: it is the correction the view draws directly
+ * above the row, which is the one the badge points at. With several later
+ * corrections above the row this need not be the first one that terminated the
+ * row's replay segment; the view only needs the field's presence, so the value
+ * stays the nearest referent.
  *
  * `seq` (the store rowid) is the authoritative recording order, and a
  * correction recorded later with an equal `occurredAt` is drawn BELOW the row

@@ -41,9 +41,10 @@ A new history-row schema, used only by `itemHistoryOutputSchema`:
 export const itemHistoryMovementSchema = stockMovementWithBalanceSchema.extend({
   /** store rowid: the ledger's recording order (issue 215). */
   seq: z.number().int().min(1).optional(),
-  /** recording order of the cost correction that supersedes this row,
-   * resolved by the api over the WHOLE ledger; `null` = not superseded.
-   * Optional so a response cached before the field existed still parses. */
+  /** recording order of the nearest correction the date-ordered view draws
+   * above this row and that was recorded after it, resolved by the api over
+   * the WHOLE ledger; `null` = no such correction. Optional so a response
+   * cached before the field existed still parses. */
   supersededBySeq: z.number().int().min(1).nullable().optional(),
 });
 
@@ -94,6 +95,13 @@ const rows = annotated.slice(offset, offset + limit);
 
 Precedence is computed on `projected` (the whole ledger), not `rows` (the page),
 which is the whole point.
+
+The reported `seq` is the nearest qualifying correction drawn above the row,
+matching #151's fallback. Replay's segment terminator is the *first* correction
+recorded after the row; with several later corrections both drawn above, the
+two can differ. The badge only needs the correction the view draws directly
+above the row (the one it points at), and the view reads the field's
+presence/absence, so the nearest referent is the honest value to expose.
 
 ### Web — trust the annotation, keep the legacy fallback
 

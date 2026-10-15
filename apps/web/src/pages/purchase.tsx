@@ -17,7 +17,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { percentageDraftInvalid } from "@/lib/amount-parse";
-import { firstLineError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
+import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
 import { CheckoutBar } from "../components/app/checkout-bar";
@@ -111,36 +111,32 @@ export function PurchasePage() {
 
   function submit() {
     setError(null);
-    if (lines.length === 0) {
-      setError(t("purchasesLinesEmpty"));
-      return;
-    }
-    // an exact typed name that belongs to a record must be picked first: saving
-    // it as typed-only would hide the invoice from that record (P1.1)
-    if (supplier.needsChoice === true) {
-      setError(t("partyChooseExisting"));
-      return;
-    }
+    // `firstCommitError` owns the check order — empty cart → party → per-line
+    // quantity → payment — shared with sale, so a future reorder cannot fix one
+    // screen and miss the other. The raw quantity drafts are validated before
+    // the payment: a cleared quantity zeroes the total, so a payment typed
+    // against the old total would otherwise fail the amount-vs-total check and
+    // show «purchasesInvalidPaid», masking the real problem.
+    //
     // #146: the quantity field is the shared draft now, so an unusable draft is
     // refused instead of silently keeping a stale quantity (the old
     // `Number(event.target.value)` handler dropped the keystroke).
-    //
-    // ORDER: this must stay BEFORE the payment check. A cleared quantity drops
-    // the total to zero, so a payment typed against the old total would fail the
-    // amount-vs-total check and show `purchasesInvalidPaid`, masking the real
-    // problem. The order is pinned by the quantity-draft tests — do not swap it.
-    const lineError = firstLineError(lines, (line) => (quantityDraftInvalid(line.quantityDraft) ? t("purchasesInvalidQuantity") : null));
-    if (lineError !== null) {
-      setError(lineError);
-      return;
-    }
-    // runs the shared percentage/amount/over-total checks and maps a zero draft
-    // to «nothing paid now» (the api requires a positive initialPaid)
     const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
-    if (!paid.ok) {
-      setError(t("purchasesInvalidPaid"));
+    const commitError = firstCommitError({
+      lines,
+      linesEmpty: t("purchasesLinesEmpty"),
+      partyNeedsChoice: supplier.needsChoice === true,
+      partyNeedsChoiceMessage: t("partyChooseExisting"),
+      quantity: { invalid: (line) => quantityDraftInvalid(line.quantityDraft), message: t("purchasesInvalidQuantity") },
+      payment: { invalid: !paid.ok, message: t("purchasesInvalidPaid") },
+    });
+    if (commitError !== null) {
+      setError(commitError);
       return;
     }
+    // `firstCommitError` already refused a `!paid.ok` resolution, so this takes
+    // the ok arm; the ternary keeps the payload typed without an assertion.
+    const initialPaid = paid.ok ? paid.paid : undefined;
     void createInvoice.mutate({
       kind: "PURCHASE",
       // the picker keeps the picked record's id; a typed-only name stays null
@@ -149,7 +145,7 @@ export function PurchasePage() {
       notes: notes.trim() === "" ? undefined : notes.trim(),
       // the api requires a POSITIVE initialPaid; a zero draft (0% or a small
       // percentage that rounds to 0) means "nothing paid now"
-      initialPaid: paid.paid,
+      initialPaid,
       lines: lines.map((line) => ({ itemId: line.item.id, quantity: parseQuantityDraft(line.quantityDraft), unitPrice: line.unitCost })),
     });
   }

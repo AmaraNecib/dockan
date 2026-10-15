@@ -928,4 +928,49 @@ describe("PurchasePage quantity draft (#146)", () => {
     expect(createdItems).toHaveLength(3);
     expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
   });
+
+  it("saves a line at the quantity cap and refuses one above it, pinning the payload", async () => {
+    const { container } = await mountWithLine("2", "1200");
+
+    await act(async () => setValue(quantityField(container), "1000001"));
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')?.textContent).toContain(i18n.t("purchasesInvalidQuantity"));
+    expect(lastPurchaseInput).toBeNull();
+
+    await act(async () => setValue(quantityField(container), "1000000"));
+    await save(container);
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 1_000_000, unitPrice: 1200 }]);
+  });
+
+  it("refuses a multi-line cart on its first unusable line and saves once it is fixed", async () => {
+    const { container } = await mountPage();
+    await toggleQuick(container);
+    await fillQuick(container, "منتج أ", "2", "1200");
+    await act(async () => {
+      await chooseOption(categoryTrigger(container)!, "تصنيف");
+    });
+    await submitQuick(container);
+    // the second create keeps the category from the first pick
+    await toggleQuick(container);
+    await fillQuick(container, "منتج ب", "3", "900");
+    await submitQuick(container);
+    expect(container.querySelectorAll('[data-testid="purchase-lines"] tbody tr')).toHaveLength(2);
+
+    // clear the FIRST line: the cart is refused and nothing is sent
+    const quantities = container.querySelectorAll<HTMLInputElement>('input[aria-label*="الكمية"]');
+    await act(async () => setValue(quantities[0]!, ""));
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-error"]')?.textContent).toContain(i18n.t("purchasesInvalidQuantity"));
+    expect(lastPurchaseInput).toBeNull();
+
+    // fixing the first line leaves the second usable: the save carries both
+    // lines with their per-line costs
+    await act(async () => setValue(quantities[0]!, "2"));
+    await save(container);
+    expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    expect(lastPurchaseInput?.lines).toEqual([
+      { itemId: "item-منتج أ", quantity: 2, unitPrice: 1200 },
+      { itemId: "item-منتج ب", quantity: 3, unitPrice: 900 },
+    ]);
+  });
 });

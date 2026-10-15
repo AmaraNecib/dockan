@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 import { parseGroupedAmount, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
   draftTotals,
-  firstLineError,
+  firstCommitError,
   lineQuantity,
   nonNegativeOr,
   parseQuantityDraft,
@@ -241,49 +241,37 @@ export function SalePage() {
 
   function submit() {
     setError(null);
-    if (lines.length === 0) {
-      setError(t("saleLinesEmpty"));
-      return;
-    }
-    // an exact typed name that belongs to a record must be picked first: saving
-    // it as typed-only would hide the invoice from that record (P1.1)
-    if (customer.needsChoice === true) {
-      setError(t("partyChooseExisting"));
-      return;
-    }
-    // ORDER: blame the raw drafts before the values derived from them. A cleared
-    // quantity drops the total to zero, so a payment typed against the old total
-    // would fail the amount-vs-total check and show «saleInvalidPaid», masking
-    // the real problem. An over-100% discount does the same: it is capped at the
-    // subtotal, so it also zeroes the total. Lines, then the discount, then the
-    // payment — the order is pinned by the draft-ordering tests. Do not swap it.
-    const lineError = firstLineError(lines, (line) => {
-      if (saleOverrideInvalid(line)) return t("saleInvalidOverride");
-      if (quantityDraftInvalid(line.quantityDraft)) return t("saleInvalidQuantity");
-      return null;
-    });
-    if (lineError !== null) {
-      setError(lineError);
-      return;
-    }
-    // the discount also feeds `total`, so it is validated before the payment it
-    // can zero: an over-100% percentage caps at the subtotal
-    if (discountType !== "") {
-      const parsedDiscount = Number(discountValue);
-      const invalidAmount = discountType === "AMOUNT" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0);
-      const invalidPercentage = discountType === "PERCENTAGE" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 100);
-      if (!Number.isFinite(parsedDiscount) || invalidAmount || invalidPercentage) {
-        setError(t("saleInvalidDiscount"));
-        return;
-      }
-    }
-    // runs the shared percentage/amount/over-total checks and maps a zero draft
-    // to «nothing paid now» (the api requires a positive initialPaid)
+    // `firstCommitError` owns the check order — empty cart → party → per-line
+    // (override before quantity) → discount → payment — so a future reorder
+    // cannot fix this screen and miss purchase. The raw drafts are validated
+    // before the values derived from them: a cleared quantity or an over-100%
+    // discount zeroes the total, and a payment typed against the old total
+    // would otherwise fail the amount-vs-total check and mask the real problem.
+    const parsedDiscount = Number(discountValue);
+    const discountInvalid =
+      discountType !== "" &&
+      (!Number.isFinite(parsedDiscount) ||
+        (discountType === "AMOUNT" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0)) ||
+        (discountType === "PERCENTAGE" && (!Number.isInteger(parsedDiscount) || parsedDiscount < 0 || parsedDiscount > 100)));
+    // maps a zero draft to «nothing paid now» (the api requires a positive initialPaid)
     const paid = resolveInitialPaid(total, payment.amount, payment.percentage);
-    if (!paid.ok) {
-      setError(t("saleInvalidPaid"));
+    const commitError = firstCommitError({
+      lines,
+      linesEmpty: t("saleLinesEmpty"),
+      partyNeedsChoice: customer.needsChoice === true,
+      partyNeedsChoiceMessage: t("partyChooseExisting"),
+      override: { invalid: saleOverrideInvalid, message: t("saleInvalidOverride") },
+      quantity: { invalid: (line) => quantityDraftInvalid(line.quantityDraft), message: t("saleInvalidQuantity") },
+      discount: { invalid: discountInvalid, message: t("saleInvalidDiscount") },
+      payment: { invalid: !paid.ok, message: t("saleInvalidPaid") },
+    });
+    if (commitError !== null) {
+      setError(commitError);
       return;
     }
+    // `firstCommitError` already refused a `!paid.ok` resolution, so this takes
+    // the ok arm; the ternary keeps the payload typed without an assertion.
+    const initialPaid = paid.ok ? paid.paid : undefined;
     const invoiceLines = lines.map((line) => {
       const invoiceLine: InvoiceCreate["lines"][number] = {
         itemId: line.item.id,
@@ -299,7 +287,7 @@ export function SalePage() {
       // the picker keeps the picked record's id; a typed-only name stays null
       counterpartyId: customer.id === null ? undefined : customer.id,
       counterpartyName: customer.name.trim() === "" ? undefined : customer.name.trim(),
-      initialPaid: paid.paid,
+      initialPaid,
       lines: invoiceLines,
     };
     if (discountType !== "") invoiceInput.discount = { type: discountType, value: enteredDiscount };

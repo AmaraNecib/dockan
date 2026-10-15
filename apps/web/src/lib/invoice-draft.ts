@@ -2,6 +2,7 @@ import type { Item } from "@dokan/contracts";
 
 import {
   amountFromPercentage,
+  normalizeArabicIndicDigits,
   parseGroupedAmount,
   parseWholePercentage,
   percentageDraftInvalid,
@@ -67,9 +68,14 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
  * back to the previous value (the field is NOT a controlled number). Only an
  * explicit add-line action (scan or duplicate picker entry) repairs a cleared
  * draft, by bumping it to one unit.
+ *
+ * Digits are normalized through the same reader the amount fields use, so an
+ * Arabic-Indic `٥` bills five units instead of refusing a number the owner can
+ * plainly read (#198 decision). The reader stays digits-only: no grouping
+ * separators, exactly as before.
  */
 export function parseQuantityDraft(draft: string): number {
-  const trimmed = draft.trim();
+  const trimmed = normalizeArabicIndicDigits(draft).trim();
   if (trimmed === "" || !/^\d+$/u.test(trimmed)) return 0;
   const value = Number(trimmed);
   return Number.isSafeInteger(value) && value >= 1 && value <= MAX_DRAFT_QUANTITY ? value : 0;
@@ -97,6 +103,64 @@ export function firstLineError<T extends DraftLine>(lines: readonly T[], errorFo
     const message = errorFor(line);
     if (message !== null) return message;
   }
+  return null;
+}
+
+/** A per-line predicate plus the message it surfaces when it fails. */
+export interface LineCheck<T> {
+  invalid: (line: T) => boolean;
+  message: string;
+}
+
+/**
+ * The inputs one invoice screen hands to `firstCommitError`. The five slots are
+ * the canonical checks in canonical order; a screen omits only the checks it
+ * does not have (purchase has no price override and no invoice discount).
+ */
+export interface CommitChecks<T extends DraftLine> {
+  /** the cart */
+  lines: readonly T[];
+  /** shown when the cart has no lines */
+  linesEmpty: string;
+  /** true when an exact typed party name matches a saved record and must be picked */
+  partyNeedsChoice: boolean;
+  partyNeedsChoiceMessage: string;
+  /** sale's per-line price override; checked before the same line's quantity */
+  override?: LineCheck<T>;
+  /** the per-line quantity */
+  quantity: LineCheck<T>;
+  /** sale's invoice discount, a second input to the total */
+  discount?: { invalid: boolean; message: string };
+  /** the initial payment, derived from the total the checks above can zero */
+  payment: { invalid: boolean; message: string };
+}
+
+/**
+ * The one commit order, shared by the sale and purchase screens:
+ *
+ *   empty cart → party → per-line (override before quantity) → discount → payment
+ *
+ * Every later check is derived from an earlier input: the total comes from the
+ * lines and (on sale) the discount, and the payment compares against that
+ * total. So a cleared quantity or an over-100% discount that zeroes the total
+ * would make a typed payment fail its amount-vs-total check and mask the real
+ * problem as «invalid payment». The order is therefore: validate the raw drafts
+ * before the values derived from them. #188 found the same masking bug in
+ * purchase first and sale second precisely because this rule lived in two
+ * places; it now lives here, once. Returns the message for the first failing
+ * check, or null when the draft is commit-ready.
+ */
+export function firstCommitError<T extends DraftLine>(checks: CommitChecks<T>): string | null {
+  if (checks.lines.length === 0) return checks.linesEmpty;
+  if (checks.partyNeedsChoice) return checks.partyNeedsChoiceMessage;
+  const lineError = firstLineError(checks.lines, (line) => {
+    if (checks.override?.invalid(line) === true) return checks.override.message;
+    if (checks.quantity.invalid(line)) return checks.quantity.message;
+    return null;
+  });
+  if (lineError !== null) return lineError;
+  if (checks.discount?.invalid === true) return checks.discount.message;
+  if (checks.payment.invalid) return checks.payment.message;
   return null;
 }
 

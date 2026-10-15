@@ -34,6 +34,42 @@ whether the stopped step is then reported failed or cancelled; either way the
 upload fires. Added by #197, after `gh run 38464745468` failed with no trace and
 no screenshot to read.
 
+## Vault-port isolation
+
+`tests/e2e/vault.spec.ts` runs its own API+web pair, separate from the pair
+`playwright.config.ts` boots for the shared suite. Since #202 that pair is
+`DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` (defaults `4399`/`5174`), so a lane
+that claims its own pair can run vault suites side by side.
+
+The resolver lives in `packages/e2e-support` and is unit-tested in
+`bun run test` (defaults, blank-means-unset, overrides, out-of-range rejection),
+which is the cheap half of the property and runs on every PR.
+
+The two-concurrent-runs property is **not** in CI. A deterministic test needs
+two full vault suites running at once; `tests/e2e/` has no Bun harness and a
+timing-based version would race, so it stays a manual procedure:
+
+```bash
+# terminal A
+DOKAN_PORT=4617 DOKAN_WEB_PORT=5473 \
+DOKAN_VAULT_PORT=4399 DOKAN_VAULT_WEB_PORT=5174 \
+E2E_DATA_DIR="$PWD/.e2e-data/lane-a" \
+bun run test:e2e tests/e2e/vault.spec.ts
+
+# terminal B
+DOKAN_PORT=4618 DOKAN_WEB_PORT=5474 \
+DOKAN_VAULT_PORT=4400 DOKAN_VAULT_WEB_PORT=5175 \
+E2E_DATA_DIR="$PWD/.e2e-data/lane-b" \
+bun run test:e2e tests/e2e/vault.spec.ts
+```
+
+Both must exit 0. All four ports and the data dir must be disjoint: selecting
+only the vault spec still boots the config's shared pair and wipes its
+`E2E_DATA_DIR` (a path under the ignored `.e2e-data/` keeps the runs clean).
+Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair and at least
+one run fails at the create-vault heading — the isolation is what makes the
+positive case pass, not luck.
+
 ## Audit policy
 
 `bun audit` first prints every advisory (informational), then fails the job

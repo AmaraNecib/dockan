@@ -42,6 +42,14 @@ const BASE_SUPPLIERS = [
   { id: "s-2", name: "مورد بلا حركات", accountBalance: 0, accountEntryCount: 0 },
   { id: "s-3", name: "مورد رصيد سالب", accountBalance: -300, accountEntryCount: 1 },
 ];
+/** #207 — two suppliers with no account entries. The boundary reject tests use
+ * these as their batch: with no supplier carrying entries, a dropped guard must
+ * SEND the batch, so `captured === null` is discriminating on its own instead of
+ * leaning on the confirmation precondition to swallow the write. */
+const TWO_NO_ENTRY_SUPPLIERS = [
+  { id: "s-a", name: "مورد أ", accountBalance: 0, accountEntryCount: 0 },
+  { id: "s-b", name: "مورد ب", accountBalance: 0, accountEntryCount: 0 },
+];
 let suppliers = BASE_SUPPLIERS;
 /** #183 — set when the page reads the full party list; it must never do so. */
 let suppliersListUsed = false;
@@ -293,7 +301,7 @@ function dispatchClickOn(testId: string, init: MouseEventInit) {
  * valid batch exists that WOULD be sent once the guard under test is removed.
  * Two unrelated guards used to mask those assertions: the empty-batch check and
  * the confirmation precondition. One valid row for row 1 (s-2, no account
- * entries) defeats both — it keeps `totalRows > 0` and its supplier has no
+ * entries) defeats both. It keeps `totalRows > 0`, and its supplier has no
  * entries, so no confirmation dialog can swallow the submit.
  *
  * `arm` then builds the failure under test; it may be async because the
@@ -304,7 +312,7 @@ function dispatchClickOn(testId: string, init: MouseEventInit) {
  *
  * `validRowAmount: null` skips the default row for a test that builds its whole
  * valid batch in `arm` (the over-limit case, or a valid typed-name row); those
- * still get the drift-prone half — the submit itself. Assertions stay in the
+ * still get the drift-prone half, the submit itself. Assertions stay in the
  * test body afterwards: a blocked submit leaves the visible state unchanged.
  */
 async function submitForm(arm: () => void | Promise<void>, validRowAmount: string | null = "300"): Promise<void> {
@@ -502,10 +510,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("rejects a negative amount draft instead of saving its magnitude (issue 207)", async () => {
+    // two no-entry suppliers: a dropped sign check would send the valid row plus
+    // the sign-stripped one, so `captured === null` alone fails
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
     render();
     await settle();
-    // the valid no-entry row submitForm fills is what a dropped sign check would
-    // send, so this cannot pass on the empty-batch guard alone
     await submitForm(() => typeIntoRow(0, "-5"));
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
@@ -517,6 +526,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     typeIntoRow(1, "1");
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -525,6 +535,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("rejects amount 0, one below the accepted range (issue 207)", async () => {
+    // two no-entry suppliers, so a dropped `<= 0` check sends the batch and the
+    // `captured === null` assertion fails on its own
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
     render();
     await settle();
     await submitForm(() => typeIntoRow(0, "0"));
@@ -538,6 +551,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     typeIntoRow(1, String(Number.MAX_SAFE_INTEGER));
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -546,6 +560,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("rejects an amount one above the largest safe integer (issue 207)", async () => {
+    // two no-entry suppliers, so a dropped safe-integer check sends the batch and
+    // the `captured === null` assertion fails on its own
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
     render();
     await settle();
     await submitForm(() => typeIntoRow(0, String(Number.MAX_SAFE_INTEGER + 1)));
@@ -614,6 +631,36 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       clickOn("opening-balance-save");
     });
     expect(captured?.rows).toHaveLength(200);
+    // every row keeps its own amount, so the cap is not met by dropping or
+    // duplicating a row
+    expect(captured?.rows.every((row) => row.amount === 1)).toBe(true);
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+
+  it("saves a typed row that brings the batch to exactly the 200-row limit (issue 207)", async () => {
+    // 199 filled rows plus the typed row is exactly the cap and must save. That
+    // the cap COUNTS the typed row is pinned by the over-limit test above (200
+    // filled plus a typed row is 201 and must block).
+    suppliers = Array.from({ length: 199 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(199);
+    // the whole valid batch is built here, so `null` stops the helper adding a row
+    await submitForm(() => {
+      fillAmounts(Array.from(inputs), () => "1");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+    }, null);
+
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+    expect(captured?.rows).toHaveLength(200);
+    expect(captured?.rows.at(-1)).toMatchObject({ newSupplierName: "مورد إضافي", amount: 1 });
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
   it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
@@ -1336,7 +1383,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
 
-    // Known exception (#207) — do NOT "fix" this by weakening the assertion.
+    // Known exception (#207): do NOT "fix" this by weakening the assertion.
     // `captured === null` here is masked by the disabled control, not by a guard
     // this test reaches: the same `listFailed` flag both disables this button and
     // backs `save()`, and React suppresses `onClick` on a control whose memoized

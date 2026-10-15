@@ -53,3 +53,34 @@ drift surfaces far away — `expected undefined to be …` for `readEnvelope`, a
 `Cannot read properties of undefined` for `readRpc`.
 
 `body: "{}"` is only correct for a no-input procedure.
+
+## A promise armed before the action needs its handler before the action
+
+Round 3 of the same review found the second half of this hazard. `actAndAck`
+arms the ack, then runs the action, then returns the read. The read is created in
+the same tick, but its only handler used to be attached when the action settled —
+so a server refusal that arrived **while the action was still running** rejected
+`output` with no handler. Node reported it as an unhandled rejection, a second
+failure that buried the action's own error.
+
+**Always**: attach the handler at creation. `void output.catch(() => undefined)`
+right after arming, and keep the ORIGINAL promise — `.catch` derives a new one,
+so `return output` still rejects an awaited call with the refusal. Do not attach
+the handler inside the action's `catch`: that is after the window it exists to
+close.
+
+Walk for any other promise created before its handler (round-3): `waitForRpc`'s
+`page.waitForResponse` promise has its `.then` attached synchronously inside
+`readEnvelope`, so it is never handler-less; `readRpc` awaits `page.evaluate`
+immediately and its inner `fetch`/`json()` are sequential awaits. `output` was the
+only gap. The derived promise from `void output.catch(...)` cannot reject (its
+callback returns `undefined`), so it is not a new gap.
+
+Test shape that discriminates: route the procedure to a 5xx, have the action
+`await` the refusal and stay in flight a turn, then throw a distinct action
+error. Assert the action error surfaces and that the armed read's rejection is not
+in the process `unhandledRejection` list. Scope that list assertion to the
+procedure name: `workers: 1` gives every spec file the same process, so an
+unrelated late rejection must not fail the test for the wrong reason. A second
+test where the action completes normally must still see the refusal — that is what
+stops a "swallow everything" fix from passing.

@@ -25,7 +25,7 @@ directories for any non-success outcome (`if: failure() || cancelled()`),
 `retention-days: 5`, named with `github.run_attempt` so re-running a failed job
 cannot overwrite the evidence from the attempt that failed.
 
-The run step also carries `timeout-minutes: 15`, below the job's 20: a job-level
+The run step also carries `timeout-minutes: 15`, below the job's 25: a job-level
 timeout *cancels* the job, and a cancelled job runs no further steps, so a hang
 would upload nothing — the exact case this evidence exists for. Stopping the suite
 step first, at 15 minutes, lets the upload still run. The `cancelled()` arm is

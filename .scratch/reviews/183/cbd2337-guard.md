@@ -44,9 +44,10 @@ The page was restored after each and the clean tree re-verified. Details in `cbd
 
 ## `origin/develop` and #190 re-check (end of round)
 
-`git fetch origin develop`:
+Final `git fetch origin develop`:
 
-- `origin/develop` is now `779f671` ("ci: upload e2e failure evidence so a red run leaves a trace (closes #197)"). It moved from `f757211` (round-1 base) since the last round. `779f671` is not in this branch's history, so this branch is one develop commit behind (a CI-only change, not a rebase blocker for #183).
+- `origin/develop` is `21dbc13` ("test: configurable vault ports and a load-proof 201-supplier test (closes #193, closes #202)"). It moved twice since the round-1 base `f757211`: first `779f671` ("ci: upload e2e failure evidence so a red run leaves a trace (closes #197)"), then `21dbc13`. Both are outside this branch, so the branch is 2 develop commits behind.
+- Relevant after a rebase: `21dbc13` makes the vault e2e ports configurable (retiring the hardcoded 4399/5174) and adds a "load-proof 201-supplier test" that may overlap with this branch's 200/201-row tests. The rebase should reconcile the two rather than leave both.
 - `gh pr view 190` -> `{"number":190,"state":"OPEN","mergedAt":null,"mergeCommit":null}` on branch `feat-184-server-name-resolution`.
 
 PR #190 has NOT landed. It edits the same files (`rpc/router.ts`, `packages/contracts/src/{core,app-contract}.ts`, `supplier-opening-balance.tsx`) and must land first, so this branch still needs a further rebase onto the post-#190 `develop` once it merges. That rebase is out of scope for this round and was not started.

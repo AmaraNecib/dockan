@@ -625,6 +625,27 @@ describe('skills:check CLI — hardening edges', () => {
     })
   })
 
+  it('tells a linked .claude/skills root to replace it by hand, not to sync', () => {
+    withTempRoot((root) => {
+      const target = join(root, 'claude-target')
+      mkdirSync(join(target, 'demo'), { recursive: true })
+      writeFileSync(join(target, 'demo', 'SKILL.md'), '# demo\n')
+      rmSync(join(root, '.claude', 'skills'), { recursive: true, force: true })
+      symlinkSync(target, join(root, '.claude', 'skills'), 'junction')
+
+      const result = runCli(root)
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('.claude/skills is a symlink')
+      expect(result.stderr).toContain('Replace every symlink')
+      expect(result.stderr).not.toContain('to replace the linked mirror')
+
+      // sync refuses the linked root too, so hand-replacement is the only fix.
+      const sync = runCli(root, [])
+      expect(sync.status).toBe(1)
+      expect(sync.stderr).toContain('refusing to sync')
+    })
+  })
+
   it('syncs a clean temp root and exits 0', () => {
     withTempRoot((root) => {
       rmSync(join(root, '.claude', 'skills', 'demo'), {

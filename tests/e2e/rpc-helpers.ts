@@ -1,4 +1,4 @@
-import { expect, type Page, type Response } from "@playwright/test";
+import { expect, type Locator, type Page, type Response } from "@playwright/test";
 
 /**
  * Server-acknowledged RPCs (issue 179).
@@ -42,6 +42,65 @@ export async function actAndAck(page: Page, procedure: string, action: () => Pro
     throw error;
   }
   return expectRpcOk(ack, procedure);
+}
+
+/**
+ * The create procedures a quick-add form can call. The sale form routes a
+ * positive opening quantity to `itemsCreateWithStock` and a blank one to
+ * `itemsCreate`; the purchase form only ever calls `itemsCreate`.
+ */
+export type QuickAddProcedure = "itemsCreateWithStock" | "itemsCreate";
+
+/** The form state a quick-add save must observe around its click (issue 196). */
+export interface QuickAddSave {
+  /**
+   * The procedure the form actually calls for THIS spec's inputs. Arming the
+   * wrong one never fires and hangs the whole test budget by construction (#191).
+   */
+  procedure: QuickAddProcedure;
+  /** The quick-add form's save control; asserted enabled before the click. */
+  save: Locator;
+  /** Where the form records a synchronous client-side refusal. */
+  error: Locator;
+  /** The line table the created item lands in. */
+  lines: Locator;
+  /** The created item's name; scopes the line-key assertion. */
+  itemName: string;
+  /** The line-quantity input's aria-label suffix ("الكمية"). */
+  quantityLabel: string;
+}
+
+/**
+ * Save a quick-add form and return only after the item write it triggered was
+ * accepted by the server. Returns the server-issued item id.
+ *
+ * This is the #191 shape, extracted so every quick-add site fails by name
+ * instead of as an anonymous 30 s `waitForResponse` timeout:
+ *
+ * 1. the save control must be enabled before the click — a disabled save never
+ *    sends the request the ack waits for;
+ * 2. inside the action, no client-side refusal may have been recorded — the
+ *    form refuses synchronously (unpicked category, rejected stock, bad price)
+ *    and sends nothing, which would otherwise leave the armed ack hanging;
+ * 3. the line the form lands is keyed on the id the create actually issued
+ *    (`name="quantity-<id>"`), so "the item exists" is a server fact rather
+ *    than a render guess.
+ */
+export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{ id: string }> {
+  await expect(options.save).toBeEnabled();
+  const created = await rpcOutput<{ id: string }>(
+    await actAndAck(page, options.procedure, async () => {
+      await options.save.click();
+      // SAFETY: both create procedures declare the item output, which carries
+      // the server-issued id the line is keyed on.
+      await expect(options.error).toHaveCount(0);
+    }),
+  );
+  await expect(options.lines.getByLabel(`${options.itemName}: ${options.quantityLabel}`)).toHaveAttribute(
+    "name",
+    `quantity-${created.id}`,
+  );
+  return created;
 }
 
 /** The oRPC success envelope; `json` carries the procedure's declared output. */

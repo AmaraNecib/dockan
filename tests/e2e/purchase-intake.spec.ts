@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Purchase intake (/purchase). Category + two uniquely-named
@@ -57,7 +58,15 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await page.getByLabel("سعر البيع (دج)").fill("1400");
   await page.getByTestId("quick-qty").fill("3");
   await page.getByTestId("quick-cost").fill("900");
-  await page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }).click();
+  // the purchase quick-add always calls itemsCreate (no with-stock path)
+  await saveQuickAdd(page, {
+    procedure: "itemsCreate",
+    save: page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }),
+    error: page.getByTestId("purchase-error"),
+    lines: page.getByTestId("purchase-lines"),
+    itemName: filterName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("purchase-lines")).toContainText(filterName);
 
   // quantities: battery ×2 @1200, filter ×3 @900 → total 5100

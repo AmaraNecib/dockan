@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Expenses + profit reports. Specs share one wiped-at-boot sqlite
@@ -204,7 +205,14 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   await page.getByLabel("سعر الشراء (دج)").fill("400");
   await page.getByLabel("سعر البيع (دج)").fill("1000");
   await page.getByTestId("sale-quick-stock").fill("2");
-  await page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }).click();
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");

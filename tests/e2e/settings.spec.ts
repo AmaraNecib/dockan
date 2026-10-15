@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
+import { saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Settings screen (store identity). Owner edits the store
@@ -48,7 +49,15 @@ test("settings edit → save → invoice header reflects the store identity", as
   await page.getByLabel("سعر البيع (دج)").fill("900");
   await page.getByTestId("quick-qty").fill("2");
   await page.getByTestId("quick-cost").fill("600");
-  await page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }).click();
+  // the purchase quick-add always calls itemsCreate (no with-stock path)
+  await saveQuickAdd(page, {
+    procedure: "itemsCreate",
+    save: page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }),
+    error: page.getByTestId("purchase-error"),
+    lines: page.getByTestId("purchase-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
   await expect(page.getByTestId("purchase-lines")).toContainText(itemName);
 
   await page.getByTestId("purchase-save").click();

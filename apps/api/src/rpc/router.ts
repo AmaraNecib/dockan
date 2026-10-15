@@ -1119,9 +1119,20 @@ export function createRpcRouter(deps: RpcDeps) {
     suppliersResolveName: os.suppliersResolveName.handler(
       guardedInput(async (input) => {
         const key = normalizeTextKey(input.name);
-        const candidates: NamedSupplierCandidate[] = (await deps.store.listParties("supplier"))
+        // #213 — compose the two names-only reads instead of `listParties`,
+        // whose invoice LEFT JOIN + GROUP BY the resolve path never reads. The
+        // names carry identity; the summary carries the entry count. A supplier
+        // with no entry is absent from the summary and defaults to 0, exactly
+        // the null `listParties` produced. Reads run together so swapping one
+        // expensive read for two cheap ones does not add a round trip.
+        const [names, summaries] = await Promise.all([
+          deps.store.listPartyNames("supplier"),
+          deps.store.listSupplierAccountSummaries(),
+        ]);
+        const entriesById = new Map(summaries.map((summary) => [summary.id, summary.accountEntryCount]));
+        const candidates: NamedSupplierCandidate[] = names
           .filter((party) => normalizeTextKey(party.name) === key)
-          .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
+          .map((party) => ({ id: party.id, name: party.name, entries: entriesById.get(party.id) ?? 0 }));
         const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
         const resolution = await resolveOpeningDestination(candidates, (candidate) =>
           deps.store.hasSupplierAdjustment(openingSignature(candidate.id, input, reason, input.occurredAt)),

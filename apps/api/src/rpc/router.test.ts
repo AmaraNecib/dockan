@@ -2417,6 +2417,64 @@ describe("supplier adjustments (issue 176)", () => {
   });
 });
 
+describe("suppliersResolveName uses the lean reads (issue 213)", () => {
+  it("resolves from listPartyNames + listSupplierAccountSummaries, never listParties (issue 213)", async () => {
+    const name = `مورد-قراءة-رقيقة-${Date.now()}`;
+    const supplier = await client.suppliersCreate({ name });
+    await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 120, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
+
+    // count the reads the resolve path performs: a regression back to
+    // `listParties` re-joins every invoice and re-introduces the aggregate #183
+    // removed, so the assertion that it is never called is the whole point.
+    let listPartiesCalls = 0;
+    const reads: string[] = [];
+    const countingStore: StorePort = {
+      ...store,
+      listParties: (role) => {
+        listPartiesCalls += 1;
+        return store.listParties(role);
+      },
+      listPartyNames: (role) => {
+        reads.push(`names:${role}`);
+        return store.listPartyNames(role);
+      },
+      listSupplierAccountSummaries: () => {
+        reads.push("summaries");
+        return store.listSupplierAccountSummaries();
+      },
+    };
+    const countingClient = clientForStore(countingStore);
+
+    const resolved = await countingClient.suppliersResolveName({ name, direction: "WE_OWE", amount: 120, occurredAt: "2026-10-13T12:00:00", reason: "رصيد افتتاحي" });
+    expect(resolved.supplier?.id).toBe(supplier.id);
+    expect(resolved.supplier?.accountEntryCount).toBe(1);
+    expect(listPartiesCalls).toBe(0);
+    expect(reads).toEqual(["names:supplier", "summaries"]);
+  });
+
+  it("returns null from an empty store without touching the aggregate (issue 213)", async () => {
+    // zero suppliers: both lean reads are empty and `listParties` is booby-trapped
+    // so a regression fails loudly instead of merely costing more.
+    const emptyStore: StorePort = {
+      ...store,
+      listPartyNames: async () => [],
+      listSupplierAccountSummaries: async () => [],
+      listParties: async () => {
+        throw new Error("suppliersResolveName must not call listParties");
+      },
+    };
+    const emptyClient = clientForStore(emptyStore);
+
+    const resolved = await emptyClient.suppliersResolveName({ name: `مورد-فارغ-${Date.now()}`, direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
+  });
+
+  it("resolves a no-match name to null through the lean filter (issue 213)", async () => {
+    const resolved = await client.suppliersResolveName({ name: `مورد-بلا-مطابقة-${Date.now()}`, direction: "WE_OWE", amount: 100, occurredAt: "2026-10-13T12:00:00" });
+    expect(resolved.supplier).toBeNull();
+  });
+});
+
 describe("supplier adjustment idempotency key (issue 181)", () => {
   it("refuses a keyed retry whose timestamp changed (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح تغيّر الوقت");

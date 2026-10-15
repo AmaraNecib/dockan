@@ -510,8 +510,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("rejects a negative amount draft instead of saving its magnitude (issue 207)", async () => {
-    // two no-entry suppliers: a dropped sign check would send the valid row plus
-    // the sign-stripped one, so `captured === null` alone fails
+    // two no-entry suppliers: a parser that accepted or stripped the sign would
+    // send the valid row plus the negative one, so `captured === null` alone
+    // fails. The `<= 0` branch itself is pinned by the two amount-0 tests.
     suppliers = TWO_NO_ENTRY_SUPPLIERS;
     render();
     await settle();
@@ -568,6 +569,21 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await submitForm(() => typeIntoRow(0, String(Number.MAX_SAFE_INTEGER + 1)));
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
+  it("rejects amount 0 in the typed new row (issue 207)", async () => {
+    render();
+    await settle();
+    // the typed row has its own `amount <= 0` branch, separate from the existing
+    // rows' reader; the helper's valid row keeps the batch non-empty
+    await submitForm(() => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "0");
+    });
+
+    expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
     expect(captured).toBeNull();
   });

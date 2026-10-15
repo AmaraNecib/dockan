@@ -72,6 +72,7 @@ alone.
 | negative draft `-5` on a row beside a valid no-entry row | a sign is rejected by `parseGroupedAmount` (plain and grouped digit regexes) | row error, save blocked, `captured === null` |
 | amount `1` on a no-entry row | low end of the accepted range (whole DZD `> 0`) | saved with `amount: 1` |
 | amount `0` beside a valid no-entry row | one below the accepted range | row error, `captured === null` |
+| amount `0` in the typed new row | the typed reader's own `amount <= 0` branch | typed-row error, save blocked, `captured === null` |
 | `String(Number.MAX_SAFE_INTEGER)` on a no-entry row | high end (`dinarsSchema` max; `Number.isSafeInteger`) | saved with that exact amount |
 | `String(Number.MAX_SAFE_INTEGER + 1)` beside a valid no-entry row | one above the accepted range | row error, `captured === null` |
 | exactly 200 filled rows, 200 suppliers | the 200-row contract cap **at** the boundary | not blocked, saved with 200 rows, every row keeps its amount |

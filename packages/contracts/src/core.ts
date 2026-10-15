@@ -1352,8 +1352,23 @@ export const itemHistoryInputSchema = z.object({
   itemId: idSchema,
 }).merge(paginationInputSchema);
 
+/**
+ * One item-history row plus the recording-order fields the superseded-row
+ * badge needs (issue 215). Both fields are additive and optional: a response
+ * cached before they existed still parses, and an old client ignores them.
+ *
+ * `seq` is the store rowid (the ledger's append order). `supersededBySeq` is
+ * the `seq` of the cost correction that supersedes this row, resolved by the
+ * api over the WHOLE ledger so the badge survives pagination; `null` means the
+ * row is not superseded.
+ */
+export const itemHistoryMovementSchema = stockMovementWithBalanceSchema.extend({
+  seq: z.number().int().min(1).optional(),
+  supersededBySeq: z.number().int().min(1).nullable().optional(),
+});
+
 export const itemHistoryOutputSchema = z.object({
-  movements: z.array(stockMovementWithBalanceSchema),
+  movements: z.array(itemHistoryMovementSchema),
   /** number of movements in the whole ledger, not just this page */
   total: z.number().int().min(0),
   stockOnHand: z.number().int().min(0),
@@ -1511,6 +1526,7 @@ export type ActivityType = z.infer<typeof activityTypeSchema>;
 export type MovementKind = z.infer<typeof movementKindSchema>;
 export type StockMovement = z.infer<typeof stockMovementSchema>;
 export type StockMovementWithBalance = z.infer<typeof stockMovementWithBalanceSchema>;
+export type ItemHistoryMovement = z.infer<typeof itemHistoryMovementSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 export type Preferences = z.infer<typeof preferencesGetOutputSchema>["values"];
 export type DebtSummary = z.infer<typeof debtSummarySchema>;

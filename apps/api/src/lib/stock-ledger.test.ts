@@ -9,7 +9,9 @@ import {
   projectLedger,
   saleMovementTime,
   stockAsOf,
+  supersededByCorrectionSeq,
   weightedAverageCost,
+  type HistoryRow,
 } from "./stock-ledger";
 
 /**
@@ -371,5 +373,92 @@ describe("weightedAverageCost — recording-order precedence (issue 144 round 3)
     ];
     // date order: 10@100, sale 5 (qty 5, avg 100), 10@200 → (500 + 2000) / 15
     expect(weightedAverageCost(movements)).toBe(167);
+  });
+});
+
+/**
+ * Issue 215 — the superseded-row badge needs recording order, not wall-clock
+ * strings, and it must resolve over the WHOLE ledger so a correction on a
+ * prior page still badges the row it replaced. Rows are date-ordered exactly
+ * as `historyWithRemaining` returns them.
+ */
+describe("supersededByCorrectionSeq (issue 215)", () => {
+  type Row = HistoryRow & { createdAt: string };
+  const row = (
+    delta: number,
+    unitCost: number | null,
+    occurredAt: string,
+    seq: number,
+    reason: string | null = null,
+    createdAt = occurredAt,
+  ): Row => ({
+    kind: delta > 0 ? "PURCHASE" : "MANUAL_ADJUSTMENT",
+    delta,
+    unitCost,
+    reason,
+    occurredAt,
+    seq,
+    stockAfter: 0,
+    createdAt,
+  });
+  const correction = (occurredAt: string, seq: number): Row =>
+    row(0, 300, occurredAt, seq, COST_CORRECTION_REASON);
+
+  it("flags an inflow drawn below a correction recorded after it", () => {
+    // date order: the correction (2026) then the future-dated purchase (2999)
+    const rows = [correction("2026-10-15T10:00:00", 3), row(10, 200, "2999-01-01T00:00:00", 1)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, 3]);
+  });
+
+  it("resolves a same-second tie by recording order, not createdAt", () => {
+    // the two inserts share a wall-clock second, so the old strict `createdAt`
+    // comparison left this row silent; seq now orders them deterministically
+    const rows = [
+      { ...correction("2026-10-15T10:00:00", 2), createdAt: "2026-10-15T10:00:00" },
+      { ...row(10, 200, "2999-01-01T00:00:00", 1), createdAt: "2026-10-15T10:00:00" },
+    ];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, 2]);
+  });
+
+  it("ignores a correction recorded before the row", () => {
+    const rows = [correction("2026-10-15T10:00:00", 1), row(10, 200, "2999-01-01T00:00:00", 2)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
+  });
+
+  it("never flags an outflow: it does not move the weighted average", () => {
+    const rows = [correction("2026-10-15T10:00:00", 2), row(-4, null, "2999-01-01T00:00:00", 1)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
+  });
+
+  it("does not treat an opening zero-delta row as a correction", () => {
+    const rows = [row(0, 100, "2026-10-15T10:00:00", 2, "opening"), row(10, 200, "2999-01-01T00:00:00", 1)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
+  });
+
+  it("does not treat a COST_CORRECTION row with a null unit cost as a correction", () => {
+    const rows = [row(0, null, "2026-10-15T10:00:00", 2, COST_CORRECTION_REASON), row(10, 200, "2999-01-01T00:00:00", 1)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
+  });
+
+  it("reports the nearest correction drawn above that was recorded after the row", () => {
+    const rows = [
+      correction("2026-10-13T10:00:00", 2), // recorded before the row: no
+      correction("2026-10-15T10:00:00", 4), // recorded after and nearest above
+      row(10, 200, "2999-01-01T00:00:00", 1),
+    ];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null, 4]);
+  });
+
+  it("returns an aligned all-null array for a ledger with no correction", () => {
+    const rows = [row(10, 100, "2026-10-14T09:00:00", 1), row(-4, null, "2026-10-15T09:00:00", 2)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null]);
+  });
+
+  it("handles an empty ledger and does not mutate its input", () => {
+    expect(supersededByCorrectionSeq([])).toEqual([]);
+    const rows = [correction("2026-10-15T10:00:00", 3), row(10, 200, "2999-01-01T00:00:00", 1)];
+    const snapshot = structuredClone(rows);
+    supersededByCorrectionSeq(rows);
+    expect(rows).toEqual(snapshot);
   });
 });

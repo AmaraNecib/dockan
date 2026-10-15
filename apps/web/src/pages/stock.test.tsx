@@ -111,6 +111,74 @@ describe("cost-correction recording-order precedence (issue 151)", () => {
   });
 });
 
+/**
+ * Issue 215 — the api resolves precedence over the WHOLE ledger and annotates
+ * each row with the recording order of the correction that supersedes it, so
+ * the badge survives pagination and same-second ties. The view renders that
+ * answer; only a response cached before the field existed falls back to the
+ * page-local comparison of issue 151.
+ */
+describe("cost-correction precedence survives pagination (issue 215)", () => {
+  const row = (over: Partial<PrecedenceRow> & Pick<PrecedenceRow, "delta">): PrecedenceRow => ({
+    unitCost: null,
+    reason: null,
+    createdAt: "2026-10-15T10:00:00",
+    ...over,
+  });
+
+  it("badges a row the api marked superseded when the correction is on another page", () => {
+    // no correction row on this page at all, so a page-local rule would miss it
+    const rows = [
+      row({ delta: 5, unitCost: 100, seq: 2, supersededBySeq: null }),
+      row({ delta: 10, unitCost: 200, seq: 1, supersededBySeq: 3 }),
+    ];
+    expect(supersededByCorrection(rows)).toEqual(new Set([1]));
+  });
+
+  it("trusts the annotation even when the page-local rule would disagree", () => {
+    // the annotated row is drawn ABOVE the correction-looking row here; the
+    // page-local fallback would not flag it, the api's whole-ledger answer does
+    const rows = [
+      row({ delta: 10, unitCost: 200, seq: 1, supersededBySeq: 3 }),
+      row({ delta: 0, unitCost: 300, reason: "COST_CORRECTION", seq: 2, supersededBySeq: null }),
+    ];
+    expect(supersededByCorrection(rows)).toEqual(new Set([0]));
+  });
+
+  it("flags nothing when the api annotated every row as not superseded", () => {
+    const rows = [
+      row({ delta: 10, unitCost: 200, seq: 1, supersededBySeq: null }),
+      row({ delta: -4, seq: 2, supersededBySeq: null }),
+    ];
+    expect(supersededByCorrection(rows)).toEqual(new Set());
+  });
+
+  it("uses the page-local fallback when the api did not annotate the response", () => {
+    const rows = [
+      row({ delta: 0, unitCost: 300, reason: "COST_CORRECTION", createdAt: "2026-10-15T10:00:00" }),
+      row({ delta: 10, unitCost: 200, createdAt: "2026-10-14T09:00:00" }),
+    ];
+    expect(supersededByCorrection(rows)).toEqual(new Set([1]));
+  });
+
+  it("prefers recording order inside the fallback when both rows carry seq", () => {
+    // equal createdAt: the legacy rule ties and stays silent, but seq orders
+    // the correction after the row, so the fallback flags it deterministically
+    const rows = [
+      row({ delta: 0, unitCost: 300, reason: "COST_CORRECTION", createdAt: "2026-10-15T10:00:00", seq: 3 }),
+      row({ delta: 10, unitCost: 200, createdAt: "2026-10-15T10:00:00", seq: 1 }),
+    ];
+    expect(supersededByCorrection(rows)).toEqual(new Set([1]));
+  });
+
+  it("never badges an outflow even if the annotation is present", () => {
+    const rows = [row({ delta: -4, seq: 1, supersededBySeq: 3 })];
+    // only inflows move the weighted average, so a corrupt annotation must not
+    // teach the view to badge one (issue 151 invariant, kept on both sides)
+    expect(supersededByCorrection(rows)).toEqual(new Set());
+  });
+});
+
 /** The badge copy is owned by the view and asserted by key, never a literal. */
 describe("superseded-row copy", () => {
   it("uses the i18n key and never leaks the API token", () => {

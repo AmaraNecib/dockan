@@ -238,15 +238,29 @@ export interface PrecedenceRow {
   unitCost: number | null;
   reason: string | null;
   createdAt: string;
+  /** store rowid: the ledger's recording order. Absent on a response cached
+   * before issue 215. */
+  seq?: number;
+  /** recording order of the correction the api resolved over the WHOLE ledger
+   * as superseding this row (issue 215). `null` = not superseded; `undefined`
+   * = the api did not annotate the response. */
+  supersededBySeq?: number | null;
 }
 
 function isCostCorrection(row: PrecedenceRow): boolean {
   return row.delta === 0 && row.unitCost !== null && row.reason === "COST_CORRECTION";
 }
 
+/** Whether `above` was recorded after `row`: the store rowid when both carry
+ * it, else the fixed-width wall-clock insert time. */
+function recordedAfter(above: PrecedenceRow, row: PrecedenceRow): boolean {
+  if (above.seq !== undefined && row.seq !== undefined) return above.seq > row.seq;
+  return above.createdAt > row.createdAt;
+}
+
 /**
  * Indices of inflow rows the date-ordered history draws *below* a cost
- * correction that was recorded after them (issue 151).
+ * correction that was recorded after them.
  *
  * Replay walks the ledger in recording order and splits it at each correction,
  * so such a row's contribution to the weighted average was replaced by the
@@ -255,12 +269,30 @@ function isCostCorrection(row: PrecedenceRow): boolean {
  * average. Only inflows (`delta > 0`) can move the average, so outflows and the
  * correction rows themselves are never flagged.
  *
- * Recording order is read from `createdAt` (the wall-clock insert time; the
- * contract carries no `seq`). `createdAt` is fixed-width `YYYY-MM-DDTHH:mm:ss`,
- * so the comparison is lexical and total. The comparison is strict: a same-
- * second tie is left unannotated rather than guessed.
+ * Issue 215: the api resolves this over the WHOLE ledger and annotates each row
+ * with `supersededBySeq`, so a correction on a prior page still badges its
+ * superseded row on a later one and a same-second tie is ordered by `seq`. When
+ * the annotation is present it is the answer; only a response cached before
+ * issue 215 falls back to the page-local recording-order comparison of issue
+ * 151 (which prefers `seq` when the page carries it, else `createdAt`).
  */
 export function supersededByCorrection(rows: readonly PrecedenceRow[]): Set<number> {
+  if (rows.some((row) => row.supersededBySeq !== undefined)) {
+    const superseded = new Set<number>();
+    rows.forEach((row, index) => {
+      // only inflows move the average: even an anomalous annotation never
+      // badges an outflow (issue 151 invariant, kept on both sides)
+      if (row.delta > 0 && row.supersededBySeq !== null && row.supersededBySeq !== undefined) {
+        superseded.add(index);
+      }
+    });
+    return superseded;
+  }
+  return pageLocalSupersededByCorrection(rows);
+}
+
+/** Legacy page-local fallback for a response fetched before issue 215. */
+function pageLocalSupersededByCorrection(rows: readonly PrecedenceRow[]): Set<number> {
   const superseded = new Set<number>();
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -268,7 +300,7 @@ export function supersededByCorrection(rows: readonly PrecedenceRow[]): Set<numb
     // the nearest correction drawn above the row that was recorded after it
     for (let j = i - 1; j >= 0; j--) {
       const above = rows[j];
-      if (above !== undefined && isCostCorrection(above) && above.createdAt > row.createdAt) {
+      if (above !== undefined && isCostCorrection(above) && recordedAfter(above, row)) {
         superseded.add(i);
         break;
       }

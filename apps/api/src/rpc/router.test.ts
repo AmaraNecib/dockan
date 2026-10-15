@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createORPCClient } from "@orpc/client";
 import { RPCLink } from "@orpc/client/fetch";
-import { dashboardSummaryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
+import { dashboardSummaryOutputSchema, itemHistoryOutputSchema, MAX_PAGE_SIZE, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, type DokanClient } from "@dokan/contracts";
 
 import { createApp } from "../app";
 import { createAuth, type BetterAuthInstance } from "../auth/auth";
@@ -4498,6 +4498,54 @@ describe("items cost correction (issue 144)", () => {
     const row = (await client.itemsAll()).items.find((i) => i.id === item.id)!;
     expect(row.stockOnHand).toBe(30);
     expect(row.costPrice).toBe(250); // (20×300 + 10×150) / 30
+  });
+});
+
+/**
+ * Issue 215 — the item history now exposes recording order (`seq`) and the api
+ * resolves correction precedence over the WHOLE ledger, so a correction on a
+ * prior page still badges the inflow it replaced. Before this change the wire
+ * stripped `seq` and the view could only compare within the returned page.
+ */
+describe("item history recording order (issue 215)", () => {
+  async function makeItem(name: string, costPrice: number) {
+    const categories = await client.categoriesList();
+    return client.itemsCreate({ name, categoryId: categories.items[0]!.id, costPrice, sellingPrice: costPrice * 2, lowStockThreshold: 0 });
+  }
+
+  it("resolves a superseded row whose correction is on a prior page", async () => {
+    const item = await makeItem(`ترتيب-تسجيل-${Date.now()}`, 100);
+    // recorded order: future inflow (1), ordinary inflow (2), correction (3)
+    await client.stockAddManual({ itemId: item.id, delta: 10, unitCost: 200, kind: "PURCHASE", occurredAt: "2999-01-01T00:00:00" });
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE", occurredAt: "2025-01-01T00:00:00" });
+    await client.itemsUpdate({ id: item.id, costPrice: 300 });
+
+    // date order: ordinary (2025), correction (now), future inflow (2999). A
+    // page of 2 therefore holds the correction on page 1 and the superseded
+    // inflow alone on page 2 — the exact split the badge used to miss.
+    const page1 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 0 });
+    const page2 = await client.itemsHistory({ itemId: item.id, limit: 2, offset: 2 });
+    expect(page1.total).toBe(3);
+    const correction = page1.movements[1]!;
+    const future = page2.movements[0]!;
+    expect(correction.reason).toBe("COST_CORRECTION");
+    expect(correction.supersededBySeq).toBeNull();
+    // recording order is on the wire and the page-2 row names the page-1
+    // correction that supersedes it
+    expect(future.seq).toBeNumber();
+    expect(correction.seq).toBeNumber();
+    expect(future.supersededBySeq).toBe(correction.seq);
+    expect(correction.seq!).toBeGreaterThan(future.seq!);
+  });
+
+  it("keeps the output additive: a row without the recording-order fields still parses", async () => {
+    const item = await makeItem(`ترتيب-إضافة-${Date.now()}`, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
+    const { movements, total, stockOnHand } = await client.itemsHistory({ itemId: item.id });
+    // strip exactly what issue 215 added: an old cached/legacy payload
+    const legacy = movements.map(({ seq: _seq, supersededBySeq: _superseded, ...rest }) => rest);
+    const parsed = itemHistoryOutputSchema.safeParse({ movements: legacy, total, stockOnHand });
+    expect(parsed.success).toBe(true);
   });
 });
 

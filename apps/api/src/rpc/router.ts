@@ -11,7 +11,7 @@ import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
@@ -610,10 +610,14 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         // `stockAfter` is cumulative, so the whole ledger is projected first;
         // only the projected rows are sliced. `total` is the full ledger count.
+        // Precedence is resolved on the whole projection, not the page, so a
+        // correction on a prior page still badges its superseded row (issue 215).
         const movements = await deps.store.listStockMovements(item.id);
-        const projected = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
+        const projected = historyWithRemaining(movements);
+        const superseded = supersededByCorrectionSeq(projected);
+        const annotated = projected.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
         const { limit, offset } = resolvePagination(input);
-        const rows = projected.slice(offset, offset + limit);
+        const rows = annotated.slice(offset, offset + limit);
         // the last running balance IS stock on hand (same delta sum)
         const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
         return { movements: rows, total: movements.length, stockOnHand };

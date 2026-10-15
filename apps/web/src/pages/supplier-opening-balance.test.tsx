@@ -114,6 +114,36 @@ function setInput(el: HTMLInputElement, text: string) {
   });
 }
 
+/**
+ * Fill many controlled amount inputs in a single React render.
+ *
+ * A real DOM `input` event is a React *discrete* event, which React flushes
+ * synchronously. Filling 200 rows that way re-renders the 201-row table 200
+ * times — the load-sensitive cost behind #193 (~15 s isolated, and a 60 s
+ * timeout under contention). Invoking each input's React change handler inside
+ * one `act` lets React batch all 200 updates into one render while still
+ * running the page's real `setRow` handler. If React's props binding is absent
+ * (a future rename), this degrades to a real DOM event: correct, just slow.
+ */
+function fillAmounts(inputs: readonly HTMLInputElement[], text: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  act(() => {
+    for (const input of inputs) {
+      setter?.call(input, text);
+      const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
+      // SAFETY: React stores the element's props bag under `__reactProps$…`;
+      // the single widening cast just reaches it, and the page's handler reads
+      // only event.target.value, which is this input
+      const props = propsKey === undefined ? undefined : (input as HTMLInputElement & Record<string, { onChange?: (event: { target: HTMLInputElement }) => void }>)[propsKey];
+      if (props?.onChange === undefined) {
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        continue;
+      }
+      props.onChange({ target: input });
+    }
+  });
+}
+
 function typeIntoRow(rowIndex: number, text: string) {
   const rows = host.querySelectorAll('[data-testid="opening-balance-row"]');
   const input = rows[rowIndex]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]');
@@ -126,6 +156,15 @@ function clickOn(testId: string) {
   if (el === null) throw new Error(`missing ${testId}`);
   act(() => el.click());
 }
+
+/**
+ * #193 — the 201-supplier case is the only test here that touches all 201 rows,
+ * so it carries an explicit budget. This is a safety net, not a load-sensitive
+ * wait: the fill is batched into one render (see `fillAmounts`), so the test
+ * costs <1 s of CPU and 60 s is ~60× headroom even on a contended turbo run.
+ * If this ever times out again, fix the cost — do not raise the bound.
+ */
+const BATCH_LIMIT_TEST_TIMEOUT_MS = 60_000;
 
 describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("writes one row per filled amount plus an inline new supplier", async () => {
@@ -518,17 +557,12 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
 
-    // fill the first 200 rows, leaving the 201st empty
+    // fill the first 200 rows, leaving the 201st empty. Batched into one
+    // render: 200 discrete input events would re-render the table 200 times
+    // and make this test's wall-clock depend on host contention (#193).
     const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
     expect(inputs).toHaveLength(201);
-    act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      inputs.forEach((input, index) => {
-        if (index >= 200) return;
-        setter?.call(input, "1");
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-    });
+    fillAmounts(Array.from(inputs).slice(0, 200), "1");
 
     // the typed name matches the 201st supplier, so the batch is 201 rows
     const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
@@ -541,5 +575,5 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // 200 filled + the resolved row is over the cap: the page blocks, never sends
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
     expect(captured).toBeNull();
-  }, 60_000);
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 });

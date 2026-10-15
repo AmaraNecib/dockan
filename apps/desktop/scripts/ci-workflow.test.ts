@@ -68,22 +68,30 @@ function invokesCargoTest(run: string): boolean {
 }
 
 /**
- * True when one argv both invokes the e2e suite and pipes its output into the
- * upload's log file: `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`.
+ * True when one argv is exactly the e2e log pipeline:
+ * `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`.
  *
- * Every leg is load-bearing for #197: `argv[0] === "bun"` keeps `echo ... |> tee`
- * or a separate line from satisfying the guard, `2>&1` is what merges the stderr
- * carrying the Playwright-managed server logs, and the tee must write the exact
- * path the upload step collects. `set -o pipefail` and `shell: bash` keep a red
- * suite red, but they say nothing about where its output goes, so deleting this
- * pipeline would leave them green while the evidence disappears.
+ * Every leg is load-bearing for #197: `argv[0] === "bun"` keeps `echo ... | tee`
+ * or a separate line from satisfying the guard, `2>&1` merges the stderr carrying
+ * the Playwright-managed server logs, and the tee must write the exact path the
+ * upload step collects. The shape is pinned end to end (`--list`, an extra token,
+ * or a reordered redirect must not satisfy it): a suite invoked with a flag that
+ * lists rather than runs would still leave a log file that proves nothing.
+ * `set -o pipefail` and `shell: bash` keep a red suite red, but they say nothing
+ * about where its output goes, so deleting this pipeline would leave them green
+ * while the evidence disappears.
  */
 function pipesSuiteToTee(argv: readonly string[], logPath: string): boolean {
-  const isSuite = argv[0] === "bun" && argv[1] === "run" && argv[2] === "test:e2e";
-  const stderr = argv.indexOf("2>&1");
-  const pipe = argv.indexOf("|");
-  const tee = argv.indexOf("tee");
-  return isSuite && stderr >= 0 && pipe > stderr && tee > pipe && argv[tee + 1] === logPath;
+  return (
+    argv.length === 7 &&
+    argv[0] === "bun" &&
+    argv[1] === "run" &&
+    argv[2] === "test:e2e" &&
+    argv[3] === "2>&1" &&
+    argv[4] === "|" &&
+    argv[5] === "tee" &&
+    argv[6] === logPath
+  );
 }
 
 /** The value of a job-level field (e.g. `if:`, `runs-on:`) or "" when absent. */
@@ -105,35 +113,51 @@ describe("PR CI workflow", () => {
 
     const e2e = parseSteps(WORKFLOW_SOURCE, "e2e");
     const runE2e = stepNamed(e2e, "Run Playwright e2e");
+    const runArgvs = commandArgvs(runE2e.run);
     // The suite must still be invoked by a real command line. A substring check
     // would be satisfied by `echo bun run test:e2e` or a comment, which run
     // nothing; only a line whose argv starts `bun run test:e2e` executes it.
     expect(
-      commandArgvs(runE2e.run).some(
+      runArgvs.findIndex(
         (argv) => argv[0] === "bun" && argv[1] === "run" && argv[2] === "test:e2e",
       ),
       `Run Playwright e2e must invoke the suite, got: ${runE2e.run}`,
-    ).toBe(true);
+    ).toBeGreaterThanOrEqual(0);
     // #197 teed the run into a log so the server output survives. A pipeline
     // reports tee's status unless pipefail is set — so without this a RED suite
     // would report green and the evidence upload would never fire. The directive
     // is read as argv, not text: `echo set -o pipefail` runs nothing and must
     // not satisfy the guard.
+    const pipefailIndex = runArgvs.findIndex(
+      (argv) => argv[0] === "set" && argv[1] === "-o" && argv[2] === "pipefail",
+    );
     expect(
-      commandArgvs(runE2e.run).some(
-        (argv) => argv[0] === "set" && argv[1] === "-o" && argv[2] === "pipefail",
-      ),
+      pipefailIndex,
       `Run Playwright e2e must set pipefail, got: ${runE2e.run}`,
-    ).toBe(true);
+    ).toBeGreaterThanOrEqual(0);
+    // `tee` cannot create its target directory, so `mkdir -p e2e-logs` is
+    // load-bearing: without it the pipeline fails and no log is ever written.
+    const mkdirIndex = runArgvs.findIndex(
+      (argv) => argv[0] === "mkdir" && argv[1] === "-p" && argv[2] === "e2e-logs",
+    );
+    expect(
+      mkdirIndex,
+      `Run Playwright e2e must create e2e-logs/, got: ${runE2e.run}`,
+    ).toBeGreaterThanOrEqual(0);
     expect(runE2e.shell).toBe("bash");
     // The pipeline that actually writes the log is a separate requirement:
     // pipefail and `shell: bash` stay green when `2>&1 | tee ...` is deleted,
     // leaving the upload with no server output — the exact regression #197
-    // fixed. The suite and the tee must share one command line.
+    // fixed. The suite and the tee must share one command line, and the setup
+    // lines must precede it: pipefail after the pipeline is inert, and mkdir
+    // after it comes too late.
+    const pipelineIndex = runArgvs.findIndex((argv) => pipesSuiteToTee(argv, E2E_LOG_PATH));
     expect(
-      commandArgvs(runE2e.run).some((argv) => pipesSuiteToTee(argv, E2E_LOG_PATH)),
+      pipelineIndex,
       `Run Playwright e2e must pipe the suite's stderr into ${E2E_LOG_PATH}, got: ${runE2e.run}`,
-    ).toBe(true);
+    ).toBeGreaterThanOrEqual(0);
+    expect(pipefailIndex).toBeLessThan(pipelineIndex);
+    expect(mkdirIndex).toBeLessThan(pipelineIndex);
     // Evidence survives a hang only when the step gives up before the job does:
     // a job-level timeout cancels the job, and a cancelled job runs no later
     // step — including the upload.
@@ -144,13 +168,16 @@ describe("PR CI workflow", () => {
   });
 
   it("uploads the evidence a red e2e run leaves behind (#197)", () => {
-    const upload = stepNamed(parseSteps(WORKFLOW_SOURCE, "e2e"), "Upload e2e failure evidence");
+    const e2eSteps = parseSteps(WORKFLOW_SOURCE, "e2e");
+    const upload = stepNamed(e2eSteps, "Upload e2e failure evidence");
     // success is the one outcome with nothing worth keeping, and a cancellation
     // (superseded run, step timeout) must still leave the trace behind. Presence
-    // alone would accept `failure() && cancelled()` (never true) or a negated
-    // pair, so require the disjunction that actually fires on either.
-    expect(upload.condition).toMatch(
-      /failure\(\)\s*\|\|\s*cancelled\(\)|cancelled\(\)\s*\|\|\s*failure\(\)/u,
+    // alone would accept `failure() && cancelled()` (never true); an unanchored
+    // match would also accept `!failure() || cancelled()`, which never fires on a
+    // failure. Pin the whole condition to the disjunction.
+    const condition = upload.condition.replace(/\$\{\{|\}\}/gu, "").trim();
+    expect(condition).toMatch(
+      /^(failure\(\)\s*\|\|\s*cancelled\(\)|cancelled\(\)\s*\|\|\s*failure\(\))$/u,
     );
     // same pinned-SHA convention as every other `uses:` in this repo
     expect(upload.uses).toMatch(/^actions\/upload-artifact@[0-9a-f]{40}/u);
@@ -166,8 +193,15 @@ describe("PR CI workflow", () => {
     expect(uploadPaths).toContain("e2e-logs/");
     expect(upload.with.get("retention-days")).toBe("5");
     // keyed on the attempt: a re-run must not overwrite the trace from the
-    // attempt that actually failed
-    expect(upload.with.get("name")).toContain("github.run_attempt");
+    // attempt that actually failed. The interpolation is what changes per
+    // attempt; the bare literal would not.
+    expect(upload.with.get("name")).toMatch(/\$\{\{\s*github\.run_attempt\s*\}\}/u);
+    // The run step must precede the upload: a step moved earlier would run
+    // before any evidence exists and the assertions above would stay green.
+    const stepNames = e2eSteps.map((step) => step.name);
+    expect(stepNames.indexOf("Upload e2e failure evidence")).toBeGreaterThan(
+      stepNames.indexOf("Run Playwright e2e"),
+    );
   });
 
   it("rejects an e2e run whose log capture was deleted or mangled", () => {
@@ -190,6 +224,21 @@ describe("PR CI workflow", () => {
     ).toBe(false);
     // a separate line echoing the pipeline must not satisfy the guard
     expect(pipesSuiteToTee(["echo", "2>&1", "|", "tee", E2E_LOG_PATH], E2E_LOG_PATH)).toBe(false);
+    // a flag that lists tests instead of running them still writes a log that
+    // proves nothing, so the pipeline shape is pinned end to end
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "--list", "2>&1", "|", "tee", E2E_LOG_PATH],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(false);
+    // a trailing token means tee is no longer the last command in the pipeline
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "2>&1", "|", "tee", E2E_LOG_PATH, "extra"],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(false);
   });
 
   it("actually runs cargo test in the desktop crate on every PR", () => {

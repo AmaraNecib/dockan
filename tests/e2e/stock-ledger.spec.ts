@@ -252,13 +252,12 @@ test("a superseded row is badged even when its correction is on a prior page", a
     input: { itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE", occurredAt: "2025-01-01T00:00:00" },
   });
   await rpc(page, { procedure: "itemsUpdate", input: { id: item.id, costPrice: 300 } });
-  // two rows per page: page 1 = [ordinary, correction], page 2 = [future]
+  // two rows per page: page 1 = [ordinary, correction], page 2 = [future].
+  // Set the size, then open the item's own history route directly: the shared
+  // e2e database holds many items, and paging the items list at size 2 would
+  // hide the seeded row.
   await rpc(page, { procedure: "preferencesSet", input: { key: "ui.pageSize", value: "2" } });
-
-  await page.goto("/items");
-  await openItemsTab(page, "products");
-  const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
-  await row.getByRole("link", { name: "السجل" }).click();
+  await page.goto(`/items/${item.id}/history`);
   await expect(page.getByTestId("history-table")).toBeVisible();
 
   const rows = page.getByTestId("history-table").locator("tbody tr");

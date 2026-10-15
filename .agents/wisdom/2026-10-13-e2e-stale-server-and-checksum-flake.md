@@ -48,7 +48,12 @@ as a pre-existing flake and report it. A durable fix would re-roll the code
 until the typo is rejected or assert the weaker "rejected" contract; both are
 separate from any feature lane.
 
-## 3. The vault spec's own pair uses fixed ports 4399/5174 (same trap, 2026-10-14)
+## 3. The vault spec's own pair used fixed ports 4399/5174 (superseded 2026-10-15 by #202)
+
+> **Superseded.** #202 made the vault pair read
+> `DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` (defaults 4399/5174), so this trap no
+> longer applies to a lane that claims its own pair. The failure signature below
+> is still the one to recognise.
 
 `tests/e2e/vault.spec.ts` spawns its dedicated API+web pair on **hard-coded**
 ports (4399/5174), so the `DOKAN_PORT`/`DOKAN_WEB_PORT` isolation that protects
@@ -59,7 +64,10 @@ to a database where a vault already exists, and the "first run: create the vault
 test fails deterministically on `vault-recovery-key` — while the previous run
 passed. Observed on #130 (PR #189) across two consecutive runs.
 
-**Always**: before a full e2e run, also clear 4399/5174, not just 4317/5173:
+**Always**: before a full e2e run, clear the ports a stale vault API could be
+holding. The vault pair defaults to 4399/5174 (set `DOKAN_VAULT_PORT`/
+`DOKAN_VAULT_WEB_PORT` to move it); clear 4317/5173 plus whichever vault pair
+the run will use:
 
 ```bash
 for p in $(netstat -ano | grep -E ":4399|:5174" | grep LISTENING | awk '{print $5}' | sort -u); do

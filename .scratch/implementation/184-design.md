@@ -271,9 +271,9 @@ Applied to all four leave tests (Cancel, back link, browser back, sidebar).
 ### Re-reported findings 3 & 4 — verified already fixed at round 1
 
 - **"Cancel still writes balances"** — the page Cancel (`leave()`,
-  `supplier-opening-balance.tsx:204`), the back `<Link>`
-  (`onClick={invalidateAttempt}`, line 372) and the synchronous layout-effect
-  unmount cleanup (line 147) all invalidate. Tests: web `does not write when the
+  `supplier-opening-balance.tsx:206`), the back `<Link>`
+  (`onClick={invalidateAttempt}`, line 374) and the synchronous layout-effect
+  unmount cleanup (line 149) all invalidate. Tests: web `does not write when the
   owner cancels while the lookup is pending`, `does not write when the page
   unmounts while the lookup is pending`; e2e `cancelling while the name lookup is
   pending writes nothing`, `leaving via the back link while the lookup is pending
@@ -282,7 +282,7 @@ Applied to all four leave tests (Cancel, back link, browser back, sidebar).
   now.
 - **"Old destination blocks valid edits"** — `typedDestination` is keyed by
   `resolveKey` (line 111), `confirmStale` hides the dialog for a mismatched key
-  (line 115), and the `resolveKey` effect (lines 132-137) drops the snapshot and
+  (line 115), and the `resolveKey` effect (lines 137-140) drops the snapshot and
   invalidates the attempt. Tests: web `lets a valid batch save after the typed
   name moves to another supplier`; e2e `editing the typed name away from the
   confirmed one keeps the batch saveable`. No residual path found; not

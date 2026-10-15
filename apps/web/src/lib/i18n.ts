@@ -589,6 +589,9 @@ const resources = {
       historyReasonReturnRejected: "مرجوع تالف {{context}}",
       historyReasonCostCorrection: "تصحيح تكلفة يدوي",
       historyReasonInvoiceCorrection: "تصحيح فاتورة {{number}} {{line}}",
+      /** issue 151 — a row drawn below a cost correction recorded after it: its
+       * effect on the average was replaced by the correction */
+      historySupersededByCorrection: "سُجِّل قبل تصحيح التكلفة أعلاه، فاستُبدل أثره في متوسط التكلفة",
       /** whole-DZD unit suffix; the api never embeds it in strings */
       dzd: "دج",
       returnNumber: "رقم المرجوع",

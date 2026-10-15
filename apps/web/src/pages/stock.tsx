@@ -232,12 +232,61 @@ export function movementDeltaClass(delta: number): string {
   return "text-muted-foreground";
 }
 
+/** The fields the precedence check reads off a history row. */
+export interface PrecedenceRow {
+  delta: number;
+  unitCost: number | null;
+  reason: string | null;
+  createdAt: string;
+}
+
+function isCostCorrection(row: PrecedenceRow): boolean {
+  return row.delta === 0 && row.unitCost !== null && row.reason === "COST_CORRECTION";
+}
+
+/**
+ * Indices of inflow rows the date-ordered history draws *below* a cost
+ * correction that was recorded after them (issue 151).
+ *
+ * Replay walks the ledger in recording order and splits it at each correction,
+ * so such a row's contribution to the weighted average was replaced by the
+ * correction even though the row is drawn after it. The view badges those rows
+ * so a future-dated purchase is not misread as one that never moved the
+ * average. Only inflows (`delta > 0`) can move the average, so outflows and the
+ * correction rows themselves are never flagged.
+ *
+ * Recording order is read from `createdAt` (the wall-clock insert time; the
+ * contract carries no `seq`). `createdAt` is fixed-width `YYYY-MM-DDTHH:mm:ss`,
+ * so the comparison is lexical and total. The comparison is strict: a same-
+ * second tie is left unannotated rather than guessed.
+ */
+export function supersededByCorrection(rows: readonly PrecedenceRow[]): Set<number> {
+  const superseded = new Set<number>();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row === undefined || row.delta <= 0) continue;
+    // the nearest correction drawn above the row that was recorded after it
+    for (let j = i - 1; j >= 0; j--) {
+      const above = rows[j];
+      if (above !== undefined && isCostCorrection(above) && above.createdAt > row.createdAt) {
+        superseded.add(i);
+        break;
+      }
+    }
+  }
+  return superseded;
+}
+
 export function ItemHistoryPage() {
   const { t } = useTranslation();
   // SAFETY: the route only mounts this component with itemId set
   const { itemId } = useParams({ strict: false }) as { itemId: string };
   const pager = usePagination();
   const history = useQuery(orpc.itemsHistory.queryOptions({ input: { itemId, ...pager.pagination } }));
+  // rows the date-ordered list draws below a correction that was recorded after
+  // them (issue 151): a future-dated purchase the owner would otherwise read as
+  // one that never moved the average
+  const superseded = history.data === undefined ? new Set<number>() : supersededByCorrection(history.data.movements);
 
   return (
     <section>
@@ -271,7 +320,7 @@ export function ItemHistoryPage() {
             </tr>
           </thead>
           <tbody>
-            {history.data.movements.map((movement) => (
+            {history.data.movements.map((movement, index) => (
               <tr key={movement.id} className="border-b last:border-0">
                 <td className="p-3">{formatDateTime(movement.occurredAt)}</td>
                 <td className="p-3">
@@ -281,6 +330,14 @@ export function ItemHistoryPage() {
                   )}
                   {movement.reason !== null && movement.reason !== "opening" && (
                     <span className="mr-2 text-xs text-muted-foreground">({movementReasonText(t, movement.reason)})</span>
+                  )}
+                  {superseded.has(index) && (
+                    <span
+                      className="mr-2 rounded bg-warning px-2 py-0.5 text-xs text-warning-foreground"
+                      data-testid="history-superseded"
+                    >
+                      {t("historySupersededByCorrection")}
+                    </span>
                   )}
                 </td>
                 <td className={`p-3 ${movementDeltaClass(movement.delta)}`}>

@@ -20,6 +20,8 @@
     "lint": "oxlint",
     "typecheck": "turbo typecheck",
     "test": "turbo test --concurrency=2",
+    "skills:sync": "bun scripts/sync-claude-skills.ts",
+    "skills:check": "bun scripts/sync-claude-skills.ts --check",
     "prepare": "husky",
     "test:e2e": "playwright test"
   },

@@ -1,6 +1,6 @@
 # Local equivalent:
 #   bun install --frozen-lockfile
-#   bun run typecheck && bun run lint && bun run test
+#   bun run typecheck && bun run lint && bun run test && bun run skills:check
 #   bun audit
 #   bunx playwright install --with-deps chromium && bun run test:e2e
 #   bun run --filter @dokan/web build
@@ -54,6 +54,13 @@ jobs:
 
       - name: Lint
         run: bun run lint
+
+      # .claude/skills is generated from .agents/skills by
+      # scripts/sync-claude-skills.ts. Fail closed if a fix landed in only one
+      # copy (the round-2 delta review caught exactly that divergence); the
+      # generated mirror may never drift from its source.
+      - name: Skills mirror drift
+        run: bun run skills:check
 
       - name: Tests
         run: bun run test

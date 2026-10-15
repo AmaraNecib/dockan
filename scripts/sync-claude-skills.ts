@@ -19,9 +19,16 @@
  * pre-commit hook and CI, is portable and fails loudly on divergence instead
  * of silently shipping a stale mirror.
  *
+ * `--check` walks the mirrored set file by file, and separately walks every
+ * non-mirrored `.agents/skills` tree for symlinks: a committed link breaks
+ * another checkout whether or not Claude Code consumes that skill. `sync`
+ * refuses a source that holds a link, because `cpSync` would copy the link.
+ *
  * Usage:
  *   bun scripts/sync-claude-skills.ts          # regenerate .claude from .agents
  *   bun scripts/sync-claude-skills.ts --check  # exit 1 on any drift
+ *
+ * `SKILLS_MIRROR_ROOT` points either mode at another tree (a test fixture).
  */
 import {
   cpSync,
@@ -34,10 +41,19 @@ import {
 } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 
-const ROOT = resolve(import.meta.dir, '..')
-const AGENTS_DIR = join(ROOT, '.agents', 'skills')
-const CLAUDE_DIR = join(ROOT, '.claude', 'skills')
-const LOCK_FILE = join(ROOT, 'skills-lock.json')
+/** The repo root the CLI acts on; a test points it at a temp tree. */
+const resolveRoot = (): string => {
+  const override = process.env.SKILLS_MIRROR_ROOT?.trim()
+  return override !== undefined && override.length > 0
+    ? resolve(override)
+    : resolve(import.meta.dir, '..')
+}
+
+const paths = (root: string) => ({
+  agentsDir: join(root, '.agents', 'skills'),
+  claudeDir: join(root, '.claude', 'skills'),
+  lockFile: join(root, 'skills-lock.json'),
+})
 
 /** The fields this script reads from one `skills-lock.json` entry. */
 type LockedSkill = { source: string; skillPath: string }
@@ -105,8 +121,15 @@ export const walkTree = (
   return { files: walk.files.sort(), links: walk.links.sort() }
 }
 
-const isSymlink = (path: string): boolean =>
-  existsSync(path) && lstatSync(path).isSymbolicLink()
+const isSymlink = (path: string): boolean => {
+  // `lstat` sees the link itself, so a dangling link still reports as one;
+  // `existsSync` follows it and would call the path missing instead.
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
 
 /** Problems that make `source` and `dest` non-equivalent, as human strings. */
 export const compare = (
@@ -160,30 +183,99 @@ export const compare = (
   return problems
 }
 
-const main = () => {
-  const checkOnly = process.argv.includes('--check')
+/**
+ * A lock key becomes a path segment under the skills roots, so refuse a name
+ * that escapes the directory: a separator, a drive/stream colon, `.` or `..`.
+ */
+const isSafeSkillName = (name: string): boolean =>
+  name.length > 0 &&
+  name !== '.' &&
+  name !== '..' &&
+  !name.includes('/') &&
+  !name.includes('\\') &&
+  !name.includes(':')
 
-  // SAFETY: skills-lock.json is a checked-in repo file with this schema; the
-  // only field consumed here is the `skills` key set, and a malformed file
-  // surfaces as a missing mirror source in the checks below.
-  const lock = JSON.parse(readFileSync(LOCK_FILE, 'utf8')) as SkillsLock
-  const names = Object.keys(lock.skills).sort()
+const readLock = (lockFile: string): SkillsLock => {
+  // SAFETY: skills-lock.json is a checked-in repo file with this schema, so the
+  // `as SkillsLock` cast holds. A malformed file cannot pass: a bad parse
+  // throws before this line, a missing `skills` object throws below, and a key
+  // that would escape the skills directory throws before any file operation.
+  const lock = JSON.parse(readFileSync(lockFile, 'utf8')) as SkillsLock
+  const skills = lock?.skills
+  if (
+    skills === null ||
+    skills === undefined ||
+    // JSON.parse yields plain objects, so an array, string, or number here is
+    // a schema mistake, not a skills map; without this `{}`/`{"a":1}` could
+    // pass vacuously (0 names, 0 mirror entries) and turn the gate off.
+    Object.getPrototypeOf(skills) !== Object.prototype
+  )
+    throw new Error('skills-lock.json has no `skills` object')
+  if (Object.keys(skills).length === 0)
+    throw new Error('skills-lock.json lists no skills (the gate would be vacuous)')
+  const unsafe = Object.keys(skills).filter((name) => !isSafeSkillName(name))
+  if (unsafe.length > 0)
+    throw new Error(
+      `skills-lock.json has unsafe skill name(s): ${unsafe.join(', ')}`,
+    )
+  return lock
+}
 
-  if (checkOnly) {
-    const problems: string[] = []
-    // The roots themselves are the one depth the per-skill walk cannot see.
-    if (isSymlink(AGENTS_DIR))
-      problems.push('.agents/skills is a symlink (mirror source)')
-    if (isSymlink(CLAUDE_DIR))
-      problems.push(
-        '.claude/skills is a symlink (npx skills add writes absolute links)',
-      )
-    if (!existsSync(CLAUDE_DIR)) {
+/** Every non-locked `.agents/skills` entry that is (or holds) a symlink. */
+export const nonLockedAgentLinks = (
+  agentsDir: string,
+  names: string[],
+): string[] => {
+  if (!existsSync(agentsDir) || isSymlink(agentsDir)) return []
+  const locked = new Set(names)
+  const problems: string[] = []
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (locked.has(entry.name)) continue
+    const path = join(agentsDir, entry.name)
+    if (entry.isSymbolicLink()) {
+      problems.push(`.agents/skills/${entry.name} is a symlink`)
+    } else if (entry.isDirectory()) {
+      for (const link of walkTree(path).links)
+        problems.push(`.agents/skills/${entry.name}/${link} is a symlink`)
+    }
+  }
+  return problems
+}
+
+export type CheckResult = { names: string[]; problems: string[] }
+
+/**
+ * Check `root`'s mirror and report every problem. Locked skills are compared
+ * file by file; every other `.agents/skills` entry is still walked for
+ * symlinks, because a committed link breaks another checkout even when the
+ * skill is Pi-only.
+ */
+export const runCheck = (root: string): CheckResult => {
+  const { agentsDir, claudeDir, lockFile } = paths(root)
+  const names = Object.keys(readLock(lockFile).skills).sort()
+  const problems: string[] = []
+  // The roots themselves are the one depth the per-skill walk cannot see.
+  if (isSymlink(agentsDir))
+    problems.push('.agents/skills is a symlink (mirror source)')
+  if (isSymlink(claudeDir))
+    problems.push(
+      '.claude/skills is a symlink (npx skills add writes absolute links)',
+    )
+  // A linked root already fails the gate; comparing through it would only add
+  // noise (every source "missing", or the mirror resolving to the source).
+  if (problems.length === 0) {
+    if (!existsSync(claudeDir)) {
       problems.push('.claude/skills does not exist')
     } else {
       for (const name of names) {
-        const source = join(AGENTS_DIR, name)
-        const dest = join(CLAUDE_DIR, name)
+        const source = join(agentsDir, name)
+        const dest = join(claudeDir, name)
+        // An `existsSync` guard first would call a dangling link "missing";
+        // `compare` sees a link via `lstat` and owns the link messages.
+        if (isSymlink(source) || isSymlink(dest)) {
+          problems.push(...compare(name, source, dest))
+          continue
+        }
         if (!existsSync(source)) {
           problems.push(`.agents/skills/${name} is missing (mirror source)`)
           continue
@@ -194,45 +286,116 @@ const main = () => {
         }
         problems.push(...compare(name, source, dest))
       }
-      for (const entry of readdirSync(CLAUDE_DIR, { withFileTypes: true })) {
+      for (const entry of readdirSync(claudeDir, { withFileTypes: true })) {
         if (!names.includes(entry.name))
           problems.push(
             `.claude/skills/${entry.name} is not in skills-lock.json (extra)`,
           )
       }
     }
+  }
+  problems.push(...nonLockedAgentLinks(agentsDir, names))
+  return { names, problems }
+}
 
-    if (problems.length > 0) {
-      console.error(`skills mirror drift: ${problems.length} problem(s)`)
-      for (const problem of problems) console.error(`  - ${problem}`)
+const main = () => {
+  const checkOnly = process.argv.includes('--check')
+  const root = resolveRoot()
+  const { agentsDir, claudeDir, lockFile } = paths(root)
+
+  if (checkOnly) {
+    let result: CheckResult
+    try {
+      result = runCheck(root)
+    } catch (error) {
       console.error(
-        '\nRun `bun run skills:sync` to regenerate .claude from .agents.',
+        `skills mirror check failed: ${error instanceof Error ? error.message : String(error)}`,
       )
       process.exit(1)
     }
+
+    if (result.problems.length > 0) {
+      console.error(`skills mirror drift: ${result.problems.length} problem(s)`)
+      for (const problem of result.problems) console.error(`  - ${problem}`)
+      // Sync can only fix a per-skill mirror link; it refuses a source link or
+      // a linked root. Everything else needs a hand replacement.
+      const replaceByHand = result.problems.some(
+        (problem) =>
+          problem.includes('is a symlink') &&
+          !problem.startsWith('.claude/skills/'),
+      )
+      const mirrorLink = result.problems.some(
+        (problem) =>
+          problem.startsWith('.claude/skills/') && problem.includes('is a symlink'),
+      )
+      if (replaceByHand)
+        console.error(
+          '\nReplace every symlink above with a real file or directory, then re-run `bun run skills:check`.',
+        )
+      else if (mirrorLink)
+        console.error(
+          '\nRun `bun run skills:sync` to replace the linked mirror.',
+        )
+      else
+        console.error(
+          '\nRun `bun run skills:sync` to regenerate .claude from .agents.',
+        )
+      process.exit(1)
+    }
     console.log(
-      `skills mirror in sync: ${names.length} skills in .claude/skills == .agents/skills`,
+      `skills mirror in sync: ${result.names.length} skills in .claude/skills == .agents/skills`,
     )
     process.exit(0)
   }
 
   // A linked root would make `dest` resolve back into the source tree, so a
   // sync could `rmSync` the source of truth before copying it.
-  for (const root of [AGENTS_DIR, CLAUDE_DIR]) {
-    if (isSymlink(root)) {
+  for (const dir of [agentsDir, claudeDir]) {
+    if (isSymlink(dir)) {
       console.error(
-        `refusing to sync: ${relative(ROOT, root)} is a symlink (replace it with a real directory)`,
+        `refusing to sync: ${relative(root, dir).split(sep).join('/')} is a symlink (replace it with a real directory)`,
       )
       process.exit(1)
     }
   }
 
-  mkdirSync(CLAUDE_DIR, { recursive: true })
+  let names: string[]
+  try {
+    names = Object.keys(readLock(lockFile).skills).sort()
+  } catch (error) {
+    console.error(
+      `skills mirror sync failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    process.exit(1)
+  }
+
+  // `cpSync` copies a link as a link, which would recreate the very drift the
+  // check rejects. Refuse before touching the mirror.
+  const sourceLinks: string[] = []
+  for (const name of names) {
+    const source = join(agentsDir, name)
+    if (isSymlink(source)) {
+      sourceLinks.push(`.agents/skills/${name}`)
+    } else if (existsSync(source)) {
+      for (const link of walkTree(source).links)
+        sourceLinks.push(`.agents/skills/${name}/${link}`)
+    }
+  }
+  if (sourceLinks.length > 0) {
+    console.error('refusing to sync: the mirror source contains symlink(s):')
+    for (const link of sourceLinks) console.error(`  - ${link}`)
+    console.error(
+      '\nReplace each with a real file, then re-run `bun run skills:sync`.',
+    )
+    process.exit(1)
+  }
+
+  mkdirSync(claudeDir, { recursive: true })
   let synced = 0
   const missing: string[] = []
   for (const name of names) {
-    const source = join(AGENTS_DIR, name)
-    const dest = join(CLAUDE_DIR, name)
+    const source = join(agentsDir, name)
+    const dest = join(claudeDir, name)
     if (!existsSync(source)) {
       missing.push(name)
       continue
@@ -244,9 +407,9 @@ const main = () => {
 
   const known = new Set(names)
   let pruned = 0
-  for (const entry of readdirSync(CLAUDE_DIR, { withFileTypes: true })) {
+  for (const entry of readdirSync(claudeDir, { withFileTypes: true })) {
     if (!known.has(entry.name)) {
-      rmSync(join(CLAUDE_DIR, entry.name), { recursive: true, force: true })
+      rmSync(join(claudeDir, entry.name), { recursive: true, force: true })
       pruned++
     }
   }

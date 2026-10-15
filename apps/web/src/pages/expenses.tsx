@@ -143,6 +143,18 @@ export function ExpensesPage() {
     if (next.bound !== previous.bound) pager.reset();
   }
 
+  /**
+   * Apply a preset/sort filter and reset the list to page one — but only when
+   * the filter actually moved. Re-picking the option that is already selected
+   * is not a filter change, so resetting then would throw a later page back for
+   * nothing (the same class as finding 2).
+   */
+  function applyFilterChange<T>(next: T, current: T, set: (value: T) => void): void {
+    if (next === current) return;
+    set(next);
+    pager.reset();
+  }
+
   // what the owner can record against: whatever the server sent, plus a
   // category created here that the refetch has not confirmed yet
   const categoryOptions = [...(categories.data?.items ?? [])];
@@ -436,14 +448,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={preset}
-                onValueChange={(value) => {
-                  const next = toPreset(value ?? "");
-                  // re-selecting the current preset is not a filter change: it
-                  // must not throw a later page back to page one (finding 2's class)
-                  if (next === preset) return;
-                  setPreset(next);
-                  pager.reset();
-                }}
+                onValueChange={(value) => applyFilterChange(toPreset(value ?? ""), preset, setPreset)}
                 items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
               >
                 <SelectTrigger className="w-full" data-testid="expense-range-preset">
@@ -458,12 +463,7 @@ export function ExpensesPage() {
               {t("expensesSortBy")}
               <Select
                 value={sortBy}
-                onValueChange={(value) => {
-                  const next = value === "amount" ? "amount" : "occurredAt";
-                  if (next === sortBy) return;
-                  setSortBy(next);
-                  pager.reset();
-                }}
+                onValueChange={(value) => applyFilterChange(value === "amount" ? "amount" : "occurredAt", sortBy, setSortBy)}
                 items={[
                   { value: "occurredAt", label: t("expensesSortByDate") },
                   { value: "amount", label: t("expensesSortByAmount") },
@@ -482,12 +482,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={sortDir}
-                onValueChange={(value) => {
-                  const next = value === "asc" ? "asc" : "desc";
-                  if (next === sortDir) return;
-                  setSortDir(next);
-                  pager.reset();
-                }}
+                onValueChange={(value) => applyFilterChange(value === "asc" ? "asc" : "desc", sortDir, setSortDir)}
                 items={[
                   { value: "desc", label: t("expensesSortDesc") },
                   { value: "asc", label: t("expensesSortAsc") },

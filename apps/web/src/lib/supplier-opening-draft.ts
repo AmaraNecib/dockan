@@ -29,6 +29,31 @@ export function openingRowStatus(draft: { amount: string } | undefined): Opening
   return { status: "filled", amount };
 }
 
+/**
+ * #204 — a background refresh can remove a supplier whose draft the owner already
+ * filled. Reconcile the drafts against the fresh id set here: a filled draft whose
+ * supplier is gone is returned so the page can name the loss (and block the save
+ * until acknowledged), while an untouched draft drops silently. The remembered
+ * `name` is the identity the draft was typed against, so a vanished supplier can
+ * still be named after it leaves the list.
+ */
+export type RemovedFilledDraft = { supplierId: string; name: string; amount: number };
+
+export function droppedFilledDrafts(input: {
+  drafts: Readonly<Record<string, { name?: string; amount: string }>>;
+  presentSupplierIds: readonly string[];
+}): RemovedFilledDraft[] {
+  const present = new Set(input.presentSupplierIds);
+  const dropped: RemovedFilledDraft[] = [];
+  for (const [supplierId, draft] of Object.entries(input.drafts)) {
+    if (present.has(supplierId)) continue;
+    const status = openingRowStatus(draft);
+    if (status.status !== "filled") continue;
+    dropped.push({ supplierId, name: draft.name ?? "", amount: status.amount });
+  }
+  return dropped;
+}
+
 export type NewOpeningRowStatus =
   | { status: "untouched" }
   | { status: "incomplete" }

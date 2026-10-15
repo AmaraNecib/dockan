@@ -483,3 +483,65 @@ test("editing the typed name away from the confirmed one keeps the batch saveabl
   await page.getByRole("link", { name: freshName }).click();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("300 دج");
 });
+
+/** Open the bulk screen and return the amount input for one supplier's row. */
+async function openBalanceAmountFor(page: Page, supplierName: string) {
+  await page.goto("/suppliers");
+  await page.getByTestId("suppliers-opening-balance").click();
+  await expect(page.getByTestId("opening-balance-page")).toBeVisible();
+  const amount = page.locator(`[data-testid="opening-balance-amount"][aria-label^="${supplierName}:"]`);
+  await expect(amount).toBeVisible();
+  return amount;
+}
+
+/**
+ * #204 — a filled amount must never be dropped silently when a background
+ * refresh removes its supplier. Fill the row, delete the supplier elsewhere
+ * (here: over the RPC, with no event reaching this tab), trigger the
+ * refetch-on-focus path, and assert the owner is shown the named loss and the
+ * save is blocked until they acknowledge it.
+ */
+test("a refresh that removes a filled row's supplier names the loss and blocks the save (#204)", async ({ page }) => {
+  await signIn(page);
+  const supplierName = `مورد-زائل-${Date.now()}`;
+  const supplier = await rpc<{ id: string }>(page, "suppliersCreate", { name: supplierName });
+
+  const amount = await openBalanceAmountFor(page, supplierName);
+  await amount.fill("700");
+
+  // the supplier is deleted elsewhere, then the page refetches as it does on focus
+  await rpc(page, "suppliersDelete", { id: supplier.id });
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+
+  // the row is gone, but the amount is NOT silently dropped: the notice names the
+  // supplier and shows the amount
+  await expect(amount).toHaveCount(0);
+  const notice = page.getByTestId("opening-balance-removed");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(supplierName);
+  await expect(page.getByTestId("opening-balance-removed-row")).toContainText("700");
+  await expect(page.getByTestId("opening-balance-save")).toBeDisabled();
+
+  // acknowledging the loss clears it and re-enables the save
+  await page.getByTestId("opening-balance-removed-dismiss").click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByTestId("opening-balance-save")).toBeEnabled();
+});
+
+/**
+ * The negative #204 pins: an UNFILLED row whose supplier vanishes on the same
+ * refresh still drops without a warning, so ordinary refreshes stay quiet.
+ */
+test("a refresh that removes an unfilled row's supplier drops it without a warning (#204)", async ({ page }) => {
+  await signIn(page);
+  const supplierName = `مورد-فارغ-${Date.now()}`;
+  const supplier = await rpc<{ id: string }>(page, "suppliersCreate", { name: supplierName });
+
+  const amount = await openBalanceAmountFor(page, supplierName);
+
+  await rpc(page, "suppliersDelete", { id: supplier.id });
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+
+  await expect(amount).toHaveCount(0);
+  await expect(page.getByTestId("opening-balance-removed")).toHaveCount(0);
+});

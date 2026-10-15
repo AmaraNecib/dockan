@@ -15,9 +15,9 @@ import { parseGroupedAmount } from "@/lib/amount-parse";
 import { tError } from "@/lib/i18n";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
-import { MAX_OPENING_BALANCE_ROWS, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus } from "@/lib/supplier-opening-draft";
+import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus, type RemovedFilledDraft } from "@/lib/supplier-opening-draft";
 
-type RowDraft = { direction: SupplierAdjustmentDirection; amount: string };
+type RowDraft = { direction: SupplierAdjustmentDirection; amount: string; name?: string };
 
 /** The server's resolved destination for a typed name (issue 184). Never
  * computed here: the client renders exactly what `suppliersResolveName` returns. */
@@ -68,6 +68,10 @@ export function SupplierOpeningBalancePage() {
   const [dateDraft, setDateDraft] = useState(() => nowDateTimeText().slice(0, 10));
   const [reasonDraft, setReasonDraft] = useState(() => t("supplierAdjustPresetOpening"));
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({});
+  // #204 — filled drafts whose supplier a background refresh removed. Kept apart
+  // from `drafts`: the draft is gone, but the loss must stay visible (and block
+  // the save) until the owner acknowledges it.
+  const [removedFilled, setRemovedFilled] = useState<RemovedFilledDraft[]>([]);
   const [newName, setNewName] = useState("");
   const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
   const [newAmount, setNewAmount] = useState("");
@@ -111,6 +115,31 @@ export function SupplierOpeningBalancePage() {
       return { id: supplier.id, name: supplier.name, accountBalance: account?.accountBalance ?? 0, accountEntryCount: account?.accountEntryCount ?? 0 };
     });
   }, [namesQuery.data, accountsQuery.data]);
+  // #204 — the refresh seam. `presentSupplierIds` only changes when the fresh
+  // supplier list changes, so reconciliation runs on a refresh (never per
+  // keystroke) and a filled draft whose supplier vanished is handed to the
+  // notice instead of disappearing with the row.
+  const presentSupplierIds = useMemo(() => suppliers.map((supplier) => supplier.id), [suppliers]);
+  /** The latest drafts, so the reconciliation effect can read them without taking
+   * `drafts` as a dependency (which would run it on every keystroke). */
+  const draftsRef = useRef(drafts);
+  useLayoutEffect(() => {
+    draftsRef.current = drafts;
+  }, [drafts]);
+  useEffect(() => {
+    const dropped = droppedFilledDrafts({ drafts: draftsRef.current, presentSupplierIds });
+    if (dropped.length === 0) return;
+    setRemovedFilled((current) => {
+      const known = new Set(current.map((row) => row.supplierId));
+      const added = dropped.filter((row) => !known.has(row.supplierId));
+      return added.length === 0 ? current : [...current, ...added];
+    });
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const row of dropped) delete next[row.supplierId];
+      return next;
+    });
+  }, [presentSupplierIds]);
   const listPending = namesQuery.isPending || accountsQuery.isPending;
   const listError = namesQuery.isError ? namesQuery.error : accountsQuery.isError ? accountsQuery.error : null;
   // #183 — a failed read must block the save. If only the account summary fails,
@@ -237,6 +266,9 @@ export function SupplierOpeningBalancePage() {
       : typedNameConflict
         ? t("supplierOpeningRowHasAmount")
         : newRowError;
+  // #204 — an unacknowledged dropped amount blocks the save on its own, so the
+  // owner cannot confirm a batch while still believing the removed row is in it.
+  const hasRemovedFilled = removedFilled.length > 0;
   // the confirmation dialog names every account the batch will write to, including
   // the server's resolved name for the typed row, so a confirmed save never lands
   // on an unnamed account
@@ -299,8 +331,17 @@ export function SupplierOpeningBalancePage() {
     invalidateAttempt();
     setDrafts((current) => {
       const existing = current[supplierId] ?? { direction: "WE_OWE", amount: "" };
-      return { ...current, [supplierId]: { ...existing, ...patch } };
+      // remember the supplier this draft is typed against, so a refresh that
+      // removes it can still name the lost row (issue 204)
+      const name = suppliers.find((supplier) => supplier.id === supplierId)?.name ?? existing.name;
+      return { ...current, [supplierId]: { ...existing, ...patch, name } };
     });
+  }
+
+  /** Acknowledge the removed rows: the loss has been shown and read, so the save
+   * unblocks and only the surviving rows remain (issue 204). */
+  function dismissRemoved() {
+    setRemovedFilled([]);
   }
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
@@ -317,6 +358,11 @@ export function SupplierOpeningBalancePage() {
     // surface the reason on the dialog path too, instead of silently no-op'ing
     if (blockedReason !== null) {
       setError(blockedReason);
+      return;
+    }
+    // the dropped amount must be acknowledged before any write is attempted
+    if (hasRemovedFilled) {
+      setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
     // a dialog can outlive the rows it named (the owner clears them): never post
@@ -408,6 +454,10 @@ export function SupplierOpeningBalancePage() {
     if (submitting || resolvingRef.current || bulk.isPending || dateInvalid || listFailed) return;
     if (blockedReason !== null) {
       setError(blockedReason);
+      return;
+    }
+    if (hasRemovedFilled) {
+      setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
     if (totalRows === 0) {
@@ -665,6 +715,25 @@ export function SupplierOpeningBalancePage() {
             </table>
           )}
 
+          {hasRemovedFilled && (
+            <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 p-3 text-sm" data-testid="opening-balance-removed">
+              <p className="font-semibold text-destructive">{t("supplierOpeningRemovedTitle")}</p>
+              <ul className="mt-2 grid gap-1">
+                {removedFilled.map((row) => (
+                  <li key={row.supplierId} className="flex flex-wrap items-center gap-1" data-testid="opening-balance-removed-row">
+                    <span>{t("supplierOpeningRemovedRow", { name: row.name })}</span>
+                    <Amount value={row.amount} />
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-3">
+                <Button type="button" variant="outline" onClick={dismissRemoved} data-testid="opening-balance-removed-dismiss">
+                  {t("supplierOpeningRemovedDismiss")}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {blockedReason !== null && (
             <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="opening-balance-blocked">
               {blockedReason}
@@ -678,7 +747,7 @@ export function SupplierOpeningBalancePage() {
           )}
 
           <div className="flex gap-2">
-            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null} data-testid="opening-balance-save">
+            <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
             <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
@@ -701,7 +770,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

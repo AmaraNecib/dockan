@@ -7,7 +7,7 @@ import { normalizeTextKey } from "@dokan/contracts";
 // SAFETY: React 19 act() requires the environment flag to be set explicitly
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n";
+import i18n from "../lib/i18n";
 
 import { routerMock } from "../tests/router-mock";
 
@@ -1518,6 +1518,75 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the write changes supplier accounts, so the full list other screens read is still refreshed
     expect(keys).toContain(JSON.stringify(["suppliersList"]));
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+  });
+
+  it("tells the owner and blocks the save when a refresh removes a filled row's supplier (#204)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+
+    // both rows are filled before the refresh drops one supplier
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "300");
+
+    // a background refresh removes `gone`
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // the owner is named the supplier and the amount, in i18n copy — never silent
+    const notice = clickTarget("opening-balance-removed");
+    expect(notice.textContent).toContain(i18n.t("supplierOpeningRemovedTitle"));
+    const removedRow = clickTarget("opening-balance-removed-row");
+    expect(removedRow.textContent).toContain(i18n.t("supplierOpeningRemovedRow", { name: "مورد زائل" }));
+    expect(removedRow.textContent).toContain("300");
+
+    // the save is blocked: the button is disabled and the form guard refuses too
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+
+    // acknowledging the loss re-enables the save, and the surviving row still goes
+    clickOn("opening-balance-removed-dismiss");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "keep", amount: 100 });
+  });
+
+  it("drops an untouched row silently when its supplier vanishes on a refresh (#204 negative)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+
+    // only the surviving row is filled; the removed one stays empty
+    typeIntoRow(0, "100");
+
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // no warning for the ordinary case: an unfilled row may drop without noise
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "keep", amount: 100 });
   });
 
   it("counts a typed name toward the batch limit and blocks before the server (round 5)", async () => {

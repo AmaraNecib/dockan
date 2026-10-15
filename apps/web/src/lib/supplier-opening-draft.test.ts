@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { parseGroupedAmount } from "./amount-parse";
-import { MAX_OPENING_BALANCE_ROWS, newOpeningRowStatus, openingRowStatus, isOpeningBatchOverLimit } from "./supplier-opening-draft";
+import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, newOpeningRowStatus, openingRowStatus, isOpeningBatchOverLimit } from "./supplier-opening-draft";
 
 /**
  * Greptile round 1 finding 1: a "1,000" amount was rejected by the strict
@@ -73,6 +73,61 @@ describe("newOpeningRowStatus", () => {
 
   it("is filled with the trimmed name and the parsed amount", () => {
     expect(newOpeningRowStatus({ name: "  مورّد جديد  ", amount: "1,000", existingNames })).toEqual({ status: "filled", name: "مورّد جديد", amount: 1000 });
+  });
+});
+
+/**
+ * #204 — a background refresh can remove a supplier whose draft the owner
+ * already filled. The draft is reconciled against the fresh id set at this seam
+ * so the page can name the loss; an untouched row may still drop silently.
+ */
+describe("droppedFilledDrafts (issue 204)", () => {
+  it("returns a filled draft whose supplier is no longer present, with its remembered name and amount", () => {
+    expect(
+      droppedFilledDrafts({
+        drafts: { "s-2": { name: "مورد بلا حركات", amount: "1,000" } },
+        presentSupplierIds: ["s-1", "s-3"],
+      }),
+    ).toEqual([{ supplierId: "s-2", name: "مورد بلا حركات", amount: 1000 }]);
+  });
+
+  it("leaves an untouched draft to drop silently (the negative the fix must not warn on)", () => {
+    expect(
+      droppedFilledDrafts({
+        drafts: { "s-2": { name: "مورد بلا حركات", amount: "" } },
+        presentSupplierIds: ["s-1"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not flag a supplier that is still present", () => {
+    expect(
+      droppedFilledDrafts({
+        drafts: { "s-2": { name: "مورد بلا حركات", amount: "300" } },
+        presentSupplierIds: ["s-2"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("does not flag an invalid draft: only a parsed, positive amount is a filled row", () => {
+    expect(
+      droppedFilledDrafts({
+        drafts: { "s-2": { name: "مورد بلا حركات", amount: "abc" } },
+        presentSupplierIds: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("keeps the draft order across several removed suppliers", () => {
+    const drafts = {
+      "s-1": { name: "أ", amount: "100" },
+      "s-2": { name: "ب", amount: "200" },
+      "s-3": { name: "ج", amount: "300" },
+    };
+    expect(droppedFilledDrafts({ drafts, presentSupplierIds: ["s-3"] })).toEqual([
+      { supplierId: "s-1", name: "أ", amount: 100 },
+      { supplierId: "s-2", name: "ب", amount: 200 },
+    ]);
   });
 });
 

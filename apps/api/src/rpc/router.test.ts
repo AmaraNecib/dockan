@@ -2476,7 +2476,8 @@ describe("suppliersResolveName uses the lean reads (issue 213)", () => {
       .map((party) => ({ id: party.id, name: party.name, entries: party.accountEntryCount ?? 0 }));
     const expected = pickOpeningSupplier(classic);
     expect(expected?.id).toBe(netZero.id);
-    expect(emptyTwin.id).not.toBe(netZero.id);
+    // the two rows really do fold to one key; without that the fixture proves nothing
+    expect(normalizeTextKey(emptyTwin.name)).toBe(normalizeTextKey(netZero.name));
     expect(resolved.supplier?.id).toBe(expected?.id);
     expect(resolved.supplier?.accountEntryCount).toBe(expected?.entries);
     expect(resolved.supplier?.accountEntryCount).toBe(2);

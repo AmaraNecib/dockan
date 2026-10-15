@@ -55,20 +55,23 @@ for "digits, the same rule the rest of the app uses" — numeric, not mobile.
 
 ```ts
 /**
- * Issue #129: a pasted/pasted phone is a valid identity only when it is numeric
- * after the SAME cleaning normalizePartyPhone applies (fold Arabic-Indic digits,
- * strip invisible bidi marks, strip the separators \s.()-), optionally with one
+ * Issue #129: a phone is a valid identity only when it is numeric after the SAME
+ * cleaning normalizePartyPhone applies (fold Arabic-Indic digits, strip
+ * invisible bidi marks, strip the separators \s.()-), optionally with one
  * leading +. Absent/empty/separator-only is valid (the phone is optional and
  * clears to unset). Arabic-Indic digits are ACCEPTED and normalised to Western.
  */
 export function isPartyPhoneText(raw: string | null | undefined): boolean;
 ```
 
-Reuses `foldArabicDigits`, `PHONE_INVISIBLE_RE` and `normalizePartyPhone`'s
-separator set; adds no second normaliser. `normalizePartyPhone` is unchanged, so
-legacy rows that already hold non-numeric text still match themselves and
+Both the predicate and `normalizePartyPhone` now call one private
+`cleanPhoneText` (fold + strip invisible + strip separators), so the rule and
+stored identity cannot drift — the failure class wisdom 2026-10-01 records. No
+second normaliser is added. `normalizePartyPhone` keeps its permissive fallback
+so legacy rows that already hold non-numeric text still match themselves and
 `displayAlgerianPhone` still renders them verbatim — no schema change, no data
-migration.
+migration. `«١٢٣»` folds to the numeric `123` and is therefore accepted (the rule
+is numeric, not the mobile shape); the test pins that decision.
 
 ### `apps/api/src/store/port.ts` + `drizzle-store.ts`
 
@@ -93,8 +96,10 @@ message instead of the clear one.
   `PHONE_EXAMPLE_LOCAL`/`PHONE_EXAMPLE_INTL` with `ltrIsolate`); a
   `SERVER_ERROR_ALIASES` map resolves the server code `INVALID_PARTY_PHONE` to
   that key, so a direct API rejection gets the same copy.
-- `party-forms.tsx` (`PartyForm.submit`): reject before mutate with
-  `t("partyPhoneInvalid")`.
+- `party-forms.tsx` (`PartyForm.submit`): reject a changed phone before mutate
+  with `t("partyPhoneInvalid")`. Only a value the operator changed is checked, so
+  a legacy record already holding junk text can still be renamed (the store
+  refuses only a changed phone; the untouched value is never re-written).
 - `party-picker.tsx` inline create panel: show the same copy and disable Save
   when the typed phone is not numeric.
 

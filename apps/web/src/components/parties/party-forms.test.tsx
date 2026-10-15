@@ -75,7 +75,7 @@ function Harness({ initial }: { initial: Party }) {
   );
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(initial: Party | null = BASE): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -83,7 +83,11 @@ async function mount(): Promise<HTMLElement> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <Harness initial={BASE} />
+        {initial === null ? (
+          <PartyForm role="customer" onSaved={(savedParty, mode) => saved.push({ name: savedParty.name, mode })} />
+        ) : (
+          <Harness initial={initial} />
+        )}
       </QueryClientProvider>,
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -226,5 +230,35 @@ describe("PartyForm phone text rule (issue 129)", () => {
     await submit(host);
 
     expect(updates).toEqual([{ id: "c-1", phone: "+213666999888" }]);
+  });
+
+  it("allows a name-only edit of a record that already holds non-numeric junk", async () => {
+    // a legacy row must stay renameable: the untouched phone is neither
+    // re-validated nor re-written (the store refuses only a CHANGED phone)
+    const host = await mount({ id: "legacy-1", name: "قديم", phone: "abc", createdAt: "2026-10-01T10:00:00" });
+    const name = host.querySelector<HTMLInputElement>('[data-testid="party-form-name"]');
+    await act(async () => {
+      if (name !== null) setElementValue(name, "قديم-٢");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await submit(host);
+
+    expect(updates).toEqual([{ id: "legacy-1", name: "قديم-٢" }]);
+    expect(host.querySelector('[data-testid="party-form-error"]')).toBeNull();
+  });
+
+  it("refuses a non-numeric phone when creating (no stored value to compare)", async () => {
+    const host = await mount(null);
+    await act(async () => {
+      const name = host.querySelector<HTMLInputElement>('[data-testid="party-form-name"]');
+      const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+      if (name !== null) setElementValue(name, "زبون-جديد");
+      if (phone !== null) setElementValue(phone, "abc");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await submit(host);
+
+    expect(created).toEqual([]);
+    expect(host.querySelector('[data-testid="party-form-error"]')?.textContent).toContain("أرقام");
   });
 });

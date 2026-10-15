@@ -347,7 +347,8 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                       {t("partyPhoneInvalid")}
                     </p>
                   )}
-                  {phoneOwner !== undefined && (                    <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid={`${testId}-phone-owner`}>
+                  {phoneOwner !== undefined && (
+                    <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid={`${testId}-phone-owner`}>
                       {t("partyPhoneTaken", { name: phoneOwner.name })}{" "}
                       <button type="button" className="underline" onClick={() => pick(phoneOwner)} data-testid={`${testId}-pick-owner`}>
                         {t("partyPickRecord", { name: phoneOwner.name })}

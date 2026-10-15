@@ -2139,8 +2139,14 @@ async function withPartyPhoneRefusals<T>(phoneKey: "CUSTOMER_PHONE_EXISTS" | "SU
     return await fn();
   } catch (err) {
     if (err instanceof PartyError) {
-      if (err.code === "INVALID_PHONE") throw new ORPCError("BAD_REQUEST", { message: "INVALID_PARTY_PHONE" });
-      throw new ORPCError("CONFLICT", { message: phoneKey });
+      // exhaustive over the union: a new PartyError code must be handled here,
+      // not silently mislabelled as a phone conflict
+      switch (err.code) {
+        case "INVALID_PHONE":
+          throw new ORPCError("BAD_REQUEST", { message: "INVALID_PARTY_PHONE" });
+        case "PHONE_EXISTS":
+          throw new ORPCError("CONFLICT", { message: phoneKey });
+      }
     }
     if (err instanceof Error && isUniqueViolation(err)) throw new ORPCError("CONFLICT", { message: phoneKey });
     throw err;

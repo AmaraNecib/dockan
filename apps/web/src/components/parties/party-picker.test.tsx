@@ -241,6 +241,17 @@ describe("PartyPicker (issue 120)", () => {
     expect(created).toEqual([{ name: "زبون-عربي", phone: "٠٦٦٦٩٩٩٨٨٨" }]);
   });
 
+  it("keeps an empty phone valid in the inline create panel (optional field)", async () => {
+    const host = await mount();
+    await type(host, "picker", "زبون-بلا-هاتف");
+    await click(host, "picker-create");
+    await type(host, "picker-create-phone", "   ");
+
+    expect(host.querySelector('[data-testid="picker-invalid-phone"]')).toBeNull();
+    await click(host, "picker-create-save");
+    expect(created).toEqual([{ name: "زبون-بلا-هاتف" }]);
+  });
+
   it("resolves a folded match to the existing debtor when the owner picks it (#130)", async () => {
     const host = await mount();
     await type(host, "picker", "على علي");

@@ -1626,6 +1626,9 @@ describe("parties (issue 120)", () => {
     await expect(client.customersUpdate({ id: party.id, phone: "12a34" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "INVALID_PARTY_PHONE" });
     // the refused update left the stored identity untouched
     expect((await client.customersGet({ id: party.id })).party.phone).toBe("+213665333444");
+    // the supplier update path is the same role-parameterised rule
+    const supplier = await client.suppliersCreate({ name: "مورد-تعديل-نص", phone: "0665444555" });
+    await expect(client.suppliersUpdate({ id: supplier.id, phone: "abc" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "INVALID_PARTY_PHONE" });
     // Arabic-Indic digits are accepted and normalise to the canonical identity
     expect((await client.customersCreate({ name: "زبون-عربي", phone: "٠٦٦٥٦٦٧٧٧٧" })).phone).toBe("+213665667777");
   });

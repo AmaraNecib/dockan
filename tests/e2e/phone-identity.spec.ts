@@ -24,6 +24,22 @@ async function deleteParty(page: Page, name: string): Promise<void> {
   await expect(page.getByTestId("party-row").filter({ hasText: name })).toHaveCount(0);
 }
 
+/** The records this spec creates; afterEach returns the shared DB even on failure. */
+let cleanupNames: string[] = [];
+
+test.afterEach(async ({ page }) => {
+  const names = cleanupNames;
+  cleanupNames = [];
+  if (names.length === 0) return;
+  await page.goto("/customers");
+  for (const name of names) {
+    const row = page.getByTestId("party-row").filter({ hasText: name });
+    if ((await row.count()) === 0) continue;
+    await row.getByTestId("party-row-delete").click();
+    await page.getByTestId("party-delete-confirm").click();
+  }
+});
+
 test("phone identity: non-numeric text is refused, Arabic-Indic digits are accepted", async ({ page }) => {
   await signIn(page);
 
@@ -38,6 +54,7 @@ test("phone identity: non-numeric text is refused, Arabic-Indic digits are accep
   // the picker needs its OWN valid number: a phone another record already owns
   // is a different refusal (party-phone-taken), not the rule under test
   const pickerArabicPhone = toArabicDigits(`0571${stamp.slice(-6)}`);
+  cleanupNames = [arabicName, pickerName];
 
   // 1. the create dialog refuses non-numeric phone text with Arabic copy...
   await page.goto("/customers");

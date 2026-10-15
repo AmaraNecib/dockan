@@ -30,18 +30,8 @@ export function waitForRpc(page: Page, procedure: string): Promise<Response> {
  * headers and the body round-trip. Reads the page issues *around* a navigation
  * must use `readRpc` below, which has no response for a navigation to discard.
  */
-function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> {
-  return ack.then(async (response) => {
-    expect(response.ok(), `${procedure} failed with HTTP ${response.status()}`).toBe(true);
-    // SAFETY: `response.json()` is untyped; the oRPC StandardRPCSerializer's
-    // success envelope is `{ json: <declared output> }` and `ok()` above
-    // rejected a refusal, so the caller's T names the value at `json`.
-    const body = (await response.json()) as { json: T };
-    if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
-      throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
-    }
-    return body.json;
-  });
+export function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> {
+  return ack.then((response) => rpcOutput<T>(response, procedure));
 }
 
 /**
@@ -126,12 +116,24 @@ export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{
   return created;
 }
 
-/** The oRPC success envelope; `json` carries the procedure's declared output. */
-export async function rpcOutput<T>(response: Response): Promise<T> {
-  // SAFETY: the oRPC fetch link (StandardRPCSerializer) answers a successful
-  // procedure call with the `{ json: <declared output> }` envelope; the caller's
-  // T names that output, and the caller already rejected a refusal.
+/**
+ * The oRPC success envelope; `json` carries the procedure's declared output.
+ *
+ * `response` must be an accepted (2xx) ack: this fails loudly on a refusal and
+ * on a body without the envelope, so a caller that reaches `json` reads the
+ * server's value rather than a guess. `readEnvelope` is the eager-read wrapper
+ * `actAndAck` uses; `procedure` labels the failure.
+ */
+export async function rpcOutput<T>(response: Response, procedure = "rpc"): Promise<T> {
+  expect(response.ok(), `${procedure} failed with HTTP ${response.status()}`).toBe(true);
+  // SAFETY: `response.json()` is untyped; the oRPC fetch link
+  // (StandardRPCSerializer) answers a successful procedure call with the
+  // `{ json: <declared output> }` envelope and `ok()` above rejected a refusal,
+  // so the caller's T names the value at `json`.
   const body = (await response.json()) as { json: T };
+  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+  }
   return body.json;
 }
 

@@ -96,7 +96,6 @@ Load relevant skills from the workflow's quality check table:
 | Accessibility, RTL, keyboard navigation | `accessibility` |
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
-| Build/version/publish a JS or TS package (exports, publint) | `tanstack-config` |
 
 ### 6. Debate — High-assurance only
 

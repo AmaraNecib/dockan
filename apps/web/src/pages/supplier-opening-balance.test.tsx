@@ -746,6 +746,20 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(resolveCalls).toBe(2);
   });
 
+  it("keeps the dialog open when the back link targets a new tab while a refusal's recovery lookup is pending (review round 4 debate)", async () => {
+    // a plain click on a `target="_blank"` link opens a new tab: the predicate must
+    // not treat it as a current-tab navigation just because the click is unmodified
+    // (debate critic: the guard must not be a weaker copy of the router's own).
+    await openConfirmWithRefusedSaveHeld();
+    clickTarget("opening-balance-back").setAttribute("target", "_blank");
+    dispatchClickOn("opening-balance-back", { button: 0 });
+
+    await releaseHeldRecovery();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    // positive control: the recovery lookup really ran (1 submit + 1 recovery)
+    expect(resolveCalls).toBe(2);
+  });
+
   it("dismisses on Escape from an input behind the open dialog (review round 3 class fix)", async () => {
     // the inline dialog has no focus trap: Escape must be handled at the form so
     // an owner who tabbed back into an amount field can still dismiss it

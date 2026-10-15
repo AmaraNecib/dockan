@@ -88,6 +88,7 @@ useQuery({
   queryKey: ['todos'],
   queryFn: async ({ signal }) => {
     const response = await fetch('/api/todos', { signal })
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`)
     return response.json()
   },
 })
@@ -317,6 +318,12 @@ onMutate: async (newTodo) => {
   return { previousTodos }
 },
 onError: (err, newTodo, context) => {
+  // No snapshot exists before the first fetch resolves, and setting `undefined`
+  // would leave the optimistic row in place: reset the query instead.
+  if (context.previousTodos === undefined) {
+    queryClient.resetQueries({ queryKey: ['todos'] })
+    return
+  }
   queryClient.setQueryData(['todos'], context.previousTodos)
 },
 ```
@@ -372,6 +379,7 @@ function InfiniteList() {
     queryKey: ['projects'],
     queryFn: async ({ pageParam }) => {
       const res = await fetch(`/api/projects?cursor=${pageParam}`)
+      if (!res.ok) throw new Error(`Request failed: ${res.status}`)
       return res.json()
     },
     initialPageParam: 0,
@@ -381,7 +389,8 @@ function InfiniteList() {
     getPreviousPageParam: (firstPage, allPages, firstPageParam) => {
       return firstPage.prevCursor ?? undefined
     },
-    maxPages: 3, // Keep max 3 pages in cache (for performance)
+    // No `maxPages` here: this list is append-only, so evicting the oldest
+    // page would silently drop rows with no control to load them back.
   })
 
   if (isPending) return <Spinner />
@@ -521,9 +530,10 @@ const queryClient = useQueryClient()
 // Prefetch on hover
 function TodoLink({ todoId }) {
   const prefetch = () => {
+    // Same options as the route loader below, or hover warms a different
+    // cache entry and the loader fetches again.
     queryClient.prefetchQuery({
-      queryKey: ['todo', todoId],
-      queryFn: () => fetchTodo(todoId),
+      ...todoQueryOptions(todoId),
       staleTime: 5000, // Only prefetch if data older than 5s
     })
   }
@@ -717,6 +727,7 @@ const { data } = useQuery({
   queryKey: ['todos'],
   queryFn: async (): Promise<Todo[]> => {
     const res = await fetch('/api/todos')
+    if (!res.ok) throw new Error(`Request failed: ${res.status}`)
     return res.json()
   },
 })
@@ -818,6 +829,7 @@ useQuery({
   queryFn: async ({ signal }) => {
     // signal is AbortSignal - automatically cancelled on unmount or key change
     const res = await fetch('/api/todos', { signal })
+    if (!res.ok) throw new Error(`Request failed: ${res.status}`)
     return res.json()
   },
 })

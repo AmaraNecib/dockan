@@ -37,8 +37,15 @@ export const Route = createFileRoute('/products')({
       return Number.isFinite(parsed) ? parsed : undefined
     }
 
+    // `Number(page) || 1` also accepts -2 and Infinity; require a finite
+    // positive integer, matching the Zod example's `min(1)`.
+    const pageOrDefault = (value: unknown) => {
+      const parsed = Number(value)
+      return Number.isInteger(parsed) && parsed >= 1 ? parsed : 1
+    }
+
     return {
-      page: Number(search.page) || 1,
+      page: pageOrDefault(search.page),
       sort: search.sort === 'desc' ? 'desc' : 'asc',
       category: typeof search.category === 'string' ? search.category : undefined,
       minPrice: numberOrDefault(search.minPrice),

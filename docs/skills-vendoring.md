@@ -47,20 +47,28 @@ Measured with a line-ending-robust recursive diff against the pinned content:
 diff -r --strip-trailing-cr -u <upstream-dir> .agents/skills/<name>
 ```
 
-Current fork size: **15 of 39 files modified, +330 / −192 lines (net +138,
-churn 522).**
+Current fork size: **15 of 39 files modified, +355 / −196 lines (net +159,
+churn 551).** (Re-measured after the round-4 review fixes.)
 
 | Skill | files changed | added | deleted |
 |---|---|---|---|
-| `tanstack-query` | 1 / 1 | +35 | −12 |
-| `tanstack-router` | 1 / 1 | +17 | −14 |
-| `tanstack-router-best-practices` | 13 / 37 | +278 | −166 |
+| `tanstack-query` | 1 / 1 | +50 | −15 |
+| `tanstack-router` | 1 / 1 | +19 | −14 |
+| `tanstack-router-best-practices` | 13 / 37 | +286 | −167 |
 
 The added lines are the PR #199 review fixes, each verified against installed
 packages or a live run:
 
 - `isLoading` → `isPending` guards for the offline-paused first fetch
   (`tanstack-query/SKILL.md`, `rules/load-parallel.md`).
+- `res.ok` guard before `res.json()` in the query-function, infinite-query,
+  cancellation and typed-query examples (`tanstack-query/SKILL.md`).
+- Optimistic-list `onError` resets the query when there was no pre-insert
+  snapshot, instead of restoring `undefined` and leaving the row in place.
+- Hover prefetch spreads `todoQueryOptions(todoId)`, so it warms the same cache
+  entry as the route loader instead of a separate `['todo', id]` key.
+- The append-only infinite example drops `maxPages`, which evicted earlier rows
+  with no previous-page control to load them back.
 - Empty-cache seeding on `setQueryData` list updaters: `(old = []) => [...]`.
 - `getNextPageParam` on `prefetchInfiniteQuery`.
 - `AuthProvider` imports the router instead of calling `useRouter()` above its
@@ -70,7 +78,9 @@ packages or a live run:
   `JSON.parse`; the Base64 example is URL-safe (base64url).
 - `search-validation`'s `numberOrDefault` keeps a legitimate `0` and rejects
   `NaN`, empty and whitespace-only strings.
-- `tanstack-router`'s `page` falls back to `1` on an empty/whitespace param.
+- `tanstack-router`'s `page` falls back to `1` on an empty/whitespace param,
+  and (round 4) requires a finite positive integer, so `-2`/`Infinity` also
+  fall back to `1`.
 - `preloadStaleTime` prose says "becomes stale", not "garbage collected".
 - `notFoundComponent` receives data via props; `onError`/`onCatch` take direct
   arguments; hooks use `Route.id`, not `Route.fullPath`.
@@ -85,8 +95,9 @@ packages or a live run:
 2. Diff upstream against our tree:
    `diff -r --strip-trailing-cr -u <upstream-dir> .agents/skills/<name>`.
 3. Reconcile into `.agents/skills/<name>` — the only file tree you edit. Apply
-   genuine upstream changes; keep our hunks above. Move the pin to the new
-   upstream commit in this file and in `skills-lock.json`'s `computedHash`.
+   genuine upstream changes; keep our hunks above. Move the upstream commit pin
+   in this file. `skills-lock.json`'s `computedHash` stays a computed
+   skill-content hash (a 64-char digest, not the 40-char Git commit ID).
 4. Regenerate and verify the mirror:
    `bun run skills:sync && bun run skills:check`.
 5. Commit `.agents`, the regenerated `.claude`, this file, and
@@ -100,8 +111,12 @@ packages or a live run:
   the clobber signal, not a real upstream change.
 - To attribute one hunk: run the step-2 diff against the pin. A hunk that exists
   in upstream but not here is an upstream change; a hunk that exists here but
-  not upstream is ours. If a hunk is gone from our tree but present in the pin,
-  one of our fixes was clobbered — restore it from the pinned diff.
+  not upstream is ours.
+- The pin identifies **upstream** changes only. It cannot reveal a lost local
+  fix: when an update replaces our hunk with upstream text, the fix is absent
+  from both trees, so this pinned diff shows nothing. To find or restore a lost
+  fix, compare our tree against the **pre-update local commit** in Git history,
+  e.g. `git diff <pre-update-sha> -- .agents/skills/<name>`.
 - When the pin moves, the diff baseline moves with it: update the commit in the
   table first, then re-measure the divergence counts above so the fork size on
   record stays accurate.

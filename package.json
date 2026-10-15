@@ -19,7 +19,7 @@
     "build": "turbo build",
     "lint": "oxlint",
     "typecheck": "turbo typecheck",
-    "test": "turbo test --concurrency=2",
+    "test": "turbo test --concurrency=2 && bun test ./scripts/",
     "skills:sync": "bun scripts/sync-claude-skills.ts",
     "skills:check": "bun scripts/sync-claude-skills.ts --check",
     "prepare": "husky",

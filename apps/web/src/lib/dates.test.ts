@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { combineBusinessDateTime, formatDate, formatDateTime, nowDateTimeText, parseDateTimeText } from "./dates";
+import { combineBusinessDateTime, editDateBound, formatDate, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText } from "./dates";
 
 /**
  * Issue #119 — the stored values are naive Algeria-local ISO strings with no
@@ -181,5 +181,34 @@ describe("nowDateTimeText (issue #119)", () => {
 
   it("pads a single-digit day, month, hour and minute", () => {
     expect(nowDateTimeText(new Date(2026, 0, 5, 9, 4, 0))).toBe("05/01/2026 09:04");
+  });
+});
+
+/**
+ * Issue #123 — the range bounds live on the api as moments, but the owner types
+ * text. The bound must only move on a readable moment so a half-typed value
+ * cannot refetch the list unfiltered.
+ */
+describe("editDateBound (issue #123)", () => {
+  it("applies a readable moment and keeps it through a half-typed or impossible edit", () => {
+    const applied = editDateBound(OPEN_BOUND, "01/01/2020 00:00");
+    expect(applied).toEqual({ text: "01/01/2020 00:00", bound: "2020-01-01T00:00:00" });
+
+    // the bound does not drop while the new value is still unreadable
+    expect(editDateBound(applied, "01/01/2020 0").bound).toBe("2020-01-01T00:00:00");
+    expect(editDateBound(applied, "31/02/2020 00:00").bound).toBe("2020-01-01T00:00:00");
+    // the text still tracks every keystroke, so a correction can apply
+    expect(editDateBound(applied, "31/02/2020 00:00").text).toBe("31/02/2020 00:00");
+  });
+
+  it("opens the bound on empty text and applies the next readable moment", () => {
+    const applied = editDateBound(OPEN_BOUND, "31/01/2020 23:59");
+    expect(editDateBound(applied, "").bound).toBeUndefined();
+    expect(editDateBound(applied, "   ").bound).toBeUndefined();
+    expect(editDateBound(applied, "02/01/2020 08:05").bound).toBe("2020-01-02T08:05:00");
+  });
+
+  it("treats a bare date as midnight, like the shared parse", () => {
+    expect(editDateBound(OPEN_BOUND, "29/02/2024").bound).toBe("2024-02-29T00:00:00");
   });
 });

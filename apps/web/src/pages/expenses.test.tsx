@@ -8,6 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import { parseDateTimeText } from "../lib/dates";
+import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 interface ExpenseCategory {
   id: string;
@@ -36,6 +38,12 @@ interface ExpenseResponse {
   createdAt: string;
 }
 
+/** One row of the history list envelope the page paginates. */
+interface ExpenseRow extends ExpenseResponse {
+  note: string | null;
+  occurredAt: string;
+}
+
 interface ExpenseMutationOptions {
   onSuccess?: (expense: ExpenseResponse) => void;
   onError?: (error: { message?: string }) => void;
@@ -50,6 +58,24 @@ let deferredCategoryCreates: Array<() => void> = [];
 let categoriesListFails = false;
 let lastCreatedName: string | null = null;
 let lastExpense: CapturedExpense | null = null;
+
+/** The slice of the `expensesList` input the range filters own, recorded so a
+ * spec can assert the custom bounds the field parsed to. */
+interface ListInput {
+  preset: string;
+  customFrom?: string;
+  customTo?: string;
+  categoryIds?: string[];
+  sortBy: string;
+  sortDir: string;
+  pageSize: number;
+  offset: number;
+}
+
+let lastListInput: ListInput | null = null;
+/** the history envelope the list query resolves: enough rows to page through */
+let listItems: ExpenseRow[] = [];
+let listTotal = 0;
 
 const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseCategory => ({
   id,
@@ -98,10 +124,15 @@ mock.module("@/lib/rpc", () => ({
       }),
     },
     expensesList: {
-      queryOptions: () => ({
-        queryKey: ["expenses"],
-        queryFn: async () => ({ items: [] }),
-      }),
+      // SAFETY: mirror the real utils signature ({ input }) and record the
+      // input so a spec can assert the custom bounds the field parsed to
+      queryOptions: ({ input }: { input?: ListInput }) => {
+        lastListInput = input ?? null;
+        return {
+          queryKey: ["expenses", input],
+          queryFn: async () => ({ items: listItems, total: listTotal }),
+        };
+      },
     },
     expensesCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
@@ -167,6 +198,15 @@ async function mountPage(queryClient: QueryClient) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       });
     },
+    /** Leave a field: React routes onBlur through the bubbling focusout event. */
+    blur: async (testid: string) => {
+      const input = query<HTMLInputElement>(testid);
+      expect(input).not.toBeNull();
+      await act(async () => {
+        input!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    },
     waitFor: async (check: () => boolean) => {
       for (let attempt = 0; attempt < 100; attempt++) {
         if (check()) return true;
@@ -182,6 +222,11 @@ async function mountPage(queryClient: QueryClient) {
     },
   };
 }
+
+beforeEach(() => {
+  listItems = [];
+  listTotal = 0;
+});
 
 describe("ExpensesPage — create a category inline (issue #99)", () => {
   let queryClient: QueryClient;
@@ -806,6 +851,293 @@ describe("ExpensesPage — the date/time field (issue #119)", () => {
 
     expect(ui.query<HTMLInputElement>("expense-date")?.disabled).toBe(true);
     expect(ui.query<HTMLButtonElement>("expense-date-now")?.disabled).toBe(true);
+
+    await ui.unmount();
+  });
+});
+
+describe("ExpensesPage — custom range bounds (issue #123)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    categoriesFixture = [category("cat-1", "عام")];
+    lastListInput = null;
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  async function openCustomRange(ui: Awaited<ReturnType<typeof mountPage>>) {
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    await openSelect(ui.query("expense-range-preset")!);
+    const option = await findOption("فترة مخصصة");
+    expect(option).not.toBeNull();
+    await activateOption(option!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") !== null)).toBe(true);
+  }
+
+  it("shows day-first text bounds, never the OS datetime-local control", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    expect(from.type).toBe("text");
+    expect(to.type).toBe("text");
+    expect(from.getAttribute("placeholder")).toBe(i18n.t("expenseDateHint"));
+    expect(ui.query("expense-custom-from-now")?.textContent).toContain("الآن");
+
+    await ui.unmount();
+  });
+
+  it("sends the typed day-first bounds as the api's ISO moments, empty as open", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // nothing typed yet: both bounds stay open
+    expect(lastListInput).not.toBeNull();
+    expect(lastListInput?.customFrom).toBeUndefined();
+    expect(lastListInput?.customTo).toBeUndefined();
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    await ui.type("expense-custom-to", "31/01/2020 23:59");
+
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    expect(lastListInput).toMatchObject({ customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:00" });
+
+    await ui.unmount();
+  });
+
+  it("refuses an impossible bound visibly and keeps the last applied window", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    // the #119 follow-up already refuses the calendar-impossible day at the parse
+    expect(parseDateTimeText("31/02/2020 00:00")).toBeNull();
+
+    await ui.blur("expense-custom-from");
+
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    const error = ui.query("expense-custom-from-error");
+    expect(error?.getAttribute("role")).toBe("alert");
+    expect(error?.textContent).toContain(i18n.t("expenseDateInvalid"));
+    // the unreadable value is not applied: the window keeps its last bound
+    // instead of silently widening to everything
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    // correcting the value clears the refusal and applies the new bound
+    await ui.type("expense-custom-from", "02/01/2020 00:00");
+    expect(from.getAttribute("aria-invalid")).toBeNull();
+    expect(ui.query("expense-custom-from-error")).toBeNull();
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps the applied bound while a new value is only half-typed", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    // an incomplete time must not drop the bound and refetch the whole list
+    await ui.type("expense-custom-from", "01/01/2020 0");
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    await ui.unmount();
+  });
+
+  it("refuses an impossible upper bound the same way", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-to", "31/01/2020 23:59");
+    expect(await ui.waitFor(() => lastListInput?.customTo === "2020-01-31T23:59:00")).toBe(true);
+
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    await ui.type("expense-custom-to", "31/02/2020 00:00");
+    await ui.blur("expense-custom-to");
+
+    expect(to.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-to-error")?.getAttribute("role")).toBe("alert");
+    // the upper bound keeps its last applied moment too
+    expect(lastListInput?.customTo).toBe("2020-01-31T23:59:00");
+
+    await ui.unmount();
+  });
+
+  it("fills a bound with now from «الآن» and sends it", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-to", "15/01/2026 08:05");
+    await ui.click("expense-custom-to-now");
+
+    const value = ui.query<HTMLInputElement>("expense-custom-to")!.value;
+    expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    expect(value).not.toBe("15/01/2026 08:05");
+    expect(await ui.waitFor(() => lastListInput?.customTo === parseDateTimeText(value))).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps a later history page when a refused bound edit is not applied", async () => {
+    // enough rows that the pager offers more than one page at any page size
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // apply a real window, then move off the first page
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    // a refused edit keeps the applied bound, so the offset must not jump to 0
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    await ui.blur("expense-custom-from");
+
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    // a real bound change is still a filter change: it must reset to page one
+    await ui.type("expense-custom-from", "02/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
+    expect(lastListInput?.offset).toBe(0);
+
+    await ui.unmount();
+  });
+
+  it("keeps the refusal visible when the preset is switched away and back", async () => {
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    const from = ui.query<HTMLInputElement>("expense-custom-from")!;
+    await ui.type("expense-custom-from", "31/02/2020 00:00");
+    await ui.blur("expense-custom-from");
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
+
+    // leave CUSTOM: the field unmounts, but the page keeps the text and bound
+    await openSelect(ui.query("expense-range-preset")!);
+    const otherPreset = await findOption(i18n.t("rangePreset_CURRENT_MONTH"));
+    expect(otherPreset).not.toBeNull();
+    await activateOption(otherPreset!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") === null)).toBe(true);
+
+    // back to CUSTOM: the same unreadable value must still refuse itself
+    await openSelect(ui.query("expense-range-preset")!);
+    const customPreset = await findOption(i18n.t("rangePreset_CUSTOM"));
+    expect(customPreset).not.toBeNull();
+    await activateOption(customPreset!);
+    expect(await ui.waitFor(() => ui.query("expense-custom-from") !== null)).toBe(true);
+
+    const remounted = ui.query<HTMLInputElement>("expense-custom-from")!;
+    expect(remounted.value).toBe("31/02/2020 00:00");
+    expect(remounted.getAttribute("aria-invalid")).toBe("true");
+    expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
+    // the window never moved: the refusal is not a silent widening
+    expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    await ui.unmount();
+  });
+
+  it("keeps a later history page when a refused upper-bound edit is not applied", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-to", "31/12/2020 23:59");
+    expect(await ui.waitFor(() => lastListInput?.customTo === "2020-12-31T23:59:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    await ui.type("expense-custom-to", "31/02/2020 00:00");
+    await ui.blur("expense-custom-to");
+
+    expect(to.getAttribute("aria-invalid")).toBe("true");
+    expect(lastListInput?.customTo).toBe("2020-12-31T23:59:00");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await ui.unmount();
+  });
+
+  it("resets to page one only when clearing a bound that was applied", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // nothing applied yet: clearing the already-open bound is not a filter change
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const openOffset = lastListInput!.offset;
+    await ui.type("expense-custom-from", "");
+    expect(lastListInput?.offset).toBe(openOffset);
+
+    // apply a bound, move off page one, then clear: the applied moment moved
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    await ui.type("expense-custom-from", "");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === undefined)).toBe(true);
+    expect(lastListInput?.offset).toBe(0);
+
+    await ui.unmount();
+  });
+
+  it("does not reset a later page when a filter is re-applied unchanged", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    expect(await ui.waitFor(() => ui.query("expenses-pager-next") !== null)).toBe(true);
+
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    // the already-active "all categories" pill is a plain button: re-clicking it
+    // changes no filter, so it must not throw the list back to page one
+    await ui.click("expense-filter-all");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    // Base UI fires onValueChange when the selected option is re-picked; the
+    // guard must ignore it because the query input is unchanged
+    await openSelect(ui.query("expense-range-preset")!);
+    const samePreset = await findOption(i18n.t("rangePreset_CURRENT_MONTH"));
+    expect(samePreset).not.toBeNull();
+    await activateOption(samePreset!);
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await openSelect(ui.query("expense-sort-by")!);
+    const sameSortBy = await findOption(i18n.t("expensesSortByDate"));
+    expect(sameSortBy).not.toBeNull();
+    await activateOption(sameSortBy!);
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await openSelect(ui.query("expense-sort-dir")!);
+    const sameSortDir = await findOption(i18n.t("expensesSortDesc"));
+    expect(sameSortDir).not.toBeNull();
+    await activateOption(sameSortDir!);
+    expect(lastListInput?.offset).toBe(laterOffset);
 
     await ui.unmount();
   });

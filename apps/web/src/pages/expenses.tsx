@@ -7,12 +7,12 @@ import { Tags } from "lucide-react";
 
 import { tError } from "../lib/i18n";
 import { parseGroupedAmount } from "@/lib/amount-parse";
-import { cn } from "@/lib/utils";
 import { Pager } from "@/components/ui/pager";
+import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
-import { formatDateTime, nowDateTimeText, parseDateTimeText } from "../lib/dates";
+import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -38,12 +38,6 @@ function toPreset(value: string): ReportRangePreset {
     if (value === preset) return preset;
   }
   return "CURRENT_MONTH";
-}
-
-/** datetime-local gives "YYYY-MM-DDTHH:mm"; the api wants seconds. */
-function withSeconds(value: string): string | undefined {
-  if (value === "") return undefined;
-  return value.length === 16 ? `${value}:00` : value;
 }
 
 /** The record form's error, tagged with the control it belongs to so a field
@@ -80,8 +74,8 @@ export function ExpensesPage() {
 
   // history filters — default: current month, newest first, all categories
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [customFrom, setCustomFrom] = useState<DateBound>(OPEN_BOUND);
+  const [customTo, setCustomTo] = useState<DateBound>(OPEN_BOUND);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
   const [sortBy, setSortBy] = useState<"occurredAt" | "amount">("occurredAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
@@ -110,8 +104,8 @@ export function ExpensesPage() {
     orpc.expensesList.queryOptions({
       input: {
         preset,
-        customFrom: withSeconds(customFrom),
-        customTo: withSeconds(customTo),
+        customFrom: customFrom.bound,
+        customTo: customTo.bound,
         categoryIds: selectedCategoryIds.size > 0 ? [...selectedCategoryIds] : undefined,
         sortBy,
         sortDir,
@@ -129,6 +123,37 @@ export function ExpensesPage() {
       return next;
     });
   };
+
+  /**
+   * Fold a typed range-bound edit into its state and reset the list only when
+   * the *applied* moment actually moved. A half-typed or impossible value keeps
+   * the previous bound (editDateBound), so an unconditional reset would jump a
+   * later history page back to page one for a filter that never changed
+   * (Greptile round 1, finding 2). `previous` is read from the render the
+   * handler was created in, which is current because each edit is one discrete,
+   * synchronously flushed event — never two `onValueChange` calls in one batch.
+   */
+  function applyBoundEdit(
+    previous: DateBound,
+    text: string,
+    setBound: (next: DateBound) => void,
+  ): void {
+    const next = editDateBound(previous, text);
+    setBound(next);
+    if (next.bound !== previous.bound) pager.reset();
+  }
+
+  /**
+   * Apply a preset/sort filter and reset the list to page one — but only when
+   * the filter actually moved. Re-picking the option that is already selected
+   * is not a filter change, so resetting then would throw a later page back for
+   * nothing (the same class as finding 2).
+   */
+  function applyFilterChange<T>(next: T, current: T, set: (value: T) => void): void {
+    if (next === current) return;
+    set(next);
+    pager.reset();
+  }
 
   // what the owner can record against: whatever the server sent, plus a
   // category created here that the refetch has not confirmed yet
@@ -172,7 +197,10 @@ export function ExpensesPage() {
           // are unconditional…
           setCreatedCategory(category);
           setCategoryNotice(category.name);
+          // the record form's refusal goes with the message node it names, so a
+          // refused date cannot leave a dangling aria-describedby (issue #123)
           setError(null);
+          setDateInvalid(false);
           // …but only the attempt still on screen may select it and close
           if (attempt === categoryAttemptRef.current) {
             setCategoryId(category.id);
@@ -330,39 +358,24 @@ export function ExpensesPage() {
       </label>
       <div className="grid gap-1">
         <label htmlFor="expense-occurred-at">{t("expenseOccurredAt")}</label>
-        <div className="flex gap-2">
-          <input
-            id="expense-occurred-at"
-            className={cn(inputClass, "w-full")}
-            name="expenseOccurredAt"
-            autoComplete="off"
-            placeholder={t("expenseDateHint")}
-            disabled={disabled}
-            value={occurredAt}
-            aria-invalid={dateInvalid || undefined}
-            aria-describedby={dateInvalid ? "expense-error" : undefined}
-            onChange={(event) => {
-              setOccurredAt(event.target.value);
-              setDateInvalid(false);
-            }}
-            data-testid="expense-date"
-          />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={disabled}
-            onClick={() => {
-              setOccurredAt(nowDateTimeText());
-              // a fresh now is valid: clear only the date field's own refusal —
-              // an amount/category/save error is not this button's to hide
-              setDateInvalid(false);
-              if (error?.field === "date") setError(null);
-            }}
-            data-testid="expense-date-now"
-          >
-            {t("dateNow")}
-          </Button>
-        </div>
+        <DateField
+          id="expense-occurred-at"
+          name="expenseOccurredAt"
+          disabled={disabled}
+          value={occurredAt}
+          invalid={dateInvalid}
+          errorId="expense-error"
+          onValueChange={(text) => {
+            setOccurredAt(text);
+            setDateInvalid(false);
+          }}
+          onNow={() => {
+            // a fresh now is valid: clear only the date field's own refusal —
+            // an amount/category/save error is not this button's to hide
+            if (error?.field === "date") setError(null);
+          }}
+          testId="expense-date"
+        />
       </div>
     </div>
   );
@@ -435,7 +448,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={preset}
-                onValueChange={(value) => { setPreset(toPreset(value ?? "")); pager.reset(); }}
+                onValueChange={(value) => applyFilterChange(toPreset(value ?? ""), preset, setPreset)}
                 items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
               >
                 <SelectTrigger className="w-full" data-testid="expense-range-preset">
@@ -450,7 +463,7 @@ export function ExpensesPage() {
               {t("expensesSortBy")}
               <Select
                 value={sortBy}
-                onValueChange={(value) => { setSortBy(value === "amount" ? "amount" : "occurredAt"); pager.reset(); }}
+                onValueChange={(value) => applyFilterChange(value === "amount" ? "amount" : "occurredAt", sortBy, setSortBy)}
                 items={[
                   { value: "occurredAt", label: t("expensesSortByDate") },
                   { value: "amount", label: t("expensesSortByAmount") },
@@ -469,7 +482,7 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={sortDir}
-                onValueChange={(value) => { setSortDir(value === "asc" ? "asc" : "desc"); pager.reset(); }}
+                onValueChange={(value) => applyFilterChange(value === "asc" ? "asc" : "desc", sortDir, setSortDir)}
                 items={[
                   { value: "desc", label: t("expensesSortDesc") },
                   { value: "asc", label: t("expensesSortAsc") },
@@ -486,22 +499,38 @@ export function ExpensesPage() {
             </label>
           </div>
           {preset === "CUSTOM" && (
-            <div className="grid grid-cols-2 gap-3">
-              <label className="grid gap-1">
-                {t("expensesCustomFrom")}
-                <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => { setCustomFrom(event.target.value); pager.reset(); }} data-testid="expense-custom-from" />
-              </label>
-              <label className="grid gap-1">
-                {t("expensesCustomTo")}
-                <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => { setCustomTo(event.target.value); pager.reset(); }} data-testid="expense-custom-to" />
-              </label>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="grid gap-1">
+                <label htmlFor="expense-custom-from">{t("expensesCustomFrom")}</label>
+                <DateField
+                  id="expense-custom-from"
+                  value={customFrom.text}
+                  onValueChange={(text) => applyBoundEdit(customFrom, text, setCustomFrom)}
+                  testId="expense-custom-from"
+                />
+              </div>
+              <div className="grid gap-1">
+                <label htmlFor="expense-custom-to">{t("expensesCustomTo")}</label>
+                <DateField
+                  id="expense-custom-to"
+                  value={customTo.text}
+                  onValueChange={(text) => applyBoundEdit(customTo, text, setCustomTo)}
+                  testId="expense-custom-to"
+                />
+              </div>
             </div>
           )}
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               className={`rounded-full border px-3 py-1 text-sm ${selectedCategoryIds.size === 0 ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
-              onClick={() => { setSelectedCategoryIds(new Set()); pager.reset(); }}
+              onClick={() => {
+                // the active pill is a no-op: resetting here would move a later
+                // page with no filter change (finding 2's class)
+                if (selectedCategoryIds.size === 0) return;
+                setSelectedCategoryIds(new Set());
+                pager.reset();
+              }}
               data-testid="expense-filter-all"
             >
               {t("expensesAllCategories")}

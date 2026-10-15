@@ -105,12 +105,39 @@ test("record expenses, filter and sort history, and see them in the profit repor
   // `Date.now()` stamps that can contain any three digits by chance
   await expect(page.getByTestId("expense-history")).not.toContainText(backdatedNote);
 
-  // …and appears only inside its own custom window
+  // …and appears only inside its own custom window. Issue #123: the bounds are
+  // the day-first text field, not the OS datetime-local control, and the same
+  // instants still filter the same row.
   await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
-  await page.getByTestId("expense-custom-from").fill("2020-01-01T00:00");
-  await page.getByTestId("expense-custom-to").fill("2020-01-31T23:59");
+  const customFrom = page.getByTestId("expense-custom-from");
+  const customTo = page.getByTestId("expense-custom-to");
+  await expect(customFrom).toHaveAttribute("type", "text");
+  await expect(customTo).toHaveAttribute("type", "text");
+  await customFrom.fill("01/01/2020 00:00");
+  await customTo.fill("31/01/2020 23:59");
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText(backdatedNote);
+
+  // an impossible bound is refused by name and is not applied: the window keeps
+  // its last bound rather than silently widening to everything
+  await customFrom.fill("31/02/2020 00:00");
+  await customFrom.blur();
+  await expect(page.getByTestId("expense-custom-from-error")).toContainText("01/10/2026 00:34");
+  await expect(customFrom).toHaveAttribute("aria-invalid", "true");
+
+  // switching the preset away and back remounts the field: the refused value
+  // and its warning must survive rather than come back clean (Greptile round 1)
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "الشهر الحالي");
+  await expect(customFrom).toHaveCount(0);
+  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
+  await expect(customFrom).toHaveValue("31/02/2020 00:00");
+  await expect(page.getByTestId("expense-custom-from-error")).toContainText("01/10/2026 00:34");
+  await expect(customFrom).toHaveAttribute("aria-invalid", "true");
+
+  // «الآن» restores a live, valid bound and clears the refusal
+  await page.getByTestId("expense-custom-from-now").click();
+  await expect(customFrom).toHaveValue(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  await expect(page.getByTestId("expense-custom-from-error")).toHaveCount(0);
 });
 
 test("profit report reconciles revenue, COGS, expenses, withdrawals and the result", async ({ page }) => {
@@ -212,6 +239,24 @@ test("profit report range preset is the themed select and switches the window", 
   // a non-CUSTOM preset never reveals the custom date bounds
   await expect(page.getByTestId("report-custom-from")).toHaveCount(0);
   await expect(page.getByTestId("report-custom-to")).toHaveCount(0);
+
+  // issue #123 — CUSTOM reveals the day-first text bounds; a typed day-first
+  // window round-trips through the api and back onto the period line
+  await chooseSelectOption(page, trigger, "فترة مخصصة");
+  const reportFrom = page.getByTestId("report-custom-from");
+  const reportTo = page.getByTestId("report-custom-to");
+  await expect(reportFrom).toHaveAttribute("type", "text");
+  await expect(reportTo).toHaveAttribute("type", "text");
+  await reportFrom.fill("01/01/2020 00:00");
+  await reportTo.fill("31/01/2020 23:59");
+  await expect(page.getByTestId("report-range-label")).toContainText("01/01/2020");
+  await expect(page.getByTestId("report-range-label")).toContainText("31/01/2020");
+
+  // an impossible bound is refused visibly rather than widening the window
+  await reportFrom.fill("31/02/2020 00:00");
+  await reportFrom.blur();
+  await expect(page.getByTestId("report-custom-from-error")).toContainText("01/10/2026 00:34");
+  await expect(reportFrom).toHaveAttribute("aria-invalid", "true");
 });
 test("create a new expense category from the expenses screen and record against it", async ({ page }) => {
   await ensureAuthed(page);
@@ -246,4 +291,46 @@ test("create a new expense category from the expenses screen and record against 
   // ending "…5312" plus "5000" renders "…5312500", which contains "1250").
   const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: categoryName });
   await expect(row).toContainText(amount);
+});
+
+test("custom range controls stack and stay inside their column on a narrow window", async ({ page }) => {
+  await ensureAuthed(page);
+  await page.setViewportSize({ width: 420, height: 800 });
+
+  for (const screen of [
+    { path: "/expenses", preset: "expense-range-preset", from: "expense-custom-from", to: "expense-custom-to" },
+    { path: "/reports", preset: "report-range-preset", from: "report-custom-from", to: "report-custom-to" },
+  ]) {
+    await page.goto(screen.path);
+    await chooseSelectOption(page, page.getByTestId(screen.preset), "فترة مخصصة");
+
+    const from = page.getByTestId(screen.from);
+    const to = page.getByTestId(screen.to);
+    const fromBox = await from.boundingBox();
+    const toBox = await to.boundingBox();
+    expect(fromBox).not.toBeNull();
+    expect(toBox).not.toBeNull();
+    // narrow width: the two bounds stack instead of sharing a fixed pair of columns
+    expect(toBox!.y).toBeGreaterThan(fromBox!.y + fromBox!.height / 2);
+
+    // the input can shrink (min-w-0): without it its intrinsic minimum wins the
+    // flex row and pushes the non-shrinking «الآن» button out of the column
+    expect(await from.evaluate((el) => getComputedStyle(el).minWidth)).toBe("0px");
+
+    // and the input + button row stays inside its own column
+    const spill = await from.evaluate((el) => {
+      const row = el.closest("div.flex");
+      const column = row?.parentElement;
+      if (row === null || column === null) return null;
+      const columnRect = column.getBoundingClientRect();
+      const children = Array.from(row.children).map((child) => child.getBoundingClientRect());
+      return {
+        left: Math.min(...children.map((rect) => rect.left)) - columnRect.left,
+        right: Math.max(...children.map((rect) => rect.right)) - columnRect.right,
+      };
+    });
+    expect(spill).not.toBeNull();
+    expect(spill!.left).toBeGreaterThanOrEqual(-1);
+    expect(spill!.right).toBeLessThanOrEqual(1);
+  }
 });

@@ -7,11 +7,11 @@ import type { ReportRangePreset } from "@dokan/contracts";
 import { Amount } from "@/components/ui/amount";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DateField } from "@/components/ui/date-field";
 
 import { tError } from "../lib/i18n";
-import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
-import { formatDate } from "../lib/dates";
+import { editDateBound, formatDate, OPEN_BOUND, type DateBound } from "../lib/dates";
 
 /**
  * Ticket 31 — profit report (/reports). Six figures over one Algeria-local
@@ -31,11 +31,6 @@ function toPreset(value: string): ReportRangePreset {
   return "CURRENT_MONTH";
 }
 
-function withSeconds(value: string): string | undefined {
-  if (value === "") return undefined;
-  return value.length === 16 ? `${value}:00` : value;
-}
-
 /**
  * The api resolves the report window to Algeria-local ISO moments
  * ("YYYY-MM-DDTHH:mm:ss"). The period line shows just the two calendar days in
@@ -47,12 +42,12 @@ function withSeconds(value: string): string | undefined {
 export function ReportsPage() {
   const { t } = useTranslation();
   const [preset, setPreset] = useState<ReportRangePreset>("CURRENT_MONTH");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
+  const [customFrom, setCustomFrom] = useState<DateBound>(OPEN_BOUND);
+  const [customTo, setCustomTo] = useState<DateBound>(OPEN_BOUND);
 
   const report = useQuery(
     orpc.reportsProfit.queryOptions({
-      input: { preset, customFrom: withSeconds(customFrom), customTo: withSeconds(customTo) },
+      input: { preset, customFrom: customFrom.bound, customTo: customTo.bound },
     }),
   );
 
@@ -85,15 +80,25 @@ export function ReportsPage() {
           )}
         </div>
         {preset === "CUSTOM" && (
-          <div className="grid grid-cols-2 gap-3">
-            <label className="grid gap-1">
-              {t("expensesCustomFrom")}
-              <input type="datetime-local" className={inputClass} value={customFrom} onChange={(event) => setCustomFrom(event.target.value)} data-testid="report-custom-from" />
-            </label>
-            <label className="grid gap-1">
-              {t("expensesCustomTo")}
-              <input type="datetime-local" className={inputClass} value={customTo} onChange={(event) => setCustomTo(event.target.value)} data-testid="report-custom-to" />
-            </label>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid gap-1">
+              <label htmlFor="report-custom-from">{t("expensesCustomFrom")}</label>
+              <DateField
+                id="report-custom-from"
+                value={customFrom.text}
+                onValueChange={(text) => setCustomFrom((previous) => editDateBound(previous, text))}
+                testId="report-custom-from"
+              />
+            </div>
+            <div className="grid gap-1">
+              <label htmlFor="report-custom-to">{t("expensesCustomTo")}</label>
+              <DateField
+                id="report-custom-to"
+                value={customTo.text}
+                onValueChange={(text) => setCustomTo((previous) => editDateBound(previous, text))}
+                testId="report-custom-to"
+              />
+            </div>
           </div>
         )}
         {report.data !== undefined && (

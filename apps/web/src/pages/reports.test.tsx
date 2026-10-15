@@ -8,7 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
-
+import i18n from "../lib/i18n";
+import { parseDateTimeText } from "../lib/dates";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 /**
@@ -27,6 +28,8 @@ interface ProfitReportFixture {
 }
 
 let report: ProfitReportFixture;
+/** the last input the page sent to reportsProfit, for the custom-bounds specs */
+let lastReportInput: { preset?: string; customFrom?: string; customTo?: string } | null = null;
 
 // The page resolves its single query through orpc.reportsProfit.queryOptions;
 // mock the rpc module so the test drives a fixture without a network seam.
@@ -34,11 +37,15 @@ mock.module("@/lib/rpc", () => ({
   orpc: {
     reportsProfit: {
       // SAFETY: mirror the real tanstack-query utils signature ({ input }) —
-      // the page sends { preset, customFrom, customTo }, ignored by the fixture
-      queryOptions: ({ input }: { input: unknown }) => ({
-        queryKey: ["reportsProfit", input],
-        queryFn: async (): Promise<ProfitReportFixture> => report,
-      }),
+      // the page sends { preset, customFrom, customTo }, recorded for the
+      // custom-bounds specs and otherwise ignored by the fixture
+      queryOptions: ({ input }: { input: { preset?: string; customFrom?: string; customTo?: string } }) => {
+        lastReportInput = input;
+        return {
+          queryKey: ["reportsProfit", input],
+          queryFn: async (): Promise<ProfitReportFixture> => report,
+        };
+      },
     },
   },
   rpcClient: {},
@@ -65,6 +72,24 @@ async function mountPage(queryClient: QueryClient) {
     container: () => container,
     text: () => container.textContent ?? "",
     rangeLabel: () => container.querySelector<HTMLElement>("[data-testid='report-range-label']"),
+    type: async (testid: string, value: string) => {
+      const input = container.querySelector<HTMLInputElement>(`[data-testid="${testid}"]`);
+      if (input === null) throw new Error(`missing ${testid}`);
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      await act(async () => {
+        setter.call(input, value);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    },
+    click: async (testid: string) => {
+      const element = container.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+      if (element === null) throw new Error(`missing ${testid}`);
+      await act(async () => {
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    },
     waitFor: async (check: () => boolean) => {
       for (let attempt = 0; attempt < 50; attempt++) {
         if (check()) return true;
@@ -209,6 +234,108 @@ describe("ReportsPage range label (#73)", () => {
     expect(await page.waitFor(() => trigger.getAttribute("aria-expanded") === "false")).toBe(true);
     // Escape dismisses without committing a new preset
     expect(trigger.textContent).toContain("الشهر الحالي");
+
+    await page.unmount();
+  });
+});
+
+describe("ReportsPage custom bounds (issue #123)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    document.body.innerHTML = "";
+    mountedRoots = [];
+    report = fixture();
+    lastReportInput = null;
+  });
+
+  afterEach(() => {
+    for (const { root, container } of mountedRoots) {
+      root.unmount();
+      container.remove();
+    }
+    mountedRoots = [];
+    queryClient.clear();
+  });
+
+  async function openCustomRange(page: Awaited<ReturnType<typeof mountPage>>) {
+    const trigger = page.container().querySelector<HTMLButtonElement>('[data-testid="report-range-preset"]');
+    if (trigger === null) throw new Error("missing report-range-preset");
+    await openSelect(trigger);
+    const option = await findOption("فترة مخصصة");
+    expect(option).not.toBeNull();
+    await activateOption(option!);
+    expect(await page.waitFor(() => page.container().querySelector('[data-testid="report-custom-from"]') !== null)).toBe(true);
+  }
+
+  it("shows day-first text bounds, never the OS datetime-local control", async () => {
+    const page = await mountPage(queryClient);
+    await openCustomRange(page);
+
+    const from = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-from"]');
+    const to = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-to"]');
+    expect(from?.type).toBe("text");
+    expect(to?.type).toBe("text");
+    expect(from?.getAttribute("placeholder")).toBe(i18n.t("expenseDateHint"));
+
+    await page.unmount();
+  });
+
+  it("sends the typed day-first bounds as the api's ISO moments", async () => {
+    const page = await mountPage(queryClient);
+    await openCustomRange(page);
+
+    await page.type("report-custom-from", "01/01/2020 00:00");
+    await page.type("report-custom-to", "31/01/2020 23:59");
+
+    expect(await page.waitFor(() => lastReportInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    expect(lastReportInput).toMatchObject({ preset: "CUSTOM", customFrom: "2020-01-01T00:00:00", customTo: "2020-01-31T23:59:00" });
+
+    await page.unmount();
+  });
+
+  it("refuses an impossible bound visibly and keeps the last applied window", async () => {
+    const page = await mountPage(queryClient);
+    await openCustomRange(page);
+
+    await page.type("report-custom-from", "01/01/2020 00:00");
+    expect(await page.waitFor(() => lastReportInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+
+    await page.type("report-custom-from", "31/02/2020 00:00");
+    const from = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-from"]')!;
+    await act(async () => {
+      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    const error = page.container().querySelector<HTMLElement>('[data-testid="report-custom-from-error"]');
+    expect(error?.getAttribute("role")).toBe("alert");
+    expect(error?.textContent).toContain(i18n.t("expenseDateInvalid"));
+    // the impossible value is not applied; the window keeps its last bound
+    expect(lastReportInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    // correcting the value clears the refusal and applies the new bound
+    await page.type("report-custom-from", "02/01/2020 00:00");
+    expect(from.getAttribute("aria-invalid")).toBeNull();
+    expect(page.container().querySelector('[data-testid="report-custom-from-error"]')).toBeNull();
+    expect(await page.waitFor(() => lastReportInput?.customFrom === "2020-01-02T00:00:00")).toBe(true);
+
+    await page.unmount();
+  });
+
+  it("fills the upper bound with now from «الآن» and sends it", async () => {
+    const page = await mountPage(queryClient);
+    await openCustomRange(page);
+
+    await page.type("report-custom-to", "15/01/2026 08:05");
+    await page.click("report-custom-to-now");
+
+    const value = page.container().querySelector<HTMLInputElement>('[data-testid="report-custom-to"]')!.value;
+    expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+    expect(value).not.toBe("15/01/2026 08:05");
+    expect(await page.waitFor(() => lastReportInput?.customTo === parseDateTimeText(value))).toBe(true);
 
     await page.unmount();
   });

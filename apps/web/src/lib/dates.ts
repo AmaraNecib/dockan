@@ -155,3 +155,33 @@ export function nowDateTimeText(now: Date = new Date()): string {
   const moment = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   return formatDateTime(moment);
 }
+
+/**
+ * A range bound's live text and the api moment it currently applies. Keeping
+ * the two together is what stops a half-typed value from reaching the query:
+ * the bound only moves when the text is empty or a real, readable moment.
+ */
+export interface DateBound {
+  text: string;
+  /** the api's naive ISO moment; `undefined` is an open bound */
+  bound: string | undefined;
+}
+
+/** An untouched range bound: no text, no filter. Frozen so the two bounds that
+ * share it as a `useState` initial value can never drift. */
+export const OPEN_BOUND: DateBound = Object.freeze({ text: "", bound: undefined });
+
+/**
+ * Fold an edit into a range bound (issue #123). Empty text opens the bound; a
+ * readable moment replaces it; anything else (a half-typed or impossible value)
+ * keeps the previous bound. That is deliberate: if unreadable text dropped the
+ * bound, editing an existing range would refetch the whole list unfiltered on
+ * every keystroke — a widening `datetime-local` never produced. The field's
+ * visible refusal, not a silent widening, tells the owner the value was not
+ * applied.
+ */
+export function editDateBound(previous: DateBound, text: string): DateBound {
+  if (text.trim() === "") return { text, bound: undefined };
+  const parsed = parseDateTimeText(text);
+  return parsed === null ? { text, bound: previous.bound } : { text, bound: parsed };
+}

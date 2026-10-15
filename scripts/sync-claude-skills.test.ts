@@ -409,6 +409,12 @@ describe('nonLockedAgentLinks', () => {
       ).toEqual([])
     })
   })
+
+  it('returns nothing when the agents tree is absent', () => {
+    expect(
+      nonLockedAgentLinks(join(tmpdir(), 'skills-absent-tree'), ['demo']),
+    ).toEqual([])
+  })
 })
 
 describe('skills:check CLI (SKILLS_MIRROR_ROOT)', () => {
@@ -540,23 +546,82 @@ describe('skills:check CLI — hardening edges', () => {
     })
   })
 
-  it('refuses a lock key that would escape the skills directory', () => {
-    withTempRoot((root) => {
-      writeFileSync(
-        join(root, 'skills-lock.json'),
-        JSON.stringify({ skills: { '..': {} } }),
-      )
-      const check = runCli(root)
-      expect(check.status).toBe(1)
-      expect(check.stderr).toContain('unsafe skill name')
+  it('refuses every lock key that would escape the skills directory', () => {
+    for (const name of ['..', '.', 'a/b', 'a\\b', 'C:x', '']) {
+      withTempRoot((root) => {
+        writeFileSync(
+          join(root, 'skills-lock.json'),
+          JSON.stringify({ skills: { [name]: {} } }),
+        )
+        const check = runCli(root)
+        expect(check.status).toBe(1)
+        expect(check.stderr).toContain('unsafe skill name')
 
-      const sync = runCli(root, [])
-      expect(sync.status).toBe(1)
-      expect(sync.stderr).toContain('unsafe skill name')
-      // The real mirror must survive the refusal.
-      expect(
-        readFileSync(join(root, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8'),
-      ).toBe('# demo\n')
+        const sync = runCli(root, [])
+        expect(sync.status).toBe(1)
+        expect(sync.stderr).toContain('unsafe skill name')
+        // The real mirror must survive the refusal.
+        expect(
+          readFileSync(join(root, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8'),
+        ).toBe('# demo\n')
+      })
+    }
+  })
+
+  it('fails closed when skills is not a plain object', () => {
+    for (const value of [[], 'abc', 42]) {
+      withTempRoot((root) => {
+        writeFileSync(
+          join(root, 'skills-lock.json'),
+          JSON.stringify({ skills: value }),
+        )
+        const result = runCli(root)
+        expect(result.status).toBe(1)
+        expect(result.stderr).toContain('no `skills` object')
+      })
+    }
+  })
+
+  it('fails closed when the lock lists no skills', () => {
+    withTempRoot((root) => {
+      writeFileSync(join(root, 'skills-lock.json'), '{"skills":{}}')
+      const result = runCli(root)
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('lists no skills')
+    })
+  })
+
+  it('reports an extra .claude/skills entry', () => {
+    withTempRoot((root) => {
+      mkdirSync(join(root, '.claude', 'skills', 'stray'), { recursive: true })
+      writeFileSync(
+        join(root, '.claude', 'skills', 'stray', 'SKILL.md'),
+        '# stray\n',
+      )
+      const result = runCli(root)
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(
+        '.claude/skills/stray is not in skills-lock.json (extra)',
+      )
+    })
+  })
+
+  it('points a linked mirror at skills:sync, not at hand-editing', () => {
+    withTempRoot((root) => {
+      const target = join(root, 'surrogate')
+      mkdirSync(target)
+      writeFileSync(join(target, 'SKILL.md'), '# real\n')
+      rmSync(join(root, '.claude', 'skills', 'demo'), {
+        recursive: true,
+        force: true,
+      })
+      symlinkSync(target, join(root, '.claude', 'skills', 'demo'), 'junction')
+
+      const result = runCli(root)
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain('.claude/skills/demo is a symlink')
+      expect(result.stderr).toContain('Run `bun run skills:sync`')
+      expect(result.stderr).not.toContain('Replace every symlink')
     })
   })
 

@@ -21,7 +21,7 @@ Do not skip or reorder these steps.
 |------|------|
 | **Lightweight** | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) |
 | **Standard** | Code, CI, workflow, config, skills, UI, API endpoints |
-| **High-assurance** | Auth/RBAC, backup/restore, invoice & debt money calculations, security |
+| **High-assurance** | Auth/RBAC, backup/restore, invoice & debt money calculations, security, a schema-version bump |
 
 Record the tier. Pass it to `guard`.
 
@@ -94,6 +94,8 @@ Load relevant skills from the workflow's quality check table:
 | Hono API routes, middleware, validation | `hono` |
 | Playwright E2E test design | `playwright-best-practices` |
 | Accessibility, RTL, keyboard navigation | `accessibility` |
+| React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
+| TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
 ### 6. Debate — High-assurance only
 
@@ -132,6 +134,10 @@ Run `guard` Phase 2. Verifies:
 
 ### 10. Push + PR
 
+**Parent-owned.** A worker lane stops at step 9 (Guard Phase 2) and reports; the
+parent session pushes, opens the PR and drives the review rounds. A lane that
+pushes is violating its authority boundary, not helping.
+
 Branch naming: `feat/<issue-id>-<short-description>`, `fix/<issue-id>-<description>`,
 `refactor/<issue-id>-<description>`, or `agent/<description>`.
 
@@ -146,15 +152,21 @@ After opening the PR, publish a concise review-evidence summary as a PR comment.
 
 ### 11. CI + Greptile
 
-If the branch has required CI checks on GitHub, wait for them green. This repo
-has no CI workflow yet, so when none exist treat the local Guard Phase 2 run as
-the CI gate and say so in the report.
+**Parent-owned.** `.github/workflows/ci.yml` runs three jobs on every PR to
+`develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
+(cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
 
 Then trigger Greptile:
 - CLI path (preferred): run the `cli-review` skill (`greptile review --json`) against the pinned base
 - PR path: comment `@greptile-apps review` in the PR
-- Address any actionable findings (fix locally → push → wait for CI if any → re-review)
-- Repeat until Greptile passes with no actionable findings
+
+**Verify every finding against the code before fixing it.** Greptile edits its
+comment in place and can re-list findings a later commit already fixed. On #188 a
+third of the reported findings was already implemented; on #190 and #184 two were.
+Read the cited lines, and when a finding is stale, close it on the PR with the
+line evidence instead of re-implementing the fix.
+
+Repeat until Greptile passes with no actionable findings.
 
 ### 12. Guard pre-report (Phase 3) + Capture wisdom
 
@@ -171,16 +183,21 @@ Report to the user: PR link, check status (local + CI), Greptile verdict, any de
 
 ## Merge rules
 
-- The agent may merge **only when ALL** of these are true:
-  1. The user explicitly says to merge
-  2. Local gates green, plus CI green when the branch has CI
-  3. Greptile has no actionable findings
-  4. The agent finds no blocker
-- Merge command:
-  ```bash
-  gh pr merge <num> --squash --subject "<title> (closes #<issue>)"
-  ```
-- If any condition is not met, report to the user — do not merge.
+**Merge only when the owner says to merge.** The agent never merges on its own
+initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
+anchored to the current head SHA, and every CI check green is the **bar to ask** —
+not permission to proceed.
+
+Ask, and wait. Do not treat a clean review as consent, and do not merge "since it
+is green anyway".
+
+Merge command:
+```bash
+gh pr merge <num> --squash --subject "<title> (closes #<issue>)"
+```
+
+A **CI change** (anything under `.github/`) goes to the owner for the diff before
+it merges, whatever Greptile says.
 
 ## Where to start
 

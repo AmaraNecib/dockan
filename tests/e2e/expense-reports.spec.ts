@@ -296,33 +296,41 @@ test("create a new expense category from the expenses screen and record against 
 test("custom range controls stack and stay inside their column on a narrow window", async ({ page }) => {
   await ensureAuthed(page);
   await page.setViewportSize({ width: 420, height: 800 });
-  await page.goto("/expenses");
-  await expect(page.getByTestId("expenses-page")).toBeVisible();
-  await chooseSelectOption(page, page.getByTestId("expense-range-preset"), "فترة مخصصة");
 
-  const from = page.getByTestId("expense-custom-from");
-  const to = page.getByTestId("expense-custom-to");
-  const fromBox = await from.boundingBox();
-  const toBox = await to.boundingBox();
-  expect(fromBox).not.toBeNull();
-  expect(toBox).not.toBeNull();
-  // narrow width: the two bounds stack instead of sharing a fixed pair of columns
-  expect(toBox!.y).toBeGreaterThan(fromBox!.y + fromBox!.height / 2);
+  for (const screen of [
+    { path: "/expenses", preset: "expense-range-preset", from: "expense-custom-from", to: "expense-custom-to" },
+    { path: "/reports", preset: "report-range-preset", from: "report-custom-from", to: "report-custom-to" },
+  ]) {
+    await page.goto(screen.path);
+    await chooseSelectOption(page, page.getByTestId(screen.preset), "فترة مخصصة");
 
-  // and the input + «الآن» row never spills past its own column: the input must
-  // shrink (min-w-0) rather than push the non-shrinking button out
-  const spill = await from.evaluate((el) => {
-    const row = el.closest("div.flex");
-    const column = row?.parentElement;
-    if (row === null || column === null) return null;
-    const columnRect = column.getBoundingClientRect();
-    const children = Array.from(row.children).map((child) => child.getBoundingClientRect());
-    return {
-      left: Math.min(...children.map((rect) => rect.left)) - columnRect.left,
-      right: Math.max(...children.map((rect) => rect.right)) - columnRect.right,
-    };
-  });
-  expect(spill).not.toBeNull();
-  expect(spill!.left).toBeGreaterThanOrEqual(-1);
-  expect(spill!.right).toBeLessThanOrEqual(1);
+    const from = page.getByTestId(screen.from);
+    const to = page.getByTestId(screen.to);
+    const fromBox = await from.boundingBox();
+    const toBox = await to.boundingBox();
+    expect(fromBox).not.toBeNull();
+    expect(toBox).not.toBeNull();
+    // narrow width: the two bounds stack instead of sharing a fixed pair of columns
+    expect(toBox!.y).toBeGreaterThan(fromBox!.y + fromBox!.height / 2);
+
+    // the input can shrink (min-w-0): without it its intrinsic minimum wins the
+    // flex row and pushes the non-shrinking «الآن» button out of the column
+    expect(await from.evaluate((el) => getComputedStyle(el).minWidth)).toBe("0px");
+
+    // and the input + button row stays inside its own column
+    const spill = await from.evaluate((el) => {
+      const row = el.closest("div.flex");
+      const column = row?.parentElement;
+      if (row === null || column === null) return null;
+      const columnRect = column.getBoundingClientRect();
+      const children = Array.from(row.children).map((child) => child.getBoundingClientRect());
+      return {
+        left: Math.min(...children.map((rect) => rect.left)) - columnRect.left,
+        right: Math.max(...children.map((rect) => rect.right)) - columnRect.right,
+      };
+    });
+    expect(spill).not.toBeNull();
+    expect(spill!.left).toBeGreaterThanOrEqual(-1);
+    expect(spill!.right).toBeLessThanOrEqual(1);
+  }
 });

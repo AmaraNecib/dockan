@@ -62,6 +62,38 @@ function fieldInstant(value: string): number {
   return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4]), Number(match[5])).getTime();
 }
 
+/**
+ * A field whose parent can unmount and remount it, the way `preset === "CUSTOM"`
+ * does. The value lives in the parent, so it survives the round trip and the
+ * remounted field must derive its state from it.
+ */
+function mountToggled(initial = "") {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  mounted.push(root);
+
+  function Harness() {
+    const [value, setValue] = useState(initial);
+    const [shown, setShown] = useState(true);
+    return (
+      <div>
+        <button type="button" data-testid="toggle" onClick={() => setShown((current) => !current)} />
+        {shown && <DateField value={value} onValueChange={setValue} testId="date" />}
+      </div>
+    );
+  }
+
+  act(() => root.render(<Harness />));
+  const query = (testid: string) => container.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+  return {
+    query,
+    toggle: () => act(() => query("toggle")!.dispatchEvent(new MouseEvent("click", { bubbles: true }))),
+    // SAFETY: the testid addresses the field's own text input
+    input: () => query("date") as HTMLInputElement,
+  };
+}
+
 describe("DateField (#123)", () => {
   it("wears the app's day-first text shape, never a datetime-local control", () => {
     const ui = mount({}, "01/10/2026 00:34");
@@ -137,42 +169,33 @@ describe("DateField (#123)", () => {
   });
 
   it("keeps a refusal across an unmount/remount (a preset switch)", () => {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    mounted.push(root);
+    const ui = mountToggled();
 
-    function Harness() {
-      const [value, setValue] = useState("");
-      const [shown, setShown] = useState(true);
-      return (
-        <div>
-          <button type="button" data-testid="toggle" onClick={() => setShown((current) => !current)} />
-          {shown && <DateField value={value} onValueChange={setValue} testId="date" />}
-        </div>
-      );
-    }
-
-    act(() => root.render(<Harness />));
-    const query = (testid: string) => container.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
-
-    // SAFETY: the testid addresses the field's own text input
-    typeInto(query("date") as HTMLInputElement, "31/02/2026 00:00");
-    // SAFETY: the same field input is still mounted
-    blur(query("date") as HTMLInputElement);
-    expect(query("date-error")).not.toBeNull();
+    typeInto(ui.input(), "31/02/2026 00:00");
+    blur(ui.input());
+    expect(ui.query("date-error")).not.toBeNull();
 
     // the field unmounts (the preset left CUSTOM); the parent still holds the text
-    act(() => query("toggle")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(query("date")).toBeNull();
+    ui.toggle();
+    expect(ui.query("date")).toBeNull();
 
     // and remounts: the unreadable value derives its refusal again, not clean
-    act(() => query("toggle")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    // SAFETY: the remounted field renders the same testid on its text input
-    const remounted = query("date") as HTMLInputElement;
+    ui.toggle();
+    const remounted = ui.input();
     expect(remounted.value).toBe("31/02/2026 00:00");
     expect(remounted.getAttribute("aria-invalid")).toBe("true");
     expect(remounted.getAttribute("aria-describedby")).toBe("date-error");
-    expect(query("date-error")?.textContent).toContain(i18n.t("expenseDateInvalid"));
+    expect(ui.query("date-error")?.textContent).toContain(i18n.t("expenseDateInvalid"));
+  });
+
+  it("remounts clean for a readable value", () => {
+    const ui = mountToggled("28/02/2026 00:00");
+    ui.toggle();
+    ui.toggle();
+
+    const remounted = ui.input();
+    expect(remounted.value).toBe("28/02/2026 00:00");
+    expect(remounted.getAttribute("aria-invalid")).toBeNull();
+    expect(ui.query("date-error")).toBeNull();
   });
 });

@@ -53,10 +53,13 @@ genuinely differ:
 - **Controlled** (record form): the parent passes `invalid` + `errorId`; the
   field marks `aria-invalid` and points `aria-describedby` at the form-level
   `expense-error` alert it already renders. No second error node.
-- **Uncontrolled** (range filters, which have no submit): the field renders its
-  own inline `role="alert"` node (`${testId}-error`) once the field has been
-  blurred with an unreadable value, so a half-typed value is not scolded
-  mid-keystroke. Typing a readable value clears it.
+- **Uncontrolled** (range filters, which have no submit): the field derives its
+  own inline `role="alert"` node (`${testId}-error`) from the value whenever it
+  is unreadable and no keystroke is in flight, so a half-typed value is not
+  scolded mid-keystroke. Because the refusal is derived, not a mount-local flag,
+  an unreadable value the parent still holds keeps its warning across an
+  unmount/remount (switching the range preset away and back). Typing a readable
+  value clears it.
 
 No `Date`, no `Intl`, no `dir` override — same bidi rules as #119.
 
@@ -76,6 +79,9 @@ refetching the whole list unfiltered on every keystroke — a widening
 `datetime-local` never produced. The bound the api receives is the same naive
 ISO moment (`2020-01-01T00:00:00`) `datetime-local` + `withSeconds` produced.
 The field's visible refusal, not a silent widening, says a value was not applied.
+The pager is reset **only when the applied bound actually moves**: a refused or
+half-typed edit keeps the previous bound and must not jump a later history page
+back to page one.
 The record form is unaffected: it keeps a plain text state and parses once at
 submit.
 
@@ -106,9 +112,9 @@ relies on it and repeats the assertion at the field level.
   `develop` @ `a0b9671`) and the `editDateBound` fold (empty / readable /
   half-typed / impossible).
 - `components/ui/date-field.test.tsx` (new) — `type="text"` + shared placeholder,
-  `onValueChange` on edit, «الآن» writes a now-shaped value, uncontrolled
-  refusal after blur with `aria-invalid`/own alert, controlled `invalid` +
-  `errorId` wiring with no own node, disabled disables both.
+  `onValueChange` on edit, «الآن» writes a now-shaped value, refusal after blur
+  with `aria-invalid`/own alert that survives an unmount/remount, controlled
+  `invalid` + `errorId` wiring with no own node, disabled disables both.
 - `pages/expenses.test.tsx` — custom bounds send the parsed ISO; an impossible
   bound shows the visible error and keeps the last applied bound; errors on both
   the `from` and `to` bounds; «الآن» fills and sends.
@@ -121,7 +127,9 @@ relies on it and repeats the assertion at the field level.
 
 ## Risks
 
-- The filter refusal is blur-based; the specs must blur (`.fill` then blur).
+- The filter refusal is derived from the value; only a keystroke in flight
+  suppresses it, so the specs must blur (`.fill` then blur) to see it. A refused
+  or half-typed edit keeps the last applied bound and does not reset the pager.
 - RTL bidi can only be seen in a browser, not a unit test — the component keeps
   the #119 rule (plain text run, no `dir` forcing).
 - `inputClass` now carries `aria-invalid:` border/ring tokens, so a raw input

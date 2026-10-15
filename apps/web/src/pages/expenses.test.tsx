@@ -39,13 +39,9 @@ interface ExpenseResponse {
 }
 
 /** One row of the history list envelope the page paginates. */
-interface ExpenseRow {
-  id: string;
-  categoryId: string;
-  amount: number;
+interface ExpenseRow extends ExpenseResponse {
   note: string | null;
   occurredAt: string;
-  createdAt: string;
 }
 
 interface ExpenseMutationOptions {
@@ -199,6 +195,15 @@ async function mountPage(queryClient: QueryClient) {
     submit: async (testid: string) => {
       await act(async () => {
         query<HTMLFormElement>(testid)!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    },
+    /** Leave a field: React routes onBlur through the bubbling focusout event. */
+    blur: async (testid: string) => {
+      const input = query<HTMLInputElement>(testid);
+      expect(input).not.toBeNull();
+      await act(async () => {
+        input!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
         await new Promise((resolve) => setTimeout(resolve, 20));
       });
     },
@@ -918,10 +923,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     // the #119 follow-up already refuses the calendar-impossible day at the parse
     expect(parseDateTimeText("31/02/2020 00:00")).toBeNull();
 
-    await act(async () => {
-      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    await ui.blur("expense-custom-from");
 
     expect(from.getAttribute("aria-invalid")).toBe("true");
     const error = ui.query("expense-custom-from-error");
@@ -963,10 +965,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
 
     const to = ui.query<HTMLInputElement>("expense-custom-to")!;
     await ui.type("expense-custom-to", "31/02/2020 00:00");
-    await act(async () => {
-      to.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    await ui.blur("expense-custom-to");
 
     expect(to.getAttribute("aria-invalid")).toBe("true");
     expect(ui.query("expense-custom-to-error")?.getAttribute("role")).toBe("alert");
@@ -1007,10 +1006,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     // a refused edit keeps the applied bound, so the offset must not jump to 0
     const from = ui.query<HTMLInputElement>("expense-custom-from")!;
     await ui.type("expense-custom-from", "31/02/2020 00:00");
-    await act(async () => {
-      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    await ui.blur("expense-custom-from");
 
     expect(from.getAttribute("aria-invalid")).toBe("true");
     expect(ui.query("expense-custom-from-error")).not.toBeNull();
@@ -1034,10 +1030,7 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
 
     const from = ui.query<HTMLInputElement>("expense-custom-from")!;
     await ui.type("expense-custom-from", "31/02/2020 00:00");
-    await act(async () => {
-      from.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
+    await ui.blur("expense-custom-from");
     expect(from.getAttribute("aria-invalid")).toBe("true");
     expect(ui.query("expense-custom-from-error")).not.toBeNull();
 
@@ -1061,6 +1054,52 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     expect(ui.query("expense-custom-from-error")?.getAttribute("role")).toBe("alert");
     // the window never moved: the refusal is not a silent widening
     expect(lastListInput?.customFrom).toBe("2020-01-01T00:00:00");
+
+    await ui.unmount();
+  });
+
+  it("keeps a later history page when a refused upper-bound edit is not applied", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    await ui.type("expense-custom-to", "31/12/2020 23:59");
+    expect(await ui.waitFor(() => lastListInput?.customTo === "2020-12-31T23:59:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const laterOffset = lastListInput!.offset;
+
+    const to = ui.query<HTMLInputElement>("expense-custom-to")!;
+    await ui.type("expense-custom-to", "31/02/2020 00:00");
+    await ui.blur("expense-custom-to");
+
+    expect(to.getAttribute("aria-invalid")).toBe("true");
+    expect(lastListInput?.customTo).toBe("2020-12-31T23:59:00");
+    expect(lastListInput?.offset).toBe(laterOffset);
+
+    await ui.unmount();
+  });
+
+  it("resets to page one only when clearing a bound that was applied", async () => {
+    listTotal = 1000;
+    const ui = await mountPage(queryClient);
+    await openCustomRange(ui);
+
+    // nothing applied yet: clearing the already-open bound is not a filter change
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    const openOffset = lastListInput!.offset;
+    await ui.type("expense-custom-from", "");
+    expect(lastListInput?.offset).toBe(openOffset);
+
+    // apply a bound, move off page one, then clear: the applied moment moved
+    await ui.type("expense-custom-from", "01/01/2020 00:00");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === "2020-01-01T00:00:00")).toBe(true);
+    await ui.click("expenses-pager-next");
+    expect(await ui.waitFor(() => (lastListInput?.offset ?? 0) > 0)).toBe(true);
+    await ui.type("expense-custom-from", "");
+    expect(await ui.waitFor(() => lastListInput?.customFrom === undefined)).toBe(true);
+    expect(lastListInput?.offset).toBe(0);
 
     await ui.unmount();
   });

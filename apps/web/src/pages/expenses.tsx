@@ -129,7 +129,9 @@ export function ExpensesPage() {
    * the *applied* moment actually moved. A half-typed or impossible value keeps
    * the previous bound (editDateBound), so an unconditional reset would jump a
    * later history page back to page one for a filter that never changed
-   * (Greptile round 1, finding 2).
+   * (Greptile round 1, finding 2). `previous` is read from the render the
+   * handler was created in, which is current because each edit is one discrete,
+   * synchronously flushed event — never two `onValueChange` calls in one batch.
    */
   function applyBoundEdit(
     previous: DateBound,
@@ -434,7 +436,14 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={preset}
-                onValueChange={(value) => { setPreset(toPreset(value ?? "")); pager.reset(); }}
+                onValueChange={(value) => {
+                  const next = toPreset(value ?? "");
+                  // re-selecting the current preset is not a filter change: it
+                  // must not throw a later page back to page one (finding 2's class)
+                  if (next === preset) return;
+                  setPreset(next);
+                  pager.reset();
+                }}
                 items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
               >
                 <SelectTrigger className="w-full" data-testid="expense-range-preset">
@@ -449,7 +458,12 @@ export function ExpensesPage() {
               {t("expensesSortBy")}
               <Select
                 value={sortBy}
-                onValueChange={(value) => { setSortBy(value === "amount" ? "amount" : "occurredAt"); pager.reset(); }}
+                onValueChange={(value) => {
+                  const next = value === "amount" ? "amount" : "occurredAt";
+                  if (next === sortBy) return;
+                  setSortBy(next);
+                  pager.reset();
+                }}
                 items={[
                   { value: "occurredAt", label: t("expensesSortByDate") },
                   { value: "amount", label: t("expensesSortByAmount") },
@@ -468,7 +482,12 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={sortDir}
-                onValueChange={(value) => { setSortDir(value === "asc" ? "asc" : "desc"); pager.reset(); }}
+                onValueChange={(value) => {
+                  const next = value === "asc" ? "asc" : "desc";
+                  if (next === sortDir) return;
+                  setSortDir(next);
+                  pager.reset();
+                }}
                 items={[
                   { value: "desc", label: t("expensesSortDesc") },
                   { value: "asc", label: t("expensesSortAsc") },
@@ -510,7 +529,13 @@ export function ExpensesPage() {
             <button
               type="button"
               className={`rounded-full border px-3 py-1 text-sm ${selectedCategoryIds.size === 0 ? "bg-primary text-primary-foreground" : "bg-card text-foreground"}`}
-              onClick={() => { setSelectedCategoryIds(new Set()); pager.reset(); }}
+              onClick={() => {
+                // the active pill is a no-op: resetting here would move a later
+                // page with no filter change (finding 2's class)
+                if (selectedCategoryIds.size === 0) return;
+                setSelectedCategoryIds(new Set());
+                pager.reset();
+              }}
               data-testid="expense-filter-all"
             >
               {t("expensesAllCategories")}

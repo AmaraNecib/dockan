@@ -2,13 +2,12 @@
 
 Tier: **Standard**. The gate protects the skill mirrors, so it must fail closed.
 
-## Base note (important)
+## Base note
 
-The brief names `origin/develop` (`68f5107`) and claims it contains #199's gate.
-It does not: PR #199 (`chore-workflow-docs-and-tanstack-skills`) is still OPEN and
-`scripts/sync-claude-skills.ts` exists only on that branch. This lane is stacked
-on #199's head `f60d357`; review diff is `git diff f60d357...HEAD`, and the
-branch must be rebased onto `develop` once #199 merges.
+Originally stacked on PR #199's head `f60d357` because `origin/develop` did not
+yet carry the gate. #199 has since merged as `4bf10be`, and this branch is
+rebased onto it; the review diff is now `git diff origin/develop...HEAD`, and the
+only delta from the pre-rebase stack is #199's landed binary-comparison fix.
 
 ## Gaps and fixes
 
@@ -51,7 +50,9 @@ The full suite still runs for Guard.
 
 ## Risks
 
-- Stacked base; isolated to `scripts/` so it rebases cleanly.
+- The rebase onto `origin/develop` auto-merged #199's binary-comparison fix; the
+  #218 logic is byte-identical to the pre-rebase stack (verified by diff).
+- Isolated to `scripts/` so it rebases cleanly.
 - Windows junctions vs POSIX symlinks: tests use `junction` (no admin on Windows,
   a normal symlink on POSIX), matching #199's fixtures.
 - The whole-tree walk is O(entries) per check; the tree is small (32 skills).

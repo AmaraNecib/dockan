@@ -1,7 +1,8 @@
-# Design — #206 (cover the vault-port property; make `backups.spec.ts` data-dir aware)
+# Design: #206 (cover the vault-port property; make `backups.spec.ts` data-dir aware)
 
 **Tier:** Standard (test + docs only; no app/contract/schema change).
-**Base:** `origin/develop` @ `21dbc13` (== current `HEAD`).
+**Base:** `origin/develop` @ `3c3abcf` after the rebase; the first draft sat on
+`21dbc13`, which the rebase replaced.
 **Issue:** #206, follow-up to #202 / PR #205.
 
 ## Problem
@@ -30,7 +31,7 @@ packages/e2e-support/
   src/vault-ports.test.ts
 ```
 
-Interface (the test surface — callers and tests cross the same seam):
+Interface, the seam the callers and tests both cross:
 
 ```ts
 export const VAULT_API_PORT_DEFAULT = 4399;
@@ -70,7 +71,7 @@ const backupsDir = path.join(dataDir, "backups");
 Matches `playwright.config.ts` and `00-onboarding.spec.ts`. With the variable
 unset the path is the current default, so the spec passes unchanged.
 
-### 3. Two concurrent vault runs — documentation, not a racy test (brief override)
+### 3. Two concurrent vault runs: documentation, not a racy test (brief override)
 
 The brief overrides the issue's requested "opt-in CI job": a deterministic
 version needs two full vault suites (each spins its own API+web pair in
@@ -84,7 +85,7 @@ and the reason it is not in CI.
 
 ## Planned tests / evidence
 
-- Unit: `packages/e2e-support/src/vault-ports.test.ts` — defaults (4399/5174),
+- Unit: `packages/e2e-support/src/vault-ports.test.ts` covers defaults (4399/5174),
   blank/whitespace-means-unset, explicit overrides, the
   1..65535 boundary, out-of-range/non-integer/non-numeric rejection with the
   name in the message, per-port independence, and the `process.env` default
@@ -106,7 +107,7 @@ and the reason it is not in CI.
   passed the gate and first-run tests on their own servers (no cross-talk), then
   both timed out at test 3's 5 s post-KDF assertion. The trace shows
   `reset-passphrase` never completed while `unlock` took 3.2 s and
-  `unlock-recovery` 2.1 s — pure-TS Argon2id (32 MiB × 3) under doubled load,
+  `unlock-recovery` 2.1 s. Pure-TS Argon2id at 32 MiB × 3 under doubled load,
   not a port collision. `docs/ci.md` now states that signature; the lesson is in
   `.agents/wisdom/2026-10-15-vault-concurrent-runs-are-kdf-bound.md`.
 

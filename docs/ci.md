@@ -78,7 +78,7 @@ Run this on an otherwise-idle host. Two runs boot the config's shared pair *and*
 the vault spec's own pair (eight servers) and perform two Argon2id derivations
 (32 MiB × 3 iterations, pure TS); the post-KDF UI assertions use Playwright's 5 s
 default, so a CPU-saturated host can time a run out at `vault-recovery-key` or
-`vault-settings-saved`. That is KDF contention, not cross-talk — measured in
+`vault-settings-saved`. That is KDF contention, not cross-talk. Measured in
 #206 at `unlock` 3.2 s, `unlock-recovery` 2.1 s and `reset-passphrase` >5 s with
 two runs plus other lanes on a 12-core host.
 

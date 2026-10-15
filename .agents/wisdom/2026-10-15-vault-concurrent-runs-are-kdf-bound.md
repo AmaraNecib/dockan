@@ -4,7 +4,7 @@
 
 Two concurrent `playwright test tests/e2e/vault.spec.ts` runs on disjoint shared
 pairs (`DOKAN_PORT`/`DOKAN_WEB_PORT`) **and** disjoint vault pairs
-(`DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT`) both failed — but at the *same late
+(`DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT`) both failed, but at the *same late
 test*, not at the gate:
 
 - test 1 (passphrase reveal / gate) passed in both,
@@ -17,7 +17,7 @@ The trace says why. `POST /api/vault/reset-passphrase` never completed
 (`"time":-1`), while the earlier `unlock` took 3.2 s and `unlock-recovery` 2.1 s.
 The vault KDF is pure-TS Argon2id at 32 MiB × 3 iterations
 (`apps/api/src/lib/vault/crypto.ts`), i.e. CPU-bound. Two concurrent runs boot
-the config's shared pair *and* the vault pair each — eight servers — and perform
+the config's shared pair *and* the vault pair each, eight servers, and perform
 two KDFs at once; on a 12-core host that was already running other lanes, the
 post-KDF request exceeded 5 s.
 
@@ -27,7 +27,7 @@ post-KDF request exceeded 5 s.
 vault pair fails test 1 immediately with the wrong gate (`فتح الخزنة`/login
 instead of `إنشاء الخزنة`). Disjoint pairs pass tests 1-2 on each run's own
 server. A later timeout at `vault-recovery-key`/`vault-settings-saved` is KDF
-contention, not cross-talk — attribute it before suspecting the ports.
+contention, not cross-talk. Attribute it before suspecting the ports.
 
 **Run the concurrent procedure on an otherwise-idle host**, and say which host
 state it was run in. The brief for #206 forbids raising timeouts, which is

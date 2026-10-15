@@ -49,6 +49,13 @@ describe("resolveVaultPorts", () => {
     expect(resolveVaultPorts({ DOKAN_VAULT_PORT: " 4510 " }).api).toBe(4510);
   });
 
+  // Pins the documented parsing: `Number()`, same as the api's DOKAN_PORT, so a
+  // refactor to parseInt/regex cannot quietly change what a value means.
+  it("parses with Number(), so hex and exponent strings resolve as numbers", () => {
+    expect(resolveVaultPorts({ DOKAN_VAULT_PORT: "0x10" }).api).toBe(16);
+    expect(resolveVaultPorts({ DOKAN_VAULT_WEB_PORT: "1e3" }).web).toBe(1000);
+  });
+
   it("defaults to process.env when no environment is injected", () => {
     const savedApi = process.env.DOKAN_VAULT_PORT;
     const savedWeb = process.env.DOKAN_VAULT_WEB_PORT;
@@ -67,15 +74,18 @@ describe("resolveVaultPorts", () => {
   const invalid = ["0", "-1", "65536", "4399.5", "abc", "NaN", "Infinity"];
 
   for (const raw of invalid) {
+    // `toThrow(new Error(...))` matches the message exactly; `toThrow(string)`
+    // only checks a substring, which would pass on a message that merely
+    // contains the expected text (verified against bun:test).
     it(`rejects ${JSON.stringify(raw)} for DOKAN_VAULT_PORT by name`, () => {
       expect(() => resolveVaultPorts({ DOKAN_VAULT_PORT: raw })).toThrow(
-        `DOKAN_VAULT_PORT must be a port number, got ${JSON.stringify(raw)}`,
+        new Error(`DOKAN_VAULT_PORT must be a port number, got ${JSON.stringify(raw)}`),
       );
     });
 
     it(`rejects ${JSON.stringify(raw)} for DOKAN_VAULT_WEB_PORT by name`, () => {
       expect(() => resolveVaultPorts({ DOKAN_VAULT_WEB_PORT: raw })).toThrow(
-        `DOKAN_VAULT_WEB_PORT must be a port number, got ${JSON.stringify(raw)}`,
+        new Error(`DOKAN_VAULT_WEB_PORT must be a port number, got ${JSON.stringify(raw)}`),
       );
     });
   }

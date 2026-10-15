@@ -101,6 +101,44 @@ test("actAndAck reports the action error, not a refused RPC, with no unhandled r
   }
 });
 
+test("an action that throws before the armed read is awaited leaves no unhandled refusal", async ({
+  page,
+}) => {
+  await openNewCustomerForm(page);
+  const { rpcUrl, refused } = await refuseCustomersCreate(page);
+  const { unhandled, stop } = trackUnhandledRejections();
+  try {
+    let thrown: Error | undefined;
+    try {
+      await actAndAck(page, "customersCreate", async () => {
+        // A short timeout makes the abandoned wait reject inside this test
+        // rather than at Playwright's 30 s default or page teardown.
+        const refusal = page.waitForResponse(rpcUrl, { timeout: 100 });
+        void refusal.catch(() => undefined);
+        // Throw BEFORE awaiting `refusal`, so the wait is abandoned and only
+        // the creation-time handler can absorb its rejection. Without that
+        // handler it rejects unhandled and buries the action error — the same
+        // defect the test above pins in `actAndAck`.
+        throw new Error("ACTION_FAILED_EARLY");
+      });
+    } catch (error) {
+      thrown = error instanceof Error ? error : new Error(String(error));
+    }
+
+    expect(thrown?.message).toBe("ACTION_FAILED_EARLY");
+    // The abandoned wait never matched, so nothing was refused here.
+    expect(refused()).toBe(0);
+    // Longer than the abandoned wait's 100 ms timeout, so its rejection has
+    // definitely fired before the assertion.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fromRefusal = unhandled.filter((message) => message.includes("waitForResponse"));
+    expect(fromRefusal, `unhandled rejections: ${unhandled.join(" | ")}`).toEqual([]);
+  } finally {
+    stop();
+    await page.unroute(rpcUrl);
+  }
+});
+
 test("actAndAck still reports a refused RPC when the action completes", async ({ page }) => {
   await openNewCustomerForm(page);
   const { rpcUrl, refused } = await refuseCustomersCreate(page);

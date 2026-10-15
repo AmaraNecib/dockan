@@ -1244,6 +1244,104 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(captured).toBeNull();
   });
 
+  /** Greptile round 3 — the two supplier reads that gate the save. A waiting
+   * submission must consult the read failure that exists when it writes, not the
+   * one the render that started it saw. */
+  const WAITING_READ_FAILURES: Array<{ label: string; queryKey: string[]; fail: () => void; recover: () => void }> = [
+    { label: "names read", queryKey: ["suppliersListNames"], fail: () => { namesShouldFail = true; }, recover: () => { namesShouldFail = false; } },
+    { label: "account summary read", queryKey: ["suppliersAccountSummaries"], fail: () => { accountsShouldFail = true; }, recover: () => { accountsShouldFail = false; } },
+  ];
+  for (const { label, queryKey, fail, recover } of WAITING_READ_FAILURES) {
+    it(`does not write when the ${label} fails while the name lookup is held (#183, Greptile round 3)`, async () => {
+      // park submit() inside its resolve await, then fail the read WHILE it
+      // waits. Failing the read before submit() starts would pass even against
+      // the defect: the render that started submit() would already carry
+      // `listFailed === true`.
+      resolveHold = new Promise((resolve) => {
+        releaseResolveHold = resolve;
+      });
+      render();
+      await settle();
+      // a new supplier (the resolver answers null) with no entries: this row
+      // takes the direct-save path the finding names
+      setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+      setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+      await act(async () => {
+        clickOn("opening-balance-save");
+      });
+      expect(resolveCalls).toBe(1);
+
+      fail();
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey });
+      });
+      await settle();
+      // the read really failed while the lookup was still held
+      expect(clickTarget("opening-balance-error")).not.toBeNull();
+
+      // release the held lookup: the waiting continuation must not write
+      await act(async () => {
+        releaseResolveHold?.();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await settle();
+      expect(captured).toBeNull();
+      expect(mutationCalls).toBe(0);
+      expect(host.querySelector('[data-testid="opening-balance-saved"]')).toBeNull();
+
+      // recovery: clearing the failure must unblock the owner, and a fresh
+      // write proves the released continuation really resumed (a dropped one
+      // would also show no write above)
+      recover();
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey });
+      });
+      await settle();
+      await act(async () => {
+        clickOn("opening-balance-save");
+      });
+      await settle();
+      expect(mutationCalls).toBe(1);
+      expect(captured).not.toBeNull();
+    });
+  }
+
+  it("does not open the confirmation off a read that failed while the name lookup was held (#183, Greptile round 3)", async () => {
+    // the typed name resolves to an account that already carries an entry, so a
+    // healthy read would open the dialog; a read failing during the held lookup
+    // must not let the continuation name counts the failed read no longer backs
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    // beforeEach resolves "مورد له حركات" to s-1 (accountEntryCount 3)
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(1);
+
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
+    await settle();
+    expect(clickTarget("opening-balance-error")).not.toBeNull();
+
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
   it("resolves a folded typed name to the server's existing account and confirms it (#183/#184)", async () => {
     // the server is the only resolver (issue 184): the fold maps to s-3, whose
     // account already carries an entry, so the dialog asks before writing

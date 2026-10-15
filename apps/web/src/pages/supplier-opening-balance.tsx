@@ -118,6 +118,22 @@ export function SupplierOpeningBalancePage() {
   // the confirmation gate the full list used to power; the base page blocked
   // because its empty list made the batch look empty. Refuse explicitly.
   const listFailed = listError !== null;
+  /** The SAME read failure, but read live from the query cache at the moment a
+   * continuation consults it. `save`/`submit` can resume after the render that
+   * started them, so a captured `listFailed` can be false while a read has since
+   * failed and the page already shows the failure banner; the write would land
+   * behind that banner (Greptile round 3). The cache flips to `error` the instant
+   * a read rejects — before React commits — so this cannot lag the read the way a
+   * render value can. `null` means no failure; a `{ message: undefined }` failure
+   * (an error status with no error object) still blocks, it just shows the
+   * generic message. */
+  function liveListFailure(): { message: string | undefined } | null {
+    for (const queryKey of [orpc.suppliersListNames.queryKey(), orpc.suppliersAccountSummaries.queryKey()]) {
+      const state = queryClient.getQueryState(queryKey);
+      if (state?.status === "error") return { message: state.error?.message };
+    }
+    return null;
+  }
   const occurredAt = parseDateTimeText(dateDraft);
   const dateInvalid = dateDraft.trim() === "" || occurredAt === null;
 
@@ -289,10 +305,13 @@ export function SupplierOpeningBalancePage() {
 
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
     if (occurredAt === null) return;
-    // a failed read must block the dialog path too: the counts the dialog was
-    // derived from may no longer be the ones on screen (see `listFailed`)
-    if (listFailed) {
-      setError(tError(listError?.message));
+    // a failed read must block the dialog path too, and it must be the failure
+    // AT WRITE TIME: this function can run from a continuation that outlived the
+    // render which started it, so `listFailed` is a captured value the read can
+    // have overtaken (Greptile round 3). Consult the live cache, not the closure.
+    const readFailure = liveListFailure();
+    if (readFailure !== null) {
+      setError(tError(readFailure.message));
       return;
     }
     // surface the reason on the dialog path too, instead of silently no-op'ing
@@ -405,6 +424,12 @@ export function SupplierOpeningBalancePage() {
     const destination = resolveInput === null ? null : await resolveForSubmit(attempt);
     if (attempt !== attemptRef.current) return; // left or the lookup fields changed
     if (destination === undefined) return; // resolve failed; the error is already shown
+    // a read that failed while the lookup was in flight must not name a dialog
+    // either: the counts `confirmNames` would show, and the gate `save` applies,
+    // come from the same render this continuation outlived (Greptile round 3
+    // class fix). The failure banner is already on screen, so stop silently the
+    // way the entry guard does.
+    if (liveListFailure() !== null) return;
     const conflict = conflictsWithFilled(destination);
     if (conflict) {
       setError(t("supplierOpeningRowHasAmount"));

@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { sampleNoWrite } from "./no-write-window";
 
 /** The inputs this spec sends over the issue-184 RPC helper. */
 type RpcInput =
@@ -36,19 +37,20 @@ async function rpc<T>(page: Page, procedure: string, json: RpcInput): Promise<T>
  * page's next steps have run. `wrote` starts false, so a single immediate read
  * passes vacuously and would miss a late write (review round 2 finding 2);
  * sample the flag for a real interval and require every sample false. The
- * sample count proves the window was observed rather than skipped.
+ * sampler (round 5) keeps going until BOTH the observed window and the minimum
+ * sample count hold, so a slow CI scheduler extends the sampling instead of
+ * failing a window no write ever touched.
  */
 async function expectNoWriteDuring(page: Page, wrote: () => boolean, windowMs = 1500): Promise<void> {
-  const sampleMs = 100;
-  const deadline = Date.now() + windowMs;
-  let samples = 0;
-  while (Date.now() < deadline) {
-    expect(wrote(), `an opening-balance write landed ${samples * sampleMs}ms into the no-write window`).toBe(false);
-    samples += 1;
-    await page.waitForTimeout(sampleMs);
-  }
-  const minSamples = Math.max(1, Math.ceil(windowMs / (sampleMs * 2)));
-  expect(samples, "the no-write window must be sampled, not skipped").toBeGreaterThanOrEqual(minSamples);
+  await sampleNoWrite({
+    windowMs,
+    check: (observedMs) => {
+      expect(wrote(), `an opening-balance write landed ${observedMs}ms into the no-write window`).toBe(false);
+    },
+    wait: (ms) => page.waitForTimeout(ms),
+  });
+  // the loop breaks on a fresh sample with no wait after it, so this is a
+  // belt-and-braces final read rather than a needed tail check
   expect(wrote()).toBe(false);
 }
 

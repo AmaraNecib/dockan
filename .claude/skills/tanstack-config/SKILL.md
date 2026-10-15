@@ -76,19 +76,19 @@ tanstackViteConfig({
 
 ```javascript
 // eslint.config.js
-import { tanstackEslintConfig } from '@tanstack/config/eslint'
+import { tanstackConfig } from '@tanstack/config/eslint'
 
-export default tanstackEslintConfig
+export default tanstackConfig
 ```
 
 ### Extending the Config
 
 ```javascript
 // eslint.config.js
-import { tanstackEslintConfig } from '@tanstack/config/eslint'
+import { tanstackConfig } from '@tanstack/config/eslint'
 
 export default [
-  ...tanstackEslintConfig,
+  ...tanstackConfig,
   {
     rules: {
       // Custom overrides
@@ -104,9 +104,9 @@ export default [
 
 ```typescript
 // publish.config.ts or used via CLI
-import { tanstackPublishConfig } from '@tanstack/config/publish'
+import { publish } from '@tanstack/config/publish'
 
-export default tanstackPublishConfig({
+export default publish({
   // Publint-compliant defaults
   // Semantic versioning automation
   // Changelog generation

@@ -11,8 +11,13 @@ Use `useNavigate()` for programmatic navigation triggered by side effects — fo
 ```tsx
 // Using window.location or manual history manipulation
 function CreatePostForm() {
-  const handleSubmit = async (data: PostData) => {
-    const post = await createPost(data)
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const post = await createPost({
+      title: String(form.get('title') ?? ''),
+      body: String(form.get('body') ?? ''),
+    })
     window.location.href = `/posts/${post.id}` // Full page reload, loses state
   }
   return <form onSubmit={handleSubmit}>{/* ... */}</form>
@@ -30,13 +35,21 @@ function CreatePostForm() {
 
 ```tsx
 import { useNavigate } from '@tanstack/react-router'
+import type { FormEvent } from 'react'
 
 function CreatePostForm() {
   // Pass 'from' at the hook level for type safety
   const navigate = useNavigate({ from: '/posts/new' })
 
-  const handleSubmit = async (data: PostData) => {
-    const post = await createPost(data)
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    // Native submit passes an event, not your values: prevent the reload,
+    // then read the form and run the async action.
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    const post = await createPost({
+      title: String(form.get('title') ?? ''),
+      body: String(form.get('body') ?? ''),
+    })
 
     navigate({
       to: '/posts/$postId',
@@ -54,8 +67,13 @@ function CreatePostForm() {
 function LoginForm() {
   const navigate = useNavigate()
 
-  const handleLogin = async (credentials: Credentials) => {
-    await authenticate(credentials)
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    await authenticate({
+      email: String(form.get('email') ?? ''),
+      password: String(form.get('password') ?? ''),
+    })
 
     navigate({
       to: '/dashboard',

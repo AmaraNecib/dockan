@@ -109,13 +109,16 @@ export const Route = createFileRoute('/users/$username')({
   notFoundComponent: UserNotFound,
 })
 
-function UserNotFound() {
-  const { data } = Route.useMatch()
-
+// notFound({ data }) passes `data` through as props to notFoundComponent
+function UserNotFound({
+  data,
+}: {
+  data: { username: string; suggestions: Array<string> }
+}) {
   return (
     <div>
-      <h1>User @{data?.username} not found</h1>
-      {data?.suggestions?.length > 0 && (
+      <h1>User @{data.username} not found</h1>
+      {data.suggestions.length > 0 && (
         <div>
           <p>Did you mean:</p>
           <ul>

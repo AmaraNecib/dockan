@@ -92,12 +92,16 @@ const router = createRouter({
     qs.parse(searchString, {
       // ignoreQueryPrefix drops the leading '?'
       ignoreQueryPrefix: true,
-      decoder(value) {
+      // A custom decoder REPLACES qs's default percent-decoding, so call the
+      // defaultDecoder first: otherwise '%20' and Arabic text stay escaped and
+      // never round-trip.
+      decoder(value, defaultDecoder) {
+        const decoded = defaultDecoder(value)
         // Parse booleans and numbers
-        if (value === 'true') return true
-        if (value === 'false') return false
-        if (/^-?\d+$/.test(value)) return parseInt(value, 10)
-        return value
+        if (decoded === 'true') return true
+        if (decoded === 'false') return false
+        if (/^-?\d+$/.test(decoded)) return parseInt(decoded, 10)
+        return decoded
       },
     }),
 })
@@ -120,14 +124,20 @@ const router = createRouter({
     const bytes = new TextEncoder().encode(json)
     let binary = ''
     for (const byte of bytes) binary += String.fromCharCode(byte)
-    return `?${btoa(binary)}`
+    // base64url: '+' would be read as a space in a query string
+    const base64 = btoa(binary)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '')
+    return `?${base64}`
   },
   parseSearch: (searchString) => {
-    // Reverse the UTF-8 -> Base64 step before parsing the JSON
+    // Reverse the UTF-8 -> Base64url step before parsing the JSON
     const encoded = searchString.replace(/^\?/, '')
     if (!encoded) return {}
     try {
-      const binary = atob(encoded)
+      const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
+      const binary = atob(base64)
       const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
       return JSON.parse(new TextDecoder().decode(bytes))
     } catch {
@@ -137,7 +147,7 @@ const router = createRouter({
 })
 
 // URL: /products?eyJjYXRlZ29yeSI6ImVsZWN0cm9uaWNzIn0
-// Opaque but compact, and reversible for any Unicode payload
+// Opaque but compact, URL-safe, and reversible for any Unicode payload
 ```
 
 ## Good Example: Hybrid Approach
@@ -174,7 +184,13 @@ const router = createRouter({
 
     params.forEach((value, key) => {
       if (key === 'filters') {
-        result.filters = JSON.parse(value)
+        // URL-controlled JSON: never let a malformed value throw before
+        // validateSearch can supply a fallback.
+        try {
+          result.filters = JSON.parse(value)
+        } catch {
+          result.filters = undefined
+        }
       } else if (value === 'true') {
         result[key] = true
       } else if (value === 'false') {

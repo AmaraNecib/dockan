@@ -130,11 +130,11 @@ function Todos() {
   const {
     data,
     error,
-    isLoading,      // First load, no data yet
+    isLoading,      // First fetch in flight (isPending && isFetching)
     isFetching,     // Any fetch in progress (including background)
     isError,
     isSuccess,
-    isPending,      // No data yet (same as isLoading in most cases)
+    isPending,      // No cached data yet; true while a first fetch is paused offline
     status,         // 'pending' | 'error' | 'success'
     fetchStatus,    // 'fetching' | 'paused' | 'idle'
     refetch,
@@ -147,7 +147,10 @@ function Todos() {
     queryFn: fetchTodos,
   })
 
-  if (isLoading) return <Spinner />
+  // Use isPending, not isLoading: a first fetch paused offline (networkMode
+  // 'online') has isPending true but isFetching false, so isLoading is false
+  // and data is still undefined here.
+  if (isPending) return <Spinner />
   if (isError) return <Error message={error.message} />
   return <TodoList todos={data} />
 }
@@ -308,7 +311,8 @@ onMutate: async (newTodo) => {
   await queryClient.cancelQueries({ queryKey: ['todos'] })
   const previousTodos = queryClient.getQueryData(['todos'])
 
-  queryClient.setQueryData(['todos'], (old) => [...old, newTodo])
+  // Seed an empty cache: before the first fetch resolves, `old` is undefined
+  queryClient.setQueryData(['todos'], (old = []) => [...old, newTodo])
 
   return { previousTodos }
 },
@@ -542,6 +546,8 @@ queryClient.prefetchInfiniteQuery({
   queryKey: ['projects'],
   queryFn: fetchProjects,
   initialPageParam: 0,
+  // Required when `pages` is set: without it only the first page is prefetched
+  getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   pages: 3, // Prefetch first 3 pages
 })
 ```
@@ -611,7 +617,7 @@ queryClient.getQueryData(['todos'])
 
 // Set cached data
 queryClient.setQueryData(['todos'], updatedTodos)
-queryClient.setQueryData(['todos'], (old) => [...old, newTodo])
+queryClient.setQueryData(['todos'], (old = []) => [...old, newTodo])
 
 // Get query state
 queryClient.getQueryState(['todos'])

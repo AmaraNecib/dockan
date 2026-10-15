@@ -140,14 +140,21 @@ function PostPage() {
 
   // Critical data ready immediately
   // Non-critical loads in component with loading state
-  const { data: comments, isLoading } = useQuery(
+  const { data: comments, isPending } = useQuery(
     commentQueries.forPost(postId)
   )
 
   return (
     <article>
       <PostContent post={post} />
-      {isLoading ? <CommentsSkeleton /> : <Comments data={comments} />}
+      {/* isPending, not isLoading: a first fetch paused offline stays pending */}
+      {isPending ? (
+        <CommentsSkeleton />
+      ) : comments ? (
+        <Comments data={comments} />
+      ) : (
+        <CommentsError />
+      )}
     </article>
   )
 }

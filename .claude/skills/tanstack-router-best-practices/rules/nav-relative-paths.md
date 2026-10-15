@@ -102,6 +102,7 @@ function PostPage() {
 
 - Always pass `from` for relative navigation — without it, TypeScript can't validate the target
 - Use `Route.fullPath` or literal route path strings for `from`
+- `Link`/`useNavigate` `from` is a URL path; the hooks `useParams`, `useSearch`, `useLoaderData`, and `useRouteContext` take a route ID (`Route.id`) instead — see `ts-use-from-param`
 - Do NOT interpolate path params, search, or hash into the `to` string — use `params`, `search`, `hash` options
 - In pathless layout routes, `Route.useNavigate()` resolves relative paths from the layout's parent route
 - `from` can also be a route object import: `from={postRoute.fullPath}`

@@ -127,7 +127,7 @@ export const Route = createFileRoute('/posts/$postId')({
 
 - Preloading loads route code AND executes loaders
 - `preloadDelay` prevents excessive requests on quick mouse movements
-- Preloaded data is garbage collected after `preloadStaleTime`
+- Preloaded data becomes stale after `preloadStaleTime`
 - Works with both router caching and external caching (TanStack Query)
 - Mobile: Consider `'viewport'` since hover isn't available
 - Monitor network tab to verify preloading works correctly

@@ -30,12 +30,19 @@ function ProductsPage() {
 ```tsx
 export const Route = createFileRoute('/products')({
   validateSearch: (search: Record<string, unknown>) => {
+    // Keep a legitimate 0, drop empty values and non-numeric junk (NaN)
+    const numberOrDefault = (value: unknown) => {
+      if (value === undefined || value === '') return undefined
+      const parsed = Number(value)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+
     return {
       page: Number(search.page) || 1,
       sort: search.sort === 'desc' ? 'desc' : 'asc',
       category: typeof search.category === 'string' ? search.category : undefined,
-      minPrice: Number(search.minPrice) || undefined,
-      maxPrice: Number(search.maxPrice) || undefined,
+      minPrice: numberOrDefault(search.minPrice),
+      maxPrice: numberOrDefault(search.maxPrice),
     }
   },
   component: ProductsPage,
@@ -86,9 +93,10 @@ function ProductsPage() {
       filters={{
         category: search.category,
         search: search.search,
-        priceRange: search.minPrice && search.maxPrice
-          ? [search.minPrice, search.maxPrice]
-          : undefined,
+        priceRange:
+          search.minPrice != null && search.maxPrice != null
+            ? [search.minPrice, search.maxPrice]
+            : undefined,
       }}
     />
   )

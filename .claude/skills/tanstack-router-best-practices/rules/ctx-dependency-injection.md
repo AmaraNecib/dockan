@@ -97,8 +97,15 @@ export const Route = createFileRoute('/posts')({
 ## Good Example: Invalidating on Context Change
 
 ```tsx
-function AuthProvider({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
+// AuthProvider.tsx — import the router created in router.tsx; do NOT call
+// useRouter() here: useRouter() reads the context that <RouterProvider>
+// provides, and this component renders that provider.
+import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import { RouterProvider } from '@tanstack/react-router'
+import { router } from './router'
+
+function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
 
   useEffect(() => {
@@ -109,7 +116,7 @@ function AuthProvider({ children }: { children: React.ReactNode }) {
       router.invalidate()
     })
     return unsubscribe
-  }, [router])
+  }, [])
 
   return <RouterProvider router={router} context={{ user }} />
 }

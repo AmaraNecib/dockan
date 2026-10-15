@@ -71,6 +71,7 @@ function PostError({ error, reset }: ErrorComponentProps) {
 
 ```tsx
 import { useQueryErrorResetBoundary } from '@tanstack/react-query'
+import type { ErrorInfo } from 'react'
 
 export const Route = createFileRoute('/posts/$postId')({
   loader: ({ params, context: { queryClient } }) =>
@@ -101,11 +102,11 @@ function PostError({ error, reset }: ErrorComponentProps) {
 ```tsx
 export const Route = createFileRoute('/posts')({
   loader: () => fetchPosts(),
-  onError: ({ error }) => {
+  onError: (error) => {
     // Called when loader throws — use for logging/reporting
     reportError(error)
   },
-  onCatch: ({ error, errorInfo }) => {
+  onCatch: (error, errorInfo?: ErrorInfo) => {
     // Called when error caught by router's CatchBoundary
     logToService(error, errorInfo)
   },

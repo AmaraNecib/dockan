@@ -93,6 +93,15 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/e2e-support": {
+      "name": "@dokan/e2e-support",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "^1.4.0",
+        "@types/node": "^22.19.15",
+        "typescript": "^5.9.3",
+      },
+    },
   },
   "overrides": {
     "brace-expansion": "^5.0.12",
@@ -171,6 +180,8 @@
     "@dokan/contracts": ["@dokan/contracts@workspace:packages/contracts"],
 
     "@dokan/desktop": ["@dokan/desktop@workspace:apps/desktop"],
+
+    "@dokan/e2e-support": ["@dokan/e2e-support@workspace:packages/e2e-support"],
 
     "@dokan/web": ["@dokan/web@workspace:apps/web"],
 

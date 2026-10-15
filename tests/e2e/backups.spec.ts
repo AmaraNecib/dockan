@@ -5,16 +5,18 @@ import path from "node:path";
 
 /**
  * The manual export button creates today's backup file on
- * disk under the api's data dir (.e2e-data/backups) and reports success.
- * The daily-on-startup copy is covered by unit tests (idempotency) — this
- * spec proves the user-facing path end to end.
+ * disk under the api's data dir (`E2E_DATA_DIR`, defaulting to
+ * `.e2e-data/backups`) and reports success. The daily-on-startup copy is covered
+ * by unit tests (idempotency) — this spec proves the user-facing path end to
+ * end.
  */
 test("manual export backup creates today's file", async ({ page }) => {
   await signIn(page);
 
   // startup already made today's daily copy; capture it so we can tell the
   // manual export apart by mtime afterwards if names collide (same name!)
-  const backupsDir = path.join(process.cwd(), ".e2e-data", "backups");
+  const dataDir = process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data");
+  const backupsDir = path.join(dataDir, "backups");
   const todayName = `dokan-${new Date().toLocaleString("en-CA", { timeZone: "Africa/Algiers", year: "numeric", month: "2-digit", day: "2-digit" })}.db`;
   const backupPath = path.join(backupsDir, todayName);
   expect(fs.existsSync(backupsDir)).toBe(true);

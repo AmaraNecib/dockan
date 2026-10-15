@@ -34,6 +34,70 @@ whether the stopped step is then reported failed or cancelled; either way the
 upload fires. Added by #197, after `gh run 38464745468` failed with no trace and
 no screenshot to read.
 
+## Vault-port isolation
+
+`tests/e2e/vault.spec.ts` runs its own API+web pair, separate from the pair
+`playwright.config.ts` boots for the shared suite. Since #202 that pair is
+`DOKAN_VAULT_PORT`/`DOKAN_VAULT_WEB_PORT` (defaults `4399`/`5174`), so a lane
+that claims its own pair can run vault suites side by side.
+
+The resolver lives in `packages/e2e-support` and is unit-tested in
+`bun run test` (defaults, blank-means-unset, overrides, out-of-range rejection),
+which is the cheap half of the property and runs on every PR.
+
+The two-concurrent-runs property is **not** in CI. A deterministic test needs
+two full vault suites running at once; `tests/e2e/` has no Bun harness and a
+timing-based version would race, so it stays a manual procedure:
+
+```bash
+# terminal A
+DOKAN_PORT=4617 DOKAN_WEB_PORT=5473 \
+DOKAN_VAULT_PORT=4399 DOKAN_VAULT_WEB_PORT=5174 \
+E2E_DATA_DIR="$PWD/.e2e-data/lane-a" \
+bun run test:e2e --output=.e2e-data/lane-a/test-results tests/e2e/vault.spec.ts
+
+# terminal B
+DOKAN_PORT=4618 DOKAN_WEB_PORT=5474 \
+DOKAN_VAULT_PORT=4400 DOKAN_VAULT_WEB_PORT=5175 \
+E2E_DATA_DIR="$PWD/.e2e-data/lane-b" \
+bun run test:e2e --output=.e2e-data/lane-b/test-results tests/e2e/vault.spec.ts
+```
+
+Both must exit 0. All four ports must be disjoint, and each run needs its own
+`E2E_DATA_DIR`: selecting only the vault spec still boots the config's shared
+pair, which is wiped and reseeded from that variable (a path under the ignored
+`.e2e-data/` keeps the runs clean). The vault pair itself makes its own temp data
+dir (`mkdtemp`), so it does not need `E2E_DATA_DIR`.
+
+Each run also needs its own `--output` dir. Playwright clears its output
+directory at startup and writes failed-test traces, screenshots, and
+`error-context.md` into it by path, so two runs left on the default
+`test-results/` would delete or overwrite each other's failure evidence. That is
+worst exactly when these runs are being used to explain a failure, which is the
+point of the pair.
+
+Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair. It is
+timing-dependent and only *may* catch a shared server, so it does not prove
+isolation. Test 1 never creates a vault and `waitForOk` only checks that the
+status route answers, not who owns it; while the shared API is still fresh both
+runs can pass the create-vault heading (`إنشاء الخزنة`) before either reaches
+test 2, and the wrong gate (`فتح الخزنة`) appears only after one run has
+initialized the vault. A green negative control therefore proves nothing, and a
+red one does not by itself pin the cause. What would prove isolation is each run
+completing its *own* vault flow on disjoint pairs, so that its own recovery key
+unlocks its own restarted server, or an explicit ownership check on the server.
+A heading is neither.
+
+Run this on an otherwise-idle host. Two runs boot the config's shared pair *and*
+the vault spec's own pair (eight servers) and perform two Argon2id derivations
+(32 MiB × 3 iterations, pure TS); the post-KDF UI assertions use Playwright's 5 s
+default, so a CPU-saturated host can time a run out at `vault-recovery-key` or
+`vault-settings-saved`. Once each run has completed its own vault flow (the
+isolation proof above), that late timeout is KDF contention, not cross-talk; on
+an unproven shared pair it can be either, so attribute it only after isolation
+is established. Measured in #206 at `unlock` 3.2 s, `unlock-recovery` 2.1 s and
+`reset-passphrase` >5 s with two runs plus other lanes on a 12-core host.
+
 ## Audit policy
 
 `bun audit` first prints every advisory (informational), then fails the job

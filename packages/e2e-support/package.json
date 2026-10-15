@@ -1,0 +1,15 @@
+{
+  "name": "@dokan/e2e-support",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "bun test --max-concurrency=2",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/node": "^22.19.15",
+    "typescript": "^5.9.3"
+  }
+}

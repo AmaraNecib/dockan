@@ -23,11 +23,18 @@ post-KDF request exceeded 5 s.
 
 ## Always
 
-**Prove vault port isolation by the gate, not by "both runs exit 0".** A shared
-vault pair fails test 1 immediately with the wrong gate (`فتح الخزنة`/login
-instead of `إنشاء الخزنة`). Disjoint pairs pass tests 1-2 on each run's own
-server. A later timeout at `vault-recovery-key`/`vault-settings-saved` is KDF
-contention, not cross-talk. Attribute it before suspecting the ports.
+**Prove vault port isolation by each run completing its own vault flow, not by
+the gate.** Test 1 only checks the create-vault heading (`إنشاء الخزنة`) and
+never creates a vault; `waitForOk` only checks that the status route answers. On
+one fresh shared API both runs can pass test 1, so a green gate proves nothing.
+A shared pair does fail eventually — once one run has initialized the vault, the
+other sees `فتح الخزنة`/login — but that is timing-dependent, not a guarantee.
+What proves isolation is two runs on disjoint pairs that each pass test 2 and
+test 3 on their own server: each run's own recovery key unlocks its own
+restarted server, or an explicit ownership check. Only then does a later timeout
+at `vault-recovery-key`/`vault-settings-saved` read as KDF contention; a timeout
+on its own does not establish which it is. Attribute it before suspecting the
+ports, and prove isolation before attributing it to CPU.
 
 **Run the concurrent procedure on an otherwise-idle host**, and say which host
 state it was run in. The brief for #206 forbids raising timeouts, which is

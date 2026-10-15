@@ -69,18 +69,27 @@ pair, which is wiped and reseeded from that variable (a path under the ignored
 `.e2e-data/` keeps the runs clean). The vault pair itself makes its own temp data
 dir (`mkdtemp`), so it does not need `E2E_DATA_DIR`.
 
-Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair and at least
-one run fails at the first test's create-vault heading (`إنشاء الخزنة`), because
-a shared pair answers with another run's gate. That failure is the cross-talk
-signature, and it is what the isolation removes.
+Negative control: run both with the *same* `DOKAN_VAULT_PORT` pair. It is
+timing-dependent and only *may* catch a shared server, so it does not prove
+isolation. Test 1 never creates a vault and `waitForOk` only checks that the
+status route answers, not who owns it; while the shared API is still fresh both
+runs can pass the create-vault heading (`إنشاء الخزنة`) before either reaches
+test 2, and the wrong gate (`فتح الخزنة`) appears only after one run has
+initialized the vault. A green negative control therefore proves nothing, and a
+red one does not by itself pin the cause. What would prove isolation is each run
+completing its *own* vault flow on disjoint pairs — its own recovery key
+unlocking its own restarted server — or an explicit ownership check on the
+server; a heading is neither.
 
 Run this on an otherwise-idle host. Two runs boot the config's shared pair *and*
 the vault spec's own pair (eight servers) and perform two Argon2id derivations
 (32 MiB × 3 iterations, pure TS); the post-KDF UI assertions use Playwright's 5 s
 default, so a CPU-saturated host can time a run out at `vault-recovery-key` or
-`vault-settings-saved`. That is KDF contention, not cross-talk. Measured in
-#206 at `unlock` 3.2 s, `unlock-recovery` 2.1 s and `reset-passphrase` >5 s with
-two runs plus other lanes on a 12-core host.
+`vault-settings-saved`. Once each run has completed its own vault flow (the
+isolation proof above), that late timeout is KDF contention, not cross-talk; on
+an unproven shared pair it can be either, so attribute it only after isolation
+is established. Measured in #206 at `unlock` 3.2 s, `unlock-recovery` 2.1 s and
+`reset-passphrase` >5 s with two runs plus other lanes on a 12-core host.
 
 ## Audit policy
 

@@ -19,29 +19,49 @@ export function waitForRpc(page: Page, procedure: string): Promise<Response> {
   );
 }
 
-/** Await an armed acknowledgement and fail loudly when the server refused it. */
-export async function expectRpcOk(response: Promise<Response>, procedure: string): Promise<Response> {
-  const resolved = await response;
-  expect(resolved.ok(), `${procedure} failed with HTTP ${resolved.status()}`).toBe(true);
-  return resolved;
+/**
+ * Read an armed ack's body and unwrap the `{ json }` envelope.
+ *
+ * The `.then` is attached to the *armed promise*, not to an awaited response,
+ * so `response.json()` runs as soon as the headers land. Playwright throws
+ * `Network.getResponseBody: No resource with given identifier found — Response
+ * body is not available for a response that was navigated away from` when a
+ * body is read after a navigation discarded it, so this is the safe default for
+ * every caller. (A read the page issues *around* a `page.goto` still belongs in
+ * `readRpc` below: there the matching response can come from the document being
+ * replaced, and even an eager read races the protocol round-trip.)
+ */
+function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> {
+  return ack.then(async (response) => {
+    expect(response.ok(), `${procedure} failed with HTTP ${response.status()}`).toBe(true);
+    // SAFETY: the oRPC fetch link (StandardRPCSerializer) answers a successful
+    // procedure call with the `{ json: <declared output> }` envelope; the
+    // caller's T names that output, and `ok()` was already asserted above.
+    const body = (await response.json()) as { json: T };
+    return body.json;
+  });
 }
 
 /**
- * Run `action` and return only after the RPC it triggered was accepted by the
- * server. Arm-then-act in one call so the wait can never be set up after the
- * request.
+ * Run `action` and return the server-acknowledged output of the RPC it
+ * triggered. Arm-then-act in one call so the wait can never be set up after the
+ * request, and read the body eagerly so a later navigation cannot discard it.
  */
-export async function actAndAck(page: Page, procedure: string, action: () => Promise<void>): Promise<Response> {
-  const ack = waitForRpc(page, procedure);
+export async function actAndAck<T = unknown>(
+  page: Page,
+  procedure: string,
+  action: () => Promise<void>,
+): Promise<T> {
+  const output = readEnvelope<T>(waitForRpc(page, procedure), procedure);
   try {
     await action();
   } catch (error) {
     // the action failed before its request could be matched; swallow the armed
-    // wait so its teardown rejection cannot mask the real failure
-    void ack.catch(() => undefined);
+    // read so its teardown rejection cannot mask the real failure
+    void output.catch(() => undefined);
     throw error;
   }
-  return expectRpcOk(ack, procedure);
+  return output;
 }
 
 /**
@@ -88,14 +108,12 @@ export interface QuickAddSave {
  */
 export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{ id: string }> {
   await expect(options.save).toBeEnabled();
-  const created = await rpcOutput<{ id: string }>(
-    await actAndAck(page, options.procedure, async () => {
-      await options.save.click();
-      // SAFETY: both create procedures declare the item output, which carries
-      // the server-issued id the line is keyed on.
-      await expect(options.error).toHaveCount(0);
-    }),
-  );
+  // SAFETY: both create procedures declare the item output, which carries the
+  // server-issued id the line is keyed on.
+  const created = await actAndAck<{ id: string }>(page, options.procedure, async () => {
+    await options.save.click();
+    await expect(options.error).toHaveCount(0);
+  });
   await expect(options.lines.getByLabel(`${options.itemName}: ${options.quantityLabel}`)).toHaveAttribute(
     "name",
     `quantity-${created.id}`,
@@ -107,7 +125,43 @@ export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{
 export async function rpcOutput<T>(response: Response): Promise<T> {
   // SAFETY: the oRPC fetch link (StandardRPCSerializer) answers a successful
   // procedure call with the `{ json: <declared output> }` envelope; the caller's
-  // T names that output, and expectRpcOk already rejected a refusal.
+  // T names that output, and the caller already rejected a refusal.
   const body = (await response.json()) as { json: T };
   return body.json;
+}
+
+/**
+ * Read a procedure's output directly, with no response for a navigation to
+ * discard.
+ *
+ * `actAndAck` is right for RPCs the page issues in response to an action that
+ * does not navigate. A *read* the page issues on mount (e.g. `customersList`
+ * after `page.goto`) is different: arming an ack before the `goto` can match a
+ * response issued by the document being replaced, and Playwright then refuses
+ * to hand over that body — "No resource with given identifier found …
+ * navigated away from". Awaiting the navigation and reading through
+ * `page.evaluate` asks the same endpoint for the same value with no
+ * navigation-raceable body.
+ *
+ * `/api/rpc/<procedure>` accepts an empty JSON body for a no-input procedure
+ * and answers the same `{ json }` envelope the page's client reads, so this is
+ * the server value the UI renders.
+ */
+export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
+  const envelope = await page.evaluate(async (name) => {
+    const response = await fetch(`/api/rpc/${name}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
+    // SAFETY: the oRPC endpoint answers a successful procedure call with the
+    // `{ json: <declared output> }` envelope; `ok()` was asserted just above.
+    return (await response.json()) as { json: unknown };
+  }, procedure);
+  // SAFETY: page.evaluate cannot carry a generic across the browser boundary,
+  // so the envelope's `json` is named by the caller's T; the shape was just
+  // checked to be the oRPC envelope.
+  return envelope.json as T;
 }

@@ -304,3 +304,32 @@ Applied to all four leave tests (Cancel, back link, browser back, sidebar).
   would still be missed.
 - The four no-write E2E tests share ~15 lines of route/listener setup; extracting
   a fixture is deferred as test-only duplication.
+
+---
+
+## Rebase onto develop (#143, #146, #189, #191, #123)
+
+The branch was rebased from its `da44b50` base onto `origin/develop` (`bcc586a`,
+then `d90e000` after #123 merged, then `f757211` after the ticket-8 test fix). One additive conflict in
+`apps/api/src/rpc/router.ts`:
+
+- **#143 (develop)** added `postStockBatch(tx, specs)` and its length-one
+  `postStock(tx, spec)` at the spot where the pre-extraction branch had the local
+  `NamedSupplierCandidate` type. **Both kept** and called by every stock-write
+  site.
+- **#184 (this branch)** deletes the local type and the inline
+  `pickByName`/`signatureHolder`; the resolver module owns them. **Kept the
+  extraction**: `import { resolveOpeningDestination, type NamedSupplierCandidate }`
+  from `./opening-balance-resolver`, used by the guarded bulk write and the
+  resolve query.
+
+Verified by reading the file: no local `type NamedSupplierCandidate` declaration;
+the only occurrences are the import and three usages; `resolveOpeningDestination`
+is called at both sites; no `pickByName`/`signatureHolder`; the resolver file is
+byte-identical to the pre-rebase branch. `origin/develop` is an ancestor of the
+rebased head.
+
+Guard 1+2 on the rebased head: `bun run test` 974 pass / 0 fail; full Playwright
+64 pass / 0 fail on isolated ports (4829/5284). Feature preservation: #143
+`stock-posting.test.ts` + `router.test.ts` 249 pass; #174 web 39 pass + the 3 e2e
+pagination tests.

@@ -27,14 +27,18 @@ synchronously by design. The only way to batch is to stop using DOM events.
 ## Fix: call the element's React change handler inside one `act` (💡 Design Principle)
 
 ```ts
-const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+// setNativeValue sets `.value` through happy-dom's native setter (assigning it
+// directly does not notify React)
 act(() => {
   for (const input of inputs) {
-    setter?.call(input, "1");
+    setNativeValue(input, "1");
     const key = Object.keys(input).find((k) => k.startsWith("__reactProps$"));
-    const props = (input as HTMLInputElement & Record<string, { onChange?: (e: { target: HTMLInputElement }) => void }>)[key!];
-    if (props?.onChange) props.onChange({ target: input }); // one render for all 200
-    else input.dispatchEvent(new Event("input", { bubbles: true })); // fallback: correct, slow
+    const props = key === undefined ? undefined : (input as HTMLInputElement & Record<string, { onChange?: (e: { target: HTMLInputElement }) => void }>)[key];
+    if (props?.onChange === undefined) {
+      input.dispatchEvent(new Event("input", { bubbles: true })); // fallback: correct, slow
+      continue;
+    }
+    props.onChange({ target: input }); // one render for all 200
   }
 });
 ```

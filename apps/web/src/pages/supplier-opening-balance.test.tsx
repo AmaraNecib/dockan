@@ -442,34 +442,49 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks the save and marks the row when an amount draft is invalid (Greptile finding 1)", async () => {
     render();
     await settle();
-    typeIntoRow(1, "abc");
+    // a valid row on s-2 (no entries) beside the invalid one keeps totalRows > 0,
+    // so the empty-batch check cannot mask the block: the invalid-row guard itself
+    // must stop the request, and without it the valid row would be sent
+    typeIntoRow(1, "300");
+    typeIntoRow(0, "abc");
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
   it("rejects a decimal-grouped amount with a row error instead of saving 100x (Greptile round 2)", async () => {
     render();
     await settle();
-    typeIntoRow(1, "1 000,00");
+    // a valid row on s-2 beside the rejected one, so the empty-batch check cannot
+    // mask the block and a dropped guard would send the valid row
+    typeIntoRow(1, "300");
+    typeIntoRow(0, "1 000,00");
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
   it("blocks an incomplete inline supplier instead of dropping it (Greptile finding 1)", async () => {
     render();
     await settle();
+    // a valid row so the empty-batch check cannot mask the incomplete-name block
+    typeIntoRow(1, "300");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ");
 
     expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
@@ -492,7 +507,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
@@ -1131,14 +1148,17 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks two outgoing rows folding to one name before the server (round 5)", async () => {
     render();
     await settle();
-    // an explicit row for s-1 plus a typed name that folds to the same name
-    typeIntoRow(0, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  له حركات");
+    // an explicit row for s-2 (no entries, so no confirmation can mask the guard)
+    // plus a typed name that folds to the same name
+    typeIntoRow(1, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 
@@ -1151,8 +1171,19 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("blocks the save when the account summary fails instead of skipping the confirmation gate (#183)", async () => {
-    accountsShouldFail = true;
     render();
+    await settle();
+    // a valid typed-name row on s-2 (no cached entries). Filling it first keeps
+    // totalRows > 0, so the empty-batch check cannot be what blocks the request:
+    // only the failed-read guard can, and without it this row would be sent.
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+
+    // the summary read now fails on refetch: its counts are no longer trustworthy
+    accountsShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+    });
     await settle();
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
@@ -1165,8 +1196,19 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   });
 
   it("blocks the save when the names read fails instead of skipping the conflict check (#183)", async () => {
-    namesShouldFail = true;
     render();
+    await settle();
+    // a valid typed-name row on s-2 (no cached entries), so totalRows > 0 and the
+    // empty-batch check cannot be what blocks the request; without the guard the
+    // row would be sent with the conflict list unknown
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+
+    // the names read now fails on refetch: the conflict list is no longer trusted
+    namesShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
     await settle();
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
@@ -1193,6 +1235,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
 
+    // the same `listFailed` flag disables the control and backs the guard in save():
+    // the disabled assertion is what proves the owner cannot fire this write
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
     await act(async () => {
       clickOn("opening-balance-confirm-save");
@@ -1278,10 +1322,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("blocks a typed name whose supplier already has a filled row instead of double-posting (round 5)", async () => {
     render();
     await settle();
-    const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
+    const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[1]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
 
-    typeIntoRow(0, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    // s-2 has no entries, so no confirmation dialog can mask the conflict guard
+    typeIntoRow(1, "700");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
 
     // the row keeps the owner's earlier 700; the inline draft is left for the
@@ -1293,7 +1338,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // conflict is visible and blocks the save before any request.
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    clickOn("opening-balance-save");
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
     expect(captured).toBeNull();
   });
 

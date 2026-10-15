@@ -38,8 +38,8 @@ export async function sampleNoWrite(opts: {
   let samples = 0;
   let observedMs = 0;
   for (;;) {
-    if (windowStart === undefined) windowStart = performance.now();
     await new Promise((resolve) => setTimeout(resolve, 0));
+    if (windowStart === undefined) windowStart = performance.now();
     observedMs = performance.now() - windowStart;
     opts.check(observedMs);
     samples += 1;

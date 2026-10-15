@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 
 import type { PartyCreate, PartyRole } from "@dokan/contracts";
-import { displayAlgerianPhone, normalizeTextKey } from "@dokan/contracts";
+import { displayAlgerianPhone, isPartyPhoneText, normalizeTextKey } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -110,7 +110,10 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
   const candidatePhone = createPhone.trim() === "" ? null : createPhone.trim();
   const phoneOwner = phoneMatchParty(candidatePhone, parties);
   const duplicate = duplicateNameParty(createName, candidatePhone, parties);
-  const createDisabled = create.isPending || createName.trim() === "" || phoneOwner !== undefined;
+  // a phone is an identity key: text that is not a phone is refused before it
+  // can become one (issue 129). Empty stays valid — the phone is optional.
+  const phoneInvalid = !isPartyPhoneText(createPhone);
+  const createDisabled = create.isPending || createName.trim() === "" || phoneOwner !== undefined || phoneInvalid;
 
   function pick(party: { id: string; name: string }) {
     onChange({ id: party.id, name: party.name, needsChoice: false });
@@ -147,6 +150,10 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
     const name = createName.trim();
     if (name === "") {
       setCreateError(t("partyNameRequired"));
+      return;
+    }
+    if (phoneInvalid) {
+      setCreateError(t("partyPhoneInvalid"));
       return;
     }
     // a present phone is unique: the store is authoritative, this is the
@@ -335,8 +342,12 @@ export function PartyPicker({ role, label, value, onChange, disabled = false, te
                     />
                   </label>
 
-                  {phoneOwner !== undefined && (
-                    <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid={`${testId}-phone-owner`}>
+                  {phoneInvalid && (
+                    <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid={`${testId}-invalid-phone`}>
+                      {t("partyPhoneInvalid")}
+                    </p>
+                  )}
+                  {phoneOwner !== undefined && (                    <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" role="alert" data-testid={`${testId}-phone-owner`}>
                       {t("partyPhoneTaken", { name: phoneOwner.name })}{" "}
                       <button type="button" className="underline" onClick={() => pick(phoneOwner)} data-testid={`${testId}-pick-owner`}>
                         {t("partyPickRecord", { name: phoneOwner.name })}

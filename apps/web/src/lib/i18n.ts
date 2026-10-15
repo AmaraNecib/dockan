@@ -732,6 +732,7 @@ const resources = {
       partyCreating: "جاري الإنشاء…",
       partyNameRequired: "أدخل الاسم",
       partyPhoneTaken: "رقم الهاتف مسجّل لـ «{{name}}»",
+      partyPhoneInvalid: `رقم الهاتف يجب أن يكون أرقاماً فقط، مثل ${ltrIsolate(PHONE_EXAMPLE_LOCAL)} أو ${ltrIsolate(PHONE_EXAMPLE_INTL)}.`,
       partyDuplicateName: "يوجد سجل باسم مشابه «{{name}}» برقم مختلف ({{phone}}). إن لم يكن الشخص نفسه فأنشئ سجلاً ثانياً.",
       partyDuplicateNameNoPhone: "يوجد سجل باسم مشابه «{{name}}» بلا هاتف. إن لم يكن الشخص نفسه فأنشئ سجلاً ثانياً.",
       partyPickRecord: "اختيار «{{name}}»",
@@ -976,6 +977,13 @@ const SENTENCE_KEYS: ReadonlyArray<{ pattern: RegExp; key: MessageKey }> = [
 const RETIRED_UNEXPECTED_KEYS = new Set(["UNEXPECTED", "unexpected"]);
 
 /**
+ * Server identity-rule keys that resolve to a UI copy key rather than their own
+ * resource entry (the UI validates the same rule inline, so both paths must
+ * render the same sentence).
+ */
+const SERVER_ERROR_ALIASES = new Map<string, MessageKey>([["INVALID_PARTY_PHONE", "partyPhoneInvalid"]]);
+
+/**
  * Server error keys are SCREAMING_SNAKE (CATEGORY_EXISTS, SETUP_LOCKED, …).
  * Anything else — a bare word a stray `Error` happened to carry — is not an
  * error key and must not render a UI label as if it were one.
@@ -989,6 +997,8 @@ const SERVER_ERROR_KEY = /^[A-Z][A-Z0-9_]*$/;
  */
 export function serverErrorKey(message: string | undefined): MessageKey {
   if (message === undefined) return "errorGeneric";
+  const aliased = SERVER_ERROR_ALIASES.get(message);
+  if (aliased !== undefined) return aliased;
   if (SERVER_ERROR_KEY.test(message) && Object.hasOwn(resources.ar.translation, message)) {
     if (RETIRED_UNEXPECTED_KEYS.has(message)) return "errorGeneric";
     // SAFETY: Object.hasOwn above established that this string is a resource key

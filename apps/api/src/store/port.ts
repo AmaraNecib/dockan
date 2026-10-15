@@ -231,9 +231,9 @@ export type SupplierReturnLineInsert = {
   amount: number;
 };
 
-/** Typed refusal from the store's party identity rule (phone uniqueness). */
+/** Typed refusal from the store's party identity rule (phone uniqueness or phone text). */
 export class PartyError extends Error {
-  constructor(public readonly code: "PHONE_EXISTS") {
+  constructor(public readonly code: "PHONE_EXISTS" | "INVALID_PHONE") {
     super(code);
     this.name = "PartyError";
   }

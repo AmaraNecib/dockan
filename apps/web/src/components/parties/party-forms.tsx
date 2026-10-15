@@ -3,7 +3,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
-import { displayAlgerianPhone, normalizePartyPhone } from "@dokan/contracts";
+import { displayAlgerianPhone, isPartyPhoneText, normalizePartyPhone } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -69,6 +69,12 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
     const trimmed = name.trim();
     if (trimmed === "") {
       setError(t("partyNameRequired"));
+      return;
+    }
+    // a phone is an identity key (ADR-0007): refuse text that is not a phone
+    // before it can become one and never match the real number (issue 129)
+    if (!isPartyPhoneText(phone)) {
+      setError(t("partyPhoneInvalid"));
       return;
     }
     // canonical identity, not the raw spelling: re-entering the same number in

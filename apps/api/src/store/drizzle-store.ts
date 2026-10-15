@@ -41,7 +41,7 @@ import type {
   SupplierEntryKind,
   SupplierReturnRecord,
 } from "@dokan/contracts";
-import { ONBOARDING_COMPLETED_PREFERENCE_KEY, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
+import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
 import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
@@ -1215,6 +1215,17 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     if (rows.some((row) => row.id !== excludeId && normalizePartyPhone(row.phone) === phone)) throw new PartyError("PHONE_EXISTS");
   };
 
+  /**
+   * The store-owned phone-text rule (issue 129): a present phone must be
+   * numeric after `normalizePartyPhone`'s cleaning, or it is not an identity
+   * and must never be written. `normalizePartyPhone` itself stays permissive so
+   * legacy rows still match themselves; only NEW writes pass through here.
+   */
+  const normalizeValidatedPartyPhone = (raw: string | null | undefined): string | null => {
+    if (!isPartyPhoneText(raw)) throw new PartyError("INVALID_PHONE");
+    return normalizePartyPhone(raw);
+  };
+
   const fetchParty = async (role: PartyRole, partyId: string): Promise<Party | undefined> => {
     if (role === "customer") {
       const rows = await db.select(customerCols).from(customers).where(eq(customers.id, partyId)).limit(1);
@@ -1658,7 +1669,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       return fetchParty(role, partyId);
     },
     async createParty(role: PartyRole, input: PartyCreate) {
-      const phone = normalizePartyPhone(input.phone);
+      const phone = normalizeValidatedPartyPhone(input.phone);
       assertPhoneFree(role, phone, null);
       if (role === "customer") {
         const row = firstRowOf(await db.insert(customers).values({ id: id(), name: input.name, phone, createdAt: now() }).returning());
@@ -1670,7 +1681,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async updateParty(role: PartyRole, partyId: string, patch: PartyUpdate) {
       // an empty patch is a no-op, not a raw drizzle UPDATE ... SET {} error
       if (patch.name === undefined && patch.phone === undefined) return fetchParty(role, partyId);
-      const phone = patch.phone === undefined ? undefined : normalizePartyPhone(patch.phone);
+      const phone = patch.phone === undefined ? undefined : normalizeValidatedPartyPhone(patch.phone);
       if (phone !== undefined) assertPhoneFree(role, phone, partyId);
       const set: PartyUpdate = {};
       if (patch.name !== undefined) set.name = patch.name;

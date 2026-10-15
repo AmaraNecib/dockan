@@ -1619,6 +1619,17 @@ describe("parties (issue 120)", () => {
     await expect(client.customersDelete({ id: crossRole.id })).rejects.toThrow(/PARTY_NOT_FOUND/);
   });
 
+  it("refuses non-numeric phone text with a stable BAD_REQUEST key (issue 129)", async () => {
+    await expect(client.customersCreate({ name: "زبون-نص", phone: "abc" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "INVALID_PARTY_PHONE" });
+    await expect(client.suppliersCreate({ name: "مورد-نص", phone: "هاتف" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "INVALID_PARTY_PHONE" });
+    const party = await client.customersCreate({ name: "زبون-تعديل-نص", phone: "0665333444" });
+    await expect(client.customersUpdate({ id: party.id, phone: "12a34" })).rejects.toMatchObject({ code: "BAD_REQUEST", message: "INVALID_PARTY_PHONE" });
+    // the refused update left the stored identity untouched
+    expect((await client.customersGet({ id: party.id })).party.phone).toBe("+213665333444");
+    // Arabic-Indic digits are accepted and normalise to the canonical identity
+    expect((await client.customersCreate({ name: "زبون-عربي", phone: "٠٦٦٥٦٦٧٧٧٧" })).phone).toBe("+213665667777");
+  });
+
   it("refuses an invoice whose picked party is unknown or the wrong role", async () => {
     const item = await makeItem("تحقق-جهة-منتج", 100, 200);
     await expect(

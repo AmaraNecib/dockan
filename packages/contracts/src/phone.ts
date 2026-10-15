@@ -61,6 +61,33 @@ export function foldArabicDigits(raw: string): string {
   });
 }
 
+/** A numeric identity: digits, at most one leading `+`. */
+const PARTY_PHONE_NUMERIC_RE = /^\+?\d+$/;
+
+/**
+ * The phone-text rule (issue 129): a present phone is a valid identity only
+ * when it is numeric after the SAME cleaning `normalizePartyPhone` applies —
+ * fold Arabic-Indic (٠-٩) and Extended Arabic-Indic (۰-۹) digits to ASCII,
+ * strip invisible bidi marks, strip the separators space/dot/parens/dash —
+ * optionally with one leading `+`.
+ *
+ * Absent, empty or separator-only text is valid: the phone is optional and
+ * clears to unset, so a walk-in with no number still saves. Arabic-Indic
+ * digits are ACCEPTED and normalised to Western because the owner's Arabic
+ * keyboard produces them by default (issue #108); rejecting them would lock
+ * the owner out of the primary input.
+ *
+ * Deliberately NOT the Algerian-mobile shape: `normalizePartyPhone` keeps a
+ * shop landline (`023551234`) and a foreign number (`+33123456789`) storable,
+ * so requiring the mobile regex here would reject a legitimate identity.
+ * Shared by the api store (authoritative), the contract and the web forms.
+ */
+export function isPartyPhoneText(raw: string | null | undefined): boolean {
+  if (raw === null || raw === undefined) return true;
+  const cleaned = foldArabicDigits(raw).replace(PHONE_INVISIBLE_RE, "").replace(/[\s.()-]/g, "");
+  return cleaned === "" || PARTY_PHONE_NUMERIC_RE.test(cleaned);
+}
+
 /**
  * Identity key for a customer/supplier phone (issue 120). Absent, empty or
  * separator-only clears the value (null, so SQLite keeps treating unset
@@ -69,6 +96,9 @@ export function foldArabicDigits(raw: string): string {
  * form; anything else is cleaned of separators and kept verbatim, so a shop
  * landline stays storable.
  * Shared by the api store, the uniqueness rule and the web picker's matching.
+ * A caller that persists a NEW value must first accept it with
+ * `isPartyPhoneText` (issue 129); this function stays permissive so legacy
+ * rows still match themselves and `displayAlgerianPhone` renders them.
  */
 export function normalizePartyPhone(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null;

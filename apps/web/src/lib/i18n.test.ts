@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
-import i18n, { authErrorKey, serverErrorKey, tError } from "./i18n";
+import i18n, { PHONE_EXAMPLE_INTL, PHONE_EXAMPLE_LOCAL, authErrorKey, serverErrorKey, tError } from "./i18n";
 
 /**
  * Issue #100 — a failure the app can name must say what it is. These cases are
@@ -190,5 +190,13 @@ describe("party labels (issue 120)", () => {
     expect(i18n.t("partySupplier")).toBe("مورّد");
     expect(i18n.t("CUSTOMER_PHONE_EXISTS")).toContain("زبون");
     expect(i18n.t("SUPPLIER_PHONE_EXISTS")).toContain("مورّد");
+  });
+
+  it("translates the non-numeric phone refusal to clear isolated Arabic (issue 129)", () => {
+    expect(serverErrorKey("INVALID_PARTY_PHONE")).toBe("partyPhoneInvalid");
+    const copy = tError("INVALID_PARTY_PHONE");
+    expect(copy).toMatch(/[\u0600-\u06FF]/);
+    expect(copy).toContain(`\u2066${PHONE_EXAMPLE_LOCAL}\u2069`);
+    expect(copy).toContain(`\u2066${PHONE_EXAMPLE_INTL}\u2069`);
   });
 });

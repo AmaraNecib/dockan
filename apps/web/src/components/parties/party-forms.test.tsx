@@ -201,3 +201,30 @@ describe("PartyForm concurrent edits (issue 120, Greptile P1.2)", () => {
     expect(saved).toEqual([{ name: "علي", mode: "updated" }]);
   });
 });
+
+describe("PartyForm phone text rule (issue 129)", () => {
+  it("refuses a non-numeric phone with clear Arabic copy and sends nothing", async () => {
+    const host = await mount();
+    const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+    await act(async () => {
+      if (phone !== null) setElementValue(phone, "abc");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await submit(host);
+
+    expect(updates).toEqual([]);
+    expect(host.querySelector('[data-testid="party-form-error"]')?.textContent).toContain("أرقام");
+  });
+
+  it("accepts Arabic-Indic digits and sends the canonical identity", async () => {
+    const host = await mount();
+    const phone = host.querySelector<HTMLInputElement>('[data-testid="party-form-phone"]');
+    await act(async () => {
+      if (phone !== null) setElementValue(phone, "٠٦٦٦٩٩٩٨٨٨");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await submit(host);
+
+    expect(updates).toEqual([{ id: "c-1", phone: "+213666999888" }]);
+  });
+});

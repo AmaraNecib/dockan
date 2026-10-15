@@ -1553,6 +1553,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured).toBeNull();
     expect(mutationCalls).toBe(0);
+    // the programmatic path still names the reason, so a bypassed disabled button
+    // is not a silent no-op
+    expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain(i18n.t("supplierOpeningRemovedBlocked"));
 
     // acknowledging the loss re-enables the save, and the surviving row still goes
     clickOn("opening-balance-removed-dismiss");
@@ -1587,6 +1590,119 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     expect(captured?.rows).toHaveLength(1);
     expect(captured?.rows[0]).toMatchObject({ supplierId: "keep", amount: 100 });
+  });
+
+  it("names every filled row a single refresh removes, then saves only the survivors (#204)", async () => {
+    suppliers = [
+      { id: "a", name: "مورد أ", accountBalance: 0, accountEntryCount: 0 },
+      { id: "b", name: "مورد ب", accountBalance: 0, accountEntryCount: 0 },
+      { id: "c", name: "مورد ج", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "200");
+    typeIntoRow(2, "300");
+
+    // one refresh removes two filled rows
+    suppliers = suppliers.filter((supplier) => supplier.id === "c");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // both losses are named, not just the first
+    expect(host.querySelectorAll('[data-testid="opening-balance-removed-row"]')).toHaveLength(2);
+
+    clickOn("opening-balance-removed-dismiss");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "c", amount: 300 });
+  });
+
+  it("never writes a supplier removed during the submit's async name lookup (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "gone", name: "مورد زائل", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    // park submit() inside its resolver await, the window a captured render value
+    // would miss
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+    typeIntoRow(1, "300");
+    // a typed name forces the resolver to be awaited before save() runs
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(resolveCalls).toBe(1);
+
+    // the removal lands while the lookup is still unanswered
+    suppliers = suppliers.filter((supplier) => supplier.id !== "gone");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+    expect(clickTarget("opening-balance-removed")).not.toBeNull();
+
+    // release the held lookup: the abandoned attempt must not write the removed row
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("closes the confirmation when a refresh removes a row it named (#204 review)", async () => {
+    render();
+    await settle();
+    // s-1 carries entries: filling it opens the confirmation
+    typeIntoRow(0, "800");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+
+    suppliers = BASE_SUPPLIERS.filter((supplier) => supplier.id !== "s-1");
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // the dialog named a batch that changed: it must close, and the loss surfaced
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    expect(clickTarget("opening-balance-removed").textContent).toContain("مورد له حركات");
+  });
+
+  it("keeps the drafts when a refetch of the supplier read fails, never flagging a phantom removal (#204 review)", async () => {
+    suppliers = [
+      { id: "keep", name: "مورد باقي", accountBalance: 0, accountEntryCount: 0 },
+      { id: "other", name: "مورد ثان", accountBalance: 0, accountEntryCount: 0 },
+    ];
+    render();
+    await settle();
+    typeIntoRow(0, "100");
+
+    namesShouldFail = true;
+    await act(async () => {
+      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+    });
+    await settle();
+
+    // a failed refetch keeps the previous data: no phantom removal notice
+    expect(host.querySelector('[data-testid="opening-balance-removed"]')).toBeNull();
+    // the failed read still blocks on its own existing reason
+    expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
   });
 
   it("counts a typed name toward the batch limit and blocks before the server (round 5)", async () => {

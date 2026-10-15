@@ -118,17 +118,35 @@ export function SupplierOpeningBalancePage() {
   // #204 — the refresh seam. `presentSupplierIds` only changes when the fresh
   // supplier list changes, so reconciliation runs on a refresh (never per
   // keystroke) and a filled draft whose supplier vanished is handed to the
-  // notice instead of disappearing with the row.
-  const presentSupplierIds = useMemo(() => suppliers.map((supplier) => supplier.id), [suppliers]);
+  // notice instead of disappearing with the row. `null` guards the not-yet-loaded
+  // (and cache-reset) case: an undefined list must never look like "every supplier
+  // vanished" and flag every draft.
+  const presentSupplierIds = useMemo(
+    () => (namesQuery.data === undefined ? null : suppliers.map((supplier) => supplier.id)),
+    [namesQuery.data, suppliers],
+  );
   /** The latest drafts, so the reconciliation effect can read them without taking
    * `drafts` as a dependency (which would run it on every keystroke). */
   const draftsRef = useRef(drafts);
   useLayoutEffect(() => {
     draftsRef.current = drafts;
   }, [drafts]);
+  /** The same removal, live at write time. `save`/`submit` can resume after the
+   * render that started them (the stale-closure class Greptile round 3 fixed for
+   * the read failure), so a captured `hasRemovedFilled` can be false while a
+   * removal landed during the in-flight resolve. */
+  const removedFilledRef = useRef(removedFilled);
+  useLayoutEffect(() => {
+    removedFilledRef.current = removedFilled;
+  }, [removedFilled]);
   useEffect(() => {
+    if (presentSupplierIds === null) return;
     const dropped = droppedFilledDrafts({ drafts: draftsRef.current, presentSupplierIds });
     if (dropped.length === 0) return;
+    // the outgoing batch changed: abandon any in-flight submit (a late resolve
+    // must not write the removed row) and close the confirmation that named the
+    // now-shrunk batch, exactly as a typed-field edit would
+    abandonAttempt();
     setRemovedFilled((current) => {
       const known = new Set(current.map((row) => row.supplierId));
       const added = dropped.filter((row) => !known.has(row.supplierId));
@@ -344,6 +362,13 @@ export function SupplierOpeningBalancePage() {
     setRemovedFilled([]);
   }
 
+  /** Whether a dropped amount still needs acknowledgement before a write. Reads
+   * the live ref, not a captured render value, so a removal during an in-flight
+   * resolve cannot slip past `save` (issue 204 review). */
+  function removalBlocksSave(): boolean {
+    return removedFilledRef.current.length > 0;
+  }
+
   async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
     if (occurredAt === null) return;
     // a failed read must block the dialog path too, and it must be the failure
@@ -361,7 +386,7 @@ export function SupplierOpeningBalancePage() {
       return;
     }
     // the dropped amount must be acknowledged before any write is attempted
-    if (hasRemovedFilled) {
+    if (removalBlocksSave()) {
       setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
@@ -456,7 +481,7 @@ export function SupplierOpeningBalancePage() {
       setError(blockedReason);
       return;
     }
-    if (hasRemovedFilled) {
+    if (removalBlocksSave()) {
       setError(t("supplierOpeningRemovedBlocked"));
       return;
     }
@@ -716,16 +741,20 @@ export function SupplierOpeningBalancePage() {
           )}
 
           {hasRemovedFilled && (
-            <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 p-3 text-sm" data-testid="opening-balance-removed">
-              <p className="font-semibold text-destructive">{t("supplierOpeningRemovedTitle")}</p>
-              <ul className="mt-2 grid gap-1">
-                {removedFilled.map((row) => (
-                  <li key={row.supplierId} className="flex flex-wrap items-center gap-1" data-testid="opening-balance-removed-row">
-                    <span>{t("supplierOpeningRemovedRow", { name: row.name })}</span>
-                    <Amount value={row.amount} />
-                  </li>
-                ))}
-              </ul>
+            <div className="rounded border border-destructive/30 bg-destructive/10 p-3 text-sm" data-testid="opening-balance-removed">
+              {/* the statement is the live region; the dismiss button stays OUTSIDE it,
+                  so the control is not announced as part of the alert (a11y review) */}
+              <div role="alert">
+                <p className="font-semibold text-destructive">{t("supplierOpeningRemovedTitle")}</p>
+                <ul className="mt-2 grid gap-1">
+                  {removedFilled.map((row) => (
+                    <li key={row.supplierId} className="flex flex-wrap items-center gap-1" data-testid="opening-balance-removed-row">
+                      <span>{t("supplierOpeningRemovedRow", { name: row.name })}</span>
+                      <Amount value={row.amount} />
+                    </li>
+                  ))}
+                </ul>
+              </div>
               <div className="mt-3">
                 <Button type="button" variant="outline" onClick={dismissRemoved} data-testid="opening-balance-removed-dismiss">
                   {t("supplierOpeningRemovedDismiss")}

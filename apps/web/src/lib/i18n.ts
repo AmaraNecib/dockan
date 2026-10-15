@@ -924,7 +924,7 @@ const resources = {
       supplierOpeningFixRows: "صحّح الصفوف المعلّمة قبل الحفظ",
       supplierOpeningTooManyRows: "لا يمكن حفظ أكثر من {{max}} صفاً في المرة الواحدة",
       supplierOpeningRemovedTitle: "لم تُحفظ مبالغ أُزيلت بعد تحديث القائمة",
-      supplierOpeningRemovedRow: "اختفت «{{name}}» من قائمة الموردين، فأُزيل صفّها ولم يُحفظ هذا المبلغ:",
+      supplierOpeningRemovedRow: "اختفت «{{name}}» من قائمة الموردين فأُزيل صفّها؛ لم يُحفظ ما كتبته فيه:",
       supplierOpeningRemovedBlocked: "راجع الصفوف المُزالة أعلاه ثم تابع الحفظ",
       supplierOpeningRemovedDismiss: "فهمت، تابع الحفظ",
     },

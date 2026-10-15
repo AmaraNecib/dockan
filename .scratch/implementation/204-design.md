@@ -109,3 +109,28 @@ snapshot-of-identity idea as #184's `expectedSupplierId`.
 
 - The server write path: the batch never referenced the deleted id, so no change.
 - An explicit refresh button: refetch-on-focus is the existing mechanism.
+
+## Review round 1 (debate + test-audit + code-review)
+
+Adversarial review found one real hole and several cheap hardenings, all applied:
+
+- **The block must be live, not captured.** `save`/`submit` can resume after the
+  render that started them, so a removal landing during the in-flight name lookup
+  could post the removed row. `removalBlocksSave()` reads `removedFilledRef` at
+  write time, and the reconciliation effect calls `abandonAttempt()` when it drops
+  anything — the same stale-closure class Greptile round 3 fixed for `listFailed`.
+- **A removal closes the confirmation it invalidated** (`abandonAttempt`).
+- **`presentSupplierIds` is `null` until the list loads**, so a cache reset cannot
+  read as "every supplier vanished".
+- **a11y**: the `role="alert"` live region wraps the statement only; the dismiss
+  button sits outside it.
+- **Copy**: `supplierOpeningRemovedRow` says "what you wrote in its row was not
+  saved", which stays true for a mid-typing partial figure.
+- **Tests added**: removal during the in-flight resolve, removal with the
+  confirmation open, two removals in one refresh, a failed refetch never flagging a
+  phantom removal, the `supplierOpeningRemovedBlocked` copy, and the nameless-draft
+  fallback.
+
+Deferred (non-blocking): a re-entry affordance/hint (the owner can retype the
+amount in the inline new-supplier row) and flagging *invalid* orphan drafts
+(`0`/`abc`), which the issue scopes out.

@@ -118,6 +118,18 @@ describe("droppedFilledDrafts (issue 204)", () => {
     ).toEqual([]);
   });
 
+  it("reports an empty name when a draft was recorded without one, never crashing", () => {
+    // `setRow` always seeds the name from a rendered row, so this is the
+    // unreachable-today fallback; pinned so a future seed path cannot blank the
+    // notice silently
+    expect(
+      droppedFilledDrafts({
+        drafts: { "s-2": { amount: "10" } },
+        presentSupplierIds: [],
+      }),
+    ).toEqual([{ supplierId: "s-2", name: "", amount: 10 }]);
+  });
+
   it("keeps the draft order across several removed suppliers", () => {
     const drafts = {
       "s-1": { name: "أ", amount: "100" },

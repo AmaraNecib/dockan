@@ -91,8 +91,8 @@ test("actAndAck reports the action error, not a refused RPC, with no unhandled r
     // The listener observes the whole worker process, and workers: 1 means every
     // spec file shares it: scope the assertion to the armed read under test so
     // another file's late rejection cannot fail this test for the wrong reason.
-    // The full list is still reported, and test 2 pins the message text this
-    // filter matches on.
+    // The full list is still reported, and the refused-RPC test below pins the
+    // exact message text this filter matches on.
     const fromHelper = unhandled.filter((message) => message.includes("customersCreate"));
     expect(fromHelper, `unhandled rejections: ${unhandled.join(" | ")}`).toEqual([]);
   } finally {

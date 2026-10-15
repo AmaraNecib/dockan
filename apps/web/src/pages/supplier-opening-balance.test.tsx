@@ -228,6 +228,14 @@ function clickOn(testId: string) {
  */
 const BATCH_LIMIT_TEST_TIMEOUT_MS = 60_000;
 
+/** Dispatch a click carrying modifier flags (e.g. Ctrl/Cmd) on a test-id element,
+ * to model the browser's new-tab activation of a link without a real browser. */
+function modifiedClickOn(testId: string, init: MouseEventInit) {
+  const el = host.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  if (el === null) throw new Error(`missing ${testId}`);
+  act(() => el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init })));
+}
+
 describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("writes one row per filled amount plus an inline new supplier", async () => {
     render();
@@ -675,6 +683,100 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
     // positive control: the recovery lookup really ran, so "stays closed" is not
     // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+    expect(resolveCalls).toBe(2);
+  });
+
+  it("keeps the dialog open when a new-tab click hits the back link while a refusal's recovery lookup is pending (review round 4)", async () => {
+    // Ctrl/Cmd-click opens the supplier list in a NEW tab: the owner never leaves
+    // THIS tab, so the confirmation must survive the click and the pending
+    // recovery must still restore it (Greptile round 4).
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // the confirmed save is refused as a stale destination; hold the recovery
+    // lookup the refusal starts so the click lands while it runs
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    // a synchronous act + microtask flush, NOT `await act(async …)`: the async
+    // form deadlocks on the held resolve promise (the act callback never settles)
+    act(() => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // a Ctrl-click on the back link: the browser opens a new tab, this one stays
+    await act(async () => {
+      modifiedClickOn("opening-balance-back", { ctrlKey: true });
+    });
+
+    // the held lookup settles: because the owner never left this tab, the
+    // recovery must still re-open the dialog, now naming the moved account
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+    const names = Array.from(host.querySelectorAll('[data-testid="opening-balance-confirm-name"]')).map((el) => el.textContent ?? "");
+    expect(names).toContain("مورد بديل");
+    // positive control: the recovery lookup really ran, so "still there" is not
+    // passing vacuously (1 initial submit resolve + 1 recovery resolve)
+    expect(resolveCalls).toBe(2);
+  });
+
+  it("abandons the dialog on a plain back-link click while a refusal's recovery lookup is pending (review round 4 control)", async () => {
+    // the control for the test above: a plain click DOES navigate this tab, so it
+    // must abandon — otherwise the new-tab test could pass by never abandoning.
+    render();
+    await settle();
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    rejectTargetChanged = true;
+    racedAfterRefusal = { key: normalizeTextKey("مورد له حركات"), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
+    resolveHold = new Promise((resolve) => {
+      releaseResolveHold = resolve;
+    });
+    act(() => {
+      clickOn("opening-balance-confirm-save");
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
+
+    // a plain (unmodified) click on the back link navigates THIS tab
+    await act(async () => {
+      modifiedClickOn("opening-balance-back", { button: 0 });
+    });
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+
+    // the held lookup settles: the dismissal must survive the refusal recovery
+    await act(async () => {
+      releaseResolveHold?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    expect(host.querySelector('[data-testid="opening-balance-confirm"]')).toBeNull();
+    // positive control: the recovery lookup still ran; only its re-open was dropped
     expect(resolveCalls).toBe(2);
   });
 

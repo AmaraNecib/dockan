@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -26,6 +26,17 @@ type ResolvedSupplier = { id: string; name: string; accountEntryCount: number };
 /** The direction Selects render only these two values, so any string they hand
  * back is narrowed here instead of asserting it. */
 const asDirection = (value: string | null): SupplierAdjustmentDirection => (value === "THEY_OWE" ? "THEY_OWE" : "WE_OWE");
+
+/** A dismissal hung off a navigation gesture must fire only when the gesture
+ * actually navigates THIS tab. A modified activation (Ctrl/Cmd/Shift/Alt) or a
+ * non-primary button (middle) tells the browser to open the destination in a NEW
+ * tab, so the owner never leaves: abandoning here would close the confirmation in
+ * the tab they are still looking at and stop a pending refusal recovery from
+ * restoring it (Greptile round 4). One predicate, applied to every dismissal
+ * route that hangs off a navigation gesture, so the rule cannot drift. */
+function navigatesCurrentTab(event: ReactMouseEvent<HTMLAnchorElement>): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
 
 /**
  * #176 — the bulk «رصيد افتتاحي» screen. One row per supplier (name + current
@@ -151,7 +162,9 @@ export function SupplierOpeningBalancePage() {
   // the cleanup synchronously in the unmount commit rather than in a deferred
   // passive flush, so the exit the page does not own (the app-shell sidebar, a
   // programmatic nav — no click handler to invalidate on) narrows to the commit
-  // itself. The back link invalidates in its `onClick` as an immediate guard.
+  // itself. The back link invalidates in its `onClick` as an immediate guard, but
+  // only for activations that navigate THIS tab: a Ctrl/Cmd/middle-click opens a
+  // new tab and leaves the owner here (Greptile round 4).
   // Re-arming on mount keeps a StrictMode double-invoke from leaving it false.
   useLayoutEffect(() => {
     mountedRef.current = true;
@@ -384,7 +397,16 @@ export function SupplierOpeningBalancePage() {
 
   return (
     <section data-testid="opening-balance-page">
-      <Link to="/suppliers" onClick={abandonAttempt} className="text-sm text-muted-foreground underline-offset-4 hover:underline" data-testid="opening-balance-back">
+      <Link
+        to="/suppliers"
+        onClick={(event) => {
+          // a new-tab activation never leaves this tab, so the confirmation (and a
+          // pending refusal recovery) must survive it (Greptile round 4)
+          if (navigatesCurrentTab(event)) abandonAttempt();
+        }}
+        className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+        data-testid="opening-balance-back"
+      >
         {t("supplierOpeningBack")}
       </Link>
       <h1 className="mt-3 text-xl font-bold">{t("supplierOpeningTitle")}</h1>

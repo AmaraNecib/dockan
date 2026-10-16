@@ -86,15 +86,15 @@ The existing coverage is `abc`, `1 000,00` (invalid), and a batch of 201
 ## Which new cases discriminate
 
 A new case is only worth keeping if weakening the guard it names makes it fail.
-Verified in this lane on the pushed HEAD by temporary production mutations, then
-reverted (`git status` clean afterwards):
+All four mutations below were re-run in this lane on this HEAD by temporary
+production edits, then reverted (`git status --short` clean afterwards):
 
 | Mutation | Failing test | Observed |
 |---|---|---|
 | `openingRowStatus`: `amount === null \|\| amount <= 0` to `amount === null` | `rejects amount 0, one below the accepted range` | exit 1, `expect(...amount-error).not.toBeNull()` received `null` |
 | `parseGroupedAmount` path: strip `-` before parsing | `rejects a negative amount draft instead of saving its magnitude` | exit 1, `expect(...amount-error).not.toBeNull()` received `null` |
-| `parseWholeAmount`: drop the `Number.isSafeInteger` check | `rejects an amount one above the largest safe integer` | (inherited; re-run not repeated this lane) |
-| `isOpeningBatchOverLimit`: `>` to `>=` | `MAX_OPENING_BALANCE_ROWS` unit test (`isOpeningBatchOverLimit(200) === false`) | (inherited; re-run not repeated this lane) |
+| `parseWholeAmount`: drop the `Number.isSafeInteger` check | `rejects an amount one above the largest safe integer` | exit 1, `expect(...amount-error).not.toBeNull()` received `null` |
+| `isOpeningBatchOverLimit`: `>` to `>=` | `MAX_OPENING_BALANCE_ROWS` unit test (`isOpeningBatchOverLimit(200) === false`) | exit 1, `expect(isOpeningBatchOverLimit(200)).toBe(false)` received `true` |
 
 The three reject tests run their batch on `TWO_NO_ENTRY_SUPPLIERS` (both
 suppliers carry no account entries). With no supplier carrying entries, a
@@ -109,6 +109,25 @@ counterpart the reject cases need, not redundant with them.
 The page-level `>=` mutation hangs the bun/happy-dom runner when the 200-row
 test fails (the process does not exit), so that boundary is pinned by the pure
 predicate unit test, which fails cleanly under the same mutation.
+All eight new tests call `submitForm`; the two accept-side tripwires assert the
+enabled control from inside `arm`, so the enabled state is checked without
+re-introducing the hand-rolled `typeIntoRow` + `clickOn` shape the helper exists
+to remove.
+
+## Deferred (not required by #207)
+
+Swept but left out to keep the ticket scoped to the boundaries it names. Each is
+a real untested branch; file a follow-up if the owner wants them.
+
+- **Whitespace-only row draft** (`openingRowStatus`'s `raw.trim() === ""`
+  branch) at the page level.
+- **Arabic-Indic digits** on a page-level amount (`normalizeArabicIndicDigits`;
+  covered at the parser level in `amount-parse.test.ts`).
+- **Negative amount in the typed new row** (same parser branch as the
+  existing-row negative case, so it adds no new discrimination).
+- **A runtime guard for the helper's `validRowAmount: null` hatch** (assert a
+  non-empty batch before submitting); today the four null callers are verified
+  by hand and the JSDoc states the invariant.
 
 ## Documentation-only fix: the confirm-save known exception
 
@@ -133,8 +152,9 @@ instead of removing the assertion.
 
 - Unit: the affected file, `apps/web/src/pages/supplier-opening-balance.test.tsx`
   (`cd apps/web && bun test src/pages/...`), then `bun run test` at the root.
-- E2E: full Playwright (`bun run test:e2e`) under an `e2e-slot`, per the lane
-  brief; no new e2e spec (no user-visible flow changed).
+- E2E: not run. No production file changed and no user-visible flow changed, so
+  the Playwright suite has nothing new to exercise; the whole change surface is
+  the component test file above.
 - Discrimination: the mutation table above.
 
 ## Risks

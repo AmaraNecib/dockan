@@ -300,8 +300,9 @@ function dispatchClickOn(testId: string, init: MouseEventInit) {
  * A test that asserts "nothing was sent" passes for the wrong reason unless a
  * valid batch exists that WOULD be sent once the guard under test is removed.
  * Two unrelated guards used to mask those assertions: the empty-batch check and
- * the confirmation precondition. One valid row for row 1 (s-2, no account
- * entries) defeats both. It keeps `totalRows > 0`, and its supplier has no
+ * the confirmation precondition. One valid row for row 1 defeats both: in the
+ * default fixture that row is s-2, and in TWO_NO_ENTRY_SUPPLIERS it is s-b, both
+ * with no account entries. It keeps `totalRows > 0`, and its supplier has no
  * entries, so no confirmation dialog can swallow the submit.
  *
  * `arm` then builds the failure under test; it may be async because the
@@ -526,11 +527,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("accepts amount 1 at the low end of the accepted range (issue 207)", async () => {
     render();
     await settle();
-    typeIntoRow(1, "1");
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
+    // the enabled control is part of the tripwire, asserted inside the arm: this
+    // boundary must NOT be blocked like the reject cases above
+    await submitForm(() => {
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, "1");
     expect(captured?.rows).toHaveLength(1);
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", amount: 1 });
   });
@@ -551,11 +552,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("accepts the largest safe amount, the high end of the accepted range (issue 207)", async () => {
     render();
     await settle();
-    typeIntoRow(1, String(Number.MAX_SAFE_INTEGER));
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
+    // enabled-control tripwire, as for amount 1 above
+    await submitForm(() => {
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, String(Number.MAX_SAFE_INTEGER));
     expect(captured?.rows).toHaveLength(1);
     expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", amount: Number.MAX_SAFE_INTEGER });
   });
@@ -637,15 +637,14 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
     expect(inputs).toHaveLength(200);
-    // batched into one render, the same #193 cost guard as the over-limit case
-    fillAmounts(Array.from(inputs), () => "1");
-
-    // exactly the cap is allowed; only a larger batch is blocked
-    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
-    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
-    await act(async () => {
-      clickOn("opening-balance-save");
-    });
+    // the whole valid batch is built here, so `null` stops the helper adding a
+    // row; exactly the cap is allowed, only a larger batch is blocked
+    await submitForm(() => {
+      // batched into one render, the same #193 cost guard as the over-limit case
+      fillAmounts(Array.from(inputs), () => "1");
+      expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, null);
     expect(captured?.rows).toHaveLength(200);
     // every row keeps its own amount, so the cap is not met by dropping or
     // duplicating a row

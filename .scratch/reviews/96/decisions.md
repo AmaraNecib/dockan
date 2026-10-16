@@ -78,9 +78,23 @@ Deliberate, with reason:
 
 ## Verification
 
-- `bun run typecheck` — exit 0
-- `bun run lint` — exit 0
-- `bun run --filter @dokan/web test` — 1164 pass, 0 fail
+All commands re-run at the final code HEAD `afcb21f`, exit 0 unless noted:
+
+- `bun run typecheck` — 4/4 workspaces
+- `bun run lint` — clean
+- `bun run --filter @dokan/web test` — 1167 pass, 0 fail
+- `bun test ./scripts/` — 73 pass, 1 pre-existing skip (selection map)
 - `DOKAN_PORT=4217 DOKAN_WEB_PORT=5273 bunx playwright test 01-empty-states` —
   6 passed
 - Screenshot harness run on base and HEAD; 16 before / 16 after.
+
+## Deferred (not silent — for the parent to route)
+
+- `EmptyState` has no component-level spec (`card` class + `testId`
+  passthrough). Low: the class is cosmetic and every call-site behaviour is
+  covered. Owner: a tiny unit test when the component is next touched.
+- `party-detail` pending-`detail` copy: unreachable at the current render gate
+  (`detail.data === undefined` returns early), so no test; revisit if that gate
+  changes.
+- The invoices filtered-copy-when-totally-empty case is reasoned in this file
+  but not asserted; it self-corrects through the clear action.

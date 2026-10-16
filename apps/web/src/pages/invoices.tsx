@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { InvoiceKind } from "@dokan/contracts";
@@ -27,6 +27,11 @@ export function InvoicesPage() {
   const { t } = useTranslation();
   const [kind, setKind] = useState<KindFilter>("");
   const [status, setStatus] = useState<StatusFilter>("");
+  // Which filter the owner last CHANGED. After clearing, focus must go to the control
+  // that narrowed the list, and "whichever value is non-empty" cannot answer that: with
+  // both set, focusing `kind` sends a keyboard user to a control that did not empty the
+  // view (review on #245).
+  const lastFilterRef = useRef<"kind" | "status" | null>(null);
   const pager = usePagination();
 
   const list = useQuery(
@@ -51,6 +56,7 @@ export function InvoicesPage() {
             onValueChange={(value) => {
               // SAFETY: the select renders only "" / SALE / PURCHASE options, so the value is in KindFilter
               setKind((value ?? "") as KindFilter);
+              lastFilterRef.current = "kind";
               // a filter change invalidates the old offset: back to page 1
               pager.reset();
             }}
@@ -77,6 +83,7 @@ export function InvoicesPage() {
             onValueChange={(value) => {
               // SAFETY: the select renders only "" / UNPAID / PARTIAL / PAID options, so the value is in StatusFilter
               setStatus((value ?? "") as StatusFilter);
+              lastFilterRef.current = "status";
               pager.reset();
             }}
             items={[
@@ -132,9 +139,15 @@ export function InvoicesPage() {
                 variant="outline"
                 data-testid="invoices-empty-action"
                 onClick={() => {
-                  // the clicked button is replaced by the table; keep focus on
-                  // whichever filter actually emptied the view (issue #96)
-                  const filter = kind !== "" ? "invoices-kind-filter" : "invoices-status-filter";
+                  // the clicked button is replaced by the table; keep focus on the
+                  // filter the owner last changed (issue #96, review on #245).
+                  // Order: last-changed, else whichever filter is set, else kind -- so
+                  // focus is never simply dropped.
+                  const last = lastFilterRef.current;
+                  const target =
+                    last ?? (kind !== "" ? "kind" : status !== "" ? "status" : "kind");
+                  const filter =
+                    target === "status" ? "invoices-status-filter" : "invoices-kind-filter";
                   setKind("");
                   setStatus("");
                   pager.reset();

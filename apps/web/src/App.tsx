@@ -305,6 +305,12 @@ function VaultOwnerGate({ children }: { children: ReactNode }) {
  * until the next launch; the settled-write subscription re-runs the import
  * instead (issue #115). The import's own direct write does not notify, so this
  * cannot loop.
+ *
+ * A refusal to run while an import is in flight must remember the request:
+ * when the migration read and the failed write settle in the same turn, the
+ * failure listener runs before the in-flight guard clears, and "not now"
+ * quietly becomes "never". One pending bit, not a queue — a second request
+ * while one is pending is the same request (issue #115, PR #241 review).
  */
 function useSidebarPreferenceMigration(enabled: boolean): void {
   const queryClient = useQueryClient();
@@ -314,8 +320,13 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
     if (!enabled) return;
 
     let importing = false;
+    // a retry asked for while an import is in flight; one bit, not a queue
+    let retryPending = false;
     const importLegacy = () => {
-      if (importing) return;
+      if (importing) {
+        retryPending = true;
+        return;
+      }
       importing = true;
       void migrateLegacySidebarCollapsed()
         .then((imported) => {
@@ -329,6 +340,11 @@ function useSidebarPreferenceMigration(enabled: boolean): void {
         })
         .finally(() => {
           importing = false;
+          // the import this retry was refused for has settled: run it now
+          if (retryPending) {
+            retryPending = false;
+            importLegacy();
+          }
         });
     };
 

@@ -946,4 +946,76 @@ describe("RequireSession preference migration (issue #97 follow-up)", () => {
     expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBeNull();
     client.clear();
   });
+
+  it("remembers a retry that arrives while the import is still settling (issue #115 round 2)", async () => {
+    sessionData = { user: { id: "u1" } };
+    // the legacy value the import must recover
+    window.localStorage.setItem("dokan.sidebar.collapsed", "false");
+
+    // hold the migration read and the owner's competing write...
+    let releaseRead = () => {};
+    preferenceReadGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let releaseWrite = () => {};
+    preferenceWriteGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    // ...and fail exactly that write, so a remembered retry can succeed
+    failPreferenceWriteCount = 1;
+
+    function SidebarWriter() {
+      const { setValue } = useSidebarCollapsed();
+      return (
+        <button type="button" data-testid="sidebar-write" onClick={() => setValue(true)}>
+          write
+        </button>
+      );
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      renderWithClient(
+        root,
+        <RequireSession>
+          <SidebarWriter />
+        </RequireSession>,
+        client,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // the owner toggles while the migration read is still held
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>("[data-testid='sidebar-write']")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // release the read and fail the competing write in the same turn: the read
+    // settles first (the migration skips for the in-flight write) and the
+    // failure listener then runs before the migration's `finally` clears
+    // `importing`; the retry must be remembered, not dropped
+    await act(async () => {
+      releaseRead();
+      releaseWrite();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    for (
+      let attempt = 0;
+      attempt < 50 && preferenceStore[SIDEBAR_COLLAPSED_KEY] !== "false";
+      attempt += 1
+    ) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+    expect(preferenceStore[SIDEBAR_COLLAPSED_KEY]).toBe("false");
+    expect(window.localStorage.getItem("dokan.sidebar.collapsed")).toBeNull();
+    client.clear();
+  });
 });

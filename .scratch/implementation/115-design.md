@@ -110,6 +110,29 @@ flight (`hasPreferenceWrite`). Two changes:
   direct `writePreference` does not notify, so there is no retry loop; an
   in-flight guard prevents two concurrent imports.
 
+## Round 2 (PR #241 Greptile review) — the guard must remember, not just refuse
+
+The round-1 retry had the same defect shape it was written to remove, one step
+narrower: `importLegacy()` refused while `importing` was true, and the refusal
+was silent. When the migration read and the competing write settle in the same
+**turn**, the read observes the write in flight and the migration skips
+(`hasPreferenceWrite`), then the failed-write listener fires *before* the
+migration's `.finally()` clears `importing`. The listener's one retry is
+dropped, and the owner's legacy sidebar choice stays unimported for the whole
+session. Sequential settling (read, then write) hid it because the guard was
+already clear by the time the listener ran.
+
+The fix is one bit of state: when `importing` is true, set `retryPending`
+instead of merely returning, and run the remembered import from `.finally()`
+after clearing `importing`. One flag, not a queue — a second request while one
+is pending is the same request, so state cannot grow without bound. The
+concurrent-import guard itself is unchanged.
+
+**The general rule**, worth stating in the code: a guard that decides "not now"
+must record that it was asked, or "not now" silently becomes "never". The one
+other guard of this shape found in the same change is named under
+candidate follow-ups rather than fixed quietly.
+
 ## Planned tests
 
 Unit (`apps/web`):
@@ -120,7 +143,12 @@ Unit (`apps/web`):
   unchanged; a failed preferences read disables the control.
 - `App.test.tsx` (RequireSession migration): legacy key + a competing sidebar
   write held in flight → migration skips, then the write fails and the import
-  re-runs, lands the legacy value, and clears the legacy key.
+  re-runs, lands the legacy value, and clears the legacy key. Round 2 adds the
+  interleaved variant: the read is released and the competing write is rejected
+  in the same turn, so the failure listener runs while `importing` is still
+  true; the remembered retry must land the legacy value. Mutation proof:
+  remove the pending flag (the pre-round-2 code) and the interleaved test fails
+  with `preferenceStore[...] === undefined`.
 - `lib/preferences.test.tsx`: a failed write notifies `ok: false` and clears
   `hasPreferenceWrite`; a successful write notifies `ok: true` and keeps it.
 
@@ -158,3 +186,24 @@ E2E (`tests/e2e/00-onboarding.spec.ts`, plus map wiring):
 - No schema/table change, no new RPC, no change to the single-connection store.
 - No "reset progress"/re-teach-the-recipe feature beyond re-showing the panel.
 - No change to the milestone's write path or its retry cap.
+
+## Candidate follow-ups (named, not fixed quietly)
+
+Round 2 is the sidebar retry only. Two more "refuse silently becomes never"
+guards sit in the same #115 change; they are reported to the parent as
+candidates rather than folded into this diff.
+
+1. **The escape hatch is unreachable when the preferences read fails.**
+   `GettingStartedSetting` sets `disabled = isPending || isError || isWriting`,
+   so a failed `/preferences` read leaves the owner with a static
+   "unavailable" message and no retry on the control. It self-heals only through
+   the shared query's refetch-on-focus/reconnect or a remount — there is no
+   explicit retry. That is closer to "never" than the sidebar case was.
+2. **The import's own write failure is only retried next launch.**
+   `migrateLegacySidebarCollapsed` returns null when its direct
+   `writePreference` fails and relies on the next launch, while a *competing*
+   write's failure is now retried in-session through
+   `onPreferenceWriteSettled`. The asymmetry is deliberate today (the import's
+   own write does not notify, which is what keeps the retry loop-free), but it
+   means the same failure mode survives on the other branch of the same
+   function.

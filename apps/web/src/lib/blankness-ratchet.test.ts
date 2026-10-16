@@ -139,4 +139,20 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     ].join("\n");
     expect(findBlanknessGates(synthetic, "synthetic.ts")).toEqual([]);
   });
+
+  it("scans the reversed, .length, parenthesised and optional-chained gate forms", () => {
+    expect(findBlanknessGates('const a = "" === draft.trim();', "s.ts").map((gate) => gate.signature)).toEqual([
+      's.ts::"" === draft.trim()',
+    ]);
+    expect(findBlanknessGates("const a = draft.trim().length === 0;", "s.ts").map((gate) => gate.signature)).toEqual([
+      "s.ts::draft.trim().length === 0",
+    ]);
+    expect(
+      findBlanknessGates('const a = (drafts[line.id] ?? "").trim() !== "";', "s.ts").map((gate) => gate.signature),
+    ).toEqual(['s.ts::(drafts[line.id] ?? "").trim() !== ""']);
+    // `?.trim()` is detected and canonicalised to the plain `.trim()` signature
+    expect(findBlanknessGates('const a = draft?.trim() !== "";', "s.ts").map((gate) => gate.signature)).toEqual([
+      's.ts::draft.trim() !== ""',
+    ]);
+  });
 });

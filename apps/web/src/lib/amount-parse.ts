@@ -105,17 +105,20 @@ export function normalizeArabicIndicDigits(draft: string): string {
  * is a `Cf` format character, not whitespace — so a raw `.trim()` check reads it
  * as a chosen value, while the loose `Number()` bills it as 0.
  *
- * This one predicate decides blankness for every numeric-draft reader: the
- * invoice-draft money readers (`saleUnitPrice`, `saleOverrideInvalid`,
+ * This one predicate decides blankness for every numeric-draft *value reader*:
+ * the invoice-draft money readers (`saleUnitPrice`, `saleOverrideInvalid`,
  * `nextUnitCost`, `resolveInitialPaid`), `percentageDraftInvalid`,
  * `resolveOpeningStock`, the opening-balance row readers, the return-quantity
  * and cash-back readers, the settle/adjust amount guards and the low-stock
  * threshold default. A mark-only draft is «nothing chosen» there exactly as an
  * empty one is (#244).
  *
- * It is NOT a repo-wide claim: a raw `.trim()` on a *text* (name, reason, note,
+ * It is NOT a repo-wide claim. A raw `.trim()` on a *text* (name, reason, note,
  * barcode) or *date* field is deliberate — a mark-only paste in a text field is
- * real content, and a mark-only date is still unreadable — so those stay raw.
+ * real content, and a mark-only date is still unreadable. The `sale.tsx`
+ * `draftDirty` unsaved-work indicator is also deliberately raw: it is not a
+ * value decision, and a pasted mark is work the discard warning must keep.
+ *
  * The class is held closed by the ratchet in `blankness-ratchet.test.ts`:
  * it scans every numeric-draft reader for raw-`.trim()` blankness gates and
  * fails on any gate that is neither converted to this predicate nor listed in

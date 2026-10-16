@@ -261,14 +261,24 @@ function firstFixtureItem(): FixtureItem {
 }
 
 /** React controlled inputs need the native value setter + an input event. */
-function setInput(testId: string, value: string) {
-  const input = inputByTestId(testId);
+function setInputElement(input: HTMLInputElement, value: string) {
   act(() => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     if (setter === undefined) throw new Error("HTMLInputElement value setter is unavailable");
     setter.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+
+function setInput(testId: string, value: string) {
+  setInputElement(inputByTestId(testId), value);
+}
+
+/** The add-form's threshold input has no testid; it is the only one by that name. */
+function setInputByName(name: string, value: string) {
+  const input = document.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+  if (input === null) throw new Error(`missing input: ${name}`);
+  setInputElement(input, value);
 }
 
 function click(testId: string) {
@@ -476,10 +486,25 @@ describe("add item form opening stock", () => {
     setInput("item-sell", "180");
     // a bidi mark is Cf, not whitespace: the raw gate read a chosen threshold
     // and then the strict reader refused it instead of taking the default
-    setInput("item-threshold", "\u200f");
+    setInputByName("itemThreshold", "\u200f");
     click("item-save");
     await waitFor(() => createInputs.length === 1);
     expect(createInputs[0]).toMatchObject({ name: "بطارية حد افتراضي", lowStockThreshold: 5 });
+  });
+
+  it("keeps an explicit 0 threshold distinct from a blank default (#244)", async () => {
+    await mount();
+    await openAddTab();
+
+    setInput("item-name", "بطارية بلا تنبيه");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    // `draftBlank("0")` is false, so 0 stays 0 (no alert) — only a blank/mark-only
+    // draft takes the 5 default. One keystroke apart, so pin both.
+    setInputByName("itemThreshold", "0");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "بطارية بلا تنبيه", lowStockThreshold: 0 });
   });
 
   it("rejects a non-numeric cost without calling the server", async () => {

@@ -81,6 +81,14 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     expect(parseSignedWholeNumber("-42")).toBe(-42);
   });
 
+  it("parseSignedWholeNumber refuses a mark-only or mark-before-sign draft (#244)", () => {
+    const RLM = "\u200f";
+    // the one signed reader that does NOT route through draftBlank: a mark-only
+    // draft is still unreadable (null), never zero
+    expect(parseSignedWholeNumber(RLM)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}5`)).toBeNull();
+  });
+
   it("resolveOpeningStock accepts an Arabic-Indic stock draft on both paths", () => {
     expect(resolveOpeningStock("٧", false)).toEqual({ ok: true, value: 7 });
     expect(resolveOpeningStock("۷", true)).toEqual({ ok: true, value: 7 });

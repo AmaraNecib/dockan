@@ -428,6 +428,15 @@ describe("customer settle in place (#164)", () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled).toBe(true);
   });
 
+  it("keeps an interior mark a refusal, never a blank (#244)", async () => {
+    await renderCustomer();
+    click("party-settle");
+    // `1\u200f2` can reorder in the RTL page, so it is refused, not read as blank
+    typeInto("party-settle-amount", "1\u200f2");
+    expect(host.querySelector('[data-testid="party-settle-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="party-settle-confirm"]')?.disabled).toBe(true);
+  });
+
   it("previews the distribution oldest first, capped at each remaining", async () => {
     await renderCustomer();
     click("party-settle");

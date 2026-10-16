@@ -198,7 +198,11 @@ export function SalePage() {
 
   const { setDraftDirty, setSavePending } = useSaleDraft();
   // Quick-add inputs count too: a half-created item in that form is live work the
-  // header's New Sale action must not silently discard.
+  // header's New Sale action must not silently discard. These `draftDirty` gates
+  // stay raw `.trim()` on purpose (#244): this is an unsaved-work indicator, not
+  // a value decision — a pasted bidi mark IS work the discard warning must keep.
+  // `saleDebt` below reads the payment draft through `draftBlank` because there
+  // the mark means «nothing paid»; the two deliberately differ here.
   const quickDraft =
     quick.fields.name.trim() !== "" ||
     quick.fields.barcode.trim() !== "" ||

@@ -417,6 +417,16 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(lastCreateInput).toBeNull();
   });
 
+  it("drops a mark-only line while a valid line on the same form still submits (#244)", async () => {
+    renderPanel(makeInvoice([saleLine(), saleLine({ id: "00000000-0000-4000-8000-0000000000c9", description: "زيت" })]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-زيت"]')!, "\u200f");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    // preview and payload agree: the mark-only line is not part of the return
+    expect(lastCreateInput).toMatchObject({ lines: [{ invoiceLineId: LINE_ID, quantity: 2 }] });
+  });
+
   it("submits a valid return and announces success in a status role", async () => {
     renderPanel(makeInvoice([saleLine()]));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");

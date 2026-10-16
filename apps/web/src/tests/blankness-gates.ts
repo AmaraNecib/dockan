@@ -6,26 +6,35 @@ import { fileURLToPath } from "node:url";
  * #244 — the scanner behind the raw-`.trim()` blankness ratchet.
  *
  * It finds every *raw* `.trim()` blankness gate in one source string: `X.trim()`
- * compared to `""` (either operand order), `X.trim().length` compared to `0`, and
- * the two-step `const X = <expr>.trim(); … X === ""`. A receiver already
- * normalised through `normalizeArabicIndicDigits` (or `draftBlank`) is skipped —
- * those readers need the normalised string, so they are not the defect class.
+ * (or `X?.trim()`) compared to `""` (either operand order), `X.trim().length`
+ * compared to `0`, and the two-step `const X = <expr>.trim(); … X === ""`. A
+ * receiver already normalised through `normalizeArabicIndicDigits` (or
+ * `draftBlank`) is skipped — those readers need the normalised string, so they
+ * are not the defect class.
  *
  * The gate's identity is `file::<canonical text>`, not a line number: lines drift
- * with every edit, the gate's own text does not.
+ * with every edit, the gate's own text does not. `?.trim()` canonicalises to
+ * `.trim()`; two identical gate texts in one file collapse to one signature.
+ *
+ * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
+ * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
+ * a negation on a call-expression receiver (`f().trim()`), or in a file that
+ * parses numerics without importing `amount-parse`/`numeric-input`, is NOT
+ * caught. Every gate of the matched forms is caught; this comment is the honest
+ * boundary of that claim.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
 /** A member/chain receiver, e.g. `value.amount`, `drafts[line.id]`. */
 const CHAIN = String.raw`[A-Za-z_$][\w$]*(?:\s*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]+\]))*`;
-const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
-const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\.trim\(\)`, "g");
+const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
+const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\??\.trim\(\)`, "g");
 const PAREN_FWD = new RegExp(
-  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(""|'')\s*\)\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
+  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(""|'')\s*\)\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
   "g",
 );
-const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\.trim\(\)\.length\s*(===|!==|==|!=)\s*0`, "g");
+const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\.length\s*(===|!==|==|!=)\s*0`, "g");
 const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*?)\.trim\(\)`, "g");
 const USE = new RegExp(
   String.raw`(?:""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)` +

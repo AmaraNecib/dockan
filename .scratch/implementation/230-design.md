@@ -1,4 +1,4 @@
-# #230 design — close the Greptile path/tier contradiction
+# #230 design: close the Greptile path/tier contradiction
 
 ## Tier
 
@@ -11,8 +11,8 @@ backup/restore behaviour is touched). No `debate` run is required.
 One finding on PR #230, `docs/engineering-workflow.md:80-82`: the opening example
 states that a 12-line PR under `apps/api/src/auth/**` **is** High-assurance, while the
 paragraph below the table says a matching path "does not by itself make a change
-High-assurance". The example therefore implies a path determines the tier — the exact
-drift #228 exists to remove.
+High-assurance". The example therefore implies a path determines the tier. That is
+ the exact drift #228 exists to remove.
 
 ## Change
 
@@ -32,7 +32,7 @@ example is the one at line 82; lines 92-97 already label paths as hints, never t
 
 ## Follow-ups (unchanged, already on the PR)
 
-1. `scripts/skill-tier-consistency.test.ts` — automated wording drift guard.
+1. `scripts/skill-tier-consistency.test.ts`: automated wording drift guard.
 2. Point `guard/SKILL.md` and `debate/SKILL.md` at the canonical failure-mode list.
 
 ## Risks

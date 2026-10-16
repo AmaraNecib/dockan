@@ -16,8 +16,8 @@ import {
 let store: Record<string, string>;
 let failRead = false;
 let failWrite = false;
-/** When set, only the Nth write of this test fails (1-based). */
-let failWriteCall: number | null = null;
+/** When set, only writes for this exact key fail. */
+let failWriteFor: string | null = null;
 let writeCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
@@ -28,7 +28,7 @@ mock.module("@/lib/rpc", () => ({
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       writeCalls += 1;
-      if (failWrite || (failWriteCall !== null && writeCalls === failWriteCall)) {
+      if (failWrite || (failWriteFor !== null && input.key === failWriteFor)) {
         throw new Error("PREFERENCES_WRITE_FAILED");
       }
       store[input.key] = input.value;
@@ -112,7 +112,7 @@ describe("getting-started settings escape hatch (issue #115)", () => {
     store = {};
     failRead = false;
     failWrite = false;
-    failWriteCall = null;
+    failWriteFor = null;
     writeCalls = 0;
     client = freshClient();
   });
@@ -178,8 +178,8 @@ describe("getting-started settings escape hatch (issue #115)", () => {
     await act(async () => page.toggle()?.click());
     expect(await waitFor(() => page.writeError() !== null)).toBe(true);
     expect(page.writeError()?.getAttribute("role")).toBe("alert");
-    // the control actually attempted the writes, and did not claim success
-    expect(writeCalls).toBeGreaterThan(0);
+    // the control actually attempted both writes, and did not claim success
+    expect(writeCalls).toBe(2);
     // no false claim: the server value still stands on screen
     expect(store[ONBOARDING_DISMISSED_KEY]).toBe("true");
     expect(page.toggle()?.checked).toBe(false);
@@ -189,8 +189,8 @@ describe("getting-started settings escape hatch (issue #115)", () => {
   it("surfaces a half-applied clear instead of reading it as success", async () => {
     store[ONBOARDING_DISMISSED_KEY] = "true";
     store[ONBOARDING_COMPLETED_KEY] = "true";
-    // fail only the second write (`dismissed`), after `completed` landed
-    failWriteCall = 2;
+    // fail only the `dismissed` clear, after `completed` landed
+    failWriteFor = ONBOARDING_DISMISSED_KEY;
     const page = await mount(client);
     expect(await waitFor(() => page.toggle()?.checked === false)).toBe(true);
     expect(await waitFor(() => page.toggle()?.disabled === false)).toBe(true);

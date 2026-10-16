@@ -256,9 +256,11 @@ describe("preferences client (issue 97 follow-up)", () => {
 
   it("notifies observers of a settled write and forgets a failed one", async () => {
     const events: Array<{ key: string; ok: boolean }> = [];
-    const unsubscribe = onPreferenceWriteSettled((key, ok) => events.push({ key, ok }));
     const handle = await mountProbe("ui.test.e");
+    let unsubscribe = () => {};
     try {
+      // subscribe only once the mount succeeded, so a mount failure cannot leak
+      unsubscribe = onPreferenceWriteSettled((key, ok) => events.push({ key, ok }));
       expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
 
       await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());

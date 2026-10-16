@@ -4346,6 +4346,9 @@ describe("UI preferences (issue 97 follow-up)", () => {
         client.preferencesSet({ key: "ui.onboarding.completed", value }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     }
+    // a refused write changed nothing
+    const after = await client.preferencesGet();
+    expect(after.values["ui.onboarding.completed"]).toBe("false");
   });
 
   it("still accepts the shell keys the owner owns", async () => {

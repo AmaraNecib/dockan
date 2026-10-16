@@ -1,0 +1,16 @@
+$ playwright test "--output=.e2e-data/fix-217/test-results" "tests/e2e/vault.spec.ts"
+[WebServer] @dokan/api start: [2026-10-16T12:08:21] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4800
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 2754 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5800/
+
+Running 4 tests using 1 worker
+
+  ok 1 tests\e2e\vault.spec.ts:127:1 › the passphrase fields share one app-controlled reveal, pinned to the left edge (1.0m)
+  ok 2 tests\e2e\vault.spec.ts:180:1 › an empty vault passphrase shows Arabic, never the browser bubble (1.4s)
+  ok 3 tests\e2e\vault.spec.ts:201:1 › first run: passphrase → recovery key shown once → owner setup → the app opens (8.7s)
+  ok 4 tests\e2e\vault.spec.ts:233:1 › after a restart the vault is locked; recovery unlocks it and sets a new working passphrase (23.0s)
+
+  4 passed (2.4m)

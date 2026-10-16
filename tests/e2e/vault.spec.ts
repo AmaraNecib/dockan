@@ -243,10 +243,16 @@ test("after a restart the vault is locked; recovery unlocks it and sets a new wo
   await expect(page.locator("form")).toHaveAttribute("novalidate", "");
   await page.getByTestId("vault-unlock-submit").click();
   await expect(page.getByTestId("vault-error")).toHaveText("أدخل كلمة مرور الخزنة.");
+  // the field-blamed refusal points the alert at the empty field (#109)
+  await expect(page.getByTestId("vault-passphrase")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.getByTestId("vault-passphrase")).toHaveAttribute("aria-describedby", "vault-error");
 
   await page.getByTestId("vault-passphrase").fill("wrong passphrase");
   await page.getByTestId("vault-unlock-submit").click();
   await expect(page.getByTestId("vault-error")).toHaveText("كلمة المرور غير صحيحة. تحقّق منها ثم أعد المحاولة.", { timeout: VAULT_KDF_TIMEOUT_MS });
+  // the server error names no field, so the empty-field blame cannot survive (#217)
+  await expect(page.getByTestId("vault-passphrase")).toHaveAttribute("aria-invalid", "false");
+  await expect(page.getByTestId("vault-passphrase")).not.toHaveAttribute("aria-describedby", "vault-error");
 
   // the recovery key opens the vault without the forgotten passphrase
   await page.getByTestId("vault-use-recovery").click();

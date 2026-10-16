@@ -34,6 +34,9 @@ type VaultHook = {
   refresh: () => void;
 };
 
+/** The input a gate refusal points at; null means the form-level alert. */
+type VaultGateField = "passphrase" | "confirm" | "recovery" | null;
+
 /**
  * Fetch the vault status once; the navigation fragment may carry the session
  * token the desktop shell minted at unlock, which always lands in
@@ -112,12 +115,15 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   const [savedConfirmed, setSavedConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [screen, setScreen] = useState<"primary" | "recovery-unlock" | "recovery-show">("primary");
-  const [error, setError] = useState<string | null>(null);
+  // A failure and the field it blames are ONE value: setting one always sets
+  // the other, so a server error that names no field can never strand a stale
+  // field blame (and edit-clear can never swallow an unrelated message).
+  const [failure, setFailure] = useState<{ message: string; field: VaultGateField } | null>(null);
+  const error = failure?.message ?? null;
+  const errorField = failure?.field ?? null;
   const [lockedUntil, setLockedUntil] = useState(status.lockedForMs > 0 ? Date.now() + status.lockedForMs : 0);
   const busyRef = useRef(false);
   const passphraseRef = useRef<HTMLInputElement>(null);
-  /** which field a failed validation blames; null = the form-level alert */
-  const [errorField, setErrorField] = useState<"passphrase" | "confirm" | "recovery" | null>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
   const recoveryRef = useRef<HTMLInputElement>(null);
 
@@ -128,8 +134,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
     const timer = setInterval(() => {
       if (Date.now() >= lockedUntil) {
         setLockedUntil(0);
-        setError(null);
-        setErrorField(null);
+        setFailure(null);
       }
     }, 1000);
     return () => clearInterval(timer);
@@ -141,11 +146,10 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
 
   const fail = (
     message: string,
-    field: "passphrase" | "confirm" | "recovery" | null = null,
+    field: VaultGateField = null,
     retryAfterMs?: number,
   ): void => {
-    setError(message);
-    setErrorField(field);
+    setFailure({ message, field });
     if (field === "passphrase") passphraseRef.current?.focus();
     if (field === "confirm") confirmRef.current?.focus();
     if (field === "recovery") recoveryRef.current?.focus();
@@ -153,18 +157,15 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
   };
 
   /** Drop a field-blamed failure as soon as that field is edited (#100 pattern). */
-  const clearFieldError = (field: "passphrase" | "confirm" | "recovery"): void => {
-    if (errorField !== field) return;
-    setError(null);
-    setErrorField(null);
+  const clearFieldError = (field: Exclude<VaultGateField, null>): void => {
+    setFailure((current) => (current !== null && current.field === field ? null : current));
   };
 
   const run = async (action: () => Promise<void>): Promise<void> => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
-    setError(null);
-    setErrorField(null);
+    setFailure(null);
     try {
       await action();
     } catch (err) {
@@ -295,7 +296,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           <button type="submit" className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" disabled={busy} data-testid="vault-recovery-submit">
             {busy ? t("vaultWorking") : t("vaultUnlock")}
           </button>
-          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setError(null); setErrorField(null); }}>
+          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setFailure(null); }}>
             {t("vaultBackToPassphrase")}
           </button>
         </form>
@@ -443,8 +444,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
           className="text-sm text-muted-foreground underline"
           onClick={() => {
             setScreen("recovery-unlock");
-            setError(null);
-            setErrorField(null);
+            setFailure(null);
           }}
           data-testid="vault-use-recovery"
         >

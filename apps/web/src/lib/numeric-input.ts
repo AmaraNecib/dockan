@@ -78,7 +78,7 @@ export function parseSignedWholeNumber(text: string): number | null {
   // re-parent that mark to the magnitude's edge and silently strip it
   // (`"-\u200f5"` → -5) — the #227 round-2 finding. `\s*` keeps the
   // pre-existing `"- 5"` read, pinned below.
-  const normalized = normalizeArabicIndicDigits(trimmed);
+  const normalized = normalizeArabicIndicDigits(trimmed).trim();
   if (!/^-\s*\d+$/u.test(normalized)) return null;
   const magnitude = readNormalizedDigits(normalized.slice(1).trim());
   return magnitude === null ? null : -magnitude;

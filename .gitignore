@@ -34,6 +34,7 @@ e2e-logs/
 coverage/
 # agent artifacts (never source)
 .pi-subagents/
+.scratch/*-logs/
 
 # local crew session state (harness-managed)
 .scratch/sessions/

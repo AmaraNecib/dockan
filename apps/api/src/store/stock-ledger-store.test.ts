@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +29,7 @@ beforeAll(async () => {
   );
   store = createDrizzleStore(conn);
   await store.setup();
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();
@@ -109,7 +110,7 @@ describe("stock movements — persistence + ordering", () => {
 });
 
 describe("opening-balance backfill", () => {
-  it("backfills exactly one opening movement per stockless-ledger item, idempotently", async () => {
+  itHeavy("backfills exactly one opening movement per stockless-ledger item, idempotently", async () => {
     const item = await makeItem("backfill-item");
     // give it stock directly (pre-ledger state simulation)
     await store.setItemStockAndCost(item.id, 7, 300);
@@ -129,7 +130,7 @@ describe("opening-balance backfill", () => {
     expect(rows.length).toBe(1);
   });
 
-  it("never touches items that already have movements", async () => {
+  itHeavy("never touches items that already have movements", async () => {
     const item = await makeItem("backfill-skip");
     await store.insertStockMovement({
       itemId: item.id,
@@ -174,7 +175,7 @@ describe("transaction atomicity — movement + stock update", () => {
 });
 
 describe("cost correction persistence (issue 144)", () => {
-  it("keeps the corrected cost and its movement across a close/reopen", async () => {
+  itHeavy("keeps the corrected cost and its movement across a close/reopen", async () => {
     const persistenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-cost-persist-"));
     const config = createAppConfig({ DOKAN_DATA_DIR: persistenceDir, DOKAN_DB_PATH: path.join(persistenceDir, "test.db") });
 

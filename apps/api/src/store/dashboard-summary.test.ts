@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -89,7 +90,7 @@ async function seedInvoice(store: StorePort, over: SeedInvoice) {
 }
 
 describe("dashboardSummary (issue 84)", () => {
-  it("aggregates the day's sales, both debt directions, and low stock in SQL", async () => {
+  itHeavy("aggregates the day's sales, both debt directions, and low stock in SQL", async () => {
     const store = await freshStore();
     const day = localDate();
     const other = "2020-01-01";
@@ -122,7 +123,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(present(result.lowStockItems).map((item) => item.id)).toEqual([low.id]);
   });
 
-  it("agrees with debtSummaries for both debt directions", async () => {
+  itHeavy("agrees with debtSummaries for both debt directions", async () => {
     const store = await freshStore();
     const day = localDate();
     // named and unnamed, unpaid and paid, both kinds
@@ -145,7 +146,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(summary.weOwe).toBe(1_200);
   });
 
-  it("returns the five newest invoices by creation time, including a just-created backdated one", async () => {
+  itHeavy("returns the five newest invoices by creation time, including a just-created backdated one", async () => {
     const store = await freshStore();
     // Five older inserts, then a backdated invoice inserted LAST. The api's
     // business-date order would bury it behind future-dated rows; creation
@@ -162,7 +163,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(present(result.recentInvoices).some((invoice) => invoice.invoiceNumber === "DASH-OLD-1")).toBe(false);
   });
 
-  it("keeps the money figures when one optional section cannot be read", async () => {
+  itHeavy("keeps the money figures when one optional section cannot be read", async () => {
     const warnings: string[] = [];
     const { store, conn } = await freshStoreWithConn({
       warn: (event, message) => warnings.push(`${event}: ${message}`),
@@ -191,7 +192,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(warnings.some((w) => w.startsWith("DASHBOARD_SECTION_FAILED") && w.includes("lowStock"))).toBe(true);
   });
 
-  it("includes a supplier account balance in weOwe even with no invoice (issue 176 review)", async () => {
+  itHeavy("includes a supplier account balance in weOwe even with no invoice (issue 176 review)", async () => {
     const store = await freshStore();
     const day = localDate();
     const supplier = await store.createParty("supplier", { name: "مورد رصيد افتتاحي" });
@@ -213,7 +214,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect((await store.dashboardSummary(day)).weOwe).toBe(500);
   });
 
-  it("matches the /debts supplier total across id-backed, typed-only and credit accounts (issue 176 review)", async () => {
+  itHeavy("matches the /debts supplier total across id-backed, typed-only and credit accounts (issue 176 review)", async () => {
     const store = await freshStore();
     const day = localDate();
 
@@ -255,7 +256,7 @@ describe("dashboardSummary (issue 84)", () => {
     expect(result.weOwe).toBe(displayed);
   });
 
-  it("returns zeros and an empty list on an empty store", async () => {
+  itHeavy("returns zeros and an empty list on an empty store", async () => {
     const store = await freshStore();
 
     const result = await store.dashboardSummary(localDate());

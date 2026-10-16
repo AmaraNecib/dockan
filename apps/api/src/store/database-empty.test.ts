@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,7 +39,7 @@ function makeStore(): StorePort {
 }
 
 describe("databaseIsEmpty", () => {
-  it("is true after setup on a fresh database — seed rows do not count", async () => {
+  itHeavy("is true after setup on a fresh database — seed rows do not count", async () => {
     const store = makeStore();
     await store.setup();
 
@@ -53,7 +54,7 @@ describe("databaseIsEmpty", () => {
     expect(await store.databaseIsEmpty()).toBe(true);
   });
 
-  it("is false as soon as one shop record exists", async () => {
+  itHeavy("is false as soon as one shop record exists", async () => {
     const store = makeStore();
     await store.setup();
     const category = (await store.listCategories())[0];
@@ -63,7 +64,7 @@ describe("databaseIsEmpty", () => {
     expect(await store.databaseIsEmpty()).toBe(false);
   });
 
-  it("is false when the admin identity marker survives without a user row", async () => {
+  itHeavy("is false when the admin identity marker survives without a user row", async () => {
     const store = makeStore();
     await store.setup();
     // a half-restored folder: the provisioning marker remains, the user row
@@ -73,7 +74,7 @@ describe("databaseIsEmpty", () => {
     expect(await store.databaseIsEmpty()).toBe(false);
   });
 
-  it("is false when the invoice number sequence has been used", async () => {
+  itHeavy("is false when the invoice number sequence has been used", async () => {
     const store = makeStore();
     await store.setup();
     // setup seeds next_number = 1; one allocation proves an invoice existed
@@ -82,7 +83,7 @@ describe("databaseIsEmpty", () => {
     expect(await store.databaseIsEmpty()).toBe(false);
   });
 
-  it("is false when the return number sequence has been used", async () => {
+  itHeavy("is false when the return number sequence has been used", async () => {
     const store = makeStore();
     await store.setup();
     await store.allocateReturnNumber();

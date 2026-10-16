@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -126,7 +127,7 @@ describe("guardBootStep", () => {
 });
 
 describe("a database advanced between open and setup", () => {
-  it("lands on the refusal page instead of a crash", async () => {
+  itHeavy("lands on the refusal page instead of a crash", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-refusal-boot-"));
     try {
       const dbPath = path.join(dir, "test.db");

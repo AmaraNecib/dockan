@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -16,18 +17,15 @@ import { readVaultBackupBundle } from "./backup";
  * JSON reply comes back on stdout, and the HTTP app starts only after unlock.
  * Nothing is asserted about internal functions, so the shell's protocol is
  * pinned end to end.
+ *
+ * Every test spawns a real process and runs Argon2id inside it; under
+ * contention one took >30s (the old per-file budget, #91), so the suite uses
+ * the shared heavy-test budget.
  */
 
 let dir: string;
 let port: number;
 let child: ChildProcessWithoutNullStreams | undefined;
-
-/**
- * CI is slower than a dev laptop: every broker test spawns a real process and
- * runs Argon2id inside it, so each test states its own per-test budget (the
- * default 5s timed out in CI).
- */
-const BROKER_TIMEOUT_MS = 30_000;
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -147,7 +145,7 @@ describe("desktop shell vault broker", () => {
     expect(reply.code).toBe("VAULT_PASSPHRASE_TOO_SHORT");
     await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
     expect(child?.exitCode).not.toBe(0);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("sets up over stdin, returns the recovery key once, and serves the app after the ack", async () => {
     child = spawnBroker(dir, port);
@@ -178,7 +176,7 @@ describe("desktop shell vault broker", () => {
     // brand-new shop has a valid self-contained backup without another unlock
     const backupFile = await waitForBackupFile();
     expect(readVaultBackupBundle(fs.readFileSync(backupFile))).toBeDefined();
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("refuses a wrong passphrase with the Arabic code and exits without serving", async () => {
     // create a vault first
@@ -204,7 +202,7 @@ describe("desktop shell vault broker", () => {
     // and the process is gone (no lingering pre-unlock server)
     await new Promise<void>((resolve) => child?.once("exit", () => resolve()));
     expect(child?.exitCode).not.toBe(0);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("unlocks with a recovery key over stdin", async () => {
     child = spawnBroker(dir, port);
@@ -224,7 +222,7 @@ describe("desktop shell vault broker", () => {
     expect(reply.ok).toBe(true);
     expect(reply.sessionToken?.length).toBeGreaterThan(20);
     await waitForHealth(port);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("answers a status probe over the pipe without consuming the one-shot request (issue #141)", async () => {
     child = spawnBroker(dir, port);
@@ -244,7 +242,7 @@ describe("desktop shell vault broker", () => {
     expect(setupReply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
     send(child, "ack");
     await waitForHealth(port);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("refuses HTTP pre-boot credential routes in broker mode: the secret has only the pipe (issue #141)", async () => {
     child = spawnBroker(dir, port);
@@ -272,7 +270,7 @@ describe("desktop shell vault broker", () => {
     const setupReply = JSON.parse(await nextLine()) as { ok: boolean; recoveryKey?: string };
     expect(setupReply.ok).toBe(true);
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("resets the passphrase from a recovery key over the pipe (round-2 finding 2)", async () => {
     child = spawnBroker(dir, port);
@@ -307,7 +305,7 @@ describe("desktop shell vault broker", () => {
     const unlockReply = JSON.parse(await unlockLine()) as { ok: boolean; sessionToken?: string };
     expect(unlockReply.ok).toBe(true);
     expect(unlockReply.sessionToken?.length).toBeGreaterThan(20);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("delivers the recovery key before the plaintext sweep and the warning as a follow-up (round-3 finding 1)", async () => {
     // an unencryptable legacy backup: the sweep reports it instead of hiding it
@@ -353,7 +351,7 @@ describe("desktop shell vault broker", () => {
     expect(warningReply.plaintextRemaining).toEqual([stubborn]);
     send(child, "ack");
     await waitForHealth(port);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 
   it("keeps the passphrase out of the sidecar's argv and environment (issue #141)", async () => {
     const secret = "phrase only the stdin pipe may see";
@@ -378,5 +376,5 @@ describe("desktop shell vault broker", () => {
     }
     send(child, "ack");
     await waitForHealth(port);
-  }, BROKER_TIMEOUT_MS);
+  }, HEAVY_TEST_TIMEOUT_MS);
 });

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -87,7 +88,7 @@ describe("vault backup bundle", () => {
     await expect(extractVaultBackup(Buffer.from("nope"), tempDir("dokan-backup-bad-"))).rejects.toThrow();
   });
 
-  it("exports a self-contained backup that restores the shop on a fresh install (finding: unlockable backups)", async () => {
+  itHeavy("exports a self-contained backup that restores the shop on a fresh install (finding: unlockable backups)", async () => {
     const source = tempDir("dokan-backup-src-");
     const sourceManager = new VaultManager({
       dataDir: source,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { itHeavy } from "../../test-support/heavy";
 
 import { VaultAuthenticationError, type KdfParams } from "./crypto";
 import { VaultCore, type VaultHeaderStore } from "./core";
@@ -122,7 +123,8 @@ describe("VaultCore", () => {
     expect(text()).toContain("argon2id");
   });
 
-  it("refuses to create a vault over an existing header", async () => {
+  // uses the production KDF (no FAST_KDF override): two real Argon2 passes
+  itHeavy("refuses to create a vault over an existing header", async () => {
     const { store } = memoryStore();
     await VaultCore.create(store, "one long enough");
     await expect(VaultCore.create(store, "two long enough")).rejects.toThrow();

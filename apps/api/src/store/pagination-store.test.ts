@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, setHeavyDefaultTimeout } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,9 @@ import { openConnection, type Connection } from "../db/connection";
 import { localDate, localDateTime } from "../lib/logger";
 import { createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
+
+// Every test pages the shared real database.
+setHeavyDefaultTimeout();
 
 /**
  * Issue 163 — server-side pagination at the store seam. One envelope for every
@@ -27,7 +31,7 @@ beforeAll(async () => {
   await store.setup();
   // the seeded default category every test item files under
   categoryId = (await store.listCategories())[0]!.id;
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();

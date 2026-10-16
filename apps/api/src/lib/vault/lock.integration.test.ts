@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect } from "bun:test";
+import { itHeavy } from "../../test-support/heavy";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -106,7 +107,7 @@ afterEach(async () => {
 });
 
 describe("vault single-writer lock over a live sidecar", () => {
-  it("refuses a second instance, keeps the first serving, and reclaims after a hard kill", async () => {
+  itHeavy("refuses a second instance, keeps the first serving, and reclaims after a hard kill", async () => {
     api = startApi(port);
     await waitForHealth(port);
 
@@ -126,9 +127,9 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
     expect(fs.existsSync(path.join(dir, "vault.lock"))).toBe(false);
-  }, 30_000);
+  });
 
-  it("a refused second sidecar never overwrites the owner's .dokan-port record (round-7 finding 2)", async () => {
+  itHeavy("a refused second sidecar never overwrites the owner's .dokan-port record (round-7 finding 2)", async () => {
     api = startApi(port);
     await waitForHealth(port);
     const portFile = path.join(dir, "run", ".dokan-port");
@@ -147,5 +148,5 @@ describe("vault single-writer lock over a live sidecar", () => {
     expect(fs.readFileSync(portFile, "utf8")).toBe(String(port));
     // the first instance still owns the folder and keeps serving
     expect((await fetch(`http://127.0.0.1:${port}/health`)).ok).toBe(true);
-  }, 30_000);
+  });
 });

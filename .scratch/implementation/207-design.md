@@ -86,8 +86,10 @@ The existing coverage is `abc`, `1 000,00` (invalid), and a batch of 201
 ## Which new cases discriminate
 
 A new case is only worth keeping if weakening the guard it names makes it fail.
-All four mutations below were re-run in this lane on this HEAD by temporary
-production edits, then reverted (`git status --short` clean afterwards):
+All four mutations below were applied in this lane to the production files (no
+production file changed on this branch, so the guarded code is byte-identical at
+every commit here), then reverted (`git status --short` clean afterwards). Exact
+commands and exit codes are recorded in `.scratch/reviews/207/<sha>-test-audit.md`.
 
 | Mutation | Failing test | Observed |
 |---|---|---|
@@ -125,9 +127,15 @@ a real untested branch; file a follow-up if the owner wants them.
   covered at the parser level in `amount-parse.test.ts`).
 - **Negative amount in the typed new row** (same parser branch as the
   existing-row negative case, so it adds no new discrimination).
-- **A runtime guard for the helper's `validRowAmount: null` hatch** (assert a
-  non-empty batch before submitting); today the four null callers are verified
-  by hand and the JSDoc states the invariant.
+- **An empty supplier list** submitted through the page: `submit()` reports
+  "nothing entered" (no write), but no test drives that branch.
+- **A runtime non-empty-batch guard in the helper.** Attempted this lane, then
+  reverted: the two read-failure callers submit while a list error has replaced
+  the table, so the typed inputs are unmounted and the batch is invisible to a
+  DOM query. A DOM-based guard fails those tests without protecting anything; the
+  `null` callers stay a documented, hand-verified invariant. The four null call
+  sites (over-limit, 199+typed, and the two read-failure cases) each build a
+  non-empty batch, and would fail loudly if the guard they exercise were dropped.
 
 ## Documentation-only fix: the confirm-save known exception
 

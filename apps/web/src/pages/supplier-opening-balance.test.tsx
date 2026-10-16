@@ -312,9 +312,14 @@ function dispatchClickOn(testId: string, init: MouseEventInit) {
  * control, and the request would never run.
  *
  * `validRowAmount: null` skips the default row for a test that builds its whole
- * valid batch in `arm` (the over-limit case, or a valid typed-name row); those
- * still get the drift-prone half, the submit itself. Assertions stay in the
- * test body afterwards: a blocked submit leaves the visible state unchanged.
+ * valid batch in `arm` (the over-limit cases, or a valid typed-name row); those
+ * still get the drift-prone half, the submit itself. The default row is row 1,
+ * whose supplier carries no entries in every fixture this file uses; a fixture
+ * with entries on row 1 would open the confirmation dialog instead of sending,
+ * so keep that invariant when adding callers. Reject-side assertions stay in the
+ * test body afterwards (a blocked submit leaves the visible state unchanged); an
+ * accept-side test may assert the enabled control from inside `arm`, before the
+ * submit.
  */
 async function submitForm(arm: () => void | Promise<void>, validRowAmount: string | null = "300"): Promise<void> {
   if (validRowAmount !== null) typeIntoRow(1, validRowAmount);

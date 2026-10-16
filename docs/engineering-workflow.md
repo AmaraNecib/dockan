@@ -119,7 +119,8 @@ reviewable next to the verdict instead of being invisible.
   its `crew_report` which lessons it applied (and which it deliberately did not)
   — reading is the lane's job even though writing is not. Wisdom is **read-only
   for a lane**: its `crew_report` may carry a candidate lesson in the `lesson`
-  field, but only the parent writes the file, and only when the same failure has
+  field (a harness without that field carries it in the report summary), but only
+  the parent writes the file, and only when the same failure has
   occurred more than once (one occurrence is a report line, not wisdom). This
   also keeps `.agents/wisdom/**` out of every lane diff, so a lane's review
   evidence can no longer go stale from a wisdom write it made to satisfy the
@@ -150,4 +151,4 @@ it merges, whatever Greptile says. Merge order matters when two PRs share a
 store/router: land the one that owns the write path first and rebase the other
 onto the new `develop`.
 
-Merge command: `gh pr merge <num> --squash --subject "<title> (closes #<issue>)"`.
+Parent-only merge command: `gh pr merge <num> --squash --subject "<title> (closes #<issue>)"`.

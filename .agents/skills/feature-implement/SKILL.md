@@ -167,17 +167,17 @@ gh pr create --base develop \
 After opening the PR, the parent publishes a concise review-evidence summary as a
 PR comment.
 
-### 11. CI + Greptile
+### 11. CI + Greptile — parent-owned
 
-**Parent-owned.** `.github/workflows/ci.yml` runs three jobs on every PR to
+`.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
 (cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
 A lane cannot trigger CI or a Greptile review at all, because it cannot push
 (step 10). This wait belongs to the parent, never the lane.
 
-Then trigger Greptile:
-- CLI path (preferred): run the `cli-review` skill (`greptile review --json`) against the pinned base
-- PR path: comment `@greptile-apps review` in the PR
+Then the parent triggers Greptile:
+- CLI path (preferred): the parent runs the `cli-review` skill (`greptile review --json`) against the pinned base
+- PR path: the parent comments `@greptile-apps review` in the PR
 
 **Verify every finding against the code before fixing it.** Greptile edits its
 comment in place and can re-list findings a later commit already fixed. On #188 a
@@ -199,9 +199,9 @@ applied and carries any candidate lesson in its `crew_report`; the parent writes
 a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
 occurred more than once.
 
-### 13. Report
+### 13. Report to the owner — parent-owned
 
-Report to the user: PR link, check status (local + CI), Greptile verdict, any deferred items.
+The parent reports: PR link, check status (local + CI), Greptile verdict, any deferred items.
 
 ## Merge rules
 
@@ -235,5 +235,5 @@ it merges, whatever Greptile says.
 | No code-review | Step 8 — code-review |
 | Guard Phase 2 not run | Step 9 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 10 (push + PR) |
-| Greptile not clean | Step 11 — CI + Greptile |
+| Greptile not clean | Parent only — Step 11 (CI + Greptile) |
 | All done | Parent only — Steps 12-13 (guard pre-report, then report to the owner) |

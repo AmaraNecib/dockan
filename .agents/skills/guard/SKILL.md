@@ -40,7 +40,7 @@ If the change touches Rust Core (`apps/desktop/src-tauri/src/`):
 ## Phase 2 — Pre-review / pre-push
 
 This is the gate before Greptile review and before any push. It never pushes by
-itself. Uses the Husky pre-push hook when the hook is available.
+itself. The parent's push runs the Husky pre-push hook when the hook is available.
 
 ```
 [ ] bun run typecheck — passes?
@@ -48,7 +48,7 @@ itself. Uses the Husky pre-push hook when the hook is available.
 [ ] bun run test — all tests pass?
 [ ] bun run test:e2e — passes? (when UI flows changed)
 [ ] git status — working tree clean?
-[ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10)
+[ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10, Merge rules)
 ```
 
 ### Review evidence checks

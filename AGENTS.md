@@ -71,9 +71,9 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 
 ## Merging
 
-**Merge only when the owner says to merge.** The agent never merges on its own
-initiative, whatever the review says — 5/5 with no findings and every check green
-is the *bar to ask*, not permission. A **CI change** (anything under `.github/`)
+**Merge only when the owner says to merge.** A lane never merges at all; the
+parent session merges only on the owner's word, whatever the review says — 5/5
+with no findings and every check green is the *bar to ask*, not permission. A **CI change** (anything under `.github/`)
 additionally goes to the owner for the diff. Merge order matters when two PRs
 share a store/router: land the one that owns the write path first and rebase the
 other onto the new develop.

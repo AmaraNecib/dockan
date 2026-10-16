@@ -92,7 +92,7 @@ record.
 ### 6. Save evidence
 
 Save the full findings to `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
-This file is used by guard to verify review completeness before push.
+This file is used by guard to verify review completeness before the parent pushes.
 
 The parent session publishes a summary as a PR comment after the PR is opened.
 

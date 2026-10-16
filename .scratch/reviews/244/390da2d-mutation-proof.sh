@@ -13,6 +13,13 @@
 #   * mktemp for the patch, so two lanes cannot clobber one /tmp/mut.patch;
 #   * fails loudly if the reverse patch does not apply.
 #
+# Round 3 (Greptile finding 3, the other half): a non-zero exit is NOT a detection.
+#   * refuses to start unless the unmutated ratchet is GREEN, so a runner error, a
+#     missing dependency or a bad reverse patch can no longer masquerade as a
+#     caught gate;
+#   * requires the EXPECTED assertion (`has every converted gate absent`) in the
+#     output, not merely a non-zero exit status.
+#
 # Never `git stash` here: `git stash push -- <path>` with nothing to stash pops an
 # unrelated stash (`.agents/wisdom/2026-10-14-git-stash-pathspec-pops-unrelated-stash.md`).
 set -u
@@ -68,6 +75,16 @@ for i in "${!FILES[@]}"; do
   }
 done
 
+echo "=================== BASELINE (unmutated) ==================="
+( cd apps/web && bun test src/lib/blankness-ratchet.test.ts > "$OUT" 2>&1 )
+baseline=$?
+echo "baseline ratchet exit code: $baseline"
+if [ "$baseline" -ne 0 ]; then
+  echo "FATAL: the ratchet is not green before any mutation; a red run proves nothing"
+  grep -E '\(fail\)|error' "$OUT" | head -10
+  exit 1
+fi
+
 status=0
 for i in "${!FILES[@]}"; do
   f="${FILES[$i]}"
@@ -84,6 +101,9 @@ for i in "${!FILES[@]}"; do
   cp -p "$BACKUP_DIR/$i" "$f"
   if [ "$code" -eq 0 ]; then
     echo "PROBLEM: the ratchet stayed green on a reverted raw gate"
+    status=1
+  elif ! grep -qE '\(fail\).*(has every converted gate absent|classifies every DETECTED gate)' "$OUT"; then
+    echo "PROBLEM: exit $code without the expected failing assertion — a crashed runner is not a detection"
     status=1
   fi
 done

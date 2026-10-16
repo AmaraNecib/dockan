@@ -31,6 +31,14 @@ import { fileURLToPath } from "node:url";
  * argument, a template `${}`); only a `;`, a closing bracket at depth 0 or a new
  * statement ends it.
  *
+ * Round 3 (#244): a template expression `${...}` is CODE in both passes — a
+ * comment inside it is stripped and a brace inside it scopes — so a gate split by
+ * a comment there is caught and an inner normalised declaration there cannot mask
+ * an outer raw check. Template TEXT stays verbatim (above). A declaration is
+ * skipped as normalised only when the trimmed VALUE comes from the normaliser: a
+ * normaliser in a subscript normalises the KEY, not the selected draft, so
+ * `drafts[normalizeArabicIndicDigits(id)].trim()` is a raw gate.
+ *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
  * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
@@ -53,9 +61,12 @@ import { fileURLToPath } from "node:url";
  * arrow/callback body on the right-hand side (`const t = xs.map((x) => x.trim())`,
  * whose canonical text then also loses the closing bracket) attributes that
  * `.trim()` to `t` (false positive with invented receiver text). A string or
- * template literal whose TEXT looks like a gate is scanned as code: blanking the
- * body was rejected because it would also hide a real gate inside a template
- * `${}` expression, which is the unsafe direction for a ratchet. Regex literals
+ * template literal whose TEXT looks like a gate is still scanned as code, so it
+ * can be reported as a gate it is not (false positive). That is a deliberate
+ * no-change from round 2, not a ceiling: now that `${...}` is handled as code,
+ * blanking only a template's TEXT is possible and would remove those false
+ * positives without hiding a gate inside `${}` — a deferred follow-up, not part
+ * of this change. Regex literals
  * are not parsed, so a regex holding a quote or a `/*` can mis-scope or HIDE every
  * later gate in the file (the unsafe direction) — a deferred follow-up, not a
  * dismissal. Every gate of the matched forms is caught; this comment is the honest
@@ -93,12 +104,24 @@ const STATEMENT_KEYWORD =
  * Whether a statement break sits between `=` and the `.trim()` at bracket depth 0,
  * i.e. the `.trim()` belongs to a later statement. A bracketed group (an object
  * argument, a template `${}`) does NOT end the right-hand side; a `;`, a closing
- * bracket at depth 0, or a new line that opens a new statement does.
+ * bracket at depth 0, or a new line that opens a new statement does. A brace
+ * inside a string or template literal is just text and is skipped, so a key like
+ * `d["}"]` does not read as a statement break.
  */
 function breaksStatement(text: string, from: number, to: number): boolean {
   let depth = 0;
+  let quote: "'" | '"' | "`" | null = null;
   for (let i = from; i < to; i += 1) {
     const char = text[i]!;
+    if (quote !== null) {
+      if (char === "\\") i += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      continue;
+    }
     if (OPENERS.includes(char)) depth += 1;
     else if (CLOSERS.includes(char)) {
       if (depth === 0) return true;
@@ -131,11 +154,34 @@ const USE_REV = new RegExp(
   "g",
 );
 /**
- * A declaration already put through the one normaliser is not a RAW trim. Matched
- * as a CALL, so a variable that merely contains the name (`draftBlankish`) is
- * still a raw gate.
+ * A declaration already put through the one normaliser is not a RAW trim.
+ * Matched as a CALL that WRAPS THE WHOLE VALUE (see `withoutSubscripts`), so a
+ * variable that merely contains the name (`draftBlankish`) is still a raw gate,
+ * and so is a normaliser that is only an argument of another call.
  */
-const NORMALISED = /\b(?:normalizeArabicIndicDigits|draftBlank)\s*\(/;
+const NORMALISED_VALUE = /^(?:normalizeArabicIndicDigits|draftBlank)\s*\(.*\)$/;
+
+/**
+ * The receiver with every `[...]` subscript group removed. A normaliser in a
+ * subscript normalises the KEY, and the selected draft is still raw
+ * (`drafts[normalizeArabicIndicDigits(id)].trim()`, round-3 finding 2). Stripping
+ * the subscript leaves `drafts`, so the declaration is reported; a normaliser
+ * over the value (`normalizeArabicIndicDigits(drafts[id]).trim()`) keeps its name
+ * and is still skipped. The resulting text is then tested against
+ * `NORMALISED_VALUE`, not mere presence, so a normaliser that is only an ARGUMENT
+ * of another call (`f(normalizeArabicIndicDigits(id)).trim()`) is still raw.
+ */
+function withoutSubscripts(receiver: string): string {
+  let out = "";
+  let depth = 0;
+  for (const char of receiver) {
+    if (char === "[") depth += 1;
+    else if (char === "]") {
+      if (depth > 0) depth -= 1;
+    } else if (depth === 0) out += char;
+  }
+  return out;
+}
 
 export interface BlanknessGate {
   readonly file: string;
@@ -144,58 +190,128 @@ export interface BlanknessGate {
   readonly signature: string;
 }
 
-/** Remove comments (block + line) but keep every newline, so line numbers hold. */
-function stripComments(source: string): string {
+/**
+ * One pass over the source producing (a) the comment-stripped text and (b) the
+ * matched brace pairs *of that text*, with a template expression `${...}` treated
+ * as CODE in both passes. Doing them together is the point: a comment inside
+ * `${}` is stripped, so a gate split by it is still a gate, and a brace inside
+ * `${}` pairs, so a declaration nested there does not share the enclosing scope
+ * of a comparison outside it. Both are round-3 finding 1 — a template expression
+ * was text to this scanner while `collectDeclarations` still read its
+ * declarations, so an inner normalised `trimmed` hid an outer raw `trimmed ===
+ * ""`. The template TEXT between groups is still copied verbatim — a deliberate
+ * no-change from round 2, because this change is about the expression half.
+ * Blanking a template's TEXT is now possible (the `${...}` half is code either
+ * way) and would only remove false positives; it is a deferred follow-up, not a
+ * ceiling. Newlines survive every branch, so line numbers hold.
+ */
+function scanSource(source: string): ScanResult {
   let out = "";
-  let state: "line" | "block" | "sq" | "dq" | "tpl" | null = null;
+  const braces: BracePair[] = [];
+  const opens: number[] = [];
+  type Region =
+    | { kind: "code"; interpolation: number | null }
+    | { kind: "template" }
+    | { kind: "line" }
+    | { kind: "block" }
+    | { kind: "quote"; terminator: "'" | '"' };
+  const regions: Region[] = [{ kind: "code", interpolation: null }];
+
   for (let i = 0; i < source.length; i += 1) {
-    const char = source[i];
+    const region = regions[regions.length - 1]!;
+    const char = source[i]!;
     const next = source[i + 1];
-    if (state === "line") {
+
+    if (region.kind === "line") {
       if (char === "\n") {
-        state = null;
+        regions.pop();
         out += char;
       }
       continue;
     }
-    if (state === "block") {
+    if (region.kind === "block") {
       if (char === "*" && next === "/") {
-        state = null;
+        regions.pop();
         i += 1;
       } else if (char === "\n") {
         out += "\n";
       }
       continue;
     }
-    if (state === "sq" || state === "dq" || state === "tpl") {
+    if (region.kind === "quote") {
       out += char;
-      const terminator = state === "sq" ? "'" : state === "dq" ? '"' : "`";
       if (char === "\\") {
         out += next ?? "";
         i += 1;
-      } else if (char === terminator) {
-        state = null;
+      } else if (char === region.terminator) {
+        regions.pop();
       }
       continue;
     }
+    if (region.kind === "template") {
+      if (char === "\\") {
+        out += char + (next ?? "");
+        i += 1;
+        continue;
+      }
+      if (char === "`") {
+        regions.pop();
+        out += char;
+        continue;
+      }
+      if (char === "$" && next === "{") {
+        // the interpolation braces are a scope, so a declaration inside `${}` is
+        // not visible to a comparison outside it
+        const at = out.length;
+        opens.push(at);
+        regions.push({ kind: "code", interpolation: at });
+        out += "${";
+        i += 1;
+        continue;
+      }
+      out += char;
+      continue;
+    }
+    // code region
     if (char === "/" && next === "/") {
-      state = "line";
+      regions.push({ kind: "line" });
       i += 1;
       continue;
     }
     if (char === "/" && next === "*") {
-      state = "block";
+      regions.push({ kind: "block" });
       i += 1;
       continue;
     }
-    if (char === "'") state = "sq";
-    else if (char === '"') state = "dq";
-    else if (char === "`") state = "tpl";
+    if (char === "'" || char === '"') {
+      regions.push({ kind: "quote", terminator: char });
+      out += char;
+      continue;
+    }
+    if (char === "`") {
+      regions.push({ kind: "template" });
+      out += char;
+      continue;
+    }
+    if (char === "{") {
+      opens.push(out.length);
+      out += char;
+      continue;
+    }
+    if (char === "}") {
+      const open = opens.pop();
+      if (open !== undefined) braces.push({ open, close: out.length });
+      // only the interpolation's OWN brace ends the region: an inner `{...}` (an
+      // object literal, an arrow body) must not turn the rest of the template
+      // back into text, which would stop stripping its comments and scoping it
+      if (region.interpolation !== null && open === region.interpolation) regions.pop();
+      out += char;
+      continue;
+    }
     out += char;
   }
-  return out;
+  return { code: out, braces };
 }
-
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 
 interface Span {
@@ -206,6 +322,12 @@ interface Span {
 interface BracePair {
   readonly open: number;
   readonly close: number;
+}
+
+/** The comment-stripped source and the brace pairs within it, from one pass. */
+interface ScanResult {
+  readonly code: string;
+  readonly braces: BracePair[];
 }
 
 interface Declaration {
@@ -224,27 +346,7 @@ function lineAt(text: string, offset: number): number {
   return line;
 }
 
-/** Matched brace pairs, ignoring braces inside string and template literals. */
-function bracePairs(text: string): BracePair[] {
-  const stack: number[] = [];
-  const pairs: BracePair[] = [];
-  let quote: "'" | '"' | "`" | null = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    if (quote !== null) {
-      if (char === "\\") i += 1;
-      else if (char === quote) quote = null;
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") quote = char;
-    else if (char === "{") stack.push(i);
-    else if (char === "}") {
-      const open = stack.pop();
-      if (open !== undefined) pairs.push({ open, close: i });
-    }
-  }
-  return pairs;
-}
+
 
 /** The brace pairs enclosing one offset — the scope chain of a token. */
 function enclosing(pairs: readonly BracePair[], offset: number): BracePair[] {
@@ -301,8 +403,7 @@ function visibleDeclaration(
 
 /** Every raw-`.trim()` blankness gate in one source string. */
 export function findBlanknessGates(source: string, file: string): BlanknessGate[] {
-  const text = stripComments(source);
-  const braces = bracePairs(text);
+  const { code: text, braces } = scanSource(source);
   const declarations = collectDeclarations(text, braces);
 
   const bySignature = new Map<string, { offset: number; gate: BlanknessGate }>();
@@ -359,7 +460,7 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
       const name = match[nameGroup] ?? "";
       const operator = match[operatorGroup] ?? "";
       const declaration = visibleDeclaration(declarations, name, start, enclosing(braces, start));
-      if (declaration === undefined || NORMALISED.test(declaration.rhs)) continue;
+      if (declaration === undefined || NORMALISED_VALUE.test(withoutSubscripts(declaration.rhs))) continue;
       claimed.push(span);
       record(start, canonical(name, operator, declaration.rhs));
     }

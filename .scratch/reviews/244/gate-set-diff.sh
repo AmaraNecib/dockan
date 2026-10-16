@@ -3,7 +3,10 @@
 #
 # A pure-precision scanner rewrite must not change which production gates are
 # detected. This scans with the reference SHA's scanner and with the working tree
-# and prints ADDED / REMOVED (both must be empty).
+# and prints ADDED / REMOVED (both must be empty). Round 3 hardening: it now
+# ENFORCES the empty diff itself (exit 1 otherwise) and refuses a reference that
+# reported no gates, so "ADDED [] / REMOVED []" cannot be read off a scan that
+# silently produced nothing to compare.
 #
 # Usage: bash .scratch/reviews/244/gate-set-diff.sh [reference-sha]
 set -u
@@ -32,4 +35,19 @@ console.log("ADDED", JSON.stringify(after.filter((signature) => !before.includes
 console.log("REMOVED", JSON.stringify(before.filter((signature) => !after.includes(signature))));
 PROBE_EOF
 
-( cd apps/web && GATE_SET_REF="$REF" bun run "src/tests/__gate-set-diff.ts" )
+OUT="$( cd apps/web && GATE_SET_REF="$REF" bun run "src/tests/__gate-set-diff.ts" )"
+printf '%s\n' "$OUT"
+reference_count="$(printf '%s\n' "$OUT" | sed -n 's/^reference .* gates: \([0-9][0-9]*\)$/\1/p')"
+if [ -z "$reference_count" ] || [ "$reference_count" -eq 0 ]; then
+  echo "PROBLEM: the reference scanner reported no gates; a diff against an empty set proves nothing"
+  exit 1
+fi
+if ! printf '%s\n' "$OUT" | grep -q '^ADDED \[\]$'; then
+  echo "PROBLEM: ADDED is not empty"
+  exit 1
+fi
+if ! printf '%s\n' "$OUT" | grep -q '^REMOVED \[\]$'; then
+  echo "PROBLEM: REMOVED is not empty"
+  exit 1
+fi
+echo "gate-set diff at $REF is empty (ADDED [] / REMOVED [], $reference_count gates)"

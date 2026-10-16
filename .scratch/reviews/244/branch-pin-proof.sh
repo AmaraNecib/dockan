@@ -6,6 +6,15 @@
 # REDDEN. A branch whose deletion stays green is a branch with no test that fails
 # without it — i.e. edited, not fixed.
 #
+# Round 3 (Greptile finding 3): a non-zero exit is not a red suite. The untouched
+# suite must be GREEN before the first deletion, and each deletion must produce at
+# least one `(fail)` line — a crashed runner has no failing test to show.
+#
+# STATED CEILING: BRANCHES lists the ten matcher call sites only. The scanner's
+# internals (`scanSource`'s template/`${}` region tracking, `withoutSubscripts`,
+# the string-aware `breaksStatement`) are pinned by the fixture tests in
+# `blankness-ratchet.test.ts`, not by a deletion here.
+#
 # The scanner is backed up to a mktemp copy and restored on EXIT (never git stash).
 set -u
 cd "$(dirname "$0")/../../.." || exit 1
@@ -21,6 +30,16 @@ OUT="$(mktemp)"
 trap 'cp -p "$BACKUP" "$SCANNER"; rm -f "$BACKUP" "$OUT"' EXIT
 cp -p "$SCANNER" "$BACKUP"
 BEFORE="$(sha256sum "$SCANNER" | cut -d' ' -f1)"
+
+# Green baseline first: a suite that is already red proves nothing about a deletion.
+( cd apps/web && bun test src/lib/blankness-ratchet.test.ts > "$OUT" 2>&1 )
+baseline=$?
+if [ "$baseline" -ne 0 ]; then
+  echo "FATAL: the ratchet is not green before any branch deletion"
+  grep -E '\(fail\)|error' "$OUT" | head -10
+  exit 1
+fi
+echo "baseline ratchet exit code: 0"
 
 SCANNER="$SCANNER" BACKUP="$BACKUP" OUT="$OUT" python - <<'PY'
 import io, os, re, subprocess
@@ -43,6 +62,7 @@ BRANCHES = [
 ]
 
 unpinned = []
+crashed = []
 for name in BRANCHES:
     pattern = re.compile(r"\n  claim(?:Inline|TwoStep)\(\s*" + name + r"\b.*?\);\n", re.S)
     match = pattern.search(original)
@@ -68,10 +88,18 @@ for name in BRANCHES:
         print(f"    {line}")
     if code == 0:
         unpinned.append(name)
+    elif not fails:
+        crashed.append(name)
 
 with io.open(scanner, "w", encoding="utf-8", newline="\n") as handle:
     handle.write(original)
 
+if crashed:
+    print(
+        f"PROBLEM: deleting {', '.join(crashed)} exited non-zero with NO failing test "
+        "— a crashed runner is not a detection"
+    )
+    raise SystemExit(1)
 if unpinned:
     print(f"PROBLEM: branch deletion stayed green for {', '.join(unpinned)}")
     raise SystemExit(1)

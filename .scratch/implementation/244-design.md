@@ -152,3 +152,34 @@ quality, code-review standards + spec). Outcomes, all recorded in
 `.scratch/reviews/244/` at `390da2d`: `-debate.md`, `-test-audit.md`,
 `-code-review.md`, `-mutation-proof.{sh,log}`, `-ratchet-green.log`,
 `-ratchet-first-red.log`, `-mark-only-{broken,fixed}.png`.
+
+## Review round 3 (four new Greptile findings on #246)
+
+Findings 5-8 of that comment are the round-1/2 list re-listed and already
+pinned; they are **not** reworked. Findings 1-4 are new.
+
+- **1 — template expressions hid raw checks.** `stripComments` wanted a
+  template to be text, so a comment inside `${}` survived and split the gate
+  (`${draft.trim() /* blank */ === ""}`); `bracePairs` also skipped braces inside
+  `${}`, while `collectDeclarations` read their declarations, so an inner
+  normalised `trimmed` hid an outer raw `trimmed === ""`. Both passes now treat
+  `${...}` as CODE, in one `scanSource` pass so the two agree by construction.
+  Template *text* stays verbatim: blanking it would hide a real gate inside
+  `${}`, the unsafe direction.
+- **2 — a normalised key hid a raw value.** The `NORMALISED` skip tested the
+  whole receiver, so `drafts[normalizeArabicIndicDigits(id)].trim()` was skipped
+  even though only the key was normalised. `withoutSubscripts` strips `[...]`
+  groups before the test, so the name; the selected draft is still raw and is
+  reported. A normaliser over the value, or inside an argument, still skips.
+- **3 — the proof harness accepted any non-zero exit.** Both scripts now require
+  a GREEN unmutated baseline and the expected failing assertion (the ratchet) or
+  at least one `(fail)` line (branch-pin); a crashed runner is refused.
+  `proof-baseline-guard-demo.sh` demonstrates the old false pass and the new
+  refusal on both scripts.
+- **4 — the e2e asserted the form, not the stored value.** The spec now reloads
+  and reopens the saved item, asserting `edit-threshold` reads `5`.
+
+Failing-first: the three scanner fixtures fail on the pre-fix scanner with `[]`
+(`ratchet-first-red.log`); the proof demo exits 1 on the old scripts with the
+false pass shown and 0 on the new; `gate-set-diff` stays `ADDED []` / `REMOVED []`
+(32 gates) against every earlier ref. Tier unchanged: High-assurance.

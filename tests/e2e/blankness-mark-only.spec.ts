@@ -36,6 +36,15 @@ test("a mark-only threshold is blank: the item saves with the default (#244)", a
 
   // the success reset proves the save was accepted, not refused with an error
   await expect(page.getByTestId("item-name")).toHaveValue("");
+
+  // ...and a reload + reopen proves the STORED value, not just that a save
+  // happened: the reset would still pass if the server kept a different threshold
+  // (#244 round 3, finding 4). The form field is fed by the item the server
+  // returns, so `edit-threshold` reads the saved `lowStockThreshold`.
+  await page.reload();
   await openItemsTab(page, "products");
-  await expect(page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) })).toBeVisible();
+  const row = page.locator("tr").filter({ has: page.getByRole("cell", { name: itemName, exact: true }) });
+  await expect(row).toBeVisible();
+  await row.getByTestId(/^edit-item-/).click();
+  await expect(page.getByTestId("edit-threshold")).toHaveValue("5");
 });

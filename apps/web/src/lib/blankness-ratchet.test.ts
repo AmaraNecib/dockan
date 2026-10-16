@@ -414,4 +414,137 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
       's.ts::draft.trim() !== ""',
     ]);
   });
+
+  it("treats a template expression as code: a comment inside it cannot hide a raw check (#244 round 3, finding 1)", () => {
+    // the control (no comment) was detected before the fix; the commented form
+    // returned [] because stripComments treated the whole template as text.
+    const control = ["export function f(draft: string) {", '  return `${draft.trim() === ""}`;', "}"].join("\n");
+    expect(findBlanknessGates(control, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draft.trim() === ""',
+    ]);
+    const hidden = ["export function f(draft: string) {", '  return `${draft.trim() /* blank */ === ""}`;', "}"].join("\n");
+    expect(findBlanknessGates(hidden, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draft.trim() === ""',
+    ]);
+  });
+
+  it("treats a template expression as code: an inner normalised declaration cannot hide an outer raw check (#244 round 3, finding 1)", () => {
+    // the control hides the outer check with a plain inner block (round 2 already
+    // caught this); the same hider inside `${...}` returned [] before the fix.
+    const control = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      "  {",
+      "    const trimmed = normalizeArabicIndicDigits(draft).trim();",
+      "    void trimmed;",
+      "  }",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(control, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+    const hidden = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      '  const label = `${(() => { const trimmed = normalizeArabicIndicDigits(draft).trim(); return trimmed; })()}`;',
+      '  if (trimmed === "") return null;',
+      "  void label;",
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(hidden, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("keeps the code region open across an inner brace inside `${}` (#244 round 3 review)", () => {
+    // an object literal or arrow body inside the interpolation must not end the
+    // code region early, or the rest of the template is read as TEXT again
+    const gateAfterNestedBlock = [
+      "export function f(draft: string) {",
+      '  return `${(() => { const o = {}; return draft.trim() /* blank */ === ""; })()}`;',
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(gateAfterNestedBlock, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draft.trim() === ""',
+    ]);
+    const maskAfterNestedBlock = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      '  const label = `${(() => { const o = {}; const trimmed = normalizeArabicIndicDigits(draft).trim(); return trimmed; })()}`;',
+      '  if (trimmed === "") return null;',
+      "  void label;",
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(maskAfterNestedBlock, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("does not read a brace inside a string subscript as a statement break (#244 round 3 review)", () => {
+    const synthetic = [
+      "export function f(d: Record<string, string>) {",
+      '  const trimmed = d["}"].trim();',
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [d["}"].trim()]',
+    ]);
+  });
+
+  it("detects a raw value selected through a normalised key (#244 round 3, finding 2)", () => {
+    // the equivalent inline check was (and is) detected; the two-step form
+    // returned [] because the normaliser in the SUBSCRIPT skipped the whole
+    // declaration even though the selected draft is still raw.
+    expect(
+      findBlanknessGates('const a = drafts[normalizeArabicIndicDigits(id)].trim() === "";', "s.ts").map(
+        (gate) => gate.signature,
+      ),
+    ).toEqual(['s.ts::drafts[normalizeArabicIndicDigits(id)].trim() === ""']);
+    const hidden = [
+      "export function f(drafts: Record<string, string>, id: string) {",
+      "  const trimmed = drafts[normalizeArabicIndicDigits(id)].trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(hidden, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [drafts[normalizeArabicIndicDigits(id)].trim()]',
+    ]);
+    // precision: a receiver whose VALUE is normalised is still ignored, and so is
+    // a normaliser inside an argument (the trimmed value comes from the normaliser)
+    const normalisedValue = [
+      "export function f(draft: string) {",
+      "  const trimmed = normalizeArabicIndicDigits(draft).trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(normalisedValue, "synthetic.ts")).toEqual([]);
+    const normalisedArgument = [
+      "export function f(drafts: Record<string, string>, id: string) {",
+      "  const trimmed = normalizeArabicIndicDigits(drafts[id]).trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(normalisedArgument, "synthetic.ts")).toEqual([]);
+    // ...but a normaliser that is only an ARGUMENT of another call does not
+    // normalise the value the call returns, so that declaration is raw
+    const wrappedArgument = [
+      "export function f(id: string) {",
+      "  const trimmed = parseIdentity(normalizeArabicIndicDigits(id)).trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(wrappedArgument, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [parseIdentity(normalizeArabicIndicDigits(id)).trim()]',
+    ]);
+  });
 });

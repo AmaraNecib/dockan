@@ -67,7 +67,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-test("no raw .trim() blankness gate in src", () => {
+test("has every converted gate absent, so reverting one reddens this ratchet", () => {
   const offenders = walk(root).filter((path) => readFileSync(path, "utf8").includes('draft.trim() === ""'));
   expect(offenders).toEqual([]);
 });
@@ -132,7 +132,7 @@ CLEAN_AFTER="$(sha256sum "$SUBJECT" | cut -d' ' -f1)"
 LEFTOVER="$(git status --porcelain -- "${FILES[@]}")"
 printf 'CASE C leftover raw: <%s>\n' "$LEFTOVER"
 if [ "$code" -eq 0 ] && [ "$CLEAN_BEFORE" = "$CLEAN_AFTER" ] && [ -z "$LEFTOVER" ] \
-  && grep -q "(fail) no raw .trim() blankness gate in src" "$TMP/case-c.out"; then
+  && grep -q "(fail) has every converted gate absent" "$TMP/case-c.out"; then
   echo "CASE C: every file reverted, the ratchet REDDENED on every revert, and the tree was restored byte-identical"
 else
   echo "CASE C: FAILED (code=$code, bytes=$CLEAN_BEFORE->$CLEAN_AFTER, leftover='$LEFTOVER')"

@@ -206,14 +206,15 @@ describe("every router refusal stays translatable (issue #113)", () => {
     expect(routerRefusals().length).toBeGreaterThan(40);
   });
 
-  it("gives every refusal its own Arabic key, never the silent fallback", () => {
+  it("gives every refusal real Arabic copy, never the silent fallback", () => {
     for (const code of routerRefusals()) {
       // the regex `serverErrorKey` gates on; a new non-conforming code fails
       // here instead of quietly rendering `errorGeneric`
       expect(code, `${code} is not a SCREAMING_SNAKE server key`).toMatch(screamingSnake);
-      // `toBe` would demand the static key union; the scan is dynamic, so pin
-      // the resolution with equality instead
-      expect(serverErrorKey(code) === code, `${code} fell back to errorGeneric`).toBe(true);
+      // the ONE shared mapping path must land on a real key. An aliased code
+      // (`INVALID_PARTY_PHONE` → `partyPhoneInvalid`) legitimately resolves to
+      // a different key, so compare against the fallback, not against the code.
+      expect(serverErrorKey(code), `${code} fell back to errorGeneric`).not.toBe("errorGeneric");
       const copy = tError(code);
       expect(copy, `missing copy for ${code}`).not.toBe(code);
       expect(copy, `empty copy for ${code}`).not.toBe("");

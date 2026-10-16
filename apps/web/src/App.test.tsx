@@ -404,7 +404,10 @@ describe("login failures name the problem (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "wrong-password");
     await submitForm(host);
 
+    // a field-less failure is its own live region: that is the only
+    // announcement path, and it is the summary that takes focus
     const alert = host.querySelector('[role="alert"]');
+    expect(alert?.getAttribute("role")).toBe("alert");
     expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(signInCalls).toBe(1);
@@ -631,6 +634,7 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     await submitForm(host);
     alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe("اكتب اسم المالك.");
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(firstTimeSetupCalls).toBe(0);
 
     // filling the owner moves the blame to the store name
@@ -638,6 +642,7 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     await submitForm(host);
     alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe("اكتب اسم المتجر.");
+    expect(alert?.getAttribute("role")).toBeNull();
     const store = inputByName(host, "storeName");
     expect(store.getAttribute("aria-invalid")).toBe("true");
     expect(store.getAttribute("aria-describedby")).toBe("setup-error");
@@ -655,7 +660,9 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    expect(host.querySelector("#setup-error")?.textContent).toBe("اكتب اسم المتجر.");
+    const alert = host.querySelector("#setup-error");
+    expect(alert?.textContent).toBe("اكتب اسم المتجر.");
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(firstTimeSetupCalls).toBe(0);
   });
 
@@ -743,7 +750,9 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "ab");
     await submitForm(host);
     const password = inputByName(host, "password");
-    expect(host.querySelector("#login-error")?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    const alert = host.querySelector("#login-error");
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(password.getAttribute("aria-invalid")).toBe("true");
 
     // typing the correction drops the alert and the invalid marking with it

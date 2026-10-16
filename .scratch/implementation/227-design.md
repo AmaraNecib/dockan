@@ -11,9 +11,9 @@
 - Base: `origin/develop` @ `850d1f7`. The brief's stack base
   (`origin/fix-210-arabic-indic-money` @ `afe15fe`) was **merged into `develop`
   while this lane ran** (PR #229/#210), and `develop` has since also merged
-  #225 (`nextUnitCost` + the remaining ASCII-only readers) and #226. The six lane
-  commits were rebased onto the current `origin/develop`; merge-base with the old
-  base is `a52084d1`.
+  #225 (`nextUnitCost` + the remaining ASCII-only readers) and #226, then #235
+  (workflow docs). The lane commits were rebased onto the current `origin/develop`
+  (@ `6708324`); merge-base with the old base is `a52084d1`.
   Overlap analysis: `git diff origin/develop...HEAD` touches only the six #227
   files below. No #229-owned file is re-touched, and `develop` contains neither
   the mark strip nor `draftBlank`, so nothing from the merged #210/#229 is
@@ -58,10 +58,10 @@ Adding the strip there and nowhere else means the paste fix cannot be half
 applied: every reader that normalises is covered, and #225 routed the previously
 ASCII-only readers (`nextUnitCost`, `numeric-input.ts`, the quick-add fields)
 through the same normaliser before this lane landed, so they inherit the strip.
-The function keeps its exported name because the brief names it, and only one
-production module (`lib/invoice-draft.ts`) imports the function itself (~15
-modules import the module). The doc comment now states the widened contract where
-the name under-describes it. A rename (`normalizeMoneyDraft`) was considered and
+The function keeps its exported name because the brief names it, and only two
+production modules (`lib/invoice-draft.ts`, `lib/numeric-input.ts`) import the
+function itself (~15 modules import the module). The doc comment now states the
+widened contract where the name under-describes it. A rename (`normalizeMoneyDraft`) was considered and
 rejected: it would churn the reader modules #225 edits for no behavioural gain.
 
 ## Which marks, and where they are dropped
@@ -76,7 +76,9 @@ Drop the zero-width directional marks a paste carries at the **edge** of a draft
 
 The brief named at least ALM/LRM/RLM; the embeddings, PDF and isolates are the
 same kind of zero-width directional character, produced by bidi-aware editors
-(Word/Excel/PDF copy). At the edge all ten are number-preserving.
+(Word/Excel/PDF copy). At the edge all ten are number-preserving — measured for
+RLM (the ticket's case); the rest have the same edge shape, where no digit run is
+split.
 
 **Only edge occurrences are dropped.** A mark *inside* a draft can split a digit
 run and let the RTL page reorder it. Measured in Chromium with `dir="rtl"` (the
@@ -113,8 +115,10 @@ no warning, on that argument.
 
 Deliberately **not** dropped:
 
-- Interior ALM/LRM/RLM/LRI/RLI/FSI/PDI and the LRE/RLE/PDF embeddings — they can
-  reorder a digit run (see the table). Refused, not removed.
+- Interior ALM/RLM and the RTL isolates LRI/RLI/FSI/PDI can reorder a digit run
+  (see the table). The interior LRM/LRE/RLE/PDF do *not* reorder a digit run
+  (measured), but the rule keys on position, so they are refused with the rest —
+  a lost acceptance, never a lost value. Refused, not removed.
 - U+202D LRO and U+202E RLO — forced display order. Refused, not removed.
 - U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER and U+FEFF (ZWNBSP/BOM): invisible
   format characters, but not `Bidi_Control`. ZWSP/WJ still fail the strict
@@ -180,17 +184,27 @@ mark-only draft is «nothing chosen» in both.
   `0` and billed the line free — the hole `saleOverrideInvalid` exists to close.
   Both now share a `draftBlank` predicate that blanks through the same normalizer;
   the pins assert the mark-only override is refused and prices at the default.
-- **"Blank" is not yet one concept.** The remaining raw-`.trim()` guards were
-  audited: each either refuses a mark-only draft (`percentageDraftInvalid`,
-  `resolveInitialPaid`, `parseReturnQuantities`, `parseCashBackDraft`, `saleDebt`)
-  or reads it as the empty value (`discountAmountFor` / the sale discount guard,
-  where a zero discount is legitimate and cannot bill a wrong number). The
-  refusals that face a *visually empty* field — a mark-only initial-payment draft
-  surfaces «invalid payment», a mark-only percentage draft is reported invalid —
-  are pre-existing and unchanged. **Deferred, not dismissed:** unifying «blank»
-  behind one normalising predicate for every money draft is a behaviour change in
-  the payment path (mark-only would become «nothing paid now»), so it wants its
-  own ticket. `draftBlank` is the seed.
+- **"Blank" is not yet one concept.** The remaining blank guards were audited.
+  `percentageDraftInvalid` (`amount-parse.ts`) and `resolveInitialPaid`
+  (`invoice-draft.ts`) still test blankness on the raw `.trim()`, so each refuses
+  a mark-only draft; `parseReturnQuantities` and `parseCashBackDraft` have no raw
+  `.trim()` guard and reach the same refusal through the normalising readers (i.e.
+  through this strip); `saleDebt` refuses via `parseGroupedAmount`; and
+  `discountAmountFor` / the sale discount guard read a mark-only draft as the
+  empty value (a zero discount, legitimate and unable to bill a wrong number).
+  The refusals that face a *visually empty* field — a mark-only initial-payment
+  draft surfaces «invalid payment», a mark-only percentage draft is reported
+  invalid — are pre-existing and unchanged. **Deferred, not dismissed:** unifying
+  «blank» behind one normalising predicate for every money draft is a behaviour
+  change in the payment path (mark-only would become «nothing paid now»), so it
+  wants its own ticket. `draftBlank` is the seed.
+- **One reader changes a *value*, not just acceptance: `nextUnitCost`.** With #225
+  it reads through the normaliser, so an edge-marked draft now returns the
+  cleared-field zero where pre-#227 it kept the previous cost. That is consistent
+  with that field's own documented «a cleared field is an explicit zero» contract
+  (a mark-only field looks empty) and the unit cost has no «free line» hole, but
+  it is a money-field behaviour change and is pinned and documented on the
+  reader. No other reader changes a read value: they accept or refuse.
 - **ASCII identity.** The strip only ever removes an edge mark;
   `normalizeArabicIndicDigits("123")` is `"123"` and every existing ASCII pin is
   re-run unchanged.

@@ -234,6 +234,10 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
  * the same `Number` check the page used before #146, now digit-normalised
  * (`parseLooseNumber`), so no reachable ASCII input changes which number the
  * line bills and an Arabic-Indic draft reads like its ASCII twin (#225).
+ *
+ * A pasted bidi mark at the edge of the draft normalises to blank (#227), so
+ * such a draft reads as the cleared-field zero — the same value a visually
+ * empty field gives — while an interior mark is left and keeps `previous`.
  */
 export function nextUnitCost(value: string, previous: number): number {
   const parsed = parseLooseNumber(value);

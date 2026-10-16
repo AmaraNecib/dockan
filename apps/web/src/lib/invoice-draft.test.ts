@@ -150,6 +150,9 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
     expect(parseQuantityDraft(pasted("5"))).toBe(5);
     expect(parseQuantityDraft(pasted("٤٢"))).toBe(42);
     expect(quantityDraftInvalid(pasted("٥"))).toBe(false);
+    // the cap is applied after the strip, exactly as it is after the digit map
+    expect(parseQuantityDraft(pasted("1000000"))).toBe(1_000_000);
+    expect(parseQuantityDraft(pasted("1000001"))).toBe(0);
     // the ASCII path is unchanged, and a bare mark is still a cleared draft
     expect(parseQuantityDraft("5")).toBe(5);
     expect(parseQuantityDraft(RLM)).toBe(0);
@@ -162,6 +165,9 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
     expect(saleOverrideInvalid(override)).toBe(false);
     expect(discountAmountFor(1000, "AMOUNT", pasted("١٠٠"))).toBe(100);
     expect(resolveInitialPaid(1000, pasted("٢٠٠"), "")).toEqual({ ok: true, paid: 200 });
+    // a mark-only discount is a zero discount, i.e. the same as none chosen —
+    // the discount has no «free line» hole, so accepting it cannot bill wrongly
+    expect(discountAmountFor(1000, "AMOUNT", RLM)).toBe(0);
     // the same drafts without the mark stay what they already were
     expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
   });

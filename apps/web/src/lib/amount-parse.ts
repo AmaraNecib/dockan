@@ -8,6 +8,10 @@
  * separator and returning a different number (the reported `1 000,00` → 100000
  * silent 100× bug). The bulk opening balance and the single-entry money fields
  * both use this one reader, so a grouped string can never mean two numbers.
+ *
+ * `normalizeArabicIndicDigits` is the one normalisation step they all share: it
+ * maps either Arabic digit script and strips the Unicode bidi formatting marks a
+ * paste carries (#227), so a value typed or pasted reads the same.
  */
 
 /** Otherwise-valid thousands separators between 3-digit groups (comma,

@@ -218,6 +218,9 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(normalizeArabicIndicDigits("\ufeff")).toBe("\ufeff");
     expect(parseWholeAmount("\u200b5")).toBeNull();
     expect(parseWholeAmount("\u20605")).toBeNull();
+    // BOM survives the strip but `trim()` drops it (ECMAScript WhiteSpace), so
+    // it reads through the pre-existing path — this strip is not what handles it
+    expect(parseWholeAmount("\ufeff5")).toBe(5);
   });
 
   it("parseWholeAmount reads a pasted amount at the front, middle and back, and is ASCII-identical", () => {
@@ -258,6 +261,8 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholePercentage(pasted(RLM, "١٠١"))).toBeNull();
     expect(parseWholePercentage(pasted(RLM, "101"))).toBeNull();
     expect(parseWholePercentage(pasted(RLM, "٥٠٫٥"))).toBeNull();
+    // a mark-only draft is not a percentage either
+    expect(parseWholePercentage(RLM)).toBeNull();
     // the ASCII path is unchanged
     expect(parseWholePercentage("100")).toBe(100);
     expect(parseWholePercentage(pasted(RLM, "100"))).toBe(parseWholePercentage("100"));
@@ -274,6 +279,7 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseGroupedAmount(pasted(RLM, "1,5"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1 000,00"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1,0000"))).toBeNull();
+    expect(parseGroupedAmount(RLM)).toBeNull();
     expect(parseGroupedAmount("1,000")).toBe(1000);
   });
 

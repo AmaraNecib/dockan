@@ -1,13 +1,13 @@
 # #227 — strip bidi formatting marks from money drafts (design)
 
-- Tier: **Standard** as the brief records, with the tension stated: the delta only
-  widens *input normalisation* (drops code points that can never be part of a
-  numeric grammar); it changes no arithmetic, no rounding, and no other
-  accepted-value semantics, and the ASCII identity is pinned. The workflow's
-  High-assurance clause names «invoice & debt money calculations», and #210 —
-  the same readers — was High-assurance, so the High-assurance **Debate** gate
-  was run as well (evidence `227/<sha>-debate.md`). Re-tiering is the parent's
-  call; the stricter gate is satisfied either way.
+- Tier: **High-assurance** in effect. The brief records Standard, and the delta
+  is only *input normalisation*; but `docs/engineering-workflow.md` names «invoice
+  & debt money calculations» High-assurance, #210 touched the same readers, and
+  round 1 proved the change *did* move a billed amount (a mark-only override went
+  from refused to free) — the exact reason #210 was High-assurance. So the
+  High-assurance gates were run: **Debate**, test-audit and code-review. The
+  design still notes the brief's label so the parent can confirm or re-label;
+  the stricter gate is satisfied either way.
 - Base (the stack): `origin/fix-210-arabic-indic-money` @ `afe15fe` — the PR
   #229 head. Merge-base with `origin/develop` is `a52084d1`. This lane is a
   stack on #229 as the brief requires: no rebase onto `develop`, nothing #229
@@ -45,13 +45,16 @@ reader funnels through it:
 | `parseQuantityDraft` | `lib/invoice-draft.ts` |
 
 Adding the strip there and nowhere else means the paste fix cannot be half
-applied: every reader that normalises is covered. The function keeps its
-exported name because the brief names it, and only one production module
-(`lib/invoice-draft.ts`) imports the function itself (the test imports it too;
-~15 modules import the module). The doc comment now states the widened contract
-where the name under-describes it. A rename (`normalizeMoneyDraft`) was
-considered and rejected: it would churn reader modules the parallel `#225` lane
-is editing for no behavioural gain.
+applied *to a reader that normalises*: all of them are covered. Readers that
+bypass the normalizer remain ASCII-only and are named under «Deliberately out of
+scope» below (#225). The function keeps its exported name because the brief
+names it, and only one production module (`lib/invoice-draft.ts`) imports the
+function itself (the test imports it too; ~15 modules import the module). The
+doc comment now states the widened contract where the name under-describes it.
+A rename (`normalizeMoneyDraft`) was considered and rejected: it would churn the
+one reader module plus the test (§«Mysterious Name» in the review evidence) for
+no behavioural gain, and would collide with the parallel `#225` lane that is
+editing the same readers.
 
 ## Which marks, and why stripping is safe
 
@@ -84,10 +87,13 @@ read the owner intended. Stripping is silent, with no warning, on that argument.
 
 Deliberately **not** stripped:
 
-- U+200B ZERO WIDTH SPACE and U+FEFF (ZWNBSP/BOM): invisible format characters,
-  but not directional (`Bidi_Control` is false), so they are outside this
-  ticket's scope. A draft carrying one still fails the strict readers — a safe
-  refusal, never a wrong number.
+- U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER and U+FEFF (ZWNBSP/BOM):
+  invisible format characters, but not directional (`Bidi_Control` is false), so
+  they are outside this ticket's scope. ZWSP/WJ still fail the strict readers —
+  a safe refusal, never a wrong number. U+FEFF also fails the *strip*, but it is
+  ECMAScript `WhiteSpace`, so `String.prototype.trim()` already dropped it before
+  #227; that read-through is pre-existing and pinned, not something this strip
+  handles.
 - U+00A0 NBSP and U+066C/U+066B: legitimate separators, already the reader's
   grammar; stripping them here would delete a real separator and invent a
   different number.
@@ -141,10 +147,20 @@ untouched.
   override would have parsed to `0` and billed the line free — the hole
   `saleOverrideInvalid` exists to close. Both now share a `draftBlank` predicate
   that blanks through the same normalizer; the pins assert the mark-only override
-  is refused and prices at the default, not zero. Every other raw-blank-then-
-  parse guard was audited and already refuses a mark-only draft
-  (`percentageDraftInvalid`, `resolveInitialPaid`, `parseReturnQuantities`,
-  `parseCashBackDraft`, `saleDebt`).
+  is refused and prices at the default, not zero.
+- **"Blank" is not yet one concept, and a mark-only draft is not refused
+  everywhere.** The remaining raw-`.trim()` guards were audited: each either
+  refuses a mark-only draft (`percentageDraftInvalid`, `resolveInitialPaid`,
+  `parseReturnQuantities`, `parseCashBackDraft`, `saleDebt`) or reads it as the
+  empty value (`discountAmountFor` / the sale discount guard, where a zero
+  discount is legitimate and cannot bill a wrong number). The two refusals that
+  face a *visually empty* field — a mark-only initial-payment draft surfaces
+  «invalid payment» — are pre-existing (they refused before #227 too) and are
+  unchanged here. **Deferred, not dismissed:** unifying «blank» behind one
+  normalising predicate for every money draft is a behaviour change in the
+  payment path (mark-only would become «nothing paid now»), so it wants its own
+  ticket rather than a #227 side effect. `draftBlank` is the seed of that
+  predicate and its doc comment says so.
 - **ASCII identity.** The strip only ever removes a `Bidi_Control` code point;
   `normalizeArabicIndicDigits("123")` is `"123"` and every existing ASCII pin is
   re-run unchanged.

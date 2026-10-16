@@ -2,6 +2,7 @@ import type { Item } from "@dokan/contracts";
 
 import {
   amountFromPercentage,
+  draftBlank,
   normalizeArabicIndicDigits,
   parseGroupedAmount,
   parseLooseNumber,
@@ -179,22 +180,11 @@ export function nonNegativeOr(value: string, fallback: number): number {
 }
 
 /**
- * True when a draft carries no value once the shared digits + bidi
- * normalisation is applied. A paste can leave an invisible mark behind
- * (`"\u200f"`, the #227 mark stripped by `normalizeArabicIndicDigits`), and a
- * bidi mark is a `Cf` format character, not whitespace — so a raw `.trim()`
- * check reads it as a chosen value, while the loose `Number()` bills it as 0.
- * Both the price and the guard go through this one predicate, so a mark-only
- * draft is «nothing chosen» in both, exactly as an empty draft is.
- */
-function draftBlank(draft: string): boolean {
-  return normalizeArabicIndicDigits(draft).trim() === "";
-}
-
-/**
  * The unit price a SALE line bills at: the item's selling price, negotiated by
  * the line's override when one is chosen. AMOUNT is the price itself; a
- * PERCENTAGE is a share of the default price; both round to whole DZD.
+ * PERCENTAGE is a share of the default price; both round to whole DZD. A
+ * mark-only override is «nothing chosen» through the one shared `draftBlank`
+ * predicate (#238), so it bills the default, never a free line.
  */
 export function saleUnitPrice(line: SaleDraftLine): number {
   const value = nonNegativeOr(line.overrideValue, line.item.sellingPrice);
@@ -237,9 +227,13 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
  *
  * A pasted bidi mark at the edge of the draft normalises to blank (#227), so
  * such a draft reads as the cleared-field zero — the same value a visually
- * empty field gives — while an interior mark is left and keeps `previous`.
+ * empty field gives — while an interior mark is left and keeps `previous`. The
+ * blank case asks the shared `draftBlank` predicate (#238) instead of leaning
+ * on `Number("")` being zero, so the reason stays the blankness rule even if the
+ * loose reader changes.
  */
 export function nextUnitCost(value: string, previous: number): number {
+  if (draftBlank(value)) return 0;
   const parsed = parseLooseNumber(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : previous;
 }
@@ -409,9 +403,16 @@ export function nextPaymentPair(total: number, current: PaymentPair): PaymentPai
  */
 export type InitialPaidResolution = { ok: true; paid: number | undefined } | { ok: false };
 
+/*
+ * #238 — blankness is decided once, by the same normalisation the reader uses.
+ * The percentage gate and the amount both ask `draftBlank`, so a mark-only draft
+ * on either side is «nothing chosen» (the legitimate unpaid case), not a
+ * refusal. The per-site fallbacks stay as they were: an empty/zero amount is
+ * `undefined` (unpaid), an over-total amount is refused.
+ */
 export function resolveInitialPaid(total: number, amountDraft: string, percentageDraft: string): InitialPaidResolution {
   if (percentageDraftInvalid(percentageDraft)) return { ok: false };
-  const paid = amountDraft.trim() === "" ? undefined : parseGroupedAmount(amountDraft);
+  const paid = draftBlank(amountDraft) ? undefined : parseGroupedAmount(amountDraft);
   if (paid === null) return { ok: false };
   if (paid !== undefined && paid > total) return { ok: false };
   return { ok: true, paid: paid === 0 ? undefined : paid };

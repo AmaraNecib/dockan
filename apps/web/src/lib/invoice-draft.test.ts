@@ -177,12 +177,11 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
     expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
   });
 
-  it("pins the pre-existing refusals a mark-only draft still gets (#227)", () => {
-    // Not the free-line hole: these guards are raw-trim and refuse. Pinned so the
-    // deferred «one blank predicate» ticket has a starting point, and so a future
-    // edit cannot flip them silently.
-    expect(resolveInitialPaid(1000, RLM, "")).toEqual({ ok: false });
-    expect(resolveInitialPaid(1000, ` ${RLM} `, "")).toEqual({ ok: false });
+  it("pins the mark-only boundaries: the shared predicate closes the #227 refusals (#238)", () => {
+    // The amount guard now blanks through the shared predicate: a mark-only
+    // amount is «nothing paid now», exactly like an empty one, not a refusal.
+    expect(resolveInitialPaid(1000, RLM, "")).toEqual({ ok: true, paid: undefined });
+    expect(resolveInitialPaid(1000, ` ${RLM} `, "")).toEqual({ ok: true, paid: undefined });
     // The purchase unit-cost field is a controlled money field, not a draft: an
     // edge mark normalises to blank, and blank is the documented explicit zero
     // (the same read an empty field gets). A marked/Arabic-Indic value now reads

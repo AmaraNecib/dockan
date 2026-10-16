@@ -278,10 +278,10 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholePercentage(pasted(RLM, "٥٠٫٥"))).toBeNull();
     // a mark-only draft is not a percentage either
     expect(parseWholePercentage(RLM)).toBeNull();
-    // and the caller-level percentage guard still refuses it (a pre-existing
-    // raw-trim guard, deliberately left for the deferred «one blank predicate»
-    // ticket — pinned here so the deferral is visible, not silent)
-    expect(percentageDraftInvalid(RLM)).toBe(true);
+    // and the caller-level percentage guard treats it as blank, not invalid:
+    // #238 closed the #227 «one blank predicate» deferral this pin recorded
+    // (mark-only == empty at every site)
+    expect(percentageDraftInvalid(RLM)).toBe(false);
     // the ASCII path is unchanged
     expect(parseWholePercentage("100")).toBe(100);
     expect(parseWholePercentage(pasted(RLM, "100"))).toBe(parseWholePercentage("100"));

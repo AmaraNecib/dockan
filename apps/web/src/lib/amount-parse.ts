@@ -36,9 +36,26 @@ const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
  * edge or not: an override displays a run in forced order, so the logical digit
  * characters a paste carries can differ from the number the owner saw.
  */
-const PASTED_BIDI_MARKS = /[\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/gu;
+export const PASTED_BIDI_MARKS: readonly string[] = [
+  "\u061C", // ALM
+  "\u200E", // LRM
+  "\u200F", // RLM
+  "\u202A", // LRE
+  "\u202B", // RLE
+  "\u202C", // PDF
+  "\u2066", // LRI
+  "\u2067", // RLI
+  "\u2068", // FSI
+  "\u2069", // PDI
+];
+/**
+ * The mark class and the content test are derived from the one list above, so
+ * the strip and any test that drives the set can never disagree about which
+ * code points are «a pasted bidi mark» (#238).
+ */
+const PASTED_BIDI_MARK = new RegExp(`[${PASTED_BIDI_MARKS.join("")}]`, "gu");
 /** Draft content for the edge test: not whitespace and not one of the marks. */
-const DRAFT_CONTENT = /[^\s\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/u;
+const DRAFT_CONTENT = new RegExp(`[^\\s${PASTED_BIDI_MARKS.join("")}]`, "u");
 
 /**
  * Drop the pasted bidi marks that sit outside the draft's content — leading,
@@ -48,7 +65,7 @@ const DRAFT_CONTENT = /[^\s\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/u;
  */
 function stripEdgeBidiMarks(draft: string): string {
   const first = draft.search(DRAFT_CONTENT);
-  if (first === -1) return draft.replace(PASTED_BIDI_MARKS, "");
+  if (first === -1) return draft.replace(PASTED_BIDI_MARK, "");
   let last = first;
   for (let index = draft.length - 1; index > first; index -= 1) {
     if (DRAFT_CONTENT.test(draft[index] ?? "")) {
@@ -56,7 +73,7 @@ function stripEdgeBidiMarks(draft: string): string {
       break;
     }
   }
-  return draft.replace(PASTED_BIDI_MARKS, (mark: string, offset: number) =>
+  return draft.replace(PASTED_BIDI_MARK, (mark: string, offset: number) =>
     offset < first || offset > last ? "" : mark,
   );
 }
@@ -74,6 +91,19 @@ export function normalizeArabicIndicDigits(draft: string): string {
   return stripEdgeBidiMarks(draft)
     .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
     .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
+}
+
+/**
+ * True when a draft carries no value once the shared digits + bidi
+ * normalisation is applied. A paste can leave an invisible mark behind
+ * (`"\u200f"`, a mark stripped by `normalizeArabicIndicDigits`), and a bidi mark
+ * is a `Cf` format character, not whitespace — so a raw `.trim()` check reads it
+ * as a chosen value, while the loose `Number()` bills it as 0. Every blankness
+ * guard and the reader it guards ask this one predicate (#238), so a mark-only
+ * draft is «nothing chosen» exactly as an empty draft is.
+ */
+export function draftBlank(draft: string): boolean {
+  return normalizeArabicIndicDigits(draft).trim() === "";
 }
 
 /**
@@ -152,5 +182,5 @@ export function percentageFromAmount(referenceTotal: number, amount: number): nu
  * as that choice.
  */
 export function percentageDraftInvalid(draft: string): boolean {
-  return draft.trim() !== "" && parseWholePercentage(draft) === null;
+  return !draftBlank(draft) && parseWholePercentage(draft) === null;
 }

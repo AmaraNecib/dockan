@@ -7,10 +7,20 @@
 # named in the KNOWN CEILING block of `apps/web/src/tests/blankness-gates.ts`.
 #
 # Usage: bash .scratch/reviews/244/scanner-shapes.sh
+#
+# Round 4 (Greptile finding 5): the probe path is unique PER RUN and is only
+# removed when THIS invocation created it, so it cannot overwrite a saved probe or
+# collide with a concurrent run.
 set -u
 cd "$(dirname "$0")/../../.." || exit 1
-PROBE="apps/web/src/tests/__scanner-shapes.ts"
+PROBE="apps/web/src/tests/__scanner-shapes.$$-$RANDOM.ts"
+PROBE_MODULE="${PROBE##*/}"
+PROBE_MODULE="${PROBE_MODULE%.ts}"
 
+if [ -e "$PROBE" ]; then
+  echo "REFUSING: $PROBE already exists; not overwriting it"
+  exit 1
+fi
 cleanup() { rm -f "$PROBE"; }
 trap cleanup EXIT
 
@@ -51,6 +61,9 @@ const cases: Array<[string, string]> = [
   ["deferred let assignment", 'let t;\nt = draft.trim();\nconst b = t === "";'],
   ["param shadows outer raw", 'const trimmed = draft.trim();\nfunction g(trimmed: string) { return trimmed === ""; }'],
   ["ASI mis-attribution", 'const t = foo\nbar.trim();\nconst b = t === "";'],
+  ["appended normalised prefix", 'const t = normalizeArabicIndicDigits(prefix).concat(draft).trim();\nconst b = t === "";'],
+  ["block comment joins tokens", 'const/* c */t = draft.trim();\nconst b = t === "";'],
+  ["nested template", 'const t = `${flag ? `;` : draft}`.trim();\nconst b = t === "";'],
 ];
 for (const [name, source] of cases) {
   const gates = findBlanknessGates(source, "s.ts").map((gate) => `${gate.signature} @L${gate.line}`);
@@ -58,4 +71,4 @@ for (const [name, source] of cases) {
 }
 PROBE_EOF
 
-( cd apps/web && bun run "src/tests/__scanner-shapes.ts" )
+( cd apps/web && bun run "src/tests/$PROBE_MODULE.ts" )

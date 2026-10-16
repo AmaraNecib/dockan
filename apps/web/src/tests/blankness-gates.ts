@@ -39,6 +39,16 @@ import { fileURLToPath } from "node:url";
  * normaliser in a subscript normalises the KEY, not the selected draft, so
  * `drafts[normalizeArabicIndicDigits(id)].trim()` is a raw gate.
  *
+ * Round 4 (#244): three more false "already clean" reads. (a) A normalised value
+ * must be the normaliser's OWN result: its closing parenthesis is matched, so
+ * `normalizeArabicIndicDigits(prefix).concat(draft).trim()` is raw even though it
+ * begins with the normaliser's name. (b) A comment is a TOKEN SEPARATOR, so
+ * removing one leaves a space: `const` + block comment + `trimmed = draft.trim()`
+ * no longer fuses into `consttrimmed` and loses the declaration. (c)
+ * `breaksStatement` tracks nested templates the same way `scanSource` does, so a
+ * `;` in a nested template's TEXT (`${flag ? `;` : draft}`) is not a statement
+ * break.
+ *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
  * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
@@ -104,30 +114,58 @@ const STATEMENT_KEYWORD =
  * Whether a statement break sits between `=` and the `.trim()` at bracket depth 0,
  * i.e. the `.trim()` belongs to a later statement. A bracketed group (an object
  * argument, a template `${}`) does NOT end the right-hand side; a `;`, a closing
- * bracket at depth 0, or a new line that opens a new statement does. A brace
- * inside a string or template literal is just text and is skipped, so a key like
- * `d["}"]` does not read as a statement break.
+ * bracket at depth 0, or a new line that opens a new statement does. Text inside a
+ * string or template literal is skipped, so a `;` or a brace there is not a break
+ * — and (round 4) templates NEST: a backtick inside `${...}` opens another
+ * template rather than closing the outer one, so `${flag ? `;` : draft}` keeps its
+ * `;` as text and does not discard the declaration.
  */
+type BreakFrame =
+  | { kind: "code"; braces: number }
+  | { kind: "quote"; terminator: "'" | '"' }
+  | { kind: "template" };
+
 function breaksStatement(text: string, from: number, to: number): boolean {
-  let depth = 0;
-  let quote: "'" | '"' | "`" | null = null;
+  const frames: BreakFrame[] = [{ kind: "code", braces: 0 }];
   for (let i = from; i < to; i += 1) {
+    const frame = frames[frames.length - 1]!;
     const char = text[i]!;
-    if (quote !== null) {
+    const next = text[i + 1];
+    if (frame.kind === "quote") {
       if (char === "\\") i += 1;
-      else if (char === quote) quote = null;
+      else if (char === frame.terminator) frames.pop();
       continue;
     }
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char;
+    if (frame.kind === "template") {
+      if (char === "\\") i += 1;
+      else if (char === "`") frames.pop();
+      else if (char === "$" && next === "{") {
+        frames.push({ kind: "code", braces: 0 });
+        i += 1;
+      }
       continue;
     }
-    if (OPENERS.includes(char)) depth += 1;
-    else if (CLOSERS.includes(char)) {
-      if (depth === 0) return true;
-      depth -= 1;
-    } else if (char === ";" && depth === 0) return true;
-    else if (char === "\n" && depth === 0 && STATEMENT_KEYWORD.test(text.slice(i + 1, i + 40))) return true;
+    if (char === "'" || char === '"') frames.push({ kind: "quote", terminator: char });
+    else if (char === "`") frames.push({ kind: "template" });
+    else if (OPENERS.includes(char)) frame.braces += 1;
+    else if (char === "}") {
+      if (frame.braces > 0) frame.braces -= 1;
+      else if (frames.length > 1) frames.pop(); // ends the enclosing `${...}`
+      else return true;
+    } else if (CLOSERS.includes(char)) {
+      // `)` / `]` (the `}` is handled above): a close at depth 0 ends the
+      // right-hand side, so the `.trim()` belongs to a later statement
+      if (frame.braces > 0) frame.braces -= 1;
+      else return true;
+    } else if (char === ";" && frame.braces === 0 && frames.length === 1) return true;
+    else if (
+      char === "\n" &&
+      frame.braces === 0 &&
+      frames.length === 1 &&
+      STATEMENT_KEYWORD.test(text.slice(i + 1, i + 40))
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -153,13 +191,40 @@ const USE_REV = new RegExp(
   String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b(?!\s*\.)`,
   "g",
 );
+/** The opening of a normaliser call at the start of the trimmed value. */
+const NORMALISER_CALL = /^(?:normalizeArabicIndicDigits|draftBlank)\s*\(/;
+
 /**
- * A declaration already put through the one normaliser is not a RAW trim.
- * Matched as a CALL that WRAPS THE WHOLE VALUE (see `withoutSubscripts`), so a
- * variable that merely contains the name (`draftBlankish`) is still a raw gate,
- * and so is a normaliser that is only an argument of another call.
+ * Whether the trimmed value is the normaliser's OWN result. The normaliser's
+ * matching closing parenthesis is located by depth (strings and templates are
+ * skipped, so a `)` in an argument does not end the call early) and the value
+ * must end there: a trailing operation (`.concat(draft)`, `+ suffix`) means the
+ * normaliser did not wrap the whole value, so the trim is still raw (#244 round 4,
+ * finding 1). `draftBlankish(...)` never matches (the call needs `(`), and a
+ * normaliser that is only an argument of another call does not match either.
+ * See `withoutSubscripts` for the subscript half of the check.
  */
-const NORMALISED_VALUE = /^(?:normalizeArabicIndicDigits|draftBlank)\s*\(.*\)$/;
+function normalisesWholeValue(receiver: string): boolean {
+  const match = NORMALISER_CALL.exec(receiver);
+  if (match === null) return false;
+  let depth = 0;
+  let quote: "'" | '"' | "`" | null = null;
+  for (let i = match[0].length - 1; i < receiver.length; i += 1) {
+    const char = receiver[i]!;
+    if (quote !== null) {
+      if (char === "\\") i += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") quote = char;
+    else if (char === "(") depth += 1;
+    else if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return receiver.slice(i + 1).trim() === "";
+    }
+  }
+  return false;
+}
 
 /**
  * The receiver with every `[...]` subscript group removed. A normaliser in a
@@ -232,6 +297,11 @@ function scanSource(source: string): ScanResult {
     if (region.kind === "block") {
       if (char === "*" && next === "/") {
         regions.pop();
+        // a comment is a token SEPARATOR, not nothing: `const/* note */trimmed`
+        // must not fuse into `consttrimmed`, which loses the declaration and
+        // the gate that follows it. One space at the end is enough, and it
+        // keeps every offset in `out` (and so every brace pair) consistent.
+        out += " ";
         i += 1;
       } else if (char === "\n") {
         out += "\n";
@@ -460,7 +530,7 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
       const name = match[nameGroup] ?? "";
       const operator = match[operatorGroup] ?? "";
       const declaration = visibleDeclaration(declarations, name, start, enclosing(braces, start));
-      if (declaration === undefined || NORMALISED_VALUE.test(withoutSubscripts(declaration.rhs))) continue;
+      if (declaration === undefined || normalisesWholeValue(withoutSubscripts(declaration.rhs))) continue;
       claimed.push(span);
       record(start, canonical(name, operator, declaration.rhs));
     }

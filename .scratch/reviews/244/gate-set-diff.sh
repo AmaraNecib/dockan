@@ -9,12 +9,25 @@
 # silently produced nothing to compare.
 #
 # Usage: bash .scratch/reviews/244/gate-set-diff.sh [reference-sha]
+#
+# Round 4 (Greptile finding 5): the probe paths are unique PER RUN and are only
+# removed when THIS invocation created them. A fixed path could overwrite a
+# developer's saved probe or collide with a concurrent comparison.
 set -u
 cd "$(dirname "$0")/../../.." || exit 1
 REF="${1:-f30581c}"
-OLD="apps/web/src/tests/__gate-set-diff-old.ts"
-PROBE="apps/web/src/tests/__gate-set-diff.ts"
+RUN="$$-$RANDOM"
+OLD_MODULE="__gate-set-diff-old.$RUN"
+PROBE_MODULE="__gate-set-diff.$RUN"
+OLD="apps/web/src/tests/$OLD_MODULE.ts"
+PROBE="apps/web/src/tests/$PROBE_MODULE.ts"
 
+for path in "$OLD" "$PROBE"; do
+  if [ -e "$path" ]; then
+    echo "REFUSING: $path already exists; not overwriting it"
+    exit 1
+  fi
+done
 cleanup() { rm -f "$OLD" "$PROBE"; }
 trap cleanup EXIT
 
@@ -24,7 +37,7 @@ git rev-parse --verify --quiet "$REF" > /dev/null || {
 }
 git show "$REF:apps/web/src/tests/blankness-gates.ts" > "$OLD"
 cat > "$PROBE" <<'PROBE_EOF'
-import * as reference from "./__gate-set-diff-old";
+import * as reference from "./__GATE_SET_DIFF_OLD_MODULE__";
 import * as current from "./blankness-gates";
 
 const before = reference.scanNumericDraftReaders().map((gate) => gate.signature);
@@ -34,8 +47,9 @@ console.log(`current gates: ${after.length}`);
 console.log("ADDED", JSON.stringify(after.filter((signature) => !before.includes(signature))));
 console.log("REMOVED", JSON.stringify(before.filter((signature) => !after.includes(signature))));
 PROBE_EOF
+sed -i "s|__GATE_SET_DIFF_OLD_MODULE__|$OLD_MODULE|" "$PROBE"
 
-OUT="$( cd apps/web && GATE_SET_REF="$REF" bun run "src/tests/__gate-set-diff.ts" )"
+OUT="$( cd apps/web && GATE_SET_REF="$REF" bun run "src/tests/$PROBE_MODULE.ts" )"
 printf '%s\n' "$OUT"
 reference_count="$(printf '%s\n' "$OUT" | sed -n 's/^reference .* gates: \([0-9][0-9]*\)$/\1/p')"
 if [ -z "$reference_count" ] || [ "$reference_count" -eq 0 ]; then

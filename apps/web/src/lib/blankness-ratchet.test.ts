@@ -547,4 +547,80 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
       'synthetic.ts::trimmed === "" [parseIdentity(normalizeArabicIndicDigits(id)).trim()]',
     ]);
   });
+
+  it("does not skip a raw gate when the normaliser does not wrap the whole value (#244 round 4, finding 1)", () => {
+    // BEFORE the fix this returned []: `NORMALISED_VALUE`'s `.*` consumed the
+    // trailing `.concat(draft)`, so the prefix-only normalisation looked whole.
+    const appended = [
+      "export function f(prefix: string, draft: string) {",
+      "  const trimmed = normalizeArabicIndicDigits(prefix).concat(draft).trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(appended, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [normalizeArabicIndicDigits(prefix).concat(draft).trim()]',
+    ]);
+    // precision: the normaliser's own result IS the whole value, so it is still
+    // skipped; a `)` inside a string argument must not end the call early.
+    const wholeValue = [
+      "export function f(draft: string) {",
+      "  const trimmed = normalizeArabicIndicDigits(draft).trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(wholeValue, "synthetic.ts")).toEqual([]);
+    const stringArgument = [
+      "export function f(draft: string) {",
+      '  const trimmed = normalizeArabicIndicDigits(draft.replace(")", "")).trim();',
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(stringArgument, "synthetic.ts")).toEqual([]);
+  });
+
+  it("keeps a block comment as a token separator so the declaration survives (#244 round 4, finding 2)", () => {
+    // BEFORE the fix the comment was removed with no separator, so
+    // `const/* note */trimmed` became `consttrimmed`, `DECL` lost the
+    // declaration, and the following `trimmed === ""` produced no gate.
+    const joined = [
+      "export function f(draft: string) {",
+      "  const/* note */trimmed = draft.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(joined, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+    // the spaced control already passed; it stays caught
+    const spaced = [
+      "export function f(draft: string) {",
+      "  const /* note */ trimmed = draft.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(spaced, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("does not read a `;` inside a nested template as a statement break (#244 round 4, finding 3)", () => {
+    // BEFORE the fix `breaksStatement` treated backticks as flat quotes, so the
+    // inner backtick closed the outer template and the `;` in its TEXT read as a
+    // statement break: the declaration was discarded and the gate was lost.
+    const nested = [
+      "export function f(flag: boolean, draft: string) {",
+      "  const trimmed = `${flag ? `;` : draft}`.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(nested, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [`${flag ? `;` : draft}`.trim()]',
+    ]);
+  });
 });

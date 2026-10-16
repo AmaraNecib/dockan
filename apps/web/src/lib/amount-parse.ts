@@ -105,23 +105,22 @@ export function normalizeArabicIndicDigits(draft: string): string {
  * is a `Cf` format character, not whitespace — so a raw `.trim()` check reads it
  * as a chosen value, while the loose `Number()` bills it as 0.
  *
- * This one predicate now decides blankness for the invoice-draft money readers:
- * `saleUnitPrice`, `saleOverrideInvalid`, `nextUnitCost`, `resolveInitialPaid`
- * (all in `invoice-draft.ts`), `percentageDraftInvalid` (here), and the sale
- * screen's `saleDebt` preview. A mark-only draft is «nothing chosen» there
- * exactly as an empty one is. It is NOT a repo-wide claim: raw-`.trim()`
- * blankness gates remain at `numeric-input.ts` (`resolveOpeningStock`),
- * `supplier-opening-draft.ts`, `supplier-adjust-panel.tsx`, the settle panels'
- * amount guards, `amount-percentage-input.tsx`'s clamp, `customCashError`
- * (`invoice.tsx`), the stock unit-cost gate (`stock.tsx`) and the low-stock
- * threshold default (`items.tsx`); they are recorded as follow-ups (#238 design,
- * #244), not silently covered.
+ * This one predicate decides blankness for every numeric-draft reader: the
+ * invoice-draft money readers (`saleUnitPrice`, `saleOverrideInvalid`,
+ * `nextUnitCost`, `resolveInitialPaid`), `percentageDraftInvalid`,
+ * `resolveOpeningStock`, the opening-balance row readers, the return-quantity
+ * and cash-back readers, the settle/adjust amount guards and the low-stock
+ * threshold default. A mark-only draft is «nothing chosen» there exactly as an
+ * empty one is (#244).
  *
- * This list is HAND-MAINTAINED and has already been found incomplete once (three
- * sites, review round 1 on #243). Treat it as a record of what has been
- * ENUMERATED, not as proof the class is closed — the durable fix is a ratchet
- * test that fails when a new raw-`.trim()` blankness gate appears, tracked in
- * #244. Until then, a new numeric-draft reader has to be classified by hand.
+ * It is NOT a repo-wide claim: a raw `.trim()` on a *text* (name, reason, note,
+ * barcode) or *date* field is deliberate — a mark-only paste in a text field is
+ * real content, and a mark-only date is still unreadable — so those stay raw.
+ * The class is held closed by the ratchet in `blankness-ratchet.test.ts`:
+ * it scans every numeric-draft reader for raw-`.trim()` blankness gates and
+ * fails on any gate that is neither converted to this predicate nor listed in
+ * its `CLASSIFIED` table with a written reason. A new gate is red until
+ * classified, so the enumeration can no longer drift silently (#244).
  */
 export function draftBlank(draft: string): boolean {
   return normalizeArabicIndicDigits(draft).trim() === "";

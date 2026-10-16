@@ -6,7 +6,7 @@ import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -92,7 +92,7 @@ export function CustomerSettlePanel({
   const amountErrorText =
     amountError === "EXCEEDS"
       ? t("pmtExceedsRemaining", { remaining: unpaid })
-      : ((amountError === "INVALID" && value.amount.trim() !== "") || percentageInvalid)
+      : ((amountError === "INVALID" && !draftBlank(value.amount)) || percentageInvalid)
         ? t("partySettleAmountRequired")
         : null;
   const amount = parseGroupedAmount(value.amount);

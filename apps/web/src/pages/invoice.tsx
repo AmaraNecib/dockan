@@ -8,7 +8,7 @@ import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contract
 
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
-import { parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -309,9 +309,8 @@ export function remainingReturnableFor(line: { id: string; quantity: number }, r
  * validator, the `valueTotal` projection and the submit payload always agree on
  * both digit scripts (#225). */
 export function returnQuantityError(draft: string, remaining: number): "INVALID" | "EXCEEDS" | null {
-  const trimmed = draft.trim();
-  if (trimmed === "") return null; // an untouched line is not part of the return
-  const value = parseWholeAmount(trimmed);
+  if (draftBlank(draft)) return null; // an untouched line is not part of the return
+  const value = parseWholeAmount(draft);
   if (value === null || value <= 0) return "INVALID";
   if (value > remaining) return "EXCEEDS";
   return null;
@@ -321,9 +320,8 @@ export type ReturnSettlementPreset = "ALL_CASH" | "ALL_DEBT" | "CUSTOM";
 
 /** Validates a custom cash draft for the settlement split. */
 export function customCashError(draft: string, valueTotal: number): "INVALID" | "EXCEEDS" | null {
-  const trimmed = draft.trim();
-  if (trimmed === "") return null; // untouched = all-debt
-  const value = parseGroupedAmount(trimmed);
+  if (draftBlank(draft)) return null; // untouched = all-debt
+  const value = parseGroupedAmount(draft);
   if (value === null) return "INVALID";
   if (value > valueTotal) return "EXCEEDS";
   return null;
@@ -499,7 +497,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     event.preventDefault();
     setError(null);
     setSavedReturn(null);
-    const entered = returnableLines.filter((line) => (drafts[line.id] ?? "").trim() !== "");
+    const entered = returnableLines.filter((line) => !draftBlank(drafts[line.id] ?? ""));
     if (entered.length === 0) {
       setError(t("returnsNoLines"));
       return;

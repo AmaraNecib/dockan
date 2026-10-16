@@ -103,9 +103,12 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     // an interior mark can reorder the run in the RTL page, so it is refused
     expect(parseWholeNumber(`٥${RLM}٥`)).toBeNull();
     expect(parseWholeNumber(`1${RLM}000`)).toBeNull();
-    // a mark-only draft is refused, never read as zero
+    // a mark-only draft is blank through the shared predicate (#244): the plain
+    // path reads it as zero, the required path asks for a value — never "invalid"
     expect(parseWholeNumber(RLM)).toBeNull();
-    expect(resolveOpeningStock(RLM, false)).toEqual({ ok: false, reason: "invalid" });
+    expect(resolveOpeningStock(RLM, false)).toEqual({ ok: true, value: 0 });
+    expect(resolveOpeningStock(RLM, true)).toEqual({ ok: false, reason: "required" });
+    expect(resolveOpeningStock(` ${RLM} `, false)).toEqual({ ok: true, value: 0 });
     // ASCII identity, unchanged
     expect(parseWholeNumber("123")).toBe(123);
   });

@@ -231,6 +231,13 @@ describe("customCashError (return settlement split)", () => {
     expect(customCashError("1 000,00", 5_000)).toBe("INVALID");
     expect(customCashError("1,5", 5_000)).toBe("INVALID");
   });
+
+  it("treats a mark-only custom-cash draft as untouched (all-debt), not INVALID (#244)", () => {
+    // a bidi mark is Cf, not whitespace: the raw gate read a chosen draft and
+    // then the grouped reader refused it
+    expect(customCashError("\u200f", 5_000)).toBeNull();
+    expect(customCashError(" \u200f ", 5_000)).toBeNull();
+  });
 });
 
 describe("PaymentPanel (invoice payment form + history)", () => {

@@ -33,6 +33,13 @@ describe("parseReturnQuantities", () => {
     expect(parseReturnQuantities({ a: "", b: "" })).toEqual({ error: true });
   });
 
+  it("treats a mark-only draft as an untouched line, never as an invalid one (#244)", () => {
+    // a bidi mark is Cf, not whitespace: the raw gate saw a chosen line and the
+    // strict reader then rejected the whole return
+    expect(parseReturnQuantities({ a: "1", b: "\u200f" })).toEqual({ lines: [{ invoiceLineId: "a", quantity: 1 }] });
+    expect(parseReturnQuantities({ a: "\u200f" })).toEqual({ error: true });
+  });
+
   it("accepts Arabic-Indic and Extended Arabic-Indic quantities like ASCII (#210)", () => {
     expect(parseReturnQuantities({ a: "٥" })).toEqual({ lines: [{ invoiceLineId: "a", quantity: 5 }] });
     expect(parseReturnQuantities({ a: "۵", b: "٢" })).toEqual({
@@ -59,6 +66,11 @@ describe("parseCashBackDraft", () => {
     expect(parseCashBackDraft("1.5")).toBeNull();
     expect(parseCashBackDraft("-5")).toBeNull();
     expect(parseCashBackDraft("abc")).toBeNull();
+  });
+
+  it("treats a mark-only draft as empty, i.e. a zero cash-back (#244)", () => {
+    expect(parseCashBackDraft("\u200f")).toBe(0);
+    expect(parseCashBackDraft(" \u200f ")).toBe(0);
   });
 
   it("reads a grouped cash-back draft with the shared parser (#180)", () => {

@@ -111,6 +111,15 @@ describe("amount/percentage linked math (#162)", () => {
     expect(percentageEdited(9_999, "1000")).toEqual({ amount: "9999", percentage: "100" });
   });
 
+  it("treats a mark-only percentage as blank, never as an over-100 draft (#244)", () => {
+    // outcome-neutral at this site: `parseLooseNumber("\u200f")` is 0, not > 100,
+    // so the raw-trim form returned the identical value. The #244 ratchet, not a
+    // black-box assertion, is what discriminates this conversion (see #238's
+    // `nextUnitCost` ablation for the same honesty).
+    expect(percentageEdited(30_000, "\u200f")).toEqual({ amount: "", percentage: "\u200f" });
+    expect(percentageEdited(30_000, " \u200f ")).toEqual({ amount: "", percentage: " \u200f " });
+  });
+
   it("links Arabic-Indic percentage digits like their ASCII value, including the over-100 clamp (#210)", () => {
     expect(percentageEdited(30_000, "٥٠")).toEqual({ amount: "15000", percentage: "٥٠" });
     expect(percentageEdited(30_000, "۱۰۰")).toEqual({ amount: "30000", percentage: "۱۰۰" });

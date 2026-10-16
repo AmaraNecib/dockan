@@ -1,6 +1,6 @@
 import { normalizeTextKey } from "@dokan/contracts";
 
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 
 /**
  * #176 — pure draft readers for the bulk opening-balance screen. They exist so
@@ -23,7 +23,7 @@ export type OpeningRowStatus =
  * otherwise. */
 export function openingRowStatus(draft: { amount: string } | undefined): OpeningRowStatus {
   const raw = draft?.amount ?? "";
-  if (raw.trim() === "") return { status: "untouched" };
+  if (draftBlank(raw)) return { status: "untouched" };
   const amount = parseGroupedAmount(raw);
   if (amount === null || amount <= 0) return { status: "invalid" };
   return { status: "filled", amount };
@@ -66,7 +66,7 @@ export type NewOpeningRowStatus =
  * supplier is a duplicate; otherwise filled. */
 export function newOpeningRowStatus(input: { name: string; amount: string; existingNames: readonly string[] }): NewOpeningRowStatus {
   const name = input.name.trim();
-  const amountFilled = input.amount.trim() !== "";
+  const amountFilled = !draftBlank(input.amount);
   if (name === "" && !amountFilled) return { status: "untouched" };
   if (name === "" || !amountFilled) return { status: "incomplete" };
   const amount = parseGroupedAmount(input.amount);

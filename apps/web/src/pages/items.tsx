@@ -16,7 +16,7 @@ import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { usePagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
-import { parseLooseNumber } from "@/lib/amount-parse";
+import { draftBlank, parseLooseNumber } from "@/lib/amount-parse";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
@@ -431,8 +431,7 @@ function ItemForm({
       setError(t("itemsCostInvalid"));
       return;
     }
-    const thresholdText = threshold.trim();
-    const parsedThreshold = thresholdText === "" ? 5 : parseWholeNumber(thresholdText);
+    const parsedThreshold = draftBlank(threshold) ? 5 : parseWholeNumber(threshold);
     if (parsedThreshold === null) {
       setError(t("itemsThresholdInvalid"));
       return;
@@ -523,7 +522,7 @@ function ItemForm({
         </label>
         <label className="grid gap-1">
           {t("itemsThreshold")}
-          <input className={inputClass} name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" />
+          <input className={inputClass} name="itemThreshold" autoComplete="off" value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric" data-testid="item-threshold" />
         </label>
       </div>
       <label className="grid gap-1">
@@ -718,9 +717,8 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
       setEditError(t("itemsCostInvalid"));
       return;
     }
-    const thresholdText = draft.threshold.trim();
-    const parsedThreshold = parseWholeNumber(thresholdText);
-    if (thresholdText !== "" && parsedThreshold === null) {
+    const parsedThreshold = parseWholeNumber(draft.threshold);
+    if (!draftBlank(draft.threshold) && parsedThreshold === null) {
       setEditError(t("itemsThresholdInvalid"));
       return;
     }

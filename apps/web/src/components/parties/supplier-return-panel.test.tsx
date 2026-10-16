@@ -184,6 +184,15 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     expect(confirmButton()?.disabled).toBe(true);
   });
 
+  it("treats a mark-only quantity as an untouched line: no draft error, confirm disabled (#244)", async () => {
+    await render();
+    // a bidi mark is Cf, not whitespace: the raw gate called it a chosen line
+    // and showed the invalid-draft banner
+    typeInto("supplier-return-qty-l2", "\u200f");
+    expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).toBeNull();
+    expect(confirmButton()?.disabled).toBe(true);
+  });
+
   it("previews and saves the same Arabic-Indic quantity draft (#210)", async () => {
     await render();
     // l2 is the priced line, so a miscounted quantity shows up in the money

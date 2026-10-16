@@ -41,6 +41,7 @@ interface CapturedCreateInput {
   name?: string;
   costPrice?: number;
   sellingPrice?: number;
+  lowStockThreshold?: number;
   stockOnHand?: number;
 }
 
@@ -466,6 +467,21 @@ describe("add item form opening stock", () => {
     expect(createInputs.length).toBe(0);
   });
 
+  it("takes the 5 default for a blanked threshold, including a mark-only paste (#244)", async () => {
+    await mount();
+    await openAddTab();
+
+    setInput("item-name", "بطارية حد افتراضي");
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    // a bidi mark is Cf, not whitespace: the raw gate read a chosen threshold
+    // and then the strict reader refused it instead of taking the default
+    setInput("item-threshold", "\u200f");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "بطارية حد افتراضي", lowStockThreshold: 5 });
+  });
+
   it("rejects a non-numeric cost without calling the server", async () => {
     await mount();
     await openAddTab();
@@ -817,6 +833,21 @@ describe("stock form prefill", () => {
     expect(stockInputs[0]?.unitCost).toBeUndefined();
   });
 
+  it("treats a mark-only unit cost as blank, not as an invalid cost (#244)", async () => {
+    await mount();
+    await openAddTab();
+    await waitFor(() => inputByTestId("stock-unit-cost").value === "100");
+    // a bidi mark is Cf, not whitespace: the raw gate called it a chosen cost
+    // and then refused it, instead of falling back to the item's known cost
+    setInput("stock-unit-cost", "\u200f");
+    setInput("stock-delta", "5");
+    click("stock-save");
+    await waitFor(() => stockInputs.length === 1);
+    expect(stockInputs[0]).toMatchObject({ itemId: "item-1", delta: 5 });
+    expect(stockInputs[0]?.unitCost).toBeUndefined();
+    expect(document.querySelector('[data-testid="stock-error"]')).toBeNull();
+  });
+
   it("does not prefill the pre-movement cost while the refetch is in flight", async () => {
     await mount();
     await openAddTab();
@@ -985,6 +1016,19 @@ describe("inline item edit", () => {
     await waitFor(() => updateInputs.length === 1);
     // blank means "leave it alone", not "warn at zero"
     expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية بلا تنبيه" });
+  });
+
+  it("treats a mark-only threshold as blank: leave the server value alone (#244)", async () => {
+    await mount();
+    click("edit-item-item-1");
+    await waitFor(() => document.querySelector('[data-testid="edit-threshold"]') !== null);
+    setInput("edit-name", "بطارية حد ممحو");
+    setInput("edit-threshold", "\u200f");
+    click("edit-save");
+    await waitFor(() => updateInputs.length === 1);
+    // no threshold in the patch and no edit error: mark-only is blank, not invalid
+    expect(updateInputs[0]).toEqual({ id: "item-1", name: "بطارية حد ممحو" });
+    expect(document.querySelector('[data-testid="items-edit-error"]')).toBeNull();
   });
 
   it("rejects money written in exponent or hex notation", async () => {

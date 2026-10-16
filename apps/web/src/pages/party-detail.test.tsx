@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n";
+import i18n from "../lib/i18n";
 
 import type { Invoice, PartyDetail, SupplierAccountEntry } from "@dokan/contracts";
 
@@ -347,7 +348,12 @@ describe("customer detail unpaid view (#164)", () => {
     partyDetail = makeDetail([invoice({ id: "paid", invoiceDate: "2026-09-01", remainingAmount: 0, paidAmount: 500, totalAmount: 500 })]);
     await renderCustomer();
     await waitFor(() => host.querySelector('[data-testid="party-invoices-empty"]') !== null);
-    expect(host.querySelector('[data-testid="party-invoices-empty"]')?.textContent).toContain("لا توجد فواتير غير مدفوعة");
+    const empty = host.querySelector('[data-testid="party-invoices-empty"]');
+    expect(empty?.textContent).toContain(i18n.t("partyNoUnpaid"));
+    // issue #96 — the default unpaid-only view explains why it is empty
+    expect(empty?.textContent).toContain(i18n.t("partyNoUnpaidHint"));
+    expect(empty?.textContent).not.toContain(i18n.t("partyInvoicesEmptyHint"));
+    expect(empty?.querySelector("button, a")).toBeNull();
     expect(host.querySelector('[data-testid="party-settle"]')).toBeNull();
   });
 
@@ -780,5 +786,47 @@ describe("supplier action refreshes the entries tab (#174 round 1)", () => {
     // a rejection may still hide a committed write: the failure path must
     // invalidate the paged supplier-entries key, not only the success path
     await waitFor(() => supplierEntriesCalls > before);
+  });
+});
+
+describe("party-detail read-only empty states (issue #96)", () => {
+  it("explains an empty invoice list when no filter is active", async () => {
+    partyDetail = makeDetail([]);
+    await renderCustomer();
+    await waitFor(() => host.querySelector('[data-testid="party-invoices-empty"]') !== null);
+
+    // the default tab is unpaid-only; clearing it reaches the unfiltered state
+    act(() => host.querySelector<HTMLInputElement>('[data-testid="party-unpaid-filter"]')?.click());
+    await waitFor(
+      () => host.querySelector('[data-testid="party-invoices-empty"]')?.textContent?.includes(i18n.t("partyInvoicesEmptyHint")) === true,
+    );
+    const empty = host.querySelector('[data-testid="party-invoices-empty"]');
+    expect(empty?.textContent).toContain(i18n.t("partyInvoicesEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("partyInvoicesEmptyHint"));
+    expect(empty?.querySelector("button, a")).toBeNull();
+  });
+
+  it("explains an empty customer payments history", async () => {
+    partyDetail = makeDetail([invoice({ id: "1", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })]);
+    await renderCustomer();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelector('[data-testid="party-payments-empty"]') !== null);
+
+    const empty = host.querySelector('[data-testid="party-payments-empty"]');
+    expect(empty?.textContent).toContain(i18n.t("partyPaymentsEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("partyPaymentsEmptyHint"));
+    expect(empty?.querySelector("button, a")).toBeNull();
+  });
+
+  it("explains an empty supplier account ledger", async () => {
+    partyDetail = { ...makeSupplierDetail(), account: { balance: 0, entries: [] } };
+    await renderSupplier();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelector('[data-testid="supplier-account-empty"]') !== null);
+
+    const empty = host.querySelector('[data-testid="supplier-account-empty"]');
+    expect(empty?.textContent).toContain(i18n.t("supplierAccountEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("supplierAccountEmptyHint"));
+    expect(empty?.querySelector("button, a")).toBeNull();
   });
 });

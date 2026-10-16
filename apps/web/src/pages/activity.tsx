@@ -4,6 +4,7 @@ import type { TFunction } from "i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Pager } from "@/components/ui/pager";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
@@ -116,7 +117,12 @@ export function ActivityLogPage() {
           ))}
         </div>
       ) : activities.data.total === 0 ? (
-        <p className="mt-4 rounded border bg-card p-4 text-muted-foreground">{t("activityEmpty")}</p>
+        <EmptyState
+          testId="activity-empty"
+          className="mt-4 rounded border border-border bg-card"
+          title={t("activityEmpty")}
+          hint={t("activityEmptyHint")}
+        />
       ) : (
         <>
         <table className="mt-4 w-full rounded border bg-card" data-testid="activity-table">

@@ -194,7 +194,7 @@ async function mountPanel(queryClient: QueryClient) {
   return {
     text: () => container.textContent ?? "",
     button: () => container.querySelector<HTMLButtonElement>("button"),
-    emptyState: () => container.textContent?.includes("لا يوجد مخزون سابق غير مُفوتر") ?? false,
+    emptyState: () => container.textContent?.includes(i18n.t("purchasesProposalEmpty")) ?? false,
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();

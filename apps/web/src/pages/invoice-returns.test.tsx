@@ -286,7 +286,11 @@ describe("remainingReturnableFor (history-aware remaining)", () => {
 describe("ReturnsPanel (new-return form + history)", () => {
   it("renders the empty-history state and disables the line input when nothing is returnable", () => {
     renderPanel(makeInvoice([saleLine({ quantity: 0 })]));
-    expect(host.querySelector('[data-testid="returns-empty"]')).toBeTruthy();
+    const empty = host.querySelector('[data-testid="returns-empty"]');
+    expect(empty).toBeTruthy();
+    // issue #96 — the history explanation is honest even when nothing is returnable
+    expect(empty?.textContent).toContain(i18n.t("returnsEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("invoiceReturnsEmptyHint"));
     expect(host.querySelector('[data-testid="returns-history"]')).toBeNull();
   });
 

@@ -8,11 +8,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n";
 
-import type { ReturnDetail } from "@dokan/contracts";
+import type { ReturnDetail, SupplierReturnRecord } from "@dokan/contracts";
 
 let failReview = false;
 let lastReviewAction: { kind: "accept" | "reject"; returnId: string; reason?: string } | null = null;
+/** mutable supplier-returns fixture so the empty / non-empty / error branches are all reachable */
+function supplierReturnsPage(items: SupplierReturnRecord[], total: number) {
+  return { items, total };
+}
+let supplierReturns = supplierReturnsPage([], 0);
+let supplierReturnsFails = false;
 
 mock.module("@tanstack/react-router", () => ({
   Link: (props: { children?: import("react").ReactNode; className?: string; "data-testid"?: string; params?: Record<string, string>; to?: string }) => {
@@ -28,6 +35,15 @@ mock.module("@/lib/rpc", () => ({
     returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
     activitiesList: { queryKey: () => ["activitiesList"] },
     invoicesList: { queryKey: () => ["invoicesList"] },
+    suppliersReturnsList: {
+      queryOptions: () => ({
+        queryKey: ["suppliersReturnsList"],
+        queryFn: async () => {
+          if (supplierReturnsFails) throw new Error("boom");
+          return supplierReturns;
+        },
+      }),
+    },
     returnsAccept: {
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["returnsAccept"],
@@ -54,7 +70,7 @@ mock.module("@/lib/rpc", () => ({
   rpcClient: {},
 }));
 
-const { ReturnsReviewList } = await import("./returns");
+const { ReturnsReviewList, SupplierReturnsList } = await import("./returns");
 
 function makeReturn(status: ReturnDetail["status"], overrides: Partial<ReturnDetail> = {}): ReturnDetail {
   return {
@@ -98,6 +114,8 @@ beforeEach(() => {
   document.body.appendChild(host);
   failReview = false;
   lastReviewAction = null;
+  supplierReturns = supplierReturnsPage([], 0);
+  supplierReturnsFails = false;
 });
 
 afterEach(() => {
@@ -137,7 +155,18 @@ async function flushAsync() {
 describe("ReturnsReviewList (accept / reject review flow)", () => {
   it("shows the empty state when no returns exist", () => {
     renderList([]);
-    expect(host.querySelector('[data-testid="returns-list-empty"]')).toBeTruthy();
+    const empty = host.querySelector('[data-testid="returns-list-empty"]');
+    expect(empty).toBeTruthy();
+    // issue #96 — a read-only review list explains where returns come from
+    expect(empty?.textContent).toContain(i18n.t("returnsEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("returnsEmptyHint"));
+    // and it invents no action
+    expect(empty?.querySelector("button, a")).toBeNull();
+  });
+
+  it("does not show the empty state once a return exists", () => {
+    renderList([makeReturn("ACCEPTED")]);
+    expect(host.querySelector('[data-testid="returns-list-empty"]')).toBeNull();
   });
 
   it("renders an accepted return without review buttons and with its green status", () => {
@@ -205,5 +234,67 @@ describe("ReturnsReviewList (accept / reject review flow)", () => {
     expect(accepted.textContent).toContain("250 دج");
     expect(accepted.textContent).not.toContain("400 دج");
     expect(rejected.textContent).toContain("خصم من الدين (لم يُطبّق)");
+  });
+});
+
+describe("SupplierReturnsList (issue #96)", () => {
+  function renderSupplierReturns() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(host);
+    roots.push(root);
+    act(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <SupplierReturnsList />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("explains where supplier returns come from", async () => {
+    renderSupplierReturns();
+    await flushAsync();
+
+    const empty = host.querySelector('[data-testid="supplier-returns-empty"]');
+    expect(empty).toBeTruthy();
+    expect(empty?.textContent).toContain(i18n.t("supplierReturnsEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("supplierReturnsEmptyHint"));
+    // no invented action on a read-only list
+    expect(empty?.querySelector("button, a")).toBeNull();
+  });
+
+  it("shows the list, not the empty state, once a supplier return exists", async () => {
+    const record: SupplierReturnRecord = {
+      id: "sr-1",
+      returnNumber: "PRT-0001",
+      supplierId: "sup-1",
+      supplierName: "مورد",
+      invoiceId: null,
+      invoiceNumber: null,
+      kind: "FREE_STANDING",
+      amount: 500,
+      debtReduction: 0,
+      credit: 500,
+      cashBack: 0,
+      reason: null,
+      occurredAt: "2026-08-26T10:00:00",
+      createdAt: "2026-08-26T10:00:00",
+      lines: [],
+    };
+    supplierReturns = supplierReturnsPage([record], 1);
+    renderSupplierReturns();
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="supplier-returns-empty"]')).toBeNull();
+    expect(host.querySelector('[data-testid="supplier-returns-list"]')).toBeTruthy();
+  });
+
+  it("shows the error box, not the empty state, when the read fails", async () => {
+    supplierReturnsFails = true;
+    renderSupplierReturns();
+    await flushAsync();
+
+    expect(host.querySelector('[data-testid="supplier-returns-error"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="supplier-returns-empty"]')).toBeNull();
   });
 });

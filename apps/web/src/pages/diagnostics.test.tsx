@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n";
 
 /** today's tail the api returns — newest-last (chronological append order) */
 interface TailFixture {
@@ -68,6 +69,7 @@ async function mountPage(queryClient: QueryClient) {
     rowsText: () =>
       [...container.querySelectorAll("[data-testid='diagnostics-row']")].map((el) => el.textContent ?? ""),
     rows: () => container.querySelectorAll("[data-testid='diagnostics-row']").length,
+    empty: () => container.querySelector("[data-testid='diagnostics-empty']"),
     retryButton: () => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("إعادة المحاولة")),
     waitFor: async (check: () => boolean) => {
       for (let attempt = 0; attempt < 50; attempt++) {
@@ -131,6 +133,8 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     expect(await page.waitFor(() => page.text().includes("SERVER_BOOT_DONE"))).toBe(true);
     expect(lastInput).toEqual({ lines: 200 });
     expect(page.text()).toContain("logs/2026-08-25.jsonl");
+    // issue #96 — the non-empty render must not show the empty state
+    expect(page.empty()).toBeNull();
     await page.unmount();
   });
 
@@ -165,7 +169,10 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
   it("shows the empty state when today's file has no lines", async () => {
     fixture = { file: "logs/2026-08-25.jsonl", lines: [] };
     const page = await mountPage(queryClient);
-    expect(await page.waitFor(() => page.text().includes("لا توجد سجلات بعد"))).toBe(true);
+    expect(await page.waitFor(() => page.text().includes(i18n.t("diagnosticsEmpty")))).toBe(true);
+    // issue #96 — a read-only log names what fills it instead of faking a step
+    expect(page.empty()?.textContent).toContain(i18n.t("diagnosticsEmptyHint"));
+    expect(page.empty()?.querySelector("button, a")).toBeNull();
     expect(page.rows()).toBe(0);
     await page.unmount();
   });

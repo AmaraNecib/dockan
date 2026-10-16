@@ -14,6 +14,7 @@ import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -170,7 +171,12 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     <div className="rounded border bg-card p-4" data-testid="pmt-panel">
       <h2 className="font-semibold">{t("pmtTitle")}</h2>
       {invoice.payments.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground" data-testid="pmt-empty">{t("pmtEmpty")}</p>
+        <EmptyState
+          testId="pmt-empty"
+          className="mt-2"
+          title={t("pmtEmpty")}
+          hint={remaining === 0 ? t("pmtEmptySettledHint") : savedPayment !== null ? t("pmtEmptyJustSavedHint") : t("pmtEmptyHint")}
+        />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="pmt-history">
           <thead>
@@ -546,7 +552,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         </p>
       )}
       {returns.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground" data-testid="returns-empty">{t("returnsEmpty")}</p>
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={t("invoiceReturnsEmptyHint")}
+        />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="returns-history">
           <thead>

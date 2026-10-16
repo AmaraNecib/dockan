@@ -38,6 +38,9 @@ try {
     DELETE FROM invoices;
     DELETE FROM stock_movements;
     DELETE FROM items;
+    -- item categories go with the items; expense categories are seeded
+    -- defaults and deliberately survive (expenses reference expense_categories)
+    DELETE FROM categories;
     DELETE FROM activities;
     DELETE FROM expenses;
     DELETE FROM customers;

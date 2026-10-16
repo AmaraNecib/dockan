@@ -15,6 +15,8 @@ round changes — **passed in every run below**. So did `01-empty-states` and
 | C — final code | stock | 92 passed, **1 failed** (13.6 m) | `learnability.spec.ts:178` — `Test timeout of 30000ms exceeded` |
 | D — final code | `--timeout=60000` | 91 passed, **2 failed** (16.4 m) | `customers.spec.ts` — two 5 s `expect` failures after writes |
 | E — final code | stock | 90 passed, **3 failed** (17.3 m) | `stock-ledger.spec.ts` — three 5 s `expect` failures |
+| F — final code | stock | 92 passed, **1 failed** (14.9 m) | `expense-reports.spec.ts:144` — the shared `signIn` wait for `dashboard-page` timed out at 5 s, before any line this round changes; **the same test passes alone with the new assertions (20.1 s)** — see `full-suite-final.log` |
+| G — final code | `--timeout=120000` | aborted after 5 tests, exit 255 | process killed with no Playwright error: servers from an earlier aborted attempt |
 
 The suite's own wall time tells the story: 11.9 m in run A, 13.0 → 17.3 m in
 B–E, a 45 % slowdown. The machine is shared with another active crew lane

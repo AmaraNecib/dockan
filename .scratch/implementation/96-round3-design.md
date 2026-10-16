@@ -86,7 +86,8 @@ precondition-independent:
 | --- | --- | --- |
 | `debts.spec.ts` | **GLOBAL** `debts-group-owed-total` 1500, `-owed-count` 1, `-weowe-total` 1200, `-weowe-count` 1 | **No** — fixed here (owns its reset in `beforeAll`) |
 | `96-returns-supplier-action.spec.ts` | none (asserts presence/absence only) | n/a — but it left the leak; fixed here (`afterAll` reset) |
-| `expense-reports.spec.ts:77` | `expense-history` tbody rows `toHaveCount(2)` — the current-month window over ALL expenses | **By convention only**: file header states "Expenses are only ever recorded by this spec". No other spec records an expense today, so it holds; recorded here as the second assertion of this class. **Residual risk:** it is the one assertion still unprotected if `96-…`'s `afterAll` never runs (killed worker, aborted run). Hardening it means scoping the sort and count assertions to rows this spec gave a unique note — deferred, see below |
+| `expense-reports.spec.ts:77` | `expense-history` tbody rows `toHaveCount(2)` — the current-month window over ALL expenses, plus the sort assertions beside it | **By convention, and double-protected**: the file header states "Expenses are only ever recorded by this spec", and no other spec writes one (`expensesCreate`/`expense-amount` appear only here, verified by grep). `debts.spec.ts`'s new `beforeAll` also deletes `expenses`, so the convention is re-established mid-run. Hardening means scoping the count *and* the sort assertions to rows this spec gave a unique note — deferred, see below. Round 1 recorded this as "the one assertion exposed if the 96 `afterAll` never runs"; round 2 showed that was wrong — the 96 spec leaks invoices and stock, never expenses |
+| `rpc-helpers.spec.ts` | none — it pins `actAndAck`'s error semantics and stubs `customersCreate` to 500, asserting the mock answered so no real row can be written | Yes — nothing global is read; it needs only a provisioned owner, which `signIn` establishes |
 | `expense-reports.spec.ts:301` | breakdown row count per seeded window | Yes — filtered by `categoryName` it created |
 | `pagination.spec.ts:80–109` | `invoice-row` 10 / 20 / min(20, total) | Yes, **by construction** — it reads `total` from `invoicesList` instead of pinning a number ("so the spec does not depend on what other specs already recorded") |
 | `pagination.spec.ts:186–242` | `party-invoice-row` / `supplier-account-row` 10 and 2 | Yes — scoped to the party it seeds |
@@ -234,6 +235,21 @@ standards, spec). Dispositions:
 | Evidence was "claimed, not committed" | blocker | **Fixed** — the raw run logs are committed under `.scratch/reviews/96/` and the test-audit / code-review evidence files are added |
 | Mutation harness for the expense race not committed | weakness | **Accepted.** The mutation is three lines and is described in this doc; committing a deliberately failing route into a spec would need it behind a flag. The failing trace that motivated it is not in the diff either — it was the parent's full-suite run, and the pre-fix failure signature is recorded above |
 
+## Decisions taken after the second review round
+
+The same five lenses ran again against the final code commit (`7e6622e`). What
+changed as a result:
+
+| Finding | Decision |
+| --- | --- |
+| The brief's **before-fix reproduction was prose, not a committed log** (both rounds) | **Fixed** — `round3/order3-before.log` re-runs the exact three-file order against the base versions of the two changed specs and records `1 failed, 8 passed · Expected "1200 دج" · Received "3200 دج"` |
+| The sweep table gave **no verdict for `tests/e2e/rpc-helpers.spec.ts`** (the closing row dismissed it as a helper) | **Fixed** — its own row is in the table above |
+| The doc claimed `expense-reports:77` was exposed if the 96 `afterAll` never runs | **Fixed** — wrong: no other spec writes an expense, and `debts`' `beforeAll` deletes `expenses` before that spec runs. That cell now says so |
+| `actAndAck` resolves at the response body, **before** React's success handler clears the amount — the race narrows, it is not closed | **Fixed** — each save now also asserts the cleared end state (`expect(expense-amount).toHaveValue("")`) before the next fill. This is the same "prove the end state, not the click" rule as wisdom `2026-10-14-e2e-cleanup-must-prove-the-end-state` |
+| The script comment named one surviving sequence where three survive | **Fixed** — the comment now names invoice, customer-return and supplier-return numbering |
+| The 96 `afterAll` cannot be falsified by any run (it only proves the script exited 0) | **Accepted, deferred** — the schema-vs-DELETE-list drift guard would close it; it needs a maintained exclusion list, so it is in Deferred rather than bolted on |
+| No green full-suite run on the final commit (the three extra `DELETE`s change what the seven specs between `96-…` and `debts` see) | **Attempted six times, not achieved, recorded.** Row 3b and `round3/full-suite-final.log`: the final commit's best run is 92/93, and the one failure is the shared `signIn` wait timing out on a machine running another crew lane (suite wall time 13–17 m against 11.9 m). Every flaking spec passes alone on this code. The full ordering green on the fix itself is row 3 (run A, `f5b8b0d`); the only behaviour `7e6622e` adds on top is three extra `DELETE`s, whose own before/after probe is row 6 |
+
 ## Deferred
 
 - `expense-reports.spec.ts:77`'s global row count and its sort assertions could
@@ -259,7 +275,7 @@ on those ports killed and `.dokan-port` removed first (wisdom
 | 1b | the same three files — **after** (`round3/order3-after.log`) | **9 passed**, including both 96 tests and their own assertions |
 | 2 | `bunx playwright test tests/e2e/debts.spec.ts` (`round3/debts-alone.log`) | **1 passed** (alone, with its new `beforeAll`) |
 | 3 | `bun run test:e2e` full ordering at `f5b8b0d` (`round3/full-suite-flakes.log` run A) | **93 passed, 0 failed** (11.9 m) |
-| 3b | the same at the final code, four more times | 90–92 passed; every failure a 5 s `expect` / 30 s test **timeout** in a spec this round does not touch, each of those specs green alone. `debts`, `96-…`, `01-empty-states` and `expense-reports` passed in every run — see `round3/full-suite-flakes.log` |
+| 3b | the same at the final code, six attempts | 90–92 passed. Every failure is a 5 s `expect` or 30 s test **timeout**, and every flaking spec passes alone: `supplier-account`, `learnability`, `customers`, `stock-ledger`, `01-empty-states`, and on run F the shared `signIn` wait for the dashboard. One attempt aborted with no Playwright error at all (killed process). `debts`, `96-…` and `01-empty-states` passed in every run that produced results — see `round3/full-suite-flakes.log` and `round3/full-suite-final.log` |
 | 4 | `bun run typecheck` / `bun run lint` / `bun run test` / `bun test scripts/e2e-selection.test.ts` (`round3/guard-phase1.log`) | all exit 0; selection guard 35 pass, 0 fail, map untouched |
 | 5 | mutation: delayed first `expensesCreate`, test 2 pre-fix / post-fix | fail / pass |
 | 6 | `reset-e2e-records.mjs` table probe, three `DELETE`s removed then present (`round3/reset-tables.log`) | `supplier_account_entries` **1 → 0** |

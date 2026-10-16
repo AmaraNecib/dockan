@@ -1,10 +1,10 @@
-# Guard Phase 1 evidence - issue #96 round 3
+# Guard Phase 1 evidence - issue #96 round 3 (final code)
 
 ## bun run typecheck
 exit=0
  Tasks:    4 successful, 4 total
 Cached:    4 cached, 4 total
-  Time:    437ms >>> FULL TURBO
+  Time:    693ms >>> FULL TURBO
 
 
 ## bun run lint
@@ -16,12 +16,12 @@ exit=0
  1 skip
  0 fail
  262 expect() calls
-Ran 74 tests across 2 files. [3.93s]
+Ran 74 tests across 2 files. [10.69s]
 
 ## bun test scripts/e2e-selection.test.ts
 exit=0
  35 pass
  0 fail
  152 expect() calls
-Ran 35 tests across 1 file. [546.00ms]
+Ran 35 tests across 1 file. [1.83s]
 

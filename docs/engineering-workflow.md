@@ -78,8 +78,9 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 ## Review tiers
 
 **The tier follows the failure mode, never the diff size.** Ask what the change
-can break, not how many lines it touches. A 600-line PR that only adds a screen
-is Standard; a 12-line PR under `apps/api/src/auth/**` is High-assurance.
+can break, not how many lines it touches. A 600-line PR that adds a screen without
+risking a named failure is Standard; a 12-line PR under `apps/api/src/auth/**`
+that can bypass a session check is High-assurance.
 
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |

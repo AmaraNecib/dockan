@@ -85,6 +85,23 @@ shared helper's docstring must name the readers it covers and file the gap):
 - `amount-percentage-input.tsx:66` — the over-100% clamp condition; provably
   outcome-neutral for a mark-only draft (`parseLooseNumber` → 0, not > 100).
 - `invoice.tsx:502` / `supplier-return-panel.tsx:80` — return-quantity drafts.
+- `customCashError` (`invoice.tsx:323`) — **review round 1 on #243**: a mark-only
+  custom-cash draft returns `"INVALID"` where empty returns `null` (all-debt).
+- the stock unit-cost gate (`stock.tsx:106`) — a mark-only draft sets
+  `stockUnitCostInvalid` where empty passes the gate.
+- the low-stock threshold default (`items.tsx:434`) — a mark-only draft skips the
+  `5` default and fails with `itemsThresholdInvalid`; empty takes the default.
+
+All three were named by review round 1 and verified by evaluating the readers:
+`parseGroupedAmount("\u200f")` and `parseWholeNumber("\u200f")` both return `null`,
+so the raw-`.trim()` guard lets the mark through to a reader that then refuses it.
+
+**This list is hand-maintained, and it was already incomplete once.** That is the
+actual defect the review surfaced: a hand-written enumeration cannot be trusted to be
+complete, so every round can find three more sites. The durable fix is a ratchet test
+that scans the numeric-draft readers for raw-`.trim()` blankness gates and fails on any
+site that is not classified — tracked in #244. Until that exists, treat this list as
+«what has been enumerated», never as «the class is closed».
 
 `parseQuantityDraft`'s inline `normalizeArabicIndicDigits(draft).trim() === ""`
 is character-for-character `draftBlank`; it is a reader that needs the normalised

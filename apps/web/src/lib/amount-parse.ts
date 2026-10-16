@@ -112,8 +112,16 @@ export function normalizeArabicIndicDigits(draft: string): string {
  * exactly as an empty one is. It is NOT a repo-wide claim: raw-`.trim()`
  * blankness gates remain at `numeric-input.ts` (`resolveOpeningStock`),
  * `supplier-opening-draft.ts`, `supplier-adjust-panel.tsx`, the settle panels'
- * amount guards and `amount-percentage-input.tsx`'s clamp; they are recorded as
- * follow-ups (#238 design), not silently covered.
+ * amount guards, `amount-percentage-input.tsx`'s clamp, `customCashError`
+ * (`invoice.tsx`), the stock unit-cost gate (`stock.tsx`) and the low-stock
+ * threshold default (`items.tsx`); they are recorded as follow-ups (#238 design,
+ * #244), not silently covered.
+ *
+ * This list is HAND-MAINTAINED and has already been found incomplete once (three
+ * sites, review round 1 on #243). Treat it as a record of what has been
+ * ENUMERATED, not as proof the class is closed — the durable fix is a ratchet
+ * test that fails when a new raw-`.trim()` blankness gate appears, tracked in
+ * #244. Until then, a new numeric-draft reader has to be classified by hand.
  */
 export function draftBlank(draft: string): boolean {
   return normalizeArabicIndicDigits(draft).trim() === "";

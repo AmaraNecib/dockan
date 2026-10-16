@@ -187,10 +187,19 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   await page.goto("/expenses");
   await selectExpenseCategory(page, "كراء المحل");
   await page.getByTestId("expense-amount").fill(String(rentAmount));
-  await page.getByTestId("expense-save").click();
+  // await each write's own acknowledgement, never a bare click. The save
+  // button is disabled while its write is pending and the success handler
+  // CLEARS the amount field; a bare second click can therefore auto-wait on
+  // the button, land after the form was emptied, be refused client-side and
+  // send nothing — CI saw the withdrawal missing from the report (#96 round 3).
+  await actAndAck(page, "expensesCreate", async () => {
+    await page.getByTestId("expense-save").click();
+  });
   await selectExpenseCategory(page, "سحوبات المالك");
   await page.getByTestId("expense-amount").fill(String(withdrawalAmount));
-  await page.getByTestId("expense-save").click();
+  await actAndAck(page, "expensesCreate", async () => {
+    await page.getByTestId("expense-save").click();
+  });
   await page.goto("/reports");
   await expect.poll(async () => readAbs("report-operating")).toBe(baselineOperatingAbs + rentAmount);
   await expect.poll(async () => readAbs("report-withdrawals")).toBe(baselineWithdrawalsAbs + withdrawalAmount);

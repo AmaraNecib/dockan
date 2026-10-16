@@ -6,9 +6,10 @@
   stock/avg-cost, totals, debt direction). The diff changes the guard itself, so
   it can violate the same failure modes the guard exists to prevent. Tier follows
   the failure mode, not the diff size (`docs/engineering-workflow.md`).
-- Base for the reviewed delta: `5fbe0f0` (= `origin/fix-244-blankness-ratchet`,
-  the PR #246 head, which is `HEAD`). Merge-base with `origin/develop`:
-  `746ff933753a0b409e96365080c91e3ef6efb5b6` (#238 squash for #243).
+- Round-2 delta base: `5fbe0f0` (= `origin/fix-244-blankness-ratchet`, the PR #246
+  head — the round-1 commit). This lane's commits sit on top of it. Merge-base
+  with `origin/develop`: `746ff933753a0b409e96365080c91e3ef6efb5b6` (#238 squash for
+  #243).
 - Authority: commit only. This lane does not push, open a PR, merge or write
   `.agents/wisdom/`.
 - Specification: the Greptile comment on PR #246 (four findings) — read in full
@@ -109,14 +110,20 @@ gate (`if (!d.trim())`), a call-expression receiver (`f().trim()`), and a numeri
 gate in a file that does not import a reader are not caught. Added in round 2:
 
 - `var` hoisting / function-scope visibility is not modelled — only brace-scope
-  `const`/`let` chains. A declaration used before its block opens (TDZ-illegal
-  anyway) is the boundary.
+  `const`/`let` chains, so a comparison of a `var`, parameter or `catch` binding
+  can be attributed to a same-named visible declaration (false positive).
 - Regex literals are not parsed, so an unbalanced `{`/`}` inside a regex literal
   can shift the scope chain (round 1 already declined regex-literal parsing).
   Balanced braces (the normal case, e.g. `/\d{1,3}/`) are neutral.
-- A `.trim()` on the result of a call (`parseAmount(x).trim()`) is still outside
-  the matched forms, so a declaration whose right-hand side is a call followed by
+- A `.trim()` on the result of a call (`parseAmount(x).trim()`) is outside the
+  matched forms, so a declaration whose right-hand side is a call followed by
   `.trim()` is only seen through the call-chain text it contains.
+- A relational `.length` test (`d.trim().length > 0`, `>= 1`) is not matched; only
+  the equality/inequality against `0` is (both operand orders).
+- A string or template literal whose **text** looks like a gate is scanned as
+  code (false positive). Blanking string bodies was **rejected**: it would also
+  hide a real gate inside a template `${}` expression, which is the unsafe
+  direction for a ratchet. A false positive only forces a `CLASSIFIED` line.
 
 None of the four findings is in this ceiling; each of the four is fixed and
 pinned by a test that fails without the fix.
@@ -137,13 +144,81 @@ pinned by a test that fails without the fix.
 
 ## Implementation risks
 
-- **Scope model wrong → a gate silently drops out of the ratchet.** Mitigated by
-  asserting the production gate set stays at 33 raw gates + the classified
-  converted-absent set; a drop shows up as a red `keeps every gate marked raw`
-  assertion, not as silence.
+- **Scope model wrong → a gate silently drops out of the ratchet.** Two guards:
+  a red assertion when a `CLASSIFIED` signature's file leaves `numericReaderFiles()`,
+  and `.scratch/reviews/244/scope-shrink-proof.sh`, which narrows the surface and
+  shows the ratchet reddens (then restores exact bytes). The production set is
+  **32 raw gates + 14 converted-absent entries = 46 classified keys**, compared
+  gate-by-gate before and after the rewrite (`ADDED []` / `REMOVED []`).
 - **Whole-text matching creates a false positive** (a gate reported that is not
   one). The safe direction for a ratchet (forces classification), and the
   production scan is compared gate-by-gate before/after.
 - **`blankness-gates.ts` is itself a non-test source file** in `apps/web/src`; it
   does not import a reader, so it is outside the scanned scope and cannot
   self-report.
+
+## Beyond the four findings (closed in this round)
+
+Three more escapes of the same class were found by the round-2 review lenses and
+closed here, each with a failing-first fixture (3 red before, green after):
+
+- **Reversed `.length`** (`0 === draft.trim().length`) — an evasion: the reversed
+  inline `=== ""` form was matched but the reversed `.length` form was not, an
+  asymmetry of exactly the kind finding 4 names.
+- **A receiver name that merely contains a normaliser name** — the inline
+  normaliser guard used a substring match, so `draftBlankish.trim() === ""` was
+  silently skipped. The normaliser is now matched as a **call** and the inline
+  check is gone: an inline receiver is a member chain, so it can never be a call.
+- **A property read attributed to a local** (`other.trimmed === ""` reported
+  against `const trimmed = draft.trim()`) — a false positive; closed with a
+  `(?<![\w$.])` lookbehind on the two-step matchers.
+
+## Review round 2 — findings verified, then fixed or dismissed
+
+Seven read-only lenses at `ad884d1` (debate critic + defender, test-audit
+edge/coverage/quality, code-review standards + spec). Every finding was verified
+against the code before acting:
+
+- **Fixed:** the three extras above; the scope-coverage assertion
+  (`numericReaderFiles()` shrinking was invisible for `draftBlank`-only files,
+  which falsified this doc's own earlier mitigation claim); the gate count in this
+  doc (32 raw, not 33); the stale "`5fbe0f0` is `HEAD`" wording; the guard demo's
+  `git show HEAD:` lookup (it must pin `5fbe0f0`, or Case A is a false FAIL at any
+  later HEAD, since the fix is itself committed) and its Case C (the throwaway
+  repo now carries a real ratchet test, so the log shows a genuine `(fail)` on
+  every revert).
+- **Dismissed — false:** "the inline normaliser guard is dead code" (it is
+  reachable, and wrongly skipped substring-named receivers — fixed anyway), and
+  "a duplicate `CLASSIFIED` key silently drops a classification" (46 keys, 46
+  verdict lines; the 47th `verdict:` match was the interface field — the real
+  defect was only the doc's count).
+- **Dismissed — valid but out of round:** scanning a string/template literal's
+  text as code (false positive). Blanking string bodies would hide a real gate
+  inside a template `${}` expression, so it is stated in the ceiling instead.
+- **Honest note:** the guard demo earned its keep — it caught a stale loop index
+  in the fixed script's restore step (`cp -p "$BACKUP_DIR/$i" "$f"` while `$f`
+  came from a different loop), which would have restored every file from the last
+  backup. The script now iterates `"${!FILES[@]}"` and proves byte-exact restore.
+
+## Result
+
+One source commit plus an evidence commit. The scanner rewrite, the three extra
+closes and the ratchet fixtures are in the source commit; the logs named
+`<sha>-*` in `.scratch/reviews/244/` are the evidence at that SHA.
+
+## Evidence at this round's head SHA
+
+- `<sha>-ratchet-first-red.log` — the 8 new fixtures red on the round-1 scanner
+  (5 for the four findings, 3 for the extras).
+- `<sha>-ratchet-green.log` — 16/16, 32 production gates classified.
+- `<sha>-mutation-proof.{sh,log}` — 11 converted files reverted, each reddens the
+  ratchet, exact bytes restored (exit 0).
+- `<sha>-guard-demo.log` — finding 3: the unfixed script destroys a local edit,
+  the fixed script refuses and preserves it, and a clean run restores
+  byte-identical while reddening on every revert.
+- `<sha>-scope-shrink-proof.{sh,log}` — a narrowed scanned surface reddens, then
+  the scanner is restored byte-identical and green.
+- `<sha>-guard-phase1.log`, `<sha>-guard-phase2.log` — the named gate commands
+  and their exit codes.
+- `<sha>-{debate,test-audit,code-review}.md` — the seven lens reports, plus
+  `<sha>-review-context.md`, the shared brief they read.

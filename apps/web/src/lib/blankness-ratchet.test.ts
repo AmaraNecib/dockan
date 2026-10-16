@@ -132,11 +132,15 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     ]);
   });
 
-  it("the scanner ignores a normalised receiver and a comment (not a raw gate)", () => {
+  it("ignores gate text in a comment and does not match a call-expression receiver", () => {
     const synthetic = [
       '// if (draft.trim() === "") is discussed here',
       'export const blank = (draft: string) => normalizeArabicIndicDigits(draft).trim() === "";',
     ].join("\n");
+    // A call-expression receiver is not one of the matched shapes (a receiver is
+    // a member chain), so this is a stated ceiling rather than a matched-and-
+    // skipped case. `draftBlankish.trim() === ""` IS caught: see the fixture in
+    // the describe body.
     expect(findBlanknessGates(synthetic, "synthetic.ts")).toEqual([]);
   });
 
@@ -227,6 +231,41 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
       "}",
     ].join("\n");
     expect(findBlanknessGates(normalisedDeclaration, "synthetic.ts")).toEqual([]);
+  });
+
+  it("catches the reversed .length gate (#244 round 2, same class as finding 1)", () => {
+    expect(findBlanknessGates("const a = 0 === draft.trim().length;", "s.ts").map((gate) => gate.signature)).toEqual([
+      "s.ts::0 === draft.trim().length",
+    ]);
+  });
+
+  it("does not skip a raw gate whose receiver name merely contains a normaliser name", () => {
+    const synthetic = [
+      "export function f(draft: string) {",
+      "  const draftBlankish = draft.trim();",
+      '  if (draftBlankish.trim() === "") return null;',
+      "  return draftBlankish;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draftBlankish.trim() === ""',
+    ]);
+  });
+
+  it("does not attribute a property read to a visible raw declaration (#244 round 2, precision)", () => {
+    const synthetic = [
+      "export function f(draft: string, other: { trimmed: string }) {",
+      "  const trimmed = draft.trim();",
+      '  if (other.trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts")).toEqual([]);
+  });
+
+  it("names only files inside the scanned scope (a scope shrink reddens this)", () => {
+    const classifiedFiles = [...new Set([...CLASSIFIED.keys()].map((signature) => signature.split("::")[0]!))];
+    expect(classifiedFiles.filter((file) => !sources.includes(file))).toEqual([]);
   });
 
   it("scans the reversed, .length, parenthesised and optional-chained gate forms", () => {

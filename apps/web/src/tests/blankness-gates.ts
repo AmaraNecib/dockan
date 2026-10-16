@@ -18,20 +18,29 @@ import { fileURLToPath } from "node:url";
  *
  * Round 2 (#244): every matcher runs over the WHOLE comment-stripped source and
  * claims its match span, instead of walking line by line. A comparison split
- * across two lines is therefore still one gate, and an inline gate on a line no
- * longer hides a two-step gate beside it (`if (inline) continue` is gone). A
- * declaration is visible to a comparison only when the brace pairs enclosing the
- * declaration also enclose the comparison, so a normalised declaration in an
- * inner block cannot mask an outer raw check.
+ * across two lines is therefore still one gate, in either operand order and for
+ * `.length` too, and an inline gate on a line no longer hides a two-step gate
+ * beside it (`if (inline) continue` is gone). A declaration is visible to a
+ * comparison only when the brace pairs enclosing the declaration also enclose the
+ * comparison, so a normalised declaration in an inner block cannot mask an outer
+ * raw check, and a property read (`other.trimmed === ""`) is not attributed to a
+ * local `trimmed`. A two-step declaration counts as normalised only when its
+ * right-hand side CALLS the normaliser, so a receiver whose name merely contains
+ * `draftBlank` is still a raw gate.
  *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
- * a negation on a call-expression receiver (`f().trim()`), or in a file that
- * parses numerics without importing `amount-parse`/`numeric-input`, is NOT
- * caught. Scope visibility is brace-pair ancestry over `const`/`let` — `var`
- * hoisting is not modelled, and regex literals are not parsed, so an unbalanced
- * `{`/`}` inside one could shift a scope chain. Every gate of the matched forms
- * is caught; this comment is the honest boundary of that claim.
+ * a relational `.length` test (`d.trim().length > 0`), a receiver that is a CALL
+ * (`f().trim()`), or in a file that parses numerics without importing
+ * `amount-parse`/`numeric-input`, is NOT caught. A declaration bound by `var`, a
+ * parameter or a `catch` is not modelled, so a comparison of such a binding can be
+ * attributed to a same-named visible declaration (false positive). A string or
+ * template literal whose TEXT looks like a gate is scanned as code: blanking the
+ * body was rejected because it would also hide a real gate inside a template
+ * `${}` expression, which is the unsafe direction for a ratchet. Scope visibility
+ * is brace-pair ancestry and regex literals are not parsed, so an unbalanced
+ * `{`/`}` inside one could shift a chain. Every gate of the matched forms is
+ * caught; this comment is the honest boundary of that claim.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -45,6 +54,7 @@ const PAREN_FWD = new RegExp(
   "g",
 );
 const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\.length\s*(===|!==|==|!=)\s*0`, "g");
+const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\??\.trim\(\)\.length`, "g");
 /**
  * The start of a two-step declaration. The right-hand side is read separately so
  * it may cross a line break (`const trimmed =\n  draft.trim();`).
@@ -57,15 +67,19 @@ const DECL_TRIM = String.raw`\.trim\(\)`;
  */
 const STATEMENT_BREAK = /[;}]|\n\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
 const USE_FWD = new RegExp(
-  String.raw`\b([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(""|'')`,
+  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(""|'')`,
   "g",
 );
 const USE_REV = new RegExp(
   String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b`,
   "g",
 );
-/** A receiver already put through the one normaliser is not a RAW trim. */
-const NORMALISED = /normalizeArabicIndicDigits|draftBlank/;
+/**
+ * A declaration already put through the one normaliser is not a RAW trim. Matched
+ * as a CALL, so a variable that merely contains the name (`draftBlankish`) is
+ * still a raw gate.
+ */
+const NORMALISED = /\b(?:normalizeArabicIndicDigits|draftBlank)\s*\(/;
 
 export interface BlanknessGate {
   readonly file: string;
@@ -247,26 +261,27 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
   };
 
   // Inline forms first: they are the more specific match, and claiming their span
-  // stops a broader matcher reading a two-step gate out of their middle.
-  const claimInline = (regex: RegExp, receiverGroup: number, canonical: (match: RegExpExecArray) => string) => {
+  // stops a broader matcher reading a two-step gate out of their middle. A raw
+  // receiver is a member chain, so it can never be a normaliser CALL — the
+  // normaliser check belongs to a two-step declaration, not here.
+  const claimInline = (regex: RegExp, canonical: (match: RegExpExecArray) => string) => {
     for (const match of text.matchAll(regex)) {
       const start = match.index;
       const span = { start, end: start + match[0].length };
       if (overlaps(span)) continue;
       claimed.push(span);
-      if (NORMALISED.test(match[receiverGroup] ?? "")) continue;
       record(start, canonical(match));
     }
   };
 
-  claimInline(INLINE_FWD, 1, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
+  claimInline(INLINE_FWD, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
   claimInline(
     PAREN_FWD,
-    1,
     (match) => `(${collapse(match[1]!)} ?? "").trim() ${match[3]} ""`,
   );
-  claimInline(INLINE_REV, 3, (match) => `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
-  claimInline(INLINE_LEN, 1, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
+  claimInline(INLINE_REV, (match) => `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
+  claimInline(INLINE_LEN, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
+  claimInline(INLINE_LEN_REV, (match) => `0 ${match[1]} ${collapse(match[2]!)}.trim().length`);
 
   // Two-step: `const X = <expr>.trim(); … X === ""`, in either operand order.
   const claimTwoStep = (regex: RegExp, reversed: boolean) => {

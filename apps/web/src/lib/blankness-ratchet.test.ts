@@ -198,17 +198,56 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     ]);
   });
 
-  it("catches the two-step .length gate on a declared raw trim (#244 round 2)", () => {
-    const synthetic = [
+  it("catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2)", () => {
+    const forward = [
       "export function f(draft: string) {",
       "  const trimmed = draft.trim();",
       "  if (trimmed.length === 0) return null;",
       "  return trimmed;",
       "}",
     ].join("\n");
-    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+    expect(findBlanknessGates(forward, "synthetic.ts").map((gate) => gate.signature)).toEqual([
       "synthetic.ts::trimmed.length === 0 [draft.trim()]",
     ]);
+    const reversed = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      "  if (0 === trimmed.length) return null;",
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(reversed, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      "synthetic.ts::0 === trimmed.length [draft.trim()]",
+    ]);
+  });
+
+  it("catches the optional-chained .length forms (a `?.` before .length changes nothing)", () => {
+    const twoStep = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      "  if (trimmed?.length === 0) return null;",
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(twoStep, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      "synthetic.ts::trimmed.length === 0 [draft.trim()]",
+    ]);
+    // `?.trim()?.length` canonicalises to `.trim().length`
+    expect(findBlanknessGates("const a = draft?.trim()?.length === 0;", "s.ts").map((gate) => gate.signature)).toEqual([
+      "s.ts::draft.trim().length === 0",
+    ]);
+  });
+
+  it("scans the parenthesised nullish gate in both operand orders and with a non-literal fallback", () => {
+    expect(
+      findBlanknessGates('const a = (drafts[id] ?? "").trim() !== "";', "s.ts").map((gate) => gate.signature),
+    ).toEqual(['s.ts::(drafts[id] ?? "").trim() !== ""']);
+    expect(
+      findBlanknessGates('const a = "" !== (drafts[id] ?? "").trim();', "s.ts").map((gate) => gate.signature),
+    ).toEqual(['s.ts::"" !== (drafts[id] ?? "").trim()']);
+    expect(
+      findBlanknessGates('const a = (drafts[id] ?? fallback).trim() !== "";', "s.ts").map((gate) => gate.signature),
+    ).toEqual(['s.ts::(drafts[id] ?? fallback).trim() !== ""']);
   });
 
   it("does not attribute a reversed property read to a visible raw declaration (#244 round 2, precision)", () => {
@@ -342,8 +381,7 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     ]);
     expect(
       findBlanknessGates('const a = (drafts[line.id] ?? "").trim() !== "";', "s.ts").map((gate) => gate.signature),
-    ).toEqual(['s.ts::(drafts[line.id] ?? "").trim() !== ""']);
-    // `?.trim()` is detected and canonicalised to the plain `.trim()` signature
+    ).toEqual(['s.ts::(drafts[line.id] ?? "").trim() !== ""']);    // `?.trim()` is detected and canonicalised to the plain `.trim()` signature
     expect(findBlanknessGates('const a = draft?.trim() !== "";', "s.ts").map((gate) => gate.signature)).toEqual([
       's.ts::draft.trim() !== ""',
     ]);

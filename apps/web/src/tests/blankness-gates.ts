@@ -34,15 +34,20 @@ import { fileURLToPath } from "node:url";
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
  * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
- * receiver that is a CALL (`f().trim() === ""`; the two-step form
+ * receiver that is NOT a plain member chain (`f().trim() === ""`,
+ * `(draft as string).trim()`, `(draft).trim()`, `draft!.trim()`,
+ * `drafts[\n id\n].trim()`, `x.trimStart() === ""`; the two-step form
  * `const t = f().trim()` IS caught), a blank operand that is not a `""`/`''`
- * literal (an empty template), a value assigned after a bare `let t; t = d.trim()`, or
- * a gate in a file that parses numerics without importing
- * `amount-parse`/`numeric-input`, is NOT caught. A declaration bound by `var`, a
- * parameter or a `catch` is not modelled, so a comparison of such a binding can be
- * attributed to a same-named visible declaration (false positive), and an
- * ASI-ambiguous `const t = foo` followed by `bar.trim();` attributes that `.trim()`
- * to `t` (false positive with invented receiver text). A string or
+ * literal (an empty template), a value assigned after a bare `let t; t = d.trim()`
+ * or aliased (`const u = t`), a second declarator on one line
+ * (`const t = d.trim(), u = e.trim()`), a destructuring binding, a gate in a file
+ * that parses numerics without importing `amount-parse`/`numeric-input` — none of
+ * those is caught. A declaration bound by `var` is not seen at all (its gate is
+ * missed), and a `var`, parameter or `catch` binding can be attributed to a
+ * same-named visible declaration (false positive); an ASI-ambiguous
+ * `const t = foo` followed by `bar.trim();` attributes that `.trim()` to `t`
+ * (false positive with invented receiver text), and so does an arrow/callback
+ * body on the right-hand side (`const t = xs.map((x) => x.trim())`). A string or
  * template literal whose TEXT looks like a gate is scanned as code: blanking the
  * body was rejected because it would also hide a real gate inside a template
  * `${}` expression, which is the unsafe direction for a ratchet. Regex literals
@@ -59,11 +64,15 @@ const CHAIN = String.raw`[A-Za-z_$][\w$]*(?:\s*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]+\
 const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
 const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)`, "g");
 const PAREN_FWD = new RegExp(
-  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(""|'')\s*\)\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
+  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(${CHAIN}|""|'')\s*\)\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
   "g",
 );
-const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*\.length\s*(===|!==|==|!=)\s*0`, "g");
-const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)\s*\.length`, "g");
+const PAREN_REV = new RegExp(
+  String.raw`(""|'')\s*(===|!==|==|!=)\s*\(\s*(${CHAIN})\s*\?\?\s*(${CHAIN}|""|'')\s*\)\s*\??\.trim\(\)`,
+  "g",
+);
+const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*\??\.length\s*(===|!==|==|!=)\s*0`, "g");
+const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)\s*\??\.length`, "g");
 /**
  * The start of a two-step declaration. The right-hand side is read separately so
  * it may cross a line break (`const trimmed =\n  draft.trim();`).
@@ -101,11 +110,11 @@ function breaksStatement(text: string, from: number, to: number): boolean {
  * catching ordinary numeric comparisons against `0`.
  */
 const USE_LEN_FWD = new RegExp(
-  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*\.length\s*(===|!==|==|!=)\s*0`,
+  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*\??\.length\s*(===|!==|==|!=)\s*0`,
   "g",
 );
 const USE_LEN_REV = new RegExp(
-  String.raw`0\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\s*\.length`,
+  String.raw`0\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\s*\??\.length`,
   "g",
 );
 const USE_FWD = new RegExp(
@@ -320,7 +329,11 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
   claimInline(INLINE_FWD, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
   claimInline(
     PAREN_FWD,
-    (match) => `(${collapse(match[1]!)} ?? "").trim() ${match[3]} ""`,
+    (match) => `(${collapse(match[1]!)} ?? ${collapse(match[2]!)}).trim() ${match[3]} ""`,
+  );
+  claimInline(
+    PAREN_REV,
+    (match) => `"" ${match[2]} (${collapse(match[3]!)} ?? ${collapse(match[4]!)}).trim()`,
   );
   claimInline(INLINE_REV, (match) => `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
   claimInline(INLINE_LEN, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);

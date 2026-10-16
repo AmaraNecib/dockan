@@ -43,6 +43,14 @@
     "apps/web/src/components/catalog/**",
     "apps/web/src/components/parties/**",
 
+    "$comment: pages that render an already-critical shared component tree (components/catalog/** by items/sale/purchase, components/parties/** by parties/party-detail/sale/purchase), plus stock.tsx which items.tsx imports as StockForm. Those components are driven by specs from more than one feature rule, so the page's own rule kept under-selecting; round 3 widened the three known rows first and then promoted the page so an unknown reach costs a full run, never coverage (#231). A promoted page's specs stay reachable through its unit-test sibling in the feature rule.",
+    "apps/web/src/pages/stock.tsx",
+    "apps/web/src/pages/items.tsx",
+    "apps/web/src/pages/sale.tsx",
+    "apps/web/src/pages/purchase.tsx",
+    "apps/web/src/pages/parties.tsx",
+    "apps/web/src/pages/party-detail.tsx",
+
     "$comment: the API is one router over one store; a changed line can move any screen, so no per-module rule is claimed",
     "apps/api/src/app.ts",
     "apps/api/src/main.ts",
@@ -82,12 +90,10 @@
 
   "features": [
     {
-      "$comment": "catalog + stock: item, category and stock screens",
+      "$comment": "catalog + stock: item, category and stock screens; stock.tsx and items.tsx are always_full, so the remaining match selects their specs for the unit-test files and the still-mapped categories.tsx (#231)",
       "match": [
-        "apps/web/src/pages/items.tsx",
         "apps/web/src/pages/items.test.tsx",
         "apps/web/src/pages/categories.tsx",
-        "apps/web/src/pages/stock.tsx",
         "apps/web/src/pages/stock.test.tsx"
       ],
       "specs": [
@@ -100,19 +106,21 @@
       ]
     },
     {
-      "$comment": "sale checkout, and the write-window/learnability invariants that exercise it",
-      "match": ["apps/web/src/pages/sale.tsx", "apps/web/src/pages/sale.test.tsx"],
+      "$comment": "sale checkout, and the write-window/learnability invariants that exercise it. sale.tsx is always_full (it renders the shared catalog + parties pickers); items-flow.spec.ts drives the sale zero-price quick-add and customer-name-variants.spec.ts the party-picker warning, so both are named here for the unit-test sibling and in case the page is ever un-promoted (#231)",
+      "match": ["apps/web/src/pages/sale.test.tsx"],
       "specs": [
         "sale-checkout.spec.ts",
         "no-write-window.spec.ts",
         "pagination.spec.ts",
         "completion-screens.spec.ts",
-        "learnability.spec.ts"
+        "learnability.spec.ts",
+        "items-flow.spec.ts",
+        "customer-name-variants.spec.ts"
       ]
     },
     {
-      "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231)",
-      "match": ["apps/web/src/pages/purchase.tsx", "apps/web/src/pages/purchase.test.tsx"],
+      "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231). purchase.tsx is always_full (shared pickers + InvoiceHeader); the rule keeps the specs reachable for the unit-test sibling",
+      "match": ["apps/web/src/pages/purchase.test.tsx"],
       "specs": ["purchase-intake.spec.ts", "learnability.spec.ts"]
     },
     {
@@ -154,11 +162,9 @@
       "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts"]
     },
     {
-      "$comment": "customers + suppliers list and detail pages; phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride the same page (#209 drift)",
+      "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift)",
       "match": [
-        "apps/web/src/pages/parties.tsx",
         "apps/web/src/pages/parties.test.tsx",
-        "apps/web/src/pages/party-detail.tsx",
         "apps/web/src/pages/party-detail.test.tsx"
       ],
       "specs": [
@@ -182,8 +188,9 @@
       "specs": ["supplier-adjustment.spec.ts", "supplier-account.spec.ts"]
     },
     {
+      "$comment": "supplier-adjustment.spec.ts drives the supplier-credit label and total on /debts (lines 162-167), so a debts.tsx-only diff must run it (#231)",
       "match": ["apps/web/src/pages/debts.tsx", "apps/web/src/pages/debts.test.tsx"],
-      "specs": ["debts.spec.ts"]
+      "specs": ["debts.spec.ts", "supplier-adjustment.spec.ts"]
     },
     {
       "$comment": "profit report and the expense history that feeds it",
@@ -196,8 +203,9 @@
       "specs": ["expense-reports.spec.ts", "completion-screens.spec.ts"]
     },
     {
+      "$comment": "backups.spec.ts drives the activity table's backup-filename render (lines 39-42), so an activity.tsx-only diff must run it (#231)",
       "match": ["apps/web/src/pages/activity.tsx", "apps/web/src/pages/activity.test.tsx"],
-      "specs": ["activity.spec.ts"]
+      "specs": ["activity.spec.ts", "backups.spec.ts"]
     },
     {
       "match": ["apps/web/src/pages/backups.tsx"],

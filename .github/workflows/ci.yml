@@ -209,10 +209,12 @@ jobs:
       - name: Tests
         run: bun run test
 
-      # The production bundle used to be built only by the `rust` job. Now that
-      # rust runs for crate-affecting paths alone, this cross-platform build keeps the
-      # gate: it is the only PR-time `vite build` (the e2e job runs `vite dev`,
-      # and `turbo test` builds workspace dependencies, not the web app).
+      # The production bundle adds a PR-time `vite build` alongside the one the
+      # `rust` job runs for crate-affecting diffs. It is an additional build,
+      # not a moved one: `rust` still runs its own, because build.rs hard-fails
+      # without apps/web/dist. This step keeps the production build on web-only
+      # diffs that skip rust (the e2e job runs `vite dev`, and `turbo test`
+      # builds workspace dependencies, not the web app).
       - name: Build web frontend
         run: bun run --filter @dokan/web build
 

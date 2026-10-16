@@ -50,10 +50,14 @@ merged tree, and it is the backstop that makes narrowing a PR safe.
   counts too. It stays on `windows-latest`: the ACL/`capabilities` guard is a
   Windows-app guard, and `desktop-installer.yml` runs only on a tag, so it
   cannot replace a PR gate.
-- The production `vite build` that used to ride along in the `rust` job moved
-  into `checks`, so gating rust off web-only diffs does not also remove the only
-  PR-time production build (the `e2e` job runs `vite dev`, and `turbo test`
-  builds workspace dependencies, not the web app).
+- `checks` runs the production `vite build` as an **additional always-running**
+  step; it was not moved out of `rust`. The `rust` job still runs the same build
+  at its own step, because `build.rs` hard-fails without `apps/web/dist` and
+  Cargo needs it before it starts. Deleting the `rust` build because "the build
+  is in `checks` now" would break the crate. The added `checks` build keeps a
+  PR-time production build on web-only diffs that skip `rust` (the `e2e` job
+  runs `vite dev`, and `turbo test` builds workspace dependencies, not the web
+  app).
 - `workflow_dispatch` takes no input and runs every suite, including `rust`.
   It is the escape hatch when the selector is distrusted; it deliberately has
   no scope input, so there is no hand-typed override to record.
@@ -92,9 +96,30 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   there can change how every spec boots (#231). Its sibling `vault-settings.tsx`
   keeps the narrow `vault.spec.ts` rule.
 - The invoice rule carries `returns.spec.ts`, because the invoice page renders
-  the new-return `ReturnsPanel` that spec drives, and the purchase rule carries
-  `learnability.spec.ts`, whose short-window cases pin the purchase form and its
-  pinned bar (#231).
+  the new-return `ReturnsPanel` that spec drives; the purchase rule carries
+  `learnability.spec.ts` for the unit-test sibling, while `purchase.tsx` itself
+  is critical (see the promotion bullet below) (#231).
+- `stock.tsx`, `items.tsx`, `sale.tsx`, `purchase.tsx`, `parties.tsx` and
+  `party-detail.tsx` are **critical**, not feature rules. Five of them render a
+  component tree already marked critical (`components/catalog/**` or
+  `components/parties/**`), which more than one page shares and whose specs span
+  several feature rules; `stock.tsx` is imported by `items.tsx` as `StockForm`,
+  so it is a component for another page. The page is another entry to the same
+  surface, so its own rule kept under-selecting: hand-enumeration was wrong for
+  three rounds running, so an unknown reach now costs a full run instead of
+  coverage. The cost is real — those six pages always run the full suite — and is
+  accepted. Pages examined and left as feature rules: `invoice.tsx` (its rule
+  already carries `returns.spec.ts` and `purchase-intake.spec.ts` for the shared
+  `ReturnsPanel` and `InvoiceHeader`), and `categories.tsx`, `invoices.tsx`,
+  `receipt-print.tsx`, `return-print.tsx` and `settings.tsx`, whose components
+  are rendered by that page alone (#231).
+- The `debts.tsx` rule carries `supplier-adjustment.spec.ts` (the supplier-credit
+  label and total on /debts) and the `activity.tsx` rule carries
+  `backups.spec.ts` (the activity table's backup-filename render). The `sale.tsx`
+  rule carries `items-flow.spec.ts` and `customer-name-variants.spec.ts` for the
+  zero-price quick-add and the party-picker warning; `sale.tsx` is itself
+  critical (see above), so the rule documents its unit-test reach and keeps the
+  list if the page is ever un-promoted (#231).
 - `phone-identity.spec.ts` and `rpc-helpers.spec.ts` (#209) ride the parties
   rule: both drive the customers page (`customersList`, and `actAndAck` over
   `customersCreate`).

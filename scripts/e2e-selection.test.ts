@@ -156,16 +156,21 @@ describe("e2e-selection behaviour", () => {
   });
 
   test("a feature diff selects exactly its mapped specs", () => {
-    const scope = selectSpecs(["apps/web/src/pages/debts.tsx"], map);
+    const scope = selectSpecs(["apps/web/src/pages/backups.tsx"], map);
     expect(scope.mode).toBe("affected");
-    expect(scope.specs).toEqual(["debts.spec.ts"]);
+    expect(scope.specs).toEqual(["backups.spec.ts"]);
   });
 
   test("two features union their specs without duplicates", () => {
     const scope = selectSpecs(["apps/web/src/pages/debts.tsx", "apps/web/src/pages/activity.tsx"], map);
-    expect(scope.specs).toEqual(["activity.spec.ts", "debts.spec.ts"]);
+    expect(scope.specs).toEqual([
+      "activity.spec.ts",
+      "backups.spec.ts",
+      "debts.spec.ts",
+      "supplier-adjustment.spec.ts",
+    ]);
     // pagination.spec.ts lives in several rules; a multi-rule diff must not repeat it.
-    const shared = selectSpecs(["apps/web/src/pages/items.tsx", "apps/web/src/pages/sale.tsx"], map);
+    const shared = selectSpecs(["apps/web/src/pages/categories.tsx", "apps/web/src/pages/invoices.tsx"], map);
     expect(shared.specs.filter((s) => s === "pagination.spec.ts")).toHaveLength(1);
   });
 
@@ -197,12 +202,96 @@ describe("e2e-selection behaviour", () => {
     expect(scope.specs).toContain("returns.spec.ts");
   });
 
-  test("a purchase page edit runs the short-window learnability checks (#231)", () => {
+  test("a purchase page edit is critical and its rule keeps the learnability checks (#231)", () => {
     // learnability.spec.ts pins the purchase form and its pinned bar at the two
-    // short window heights; a purchase.tsx edit must not skip them.
-    const scope = selectSpecs(["apps/web/src/pages/purchase.tsx"], map);
+    // short window heights. purchase.tsx is now always_full (it renders the
+    // shared catalog + parties pickers and InvoiceHeader), so the page forces
+    // the whole suite while the rule keeps the list for the unit-test sibling.
+    const page = selectSpecs(["apps/web/src/pages/purchase.tsx"], map);
+    expect(page.mode).toBe("full");
+    expect(page.reason).toContain("critical path");
+    const rule = selectSpecs(["apps/web/src/pages/purchase.test.tsx"], map);
+    expect(rule.mode).toBe("affected");
+    expect(rule.specs).toEqual(["learnability.spec.ts", "purchase-intake.spec.ts"]);
+  });
+
+  test("a debts page edit runs the supplier-credit checks (#231)", () => {
+    // supplier-adjustment.spec.ts navigates to /debts and pins the supplier
+    // credit label and total (lines 162-167). Dropping it let a debts.tsx edit
+    // pass PR checks without the browser covering the group totals. Assert the
+    // exact list so a later over-widening is visible too.
+    const scope = selectSpecs(["apps/web/src/pages/debts.tsx"], map);
     expect(scope.mode).toBe("affected");
-    expect(scope.specs).toContain("learnability.spec.ts");
+    expect(scope.specs).toEqual(["debts.spec.ts", "supplier-adjustment.spec.ts"]);
+  });
+
+  test("an activity page edit runs the backup-filename check (#231)", () => {
+    // backups.spec.ts navigates to /activity and pins the activity table's
+    // backup-filename render (lines 39-42).
+    const scope = selectSpecs(["apps/web/src/pages/activity.tsx"], map);
+    expect(scope.mode).toBe("affected");
+    expect(scope.specs).toEqual(["activity.spec.ts", "backups.spec.ts"]);
+  });
+
+  test("a sale page edit runs the quick-add and party-picker checks (#231)", () => {
+    // items-flow.spec.ts drives the zero-price sale quick-add and
+    // customer-name-variants.spec.ts the party-picker warning. sale.tsx renders
+    // the shared catalog + parties pickers, so it is always_full and the page
+    // edit reaches both through the full suite; the rule keeps them listed for
+    // the unit-test sibling.
+    const page = selectSpecs(["apps/web/src/pages/sale.tsx"], map);
+    expect(page.mode).toBe("full");
+    expect(page.reason).toContain("critical path");
+    const rule = selectSpecs(["apps/web/src/pages/sale.test.tsx"], map);
+    expect(rule.mode).toBe("affected");
+    expect(rule.specs).toEqual([
+      "completion-screens.spec.ts",
+      "customer-name-variants.spec.ts",
+      "items-flow.spec.ts",
+      "learnability.spec.ts",
+      "no-write-window.spec.ts",
+      "pagination.spec.ts",
+      "sale-checkout.spec.ts",
+    ]);
+  });
+
+  test("pages that render a critical shared component tree are critical, not feature rules (#231)", () => {
+    // components/catalog/** and components/parties/** are critical because more
+    // than one page renders them, and their specs span several feature rules.
+    // A page that renders one of those trees is another entry to the same
+    // surface, so its own rule under-selects; stock.tsx is imported by items.tsx
+    // as StockForm. Round 3 promotes the page instead. Assert the reason too:
+    // `full` is also what an unmapped path produces.
+    const pages = [
+      "apps/web/src/pages/stock.tsx",
+      "apps/web/src/pages/items.tsx",
+      "apps/web/src/pages/sale.tsx",
+      "apps/web/src/pages/purchase.tsx",
+      "apps/web/src/pages/parties.tsx",
+      "apps/web/src/pages/party-detail.tsx",
+    ];
+    const notFull = pages.filter((page) => selectSpecs([page], map).mode !== "full");
+    expect(notFull).toEqual([]);
+    const uncritical = pages.filter(
+      (page) => !selectSpecs([page], map).reason.includes("critical path"),
+    );
+    expect(uncritical).toEqual([]);
+  });
+
+  test("every feature rule has a live path (none is fully shadowed by always_full)", () => {
+    // The promotions move a page out of its feature rule but leave the specs to
+    // the page's unit-test sibling. If a later change promoted every path a rule
+    // matches, that rule would be dead and the specs would silently drop to the
+    // full suite only. Assert each rule still has one tracked path whose
+    // selection is not `full`. (Rule-vs-rule shadowing is by design: the first
+    // matching feature rule wins.)
+    for (const feature of map.features) {
+      const fires = feature.match.some((pattern) => {
+        const re = globToRegExp(pattern);
+        return tracked.some((f) => re.test(f) && selectSpecs([f], map).mode !== "full");
+      });
+      expect({ match: feature.match, fires }).toMatchObject({ fires: true });
+    }
   });
 
   test("the vault gate is critical: shared startup, not a vault-only rule (#231)", () => {
@@ -221,7 +310,8 @@ describe("e2e-selection behaviour", () => {
     // PR #209 added phone-identity.spec.ts and rpc-helpers.spec.ts while this
     // branch was open; the drift guard fails until they are mapped. Both drive
     // the customers page (party phone identity, actAndAck over customersCreate).
-    const scope = selectSpecs(["apps/web/src/pages/parties.tsx"], map);
+    // parties.tsx is always_full now, so the rule is reached via its test sibling.
+    const scope = selectSpecs(["apps/web/src/pages/parties.test.tsx"], map);
     expect(scope.specs).toContain("phone-identity.spec.ts");
     expect(scope.specs).toContain("rpc-helpers.spec.ts");
   });
@@ -262,11 +352,11 @@ describe("e2e-selection CLI", () => {
       return execFileSync(process.execPath, [CLI, changed], { cwd: ROOT, encoding: "utf8" });
     };
     try {
-      const affected = run("apps/web/src/pages/debts.tsx\n");
+      const affected = run("apps/web/src/pages/backups.tsx\n");
       expect(affected).toContain("mode=affected\n");
       // ci.yml word-splits this line into Playwright positional filters, so the
       // tests/e2e/ prefix and the space join are part of the contract.
-      expect(affected).toContain("specs=tests/e2e/debts.spec.ts\n");
+      expect(affected).toContain("specs=tests/e2e/backups.spec.ts\n");
       expect(affected).toMatch(/^reason=.+$/mu);
       // full and skip both emit an empty specs line, never a stale one
       expect(run("apps/api/src/rpc/router.ts\n")).toContain("mode=full\nspecs=\n");

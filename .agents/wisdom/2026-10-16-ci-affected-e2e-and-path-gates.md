@@ -108,3 +108,48 @@ glob look maintained. Plain `git ls-files` would fail the guard pre-commit.
 
 **Always**: a checked-in map needs a drift guard that runs in the cheap job, and
 the guard's file listing must match the phase it runs in (pre-commit vs CI).
+
+## A page that hosts a shared panel is not safe with a hand-written spec list
+Three Greptile rounds in a row found the same class of miss: the map named the
+specs a page's *own* rule reached and missed the specs mapped to other features
+that drive a shared surface *through* that page. Round 1: `invoice.tsx` renders
+`ReturnsPanel`, which `returns.spec.ts` drives, and `purchase.tsx` hosts the form
+`learnability.spec.ts` pins. Round 2: `debts.tsx` hosts the supplier-credit totals
+`supplier-adjustment.spec.ts` asserts, `activity.tsx` hosts the backup-filename
+render `backups.spec.ts` pins, and `sale.tsx` hosts the item picker
+`items-flow.spec.ts` and the party picker `customer-name-variants.spec.ts` drive.
+Each round patched the named rows and the next round found more.
+
+**Always**: do not widen one row at a time; promote the page. A page becomes
+`always_full` when it is imported by another page, or renders a component tree
+already marked critical (`components/catalog/**`, `components/parties/**`) that
+another feature's spec drives. #231 promoted `stock`, `items`, `sale`, `purchase`,
+`parties` and `party-detail`. Recorded cost: those pages always run the full
+suite. Accepted, because the gate's invariant is that a miss costs minutes, never
+coverage.
+
+## Widen first, then promote — and keep the widened rule reachable
+When a policy supersedes a hand fix, do both: widen the known rows for the
+record, then promote. The trap is leaving the widened rule dead after a
+promotion. The round-3 map keeps the rule for the page's unit-test sibling, and
+the test asserts both the page (`full`) and the rule (the exact spec list). The
+selector CLI output for each row was captured before (`b7c0bd9`) and after,
+because "the auditor could see them fail" is what makes a regression case worth
+having.
+
+**Always**: when a policy supersedes a hand fix, keep the hand fix reachable and
+mutation-visible, and capture the selector's before/after for the rows the brief
+names. Do not use `toContain` on a list whose whole point is that it must not
+silently change — pin the exact list.
+
+## "Additional build", not "moved build": Cargo still needs `apps/web/dist`
+`docs/ci.md` said the production `vite build` was "moved into `checks`". It was
+not: `rust` runs the same build at its own step because `build.rs` hard-fails
+without `apps/web/dist`, and Cargo needs it before it starts. The misleading
+wording invites a cleanup that deletes a build the crate requires. A second copy
+of the same claim lived in the `ci.yml` comment and a third in
+`ci-workflow.test.ts`.
+
+**Always**: when a job gains a build another job also needs, say "additional" and
+name the consumer that still requires it; correct every copy (docs, source
+comment, guard test), not only the doc.

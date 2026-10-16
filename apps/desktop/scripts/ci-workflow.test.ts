@@ -265,9 +265,11 @@ describe("PR CI workflow", () => {
   });
 
   it("keeps the production web build in checks", () => {
-    // #226 gates the rust job on crate-affecting paths. The rust job used to carry the
-    // only PR-time `vite build`; that gate moves to `checks`, and this pins it
-    // so a later cleanup cannot drop the production build entirely.
+    // #226 gates the rust job on crate-affecting paths. `checks` runs an
+    // additional PR-time `vite build`; `rust` still runs its own for
+    // crate-affecting diffs (build.rs needs apps/web/dist). This pins the
+    // checks build so a later cleanup cannot drop the production build from
+    // web-only diffs.
     const checks = parseSteps(WORKFLOW_SOURCE, "checks");
     expect(stepNamed(checks, "Build web frontend").run).toBe(
       "bun run --filter @dokan/web build",

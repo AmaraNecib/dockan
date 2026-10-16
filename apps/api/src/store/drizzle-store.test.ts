@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, setHeavyDefaultTimeout } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,10 @@ import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
 import { createDrizzleStore, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
+
+// The whole file is store-seam work against a real SQLite database, including
+// legacy-database fixtures in individual tests; every test takes the budget.
+setHeavyDefaultTimeout();
 
 /**
  * Store-seam tests (spec: Testing Decisions — seam 2).
@@ -24,7 +29,7 @@ beforeAll(async () => {
     );
   store = createDrizzleStore(conn);
   await store.setup();
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();

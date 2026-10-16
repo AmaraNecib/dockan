@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,14 +22,10 @@ import { localDate } from "./logger";
 /**
  * Ticket 13 unit seams: naming policy, once-per-day idempotency, and the
  * guarantee that a copied file opens standalone with the committed data.
+ *
+ * Tests that copy or rebuild a real database take the shared `itHeavy` budget
+ * (#89, #91); the instant naming tests keep Bun's strict default.
  */
-
-/**
- * Copying or rebuilding a real database can exceed Bun's 5s default on a cold,
- * disk-contended run. Only those tests get the longer budget; the instant
- * naming tests keep the strict default.
- */
-const DB_COPY_TIMEOUT_MS = 60_000;
 
 let root: string;
 let conn: Connection;
@@ -70,11 +67,6 @@ function freshDataDir(): string {
   return created;
 }
 
-/** `it` with the longer budget that real database copies need. */
-function itCopyingDb(name: string, fn: () => Promise<void>): void {
-  it(name, fn, DB_COPY_TIMEOUT_MS);
-}
-
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-backups-live-"));
   const config = createAppConfig({
@@ -84,7 +76,7 @@ beforeAll(async () => {
   conn = openConnection(config);
   store = createDrizzleStore(conn);
   await store.setup();
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();
@@ -119,7 +111,7 @@ describe("backup file naming", () => {
 });
 
 describe("manual export copy", () => {
-  itCopyingDb("writes a file that opens standalone with the committed rows", async () => {
+  itHeavy("writes a file that opens standalone with the committed rows", async () => {
     const dir = freshDataDir();
     await store.createCategory({ name: "تصنيف النسخ" });
     const result = await createBackup({ store, dataDir: dir });
@@ -141,7 +133,7 @@ describe("manual export copy", () => {
 });
 
 describe("daily startup backup", () => {
-  itCopyingDb("creates today's file once; a second call on the same day is a no-op", async () => {
+  itHeavy("creates today's file once; a second call on the same day is a no-op", async () => {
     const dir = freshDataDir();
     // far-future fixture keeps the pinned day clear of the real clock
     const today = "2035-06-01";
@@ -170,7 +162,7 @@ describe("daily startup backup", () => {
     }
   });
 
-  itCopyingDb("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
+  itHeavy("rebuilds today's file when a truncated copy is on disk (review fix)", async () => {
     const dir = freshDataDir();
     const day = "2035-06-02";
     const dest = backupFilePath(dir, day);
@@ -194,7 +186,7 @@ describe("daily startup backup", () => {
     }
   });
 
-  itCopyingDb("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
+  itHeavy("rebuilds a header-valid file whose tail pages were truncated (greptile P1)", async () => {
     const dir = freshDataDir();
     const day = "2035-06-03";
 
@@ -222,7 +214,7 @@ describe("daily startup backup", () => {
     }
   });
 
-  itCopyingDb("survives two concurrent exports for the same day (greptile race)", async () => {
+  itHeavy("survives two concurrent exports for the same day (greptile race)", async () => {
     const dir = freshDataDir();
     const results = await Promise.all([
       createBackup({ store, dataDir: dir }),
@@ -244,7 +236,7 @@ describe("daily startup backup", () => {
     expect(files.filter((f) => f.includes(".partial"))).toEqual([]);
   });
 
-  it("never leaves a .partial file behind after a failed copy", async () => {
+  itHeavy("never leaves a .partial file behind after a failed copy", async () => {
     const dir = freshDataDir();
     // production pre-creates <dataDir>/backups (main.ts); the failing store
     // throws before its own mkdir, so the dir must exist for the assertion
@@ -264,7 +256,7 @@ describe("daily startup backup", () => {
     expect(fs.existsSync(backupFilePath(dir, day))).toBe(false);
   });
 
-  itCopyingDb("keeps one file per distinct day", async () => {
+  itHeavy("keeps one file per distinct day", async () => {
     const dir = freshDataDir();
     await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-06" });
     await ensureDailyBackup({ store, dataDir: dir, today: "2035-06-07" });

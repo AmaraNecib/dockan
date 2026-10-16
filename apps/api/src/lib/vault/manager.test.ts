@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { itHeavy } from "../../test-support/heavy";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
@@ -42,7 +43,7 @@ async function createVault(vault: VaultManager): Promise<VaultSession> {
 }
 
 describe("VaultManager", () => {
-  it("reports unconfigured, then locked, then unlocked", async () => {
+  itHeavy("reports unconfigured, then locked, then unlocked", async () => {
     const vault = manager();
     expect(vault.status().state).toBe("unconfigured");
     await vault.prepareSetup("correct horse");
@@ -54,7 +55,7 @@ describe("VaultManager", () => {
     expect(manager().status().state).toBe("locked");
   });
 
-  it("writes the header and the initial recovery key through the commit", async () => {
+  itHeavy("writes the header and the initial recovery key through the commit", async () => {
     const vault = manager();
     const prepared = await vault.prepareSetup("correct horse");
     expect(prepared.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
@@ -64,7 +65,7 @@ describe("VaultManager", () => {
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
 
-  it("unlocks with the passphrase and with the recovery key", async () => {
+  itHeavy("unlocks with the passphrase and with the recovery key", async () => {
     const vault = manager();
     const { recoveryKey } = await vault.prepareSetup("correct horse");
     await vault.commitSetup();
@@ -84,7 +85,7 @@ describe("VaultManager", () => {
     expect(recoveryUnlock.unlocked).toBe(true);
   });
 
-  it("refuses a wrong passphrase, records the failure, and locks after five attempts", async () => {
+  itHeavy("refuses a wrong passphrase, records the failure, and locks after five attempts", async () => {
     const vault = manager();
     await createVault(vault);
     vault.close();
@@ -107,7 +108,7 @@ describe("VaultManager", () => {
     expect(manager().status().lockedForMs).toBe(0);
   });
 
-  it("queues pre-unlock failures for the activity log and drains them once", async () => {
+  itHeavy("queues pre-unlock failures for the activity log and drains them once", async () => {
     const vault = manager();
     await createVault(vault);
     vault.close();
@@ -120,7 +121,7 @@ describe("VaultManager", () => {
     expect(await reopened.drainPendingEvents()).toHaveLength(0);
   });
 
-  it("treats an unreadable header as invalid and refuses to overwrite it", async () => {
+  itHeavy("treats an unreadable header as invalid and refuses to overwrite it", async () => {
     fs.mkdirSync(path.join(dir, "vault"), { recursive: true });
     fs.writeFileSync(path.join(dir, "vault", "vault.json"), "{not json");
     const vault = manager();
@@ -128,7 +129,7 @@ describe("VaultManager", () => {
     await expect(vault.prepareSetup("correct horse")).rejects.toThrow(VaultAlreadyConfiguredError);
   });
 
-  it("rotates recovery keys while unlocked and requires an unlock for the rest", async () => {
+  itHeavy("rotates recovery keys while unlocked and requires an unlock for the rest", async () => {
     const vault = manager();
     await createVault(vault);
     const added = await vault.addRecoveryKey();
@@ -139,7 +140,7 @@ describe("VaultManager", () => {
     await expect(manager().addRecoveryKey()).rejects.toThrow();
   });
 
-  it("flags a legacy plaintext database in the status for the setup flow", async () => {
+  itHeavy("flags a legacy plaintext database in the status for the setup flow", async () => {
     fs.writeFileSync(path.join(dir, "dokan.db"), "SQLite format 3\u0000");
     const vault = manager();
     expect(vault.status().state).toBe("unconfigured");
@@ -154,7 +155,7 @@ describe("VaultManager", () => {
     expect(unlockBackoffMs(50)).toBe(15 * 60_000);
   });
 
-  it("single-flights first-run setup and releases the slot on abort (finding A6)", async () => {
+  itHeavy("single-flights first-run setup and releases the slot on abort (finding A6)", async () => {
     const vault = manager();
     await vault.prepareSetup("correct horse battery");
     await expect(vault.prepareSetup("correct horse battery")).rejects.toThrow(VaultSetupInProgressError);
@@ -163,13 +164,13 @@ describe("VaultManager", () => {
     await vault.commitSetup();
   });
 
-  it("refuses short passphrases on the NORMALIZED value (finding: spaces)", async () => {
+  itHeavy("refuses short passphrases on the NORMALIZED value (finding: spaces)", async () => {
     const vault = manager();
     await expect(vault.prepareSetup("        ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
     await expect(vault.prepareSetup("  short  ")).rejects.toThrow("VAULT_PASSPHRASE_TOO_SHORT");
   });
 
-  it("sets a new passphrase from a recovery key without the old one (finding C4)", async () => {
+  itHeavy("sets a new passphrase from a recovery key without the old one (finding C4)", async () => {
     const vault = manager();
     const { recoveryKey } = await vault.prepareSetup("correct horse battery");
     await vault.commitSetup();
@@ -185,7 +186,7 @@ describe("VaultManager", () => {
     expect(fresh.unlocked).toBe(true);
   });
 
-  it("rotates the session token when a recovery key is deleted (finding A14)", async () => {
+  itHeavy("rotates the session token when a recovery key is deleted (finding A14)", async () => {
     const vault = manager();
     await createVault(vault);
     const added = await vault.addRecoveryKey();
@@ -196,7 +197,7 @@ describe("VaultManager", () => {
     expect(vault.sessionMatches(after.token)).toBe(true);
   });
 
-  it("serializes concurrent credential changes so each response carries a valid, ordered token (round-7 finding 5)", async () => {
+  itHeavy("serializes concurrent credential changes so each response carries a valid, ordered token (round-7 finding 5)", async () => {
     const vault = manager();
     await createVault(vault);
     const added = await vault.addRecoveryKey();
@@ -213,7 +214,7 @@ describe("VaultManager", () => {
     expect(changed.token).not.toBe(removed.token);
     expect([changed, removed].filter((session) => vault.sessionMatches(session.token))).toHaveLength(1);
   });
-  it("retries the legacy plaintext cleanup on a later unlock until it is gone (finding C11)", async () => {
+  itHeavy("retries the legacy plaintext cleanup on a later unlock until it is gone (finding C11)", async () => {
     const legacyPath = path.join(dir, "dokan.db");
     fs.writeFileSync(legacyPath, "SQLite format 3\u0000");
     fs.writeFileSync(`${legacyPath}-wal`, "wal");
@@ -235,7 +236,7 @@ describe("VaultManager", () => {
     expect(fs.existsSync(otherLegacy)).toBe(true);
   });
 
-  it("clamps a hostile throttle state instead of locking the owner out (finding C13)", async () => {
+  itHeavy("clamps a hostile throttle state instead of locking the owner out (finding C13)", async () => {
     fs.mkdirSync(path.join(dir, "vault"), { recursive: true });
     fs.writeFileSync(
       path.join(dir, "vault", "state.json"),
@@ -246,7 +247,7 @@ describe("VaultManager", () => {
     expect(vault.status().lockedForMs).toBeLessThanOrEqual(15 * 60_000);
   });
 
-  it("encrypts legacy plaintext backups during cleanup (finding: backups survived migration)", async () => {
+  itHeavy("encrypts legacy plaintext backups during cleanup (finding: backups survived migration)", async () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir, { recursive: true });
     const legacyBackup = path.join(backupsDir, "dokan-2020-01-01.db");
@@ -283,7 +284,7 @@ describe("VaultManager", () => {
     restored.close();
   });
 
-  it("reports a plaintext backup it could not encrypt (never silently succeeds)", async () => {
+  itHeavy("reports a plaintext backup it could not encrypt (never silently succeeds)", async () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir, { recursive: true });
     const newerBackup = path.join(backupsDir, "dokan-2020-01-02.db");
@@ -300,7 +301,7 @@ describe("VaultManager", () => {
     expect(fs.readFileSync(newerBackup).subarray(0, 15).toString("utf8")).toBe("SQLite format 3");
   });
 
-  it("resumes a setup only after its snapshot exists and only with its passphrase (findings 3 + round-4 security)", async () => {
+  itHeavy("resumes a setup only after its snapshot exists and only with its passphrase (findings 3 + round-4 security)", async () => {
     const vault = manager();
     const { recoveryKey } = await vault.prepareSetup(PASSPHRASE);
     // the first request is still bootstrapping: no snapshot on disk yet
@@ -320,7 +321,7 @@ describe("VaultManager", () => {
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
 
-  it("never resumes while the first bootstrap is running, even with a snapshot on disk (round-7 finding 1)", async () => {
+  itHeavy("never resumes while the first bootstrap is running, even with a snapshot on disk (round-7 finding 1)", async () => {
     const vault = manager();
     await vault.prepareSetup(PASSPHRASE);
     // the snapshot is written mid-bootstrap; the app is NOT ready yet
@@ -334,7 +335,7 @@ describe("VaultManager", () => {
     vault.abortSetup();
   });
 
-  it("never reads a whole backup file during the sweep (round-4 performance)", async () => {
+  itHeavy("never reads a whole backup file during the sweep (round-4 performance)", async () => {
     const backupsDir = path.join(dir, "backups");
     fs.mkdirSync(backupsDir, { recursive: true });
     const legacyBackup = path.join(backupsDir, "dokan-2020-01-03.db");
@@ -369,7 +370,7 @@ describe("VaultManager", () => {
     }
   });
 
-  it("checks legacy database existence with stat, never a full read (round-7 finding 7)", () => {
+  itHeavy("checks legacy database existence with stat, never a full read (round-7 finding 7)", () => {
     const legacyPath = path.join(dir, "dokan.db");
     // a large file: a readFile-based existence check would block and allocate it
     fs.writeFileSync(legacyPath, Buffer.alloc(4 * 1024 * 1024, 7));

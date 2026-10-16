@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
+import { itHeavy } from "../test-support/heavy";
 
 import { pickOpeningSupplier, resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 
@@ -65,7 +66,8 @@ describe("tie-break lives in exactly one place (issue 184, structural)", () => {
 
   const TIE_BREAK = /entries\s*>\s*(best|bestEntries|winner|current|max)|\w+\.accountEntryCount\s*>\s*\w+\.accountEntryCount|Math\.max\([^)]*entries/;
 
-  it("defines the entry-count/lowest-id comparison only in the api resolver module", async () => {
+  // the structural guard reads every .ts/.tsx in the repo, so it takes the budget
+  itHeavy("defines the entry-count/lowest-id comparison only in the api resolver module", async () => {
     const root = fileURLToPath(new URL("../../../../", import.meta.url));
     const glob = new Bun.Glob("**/*.{ts,tsx}");
     const offenders: string[] = [];

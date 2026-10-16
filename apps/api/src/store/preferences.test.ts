@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,12 +52,12 @@ afterAll(() => {
 });
 
 describe("UI preferences (issue 97 follow-up)", () => {
-  it("returns an empty map on a fresh store", async () => {
+  itHeavy("returns an empty map on a fresh store", async () => {
     const store = await freshStore();
     expect(await store.getPreferences()).toEqual({});
   });
 
-  it("round-trips a preference and updates it in place", async () => {
+  itHeavy("round-trips a preference and updates it in place", async () => {
     const store = await freshStore();
     await store.setPreference("ui.sidebar.collapsed", "true");
     expect(await store.getPreferences()).toEqual({ "ui.sidebar.collapsed": "true" });
@@ -64,7 +65,7 @@ describe("UI preferences (issue 97 follow-up)", () => {
     expect(await store.getPreferences()).toEqual({ "ui.sidebar.collapsed": "false" });
   });
 
-  it("keeps preferences out of store-identity settings", async () => {
+  itHeavy("keeps preferences out of store-identity settings", async () => {
     const store = await freshStore();
     await store.setPreference("ui.onboarding.dismissed", "true");
     // the settings row must not grow a preference key
@@ -73,7 +74,7 @@ describe("UI preferences (issue 97 follow-up)", () => {
     expect((await store.getPreferences())["ui.onboarding.dismissed"]).toBe("true");
   });
 
-  it("survives re-opening the same database file (restart persistence)", async () => {
+  itHeavy("survives re-opening the same database file (restart persistence)", async () => {
     const dir = tempDir("dokan-prefs-restart-");
     const config = createAppConfig({
       DOKAN_DATA_DIR: dir,

@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -77,7 +78,7 @@ function seedVersion2Database(dbPath: string): void {
 }
 
 describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", () => {
-  it("adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently", async () => {
+  itHeavy("adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "v2.db");
     seedVersion2Database(dbPath);
@@ -176,7 +177,7 @@ function seedHalfMigratedDatabase(dbPath: string): void {
 }
 
 describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => {
-  it("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently", async () => {
+  itHeavy("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "v3.db");
     seedVersion3Database(dbPath);
@@ -257,7 +258,7 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     expect(after).toEqual(rows.map((row) => ({ id: row.id, dedupKey: row.dedupKey })));
   });
 
-  it("self-heals a half-migrated database: column present, keys null, version 3 (issue 181)", async () => {
+  itHeavy("self-heals a half-migrated database: column present, keys null, version 3 (issue 181)", async () => {
     // models the crash window where the v4 ALTER committed but the version
     // stamp did not, and a v3 build then wrote NULL-keyed adjustments
     const dir = tempDir();

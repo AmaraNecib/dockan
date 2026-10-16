@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -95,7 +96,7 @@ describe("isStrongSessionSecret", () => {
 });
 
 describe("ensureSessionSecret", () => {
-  it("generates and stores a strong secret on a fresh database", async () => {
+  itHeavy("generates and stores a strong secret on a fresh database", async () => {
     const dir = tempDir();
     const conn = openTestConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
     const store = createDrizzleStore(conn);
@@ -106,7 +107,7 @@ describe("ensureSessionSecret", () => {
     expect(await store.getSetting(SESSION_SECRET_SETTING_KEY)).toBe(secret);
   });
 
-  it("returns a stored strong value untouched (restoring the data keeps sessions)", async () => {
+  itHeavy("returns a stored strong value untouched (restoring the data keeps sessions)", async () => {
     const dir = tempDir();
     const conn = openTestConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
     const store = createDrizzleStore(conn);
@@ -121,7 +122,7 @@ describe("ensureSessionSecret", () => {
     expect(await ensureSessionSecret(store)).toBe(stored);
   });
 
-  it("regenerates empty, short and malformed stored values with a warning", async () => {
+  itHeavy("regenerates empty, short and malformed stored values with a warning", async () => {
     for (const damaged of ["", "short-secret", "!".repeat(SESSION_SECRET_MIN_LENGTH)]) {
       const dir = tempDir();
       const conn = openTestConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
@@ -139,7 +140,7 @@ describe("ensureSessionSecret", () => {
     }
   });
 
-  it("keeps the regenerated secret even when the warning logger throws", async () => {
+  itHeavy("keeps the regenerated secret even when the warning logger throws", async () => {
     const dir = tempDir();
     const conn = openTestConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
     const store = createDrizzleStore(conn);
@@ -156,7 +157,7 @@ describe("ensureSessionSecret", () => {
     expect(isStrongSessionSecret(stored ?? "")).toBe(true);
   });
 
-  it("converges on one secret across two processes opening the same fresh database", async () => {
+  itHeavy("converges on one secret across two processes opening the same fresh database", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "test.db");
     const config = createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath });
@@ -202,9 +203,9 @@ console.log(secret);
     // SAFETY: COUNT(*) returns one row with a numeric count
     const rows = verify.raw.query("SELECT COUNT(*) AS count FROM settings WHERE key = ?").get(SESSION_SECRET_SETTING_KEY) as { count: number };
     expect(rows.count).toBe(1);
-  }, 15_000);
+  });
 
-  it("migrates a pre-universal database once, with no recovery credential", async () => {
+  itHeavy("migrates a pre-universal database once, with no recovery credential", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "test.db");
     const config = createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath });
@@ -237,7 +238,7 @@ console.log(secret);
     expect(await thirdStore.getSetting(SESSION_SECRET_SETTING_KEY)).toBe(generated);
   });
 
-  it("keeps a live session cookie when the database is copied", async () => {
+  itHeavy("keeps a live session cookie when the database is copied", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "test.db");
     const config = createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath });

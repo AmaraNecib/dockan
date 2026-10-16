@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, setHeavyDefaultTimeout } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,9 @@ import { localDate, localDateTime } from "../lib/logger";
 import { adjustmentDedupKey, deriveInvoicePaid, supplierBalance } from "../lib/supplier-ledger";
 import { backfillSupplierAccounts, createDrizzleStore } from "./drizzle-store";
 import type { StorePort } from "./port";
+
+// Every test exercises the real supplier-account ledger on the shared database.
+setHeavyDefaultTimeout();
 
 /**
  * Store-seam tests for the signed supplier account (issue 161): the backfill of
@@ -24,7 +28,7 @@ beforeAll(async () => {
   conn = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "test.db") }));
   store = createDrizzleStore(conn);
   await store.setup();
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();

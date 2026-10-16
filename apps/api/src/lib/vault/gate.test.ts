@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
+import { itHeavy } from "../../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -232,7 +233,7 @@ async function json<T>(response: Response): Promise<T> {
 /** Late-bound handle so an afterCredentialChange hook can rotate mid-request. */
 type ManagerHolder = { manager?: VaultManager };
 describe("vault HTTP gate", () => {
-  it("walks first run: unconfigured → setup → recovery key → owner setup → guarded RPC", async () => {
+  itHeavy("walks first run: unconfigured → setup → recovery key → owner setup → guarded RPC", async () => {
     const h = harness(tempDir("dokan-vault-gate-"));
     const status = await json<{ state: string; unlocked: boolean }>(await h.gate.request("/api/vault/status"));
     expect(status.state).toBe("unconfigured");
@@ -292,7 +293,7 @@ describe("vault HTTP gate", () => {
     expect(recoveryUnlock.status).toBe(200);
   });
 
-  it("refuses a non-JSON pre-auth request (cross-site POST) without consuming an attempt", async () => {
+  itHeavy("refuses a non-JSON pre-auth request (cross-site POST) without consuming an attempt", async () => {
     const h = harness(tempDir("dokan-vault-csrf-"));
     await h.gate.request("/api/vault/setup", {
       method: "POST",
@@ -317,7 +318,7 @@ describe("vault HTTP gate", () => {
     expect(right.status).toBe(200);
   });
 
-  it("still returns the recovery key when post-commit plaintext cleanup fails", async () => {
+  itHeavy("still returns the recovery key when post-commit plaintext cleanup fails", async () => {
     const dir = tempDir("dokan-vault-cleanup-");
     createLegacyDatabaseOutsideProcess(dir);
     const h = harness(dir, {
@@ -339,7 +340,7 @@ describe("vault HTTP gate", () => {
     h.connection().close();
   });
 
-  it("refuses a wrong passphrase with Arabic copy and never corrupts the vault", async () => {
+  itHeavy("refuses a wrong passphrase with Arabic copy and never corrupts the vault", async () => {
     const h = harness(tempDir("dokan-vault-wrong-"));
     await h.gate.request("/api/vault/setup", {
       method: "POST",
@@ -372,7 +373,7 @@ describe("vault HTTP gate", () => {
     expect(right.status).toBe(200);
   });
 
-  it("migrates a legacy plaintext database, preserving the schema version, and removes the plaintext files", async () => {
+  itHeavy("migrates a legacy plaintext database, preserving the schema version, and removes the plaintext files", async () => {
     const dir = tempDir("dokan-vault-migrate-");
     createLegacyDatabaseOutsideProcess(dir);
 
@@ -391,7 +392,7 @@ describe("vault HTTP gate", () => {
     h.connection().close();
   });
 
-  it("decrypts a copied data folder on a fresh machine (portability)", async () => {
+  itHeavy("decrypts a copied data folder on a fresh machine (portability)", async () => {
     const source = tempDir("dokan-vault-portable-src-");
     const h = harness(source);
     const setup = await h.gate.request("/api/vault/setup", {
@@ -429,7 +430,7 @@ describe("vault HTTP gate", () => {
     expect(recovery.status).toBe(200);
   });
 
-  it("adds, lists, and removes recovery keys while unlocked; change-passphrase keeps recovery valid", async () => {
+  itHeavy("adds, lists, and removes recovery keys while unlocked; change-passphrase keeps recovery valid", async () => {
     const h = harness(tempDir("dokan-vault-rotate-"));
     const setup = await h.gate.request("/api/vault/setup", {
       method: "POST",
@@ -491,7 +492,7 @@ describe("vault gate hardening (review supplement)", () => {
     });
   }
 
-  it("validates the NORMALIZED passphrase (finding: eight spaces is empty)", async () => {
+  itHeavy("validates the NORMALIZED passphrase (finding: eight spaces is empty)", async () => {
     const h = harness(tempDir("dokan-vault-norm-"));
     const spaces = await setupVault(h, "        ");
     expect(spaces.status).toBe(400);
@@ -503,7 +504,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect((await setupVault(h, "correct horse battery")).status).toBe(200);
   });
 
-  it("keeps first-run setup single-flight (finding: concurrent setups mixing keys)", async () => {
+  itHeavy("keeps first-run setup single-flight (finding: concurrent setups mixing keys)", async () => {
     const h = harness(tempDir("dokan-vault-single-flight-"));
     const responses = await Promise.all([setupVault(h), setupVault(h)]);
     // one request wins; a concurrent retry may resume the same pending setup,
@@ -527,7 +528,7 @@ describe("vault gate hardening (review supplement)", () => {
     }
   });
 
-  it("refuses a torn or damaged snapshot as corruption, never as a wrong passphrase", async () => {
+  itHeavy("refuses a torn or damaged snapshot as corruption, never as a wrong passphrase", async () => {
     const h = harness(tempDir("dokan-vault-corrupt-"));
     await setupVault(h);
     await h.connection().close();
@@ -561,7 +562,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect((await json<{ error: { code: string } }>(damaged)).error.code).toBe("VAULT_CORRUPT");
   });
 
-  it("refuses a missing snapshot instead of fabricating an empty shop", async () => {
+  itHeavy("refuses a missing snapshot instead of fabricating an empty shop", async () => {
     const h = harness(tempDir("dokan-vault-missing-"));
     await setupVault(h);
     await h.connection().close();
@@ -581,7 +582,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(fs.existsSync(h.manager.snapshotPath)).toBe(false);
   });
 
-  it("refuses to delete the last recovery key (finding C8)", async () => {
+  itHeavy("refuses to delete the last recovery key (finding C8)", async () => {
     const h = harness(tempDir("dokan-vault-lastkey-"));
     const setup = await setupVault(h);
     // SAFETY: the setup contract carries the session token
@@ -600,7 +601,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.status().recoveryKeyCount).toBe(1);
   });
 
-  it("resets the passphrase with a recovery key, no current passphrase needed (finding C4)", async () => {
+  itHeavy("resets the passphrase with a recovery key, no current passphrase needed (finding C4)", async () => {
     const h = harness(tempDir("dokan-vault-reset-"));
     const setup = await setupVault(h);
     // SAFETY: the setup contract carries the recovery key
@@ -635,7 +636,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(recovered.status).toBe(200);
   });
 
-  it("throttles credential changes, returns retryAfterMs, and rotates the session (findings C13/A14)", async () => {
+  itHeavy("throttles credential changes, returns retryAfterMs, and rotates the session (findings C13/A14)", async () => {
     const h = harness(tempDir("dokan-vault-throttle-"));
     const setup = await setupVault(h);
     // SAFETY: the setup contract carries the session token
@@ -674,7 +675,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(retryAfterMs).toBeGreaterThan(0);
   });
 
-  it("does not mount better-auth routes in vault mode (finding C10)", async () => {
+  itHeavy("does not mount better-auth routes in vault mode (finding C10)", async () => {
     const h = harness(tempDir("dokan-vault-no-auth-"));
     await setupVault(h);
     const signIn = await h.appFor().request("/api/auth/sign-in/username", {
@@ -685,7 +686,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(signIn.status).toBe(404);
   });
 
-  it("hides the recovery-key inventory while locked", async () => {
+  itHeavy("hides the recovery-key inventory while locked", async () => {
     const h = harness(tempDir("dokan-vault-status-"));
     await setupVault(h);
     h.manager.close();
@@ -694,7 +695,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(status.recoveryKeyCount).toBe(0);
   });
 
-  it("reports the cleanup result on setup and resumes a pending setup whose header write failed (findings 2 and 3)", async () => {
+  itHeavy("reports the cleanup result on setup and resumes a pending setup whose header write failed (findings 2 and 3)", async () => {
     const dir = tempDir("dokan-vault-resume-");
     const h = harness(dir);
     // simulate the crash window: the first attempt prepared the vault, bootstrapped
@@ -714,7 +715,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.pendingRecoveryKey()).toBeUndefined();
   });
 
-  it("refuses to resume a pending setup for a DIFFERENT passphrase (round-4 security)", async () => {
+  itHeavy("refuses to resume a pending setup for a DIFFERENT passphrase (round-4 security)", async () => {
     const dir = tempDir("dokan-vault-resume-auth-");
     const h = harness(dir);
     // simulate the crash window: snapshot written, header uncommitted
@@ -743,7 +744,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(ownerBody.sessionToken.length).toBeGreaterThan(20);
   });
 
-  it("surfaces plaintext files that could not be removed instead of silently succeeding", async () => {
+  itHeavy("surfaces plaintext files that could not be removed instead of silently succeeding", async () => {
     const dir = tempDir("dokan-vault-remaining-");
     const h = harness(dir, {
       onSetupCommitted: async () => ({ plaintextRemaining: ["C:/data/dokan.db"] }),
@@ -756,7 +757,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(body.plaintextRemaining).toEqual(["C:/data/dokan.db"]);
   });
 
-  it("reports UNKNOWN when the HTTP cleanup throws instead of a clean empty list (round-4 finding)", async () => {
+  itHeavy("reports UNKNOWN when the HTTP cleanup throws instead of a clean empty list (round-4 finding)", async () => {
     const h = harness(tempDir("dokan-vault-cleanup-unknown-"), {
       onSetupCommitted: async () => {
         throw new Error("cleanup exploded");
@@ -772,7 +773,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(body.recoveryKey).toBeDefined();
   });
 
-  it("revokes the in-process session on logout (finding 4)", async () => {
+  itHeavy("revokes the in-process session on logout (finding 4)", async () => {
     const h = harness(tempDir("dokan-vault-logout-"));
     const setup = await setupVault(h);
     // SAFETY: the setup contract carries the session token
@@ -797,7 +798,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(unlock.status).toBe(200);
   });
 
-  it("keeps first-run setup retryable when the bootstrap fails after the snapshot landed (round-7 finding 1)", async () => {
+  itHeavy("keeps first-run setup retryable when the bootstrap fails after the snapshot landed (round-7 finding 1)", async () => {
     const dir = tempDir("dokan-vault-bootstrap-fail-");
     let releaseBootstrap: (() => void) | undefined;
     const bootstrapGate = new Promise<void>((resolve) => {
@@ -843,7 +844,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(true);
   });
 
-  it("refuses credential routes from a non-loopback peer through the REAL overlay, and fails closed on an unknown peer (round-8 finding 1)", async () => {
+  itHeavy("refuses credential routes from a non-loopback peer through the REAL overlay, and fails closed on an unknown peer (round-8 finding 1)", async () => {
     const h = harness(tempDir("dokan-vault-loopback-"));
     // the same overlay main.ts serves: it must forward the server socket env,
     // not just the raw Request
@@ -878,7 +879,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(local.status).toBe(200);
   });
 
-  it("refuses HTTP pre-boot credential routes in broker mode; post-unlock routes stay HTTP (issue #141)", async () => {
+  itHeavy("refuses HTTP pre-boot credential routes in broker mode; post-unlock routes stay HTTP (issue #141)", async () => {
     const h = harness(tempDir("dokan-vault-broker-mode-"), { broker: true });
     // SAFETY: the status route contract carries the broker flag
     const status = await json<{ broker: boolean }>(await h.gate.request("/api/vault/status"));
@@ -909,7 +910,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(changed.status).toBe(200);
   });
 
-  it("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {
+  itHeavy("returns an increasing session generation on credential rotations (round-7 finding 5)", async () => {
     const h = harness(tempDir("dokan-vault-generation-"));
     const setup = await setupVault(h);
     // SAFETY: the setup contract carries the session token
@@ -935,7 +936,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.sessionMatches(secondBody.sessionToken)).toBe(true);
   });
 
-  it("never reports a generation newer than the token it returns when a rotation lands during the delete refresh (round-8 finding 2)", async () => {
+  itHeavy("never reports a generation newer than the token it returns when a rotation lands during the delete refresh (round-8 finding 2)", async () => {
     const holder: ManagerHolder = {};
     const h = harness(tempDir("dokan-vault-rotation-gap-delete-"), {
       afterCredentialChange: async () => {
@@ -965,7 +966,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
   });
 
-  it("never reports a generation newer than the token it returns when a rotation lands during the reset refresh (round-8 finding 2)", async () => {
+  itHeavy("never reports a generation newer than the token it returns when a rotation lands during the reset refresh (round-8 finding 2)", async () => {
     const holder: ManagerHolder = {};
     const h = harness(tempDir("dokan-vault-rotation-gap-reset-"), {
       afterCredentialChange: async () => {
@@ -992,7 +993,7 @@ describe("vault gate hardening (review supplement)", () => {
     expect(h.manager.sessionMatches(body.sessionToken)).toBe(false);
   });
 
-  it("refuses a stale backup after a credential change and restores the refreshed one with the new passphrase (round-7 finding 3)", async () => {
+  itHeavy("refuses a stale backup after a credential change and restores the refreshed one with the new passphrase (round-7 finding 3)", async () => {
     let refreshes = 0;
     const h = harness(tempDir("dokan-vault-backup-refresh-"), {
       afterCredentialChange: async () => {

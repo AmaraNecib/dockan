@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,7 +49,7 @@ function closeLater(conn: Connection): Connection {
 }
 
 describe("readSchemaVersion / stampSchemaVersion", () => {
-  it("reads 0 from a fresh database (pre-universal format)", () => {
+  itHeavy("reads 0 from a fresh database (pre-universal format)", () => {
     const dir = tempDir();
     const raw = new Database(path.join(dir, "fresh.db"), { create: true });
     try {
@@ -60,7 +61,7 @@ describe("readSchemaVersion / stampSchemaVersion", () => {
     }
   });
 
-  it("refuses to stamp a nonsense version", () => {
+  itHeavy("refuses to stamp a nonsense version", () => {
     const dir = tempDir();
     const raw = new Database(path.join(dir, "bad.db"), { create: true });
     try {
@@ -73,7 +74,7 @@ describe("readSchemaVersion / stampSchemaVersion", () => {
 });
 
 describe("stampSchemaVersionLocked", () => {
-  it("stamps an older database under the write lock", () => {
+  itHeavy("stamps an older database under the write lock", () => {
     const dir = tempDir();
     const raw = new Database(path.join(dir, "locked-stamp.db"), { create: true });
     try {
@@ -84,7 +85,7 @@ describe("stampSchemaVersionLocked", () => {
     }
   });
 
-  it("refuses a version that advanced past this build and leaves it untouched", () => {
+  itHeavy("refuses a version that advanced past this build and leaves it untouched", () => {
     const dir = tempDir();
     const raw = new Database(path.join(dir, "locked-newer.db"), { create: true });
     try {
@@ -100,7 +101,7 @@ describe("stampSchemaVersionLocked", () => {
 });
 
 describe("the version gate", () => {
-  it("accepts an older database and reports its version", () => {
+  itHeavy("accepts an older database and reports its version", () => {
     const dir = tempDir();
     const raw = new Database(path.join(dir, "older.db"), { create: true });
     try {
@@ -110,7 +111,7 @@ describe("the version gate", () => {
     }
   });
 
-  it("refuses a newer database with a clear Arabic message", () => {
+  itHeavy("refuses a newer database with a clear Arabic message", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "newer.db");
     const seed = new Database(dbPath, { create: true });
@@ -133,7 +134,7 @@ describe("the version gate", () => {
     }
   });
 
-  it("refuses the supplier-account format with a build that only supports version 1 (issue 161)", () => {
+  itHeavy("refuses the supplier-account format with a build that only supports version 1 (issue 161)", () => {
     // ADR-0009: the signed supplier account is a forward format change. A
     // version-1 build must refuse version-2 data, or it would record purchases
     // and payments with no supplier entries and silently corrupt the balance.
@@ -154,7 +155,7 @@ describe("the version gate", () => {
     }
   });
 
-  it("refuses a newer database before any write, leaves it untouched and closes the handle", () => {
+  itHeavy("refuses a newer database before any write, leaves it untouched and closes the handle", () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "newer-open.db");
     const seed = new Database(dbPath, { create: true });
@@ -190,7 +191,7 @@ describe("the version gate", () => {
 });
 
 describe("forward migration", () => {
-  it("migrates a pre-universal database forward and stamps the new version", async () => {
+  itHeavy("migrates a pre-universal database forward and stamps the new version", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "legacy.db");
     // The oldest format: an items table that predates the barcode column,

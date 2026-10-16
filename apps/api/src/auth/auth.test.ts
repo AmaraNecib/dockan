@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, setHeavyDefaultTimeout } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,9 @@ import { createRpcRouter } from "../rpc/router";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
 import { createAuth, type BetterAuthInstance } from "./auth";
+
+// Every test drives the real auth/RPC surface against the shared database.
+setHeavyDefaultTimeout();
 
 const PHONE = "+213550123123";
 const USERNAME = phoneToUsername(PHONE);
@@ -59,7 +63,7 @@ beforeAll(async () => {
   // Provision the single owner the way the app does: public first-run setup.
   const setupClient: DokanClient = createORPCClient(linkFor(""));
   await setupClient.firstTimeSetup({ ownerName: "مالك الاختبار", phoneNumber: PHONE, password: PASSWORD, storeName: "متجر الاختبار" });
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { HEAVY_TEST_TIMEOUT_MS, setHeavyDefaultTimeout } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +21,10 @@ import { pickOpeningSupplier } from "./opening-balance-resolver";
 import { createDrizzleStore } from "../store/drizzle-store";
 import type { StorePort } from "../store/port";
 import { weightedAverageCost } from "../lib/stock-ledger";
+
+// Every test drives the real SQLite database through the wire, so the whole
+// file takes the shared heavy budget.
+setHeavyDefaultTimeout();
 
 /**
  * Wire-seam tests for the merged router. The typed oRPC client calls the real
@@ -89,7 +94,7 @@ beforeAll(async () => {
 
   client = createORPCClient(linkWith(cookie));
   unauthed = createORPCClient(linkWith(""));
-});
+}, HEAVY_TEST_TIMEOUT_MS);
 
 afterAll(() => {
   conn.close();

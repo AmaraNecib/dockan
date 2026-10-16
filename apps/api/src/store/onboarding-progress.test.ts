@@ -1,4 +1,5 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect } from "bun:test";
+import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,7 +83,7 @@ afterAll(() => {
 });
 
 describe("onboardingProgress (issue 97)", () => {
-  it("reports every step open on an empty store", async () => {
+  itHeavy("reports every step open on an empty store", async () => {
     const store = await freshStore();
     expect(await store.onboardingProgress()).toEqual({
       hasItems: false,
@@ -92,7 +93,7 @@ describe("onboardingProgress (issue 97)", () => {
     });
   });
 
-  it("marks items done from a real item and nothing else", async () => {
+  itHeavy("marks items done from a real item and nothing else", async () => {
     const store = await freshStore();
     await createItem(store, "بطارية");
     expect(await store.onboardingProgress()).toEqual({
@@ -103,7 +104,7 @@ describe("onboardingProgress (issue 97)", () => {
     });
   });
 
-  it("marks a purchase done independently of a sale", async () => {
+  itHeavy("marks a purchase done independently of a sale", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-P1", kind: "PURCHASE", totalAmount: 1000, paidAmount: 1000, remainingAmount: 0 });
     expect(await store.onboardingProgress()).toEqual({
@@ -114,7 +115,7 @@ describe("onboardingProgress (issue 97)", () => {
     });
   });
 
-  it("marks a sale done independently of a purchase", async () => {
+  itHeavy("marks a sale done independently of a purchase", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-S1", kind: "SALE", totalAmount: 1000, paidAmount: 1000, remainingAmount: 0 });
     expect(await store.onboardingProgress()).toEqual({
@@ -125,7 +126,7 @@ describe("onboardingProgress (issue 97)", () => {
     });
   });
 
-  it("marks the debt step done for a party-attributed unpaid sale", async () => {
+  itHeavy("marks the debt step done for a party-attributed unpaid sale", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-S2", kind: "SALE", totalAmount: 2000, paidAmount: 500, remainingAmount: 1500 });
     expect(await store.onboardingProgress()).toEqual({
@@ -136,13 +137,13 @@ describe("onboardingProgress (issue 97)", () => {
     });
   });
 
-  it("does not count a fully paid sale as debt", async () => {
+  itHeavy("does not count a fully paid sale as debt", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-S3", kind: "SALE", totalAmount: 1000, paidAmount: 1000, remainingAmount: 0 });
     expect((await store.onboardingProgress()).hasDebt).toBe(false);
   });
 
-  it("does not count a party-less walk-in remainder as debt", async () => {
+  itHeavy("does not count a party-less walk-in remainder as debt", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-S4", kind: "SALE", totalAmount: 400, paidAmount: 0, remainingAmount: 400, unnamed: true });
     const progress = await store.onboardingProgress();
@@ -150,7 +151,7 @@ describe("onboardingProgress (issue 97)", () => {
     expect(progress.hasDebt).toBe(false);
   });
 
-  it("does not count a purchase we owe as the debts step", async () => {
+  itHeavy("does not count a purchase we owe as the debts step", async () => {
     const store = await freshStore();
     await seedInvoice(store, { invoiceNumber: "ONB-P3", kind: "PURCHASE", totalAmount: 900, paidAmount: 100, remainingAmount: 800 });
     const progress = await store.onboardingProgress();
@@ -159,7 +160,7 @@ describe("onboardingProgress (issue 97)", () => {
     expect(progress.hasDebt).toBe(false);
   });
 
-  it("counts a debt attributed by counterparty id, not only by typed name", async () => {
+  itHeavy("counts a debt attributed by counterparty id, not only by typed name", async () => {
     const store = await freshStore();
     // id present, name absent: the identity branch the name-only tests miss
     await seedInvoice(store, {
@@ -174,7 +175,7 @@ describe("onboardingProgress (issue 97)", () => {
     expect((await store.onboardingProgress()).hasDebt).toBe(true);
   });
 
-  it("reaches every step at once after the whole first-day flow", async () => {
+  itHeavy("reaches every step at once after the whole first-day flow", async () => {
     const store = await freshStore();
     await createItem(store, "بطارية");
     await seedInvoice(store, { invoiceNumber: "ONB-P2", kind: "PURCHASE", totalAmount: 500, paidAmount: 300, remainingAmount: 200 });
@@ -189,14 +190,14 @@ describe("onboardingProgress (issue 97)", () => {
 });
 
 describe("recordOnboardingCompletion (issue 97 follow-up)", () => {
-  it("does not record the milestone while any record is missing", async () => {
+  itHeavy("does not record the milestone while any record is missing", async () => {
     const store = await freshStore();
     await createItem(store, "بطارية");
     expect(await store.recordOnboardingCompletion()).toBe(false);
     expect(await store.getPreferences()).toEqual({});
   });
 
-  it("records the milestone idempotently once every record exists", async () => {
+  itHeavy("records the milestone idempotently once every record exists", async () => {
     const store = await freshStore();
     await createItem(store, "بطارية");
     await seedInvoice(store, { invoiceNumber: "ONB-C1", kind: "PURCHASE", totalAmount: 500, paidAmount: 500, remainingAmount: 0 });

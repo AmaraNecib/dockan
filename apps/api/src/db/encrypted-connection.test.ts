@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { setHeavyDefaultTimeout } from "../test-support/heavy";
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { MissingVaultDatabaseError, SnapshotPersistenceError, VaultCorruptionError, createEncryptedConnection, readLegacyDatabaseImage } from "./encrypted-connection";
+
+// Every test opens an encrypted connection and writes a snapshot.
+setHeavyDefaultTimeout();
 
 let dir: string;
 const vaultId = "11111111-2222-3333-4444-555555555555";

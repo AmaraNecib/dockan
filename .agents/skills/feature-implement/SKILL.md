@@ -15,9 +15,8 @@ Do not skip or reorder these steps.
 
 ### 1. Tier and base SHA
 
-**Select review tier.** The tier follows the **failure mode, never the diff
-size**; the canonical decision, including the five High-assurance failure modes,
-is in `docs/engineering-workflow.md` (Review tiers).
+**Select review tier** from `docs/engineering-workflow.md` (Review tiers), which
+defines the five High-assurance failure modes.
 
 | Tier | When |
 |------|------|

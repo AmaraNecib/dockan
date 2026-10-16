@@ -85,15 +85,7 @@ is Standard; a 12-line PR under `apps/api/src/auth/**` is High-assurance.
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
 | Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → test-audit → code-review → guard 2 → Greptile → guard 3 |
-| High-assurance | The diff can violate one of the named failure modes below | Standard plus debate |
-
-**High-assurance means the diff can make any of these true:**
-
-1. Stock quantity goes below zero, or an average cost is recomputed wrongly.
-2. A payment exceeds its invoice total, or a total is computed wrongly.
-3. Debt direction is wrong (who owes whom).
-4. A login, session, RBAC or secret-handling rule is bypassed.
-5. A backup/restore loses or corrupts data.
+| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | Standard plus debate |
 
 Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
 schema-version bump are **examples that hint at a failure mode, never a test**.

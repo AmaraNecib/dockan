@@ -15,9 +15,9 @@ The caller (feature-implement) provides:
 ## When to run
 
 After debate (implementation is finalized) and before code-review.
-Required for **Standard and High-assurance** changes. The tier rule, what
-escalates a change to High-assurance, lives in `docs/engineering-workflow.md`
-(Review tiers); do not restate it here.
+Required for **Standard and High-assurance** changes. What escalates a change to
+High-assurance is defined once, in `docs/engineering-workflow.md` (Review tiers);
+do not restate it here.
 
 ## How to run
 

@@ -63,10 +63,18 @@ one leak, and a single reset per file is cheaper than two. `afterAll` also runs
 when a test fails — the case where a leaked row would otherwise sit in the
 database for the rest of the run.
 
-Why a plain inline `execFileSync` and not a new shared helper: `00-onboarding`
-and `01-empty-states` already carry this exact pattern with their own
-env-defaulting, and extracting it would widen the diff into the fixtures of two
-green, already-reviewed specs. Minimal blast radius wins here.
+Why a shared `tests/e2e/reset-helpers.ts` and not an inline `execFileSync` in
+each spec: with two new call sites the block existed in four places
+(`00-onboarding`, `01-empty-states`, `96-returns-…`, `debts`), each repeating
+`E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data")` — the same default
+`playwright.config.ts` computes. One copy of that line cannot drift; four can.
+`runE2eReset()` takes the script name as a union, so a typo is a compile error
+at the source instead of a failed subprocess at run time. The file-specific
+intent comments stay in the specs, next to the hooks they explain.
+
+`00-onboarding.spec.ts` already had a local `runReset(script)` wrapper, so this
+is the same shape moved to one module rather than a new convention — it now uses
+the helper and lost its local copy.
 
 ## Sweep — every spec asserting an exact count or total
 
@@ -78,7 +86,7 @@ precondition-independent:
 | --- | --- | --- |
 | `debts.spec.ts` | **GLOBAL** `debts-group-owed-total` 1500, `-owed-count` 1, `-weowe-total` 1200, `-weowe-count` 1 | **No** — fixed here (owns its reset in `beforeAll`) |
 | `96-returns-supplier-action.spec.ts` | none (asserts presence/absence only) | n/a — but it left the leak; fixed here (`afterAll` reset) |
-| `expense-reports.spec.ts:77` | `expense-history` tbody rows `toHaveCount(2)` — the current-month window over ALL expenses | **By convention only**: file header states "Expenses are only ever recorded by this spec". No other spec records an expense today, so it holds; recorded here as the second assertion of this class |
+| `expense-reports.spec.ts:77` | `expense-history` tbody rows `toHaveCount(2)` — the current-month window over ALL expenses | **By convention only**: file header states "Expenses are only ever recorded by this spec". No other spec records an expense today, so it holds; recorded here as the second assertion of this class. **Residual risk:** it is the one assertion still unprotected if `96-…`'s `afterAll` never runs (killed worker, aborted run). Hardening it means scoping the sort and count assertions to rows this spec gave a unique note — deferred, see below |
 | `expense-reports.spec.ts:301` | breakdown row count per seeded window | Yes — filtered by `categoryName` it created |
 | `pagination.spec.ts:80–109` | `invoice-row` 10 / 20 / min(20, total) | Yes, **by construction** — it reads `total` from `invoicesList` instead of pinning a number ("so the spec does not depend on what other specs already recorded") |
 | `pagination.spec.ts:186–242` | `party-invoice-row` / `supplier-account-row` 10 and 2 | Yes — scoped to the party it seeds |
@@ -177,6 +185,67 @@ This is outside the brief's two named fix options, so it is a **separate commit*
 and the parent can drop it. It is included because the round exists to make CI
 green, and this failure lands in the same suite the round is about.
 
+## Third finding — the records reset did not reset three shop-record tables
+
+`scripts/reset-e2e-records.mjs` is the script this fix leans on for "clean shop
+records", and it was **incomplete**: against `apps/api/src/db/schema.ts` it reset
+14 of the 17 shop-record tables and left `supplier_account_entries`,
+`supplier_returns` and `supplier_return_lines` alone. Its own comment claimed
+"children before parents" for a complete set, so the contract was wrong, not just
+the list.
+
+Both new hooks create those rows: the 96 spec's first test records a purchase
+against an inline supplier, which writes a supplier-account charge. Because the
+reset deletes `suppliers`/`invoices` first, the survivors become orphans that no
+later assertion can see — until a future spec reads a supplier total across the
+whole database, which is exactly the class this round is about.
+
+Fix: add the three `DELETE`s (children first) and state the survivors explicitly
+— `settings`, the auth tables, `expense_categories` (a seeded default) and the
+three number sequences (invoice numbering must stay honest).
+
+### Proof the three deletes matter
+
+E2E runs, not a code reading. The 96 spec alone, then a row count on the shared
+database:
+
+| `reset-e2e-records.mjs` | `supplier_account_entries` | `supplier_returns` | `supplier_return_lines` |
+| --- | --- | --- | --- |
+| **before** (three deletes removed) | **1** | 0 | 0 |
+| **after** (three deletes present) | **0** | 0 | 0 |
+
+`supplier_returns`/`supplier_return_lines` are 0 in this run because the 96 spec
+does not record a supplier return; `supplier-account.spec.ts` does, which is why
+they are in the fix rather than only the table that showed a row here.
+
+## Decisions taken after the first review round
+
+Five independent reviewer sub-agents ran against the first code commit (three
+test-audit lenses: edge cases, coverage, quality; two code-review axes:
+standards, spec). Dispositions:
+
+| Finding | Severity claimed | Decision |
+| --- | --- | --- |
+| Reset script omits three supplier tables | 🟠 | **Fixed** in its own commit, with the before/after counts above |
+| Reset block duplicated in four specs (Duplicated Code / Shotgun Surgery) | smell | **Fixed** — `tests/e2e/reset-helpers.ts`; the doc's former "they already carry this exact pattern" defence was inaccurate and is corrected above |
+| `afterAll` does not run on a killed worker / aborted run, so the leak can still reach later specs | 🔴 | **Accepted as a limit, recorded.** No hook survives `SIGKILL`; the alternatives are a `beforeAll` in every global-assertion spec (which `debts` now has) or a per-test reset. `expense-reports:77` is the one assertion still exposed, and it is recorded rather than hardenend because hardening it means rewriting its sort assertions too (see the sweep row) |
+| The two resets are redundant for *this* regression — removing either one alone still passes | — | **Accepted, not changed.** They are not covering the same failure: `debts`'s `beforeAll` protects the global assertion against *any* leaker, and the 96 spec's `afterAll` stops *this* leaker from reaching every later spec. The brief asked for both and for the reason the other is not relied on, which the section above gives |
+| `cwd: process.cwd()` and a relative script path (copied from `00`/`01`) | 🟡 | **Accepted.** Playwright runs specs from the config root; this is the pre-existing pattern and the helper keeps it in one place |
+| Evidence was "claimed, not committed" | blocker | **Fixed** — the raw run logs are committed under `.scratch/reviews/96/` and the test-audit / code-review evidence files are added |
+| Mutation harness for the expense race not committed | weakness | **Accepted.** The mutation is three lines and is described in this doc; committing a deliberately failing route into a spec would need it behind a flag. The failing trace that motivated it is not in the diff either — it was the parent's full-suite run, and the pre-fix failure signature is recorded above |
+
+## Deferred
+
+- `expense-reports.spec.ts:77`'s global row count and its sort assertions could
+  be scoped to rows this spec labelled with a unique note, removing the last
+  "no earlier spec adds records" dependency in the suite. Deferred because it
+  rewrites three assertions in a spec this round did not set out to touch, and
+  the file's header already documents the convention honestly.
+- A drift guard that reads `apps/api/src/db/schema.ts` and fails when a
+  shop-record table has no `DELETE` in the reset script. Deferred: it needs a
+  maintained exclusion list (settings, auth, seeded categories, sequences),
+  which is its own design.
+
 ## Evidence
 
 All commands run from the worktree root, on a lane-private port pair
@@ -187,24 +256,33 @@ on those ports killed and `.dokan-port` removed first (wisdom
 | # | Command | Result |
 | --- | --- |
 | 1a | `bunx playwright test 01-empty-states 96-returns-supplier-action debts` — **before** | **1 failed, 8 passed** · `Received "3200 دج"` at `debts.spec.ts:77` |
-| 1b | the same three files — **after** | **9 passed** (both 96 tests, both empty-state files, debts) |
-| 2 | `bunx playwright test tests/e2e/debts.spec.ts` | **1 passed** (alone, with its new `beforeAll`) |
-| 3 | `bun run test:e2e` (full suite, path order) | **93 passed, 0 failed** (11.9 m) |
-| 4 | `bun run typecheck` | exit 0 |
-| 5 | `bun run lint` | exit 0 |
-| 6 | `bun run test` | exit 0 |
-| 7 | `bun test scripts/e2e-selection.test.ts` | 35 pass, 0 fail (map untouched, guard green) |
-| 8 | mutation: delayed first `expensesCreate`, test 2 pre-fix / post-fix | fail / pass |
+| 1b | the same three files — **after** (`round3/order3-after.log`) | **9 passed**, including both 96 tests and their own assertions |
+| 2 | `bunx playwright test tests/e2e/debts.spec.ts` (`round3/debts-alone.log`) | **1 passed** (alone, with its new `beforeAll`) |
+| 3 | `bun run test:e2e` full ordering at `f5b8b0d` (`round3/full-suite-flakes.log` run A) | **93 passed, 0 failed** (11.9 m) |
+| 3b | the same at the final code, four more times | 90–92 passed; every failure a 5 s `expect` / 30 s test **timeout** in a spec this round does not touch, each of those specs green alone. `debts`, `96-…`, `01-empty-states` and `expense-reports` passed in every run — see `round3/full-suite-flakes.log` |
+| 4 | `bun run typecheck` / `bun run lint` / `bun run test` / `bun test scripts/e2e-selection.test.ts` (`round3/guard-phase1.log`) | all exit 0; selection guard 35 pass, 0 fail, map untouched |
+| 5 | mutation: delayed first `expensesCreate`, test 2 pre-fix / post-fix | fail / pass |
+| 6 | `reset-e2e-records.mjs` table probe, three `DELETE`s removed then present (`round3/reset-tables.log`) | `supplier_account_entries` **1 → 0** |
 
-A first full-suite attempt (before the `actAndAck` fix) is what surfaced #3's
-failure: **92 passed, 1 failed** on `expense-reports.spec.ts:196`.
+A first full-suite attempt (before the `actAndAck` fix) is what surfaced the
+expense race: **92 passed, 1 failed** on `expense-reports.spec.ts:196`. Raw logs
+for every run named above are committed under `.scratch/reviews/96/round3/`.
 
 ## Risks
 
 - The `debts.spec.ts` reset deletes shop records created by the specs between
   `96-` and `debts` (activity, arabic-search, backups, catalog-scan,
   completion-screens, customer-name-variants, customers). Evidence row 3 is the
-  test of that: the full suite stayed green.
+  test of that: the full suite was green at `f5b8b0d`, and `debts` itself never
+  failed in any later run either.
+- E2E run-to-run flakiness on a loaded machine: Evidence rows 3b and
+  `full-suite-flakes.log`. Not caused by this diff — every flaking spec is one
+  this round does not touch and every one passes alone — but the parent should
+  read a local 92/93 as load, not as a regression.
+- A 96-spec run rewrites the committed round-2 screenshots under
+  `.scratch/reviews/96/screenshots/round2/` (a 4-byte PNG difference) and
+  `.dokan-port`, so the tree is dirty after any e2e run. Pre-existing; restored
+  before committing, and recorded because Guard Phase 2 asks for a clean tree.
 - The reset clears server-side UI preferences. `pagination.spec.ts` sets its own
   `ui.pageSize` explicitly for exactly this reason, and `00-onboarding` already
   clears preferences mid-run, so this is not a new class of clearing.

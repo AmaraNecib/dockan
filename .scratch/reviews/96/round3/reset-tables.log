@@ -1,0 +1,51 @@
+# `reset-e2e-records.mjs` completeness — evidence for #96 round 3
+
+`reset-e2e-records.mjs` is what both new hooks run to restore "clean shop
+records". Against `apps/api/src/db/schema.ts` it was resetting 14 of the 17
+shop-record tables and leaving `supplier_account_entries`, `supplier_returns`
+and `supplier_return_lines` behind. The rows become orphans once `suppliers` and
+`invoices` are deleted, so no assertion sees them — until a later spec reads a
+supplier total over the whole database, which is the class this round is about.
+
+The 96 spec's first test records a purchase against an inline supplier, which
+writes a supplier-account charge, so it is the right probe.
+
+## Command shape
+
+```
+bunx playwright test tests/e2e/96-returns-supplier-action.spec.ts
+bun -e '<readonly row counts on .e2e-data/dokan.db>'
+```
+
+## BEFORE — the three `DELETE`s removed from the script
+
+```
+2 passed (32.0s)
+supplier_account_entries 1
+supplier_returns 0
+supplier_return_lines 0
+invoices 0
+suppliers 0
+returns 0
+items 0
+```
+
+One orphaned account entry survives the reset. (The two `supplier_return*`
+tables are 0 in this probe because the 96 spec records a *customer* return;
+`supplier-account.spec.ts` is the spec that writes supplier returns, which is
+why they are fixed too and not only the table that showed a row here.)
+
+## AFTER — the three `DELETE`s present
+
+```
+2 passed (35.9s)
+supplier_account_entries 0
+supplier_returns 0
+supplier_return_lines 0
+invoices 0
+suppliers 0
+returns 0
+items 0
+```
+
+The shop records return to zero, which is what the reset's own contract claimed.

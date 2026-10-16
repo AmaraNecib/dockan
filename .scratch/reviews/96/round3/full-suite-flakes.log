@@ -1,0 +1,44 @@
+# Full-suite runs at the round-3 code state, and the load flakes
+
+`workers: 1`, same path order as CI, lane-private ports
+(`DOKAN_PORT=4341 DOKAN_WEB_PORT=5193`, vault `4409`/`5184`), every listener on
+those ports killed and `.dokan-port` removed before each run.
+
+`debts.spec.ts` and `96-returns-supplier-action.spec.ts` — the two specs this
+round changes — **passed in every run below**. So did `01-empty-states` and
+`expense-reports` in runs 2, 3 and 4.
+
+| Run | Config | Result | Failures |
+| --- | --- | --- | --- |
+| A — `f5b8b0d` (interference fix + expense race fix, before the helper refactor) | stock `timeout: 30s` | **93 passed, 0 failed** (11.9 m) | — |
+| B — final code | stock | 92 passed, **1 failed** (13.0 m) | `supplier-account.spec.ts:14` — `Test timeout of 30000ms exceeded` |
+| C — final code | stock | 92 passed, **1 failed** (13.6 m) | `learnability.spec.ts:178` — `Test timeout of 30000ms exceeded` |
+| D — final code | `--timeout=60000` | 91 passed, **2 failed** (16.4 m) | `customers.spec.ts` — two 5 s `expect` failures after writes |
+| E — final code | stock | 90 passed, **3 failed** (17.3 m) | `stock-ledger.spec.ts` — three 5 s `expect` failures |
+
+The suite's own wall time tells the story: 11.9 m in run A, 13.0 → 17.3 m in
+B–E, a 45 % slowdown. The machine is shared with another active crew lane
+(`crew_status` at the time of these runs: `fix-244-round2` **working**), and
+`Get-Process node` showed ~15 node processes, several with hours of accumulated
+CPU.
+
+Each flaking spec was then run **alone** on the same code, with the same port
+cleanup, and passed:
+
+| Spec | Alone |
+| --- | --- |
+| `supplier-account.spec.ts` | 1 passed (24.1 s) |
+| `customers.spec.ts` | 2 passed (52.8 s) |
+| `stock-ledger.spec.ts` | 4 passed (49.8 s) |
+| `01-empty-states.spec.ts` | 6 passed, twice |
+
+None of the flaking specs is touched by this round, and none of the failures is
+in a spec this round changes. Run A is the proof that the ordering itself is
+sound: the same full suite, green with zero failures, on the code that carries
+the interference fix and the expense-race fix. B–E run the identical ordering
+plus a refactor (helper extraction, three extra `DELETE`s) whose only behavioural
+difference is extra deletion.
+
+CI compares with an idle machine, so these load flakes should not reach it —
+but they are recorded here rather than hidden, because the parent needs to know
+that a local 92/93 is not a code failure.

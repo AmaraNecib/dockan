@@ -140,3 +140,98 @@ operable and no action is invented.
   adjacent form can be disabled, the action is not rendered at all.
 - Sibling lanes share the e2e ports: e2e runs use `DOKAN_PORT`/`DOKAN_WEB_PORT`
   and clear any stale listeners on the shared pair before a run.
+
+---
+
+# Round 2 — the return action on a purchase invoice, and after a save
+
+Tier: **Standard** — UI branch + copy + a navigation target. No stock, money,
+debt, auth or backup path moves, so none of the five High-assurance failure
+modes apply.
+Base: `b7038b5` (`origin/issue-96-empty-states`, the PR #245 head). Target PR:
+#245.
+
+## The class (round-1 lesson, applied one level deeper)
+
+> An empty state whose action opens a form gated by a **second** query must not
+> offer the action when that query can fail. The empty state has to branch on
+> the dependency's state, not just the list's total.
+
+In round 1 this fixed Items (a missing category). It was **not** applied to the
+invoice-returns action added in the same PR. Two gates were missed:
+
+1. **Kind** — `returnsCreate` refuses a purchase invoice outright
+   (`apps/api/src/rpc/router.ts:1507 RETURN_NOT_SALE`). `hasReturnableLine` only
+   asks whether a line has units left, so a purchase invoice offered a
+   customer-return form it can never submit.
+2. **The form is rendered at all** — after a save, `savedReturn` replaces the
+   form with a completion card, but the history refetch has not landed, so
+   `returns` is still `[]` and `hasReturnableLine` is still true. The empty state
+   and its action rendered beside the card, and the action focused a field that
+   no longer existed.
+
+A third gate of the same class was found while sweeping: the per-line cap comes
+from `returnsForInvoice`. When that read fails and there is no cached list, the
+remaining quantity is unknown, so the action (and the form) opened on a guessed
+cap.
+
+## Interface (no new component)
+
+`ReturnsPanel` (`apps/web/src/pages/invoice.tsx`) branches its body on:
+
+- `!isSale` (`invoice.kind !== "SALE"`) → one `EmptyState` (testId
+  `returns-empty`) whose hint names the supplier account and whose action is a
+  `Link` to `/suppliers/$partyId` (`counterpartyId`), or `/suppliers` when the
+  purchase invoice has no linked supplier. No customer-return form, no history
+  table.
+- `returnsUnavailable` (`returnsQuery.isError && returnsQuery.data ===
+  undefined`) → explanatory `EmptyState`, no action, no form.
+- `returns.length === 0` → the round-1 state, now with
+  `invoiceReturnsJustSavedHint` and **no action** while `savedReturn !== null`,
+  and the action only when `savedReturn === null && hasReturnableLine`.
+- otherwise the history table.
+
+The completion card / form branch is `!isSale || returnsUnavailable ? null :
+savedReturn !== null ? <card> : <form>`, mirroring `PaymentPanel`, which already
+hides its action while `savedPayment !== null`.
+
+## Sweep — the payments action (`pmt-*`)
+
+Neither hole applies:
+
+- `invoicesPay` has no kind gate (a purchase invoice paid in place is also a
+  signed supplier payment), so a payment form on a purchase invoice is not a
+  dead end.
+- `PaymentPanel` already hides `pmt-empty-action` when `remaining === 0 ||
+  savedPayment !== null` and swaps the hint to `pmtEmptyJustSavedHint`
+  (`invoice.tsx:188-196`). That is the pattern this round follows.
+- The payment form's cap (`remainingAmount`) is part of the invoice detail read;
+  there is no second query that can fail, so the `returnsUnavailable` branch has
+  no payment analogue.
+
+## Tests
+
+`apps/web/src/pages/invoice-returns.test.tsx` (all four fail on `b7038b5`):
+
+1. purchase + linked supplier → no `returns-empty-action`, no `returns-form`,
+   action link goes to `/suppliers/$partyId` with the supplier id;
+2. purchase with no supplier record → action link goes to `/suppliers`;
+3. save a return through the real form, history still stale → completion card
+   shown, action absent, `invoiceReturnsJustSavedHint` copy;
+4. history read fails → action and form absent, `invoiceReturnsUnavailableHint`.
+
+`tests/e2e/96-returns-supplier-action.spec.ts` drives the real screen path:
+a purchase invoice shows the supplier-account link and no return form; a sale
+invoice's saved return shows the card with no dead action while the history
+refetch is held open.
+
+## Risks
+
+- Hiding the whole customer-return form on a purchase invoice removes a
+  pre-existing (never-submittable) UI path. The supplier account is the real
+  path; the purchase invoice still shows its lines, totals and payments.
+- The stale window between save and refetch is proven deterministically by
+  holding the `returnsForInvoice` response open in the e2e spec, not by timing.
+- The pending window (`returnsQuery.isPending`, data undefined) still offers the
+  action, matching the round-1 items trade-off (N2); only a settled failure
+  withholds it.

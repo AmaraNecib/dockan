@@ -413,6 +413,16 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // zero, or every unit already returned). The empty state must not offer a
   // focus action into that dead form (issue #96).
   const hasReturnableLine = returnableLines.some((line) => remainingReturnableFor(line, returns) > 0);
+  // #96 round 2 — the api refuses a customer return on a purchase invoice
+  // outright (`RETURN_NOT_SALE`), so the panel must not render that form here:
+  // a purchase return is recorded from the supplier account instead.
+  const isSale = invoice.kind === "SALE";
+  const supplierAccountId = invoice.counterpartyId;
+  // #96 round 2 — the form's per-line cap is read from this history. When the
+  // read failed and there is no cached list, the remaining quantity is unknown,
+  // so the action is withheld rather than opening a form that can only be
+  // refused (the round-1 lesson: branch on the dependency, not just the total).
+  const returnsUnavailable = returnsQuery.isError && returnsQuery.data === undefined;
 
   // What earlier returns already refunded per line, in the shape
   // `computeReturnRefund` expects. The api derives the identical map from
@@ -577,14 +587,39 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           {t("returnsPendingCountLabel", { count: pendingReturns.length })} · {t("returnsReviewedCountLabel", { count: reviewedReturns.length })}
         </p>
       )}
-      {returns.length === 0 ? (
+      {!isSale ? (
         <EmptyState
           testId="returns-empty"
           className="mt-2"
           title={t("returnsEmpty")}
-          hint={t("invoiceReturnsEmptyHint")}
+          hint={supplierAccountId === null ? t("invoiceReturnsPurchaseNoPartyHint") : t("invoiceReturnsPurchaseHint")}
           action={
-            hasReturnableLine ? (
+            supplierAccountId === null ? (
+              <Button size="lg" variant="outline" asChild>
+                <Link to="/suppliers" data-testid="returns-supplier-action">{t("suppliersTitle")}</Link>
+              </Button>
+            ) : (
+              <Button size="lg" variant="outline" asChild>
+                <Link to="/suppliers/$partyId" params={{ partyId: supplierAccountId }} data-testid="returns-supplier-action">{t("invoiceReturnsSupplierAction")}</Link>
+              </Button>
+            )
+          }
+        />
+      ) : returnsUnavailable ? (
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={t("invoiceReturnsUnavailableHint")}
+        />
+      ) : returns.length === 0 ? (
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={savedReturn !== null ? t("invoiceReturnsJustSavedHint") : t("invoiceReturnsEmptyHint")}
+          action={
+            savedReturn === null && hasReturnableLine ? (
               <Button
                 size="lg"
                 variant="outline"
@@ -628,7 +663,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         </table>
       )}
 
-      {savedReturn !== null ? (
+      {!isSale || returnsUnavailable ? null : savedReturn !== null ? (
         <SuccessCard
           testId="returns-done"
           className="mt-4"

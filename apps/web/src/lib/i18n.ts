@@ -559,6 +559,18 @@ const resources = {
       returnsEmpty: "لا توجد مرتجعات بعد",
       returnsEmptyHint: "تُسجَّل المرتجعات من شاشة الفاتورة، وتظهر هنا للمراجعة.",
       invoiceReturnsEmptyHint: "لم تُسجَّل مرتجعات على هذه الفاتورة بعد؛ سجّلها من النموذج أسفله.",
+      // #96 round 2 — a purchase invoice has no customer-return form; the
+      // return is recorded from the supplier account instead.
+      invoiceReturnsPurchaseHint: "مرتجعات المشتريات تُسجَّل من كشف حساب المورّد، لا من فاتورة الشراء.",
+      invoiceReturnsPurchaseNoPartyHint: "مرتجعات المشتريات تُسجَّل من كشف حساب المورّد، وهذه الفاتورة بلا مورّد مسجّل.",
+      invoiceReturnsSupplierAction: "كشف حساب المورّد",
+      // #96 round 2 — the saved card replaces the form until the owner asks for
+      // another return; while the history refetch is in flight the action is
+      // withheld (mirrors pmtEmptyJustSavedHint).
+      invoiceReturnsJustSavedHint: "تم تسجيل المرجوع للتو؛ سيظهر سجله بعد التحديث.",
+      // #96 round 2 — the form's cap comes from this read; when it failed there
+      // is no honest remaining quantity to type against.
+      invoiceReturnsUnavailableHint: "تعذّر تحميل سجل المرتجعات؛ لا يمكن تسجيل مرجوع قبل ظهور السجل.",
       returnsRecordTitle: "تسجيل مرجوع",
       returnsReason: "سبب المرجوع (اختياري)",
       returnQuantity: "كمية المرجوع",

@@ -141,6 +141,7 @@
         "pagination.spec.ts",
         "purchase-intake.spec.ts",
         "returns.spec.ts",
+        "96-returns-supplier-action.spec.ts",
         "01-empty-states.spec.ts"
       ]
     },

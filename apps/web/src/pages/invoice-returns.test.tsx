@@ -17,6 +17,8 @@ import { routerMock } from "../tests/router-mock";
 /** returnsList payload the panel should serve, or an error flag / payload for create */
 let returnsData: ReturnDetail[] = [];
 let failReturnsCreate = false;
+/** fail the panel's history read, to prove the action is withheld when the cap source is unknown */
+let failReturnsRead = false;
 /** what the mocked returnsCreate resolves with; a test can override it */
 let createdReturn: ReturnDetail | null = null;
 let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string; cashPaidOut?: number } | null = null;
@@ -37,7 +39,10 @@ mock.module("@/lib/rpc", () => ({
       // serves it unpaginated (issue #163 review)
       queryOptions: () => ({
         queryKey: ["returnsForInvoice"],
-        queryFn: async () => ({ items: returnsData }),
+        queryFn: async () => {
+          if (failReturnsRead) throw new Error("RETURNS_READ_FAILED");
+          return { items: returnsData };
+        },
       }),
       queryKey: ({ input }: { input: { invoiceId: string } }) => ["returnsForInvoice", input],
     },
@@ -73,7 +78,13 @@ const { returnQuantityError, remainingReturnableFor, ReturnsPanel } = await impo
 const LINE_ID = "00000000-0000-4000-8000-0000000000c1";
 const ITEM_ID = "00000000-0000-4000-8000-0000000000c2";
 
-function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, totalAmount = 900, returnCreditAmount = 0): InvoiceDetail {
+function makeInvoice(
+  lines: InvoiceDetail["lines"] = [],
+  paidAmount = 900,
+  totalAmount = 900,
+  returnCreditAmount = 0,
+  overrides: Partial<InvoiceDetail> = {},
+): InvoiceDetail {
   return {
     id: "00000000-0000-4000-8000-0000000000b1",
     invoiceNumber: "INV-0001",
@@ -94,6 +105,7 @@ function makeInvoice(lines: InvoiceDetail["lines"] = [], paidAmount = 900, total
     updatedAt: "2026-08-26T10:00:00",
     lines,
     payments: [],
+    ...overrides,
   };
 }
 
@@ -157,6 +169,7 @@ beforeEach(() => {
   document.body.appendChild(host);
   returnsData = [];
   failReturnsCreate = false;
+  failReturnsRead = false;
   createdReturn = null;
   lastCreateInput = null;
 });
@@ -306,6 +319,53 @@ describe("ReturnsPanel (new-return form + history)", () => {
     const firstEnabled = Array.from(form?.querySelectorAll<HTMLInputElement>("input") ?? []).find((input) => !input.disabled);
     expect(firstEnabled).toBeDefined();
     expect(document.activeElement).toBe(firstEnabled ?? null);
+  });
+
+  it("a purchase invoice points at the supplier account instead of a return form it can never submit (#96 round 2)", () => {
+    const supplierId = "00000000-0000-4000-8000-0000000000e1";
+    renderPanel(makeInvoice([saleLine()], 900, 900, 0, { kind: "PURCHASE", counterpartyId: supplierId, counterpartyName: "مورد" }));
+    const empty = host.querySelector('[data-testid="returns-empty"]');
+    // the customer-return action and its form are both the dead end here
+    expect(host.querySelector('[data-testid="returns-empty-action"]')).toBeNull();
+    expect(host.querySelector('[data-testid="returns-form"]')).toBeNull();
+    expect(empty?.textContent).toContain(i18n.t("returnsEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("invoiceReturnsPurchaseHint"));
+    const link = host.querySelector<HTMLAnchorElement>('[data-testid="returns-supplier-action"]');
+    expect(link?.getAttribute("href")).toContain("/suppliers/$partyId");
+    expect(link?.getAttribute("href")).toContain(`partyId=${supplierId}`);
+  });
+
+  it("a purchase invoice with no supplier record points at the suppliers list instead (#96 round 2)", () => {
+    renderPanel(makeInvoice([saleLine()], 900, 900, 0, { kind: "PURCHASE" }));
+    const empty = host.querySelector('[data-testid="returns-empty"]');
+    expect(host.querySelector('[data-testid="returns-empty-action"]')).toBeNull();
+    expect(empty?.textContent).toContain(i18n.t("invoiceReturnsPurchaseNoPartyHint"));
+    const link = host.querySelector<HTMLAnchorElement>('[data-testid="returns-supplier-action"]');
+    expect(link?.getAttribute("href")).toContain("/suppliers");
+  });
+
+  it("hides the action and shows the just-saved hint while the saved return's history is still stale (#96 round 2)", async () => {
+    // drive the REAL save: returnsData stays [] because the mocked history read
+    // is still the pre-save list — the exact window before the refetch lands
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(host.querySelector('[data-testid="returns-done"]')).not.toBeNull();
+    // the form is gone, so the action would focus nothing: it must be gone too
+    expect(host.querySelector('[data-testid="returns-empty-action"]')).toBeNull();
+    const empty = host.querySelector('[data-testid="returns-empty"]');
+    expect(empty?.textContent).toContain(i18n.t("invoiceReturnsJustSavedHint"));
+  });
+
+  it("withholds the return form and action when the history read failed, so the cap is never guessed (#96 round 2)", async () => {
+    failReturnsRead = true;
+    renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
+    const empty = host.querySelector('[data-testid="returns-empty"]');
+    expect(host.querySelector('[data-testid="returns-empty-action"]')).toBeNull();
+    expect(host.querySelector('[data-testid="returns-form"]')).toBeNull();
+    expect(empty?.textContent).toContain(i18n.t("invoiceReturnsUnavailableHint"));
   });
 
   it("renders every prior return with its status, refund and a voucher link", async () => {

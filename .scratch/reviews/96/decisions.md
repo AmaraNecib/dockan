@@ -23,7 +23,7 @@ Screenshots: `.scratch/reviews/96/screenshots/{before,after}/<n>-<screen>.png`
 | 12 | Party detail — payments | A | copy improved — `partyPaymentsEmptyHint`; deliberately **no action** | `pages/party-detail.tsx` | `12-party-detail-payments` |
 | 13 | Party detail — supplier account | A | copy improved — `supplierAccountEmptyHint` names the four entry kinds; deliberately **no action** | `pages/party-detail.tsx` | `13-supplier-account` |
 | 14 | Invoice detail — payments | A/B | copy improved, **action added only when a payment can be recorded** — focuses `pmt-amount`; a settled invoice or the just-saved card gets copy with no action | `pages/invoice.tsx` | `14-invoice-payments` |
-| 15 | Invoice detail — returns | A/B | copy improved, **action added only when a line has units left to return** — focuses the first enabled return field; otherwise no action | `pages/invoice.tsx` | `15-invoice-returns` |
+| 15 | Invoice detail — returns | A/B | copy improved, **action added only when a line has units left to return** — focuses the first enabled return field; otherwise no action. Round 2: on a **purchase** invoice the panel points at the supplier account instead (the api refuses `RETURN_NOT_SALE`), and while a saved return's card is shown the action is withheld | `pages/invoice.tsx` | `15-invoice-returns` |
 | 16 | Purchase link-proposals | A | copy improved — `purchasesProposalEmpty` now says what would appear and why it is empty; deliberately **no action**; keeps the panel's own `h3` (an `EmptyState` would duplicate it) | `pages/purchase.tsx` | `16-purchase-proposals` |
 
 ## Judgement notes

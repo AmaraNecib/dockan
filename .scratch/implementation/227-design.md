@@ -1,25 +1,30 @@
 # #227 — strip bidi formatting marks from money drafts (design)
 
-- Tier: **High-assurance** in effect. The brief records Standard, and the delta
-  is only *input normalisation*; but `docs/engineering-workflow.md` names «invoice
-  & debt money calculations» High-assurance, #210 touched the same readers, and
-  round 1 proved the change *did* move a billed amount (a mark-only override went
-  from refused to free) — the exact reason #210 was High-assurance. So the
-  High-assurance gates were run: **Debate**, test-audit and code-review. The
-  design still notes the brief's label so the parent can confirm or re-label;
-  the stricter gate is satisfied either way.
-- Base (the stack): `origin/fix-210-arabic-indic-money` @ `afe15fe` — the PR
-  #229 head. Merge-base with `origin/develop` is `a52084d1`. This lane is a
-  stack on #229 as the brief requires: no rebase onto `develop`, nothing #229
-  carries is re-implemented.
+- Tier: **High-assurance**. Justification (one line): the diff sits on the
+  invoice-total computation path (a sale line's price override feeds the total),
+  so it can violate failure mode (2) «a total is computed wrongly» — round 1 of
+  this lane *did* move a billed amount (a mark-only override went from refused to
+  a free line). Per the workflow the tier follows the failure mode, not the diff
+  size; the brief recorded Standard, and the failure-mode read plus the #210
+  precedent (same readers) make High-assurance the defensible tier. The
+  High-assurance gates therefore ran: **Debate**, test-audit and code-review.
+- Base: `origin/develop` @ `c3f8544`. PR #229/#210 was **merged into `develop`
+  while this lane ran**, so the brief's stack base (`origin/fix-210-arabic-indic-money`
+  @ `afe15fe`) is no longer the base: the three lane commits were rebased onto
+  the current `origin/develop` (merge-base with the old base is `a52084d1`).
+  Overlap analysis: `git diff origin/develop...HEAD` touches only the 7 #227
+  files; no #229-owned file is re-touched, and `develop` contains neither
+  `BIDI_CONTROL` nor `draftBlank`, so nothing is duplicated from the merged
+  #210/#229 content.
 - Authority: commit only. This lane does **not** push and does **not** merge.
 
 ## Problem
 
 `normalizeArabicIndicDigits` maps digits only, and every strict reader `trim()`s
-(`trim` drops whitespace, not `Cf` format characters) but does not strip Unicode
-bidi formatting marks. Copying Arabic-Indic digits out of RTL text commonly
-carries an RLM (U+200F) or LRM (U+200E), so:
+(`trim` drops ECMAScript `WhiteSpace`; the bidi marks are `Cf` format characters,
+and `Cf` is not `WhiteSpace`, so `trim` cannot drop them) but does not strip
+Unicode bidi formatting marks. Copying Arabic-Indic digits out of RTL text
+commonly carries an RLM (U+200F) or LRM (U+200E), so:
 
 - `parseWholeAmount("\u200f٥")` → `null` (expected 5)
 - `parseWholePercentage("\u200f١٠٠")` → `null` (expected 100)
@@ -52,9 +57,8 @@ names it, and only one production module (`lib/invoice-draft.ts`) imports the
 function itself (the test imports it too; ~15 modules import the module). The
 doc comment now states the widened contract where the name under-describes it.
 A rename (`normalizeMoneyDraft`) was considered and rejected: it would churn the
-one reader module plus the test (§«Mysterious Name» in the review evidence) for
-no behavioural gain, and would collide with the parallel `#225` lane that is
-editing the same readers.
+one reader module plus the test for no behavioural gain, and would collide with
+the `#225` lane that edits the same readers.
 
 ## Which marks, and why stripping is safe
 
@@ -102,7 +106,10 @@ Deliberately **not** stripped:
 
 No new export, no signature change, no dependency. `normalizeArabicIndicDigits`
 gains one `.replace` of one module-private regex; callers and imports are
-untouched.
+untouched. As a consequence of that strip, `lib/invoice-draft.ts` also gains the
+private `draftBlank` predicate and uses it at the two override sites
+(`saleUnitPrice`, `saleOverrideInvalid`), so a mark-only draft is «nothing
+chosen» in both — see the Risks section.
 
 ## Planned tests
 
@@ -110,8 +117,11 @@ untouched.
    - `normalizeArabicIndicDigits` drops each of the twelve `Bidi_Control` code
      points (a loop, so a typo'd range cannot pass) and leaves a mark-free draft
      byte-identical (ASCII identity, and the legitimate `1٬000` unchanged).
-   - a negative boundary: non-`Bidi_Control` invisibles (U+200B ZWSP, U+FEFF)
-     are left untouched, so a future widening to `\p{Cf}` fails a pin.
+   - a negative boundary: non-`Bidi_Control` invisibles (U+200B ZWSP, U+2060
+     word joiner, U+FEFF BOM) are left untouched, so a future widening to
+     `\p{Cf}` fails a pin. U+FEFF is additionally pinned as *reading through*
+     (`parseWholeAmount("\ufeff5")` = 5) because it is ECMAScript `WhiteSpace`
+     and `trim()` — not this strip — drops it.
    - each reader: `parseWholeAmount`, `parseWholePercentage`,
      `parseGroupedAmount`, `parseLooseNumber`.
    - the ASCII-identity case: `parseWholeAmount("\u200f123")` = `123` and plain
@@ -153,10 +163,11 @@ untouched.
   refuses a mark-only draft (`percentageDraftInvalid`, `resolveInitialPaid`,
   `parseReturnQuantities`, `parseCashBackDraft`, `saleDebt`) or reads it as the
   empty value (`discountAmountFor` / the sale discount guard, where a zero
-  discount is legitimate and cannot bill a wrong number). The two refusals that
-  face a *visually empty* field — a mark-only initial-payment draft surfaces
-  «invalid payment» — are pre-existing (they refused before #227 too) and are
-  unchanged here. **Deferred, not dismissed:** unifying «blank» behind one
+  discount is legitimate and cannot bill a wrong number). The refusals that face
+  a *visually empty* field — a mark-only initial-payment draft surfaces
+  «invalid payment», and a mark-only percentage draft is reported invalid rather
+  than empty — are pre-existing (they refused before #227 too) and are unchanged
+  here. **Deferred, not dismissed:** unifying «blank» behind one
   normalising predicate for every money draft is a behaviour change in the
   payment path (mark-only would become «nothing paid now»), so it wants its own
   ticket rather than a #227 side effect. `draftBlank` is the seed of that

@@ -96,7 +96,18 @@ with its own money review):
 None of them becomes *inconsistent with itself* by this change: they do not read
 any draft that a widened reader also reads. The remaining readers are tracked as
 **#225** (a follow-up issue created from review round 1), so #210 does not claim
-"every numeric input" is done.
+"every numeric input" is done. Bidi formatting marks on a pasted Arabic-Indic
+number (RLM/LRM defeat the digits-only test) are tracked as **#227**.
+
+## Review rounds
+
+Round 1 (7 agents) found the preview/submit reader split and the already-applied
+hardening. Round 2 verified the production fix and found one false-positive test:
+the refused-draft preview assertion used `toContain("0")`, which also matched the
+`400000` the old reader showed, so it passed on the unfixed code. Rewritten to
+extract the exact preview number (`previewAmount()`), with the Arabic test now
+submitting and asserting the same quantity it previewed, plus a free-standing
+Arabic-quantity test and pins for the mixed-script loose grammar (`١e٣`→1000).
 
 ## Tests
 
@@ -116,8 +127,10 @@ Unit (`bun test`):
 - `supplier-return-draft.test.ts` — `parseReturnQuantities` accepts `٥` and `۵`,
   rejects `«٥٫٥»`, and equals the ASCII read.
 - `supplier-return-panel.test.tsx` — the invoice-linked **preview** reads an
-  Arabic-Indic quantity as the same value as ASCII, and previews 0 for a draft
-  the submit path refuses (`1e3`, `5.5`) rather than a value it will not send.
+  Arabic-Indic quantity as the value it then submits (`previewAmount()`, not a
+  substring match), previews exactly 0 for a draft the submit path refuses
+  (`1e3`, `1.5`) rather than a value it will not send, and accepts an
+  Arabic-Indic quantity on the free-standing path.
 - `amount-percentage-input.test.tsx` — `percentageEdited` clamps `«١٥٠»` to 100
   and links `«٥٠»` to half.
 - `sale.test.tsx` (page level) — a sale typed entirely in Arabic-Indic

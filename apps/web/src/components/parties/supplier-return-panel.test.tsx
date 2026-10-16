@@ -119,6 +119,14 @@ function confirmButton() {
   return host.querySelector<HTMLButtonElement>('[data-testid="supplier-return-confirm"]');
 }
 
+/** The previewed return value as a number. The rendered element is "label: 2000 دج",
+ * so extract the last digit run instead of substring-matching (a bare
+ * `toContain("0")` also matches 400000, the value the old loose reader showed). */
+function previewAmount(): number {
+  const text = host.querySelector('[data-testid="supplier-return-value"]')?.textContent ?? "";
+  return Number(text.match(/(\d+)(?!.*\d)/u)?.[1] ?? Number.NaN);
+}
+
 async function submit() {
   const form = host.querySelector<HTMLFormElement>('[data-testid="supplier-return-panel"]');
   await act(async () => {
@@ -164,23 +172,36 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     expect(confirmButton()?.disabled).toBe(true);
   });
 
-  it("previews an Arabic-Indic quantity as the same value the ASCII draft reads (#210)", async () => {
+  it("previews an Arabic-Indic quantity as the value it submits (#210)", async () => {
     await render();
     typeInto("supplier-return-qty-l1", "٥");
-    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("2000");
+    expect(previewAmount()).toBe(2000);
     typeInto("supplier-return-qty-l1", "5");
-    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("2000");
+    expect(previewAmount()).toBe(2000);
+    // preview and submit read the same draft: type ٥, submit 5
+    await submit();
+    expect(submitted[0]).toMatchObject({ lines: [{ invoiceLineId: "l1", quantity: 5 }] });
   });
 
   it("previews zero for a draft the submit path refuses, never a value it will not send (#210)", async () => {
     await render();
-    // `Number` read `1e3` as 1000 and `1.5` as a fractional sum, but the
-    // submit path reads through parseWholeAmount and refuses both
+    // `Number` read `1e3` as 1000 and `1.5` as a fractional sum; both render a
+    // number containing a zero, so this asserts the exact preview value
     typeInto("supplier-return-qty-l1", "1e3");
-    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("0");
+    expect(previewAmount()).toBe(0);
     typeInto("supplier-return-qty-l1", "1.5");
-    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("0");
+    expect(previewAmount()).toBe(0);
     expect(confirmButton()?.disabled).toBe(true);
+  });
+
+  it("accepts an Arabic-Indic quantity on the free-standing path (#210)", async () => {
+    await render();
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    await openSelect("supplier-return-item", "هدية");
+    typeInto("supplier-return-quantity", "٥");
+    typeInto("supplier-return-amount", "300");
+    await submit();
+    expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 5, amount: 300 });
   });
 
   it("rejects a malformed cash-back instead of omitting the refund", async () => {

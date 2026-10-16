@@ -142,6 +142,14 @@ describe("Arabic-Indic digits in the money readers (#210)", () => {
     expect(parseLooseNumber(" ٥٠ ")).toBe(parseLooseNumber(" 50 "));
     expect(parseLooseNumber("٠")).toBe(0);
     expect(parseLooseNumber("-٥")).toBe(-5);
+    // normalising digits first lets an Arabic digit compose an ASCII numeric
+    // grammar (`1e3`, `0x10`); the loose reader is defined as Number() after a
+    // digit-only replace, so these read like their ASCII twins. The strict
+    // readers still reject both.
+    expect(parseLooseNumber("١e٣")).toBe(1000);
+    expect(parseLooseNumber("١e٣")).toBe(parseLooseNumber("1e3"));
+    expect(parseLooseNumber("٠x١٠")).toBe(16);
+    expect(parseWholeAmount("١e٣")).toBeNull();
   });
 
   it("normalises each digit independently, so a mixed-script draft concatenates (#210)", () => {

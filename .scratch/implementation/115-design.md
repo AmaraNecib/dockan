@@ -142,7 +142,8 @@ pre-round-2 code) fails the test with `preferenceStore[SIDEBAR_COLLAPSED_KEY] ==
 undefined`. Adding an assertion that cannot fail for the wrong reason was
 deliberately avoided; the literal criterion "a test that pins the interleaving"
 is met by the mutation, which is recorded in
-`.scratch/reviews/115/<sha>-test-audit.md`.
+`.scratch/reviews/115/12992bf928cb1a87c2545401d2a9f27e4e79392a-test-audit.md`
+(command, exit code and observed failure).
 
 ## Planned tests
 

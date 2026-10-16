@@ -13,7 +13,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
-import { parseGroupedAmount, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
   draftTotals,
   firstCommitError,
@@ -63,10 +63,12 @@ export interface SaleDebt {
  * report `valid: false` so the pre-commit preview can stay hidden while
  * `submit` surfaces its own validation error. A draft above the total is also
  * invalid: invoice creation rejects an overpayment, so it is not a zero-debt
- * commit.
+ * commit. Blankness asks the shared `draftBlank` predicate (#238), the same one
+ * `resolveInitialPaid` commits with, so a mark-only paid draft previews as
+ * unpaid instead of diverging from the commit.
  */
 export function saleDebt(total: number, paidDraft: string): SaleDebt {
-  if (paidDraft.trim() === "") return { valid: true, debt: Math.max(total, 0) };
+  if (draftBlank(paidDraft)) return { valid: true, debt: Math.max(total, 0) };
   const paid = parseGroupedAmount(paidDraft);
   if (paid === null || paid > total) return { valid: false, debt: 0 };
   return { valid: true, debt: Math.max(total - paid, 0) };

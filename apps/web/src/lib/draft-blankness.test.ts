@@ -17,7 +17,11 @@ import { nextUnitCost, resolveInitialPaid, saleOverrideInvalid, saleUnitPrice, t
  * The invariant pinned here is *not* "every site treats blank the same" (the
  * fallbacks differ on purpose, #146). It is: **every site judges a mark-only
  * draft exactly as it judges an empty draft**, and a mark *inside* a draft is
- * still a refusal, never a blank.
+ * still a refusal, never a blank. The sites this file covers are the ones the
+ * shared predicate reaches: `saleUnitPrice`, `saleOverrideInvalid`,
+ * `nextUnitCost`, `resolveInitialPaid`, `percentageDraftInvalid` and
+ * `draftBlank` itself. Raw-`.trim()` gates outside that set are recorded as
+ * follow-ups, not silently claimed (#238 design).
  */
 
 const RLM = "\u200f";
@@ -102,9 +106,10 @@ const SITES: readonly Site[] = [
 
 describe("one blankness predicate across every numeric-draft reader (#238)", () => {
   it("decides blankness with the reader's normalisation, not a raw trim()", () => {
-    // The exact gap: raw trim() reads the mark as content, the shared predicate
-    // reads it as empty. This is why the four guards disagreed with their reader.
-    expect(RLM.trim() === "").toBe(false);
+    // A bidi mark is `Cf`, not ES `WhiteSpace`, so `.trim()` alone reads it as
+    // content while the shared predicate reads it as empty — the gap the guards
+    // disagreed over. (Stated as a comment, not an assertion on `.trim()`, which
+    // is a JavaScript-platform property rather than this code's.)
     expect(draftBlank(RLM)).toBe(true);
     expect(draftBlank("")).toBe(true);
     expect(draftBlank("   ")).toBe(true);
@@ -117,6 +122,12 @@ describe("one blankness predicate across every numeric-draft reader (#238)", () 
       expect([site.name, site.judge(RLM)]).toEqual([site.name, site.blankVerdict]);
       expect([site.name, site.judge(site.chosenDraft)]).toEqual([site.name, site.chosenVerdict]);
     }
+    // percentageDraftInvalid's row has blank==chosen ("not invalid" both ways),
+    // so its discriminating direction is pinned separately — otherwise a stub
+    // that always returned false would pass the whole table.
+    expect(percentageDraftInvalid("12.5")).toBe(true);
+    expect(percentageDraftInvalid("abc")).toBe(true);
+    expect(percentageDraftInvalid("101")).toBe(true);
   });
 
   it("judges mark-only exactly like empty at every site (the class invariant)", () => {
@@ -138,15 +149,40 @@ describe("one blankness predicate across every numeric-draft reader (#238)", () 
     }
   });
 
+  it("holds for two DIFFERENT marks, not only one mark repeated", () => {
+    for (const first of PASTED_BIDI_MARKS) {
+      for (const second of PASTED_BIDI_MARKS) {
+        expect([first, second, draftBlank(` ${first} ${second} `)]).toEqual([first, second, true]);
+      }
+    }
+  });
+
+  it("keeps the strip at the edge: a mark glued to digits is content, not blank", () => {
+    for (const mark of PASTED_BIDI_MARKS) {
+      expect([mark, draftBlank(`${mark}400`)]).toEqual([mark, false]);
+      expect([mark, draftBlank(`400${mark}`)]).toEqual([mark, false]);
+      // either Arabic-Indic digit script is content too, so the edge case cannot
+      // be mistaken for a blank just because the digit is not ASCII
+      expect([mark, draftBlank(`${mark}٥`)]).toEqual([mark, false]);
+      expect([mark, draftBlank(`${mark}۵`)]).toEqual([mark, false]);
+    }
+  });
+
   it("keeps an interior mark a refusal at every site, never a blank", () => {
     // #227 deliberately leaves a mark inside a draft for the strict readers to
     // refuse: in the RTL page `1\u200f2` renders as `21`, so reading the logical
-    // order would bill a number the owner never saw. It must stay a refusal.
-    const interior = `1${RLM}2`;
-    expect(draftBlank(interior)).toBe(false);
-    expect(percentageDraftInvalid(interior)).toBe(true);
-    expect(resolveInitialPaid(1000, interior, "")).toEqual({ ok: false });
-    expect(nextUnitCost(interior, 1200)).toBe(1200);
-    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: interior })).toBe(true);
+    // order would bill a number the owner never saw. It must stay a refusal at
+    // every mark, not just the one RLM case.
+    for (const mark of PASTED_BIDI_MARKS) {
+      const interior = `1${mark}2`;
+      expect([mark, draftBlank(interior)]).toEqual([mark, false]);
+      expect([mark, percentageDraftInvalid(interior)]).toEqual([mark, true]);
+      expect([mark, resolveInitialPaid(1000, interior, "")]).toEqual([mark, { ok: false }]);
+      expect([mark, nextUnitCost(interior, 1200)]).toEqual([mark, 1200]);
+      expect([mark, saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: interior })]).toEqual([mark, true]);
+      // saleUnitPrice cannot itself refuse: it falls back to the default price,
+      // and saleOverrideInvalid is what turns that into a submit refusal.
+      expect([mark, saleUnitPrice(overrideLine(interior))]).toEqual([mark, 1000]);
+    }
   });
 });

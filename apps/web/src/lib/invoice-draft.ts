@@ -230,7 +230,8 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
  * empty field gives — while an interior mark is left and keeps `previous`. The
  * blank case asks the shared `draftBlank` predicate (#238) instead of leaning
  * on `Number("")` being zero, so the reason stays the blankness rule even if the
- * loose reader changes.
+ * loose reader changes (redundant with today's reader — both yield 0 — but it
+ * keeps the cleared-field contract from depending on that coincidence).
  */
 export function nextUnitCost(value: string, previous: number): number {
   if (draftBlank(value)) return 0;

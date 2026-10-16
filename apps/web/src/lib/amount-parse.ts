@@ -52,10 +52,15 @@ export const PASTED_BIDI_MARKS: readonly string[] = [
  * The mark class and the content test are derived from the one list above, so
  * the strip and any test that drives the set can never disagree about which
  * code points are «a pasted bidi mark» (#238).
+ *
+ * Each member is escaped before interpolation: a future mark that is a class
+ * metacharacter (`-`, `]`, `^`, `\\`) must not silently widen or corrupt the
+ * class when it is added to the list.
  */
-const PASTED_BIDI_MARK = new RegExp(`[${PASTED_BIDI_MARKS.join("")}]`, "gu");
+const pasteMarkClass = PASTED_BIDI_MARKS.map((mark) => mark.replace(/[\\\]^/-]/gu, "\\$&")).join("");
+const PASTED_BIDI_MARK = new RegExp(`[${pasteMarkClass}]`, "gu");
 /** Draft content for the edge test: not whitespace and not one of the marks. */
-const DRAFT_CONTENT = new RegExp(`[^\\s${PASTED_BIDI_MARKS.join("")}]`, "u");
+const DRAFT_CONTENT = new RegExp(`[^\\s${pasteMarkClass}]`, "u");
 
 /**
  * Drop the pasted bidi marks that sit outside the draft's content — leading,
@@ -98,9 +103,17 @@ export function normalizeArabicIndicDigits(draft: string): string {
  * normalisation is applied. A paste can leave an invisible mark behind
  * (`"\u200f"`, a mark stripped by `normalizeArabicIndicDigits`), and a bidi mark
  * is a `Cf` format character, not whitespace — so a raw `.trim()` check reads it
- * as a chosen value, while the loose `Number()` bills it as 0. Every blankness
- * guard and the reader it guards ask this one predicate (#238), so a mark-only
- * draft is «nothing chosen» exactly as an empty draft is.
+ * as a chosen value, while the loose `Number()` bills it as 0.
+ *
+ * This one predicate now decides blankness for the invoice-draft money readers:
+ * `saleUnitPrice`, `saleOverrideInvalid`, `nextUnitCost`, `resolveInitialPaid`
+ * (all in `invoice-draft.ts`), `percentageDraftInvalid` (here), and the sale
+ * screen's `saleDebt` preview. A mark-only draft is «nothing chosen» there
+ * exactly as an empty one is. It is NOT a repo-wide claim: raw-`.trim()`
+ * blankness gates remain at `numeric-input.ts` (`resolveOpeningStock`),
+ * `supplier-opening-draft.ts`, `supplier-adjust-panel.tsx`, the settle panels'
+ * amount guards and `amount-percentage-input.tsx`'s clamp; they are recorded as
+ * follow-ups (#238 design), not silently covered.
  */
 export function draftBlank(draft: string): boolean {
   return normalizeArabicIndicDigits(draft).trim() === "";

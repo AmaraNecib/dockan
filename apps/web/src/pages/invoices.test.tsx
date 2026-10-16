@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -36,6 +36,8 @@ const allInvoices: Row[] = [
   { id: "inv-1", invoiceNumber: "INV-0001", kind: "SALE", status: "UNPAID", counterpartyName: "زبون", invoiceDate: "2026-08-01", totalAmount: 1000, remainingAmount: 1000 },
   { id: "inv-2", invoiceNumber: "INV-0002", kind: "PURCHASE", status: "PAID", counterpartyName: "مورد", invoiceDate: "2026-08-02", totalAmount: 500, remainingAmount: 0 },
 ];
+/** the seeded rows are restored after every test; the empty-state specs mutate them */
+const seedInvoices: Row[] = [...allInvoices];
 
 // stub the whole seam + Link (rendered as a plain anchor) so the page is
 // testable without a network or a router mount, matching returns.test.tsx
@@ -72,14 +74,23 @@ const { InvoicesPage } = await import("./invoices");
 
 let mounted: Array<{ unmount: () => void }> = [];
 
+beforeEach(() => {
+  // restore the seed before each test so a hard failure cannot leak fixture
+  // mutations into the next test (issue #96 review)
+  allInvoices.length = 0;
+  allInvoices.push(...seedInvoices);
+  requests = [];
+});
+
 afterEach(() => {
   const roots = mounted;
   mounted = [];
   for (const root of roots) act(() => root.unmount());
   document.body.innerHTML = "";
   requests = [];
+  allInvoices.length = 0;
+  allInvoices.push(...seedInvoices);
 });
-
 /** act-wrapped polling so floating-ui positioning and store updates settle inside React */
 const waitFor = async (predicate: () => boolean) => {
   for (let i = 0; i < 100; i++) {
@@ -104,13 +115,21 @@ async function mountPage() {
       </QueryClientProvider>,
     );
   });
-  await waitFor(() => container.querySelector("[data-testid='invoices-table']") !== null);
+  await waitFor(
+    () =>
+      container.querySelector("[data-testid='invoices-table']") !== null ||
+      container.querySelector("[data-testid='invoices-empty']") !== null,
+  );
   return {
     rows: () => Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='invoice-row']")),
     numbers: () =>
       Array.from(container.querySelectorAll<HTMLTableRowElement>("tr[data-testid='invoice-row']")).map((row) =>
         row.querySelector("td")?.textContent ?? "",
       ),
+    empty: () => container.querySelector("[data-testid='invoices-empty']"),
+    emptyAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action']"),
+    emptyPurchaseAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action-purchase']"),
+    kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
   };
 }
 
@@ -172,5 +191,50 @@ describe("InvoicesPage filters", () => {
     await choose("invoices-status-filter", i18n.t("invoicesStatusAll"));
     await waitFor(() => page.numbers().length === 2);
     expect(requests.at(-1)?.status).toBeUndefined();
+  });
+});
+
+describe("InvoicesPage empty states (issue #96)", () => {
+  it("names the next step and links to a new sale when there are no invoices", async () => {
+    allInvoices.length = 0;
+    const page = await mountPage();
+
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmpty"));
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("saleNew"));
+    expect(page.emptyAction()?.getAttribute("href")?.split("?")[0]).toBe("/sale");
+    // the list holds purchase invoices too, so a purchase-first owner needs a
+    // real second step rather than only the sale screen (issue #96 review)
+    expect(page.emptyPurchaseAction()?.textContent).toBe(i18n.t("purchasesNew"));
+    expect(page.emptyPurchaseAction()?.getAttribute("href")?.split("?")[0]).toBe("/purchase");
+  });
+
+  it("offers to clear the filter when only the status filter is active", async () => {
+    const page = await mountPage();
+
+    // neither seeded row is PARTIAL, so a status-only filter empties the list
+    await choose("invoices-status-filter", i18n.t("invoicesStatusPartial"));
+    await waitFor(() => page.empty() !== null);
+
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+  });
+
+  it("offers to clear the filter when the filtered view has no matches", async () => {
+    allInvoices.length = 0;
+    allInvoices.push(seedInvoices[0]!);
+    const page = await mountPage();
+
+    await choose("invoices-kind-filter", i18n.t("invoicesFilterPurchase"));
+    await waitFor(() => page.empty() !== null);
+    expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+
+    // the honest action clears the filter and the list returns
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 1);
+    expect(page.empty()).toBeNull();
+    // focus lands on the filter that caused the empty view, not the body
+    expect(document.activeElement).toBe(page.kindFilter());
   });
 });

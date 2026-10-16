@@ -11,6 +11,11 @@ import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslatio
 import i18n from "../lib/i18n";
 import { parseDateTimeText } from "../lib/dates";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
+import { routerMock } from "../tests/router-mock";
+
+// the breakdown's empty state renders a router Link; keep the rest of the
+// module real so sibling files keep RouterProvider (issue #96)
+mock.module("@tanstack/react-router", () => routerMock());
 
 /**
  * The range label is the only thing under test, so the profit figures stay at
@@ -336,6 +341,53 @@ describe("ReportsPage custom bounds (issue #123)", () => {
     expect(value).toMatch(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
     expect(value).not.toBe("15/01/2026 08:05");
     expect(await page.waitFor(() => lastReportInput?.customTo === parseDateTimeText(value))).toBe(true);
+
+    await page.unmount();
+  });
+});
+
+describe("ReportsPage breakdown empty state (issue #96)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    document.body.innerHTML = "";
+    mountedRoots = [];
+    report = fixture();
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    for (const { root, container } of mountedRoots) {
+      root.unmount();
+      container.remove();
+    }
+    mountedRoots = [];
+    document.body.innerHTML = "";
+  });
+
+  it("names the next step and links to recording an expense", async () => {
+    const page = await mountPage(queryClient);
+    expect(await page.waitFor(() => page.container().querySelector("[data-testid='report-breakdown-empty']") !== null)).toBe(true);
+
+    const empty = page.container().querySelector<HTMLElement>("[data-testid='report-breakdown-empty']")!;
+    expect(empty.textContent).toContain(i18n.t("reportsEmpty"));
+    expect(empty.textContent).toContain(i18n.t("reportsEmptyHint"));
+
+    const action = page.container().querySelector<HTMLAnchorElement>("[data-testid='reports-empty-action']");
+    expect(action).not.toBeNull();
+    expect(action!.textContent).toBe(i18n.t("reportsEmptyAction"));
+    expect(action!.getAttribute("href")?.split("?")[0]).toBe("/expenses");
+
+    await page.unmount();
+  });
+
+  it("does not show the breakdown empty state when a category row exists", async () => {
+    report = fixture({ byCategory: [{ categoryId: "cat-1", categoryName: "كراء", isOwnerWithdrawal: false, total: 500, count: 1 }] });
+    const page = await mountPage(queryClient);
+
+    expect(await page.waitFor(() => page.container().querySelector("[data-testid='report-breakdown']") !== null)).toBe(true);
+    expect(page.container().querySelector("[data-testid='report-breakdown-empty']")).toBeNull();
 
     await page.unmount();
   });

@@ -124,6 +124,18 @@ export function ExpensesPage() {
     });
   };
 
+  /** a non-default window or any category filter means a new expense recorded
+   * now may not land in the view; the empty state must say so (issue #96) */
+  const historyFiltersActive = preset !== "CURRENT_MONTH" || selectedCategoryIds.size > 0;
+
+  function clearHistoryFilters(): void {
+    pager.reset();
+    setPreset("CURRENT_MONTH");
+    setCustomFrom(OPEN_BOUND);
+    setCustomTo(OPEN_BOUND);
+    setSelectedCategoryIds(new Set());
+  }
+
   /**
    * Fold a typed range-bound edit into its state and reset the list only when
    * the *applied* moment actually moved. A half-typed or impossible value keeps
@@ -166,6 +178,8 @@ export function ExpensesPage() {
   /** the list has never produced data: nothing to record against, and nothing
    * to show as an option list either */
   const categoriesUnavailable = categories.data === undefined;
+  /** the list loaded and is genuinely empty (distinct from a failed/pending read) */
+  const noExpenseCategories = !categoriesUnavailable && categoryListEmpty;
 
   // the list now carries it, so the grace entry has done its job
   useEffect(() => {
@@ -554,8 +568,45 @@ export function ExpensesPage() {
 
         {history.isPending ? (
           <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-loading">{t("expensesLoading")}</p>
+        ) : history.isError ? (
+          <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-4 text-sm text-destructive" data-testid="expenses-history-error">
+            {tError(history.error instanceof Error ? history.error.message : undefined)}
+          </p>
         ) : history.data === undefined || history.data.total === 0 ? (
-          <p className="rounded border bg-card p-4 text-muted-foreground" data-testid="expenses-empty">{t("expensesEmpty")}</p>
+          <EmptyState
+            testId="expenses-empty"
+            className="rounded border border-border bg-card"
+            title={t(noExpenseCategories ? "expensesEmptyNoCategory" : "expensesEmpty")}
+            hint={
+              historyFiltersActive
+                ? t("expensesEmptyFilteredHint")
+                : noExpenseCategories
+                  ? t("expenseCategoryEmptyHint")
+                  : categoriesUnavailable
+                    ? undefined
+                    : t("expensesEmptyHint")
+            }
+            action={
+              historyFiltersActive ? (
+                <Button size="lg" variant="outline" onClick={clearHistoryFilters} data-testid="expenses-empty-action">
+                  {t("expensesEmptyClearFilters")}
+                </Button>
+              ) : noExpenseCategories ? (
+                <Button size="lg" variant="outline" onClick={openCategoryForm} data-testid="expenses-empty-action">
+                  {t("expenseCategoryCreateFirst")}
+                </Button>
+              ) : categoriesUnavailable ? undefined : (
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => document.querySelector<HTMLInputElement>('[data-testid="expense-amount"]')?.focus()}
+                  data-testid="expenses-empty-action"
+                >
+                  {t("expensesEmptyAction")}
+                </Button>
+              )
+            }
+          />
         ) : (
           <>
           <table className="w-full rounded border bg-card" data-testid="expense-history">

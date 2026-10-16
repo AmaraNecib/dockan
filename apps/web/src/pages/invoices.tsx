@@ -9,6 +9,8 @@ import { orpc } from "../lib/rpc";
 import { formatDate } from "../lib/dates";
 import { usePagination } from "../hooks/use-pagination";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Pager } from "@/components/ui/pager";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -108,7 +110,41 @@ export function InvoicesPage() {
           {t("activityError")}
         </p>
       ) : list.data.total === 0 ? (
-        <p className="mt-4 text-sm text-muted-foreground" data-testid="invoices-empty">{t("invoicesEmpty")}</p>
+        <EmptyState
+          testId="invoices-empty"
+          className="mt-4 rounded border border-border bg-card"
+          title={t("invoicesEmpty")}
+          hint={t(kind === "" && status === "" ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
+          action={
+            kind === "" && status === "" ? (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button asChild size="lg">
+                  <Link to="/sale" data-testid="invoices-empty-action">{t("saleNew")}</Link>
+                </Button>
+                <Button asChild size="lg" variant="outline">
+                  <Link to="/purchase" data-testid="invoices-empty-action-purchase">{t("purchasesNew")}</Link>
+                </Button>
+              </div>
+            ) : (
+              <Button
+                size="lg"
+                variant="outline"
+                data-testid="invoices-empty-action"
+                onClick={() => {
+                  // the clicked button is replaced by the table; keep focus on
+                  // whichever filter actually emptied the view (issue #96)
+                  const filter = kind !== "" ? "invoices-kind-filter" : "invoices-status-filter";
+                  setKind("");
+                  setStatus("");
+                  pager.reset();
+                  document.querySelector<HTMLElement>(`[data-testid="${filter}"]`)?.focus();
+                }}
+              >
+                {t("invoicesEmptyClearFilters")}
+              </Button>
+            )
+          }
+        />
       ) : (
         <>
         <table className="mt-4 w-full" data-testid="invoices-table">

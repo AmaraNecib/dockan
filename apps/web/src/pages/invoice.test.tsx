@@ -244,6 +244,21 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(empty?.textContent).toContain(i18n.t("pmtEmpty"));
     expect(empty?.textContent).toContain(i18n.t("pmtEmptyHint"));
     expect(host.querySelector('[data-testid="pmt-history"]')).toBeNull();
+
+    // and the action moves focus to the adjacent record field
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="pmt-empty-action"]')!.click());
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-amount"]'));
+  });
+
+  it("does not offer a dead action on a settled invoice with no payment rows (#96)", () => {
+    renderPanel(makeInvoice(0));
+    const empty = host.querySelector('[data-testid="pmt-empty"]');
+    expect(empty).toBeTruthy();
+    // the installments are all disabled at remaining 0, so the copy must not
+    // tell the owner to record one and no action may be offered
+    expect(empty?.textContent).toContain(i18n.t("pmtEmptySettledHint"));
+    expect(empty?.textContent).not.toContain(i18n.t("pmtEmptyHint"));
+    expect(host.querySelector('[data-testid="pmt-empty-action"]')).toBeNull();
   });
 
   it("links the instalment amount to the invoice remaining (#162)", () => {

@@ -49,6 +49,17 @@ function seedPaid(remaining: number): AmountPercentageValue {
 }
 
 /**
+ * The first enabled control inside a form. Focus-based actions and the
+ * completion-card restore both need a real field, never a disabled one, and
+ * must not hard-code which field happens to be first (issue #96).
+ */
+function firstEnabledField(form: HTMLFormElement | null): HTMLInputElement | null {
+  return (
+    Array.from(form?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled) ?? null
+  );
+}
+
+/**
  * Router-free payment panel (same shape as purchase's LinkProposalPanel):
  * full history + record-payment form, unit-testable without a router.
  */
@@ -84,8 +95,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
       return;
     }
     if (!restoreFocusPending.current) return;
-    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
-    const target = first ?? paidOffRef.current;
+    const target = firstEnabledField(formRef.current) ?? paidOffRef.current;
     if (target === null || target === undefined) return;
     target.focus();
     // consume the flag only once focus actually moved; a failed move leaves it
@@ -176,6 +186,18 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           className="mt-2"
           title={t("pmtEmpty")}
           hint={remaining === 0 ? t("pmtEmptySettledHint") : savedPayment !== null ? t("pmtEmptyJustSavedHint") : t("pmtEmptyHint")}
+          action={
+            remaining === 0 || savedPayment !== null ? undefined : (
+              <Button
+                size="lg"
+                variant="outline"
+                data-testid="pmt-empty-action"
+                onClick={() => formRef.current?.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.focus()}
+              >
+                {t("pmtRecord")}
+              </Button>
+            )
+          }
         />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="pmt-history">
@@ -370,8 +392,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       return;
     }
     if (!restoreFocusPending.current) return;
-    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
-    if (first === undefined) return;
+    const first = firstEnabledField(formRef.current);
+    if (first === null) return;
     first.focus();
     // consume the flag only once focus actually moved
     if (document.activeElement === first) restoreFocusPending.current = false;
@@ -387,6 +409,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pendingReturns = returns.filter((record) => record.status === "PENDING_REVIEW");
   const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
+  // A structurally returnable line can still have nothing left (sold quantity
+  // zero, or every unit already returned). The empty state must not offer a
+  // focus action into that dead form (issue #96).
+  const hasReturnableLine = returnableLines.some((line) => remainingReturnableFor(line, returns) > 0);
 
   // What earlier returns already refunded per line, in the shape
   // `computeReturnRefund` expects. The api derives the identical map from
@@ -557,6 +583,18 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           className="mt-2"
           title={t("returnsEmpty")}
           hint={t("invoiceReturnsEmptyHint")}
+          action={
+            hasReturnableLine ? (
+              <Button
+                size="lg"
+                variant="outline"
+                data-testid="returns-empty-action"
+                onClick={() => firstEnabledField(formRef.current)?.focus()}
+              >
+                {t("returnsRecordTitle")}
+              </Button>
+            ) : undefined
+          }
         />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="returns-history">

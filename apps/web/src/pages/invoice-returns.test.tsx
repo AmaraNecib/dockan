@@ -292,6 +292,20 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(empty?.textContent).toContain(i18n.t("returnsEmpty"));
     expect(empty?.textContent).toContain(i18n.t("invoiceReturnsEmptyHint"));
     expect(host.querySelector('[data-testid="returns-history"]')).toBeNull();
+    // nothing is returnable, so there is no honest action and none is offered
+    expect(host.querySelector('[data-testid="returns-empty-action"]')).toBeNull();
+  });
+
+  it("moves focus to the adjacent return field when a line is returnable (#96)", () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const action = host.querySelector<HTMLButtonElement>('[data-testid="returns-empty-action"]');
+    expect(action?.textContent).toBe(i18n.t("returnsRecordTitle"));
+
+    act(() => action!.click());
+    const form = host.querySelector<HTMLFormElement>('[data-testid="returns-form"]');
+    const firstEnabled = Array.from(form?.querySelectorAll<HTMLInputElement>("input") ?? []).find((input) => !input.disabled);
+    expect(firstEnabled).toBeDefined();
+    expect(document.activeElement).toBe(firstEnabled ?? null);
   });
 
   it("renders every prior return with its status, refund and a voucher link", async () => {

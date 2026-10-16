@@ -8,6 +8,8 @@ import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
@@ -199,7 +201,15 @@ export function ItemsPage() {
 
       <div role="tabpanel" id="items-panel-products" aria-labelledby="items-tab-products" hidden={tab !== "products"}>
         <CatalogSearch />
-        <ItemList scanNonce={scanNonce} />
+        <ItemList
+          scanNonce={scanNonce}
+          onAddItem={() => {
+            selectTab("add");
+            // the action unmounts the button that was clicked; hand focus to the
+            // tab it opened (mirrors the arrow-key path) so context is not lost
+            document.getElementById("items-tab-add")?.focus();
+          }}
+        />
       </div>
       <div role="tabpanel" id="items-panel-add" aria-labelledby="items-tab-add" hidden={tab !== "add"}>
         <ItemForm key={formResetKey} seed={formSeed} sessionRef={formSessionRef} onSeedConsumed={() => setFormSeed(null)} onSaved={() => invalidateItems(queryClient)} />
@@ -568,7 +578,7 @@ function ItemForm({
   );
 }
 
-function ItemList({ scanNonce }: { scanNonce: number }) {
+function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const pager = usePagination();
@@ -780,7 +790,31 @@ function ItemList({ scanNonce }: { scanNonce: number }) {
   }
 
   if (items.data.total === 0) {
-    return <p className="mt-6 rounded border bg-card p-3 text-muted-foreground">{t("itemsEmpty")}</p>;
+    // a fresh install has no item category, and the add form requires one it
+    // cannot create. Point at the categories screen instead of opening a form
+    // the owner cannot complete (issue #96).
+    const noCategories = categories.data?.items.length === 0;
+    return (
+      <EmptyState
+        testId="items-empty"
+        className="mt-6 rounded border border-border bg-card"
+        title={t(noCategories ? "itemsEmptyNoCategory" : "itemsEmpty")}
+        hint={t(noCategories ? "itemsEmptyNoCategoryHint" : "itemsEmptyHint")}
+        action={
+          noCategories ? (
+            <Button asChild size="lg" variant="outline">
+              <Link to="/categories" data-testid="items-empty-action">
+                {t("itemsEmptyNoCategoryAction")}
+              </Link>
+            </Button>
+          ) : (
+            <Button size="lg" onClick={onAddItem} data-testid="items-empty-action">
+              {t("itemsEmptyAction")}
+            </Button>
+          )
+        }
+      />
+    );
   }
 
   return (

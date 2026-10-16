@@ -312,6 +312,24 @@ async function mount(): Promise<MountedPage> {
   return { container, queryClient };
 }
 
+/** The same mount for the empty-catalogue case, where the products table has no rows. */
+async function mountEmpty(): Promise<MountedPage> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  mounted.push({ root, container, queryClient });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ItemsPage />
+      </QueryClientProvider>,
+    );
+  });
+  await waitFor(() => document.querySelector('[data-testid="items-empty"]') !== null);
+  return { container, queryClient };
+}
+
 async function openAddTab(): Promise<void> {
   click("items-tab-add");
   await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
@@ -368,6 +386,41 @@ afterEach(() => {
 });
 
 describe("items page tabs", () => {
+  it("shows a teaching empty state whose action opens the add tab (#96)", async () => {
+    items = [];
+    await mountEmpty();
+
+    const empty = el<HTMLElement>('[data-testid="items-empty"]');
+    expect(empty.textContent).toContain(i18n.t("itemsEmpty"));
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyHint"));
+    expect(el<HTMLButtonElement>('[data-testid="items-empty-action"]').textContent).toBe(i18n.t("itemsEmptyAction"));
+
+    // the honest action opens the adjacent add form and keeps keyboard focus
+    click("items-empty-action");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(el<HTMLElement>("#items-panel-products").hidden).toBe(true);
+    expect(document.activeElement).toBe(el<HTMLElement>("#items-tab-add"));
+  });
+
+  it("points at the categories screen when there is no category to add into (#96)", async () => {
+    const original = [...categories];
+    categories.length = 0;
+    items = [];
+    try {
+      await mountEmpty();
+
+      const empty = el<HTMLElement>('[data-testid="items-empty"]');
+      expect(empty.textContent).toContain(i18n.t("itemsEmptyNoCategory"));
+      expect(empty.textContent).toContain(i18n.t("itemsEmptyNoCategoryHint"));
+      const action = el<HTMLAnchorElement>('[data-testid="items-empty-action"]');
+      expect(action.textContent).toBe(i18n.t("itemsEmptyNoCategoryAction"));
+      expect(action.getAttribute("href")?.split("?")[0]).toBe("/categories");
+    } finally {
+      categories.length = 0;
+      categories.push(...original);
+    }
+  });
+
   it("defaults to the products table and hides the add panel", async () => {
     await mount();
     expect(el<HTMLElement>("#items-panel-products").hidden).toBe(false);

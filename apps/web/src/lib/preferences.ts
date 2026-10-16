@@ -90,7 +90,16 @@ export function onPreferenceWriteSettled(listener: PreferenceWriteListener): () 
 }
 
 function notifyPreferenceWriteSettled(key: string, ok: boolean): void {
-  for (const listener of writeSettledListeners) listener(key, ok);
+  // This runs in a promise `finally`, where a throw would become an unhandled
+  // rejection and skip the remaining observers; a broken observer must not be
+  // able to break the write path or other observers.
+  for (const listener of writeSettledListeners) {
+    try {
+      listener(key, ok);
+    } catch {
+      // a broken observer is not a failed write
+    }
+  }
 }
 
 /**

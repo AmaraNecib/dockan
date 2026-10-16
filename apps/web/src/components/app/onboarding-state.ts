@@ -34,8 +34,10 @@ export function useGettingStartedVisibility() {
 
   function setVisible(next: boolean): void {
     if (next) {
-      // completed first: while it is set the panel can never render, whatever
-      // `dismissed` says
+      // BOTH flags must clear: `completed` alone keeps the panel hidden
+      // whatever `dismissed` says, and vice versa. The two writes run
+      // concurrently (two preferences, one control); each failure is surfaced
+      // by the caller, and a retry converges because each write is idempotent.
       completed.setValue(false);
       dismissed.setValue(false);
       return;

@@ -6,12 +6,13 @@ import { useGettingStartedVisibility } from "./onboarding-state";
  * Settings escape hatch for the getting-started checklist (issue #115).
  *
  * Dismissing or completing the checklist retires it, and nothing used to bring
- * it back. This control is the way back: turning it on clears `dismissed`
- * **and** the record-derived `completed` milestone (either one alone keeps
- * `hidden = dismissed || completed` true), so the checklist returns to the
- * dashboard while any step is still open. A shop that is genuinely complete
- * re-records the milestone on the next observation, which is the intended
- * "nothing left to teach" behaviour rather than a hidden door.
+ * it back. This control is the way back: turning it on requests a clear of
+ * `dismissed` **and** the record-derived `completed` milestone (either one
+ * alone keeps `hidden = dismissed || completed` true), so the checklist returns
+ * to the dashboard while any step is still open. A half-applied clear is
+ * surfaced as an alert, never read as success. A shop that is genuinely
+ * complete re-records the milestone on the next observation, which is the
+ * intended "nothing left to teach" behaviour rather than a hidden door.
  */
 export function GettingStartedSetting() {
   const { t } = useTranslation();

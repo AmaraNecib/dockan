@@ -16,6 +16,8 @@ import {
 let store: Record<string, string>;
 let failRead = false;
 let failWrite = false;
+/** When set, only the Nth write of this test fails (1-based). */
+let failWriteCall: number | null = null;
 let writeCalls = 0;
 
 mock.module("@/lib/rpc", () => ({
@@ -26,7 +28,9 @@ mock.module("@/lib/rpc", () => ({
     },
     preferencesSet: async (input: { key: string; value: string }) => {
       writeCalls += 1;
-      if (failWrite) throw new Error("PREFERENCES_WRITE_FAILED");
+      if (failWrite || (failWriteCall !== null && writeCalls === failWriteCall)) {
+        throw new Error("PREFERENCES_WRITE_FAILED");
+      }
       store[input.key] = input.value;
       return { key: input.key, value: input.value };
     },
@@ -94,6 +98,8 @@ async function mount(client: QueryClient): Promise<{
     writeError: () => host.querySelector<HTMLElement>("[data-testid='settings-getting-started-write-error']"),
     unmount: async () => {
       await act(async () => root.unmount());
+      // the module afterEach must not unmount the same root twice
+      mounted = mounted.filter((entry) => entry.root !== root);
       host.remove();
     },
   };
@@ -106,6 +112,7 @@ describe("getting-started settings escape hatch (issue #115)", () => {
     store = {};
     failRead = false;
     failWrite = false;
+    failWriteCall = null;
     writeCalls = 0;
     client = freshClient();
   });
@@ -171,8 +178,29 @@ describe("getting-started settings escape hatch (issue #115)", () => {
     await act(async () => page.toggle()?.click());
     expect(await waitFor(() => page.writeError() !== null)).toBe(true);
     expect(page.writeError()?.getAttribute("role")).toBe("alert");
+    // the control actually attempted the writes, and did not claim success
+    expect(writeCalls).toBeGreaterThan(0);
     // no false claim: the server value still stands on screen
     expect(store[ONBOARDING_DISMISSED_KEY]).toBe("true");
+    expect(page.toggle()?.checked).toBe(false);
+    await page.unmount();
+  });
+
+  it("surfaces a half-applied clear instead of reading it as success", async () => {
+    store[ONBOARDING_DISMISSED_KEY] = "true";
+    store[ONBOARDING_COMPLETED_KEY] = "true";
+    // fail only the second write (`dismissed`), after `completed` landed
+    failWriteCall = 2;
+    const page = await mount(client);
+    expect(await waitFor(() => page.toggle()?.checked === false)).toBe(true);
+    expect(await waitFor(() => page.toggle()?.disabled === false)).toBe(true);
+
+    await act(async () => page.toggle()?.click());
+    expect(await waitFor(() => store[ONBOARDING_COMPLETED_KEY] === "false")).toBe(true);
+    // the second flag did not land, so the panel is still hidden and the owner
+    // is told (the retry converges because both writes are idempotent)
+    expect(store[ONBOARDING_DISMISSED_KEY]).toBe("true");
+    expect(await waitFor(() => page.writeError() !== null)).toBe(true);
     expect(page.toggle()?.checked).toBe(false);
     await page.unmount();
   });

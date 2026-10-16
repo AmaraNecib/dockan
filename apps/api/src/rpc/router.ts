@@ -21,6 +21,9 @@ import { createBackup } from "../lib/backups";
 import { createSetupThrottle, type SetupThrottle } from "../lib/setup-throttle";
 import { tokenMatches } from "../lib/boot-token";
 import { localDate, localDateTime } from "../lib/logger";
+import type { ReportRangePreset } from "@dokan/contracts";
+import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
+import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
 
 /**
  * The only preference keys a client may write. Everything else — notably
@@ -40,9 +43,6 @@ const CLIENT_WRITABLE_PREFERENCE_KEYS = new Set(["ui.sidebar.collapsed", "ui.onb
 function isClearablePreference(key: string, value: string): boolean {
   return key === ONBOARDING_COMPLETED_PREFERENCE_KEY && value === "false";
 }
-import type { ReportRangePreset } from "@dokan/contracts";
-import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
-import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
 
 export type RpcContext = { request: Request };
 

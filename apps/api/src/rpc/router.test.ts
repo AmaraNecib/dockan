@@ -4340,6 +4340,12 @@ describe("UI preferences (issue 97 follow-up)", () => {
     await expect(
       client.preferencesSet({ key: "ui.onboarding.completed", value: "true" }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // the clear is exact: only "false" is a reset, never another falsy spelling
+    for (const value of ["yes", "0", "False", ""]) {
+      await expect(
+        client.preferencesSet({ key: "ui.onboarding.completed", value }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
   });
 
   it("still accepts the shell keys the owner owns", async () => {

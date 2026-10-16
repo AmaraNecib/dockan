@@ -2689,6 +2689,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: composed from the raw closures above, never through the
       // serialized port methods. Re-entering `runSerialized` on the single
       // connection would self-deadlock; see readOnboardingProgress (issue #115).
+      // The closure write also bypasses the wrapper's own dirty/persist seam, so
+      // this method MUST stay in MUTATING_METHODS: the wrapper is what marks the
+      // vault image dirty and persists it after the composed job.
       const progress = await readOnboardingProgress();
       const completed = progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt;
       if (!completed) return false;

@@ -1,8 +1,10 @@
 # Design: #207 (extract a `submitForm()` helper and close the opening-balance boundary gaps)
 
-**Tier:** Standard (test-only; no production, contract or schema change).
-**Base:** `origin/develop` @ `a52084d` (already includes PR #219's changes to the
-same page and test file).
+**Tier:** Standard. Justification: the change is test-only (no production, contract
+or schema change), but it edits a reviewed test file, so the Standard gates apply.
+**Base:** `origin/develop` @ `1ea76b5` (merge-base with this lane's branch; this
+branch is the abandoned `fix-207-submitform-helper` work cherry-picked onto
+current `develop`).
 **Issue:** #207, follow-up to #183 / PR #203.
 **Files:** `apps/web/src/pages/supplier-opening-balance.test.tsx` only.
 
@@ -84,14 +86,15 @@ The existing coverage is `abc`, `1 000,00` (invalid), and a batch of 201
 ## Which new cases discriminate
 
 A new case is only worth keeping if weakening the guard it names makes it fail.
-Verified by temporary mutations, then reverted:
+Verified in this lane on the pushed HEAD by temporary production mutations, then
+reverted (`git status` clean afterwards):
 
-| Mutation | Failing test |
-|---|---|
-| `openingRowStatus`: `amount === null \|\| amount <= 0` to `amount === null` | `rejects amount 0, one below the accepted range` |
-| `parseGroupedAmount` path: strip `-` before parsing | `rejects a negative amount draft instead of saving its magnitude` |
-| `parseWholeAmount`: drop the `Number.isSafeInteger` check | `rejects an amount one above the largest safe integer` |
-| `isOpeningBatchOverLimit`: `>` to `>=` | `MAX_OPENING_BALANCE_ROWS` unit test (`isOpeningBatchOverLimit(200) === false`) |
+| Mutation | Failing test | Observed |
+|---|---|---|
+| `openingRowStatus`: `amount === null \|\| amount <= 0` to `amount === null` | `rejects amount 0, one below the accepted range` | exit 1, `expect(...amount-error).not.toBeNull()` received `null` |
+| `parseGroupedAmount` path: strip `-` before parsing | `rejects a negative amount draft instead of saving its magnitude` | exit 1, `expect(...amount-error).not.toBeNull()` received `null` |
+| `parseWholeAmount`: drop the `Number.isSafeInteger` check | `rejects an amount one above the largest safe integer` | (inherited; re-run not repeated this lane) |
+| `isOpeningBatchOverLimit`: `>` to `>=` | `MAX_OPENING_BALANCE_ROWS` unit test (`isOpeningBatchOverLimit(200) === false`) | (inherited; re-run not repeated this lane) |
 
 The three reject tests run their batch on `TWO_NO_ENTRY_SUPPLIERS` (both
 suppliers carry no account entries). With no supplier carrying entries, a

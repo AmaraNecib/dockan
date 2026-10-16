@@ -8,13 +8,34 @@
 #
 # Action refs are pinned to full commit SHAs (a mutable tag can be moved to
 # untrusted code); the trailing comment names the release each SHA is from.
+#
+# PR scope (issue 226): a `changes` job turns the diff into an e2e scope and a
+# rust on/off decision, so a docs-only or a web-only PR does not pay for the
+# Windows crate build, and a feature PR runs only the specs its paths reach.
+# The push-to-develop run stays full: it is the only run that sees the exact
+# merged tree. Precedence in the map is critical -> feature -> skip -> full, so
+# a path the map does not know costs minutes, never coverage.
+#
+# #231 review fixes, all in this file: the diff is collected with `--no-renames`
+# so both sides of a move are seen, the PR trigger subscribes to `labeled` so the
+# `e2e:full` escape hatch starts a run, and the scope summary is published by
+# `changes` so a `skip` decision is explained on the run itself.
 name: CI
 
 on:
   pull_request:
     branches: [develop]
+    # `labeled` is the `e2e:full` escape hatch: GitHub dispatches no event for a
+    # label change unless it is listed, so without it adding the label to an
+    # open PR starts nothing. Listing `types:` replaces the default set
+    # (opened, synchronize, reopened), so all four are named.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [develop]
+  # Manual escape hatch: a dispatch re-runs every suite whatever the diff says,
+  # so a human who distrusts the selector is never stuck. It carries no input,
+  # because a hand-typed scope would be an unrecorded override of the map.
+  workflow_dispatch:
 
 # A newer push to the same ref makes the older run irrelevant.
 concurrency:
@@ -25,6 +46,126 @@ permissions:
   contents: read
 
 jobs:
+  # Cheap (~10 s) decision job. Every heavy job reads its outputs instead of
+  # repeating the diff logic, so there is exactly one place that can be wrong.
+  # It deliberately runs the checked-in selector rather than trusting a free-text
+  # input: the only overrule is the `e2e:full` label, and it is recorded on the PR.
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.decide.outputs.rust }}
+      e2e_mode: ${{ steps.decide.outputs.e2e_mode }}
+      e2e_specs: ${{ steps.decide.outputs.e2e_specs }}
+      e2e_reason: ${{ steps.decide.outputs.e2e_reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The diff needs history: the base commit is not always reachable from
+          # the shallow default clone.
+          fetch-depth: 0
+
+      # setup-bun reads packageManager (bun@1.3.14) from package.json,
+      # so CI tracks the repo's bun pin without a second source of truth.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Compute the changed-file list
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) base="${{ github.event.pull_request.base.sha }}"; head="${{ github.event.pull_request.head.sha }}" ;;
+            push)         base="${{ github.event.before }}";                  head="${{ github.sha }}" ;;
+            *)            base=""; head="" ;;
+          esac
+          # A zeroed `before` means a new branch, and an empty pair means we
+          # cannot prove what moved. Both must degrade to "assume everything".
+          if [ -z "$head" ] || [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            printf '*\n' > changed.txt
+          else
+            # Diff from the merge base, not the base tip: a two-dot diff against
+            # a base branch that moved on would list that branch's own commits
+            # as if this PR made them. If merge-base itself fails (unrelated
+            # histories) the tip is the fallback, which can only over-list.
+            root="$(git merge-base "$base" "$head" 2>/dev/null || echo "$base")"
+            # `--no-renames` lists a detected rename as a delete plus an add.
+            # Without it the diff reports only the destination, so a file moved
+            # out of `apps/desktop/src-tauri/**` would list its ungated
+            # destination and the rust gate would skip a crate that just lost a
+            # file. Both directions are therefore listed and run the gate; a
+            # rename can only over-run it, never under-run it.
+            git diff --no-renames --name-only "$root" "$head" > changed.txt
+          fi
+          echo "--- changed files ---"; cat changed.txt
+
+      - name: Decide the scope
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A push to develop is the authoritative run: it is the only suite
+          # that sees the exact merged tree, so it is never narrowed.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            printf 'mode=full\nspecs=\nreason=merge to develop\n' > scope.txt
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            printf 'mode=full\nspecs=\nreason=manual dispatch\n' > scope.txt
+          elif [ "${{ github.event_name }}" = "pull_request" ] && \
+               [ "${{ contains(github.event.pull_request.labels.*.name, 'e2e:full') }}" = "true" ]; then
+            # The label is the only way a person or an agent can overrule the
+            # map, and it is recorded on the PR. Free text decides nothing.
+            printf 'mode=full\nspecs=\nreason=e2e:full label\n' > scope.txt
+          else
+            bun scripts/e2e-selection.ts changed.txt > scope.txt
+          fi
+          cat scope.txt
+          mode="$(sed -n 's/^mode=//p' scope.txt)"
+          specs="$(sed -n 's/^specs=//p' scope.txt)"
+          reason="$(sed -n 's/^reason=//p' scope.txt)"
+          echo "e2e_mode=$mode"    >> "$GITHUB_OUTPUT"
+          echo "e2e_specs=$specs"  >> "$GITHUB_OUTPUT"
+          echo "e2e_reason=$reason" >> "$GITHUB_OUTPUT"
+          # `rust` gates the crate. It is true for a path that can end up inside
+          # the crate or drive its build.rs: the desktop crate, its scripts, and
+          # the sidecar inputs build.rs fingerprints (the api sources and their
+          # configs, the contracts package, bun.lock, the root tsconfig and
+          # package.json), plus a future rust-toolchain.toml / .cargo config.
+          # `*` is the unknown-diff sentinel from the step above.
+          if grep -qE '^(\*|apps/desktop/(src-tauri|scripts)/.*|apps/desktop/package\.json|rust-toolchain\.toml|\.cargo/.*|apps/api/(src/.*|package\.json|tsconfig\.json)|packages/contracts/.*|bun\.lock|tsconfig\.base\.json|package\.json)$' changed.txt; then
+            echo "rust=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The summary lives here, not in the `e2e` job: a `skip` decision is
+      # exactly when that job does not run, so a summary written there would
+      # never explain why nothing ran (#231). `always()` still publishes it when
+      # the decision itself failed, where the outputs are empty.
+      - name: Report the scope decision
+        if: always()
+        env:
+          E2E_MODE: ${{ steps.decide.outputs.e2e_mode }}
+          E2E_REASON: ${{ steps.decide.outputs.e2e_reason }}
+          E2E_SPECS_OUT: ${{ steps.decide.outputs.e2e_specs }}
+          RUST_RUNS: ${{ steps.decide.outputs.rust }}
+        run: |
+          {
+            echo "### CI scope"
+            echo ""
+            echo "e2e: \`${E2E_MODE:-unknown}\`"
+            echo ""
+            echo "\`${E2E_REASON:-no reason recorded — the decision may have failed}\`"
+            if [ -n "$E2E_SPECS_OUT" ]; then
+              echo ""
+              echo "Specs: \`$E2E_SPECS_OUT\`"
+            fi
+            echo ""
+            echo "rust: \`${RUST_RUNS:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   checks:
     name: typecheck, lint, test, audit
     runs-on: ubuntu-latest
@@ -62,8 +203,20 @@ jobs:
       - name: Skills mirror drift
         run: bun run skills:check
 
+      # `turbo test --concurrency=2 && bun test ./scripts/`, so this step also
+      # runs scripts/e2e-selection.test.ts: a stale e2e map fails here, in a
+      # couple of minutes, instead of quietly disarming the suite.
       - name: Tests
         run: bun run test
+
+      # The production bundle adds a PR-time `vite build` alongside the one the
+      # `rust` job runs for crate-affecting diffs. It is an additional build,
+      # not a moved one: `rust` still runs its own, because build.rs hard-fails
+      # without apps/web/dist. This step keeps the production build on web-only
+      # diffs that skip rust (the e2e job runs `vite dev`, and `turbo test`
+      # builds workspace dependencies, not the web app).
+      - name: Build web frontend
+        run: bun run --filter @dokan/web build
 
       # Report every advisory, then gate on high/critical only:
       # --audit-level filters what bun counts, and bun exits 1 when any
@@ -79,6 +232,16 @@ jobs:
   # and vice versa. Runs in parallel with `checks` on purpose.
   e2e:
     name: playwright e2e
+    needs: changes
+    # A skip is not silent: the decision is written to the `changes` job's
+    # summary (not this job's — a skip is exactly when this job does not run),
+    # and the push-to-develop run always reports `full`. `!cancelled()` (not a
+    # bare read of the output) makes a `changes` failure fail closed: an empty
+    # `e2e_mode` runs the whole suite instead of skipping it. A skipped job-level
+    # gate satisfies a required status check (the check reports `skipped`, which
+    # GitHub counts as successful); only a trigger-level `paths:` filter would
+    # leave a required check pending (see docs/ci.md).
+    if: ${{ !cancelled() && needs.changes.outputs.e2e_mode != 'skip' }}
     runs-on: ubuntu-latest
     # The job budget has to cover SETUP + the run step's own limit + the upload,
     # or a step timeout never fires: the job would cancel first and the evidence
@@ -113,6 +276,10 @@ jobs:
       - name: Install Playwright browser
         run: bunx playwright install --with-deps chromium
 
+      # The scope decision is published by the `changes` job: its step summary is
+      # the one place a `skip` decision is visible, because that is exactly when
+      # this job does not run (#231).
+
       - name: Run Playwright e2e
         # pipefail is load-bearing: without it the step exits with tee's status
         # (0), so a red suite would report green and the upload below would not
@@ -129,10 +296,16 @@ jobs:
         # is exactly the hang case this upload exists for. Stopping the step
         # first is what lets the upload below still run.
         timeout-minutes: 15
+        env:
+          # Empty means the whole suite (the `full` and `skip` paths never set
+          # specs). Word-split below is intended: each mapped path is one
+          # Playwright positional filter.
+          E2E_SPECS: ${{ needs.changes.outputs.e2e_specs }}
         run: |
           set -o pipefail
           mkdir -p e2e-logs
-          bun run test:e2e 2>&1 | tee e2e-logs/playwright.log
+          # shellcheck disable=SC2086 -- the spec list must word-split.
+          bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log
 
       # Evidence, not a report: a green suite leaves nothing worth 5 days of
       # storage, so success is the one outcome that skips this. #197.
@@ -166,11 +339,25 @@ jobs:
   # tests must gate PRs instead of waiting for the manual/tag release workflow.
   rust:
     name: rust test, clippy
+    needs: changes
+    # 1,057 of the 2,302 billed minutes in Oct 1-16 were this job (windows at
+    # 2x), and most of them ran for diffs that cannot reach the crate. This
+    # `if` is the single largest saving in the file. The `changes` job's `rust`
+    # output is true for the crate, its scripts, and the sidecar inputs
+    # build.rs fingerprints, so a crate, ACL, sidecar or api/contracts change
+    # still runs it; only a diff that cannot compile into the crate (web, docs,
+    # ci) is skipped. `!cancelled()` makes a `changes` failure fail closed: an
+    # empty `rust` runs the crate instead of skipping it.
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     # windows-latest on purpose: desktop-installer.yml already proves this
     # crate compiles and links there, and the Windows image ships stable Rust,
     # rustup and the WebView2 runtime. A Linux runner would need the
     # webkit2gtk/libsoup Tauri system packages installed via apt before a
     # single test compiles, which is a slower and more fragile gate.
+    #
+    # Note the price of that choice: windows-latest bills at 2x, so this job's
+    # 4 minutes are 8 billed minutes. Moving it to ubuntu would halve its cost;
+    # only do that if the apt step stays under the surcharge it replaces.
     runs-on: windows-latest
     timeout-minutes: 30
     steps:

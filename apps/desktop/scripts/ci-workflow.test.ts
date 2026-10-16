@@ -1,18 +1,28 @@
 /**
- * Invariants for the PR CI workflow (issue 154). The Rust capability guards
- * added in #153 only gate a merge if a job in this workflow actually runs
- * `cargo test` in the desktop crate, so these tests assert that job exists,
- * that its steps execute the real commands (not comments or `echo` no-ops),
- * that cargo runs in the crate directory, and that neither a `paths:` filter
- * nor a job-level `if:` can silently stop the guards on a pull request.
+ * Invariants for the PR CI workflow (issue 154, extended by issue 226). The
+ * Rust capability guards added in #153 only gate a merge if a job in this
+ * workflow actually runs `cargo test` in the desktop crate, so these tests
+ * assert that job exists, that its steps execute the real commands (not
+ * comments or `echo` no-ops), that cargo runs in the crate directory, and that
+ * its path gate runs it for every crate-affecting diff. Issue 226 replaced the
+ * always-run trade-off with a diff decision: the trigger keeps no `paths:`
+ * filter, a `changes` job computes `rust`, and the rust job's only gate is
+ * that output. The tests below pin the detector to the crate paths, so a
+ * tightened regex cannot silently drop the guard.
  *
  * The workflow is parsed with the shared `workflow-utils` helpers, so comments
  * are stripped, block scalars are dedented and line endings are normalised the
  * same way as the desktop-installer workflow tests.
+ *
+ * #231 added the review-round guards: `--no-renames` (both sides of a rename),
+ * the `labeled` trigger, the decision step reaching `full` for a labeled PR, and
+ * the root-`test`-script wiring assertion moved out of the scripts suite.
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -69,28 +79,30 @@ function invokesCargoTest(run: string): boolean {
 
 /**
  * True when one argv is exactly the e2e log pipeline:
- * `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`.
+ * `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`, or the affected form
+ * `bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log`.
  *
  * Every leg is load-bearing for #197: `argv[0] === "bun"` keeps `echo ... | tee`
  * or a separate line from satisfying the guard, `2>&1` merges the stderr carrying
  * the Playwright-managed server logs, and the tee must write the exact path the
  * upload step collects. The shape is pinned end to end (`--list`, an extra token,
  * or a reordered redirect must not satisfy it): a suite invoked with a flag that
- * lists rather than runs would still leave a log file that proves nothing.
+ * lists rather than runs would still leave a log file that proves nothing. #226
+ * added the optional spec list, but it must be exactly the `$E2E_SPECS` token,
+ * so `--list` or any other flag still fails the guard.
  * `set -o pipefail` and `shell: bash` keep a red suite red, but they say nothing
  * about where its output goes, so deleting this pipeline would leave them green
  * while the evidence disappears.
  */
 function pipesSuiteToTee(argv: readonly string[], logPath: string): boolean {
+  if (argv[0] !== "bun" || argv[1] !== "run" || argv[2] !== "test:e2e") return false;
+  const rest = argv[3] === "$E2E_SPECS" ? argv.slice(4) : argv.slice(3);
   return (
-    argv.length === 7 &&
-    argv[0] === "bun" &&
-    argv[1] === "run" &&
-    argv[2] === "test:e2e" &&
-    argv[3] === "2>&1" &&
-    argv[4] === "|" &&
-    argv[5] === "tee" &&
-    argv[6] === logPath
+    rest.length === 4 &&
+    rest[0] === "2>&1" &&
+    rest[1] === "|" &&
+    rest[2] === "tee" &&
+    rest[3] === logPath
   );
 }
 
@@ -102,6 +114,91 @@ function jobField(source: string, jobName: string, key: string): string {
     if (match !== null) return match[1].trim();
   }
   return "";
+}
+
+/** The rust-path ERE the `changes` job greps changed.txt with, as a string. */
+function rustPathPattern(): string {
+  const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
+  const match = /grep -qE '([^']+)' changed\.txt/u.exec(decide.run);
+  if (match === null) throw new Error("The changes job has no rust grep");
+  return match[1];
+}
+
+/**
+ * Run the `changes` decision script with the two GitHub expressions it
+ * interpolates resolved (event name, and whether the PR carries `e2e:full`).
+ * An expression left unresolved throws, so a new one cannot pass the test while
+ * the step is only partially executed.
+ */
+function runDecide(
+  run: string,
+  event: { eventName: string; hasFullLabel: boolean },
+) {
+  const script = run
+    .replace(
+      /\$\{\{\s*contains\(github\.event\.pull_request\.labels\.\*\.name, 'e2e:full'\)\s*\}\}/gu,
+      event.hasFullLabel ? "true" : "false",
+    )
+    .replace(/\$\{\{\s*github\.event_name\s*\}\}/gu, event.eventName);
+  const unresolved = /\$\{\{[^}]*\}\}/u.exec(script);
+  if (unresolved !== null) throw new Error(`unhandled expression in the decide step: ${unresolved[0]}`);
+
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-decide-"));
+  try {
+    const outputFile = path.join(dir, "github-output");
+    // the decision step's rust grep reads changed.txt; an empty file keeps it
+    // quiet and yields rust=false in the branches that do not run the selector
+    writeFileSync(path.join(dir, "changed.txt"), "");
+    const scope = execFileSync("bash", ["-euo", "pipefail", "-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      env: shellEnv({ GITHUB_OUTPUT: outputFile }),
+    });
+    return { scope, outputs: readFileSync(outputFile, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** process.env as string values, plus `extra` — execFileSync rejects undefined. */
+function shellEnv(extra: Record<string, string>) {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...extra };
+}
+
+/** A throwaway git repo for the diff commands; `fn` runs inside it. */
+function withTempRepo(fn: (git: (...args: string[]) => string, dir: string) => void): void {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-rename-"));
+  const git = (...args: string[]): string =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "ci-workflow-test@example.com");
+    git("config", "user.name", "ci-workflow-test");
+    git("config", "commit.gpgsign", "false");
+    fn(git, dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The only Rust gate #226 allows: the `changes` job's diff decision. */
+const RUST_GATE = "!cancelled() && needs.changes.outputs.rust != 'false'";
+
+/**
+ * True when a rust-job condition runs it for every crate-affecting diff.
+ * Anything keyed off the event type (`push`) can drop the PR gate, and an empty
+ * condition is the pre-#226 always-run behaviour; both must fail so the gate
+ * cannot be deleted (or hollowed out) without a conscious test edit. A
+ * `changes` failure leaves the output empty, and `!= 'false'` runs the crate in
+ * that case, which is the fail-closed direction.
+ */
+function isRustGate(condition: string): boolean {
+  const expression = condition.replace(/^\$\{\{\s*|\s*\}\}$/gu, "").trim();
+  return expression === RUST_GATE;
 }
 
 describe("PR CI workflow", () => {
@@ -167,6 +264,18 @@ describe("PR CI workflow", () => {
     expect(jobTimeout - runTimeout).toBeGreaterThanOrEqual(E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES);
   });
 
+  it("keeps the production web build in checks", () => {
+    // #226 gates the rust job on crate-affecting paths. `checks` runs an
+    // additional PR-time `vite build`; `rust` still runs its own for
+    // crate-affecting diffs (build.rs needs apps/web/dist). This pins the
+    // checks build so a later cleanup cannot drop the production build from
+    // web-only diffs.
+    const checks = parseSteps(WORKFLOW_SOURCE, "checks");
+    expect(stepNamed(checks, "Build web frontend").run).toBe(
+      "bun run --filter @dokan/web build",
+    );
+  });
+
   it("uploads the evidence a red e2e run leaves behind (#197)", () => {
     const e2eSteps = parseSteps(WORKFLOW_SOURCE, "e2e");
     const upload = stepNamed(e2eSteps, "Upload e2e failure evidence");
@@ -207,6 +316,20 @@ describe("PR CI workflow", () => {
   it("rejects an e2e run whose log capture was deleted or mangled", () => {
     const pipeline = ["bun", "run", "test:e2e", "2>&1", "|", "tee", E2E_LOG_PATH];
     expect(pipesSuiteToTee(pipeline, E2E_LOG_PATH)).toBe(true);
+    // #226: the affected form adds exactly the spec-list token and nothing else
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "$E2E_SPECS", "2>&1", "|", "tee", E2E_LOG_PATH],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(true);
+    // a token after the spec list is no longer just the spec list
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "$E2E_SPECS", "--list", "2>&1", "|", "tee", E2E_LOG_PATH],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(false);
 
     // the regression #197 fixed: no tee, so nothing reaches the upload
     expect(pipesSuiteToTee(["bun", "run", "test:e2e"], E2E_LOG_PATH)).toBe(false);
@@ -263,22 +386,212 @@ describe("PR CI workflow", () => {
     expect(clippy.condition).toBe("");
   });
 
-  it("does not put the Rust job behind a paths filter", () => {
+  it("does not put the whole workflow behind a trigger-level paths filter", () => {
     const triggers = onLines(WORKFLOW_SOURCE).join("\n");
     expect(triggers).toContain("pull_request:");
     expect(triggers).toContain("branches: [develop]");
-    // A `paths:`/`paths-ignore:` filter makes the job report "skipped"; if the
-    // owner marks it required, a skipped check never satisfies branch
-    // protection and the PR is stuck pending forever. No filter, no trap.
+    // A `paths:`/`paths-ignore:` filter on the trigger makes the whole workflow
+    // (including `checks`) report "skipped" on a docs-only PR; if the owner
+    // marks a job required, a skipped check never satisfies branch protection
+    // and the PR is stuck pending forever (#154). Scope is a job decision
+    // instead, so every suite still reports on every event.
     expect(triggers).not.toContain("paths");
   });
 
-  it("does not let a job-level if: skip the Rust job on pull requests", () => {
-    // A job-level `if:` is the other way to silently disable the guards: a
-    // condition like `github.event_name == 'push'` leaves every step assertion
-    // above green while the rust job never runs on a PR. No condition at all
-    // is the strongest form of "always runs on pull_request".
-    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
+  it("gates the Rust job on crate-affecting paths, not on the event type", () => {
+    // Issue 226 made the job-level `if:` the only gate. A condition on the
+    // event type (`push`) would leave every step assertion above green while
+    // the rust job never runs on a PR; an empty condition is the old
+    // always-run behaviour. Both must fail.
+    expect(isRustGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
+    expect(isRustGate("github.event_name == 'push'")).toBe(false);
+    expect(isRustGate("")).toBe(false);
+    // `${{ }}` is optional YAML dressing; the expression is what must match.
+    expect(isRustGate("${{ " + RUST_GATE + " }}")).toBe(true);
+  });
+
+  it("detects every crate-affecting path for the Rust gate", () => {
+    const rustPath = new RegExp(rustPathPattern(), "u");
+    const cratePaths = [
+      // the crate, its ACL and its build script
+      "apps/desktop/src-tauri/src/lib.rs",
+      "apps/desktop/src-tauri/capabilities/default.json",
+      "apps/desktop/src-tauri/permissions/vault.toml",
+      "apps/desktop/src-tauri/build.rs",
+      "apps/desktop/src-tauri/Cargo.toml",
+      "apps/desktop/src-tauri/tauri.conf.json",
+      "apps/desktop/scripts/sidecar.ts",
+      "apps/desktop/package.json",
+      // the sidecar inputs build.rs fingerprints
+      "apps/api/src/main.ts",
+      "apps/api/package.json",
+      "apps/api/tsconfig.json",
+      "packages/contracts/src/core.ts",
+      "packages/contracts/package.json",
+      "bun.lock",
+      "tsconfig.base.json",
+      "package.json",
+      // future root-level toolchain inputs
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      // the unknown-diff sentinel must gate rust ON (fail closed)
+      "*",
+    ];
+    for (const cratePath of cratePaths) {
+      expect(rustPath.test(cratePath), `${cratePath} must mark the diff as rust`).toBe(true);
+    }
+    for (const other of [
+      "apps/web/src/pages/items.tsx",
+      "apps/desktop/docs/design.md",
+      "docs/ci.md",
+      "README.md",
+    ]) {
+      expect(rustPath.test(other), `${other} must not mark the diff as rust`).toBe(false);
+    }
+  });
+
+  it("collects both sides of a rename, so a move across the rust gate still runs it", () => {
+    // #231: `git diff --name-only` reports only the destination of a detected
+    // rename, so a file moved out of `apps/desktop/src-tauri/**` listed an
+    // ungated path and the crate that just lost a file was skipped. The diff
+    // must ask for `--no-renames`, which lists the move as delete + add.
+    const diff = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Compute the changed-file list");
+    expect(diff.run).toContain("--no-renames");
+
+    const rustPath = new RegExp(rustPathPattern(), "u");
+    const crateFile = "apps/desktop/src-tauri/src/lib.rs";
+    const outsideFile = "apps/desktop/lib.rs";
+    const lines = (output: string): string[] => output.split("\n").filter(Boolean);
+
+    withTempRepo((git, dir) => {
+      mkdirSync(path.join(dir, "apps/desktop/src-tauri/src"), { recursive: true });
+      writeFileSync(path.join(dir, crateFile), "pub fn guard() {}\n");
+      git("add", "-A");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD").trim();
+
+      // OUT of the gate: the crate loses a file, so the deleted side is what
+      // must keep the gate open.
+      git("mv", crateFile, outsideFile);
+      git("commit", "-qm", "move out");
+      const movedOut = git("diff", "--no-renames", "--name-only", base, "HEAD");
+      expect(lines(movedOut)).toContain(crateFile);
+      expect(lines(movedOut).some((file) => rustPath.test(file))).toBe(true);
+      // The pre-#231 command hid the gate side entirely. Rename detection is
+      // forced on so the contrast holds whatever the host's git config says.
+      const withoutFix = git("-c", "diff.renames=true", "diff", "--name-only", base, "HEAD");
+      expect(lines(withoutFix)).not.toContain(crateFile);
+
+      // INTO the gate: a plain file becomes a crate input, so the added side
+      // must open the gate.
+      git("mv", outsideFile, "apps/desktop/src-tauri/src/recovered.rs");
+      git("commit", "-qm", "move in");
+      const movedIn = git("diff", "--no-renames", "--name-only", base, "HEAD");
+      expect(lines(movedIn)).toContain("apps/desktop/src-tauri/src/recovered.rs");
+      expect(lines(movedIn).some((file) => rustPath.test(file))).toBe(true);
+    });
+  });
+
+  it("subscribes to `labeled` so the e2e:full escape hatch starts a run (#231)", () => {
+    const triggers = onLines(WORKFLOW_SOURCE).join("\n");
+    // A `types:` list replaces the default events, so `labeled` is not enough on
+    // its own: the three defaults must stay or a push/PR stops triggering.
+    expect(triggers).toMatch(/^\s{4}types:\s*\[opened, synchronize, reopened, labeled\]$/mu);
+  });
+
+  it("reaches `full` for a labeled pull_request event (#231)", () => {
+    // The trigger (pinned by the `types:` test above) is what makes GitHub
+    // dispatch; this proves the decision then classifies the event as full. The
+    // two tests are the proof together: the `types:` assertion fails if the
+    // trigger is reverted, this one fails if the label branch is.
+    const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
+    const labeled = runDecide(decide.run, { eventName: "pull_request", hasFullLabel: true });
+    expect(labeled.scope).toContain("mode=full");
+    expect(labeled.scope).toContain("reason=e2e:full label");
+    expect(labeled.outputs).toContain("e2e_mode=full");
+    // a push to develop is full for a different reason; the branch still runs
+    const pushed = runDecide(decide.run, { eventName: "push", hasFullLabel: false });
+    expect(pushed.scope).toContain("reason=merge to develop");
+  });
+
+  it("publishes the skip explanation from the always-running changes job (#231)", () => {
+    // Finding 4: the summary used to live in the `e2e` job, which a `skip`
+    // decision does not run, so nothing explained the skip. Pin the home (it
+    // must be a `changes` step, so a revert to `e2e` fails `stepNamed`) and the
+    // behaviour (it writes the mode, reason and rust decision).
+    const summary = stepNamed(
+      parseSteps(WORKFLOW_SOURCE, "changes"),
+      "Report the scope decision",
+    );
+    expect(summary.condition).toBe("always()");
+    expect(
+      parseSteps(WORKFLOW_SOURCE, "e2e").some((step) => step.name === "Report the scope decision"),
+    ).toBe(false);
+
+    const dir = mkdtempSync(path.join(tmpdir(), "ci-summary-"));
+    try {
+      const summaryFile = path.join(dir, "step-summary");
+      execFileSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+        cwd: dir,
+        encoding: "utf8",
+        env: shellEnv({
+          GITHUB_STEP_SUMMARY: summaryFile,
+          E2E_MODE: "skip",
+          E2E_REASON: "no browser-reachable path changed",
+          E2E_SPECS_OUT: "",
+          RUST_RUNS: "false",
+        }),
+      });
+      const written = readFileSync(summaryFile, "utf8");
+      expect(written).toContain("e2e: `skip`");
+      expect(written).toContain("no browser-reachable path changed");
+      expect(written).toContain("rust: `false`");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the root `test` script running the scripts suite (#231)", () => {
+    // This assertion used to live in scripts/e2e-selection.test.ts, where
+    // removing `bun test ./scripts/` from the root script also stopped the
+    // assertion from running. This suite is reached through `turbo test`, so it
+    // still runs — and fails — after the scripts suite is disconnected.
+    // SAFETY: package.json is this repo's own file; `scripts` is the field read.
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(import.meta.dir, "../../../package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts.test).toContain("bun test ./scripts/");
+  });
+
+  it("keeps the fail-closed shell wiring for the diff decision", () => {
+    const changes = parseSteps(WORKFLOW_SOURCE, "changes");
+    const diff = stepNamed(changes, "Compute the changed-file list");
+    // a new branch / unknown base must assume everything changed
+    expect(diff.run).toContain("0000000000000000000000000000000000000000");
+    expect(diff.run).toContain("merge-base");
+    const decide = stepNamed(changes, "Decide the scope");
+    // the only overrule is the recorded PR label
+    expect(decide.run).toContain("e2e:full");
+    expect(decide.run).toContain("github.event.pull_request.labels");
+    // a push to develop is never narrowed; a dispatch runs full
+    expect(decide.run).toContain("merge to develop");
+    expect(decide.run).toContain("manual dispatch");
+    // a hand-typed scope would be an unrecorded override (invariant 5)
+    expect(onLines(WORKFLOW_SOURCE).join("\n")).not.toContain("inputs:");
+    // the e2e job fails closed when `changes` fails
+    const e2eIf = jobField(WORKFLOW_SOURCE, "e2e", "if");
+    expect(e2eIf).toContain("!cancelled()");
+    expect(e2eIf).toContain("e2e_mode != 'skip'");
+  });
+
+  it("parses as YAML, not only as the workflow-utils line parser", () => {
+    // workflow-utils splits lines; it would accept a stray-indent or stray
+    // colon that GitHub refuses. Bun ships a YAML parser, so parse for real.
+    // SAFETY: Bun.YAML.parse returns `unknown`; only `jobs` is read, and the
+    // assertions below pin its keys.
+    const doc = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs?: object };
+    expect(doc.jobs).toBeDefined();
+    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["changes", "checks", "e2e", "rust"]);
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {
@@ -397,10 +710,10 @@ describe("PR CI workflow", () => {
       "        working-directory: apps/desktop/src-tauri",
       "        run: cargo test",
     ].join("\n");
-    // the mutation is detected: a non-empty condition is not "" ...
-    expect(jobField(pushOnly, RUST_JOB, "if")).toBe("github.event_name == 'push'");
-    // ... and the real workflow must not have one
-    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
+    // the mutation is detected: a push-only condition is not the crate gate ...
+    expect(isRustGate(jobField(pushOnly, RUST_JOB, "if"))).toBe(false);
+    // ... and the real workflow must use the diff decision
+    expect(isRustGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
   });
 
   it("does not accept a cargo test that only appears in a comment", () => {

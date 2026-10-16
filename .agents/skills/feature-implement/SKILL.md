@@ -15,15 +15,17 @@ Do not skip or reorder these steps.
 
 ### 1. Tier and base SHA
 
-**Select review tier:**
+**Select review tier** from `docs/engineering-workflow.md` (Review tiers), which
+defines the five High-assurance failure modes.
 
 | Tier | When |
 |------|------|
 | **Lightweight** | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) |
-| **Standard** | Code, CI, workflow, config, skills, UI, API endpoints |
-| **High-assurance** | Auth/RBAC, backup/restore, invoice & debt money calculations, security, a schema-version bump |
+| **Standard** | Everything else: code, tests, config, UI, API, skills, docs |
+| **High-assurance** | The diff can violate one of the named failure modes in `docs/engineering-workflow.md` (Review tiers) |
 
-Record the tier. Pass it to `guard`.
+Record the tier **and a one-line justification** in the design doc (step 2), so
+the choice is reviewable next to the verdict. Pass the tier to `guard`.
 
 **Resolve base commit once:**
 
@@ -41,6 +43,7 @@ Before writing production code, create a design document:
 ```
 
 The design must specify:
+- The chosen review tier and a one-line justification (step 1)
 - Public API / component interfaces
 - Dependencies
 - Planned tests (unit + Playwright E2E)

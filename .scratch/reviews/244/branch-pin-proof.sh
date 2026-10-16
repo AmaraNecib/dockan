@@ -79,6 +79,10 @@ print(f"branch-pin proof PASSED: all {len(BRANCHES)} branches redden the suite w
 PY
 result=$?
 
+# The python pass rewrites the scanner as LF text; restore the exact backup bytes
+# from the shell before the post-checks (the trap is the second line of defence).
+cp -p "$BACKUP" "$SCANNER"
+
 ( cd apps/web && bun test src/lib/blankness-ratchet.test.ts > "$OUT" 2>&1 )
 restored=$?
 AFTER="$(sha256sum "$SCANNER" | cut -d' ' -f1)"

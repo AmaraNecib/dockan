@@ -1,0 +1,41 @@
+### branch-pin proof at c143fa8 (script: .scratch/reviews/244/branch-pin-proof.sh)
+
+--- delete INLINE_FWD: exit 1, 9 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.94ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [0.88ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.61ms]
+--- delete PAREN_FWD: exit 1, 4 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [1.20ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [1.50ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [1.20ms]
+--- delete PAREN_REV: exit 1, 2 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [1.89ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [1.89ms]
+--- delete INLINE_REV: exit 1, 2 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [27.87ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [27.87ms]
+--- delete INLINE_LEN: exit 1, 6 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a .trim() chain the formatter broke across lines (#244 round 2, same class) [0.77ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.38ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.75ms]
+--- delete INLINE_LEN_REV: exit 1, 2 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [1.03ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [1.03ms]
+--- delete USE_FWD: exit 1, 7 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [1.02ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration whose right-hand side holds a bracketed group (#244 round 2) [0.50ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a type-annotated two-step declaration (#244 round 2) [0.70ms]
+--- delete USE_LEN_FWD: exit 1, 4 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.00ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.65ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.00ms]
+--- delete USE_REV: exit 1, 2 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [2.25ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [2.25ms]
+--- delete USE_LEN_REV: exit 1, 2 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.14ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.14ms]
+branch-pin proof PASSED: all 10 branches redden the suite when deleted
+restored ratchet exit code: 0
+scanner restored byte-identical and green
+proof exit code: 0

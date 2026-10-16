@@ -135,8 +135,33 @@ gate in a file that does not import a reader are not caught. Added in round 2:
   hide a real gate inside a template `${}` expression, which is the unsafe
   direction for a ratchet. A false positive only forces a `CLASSIFIED` line.
 
+Also outside the matched forms, and named here rather than only in the code:
+a receiver that is not a plain member chain — a call, an `as` cast, a
+parenthesised expression of more than one level (`((a ?? b) ?? c).trim()`),
+`draft!.trim()`, `draft.trim().trim()`, `drafts[
+ id
+].trim()`,
+`trimStart()`/`trimEnd()`, a space inside `.trim ()`; a value aliased
+(`const u = t`) or destructured; a second declarator on one line; a
+`switch (t) { case "" }` after a raw trim; a continuation line on the right-hand
+side. The reason for all of these is one: the matcher keys on a plain member
+chain compared to an empty literal, and each of those shapes is a different
+grammar production, so enumerating them would be an endless list rather than a
+boundary. They fail **closed** for a ratchet only if a real gate is written that
+way; `c143fa8-scanner-shapes.log` records which shapes it observed, so a reader
+can see the boundary rather than infer it.
+
 None of the four findings is in this ceiling; each of the four is fixed and
 pinned by a test that fails without the fix.
+
+### The classification set is provably unchanged
+
+Two facts, both in evidence: `gate-set-diff.sh` shows the **detected** gate set is
+identical (32 gates, `ADDED []`, `REMOVED []`) at `5fbe0f0`, `ad884d1`,
+`f30581c`, `f827d28` and `ba5a0b0`; and `git diff 5fbe0f0..c143fa8` over
+`blankness-ratchet.test.ts` contains **zero** changed `CLASSIFIED` entry lines
+(`grep -cE '^[+-]  \["'` = 0), so the 46 keys and their verdicts are
+byte-identical. The wider matchers therefore added no gate and reclassified none.
 
 ## Planned tests / evidence
 
@@ -223,29 +248,36 @@ against the code before acting:
 
 ## Result
 
-One source commit plus an evidence commit. The scanner rewrite, the three extra
-closes and the ratchet fixtures are in the source commit; the logs named
-`<sha>-*` in `.scratch/reviews/244/` are the evidence at that SHA.
+Five source commits carry the work — `ad884d1` (the four findings), `f30581c`,
+`f827d28`, `ba5a0b0`, `c143fa8` — and one final commit carries the evidence. Only
+two files under review changed: `apps/web/src/tests/blankness-gates.ts` and
+`apps/web/src/lib/blankness-ratchet.test.ts` (the other `.scratch/` files are the
+tools and the design). Every log and lens report in `.scratch/reviews/244/` is
+named `<sha>-*` for the reviewed HEAD, and the evidence commit changes only
+`.scratch/`, so the evidence stays valid at that HEAD.
 
 ## Evidence at this round's head SHA
 
-- `<sha>-ratchet-first-red.log` — the 8 new fixtures red on the round-1 scanner
-  (5 for the four findings, 3 for the extras).
-- `<sha>-ratchet-green.log` — 16/16, 32 production gates classified.
-- `<sha>-mutation-proof.log` (tool: `.scratch/reviews/244/390da2d-mutation-proof.sh`,
-  the path Greptile cited) — 11 converted files reverted, each reddens the ratchet,
-  exact bytes restored (exit 0).
+- `<sha>-ratchet-first-red.log` — 18 red fixtures across five sections, each run
+  against the THEN-committed scanner, so every shipped fixture failed before its
+  fix (5 for the four findings, 13 for the extras).
+- `<sha>-ratchet-green.log` — 24/24 ratchet tests, 32 production gates classified.
+- `<sha>-branch-pin-proof.log` (tool: `branch-pin-proof.sh`) — each of the 10
+  matcher branches is deleted in turn and must redden the suite; an unpinned
+  branch fails the proof.
+- `<sha>-mutation-proof.log` (tool: `390da2d-mutation-proof.sh`, the path Greptile
+  cited) — 11 converted files reverted, each reddens the ratchet, exact bytes
+  restored.
 - `<sha>-guard-demo.log` — finding 3: the unfixed script destroys a local edit,
-  the fixed script refuses and preserves it, and a clean run restores
-  byte-identical while reddening on every revert.
-- `<sha>-scope-shrink-proof.log` (tool: `.scratch/reviews/244/scope-shrink-proof.sh`)
-  — a narrowed scanned surface reddens, then the scanner is restored
-  byte-identical and green.
-- `<sha>-gate-set-diff.log` — the production gate set is compared gate-by-gate
-  between the reference SHA and the rewrite: 32 gates, `ADDED []`, `REMOVED []`.
-- `<sha>-scanner-shapes.log` — the scanner's observed result for 20 attack shapes
-  (the ones the lenses tried), so "caught" vs "stated ceiling" is inspectable.
-- `<sha>-guard-phase1.log`, `<sha>-guard-phase2.log` — the named gate commands
-  and their exit codes.
-- `<sha>-{debate,test-audit,code-review}.md` — the seven lens reports, plus
-  `<sha>-review-context.md`, the shared brief they read.
+  the fixed script refuses and preserves it, and a clean run reddens on every
+  revert then restores byte-identical.
+- `<sha>-scope-shrink-proof.log` — a narrowed scanned surface reddens, then the
+  scanner is restored byte-identical and green.
+- `<sha>-gate-set-diff.log` — the detected gate set compared gate-by-gate against
+  five earlier SHAs: 32 gates, `ADDED []`, `REMOVED []`.
+- `<sha>-scanner-shapes.log` — the scanner's OBSERVED result for 33 attack shapes,
+  so "caught" vs "stated ceiling" is inspectable rather than asserted.
+- `<sha>-guard-phase1.log`, `<sha>-guard-phase2.log` — the named gate commands and
+  their exit codes.
+- `<sha>-{debate,test-audit,code-review}.md` — the five lens rounds synthesised,
+  plus `<sha>-review-context.md`, the shared brief the lenses read.

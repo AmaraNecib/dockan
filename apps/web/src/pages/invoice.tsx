@@ -8,7 +8,7 @@ import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contract
 
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
@@ -304,13 +304,15 @@ export function remainingReturnableFor(line: { id: string; quantity: number }, r
   return Math.max(0, line.quantity - already);
 }
 
-/** Pure boundary check shared with the unit tests (mirrors the api cap). */
+/** Pure boundary check shared with the unit tests (mirrors the api cap). Reads
+ * the quantity through the one shared strict reader (`parseWholeAmount`), so the
+ * validator, the `valueTotal` projection and the submit payload always agree on
+ * both digit scripts (#225). */
 export function returnQuantityError(draft: string, remaining: number): "INVALID" | "EXCEEDS" | null {
   const trimmed = draft.trim();
   if (trimmed === "") return null; // an untouched line is not part of the return
-  if (!/^\d+$/u.test(trimmed)) return "INVALID";
-  const value = Number(trimmed);
-  if (!Number.isSafeInteger(value) || value <= 0) return "INVALID";
+  const value = parseWholeAmount(trimmed);
+  if (value === null || value <= 0) return "INVALID";
   if (value > remaining) return "EXCEEDS";
   return null;
 }
@@ -404,8 +406,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // settlement shown is the settlement persisted; the api still recomputes.
   const valueTotal = useMemo(() => {
     const entered = returnableLines.flatMap((line) => {
-      const quantity = Number(drafts[line.id] ?? "");
-      if (!Number.isInteger(quantity) || quantity <= 0) return [];
+      const quantity = parseWholeAmount(drafts[line.id] ?? "");
+      if (quantity === null || quantity <= 0) return [];
       return [{ invoiceLineId: line.id, quantity, netTotal: line.netTotal, lineQuantity: line.quantity }];
     });
     if (entered.length === 0) return 0;
@@ -518,7 +520,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       setError(t("returnsInvalidCash"));
       return;
     }
-    const lines = entered.map((line) => ({ invoiceLineId: line.id, quantity: Number(drafts[line.id]) }));
+    const lines = entered.flatMap((line) => {
+      const quantity = parseWholeAmount(drafts[line.id] ?? "");
+      return quantity === null ? [] : [{ invoiceLineId: line.id, quantity }];
+    });
     void create.mutate({
       invoiceId: invoice.id,
       lines,

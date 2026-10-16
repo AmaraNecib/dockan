@@ -9,7 +9,7 @@ import * as routerModule from "@tanstack/react-router";
 // SAFETY: only this flag is written; globalThis keeps every other property.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 /** Row shape the page reads from itemsList (see ItemListItem). */
 interface FixtureItem {
@@ -1162,5 +1162,36 @@ describe("inline item edit", () => {
     });
     await waitFor(() => document.querySelector('[data-testid="edit-name"]') === null);
     expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(false);
+  });
+});
+
+/**
+ * #225 — the live profit preview reads the same cost/sell drafts the save path
+ * reads. An Arabic-Indic draft must preview the figure it will save (ASCII did
+ * via `Number`, Arabic used to show `…`), so the preview cannot disagree with
+ * the value the form stores.
+ */
+describe("add item form profit preview (#225)", () => {
+  it("previews and saves the same profit for an Arabic-Indic draft as for ASCII", async () => {
+    await mount();
+    await openAddTab();
+    const preview = () => document.querySelector('[data-testid="profit-preview"]')?.textContent ?? "";
+
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
+
+    // ١٠٠ / ۱۸۰ — the same profit, not the `…` the ASCII-only reader rendered.
+    // The sell draft is Extended Arabic-Indic, so both scripts are exercised.
+    setInput("item-cost", "١٠٠");
+    setInput("item-sell", "۱۸۰");
+    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
+    expect(preview()).not.toContain("…");
+
+    // and the same draft saves as the numbers the preview promised
+    setInput("item-name", "بطارية بأرقام");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "بطارية بأرقام", costPrice: 100, sellingPrice: 180 });
   });
 });

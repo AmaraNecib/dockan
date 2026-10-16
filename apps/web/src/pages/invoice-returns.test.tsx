@@ -11,6 +11,7 @@ import i18n from "../lib/i18n"; // initializes i18next (ar) for useTranslation; 
 
 import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { routerMock } from "../tests/router-mock";
 
 /** returnsList payload the panel should serve, or an error flag / payload for create */
@@ -256,6 +257,16 @@ describe("returnQuantityError (per-line return cap boundary)", () => {
     expect(returnQuantityError("abc", 4)).toBe("INVALID");
     expect(returnQuantityError("1e1", 4)).toBe("INVALID");
   });
+
+  it("reads both Arabic-Indic scripts exactly like ASCII (#225)", () => {
+    expect(returnQuantityError("٥", 9)).toBeNull();
+    // script-for-script identity on the whole boundary set, including the
+    // forms the strict reader refuses
+    for (const draft of ["", "   ", "1", "4", "5", "0", "-1", "1.5", "abc", "1e1", "9007199254740993"]) {
+      expect(returnQuantityError(toArabicIndic(draft), 4)).toBe(returnQuantityError(draft, 4));
+      expect(returnQuantityError(toExtendedArabicIndic(draft), 4)).toBe(returnQuantityError(draft, 4));
+    }
+  });
 });
 
 describe("remainingReturnableFor (history-aware remaining)", () => {
@@ -352,6 +363,28 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("المتبقي");
     expect(lastCreateInput).toBeNull();
+  });
+
+  it("previews and submits an Arabic-Indic quantity as the same number as ASCII (#225)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    typeInto(input, "٢");
+    // the valueTotal projection must read the SAME reader the validator does: 2 ×
+    // 900 net = 1800, not 0 (the #229 preview/submit split, on the customer side)
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("1800 دج");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput).toMatchObject({ lines: [{ invoiceLineId: LINE_ID, quantity: 2 }] });
+  });
+
+  it("projects only drafts the validator will submit, so preview and submit agree (#225)", () => {
+    renderPanel(makeInvoice([saleLine()]));
+    // `1e3` is refused by the strict validator, so the projection must not price
+    // it: the pre-#225 projection read `Number(draft)` and showed 3600 for a
+    // draft submit could never send
+    expect(returnQuantityError("1e3", 4)).toBe("INVALID");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1e3");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("0 دج");
   });
 
   it("blocks a non-numeric draft and refuses an empty return", () => {

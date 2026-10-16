@@ -216,6 +216,29 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 5, amount: 300 });
   });
 
+  it("submits an Arabic-Indic free-standing amount as the same number as ASCII (#225)", async () => {
+    await render();
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    await openSelect("supplier-return-item", "هدية");
+    typeInto("supplier-return-quantity", "5");
+    // the amount reader stays loose (`Number`), now digit-normalised: ٣٠٠ is 300,
+    // exactly what the ASCII twin above submits
+    typeInto("supplier-return-amount", "٣٠٠");
+    await submit();
+    expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 5, amount: 300 });
+  });
+
+  it("submits an Extended Arabic-Indic free-standing amount as the same number too (#225)", async () => {
+    await render();
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    await openSelect("supplier-return-item", "هدية");
+    // Extended Arabic-Indic (U+06F0..U+06F9) on both the quantity and the amount
+    typeInto("supplier-return-quantity", "۵");
+    typeInto("supplier-return-amount", "۳۰۰");
+    await submit();
+    expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 5, amount: 300 });
+  });
+
   it("rejects a malformed cash-back instead of omitting the refund", async () => {
     await render();
     typeInto("supplier-return-qty-l1", "1");

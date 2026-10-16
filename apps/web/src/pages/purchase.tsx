@@ -16,7 +16,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
-import { percentageDraftInvalid } from "@/lib/amount-parse";
+import { parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import { firstCommitError, lineQuantity, nextUnitCost, parseQuantityDraft, purchaseUnitPrice, quantityDraftInvalid, resolvedInitialPaid, resolveInitialPaid, type PurchaseDraftLine } from "@/lib/invoice-draft";
 import { useInvoiceDraft, usePaymentPair, useQuickAdd, type QuickAddOutcome, type QuickAddSpec } from "@/lib/use-invoice-draft";
 import { cn } from "@/lib/utils";
@@ -104,7 +104,7 @@ export function PurchasePage() {
       // SAFETY: quickSubmit rejects any quantity the shared parser cannot read
       // as a whole 1..MAX_DRAFT_QUANTITY, so the resolved number is always a
       // valid draft here.
-      draft.addItem(item, { quantityDraft: String(parseQuantityDraft(fields.qty)), unitCost: Number(fields.unitCost) });
+      draft.addItem(item, { quantityDraft: String(parseQuantityDraft(fields.qty)), unitCost: parseLooseNumber(fields.unitCost) });
     },
     setError,
   });
@@ -153,7 +153,7 @@ export function PurchasePage() {
       // the shared draft rule bounds the quick quantity too: an over-cap value
       // would land a line that resolves to zero and could never be saved
       const qty = parseQuantityDraft(fields.qty);
-      const unitCost = Number(fields.unitCost);
+      const unitCost = parseLooseNumber(fields.unitCost);
       if (qty < 1) return { ok: false, error: t("purchasesInvalidQuantity") };
       if (!Number.isInteger(unitCost) || unitCost <= 0) return { ok: false, error: t("purchasesInvalidCost") };
       return await new Promise<QuickAddOutcome>((resolve) => {
@@ -162,8 +162,8 @@ export function PurchasePage() {
             name: fields.name,
             categoryId: fields.categoryId,
             costPrice: unitCost,
-            sellingPrice: fields.sellPrice === "" ? unitCost : Number(fields.sellPrice),
-            lowStockThreshold: fields.threshold === "" ? undefined : Number(fields.threshold),
+            sellingPrice: fields.sellPrice === "" ? unitCost : parseLooseNumber(fields.sellPrice),
+            lowStockThreshold: fields.threshold === "" ? undefined : parseLooseNumber(fields.threshold),
             barcode: fields.barcode.trim() === "" ? undefined : fields.barcode.trim(),
           },
           { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },

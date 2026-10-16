@@ -317,8 +317,8 @@ export function SalePage() {
     event.preventDefault();
     void quick.submit(async (fields) => {
       const categoryId = quickCategory;
-      const cost = Number(fields.cost);
-      const sell = Number(fields.sell);
+      const cost = parseLooseNumber(fields.cost);
+      const sell = parseLooseNumber(fields.sell);
       // the plain path reads blank and 0 as "no opening stock"; the scan's
       // create-with-stock path requires a positive count — the resolver owns
       // that rule, the messages stay here

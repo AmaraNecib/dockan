@@ -16,16 +16,19 @@ import { orpc, rpcClient } from "../lib/rpc";
 import { tError } from "../lib/i18n";
 import { usePagination } from "../hooks/use-pagination";
 import { normalizeBarcode } from "@dokan/contracts";
+import { parseLooseNumber } from "@/lib/amount-parse";
 import { parseWholeNumber, resolveOpeningStock } from "../lib/numeric-input";
 import { useBarcodeScanner } from "../lib/use-barcode-scanner";
 import { ItemPickerDialog, matchBadgeKey } from "@/components/catalog/item-picker-dialog";
 import { UnknownScanDialog } from "@/components/catalog/unknown-scan-dialog";
 import { StockForm } from "./stock";
 
-/** Live profit preview: selling - cost, recomputed on every keystroke. */
+/** Live profit preview: selling - cost, recomputed on every keystroke. Reads
+ * the same cost/sell drafts the save path reads, through the shared loose reader,
+ * so an Arabic-Indic draft previews the figure it will save (#225). */
 function profitPreview(costText: string, sellText: string): number | null {
-  const cost = Number(costText);
-  const sell = Number(sellText);
+  const cost = parseLooseNumber(costText);
+  const sell = parseLooseNumber(sellText);
   if (!Number.isFinite(cost) || !Number.isFinite(sell)) return null;
   return sell - cost;
 }

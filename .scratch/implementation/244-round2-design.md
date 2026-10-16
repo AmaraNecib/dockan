@@ -37,12 +37,13 @@ once anything on it matched.
 Fix: strip comments, then run every matcher over the **whole source text**, and
 accept a match only when its `[start, end)` span does not overlap an
 already-accepted span. Inline forms win the priority order (`INLINE_FWD`,
-`PAREN_FWD`, `INLINE_REV`, `INLINE_LEN`, then the two-step `USE`), so
-`"" === draft.trim()`'s reversed inline match claims its span before `USE` can
-read `"" === draft` out of the middle of it — and `trimmed === ""` on a line that
-also holds an inline gate is no longer swallowed. Line numbers are recovered from
-the match offset (`1 + newlines before offset`), so the reported line stays the
-gate's own line.
+`PAREN_FWD`, `INLINE_REV`, `INLINE_LEN`, `INLINE_LEN_REV`, then the two-step
+`USE_FWD`/`USE_LEN_FWD`/`USE_REV`/`USE_LEN_REV`), so `"" === draft.trim()`'s
+reversed inline match claims its span before a two-step matcher can read
+`"" === draft` out of the middle of it — and `trimmed === ""` on a line that also
+holds an inline gate is no longer swallowed. Line numbers are recovered from the
+match offset (`1 + newlines before offset`), so the reported line stays the gate's
+own line.
 
 The declaration scan (`DECL`) also moves to the whole text and its right-hand
 side may cross a line break (`const trimmed =\n draft.trim();`), stopping at a
@@ -110,16 +111,25 @@ gate (`if (!d.trim())`), a call-expression receiver (`f().trim()`), and a numeri
 gate in a file that does not import a reader are not caught. Added in round 2:
 
 - `var` hoisting / function-scope visibility is not modelled — only brace-scope
-  `const`/`let` chains, so a comparison of a `var`, parameter or `catch` binding
-  can be attributed to a same-named visible declaration (false positive).
-- Regex literals are not parsed, so an unbalanced `{`/`}` inside a regex literal
-  can shift the scope chain (round 1 already declined regex-literal parsing).
-  Balanced braces (the normal case, e.g. `/\d{1,3}/`) are neutral.
+  `const`/`let` declared at the declaration site, so a comparison of a `var`,
+  parameter, `catch` or post-`let`-assignment binding can be attributed to a
+  same-named visible declaration (false positive), and a value assigned after a
+  bare `let t; t = d.trim()` is not seen at all (false negative). An ASI-ambiguous
+  `const t = foo` above `bar.trim()` attributes that `.trim()` to `t` (false
+  positive with invented receiver text).
+- Regex literals are not parsed, so a regex holding a quote (e.g. `/['"]/`) or a
+  `/*` can mis-scope the file or **hide every later gate in it** (the unsafe
+  direction), and a comment after such a regex can be read as code (false
+  positive). Round 1 declined regex-literal parsing; round 2 states the severity
+  honestly and leaves it a **deferred follow-up**, because a half-lexer that
+  mis-reads division as a regex would create a new false negative.
 - A `.trim()` on the result of a call (`parseAmount(x).trim()`) is outside the
-  matched forms, so a declaration whose right-hand side is a call followed by
-  `.trim()` is only seen through the call-chain text it contains.
+  matched forms **inline** (`f().trim() === ""`); a two-step
+  `const t = f().trim()` **is** caught.
 - A relational `.length` test (`d.trim().length > 0`, `>= 1`) is not matched; only
-  the equality/inequality against `0` is (both operand orders).
+  the equality/inequality against `0` is (both operand orders, inline and two-step).
+- The blank operand must be a `""`/`''` literal; an empty template literal operand
+  is not matched.
 - A string or template literal whose **text** looks like a gate is scanned as
   code (false positive). Blanking string bodies was **rejected**: it would also
   hide a real gate inside a template `${}` expression, which is the unsafe
@@ -159,8 +169,8 @@ pinned by a test that fails without the fix.
 
 ## Beyond the four findings (closed in this round)
 
-Three more escapes of the same class were found by the round-2 review lenses and
-closed here, each with a failing-first fixture (3 red before, green after):
+Escapes and over-reaches of the same class were found by the round-2 review lenses
+and closed here, each with a failing-first fixture (red before, green after):
 
 - **Reversed `.length`** (`0 === draft.trim().length`) — an evasion: the reversed
   inline `=== ""` form was matched but the reversed `.length` form was not, an
@@ -169,9 +179,20 @@ closed here, each with a failing-first fixture (3 red before, green after):
   normaliser guard used a substring match, so `draftBlankish.trim() === ""` was
   silently skipped. The normaliser is now matched as a **call** and the inline
   check is gone: an inline receiver is a member chain, so it can never be a call.
-- **A property read attributed to a local** (`other.trimmed === ""` reported
-  against `const trimmed = draft.trim()`) — a false positive; closed with a
-  `(?<![\w$.])` lookbehind on the two-step matchers.
+- **A property read attributed to a local** (`other.trimmed === ""`, and the
+  reversed `"" === trimmed.suffix`) — a false positive; closed with
+  `(?<![\w$.])` on the forward and `(?!\s*\.)` on the reversed two-step matcher.
+- **A `.trim()` chain the formatter broke across lines** (`draft\n  .trim() === ""`,
+  `draft.trim()\n  .length === 0`) — the chain matchers now allow whitespace inside
+  the chain; the canonical text still collapses it away.
+- **A declaration whose right-hand side holds a bracketed group**
+  (`parse({ raw: draft }).trim()`, `` `${draft}`.trim() ``) — the statement-break
+  check was a regex over `;`/`}`, so any `}` in an argument hid the declaration.
+  Replaced by a bracket-depth scan: only a `;`, a closing bracket at depth 0, or a
+  new statement ends the right-hand side.
+- **The two-step `.length` gate** (`const t = draft.trim(); t.length === 0`, either
+  operand order) — matched now, keyed on `.length` so ordinary numeric
+  comparisons against `0` are not swept in.
 
 ## Review round 2 — findings verified, then fixed or dismissed
 
@@ -211,13 +232,19 @@ closes and the ratchet fixtures are in the source commit; the logs named
 - `<sha>-ratchet-first-red.log` — the 8 new fixtures red on the round-1 scanner
   (5 for the four findings, 3 for the extras).
 - `<sha>-ratchet-green.log` — 16/16, 32 production gates classified.
-- `<sha>-mutation-proof.{sh,log}` — 11 converted files reverted, each reddens the
-  ratchet, exact bytes restored (exit 0).
+- `<sha>-mutation-proof.log` (tool: `.scratch/reviews/244/390da2d-mutation-proof.sh`,
+  the path Greptile cited) — 11 converted files reverted, each reddens the ratchet,
+  exact bytes restored (exit 0).
 - `<sha>-guard-demo.log` — finding 3: the unfixed script destroys a local edit,
   the fixed script refuses and preserves it, and a clean run restores
   byte-identical while reddening on every revert.
-- `<sha>-scope-shrink-proof.{sh,log}` — a narrowed scanned surface reddens, then
-  the scanner is restored byte-identical and green.
+- `<sha>-scope-shrink-proof.log` (tool: `.scratch/reviews/244/scope-shrink-proof.sh`)
+  — a narrowed scanned surface reddens, then the scanner is restored
+  byte-identical and green.
+- `<sha>-gate-set-diff.log` — the production gate set is compared gate-by-gate
+  between the reference SHA and the rewrite: 32 gates, `ADDED []`, `REMOVED []`.
+- `<sha>-scanner-shapes.log` — the scanner's observed result for 20 attack shapes
+  (the ones the lenses tried), so "caught" vs "stated ceiling" is inspectable.
 - `<sha>-guard-phase1.log`, `<sha>-guard-phase2.log` — the named gate commands
   and their exit codes.
 - `<sha>-{debate,test-audit,code-review}.md` — the seven lens reports, plus

@@ -18,60 +18,102 @@ import { fileURLToPath } from "node:url";
  *
  * Round 2 (#244): every matcher runs over the WHOLE comment-stripped source and
  * claims its match span, instead of walking line by line. A comparison split
- * across two lines is therefore still one gate, in either operand order and for
- * `.length` too, and an inline gate on a line no longer hides a two-step gate
- * beside it (`if (inline) continue` is gone). A declaration is visible to a
- * comparison only when the brace pairs enclosing the declaration also enclose the
- * comparison, so a normalised declaration in an inner block cannot mask an outer
- * raw check, and a property read (`other.trimmed === ""`) is not attributed to a
- * local `trimmed`. A two-step declaration counts as normalised only when its
- * right-hand side CALLS the normaliser, so a receiver whose name merely contains
- * `draftBlank` is still a raw gate.
+ * across two lines is therefore still one gate, in either operand order, for
+ * `.length` too, and for a `.trim()` chain the formatter breaks mid-chain, and an
+ * inline gate on a line no longer hides a two-step gate beside it (`if (inline)
+ * continue` is gone). A declaration is visible to a comparison only when the
+ * brace pairs enclosing the declaration also enclose the comparison, so a
+ * normalised declaration in an inner block cannot mask an outer raw check, and a
+ * property read (`other.trimmed === ""`) is not attributed to a local `trimmed`.
+ * A two-step declaration counts as normalised only when its right-hand side CALLS
+ * the normaliser, so a receiver whose name merely contains `draftBlank` is still a
+ * raw gate. The right-hand side may cross lines and bracketed groups (an object
+ * argument, a template `${}`); only a `;`, a closing bracket at depth 0 or a new
+ * statement ends it.
  *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
- * a relational `.length` test (`d.trim().length > 0`), a receiver that is a CALL
- * (`f().trim()`), or in a file that parses numerics without importing
+ * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
+ * receiver that is a CALL (`f().trim() === ""`; the two-step form
+ * `const t = f().trim()` IS caught), a blank operand that is not a `""`/`''`
+ * literal (an empty template), a value assigned after a bare `let t; t = d.trim()`, or
+ * a gate in a file that parses numerics without importing
  * `amount-parse`/`numeric-input`, is NOT caught. A declaration bound by `var`, a
  * parameter or a `catch` is not modelled, so a comparison of such a binding can be
- * attributed to a same-named visible declaration (false positive). A string or
+ * attributed to a same-named visible declaration (false positive), and an
+ * ASI-ambiguous `const t = foo` followed by `bar.trim();` attributes that `.trim()`
+ * to `t` (false positive with invented receiver text). A string or
  * template literal whose TEXT looks like a gate is scanned as code: blanking the
  * body was rejected because it would also hide a real gate inside a template
- * `${}` expression, which is the unsafe direction for a ratchet. Scope visibility
- * is brace-pair ancestry and regex literals are not parsed, so an unbalanced
- * `{`/`}` inside one could shift a chain. Every gate of the matched forms is
- * caught; this comment is the honest boundary of that claim.
+ * `${}` expression, which is the unsafe direction for a ratchet. Regex literals
+ * are not parsed, so a regex holding a quote or a `/*` can mis-scope or HIDE every
+ * later gate in the file (the unsafe direction) — a deferred follow-up, not a
+ * dismissal. Every gate of the matched forms is caught; this comment is the honest
+ * boundary of that claim.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
 /** A member/chain receiver, e.g. `value.amount`, `drafts[line.id]`. */
 const CHAIN = String.raw`[A-Za-z_$][\w$]*(?:\s*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]+\]))*`;
-const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
-const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\??\.trim\(\)`, "g");
+const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
+const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)`, "g");
 const PAREN_FWD = new RegExp(
-  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(""|'')\s*\)\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
+  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(""|'')\s*\)\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
   "g",
 );
-const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\.length\s*(===|!==|==|!=)\s*0`, "g");
-const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\??\.trim\(\)\.length`, "g");
+const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*\.length\s*(===|!==|==|!=)\s*0`, "g");
+const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)\s*\.length`, "g");
 /**
  * The start of a two-step declaration. The right-hand side is read separately so
  * it may cross a line break (`const trimmed =\n  draft.trim();`).
  */
 const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*`, "g");
 const DECL_TRIM = String.raw`\.trim\(\)`;
+const OPENERS = "([{";
+const CLOSERS = ")]}";
+const STATEMENT_KEYWORD =
+  /^\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
+
 /**
- * Anything between `=` and the `.trim()` that ends the statement means the
- * `.trim()` belongs to a later statement, not this declaration.
+ * Whether a statement break sits between `=` and the `.trim()` at bracket depth 0,
+ * i.e. the `.trim()` belongs to a later statement. A bracketed group (an object
+ * argument, a template `${}`) does NOT end the right-hand side; a `;`, a closing
+ * bracket at depth 0, or a new line that opens a new statement does.
  */
-const STATEMENT_BREAK = /[;}]|\n\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
+function breaksStatement(text: string, from: number, to: number): boolean {
+  let depth = 0;
+  for (let i = from; i < to; i += 1) {
+    const char = text[i]!;
+    if (OPENERS.includes(char)) depth += 1;
+    else if (CLOSERS.includes(char)) {
+      if (depth === 0) return true;
+      depth -= 1;
+    } else if (char === ";" && depth === 0) return true;
+    else if (char === "\n" && depth === 0 && STATEMENT_KEYWORD.test(text.slice(i + 1, i + 40))) return true;
+  }
+  return false;
+}
+
+/**
+ * Two-step gates on the `.length` of a declared raw trim: `const t = d.trim(); if
+ * (t.length === 0)`. The `.length` is what makes this safe to match without also
+ * catching ordinary numeric comparisons against `0`.
+ */
+const USE_LEN_FWD = new RegExp(
+  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*\.length\s*(===|!==|==|!=)\s*0`,
+  "g",
+);
+const USE_LEN_REV = new RegExp(
+  String.raw`0\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\s*\.length`,
+  "g",
+);
 const USE_FWD = new RegExp(
   String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(""|'')`,
   "g",
 );
 const USE_REV = new RegExp(
-  String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b`,
+  String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b(?!\s*\.)`,
   "g",
 );
 /**
@@ -209,11 +251,10 @@ function collectDeclarations(text: string, braces: readonly BracePair[]): Declar
     const afterEquals = offset + match[0].length;
     const trimOffset = trimCalls.find((candidate) => candidate >= afterEquals);
     if (trimOffset === undefined) continue;
-    const rhsRegion = text.slice(afterEquals, trimOffset);
-    if (STATEMENT_BREAK.test(rhsRegion)) continue;
+    if (breaksStatement(text, afterEquals, trimOffset)) continue;
     declarations.push({
       name: match[1]!,
-      rhs: collapse(rhsRegion),
+      rhs: collapse(text.slice(afterEquals, trimOffset)),
       offset,
       enclosing: enclosing(braces, offset),
     });
@@ -274,6 +315,8 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
     }
   };
 
+  // A `.trim()` chain may be broken across lines by the formatter, so the chain
+  // matchers allow whitespace inside it; the canonical text collapses it away.
   claimInline(INLINE_FWD, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
   claimInline(
     PAREN_FWD,
@@ -283,24 +326,42 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
   claimInline(INLINE_LEN, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
   claimInline(INLINE_LEN_REV, (match) => `0 ${match[1]} ${collapse(match[2]!)}.trim().length`);
 
-  // Two-step: `const X = <expr>.trim(); … X === ""`, in either operand order.
-  const claimTwoStep = (regex: RegExp, reversed: boolean) => {
+  // Two-step: `const X = <expr>.trim(); … X === ""` / `X.length === 0`, in either
+  // operand order.
+  const claimTwoStep = (
+    regex: RegExp,
+    nameGroup: number,
+    operatorGroup: number,
+    canonical: (name: string, operator: string, rhs: string) => string,
+  ) => {
     for (const match of text.matchAll(regex)) {
       const start = match.index;
       const span = { start, end: start + match[0].length };
       if (overlaps(span)) continue;
-      const name = (reversed ? match[3] : match[1]) ?? "";
-      const operator = match[2] ?? "";
+      const name = match[nameGroup] ?? "";
+      const operator = match[operatorGroup] ?? "";
       const declaration = visibleDeclaration(declarations, name, start, enclosing(braces, start));
       if (declaration === undefined || NORMALISED.test(declaration.rhs)) continue;
       claimed.push(span);
-      const suffix = `[${declaration.rhs}.trim()]`;
-      record(start, reversed ? `"" ${operator} ${name} ${suffix}` : `${name} ${operator} "" ${suffix}`);
+      record(start, canonical(name, operator, declaration.rhs));
     }
   };
 
-  claimTwoStep(USE_FWD, false);
-  claimTwoStep(USE_REV, true);
+  const gateSuffix = (rhs: string) => `[${rhs}.trim()]`;
+  claimTwoStep(USE_FWD, 1, 2, (name, operator, rhs) => `${name} ${operator} "" ${gateSuffix(rhs)}`);
+  claimTwoStep(
+    USE_LEN_FWD,
+    1,
+    2,
+    (name, operator, rhs) => `${name}.length ${operator} 0 ${gateSuffix(rhs)}`,
+  );
+  claimTwoStep(USE_REV, 3, 2, (name, operator, rhs) => `"" ${operator} ${name} ${gateSuffix(rhs)}`);
+  claimTwoStep(
+    USE_LEN_REV,
+    2,
+    1,
+    (name, operator, rhs) => `0 ${operator} ${name}.length ${gateSuffix(rhs)}`,
+  );
 
   return [...bySignature.values()].sort((a, b) => a.offset - b.offset).map((entry) => entry.gate);
 }

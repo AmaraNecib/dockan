@@ -88,6 +88,8 @@ const createInputs: CapturedCreateInput[] = [];
 const createWithStockInputs: CapturedCreateInput[] = [];
 const updateInputs: CapturedUpdateInput[] = [];
 const stockInputs: CapturedStockInput[] = [];
+/** makes the category read reject, so the items empty state cannot offer the add form */
+let categoriesListFails = false;
 /** knobs the edit tests drive: reject, or hold the mutation open */
 let updateFails = false;
 let updateDeferred = false;
@@ -104,7 +106,13 @@ let releaseItemsGate: (() => void) | null = null;
 mock.module("@/lib/rpc", () => ({
   orpc: {
     categoriesList: {
-      queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: categories }) }),
+      queryOptions: () => ({
+        queryKey: ["categories"],
+        queryFn: async () => {
+          if (categoriesListFails) throw new Error("CATEGORIES_FAILED");
+          return { items: categories };
+        },
+      }),
     },
     itemsList: {
       // clone on each fetch so a refetch yields new object identities, exactly
@@ -365,6 +373,7 @@ beforeEach(() => {
   createWithStockInputs.length = 0;
   updateInputs.length = 0;
   stockInputs.length = 0;
+  categoriesListFails = false;
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
@@ -419,6 +428,19 @@ describe("items page tabs", () => {
       categories.length = 0;
       categories.push(...original);
     }
+  });
+
+  it("offers no add action when the category read failed, because the form cannot be completed (#96)", async () => {
+    categoriesListFails = true;
+    items = [];
+    await mountEmpty();
+
+    const empty = el<HTMLElement>('[data-testid="items-empty"]');
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyHint"));
+    // the add form refuses without a category; a dead-end button must not ship.
+    // wait for the rejected read to settle — the action exists while it is pending
+    await waitFor(() => document.querySelector('[data-testid="items-empty-action"]') === null);
+    expect(document.querySelector('[data-testid="items-empty-action"]')).toBeNull();
   });
 
   it("defaults to the products table and hides the add panel", async () => {

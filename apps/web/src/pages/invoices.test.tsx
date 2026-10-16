@@ -130,6 +130,7 @@ async function mountPage() {
     emptyAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action']"),
     emptyPurchaseAction: () => container.querySelector<HTMLElement>("[data-testid='invoices-empty-action-purchase']"),
     kindFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-kind-filter']"),
+    statusFilter: () => container.querySelector<HTMLElement>("[data-testid='invoices-status-filter']"),
   };
 }
 
@@ -218,6 +219,13 @@ describe("InvoicesPage empty states (issue #96)", () => {
 
     expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
     expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+
+    // clearing restores the unfiltered rows and returns focus to the status
+    // control that emptied the view, not to the body
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 2);
+    expect(page.empty()).toBeNull();
+    expect(document.activeElement).toBe(page.statusFilter());
   });
 
   it("offers to clear the filter when the filtered view has no matches", async () => {

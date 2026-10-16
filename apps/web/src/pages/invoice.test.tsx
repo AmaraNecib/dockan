@@ -308,6 +308,12 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(done?.textContent).toContain("تم تسجيل الدفعة");
     // the submitted control unmounted with the form: focus lands on the card
     expect(document.activeElement).toBe(done);
+    // the history is still empty on this static invoice; the copy says the
+    // payment was just saved instead of telling the owner to record one (#96)
+    const justSaved = host.querySelector('[data-testid="pmt-empty"]');
+    expect(justSaved?.textContent).toContain(i18n.t("pmtEmptyJustSavedHint"));
+    expect(justSaved?.textContent).not.toContain(i18n.t("pmtEmptyHint"));
+    expect(host.querySelector('[data-testid="pmt-empty-action"]')).toBeNull();
     // the detail line shows the recorded amount in «دج» (never "DA")
     const detail = host.querySelector('[data-testid="pmt-saved-detail"]');
     expect(detail?.textContent).toContain("600");

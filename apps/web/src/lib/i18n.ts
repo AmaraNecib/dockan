@@ -161,7 +161,7 @@ const resources = {
       categoriesAdd: "إضافة",
       categoriesEmpty: "لا توجد تصنيفات بعد",
       categoriesEmptyHint: "اكتب اسم التصنيف في الحقل أعلاه ثم اضغط إضافة.",
-      categoriesEmptyAction: "اكتب اسم التصنيف",
+      categoriesEmptyAction: "أضف تصنيفاً",
       itemsTitle: "المنتجات",
       itemsTabsLabel: "أقسام المنتجات",
       itemsTabProducts: "المنتجات",

@@ -277,3 +277,60 @@ describe("party labels (issue 120)", () => {
     expect(copy).toContain(`\u2066${PHONE_EXAMPLE_INTL}\u2069`);
   });
 });
+
+/**
+ * Issue #96 — the secondary empty states live or die by their copy, and the
+ * page specs assert it with `toContain(i18n.t(key))`, which passes even when
+ * the key is missing (i18next then returns the key itself). This enumerates
+ * every key the change added or rewrote so a missing Arabic string fails here,
+ * next to the copy it belongs to.
+ */
+describe("every issue #96 empty-state key has real Arabic copy", () => {
+  const EMPTY_STATE_KEYS = [
+    // Group A — read-only explanations
+    "activityEmptyHint",
+    "diagnosticsEmptyHint",
+    "historyEmptyHint",
+    "returnsEmptyHint",
+    "supplierReturnsEmptyHint",
+    "pmtEmptyHint",
+    "pmtEmptySettledHint",
+    "pmtEmptyJustSavedHint",
+    "invoiceReturnsEmptyHint",
+    "partyInvoicesEmptyHint",
+    "partyNoUnpaidHint",
+    "partyPaymentsEmptyHint",
+    "supplierAccountEmptyHint",
+    "purchasesProposalEmpty",
+    // Group B — adjacent actions and their hints
+    "itemsEmptyHint",
+    "itemsEmptyAction",
+    "itemsEmptyNoCategory",
+    "itemsEmptyNoCategoryHint",
+    "itemsEmptyNoCategoryAction",
+    "categoriesEmptyHint",
+    "categoriesEmptyAction",
+    "invoicesEmptyHint",
+    "invoicesEmptyFilteredHint",
+    "invoicesEmptyClearFilters",
+    "purchasesNew",
+    "expensesEmptyNoCategory",
+    "expensesEmptyHint",
+    "expensesEmptyFilteredHint",
+    "expensesEmptyClearFilters",
+    "expensesEmptyAction",
+    "reportsEmptyHint",
+    "reportsEmptyAction",
+  ] as const;
+
+  it("resolves each key to non-empty Arabic, never back to the key", () => {
+    for (const key of EMPTY_STATE_KEYS) {
+      const copy = i18n.t(key);
+      expect(copy, `missing copy for ${key}`).not.toBe(key);
+      expect(copy.length, `empty copy for ${key}`).toBeGreaterThan(0);
+      expect(copy, `non-Arabic copy for ${key}`).toMatch(/[\u0600-\u06FF]/);
+      // none of these carry interpolation; a stray {{ means a broken template
+      expect(copy, `unfilled template in ${key}`).not.toContain("{{");
+    }
+  });
+});

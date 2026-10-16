@@ -792,8 +792,10 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
   if (items.data.total === 0) {
     // a fresh install has no item category, and the add form requires one it
     // cannot create. Point at the categories screen instead of opening a form
-    // the owner cannot complete (issue #96).
+    // the owner cannot complete (issue #96). A failed category read is worse:
+    // the add form can never be completed, so no action is offered at all.
     const noCategories = categories.data?.items.length === 0;
+    const categoriesUnavailable = categories.isError;
     return (
       <EmptyState
         testId="items-empty"
@@ -807,7 +809,7 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
                 {t("itemsEmptyNoCategoryAction")}
               </Link>
             </Button>
-          ) : (
+          ) : categoriesUnavailable ? undefined : (
             <Button size="lg" onClick={onAddItem} data-testid="items-empty-action">
               {t("itemsEmptyAction")}
             </Button>

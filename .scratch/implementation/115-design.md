@@ -133,6 +133,17 @@ must record that it was asked, or "not now" silently becomes "never". The one
 other guard of this shape found in the same change is named under
 candidate follow-ups rather than fixed quietly.
 
+**Why the evidence is a mutation, not an assertion.** The fixed code makes the
+same-turn and sequential paths observably identical at the end (the legacy value
+lands either way), so no black-box assertion can tell "a remembered retry ran"
+from "the retry ran directly". The same-turn release is the test's *premise*;
+the discrimination evidence is the mutation — removing `retryPending` (the
+pre-round-2 code) fails the test with `preferenceStore[SIDEBAR_COLLAPSED_KEY] ===
+undefined`. Adding an assertion that cannot fail for the wrong reason was
+deliberately avoided; the literal criterion "a test that pins the interleaving"
+is met by the mutation, which is recorded in
+`.scratch/reviews/115/<sha>-test-audit.md`.
+
 ## Planned tests
 
 Unit (`apps/web`):

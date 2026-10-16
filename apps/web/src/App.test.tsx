@@ -790,6 +790,68 @@ describe("RequireSession preference migration (issue #97 follow-up)", () => {
     return <span data-testid="sidebar-value">{String(value)}</span>;
   }
 
+  function SidebarWriter() {
+    const { setValue } = useSidebarCollapsed();
+    return (
+      <button type="button" data-testid="sidebar-write" onClick={() => setValue(true)}>
+        write
+      </button>
+    );
+  }
+
+  /**
+   * Mount the migration with the legacy sidebar value seeded, the migration
+   * read and the owner's competing write both held, and exactly that write
+   * configured to fail. The caller releases the two gates in the order the
+   * scenario needs — sequentially (round 1) or in the same turn (round 2).
+   */
+  async function mountHeldSidebarImport(legacy: string): Promise<{
+    client: QueryClient;
+    releaseRead: () => void;
+    releaseWrite: () => void;
+  }> {
+    sessionData = { user: { id: "u1" } };
+    // the legacy value the import must recover
+    window.localStorage.setItem("dokan.sidebar.collapsed", legacy);
+
+    // hold the migration read so the owner's write is issued first...
+    let releaseRead = () => {};
+    preferenceReadGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    // ...hold that write so the migration observes it in flight...
+    let releaseWrite = () => {};
+    preferenceWriteGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    // ...and fail exactly that write, so the retry can succeed
+    failPreferenceWriteCount = 1;
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    mounted.push({ root, host });
+    await act(async () => {
+      renderWithClient(
+        root,
+        <RequireSession>
+          <SidebarWriter />
+        </RequireSession>,
+        client,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    // the owner toggles while the migration read is still held
+    await act(async () => {
+      host.querySelector<HTMLButtonElement>("[data-testid='sidebar-write']")?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    return { client, releaseRead, releaseWrite };
+  }
+
   it("renders the shell immediately and surfaces the imported value in the background", async () => {
     sessionData = { user: { id: "u1" } };
     window.localStorage.setItem("dokan.sidebar.collapsed", "true");
@@ -874,53 +936,7 @@ describe("RequireSession preference migration (issue #97 follow-up)", () => {
   });
 
   it("re-runs the import when the owner's competing sidebar write fails (issue #115)", async () => {
-    sessionData = { user: { id: "u1" } };
-    // the legacy value the import must recover
-    window.localStorage.setItem("dokan.sidebar.collapsed", "false");
-
-    // hold the migration read so the owner's write is issued first...
-    let releaseRead = () => {};
-    preferenceReadGate = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    // ...hold that write so the migration observes it in flight...
-    let releaseWrite = () => {};
-    preferenceWriteGate = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-    // ...and fail exactly that write, so the retry can succeed
-    failPreferenceWriteCount = 1;
-
-    function SidebarWriter() {
-      const { setValue } = useSidebarCollapsed();
-      return (
-        <button type="button" data-testid="sidebar-write" onClick={() => setValue(true)}>
-          write
-        </button>
-      );
-    }
-
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-    mounted.push({ root, host });
-    await act(async () => {
-      renderWithClient(
-        root,
-        <RequireSession>
-          <SidebarWriter />
-        </RequireSession>,
-        client,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-
-    // the owner toggles while the migration read is still held
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>("[data-testid='sidebar-write']")?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    const { client, releaseRead, releaseWrite } = await mountHeldSidebarImport("false");
 
     // release the read: the migration sees the competing write and skips
     releaseRead();
@@ -948,57 +964,14 @@ describe("RequireSession preference migration (issue #97 follow-up)", () => {
   });
 
   it("remembers a retry that arrives while the import is still settling (issue #115 round 2)", async () => {
-    sessionData = { user: { id: "u1" } };
-    // the legacy value the import must recover
-    window.localStorage.setItem("dokan.sidebar.collapsed", "false");
-
-    // hold the migration read and the owner's competing write...
-    let releaseRead = () => {};
-    preferenceReadGate = new Promise<void>((resolve) => {
-      releaseRead = resolve;
-    });
-    let releaseWrite = () => {};
-    preferenceWriteGate = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-    // ...and fail exactly that write, so a remembered retry can succeed
-    failPreferenceWriteCount = 1;
-
-    function SidebarWriter() {
-      const { setValue } = useSidebarCollapsed();
-      return (
-        <button type="button" data-testid="sidebar-write" onClick={() => setValue(true)}>
-          write
-        </button>
-      );
-    }
-
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const root = createRoot(host);
-    mounted.push({ root, host });
-    await act(async () => {
-      renderWithClient(
-        root,
-        <RequireSession>
-          <SidebarWriter />
-        </RequireSession>,
-        client,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-
-    // the owner toggles while the migration read is still held
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>("[data-testid='sidebar-write']")?.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    const { client, releaseRead, releaseWrite } = await mountHeldSidebarImport("false");
 
     // release the read and fail the competing write in the same turn: the read
     // settles first (the migration skips for the in-flight write) and the
     // failure listener then runs before the migration's `finally` clears
-    // `importing`; the retry must be remembered, not dropped
+    // `importing`; the retry must be remembered, not dropped. The two orderings
+    // are behaviourally identical at the end, so the discrimination evidence is
+    // the mutation (drop `retryPending` → this test fails), not an assertion.
     await act(async () => {
       releaseRead();
       releaseWrite();

@@ -98,8 +98,10 @@ message instead of the clear one.
   that key, so a direct API rejection gets the same copy.
 - `party-forms.tsx` (`PartyForm.submit`): reject a changed phone before mutate
   with `t("partyPhoneInvalid")`. Only a value the operator changed is checked, so
-  a legacy record already holding junk text can still be renamed (the store
-  refuses only a changed phone; the untouched value is never re-written).
+  a legacy record already holding junk text can still be renamed (the form
+  omits an unchanged phone from the patch, so the store never sees the legacy
+  value and never re-writes it; the store does refuse any invalid phone it is
+  explicitly asked to write).
 - `party-picker.tsx` inline create panel: show the same copy and disable Save
   when the typed phone is not numeric.
 

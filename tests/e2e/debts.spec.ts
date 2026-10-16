@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
-import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { runE2eReset } from "./reset-helpers";
 
 /**
  * Debts screen (/debts). After first-time setup, seed a
@@ -30,12 +29,7 @@ import { openItemsTab } from "./items-helpers";
  * 2000 دج, and that group read "3200 دج" (#96 round 3).
  */
 test.beforeAll(() => {
-  execFileSync("bun", ["scripts/reset-e2e-records.mjs"], {
-    cwd: process.cwd(),
-    // respect a harness-supplied data dir; only default when none is set
-    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  runE2eReset("reset-e2e-records.mjs");
 });
 
 test("debts screen: both directions grouped with totals, counts, and drill-down", async ({ page }) => {

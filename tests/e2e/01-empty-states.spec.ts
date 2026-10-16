@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
-import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
+import { runE2eReset } from "./reset-helpers";
 
 /**
  * Issue #96 — secondary empty states name a real next action.
@@ -14,11 +13,7 @@ import { signIn } from "./auth-helpers";
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(() => {
-  execFileSync("bun", ["scripts/reset-e2e-records.mjs"], {
-    cwd: process.cwd(),
-    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  runE2eReset("reset-e2e-records.mjs");
 });
 
 test("categories: the empty state focuses the adjacent add field", async ({ page }) => {

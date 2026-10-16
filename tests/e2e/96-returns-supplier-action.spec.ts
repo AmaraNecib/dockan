@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
-import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
 import { saveQuickAdd } from "./rpc-helpers";
+import { runE2eReset } from "./reset-helpers";
 
 /**
  * Issue #96 round 2 — the invoice-returns action must branch on the second
@@ -38,12 +37,7 @@ import { saveQuickAdd } from "./rpc-helpers";
  * would otherwise leave the rows behind for every later spec.
  */
 test.afterAll(() => {
-  execFileSync("bun", ["scripts/reset-e2e-records.mjs"], {
-    cwd: process.cwd(),
-    // respect a harness-supplied data dir; only default when none is set
-    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  runE2eReset("reset-e2e-records.mjs");
 });
 
 test.describe.configure({ mode: "serial" });

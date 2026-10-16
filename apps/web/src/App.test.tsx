@@ -404,7 +404,14 @@ describe("login failures name the problem (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "wrong-password");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    // a field-less failure is its own live region: that is the only
+    // announcement path, and it is the summary that takes focus. Select it by
+    // id so the role assertion is a real check, not a restatement of the
+    // selector.
+    const alert = host.querySelector("#login-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    // exactly one live region: a field-less failure has no second path
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(signInCalls).toBe(1);
@@ -412,7 +419,7 @@ describe("login failures name the problem (issue #100)", () => {
     expect(signInArgs?.username).toBe("213550123123");
     // the copy names both fields, so the summary carries the message and no
     // single field is blamed (the field's own aria-invalid would lie)
-    expect(document.activeElement).toBe(host.querySelector('[role="alert"]'));
+    expect(document.activeElement).toBe(alert);
     expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("false");
   });
 
@@ -429,6 +436,11 @@ describe("login failures name the problem (issue #100)", () => {
     expect(document.activeElement).toBe(phone);
     expect(phone.getAttribute("aria-invalid")).toBe("true");
     expect(phone.getAttribute("aria-describedby")).toBe("login-error");
+    // the paragraph is a plain description, not a live region too: otherwise a
+    // screen reader announces the sentence on insertion and again on focus.
+    // No live region anywhere: the field's description is the only path.
+    expect(host.querySelector("#login-error")?.getAttribute("role")).toBeNull();
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(0);
   });
 
   it("stops the phone field at the longest accepted form", async () => {
@@ -452,8 +464,11 @@ describe("login failures name the problem (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "any-password");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    // a field error is announced through the field, so the paragraph is not a
+    // second live region (issue #113)
+    const alert = host.querySelector("#login-error");
     expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(inputByName(host, "username").getAttribute("aria-invalid")).toBe("true");
     expect(inputByName(host, "username").getAttribute("aria-describedby")).toBe("login-error");
     expect(document.activeElement).toBe(inputByName(host, "username"));
@@ -507,6 +522,26 @@ describe("login failures name the problem (issue #100)", () => {
     // the key does not change
     expect(second).not.toBe(first);
   });
+
+  it("a field-less failure after a field failure becomes a live region again", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    // a phone-blamed failure is read through the field: no live region at all
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(0);
+
+    // the next failure blames no field, so the summary must become the live
+    // region and take focus — the role is a per-failure contract, not fixed
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", status: 401 } };
+    setInputValue(inputByName(host, "username"), "0550123123");
+    await submitForm(host);
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    expect(document.activeElement).toBe(alert);
+  });
 });
 
 describe("login normalises Arabic-Indic phone digits (issue #108)", () => {
@@ -541,8 +576,9 @@ describe("setup names the field (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "abc");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    const alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("true");
     expect(document.activeElement).toBe(inputByName(host, "password"));
     expect(firstTimeSetupCalls).toBe(0);
@@ -561,7 +597,7 @@ describe("setup names the field (issue #100)", () => {
     await submitForm(host);
 
     expect(firstTimeSetupCalls).toBe(1);
-    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector("#setup-error")).toBeNull();
   });
 });
 
@@ -573,8 +609,9 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
 
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    const alert = host.querySelector("#login-error");
     expect(alert?.textContent).toBe(i18n.t("INVALID_PHONE_NUMBER"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(signInCalls).toBe(0);
     const phone = inputByName(host, "username");
     expect(phone.getAttribute("aria-invalid")).toBe("true");
@@ -589,8 +626,9 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     setInputValue(inputByName(host, "username"), "0550123123");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    const alert = host.querySelector("#login-error");
     expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(signInCalls).toBe(0);
     const password = inputByName(host, "password");
     expect(password.getAttribute("aria-invalid")).toBe("true");
@@ -608,8 +646,9 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    let alert = host.querySelector('[role="alert"]');
+    let alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe("اكتب اسم المالك.");
+    expect(alert?.getAttribute("role")).toBeNull();
     const owner = inputByName(host, "ownerName");
     expect(owner.getAttribute("aria-invalid")).toBe("true");
     expect(owner.getAttribute("aria-describedby")).toBe("setup-error");
@@ -619,15 +658,17 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     // a whitespace-only owner name is still empty (the api trims it)
     setInputValue(owner, "   ");
     await submitForm(host);
-    alert = host.querySelector('[role="alert"]');
+    alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe("اكتب اسم المالك.");
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(firstTimeSetupCalls).toBe(0);
 
     // filling the owner moves the blame to the store name
     setInputValue(owner, "مالك");
     await submitForm(host);
-    alert = host.querySelector('[role="alert"]');
+    alert = host.querySelector("#setup-error");
     expect(alert?.textContent).toBe("اكتب اسم المتجر.");
+    expect(alert?.getAttribute("role")).toBeNull();
     const store = inputByName(host, "storeName");
     expect(store.getAttribute("aria-invalid")).toBe("true");
     expect(store.getAttribute("aria-describedby")).toBe("setup-error");
@@ -645,7 +686,9 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe("اكتب اسم المتجر.");
+    const alert = host.querySelector("#setup-error");
+    expect(alert?.textContent).toBe("اكتب اسم المتجر.");
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(firstTimeSetupCalls).toBe(0);
   });
 
@@ -659,7 +702,7 @@ describe("auth forms take over the browser's validation (issue #109)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector("#setup-error")).toBeNull();
     expect(firstTimeSetupCalls).toBe(1);
   });
 });
@@ -692,7 +735,11 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    // SETUP_ALREADY_DONE hands off to the login form and the notice is reported
+    // there, so the summary is the login page's live region
+    const alert = host.querySelector("#login-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
@@ -714,7 +761,9 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    const alert = host.querySelector("#setup-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("SETUP_LOCKED"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
@@ -733,12 +782,14 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "ab");
     await submitForm(host);
     const password = inputByName(host, "password");
-    expect(host.querySelector('[role="alert"]')?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    const alert = host.querySelector("#login-error");
+    expect(alert?.textContent).toBe(i18n.t("AUTH_PASSWORD_TOO_SHORT"));
+    expect(alert?.getAttribute("role")).toBeNull();
     expect(password.getAttribute("aria-invalid")).toBe("true");
 
     // typing the correction drops the alert and the invalid marking with it
     setInputValue(password, "abcd");
-    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector("#login-error")).toBeNull();
     expect(password.getAttribute("aria-invalid")).toBe("false");
 
     // a phone error survives an edit to the password, and clears on its own
@@ -749,7 +800,7 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(password, "another-password");
     expect(phone.getAttribute("aria-invalid")).toBe("true");
     setInputValue(phone, "0550123123");
-    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelector("#login-error")).toBeNull();
   });
 
   it("a second submit while the first is in flight does not double-fire", async () => {

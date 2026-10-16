@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { authClient, useSession } from "./lib/auth-client";
 import { authErrorKey, serverErrorKey, type MessageKey } from "./lib/i18n";
 import "./lib/i18n";
+import { AuthErrorAlert, authFieldKey, useAuthReporter } from "./lib/auth-errors";
 import { MIN_PASSWORD_LENGTH, normalizeAlgerianPhone, phoneToUsername, type Preferences } from "@dokan/contracts";
 import { VaultGate, useVaultStatus } from "./components/vault/vault-gate";
 import { PasswordInput } from "./components/ui/password-input";
@@ -14,71 +15,8 @@ import { readSetupToken } from "./lib/setup-token";
 import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
-/** The field an auth error points the owner back to; null means the summary. */
-type AuthErrorField = "phone" | "password" | "ownerName" | "storeName" | null;
-
 /** The longest accepted login name: "+213550123123". */
 const PHONE_MAX_LENGTH = 13;
-
-/**
- * Shared auth-form error state (issue #100). The message is announced through
- * `role="alert"`; focus lands on the blamed field, or on the alert itself
- * when the failure names no single field.
- */
-function useAuthError() {
-  const [state, setState] = useState<{ message: string; field: AuthErrorField; nonce: number } | null>(null);
-  const errorRef = useRef<HTMLParagraphElement>(null);
-  const focusErrorRef = useRef(false);
-  // monotonic: the alert is keyed by it so an identical repeated failure is a
-  // fresh live region and gets announced again
-  const nonceRef = useRef(0);
-
-  useEffect(() => {
-    if (!focusErrorRef.current) return;
-    focusErrorRef.current = false;
-    errorRef.current?.focus();
-  }, [state]);
-
-  const show = useCallback((message: string, field: AuthErrorField, target: HTMLElement | null): void => {
-    focusErrorRef.current = target === null;
-    nonceRef.current += 1;
-    setState({ message, field, nonce: nonceRef.current });
-    target?.focus();
-  }, []);
-
-  const clear = useCallback((): void => setState(null), []);
-
-  // drop the alert as soon as the field it blames is edited: leaving it up
-  // keeps the corrected field marked invalid and tied to a stale message
-  const clearField = useCallback((field: Exclude<AuthErrorField, null>): void => {
-    setState((current) => (current !== null && current.field === field ? null : current));
-  }, []);
-
-  return { state, show, clear, clearField, errorRef };
-}
-
-/** Which field a resolved error blames; null means the alert summary. */
-function authErrorField(key: MessageKey): AuthErrorField {
-  if (key === "INVALID_PHONE_NUMBER") return "phone";
-  // a short password is a password problem; "credentials" names both fields in
-  // its copy, so blaming one of them would contradict the message
-  if (key === "AUTH_PASSWORD_TOO_SHORT") return "password";
-  // issue #109 — the two names the native `required` used to guard
-  if (key === "AUTH_OWNER_NAME_REQUIRED") return "ownerName";
-  if (key === "AUTH_STORE_NAME_REQUIRED") return "storeName";
-  return null;
-}
-
-/**
- * The first field-level failure on a new-owner form, using the exact rules the
- * contracts enforce (phone normalization, password minimum). `null` means the
- * form may be submitted.
- */
-function authFieldKey(phone: string, password: string): MessageKey | null {
-  if (normalizeAlgerianPhone(phone) === null) return "INVALID_PHONE_NUMBER";
-  if (password.length < MIN_PASSWORD_LENGTH) return "AUTH_PASSWORD_TOO_SHORT";
-  return null;
-}
 
 /**
  * The setup name rules (`firstTimeSetupInputSchema`: `z.string().trim().min(1)`),
@@ -89,66 +27,6 @@ function setupNameKey(ownerName: string, storeName: string): MessageKey | null {
   if (ownerName.trim() === "") return "AUTH_OWNER_NAME_REQUIRED";
   if (storeName.trim() === "") return "AUTH_STORE_NAME_REQUIRED";
   return null;
-}
-
-/** The input a blamed field points at, or null for the alert summary. */
-function authTarget(
-  field: AuthErrorField,
-  refs: {
-    phone: RefObject<HTMLInputElement | null>;
-    password: RefObject<HTMLInputElement | null>;
-    ownerName?: RefObject<HTMLInputElement | null>;
-    storeName?: RefObject<HTMLInputElement | null>;
-  },
-): HTMLElement | null {
-  if (field === "phone") return refs.phone.current;
-  if (field === "password") return refs.password.current;
-  if (field === "ownerName") return refs.ownerName?.current ?? null;
-  if (field === "storeName") return refs.storeName?.current ?? null;
-  return null;
-}
-
-/**
- * The shared wiring for an auth form's failures: the alert state plus a
- * reporter that translates a resolved key and focuses the field it blames.
- */
-function useAuthReporter(
-  phoneRef: RefObject<HTMLInputElement | null>,
-  passwordRef: RefObject<HTMLInputElement | null>,
-  ownerNameRef?: RefObject<HTMLInputElement | null>,
-  storeNameRef?: RefObject<HTMLInputElement | null>,
-) {
-  const { t } = useTranslation();
-  const authError = useAuthError();
-  const { show } = authError;
-  // stable: the login form announces its setup handoff in an effect keyed on
-  // the reporter, and a fresh closure every render would re-run that effect
-  const report = useCallback(
-    (key: MessageKey): void => {
-      const field = authErrorField(key);
-      show(t(key), field, authTarget(field, { phone: phoneRef, password: passwordRef, ownerName: ownerNameRef, storeName: storeNameRef }));
-    },
-    [show, t, phoneRef, passwordRef, ownerNameRef, storeNameRef],
-  );
-  return { authError, report };
-}
-
-/** The one error paragraph the auth forms render; focusable and announced. */
-function AuthErrorAlert({
-  id,
-  message,
-  errorRef,
-}: {
-  id: string;
-  message: string | null;
-  errorRef: RefObject<HTMLParagraphElement | null>;
-}) {
-  if (message === null) return null;
-  return (
-    <p id={id} ref={errorRef} tabIndex={-1} role="alert" className="mt-2 text-sm text-destructive">
-      {message}
-    </p>
-  );
 }
 
 /** Blocks children until a session exists; preferences import in the background. */
@@ -525,7 +403,7 @@ function SetupPage({ onDone, vaultMode = false }: { onDone: (notice?: MessageKey
         )}
 
 
-        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
+        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="setup-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} field={authError.state?.field ?? null} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50">
           {busy ? t("settingsSaving") : t("setupCreate")}
         </button>
@@ -610,7 +488,7 @@ function LoginPage({ notice, onNoticeConsumed }: { notice: MessageKey | null; on
           <PasswordInput ref={passwordRef} minLength={MIN_PASSWORD_LENGTH} name="password" value={password} onChange={(e) => { setPassword(e.target.value); authError.clearField("password"); }} autoComplete="current-password" required aria-invalid={authError.state?.field === "password"} aria-describedby={authError.state?.field === "password" ? "login-error" : undefined} data-testid="login-password" />
         </label>
 
-        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} />
+        <AuthErrorAlert key={authError.state?.nonce ?? 0} id="login-error" message={authError.state?.message ?? null} errorRef={authError.errorRef} field={authError.state?.field ?? null} />
         <button type="submit" disabled={busy} className="mt-4 w-full rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" data-testid="login-submit">
           {busy ? t("settingsSaving") : t("login")}
         </button>

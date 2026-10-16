@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import { VAULT_ERROR_CODES } from "@dokan/contracts";
 
@@ -175,6 +176,82 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
     // distinctness: two refusals sharing one sentence would still pass existence
     // checks while telling the owner the wrong thing
     expect(new Set(copies).size, "duplicate Arabic copy across refusals").toBe(copies.length);
+  });
+});
+
+/**
+ * Issue #113 — every refusal the router can send must be a translatable key.
+ * `serverErrorKey` gates on SCREAMING_SNAKE plus a resource entry and returns
+ * `errorGeneric` silently otherwise, so a missing or non-conforming code is
+ * invisible without a scan that reads the router itself. Precedent for reading
+ * real source in a test: `cell-ltr.test.ts`.
+ */
+describe("every router refusal stays translatable (issue #113)", () => {
+  const routerSource = new URL("../../../api/src/rpc/router.ts", import.meta.url);
+  const ledgerSource = new URL("../../../api/src/lib/stock-ledger.ts", import.meta.url);
+  const messageField = /message:\s*"([^"]*)"/g;
+  const screamingSnake = /^[A-Z][A-Z0-9_]*$/;
+
+  function quotedIn(text: string): string[] {
+    const codes: string[] = [];
+    for (const match of text.matchAll(/"([^"]+)"/g)) {
+      if (match[1] !== undefined) codes.push(match[1]);
+    }
+    return codes;
+  }
+
+  /**
+   * Every message the router can hand the client. Most are `message: "CODE"`
+   * literals. Two are forwarded by identifier and a regex cannot see their
+   * value, so their source unions are read instead: `message: error.code`
+   * (`StockLedgerError`) and `message: phoneKey` (`withPartyPhoneRefusals`).
+   * The guard below fails if those shapes change, so this scan cannot silently
+   * lose them.
+   */
+  function routerRefusals(): string[] {
+    const router = readFileSync(routerSource, "utf8");
+    const codes = new Set<string>();
+    for (const match of router.matchAll(messageField)) {
+      const code = match[1];
+      // an empty `message: ""` is added so the SCREAMING_SNAKE check below
+      // fails on it instead of it slipping through unseen
+      if (code !== undefined) codes.add(code);
+    }
+    for (const code of quotedIn(/phoneKey:\s*([^,)]+)/.exec(router)?.[1] ?? "")) codes.add(code);
+    for (const code of quotedIn(/readonly code:\s*([^,)]+)/.exec(readFileSync(ledgerSource, "utf8"))?.[1] ?? "")) codes.add(code);
+    return [...codes].sort();
+  }
+
+  it("scans the real router, not an empty list", () => {
+    // a moved file or a broken regex would otherwise pass every check below
+    expect(routerRefusals().length).toBeGreaterThan(40);
+  });
+
+  it("names the identifier-forwarded refusals it reads from unions", () => {
+    // a named-type refactor (phoneKey: PartyPhoneKey) would make the union
+    // extractor return nothing while the count guard above still passes, so the
+    // codes are named here and a refactor fails loudly instead of losing them
+    expect(routerRefusals()).toEqual(expect.arrayContaining([
+      "STOCK_NEGATIVE",
+      "CUSTOMER_PHONE_EXISTS",
+      "SUPPLIER_PHONE_EXISTS",
+    ]));
+  });
+
+  it("gives every refusal real Arabic copy, never the silent fallback", () => {
+    for (const code of routerRefusals()) {
+      // the regex `serverErrorKey` gates on; a new non-conforming code fails
+      // here instead of quietly rendering `errorGeneric`
+      expect(code, `${code} is not a SCREAMING_SNAKE server key`).toMatch(screamingSnake);
+      // the ONE shared mapping path must land on a real key. An aliased code
+      // (`INVALID_PARTY_PHONE` → `partyPhoneInvalid`) legitimately resolves to
+      // a different key, so compare against the fallback, not against the code.
+      expect(serverErrorKey(code), `${code} fell back to errorGeneric`).not.toBe("errorGeneric");
+      const copy = tError(code);
+      expect(copy, `missing copy for ${code}`).not.toBe(code);
+      expect(copy, `empty copy for ${code}`).not.toBe("");
+      expect(copy, `non-Arabic copy for ${code}`).toMatch(/[\u0600-\u06FF]/);
+    }
   });
 });
 

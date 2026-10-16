@@ -3,7 +3,7 @@ import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-q
 import { useTranslation } from "react-i18next";
 
 import type { Party, PartyRole, PartyUpdateInput } from "@dokan/contracts";
-import { displayAlgerianPhone, normalizePartyPhone } from "@dokan/contracts";
+import { displayAlgerianPhone, isPartyPhoneText, normalizePartyPhone } from "@dokan/contracts";
 
 import { Button } from "@/components/ui/button";
 import { orpc } from "@/lib/rpc";
@@ -75,6 +75,16 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
     // a local format is not a change, so it must not write or audit (Greptile
     // finding 2)
     const cleanPhone = normalizePartyPhone(phone);
+    const storedPhone = party === undefined || party === null ? undefined : normalizePartyPhone(party.phone);
+    // A phone is an identity key (ADR-0007): refuse text that is not a phone
+    // before it can become one and never match the real number (issue 129).
+    // Only a value the operator actually changed is checked, so a record that
+    // already holds legacy junk text can still be renamed — the store refuses
+    // only a changed phone and the untouched value is never re-written.
+    if (cleanPhone !== storedPhone && !isPartyPhoneText(phone)) {
+      setError(t("partyPhoneInvalid"));
+      return;
+    }
     const onSuccess = (saved: Party) => {
       invalidateParties(queryClient);
       onSaved(saved, party === undefined || party === null ? "created" : "updated");
@@ -86,7 +96,7 @@ export function PartyForm({ role, party, onSaved, onCancel }: PartyFormProps) {
       // overwritten by a stale form value (Greptile P1.2)
       const patch: PartyUpdateInput = { id: party.id };
       if (trimmed !== party.name) patch.name = trimmed;
-      if (cleanPhone !== normalizePartyPhone(party.phone)) patch.phone = cleanPhone;
+      if (cleanPhone !== storedPhone) patch.phone = cleanPhone;
       if (patch.name === undefined && patch.phone === undefined) {
         onSaved(party, "updated");
         return;

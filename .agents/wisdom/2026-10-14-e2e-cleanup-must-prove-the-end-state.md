@@ -15,7 +15,8 @@ the same disease**: the spec passed while proving nothing.
    *first* deletion's notice, before its own write landed.
 
 **Always**: take presence from the **acked RPC payload**, not from the DOM
-(`rpcOutput(await actAndAck(page, "<listProcedure>", …))` — see
+(`await actAndAck<T>(page, "<procedure>", …)` for an action, or
+`readRpc<T>(page, "<procedure>")` for a read you issue after a navigation — see
 `tests/e2e/rpc-helpers.ts`), then let `toHaveCount(1)` give the render its
 auto-wait. Never decide "the record is not there" from a bare `count()`.
 

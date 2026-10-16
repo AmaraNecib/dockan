@@ -19,29 +19,44 @@ export function waitForRpc(page: Page, procedure: string): Promise<Response> {
   );
 }
 
-/** Await an armed acknowledgement and fail loudly when the server refused it. */
-export async function expectRpcOk(response: Promise<Response>, procedure: string): Promise<Response> {
-  const resolved = await response;
-  expect(resolved.ok(), `${procedure} failed with HTTP ${resolved.status()}`).toBe(true);
-  return resolved;
+/**
+ * Read an armed ack's body and unwrap the `{ json }` envelope.
+ *
+ * The `.then` is attached to the *armed promise*, not to an awaited response,
+ * so `response.json()` runs as soon as the headers land. That makes the window
+ * in which a later navigation can discard the body negligible, which is the
+ * safe default for every `actAndAck` caller. It does not close that window
+ * entirely: an action that navigates can still lose the body between the
+ * headers and the body round-trip. Reads the page issues *around* a navigation
+ * must use `readRpc` below, which has no response for a navigation to discard.
+ */
+export function readEnvelope<T>(ack: Promise<Response>, procedure: string): Promise<T> {
+  return ack.then((response) => rpcOutput<T>(response, procedure));
 }
 
 /**
- * Run `action` and return only after the RPC it triggered was accepted by the
- * server. Arm-then-act in one call so the wait can never be set up after the
- * request.
+ * Run `action` and return the server-acknowledged output of the RPC it
+ * triggered. Arm-then-act in one call so the wait can never be set up after the
+ * request, and read the body eagerly so a later navigation cannot discard it.
+ *
+ * `action` must not navigate: a navigating read belongs in `readRpc`, whose
+ * response cannot be lost to the document swap.
  */
-export async function actAndAck(page: Page, procedure: string, action: () => Promise<void>): Promise<Response> {
-  const ack = waitForRpc(page, procedure);
-  try {
-    await action();
-  } catch (error) {
-    // the action failed before its request could be matched; swallow the armed
-    // wait so its teardown rejection cannot mask the real failure
-    void ack.catch(() => undefined);
-    throw error;
-  }
-  return expectRpcOk(ack, procedure);
+export async function actAndAck<T = unknown>(
+  page: Page,
+  procedure: string,
+  action: () => Promise<void>,
+): Promise<T> {
+  const output = readEnvelope<T>(waitForRpc(page, procedure), procedure);
+  // Attach the rejection handler NOW: the action runs while the read is already
+  // armed, so the server can refuse the RPC before the action ends. Without a
+  // handler at that moment Node reports that refusal as an unhandled rejection
+  // — a second failure that masks the action's own error. `output` keeps its
+  // rejection (a second handler does not consume it), so a refusal the action
+  // does not outlive is still what the awaited call reports.
+  void output.catch(() => undefined);
+  await action();
+  return output;
 }
 
 /**
@@ -88,14 +103,12 @@ export interface QuickAddSave {
  */
 export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{ id: string }> {
   await expect(options.save).toBeEnabled();
-  const created = await rpcOutput<{ id: string }>(
-    await actAndAck(page, options.procedure, async () => {
-      await options.save.click();
-      // SAFETY: both create procedures declare the item output, which carries
-      // the server-issued id the line is keyed on.
-      await expect(options.error).toHaveCount(0);
-    }),
-  );
+  // SAFETY: both create procedures declare the item output, which carries the
+  // server-issued id the line is keyed on.
+  const created = await actAndAck<{ id: string }>(page, options.procedure, async () => {
+    await options.save.click();
+    await expect(options.error).toHaveCount(0);
+  });
   await expect(options.lines.getByLabel(`${options.itemName}: ${options.quantityLabel}`)).toHaveAttribute(
     "name",
     `quantity-${created.id}`,
@@ -103,11 +116,73 @@ export async function saveQuickAdd(page: Page, options: QuickAddSave): Promise<{
   return created;
 }
 
-/** The oRPC success envelope; `json` carries the procedure's declared output. */
-export async function rpcOutput<T>(response: Response): Promise<T> {
-  // SAFETY: the oRPC fetch link (StandardRPCSerializer) answers a successful
-  // procedure call with the `{ json: <declared output> }` envelope; the caller's
-  // T names that output, and expectRpcOk already rejected a refusal.
+/**
+ * The oRPC success envelope; `json` carries the procedure's declared output.
+ *
+ * `response` must be an accepted (2xx) ack: this fails loudly on a refusal and
+ * on a body without the envelope, so a caller that reaches `json` reads the
+ * server's value rather than a guess. `readEnvelope` is the eager-read wrapper
+ * `actAndAck` uses; `procedure` labels the failure.
+ */
+export async function rpcOutput<T>(response: Response, procedure = "rpc"): Promise<T> {
+  expect(response.ok(), `${procedure} failed with HTTP ${response.status()}`).toBe(true);
+  // SAFETY: `response.json()` is untyped; the oRPC fetch link
+  // (StandardRPCSerializer) answers a successful procedure call with the
+  // `{ json: <declared output> }` envelope and `ok()` above rejected a refusal,
+  // so the caller's T names the value at `json`.
   const body = (await response.json()) as { json: T };
+  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+  }
   return body.json;
+}
+
+/**
+ * Read a no-input procedure's output directly, with no response for a
+ * navigation to discard.
+ *
+ * `actAndAck` is right for RPCs the page issues in response to an action that
+ * does not navigate. A *read* the page issues on mount (e.g. `customersList`
+ * after `page.goto`) is different: arming an ack before the `goto` can match a
+ * response issued by the document being replaced, and Playwright then refuses
+ * to hand over that body — "No resource with given identifier found …
+ * navigated away from" — even with an eager read. Awaiting the navigation and
+ * reading through `page.evaluate` asks the same endpoint for the same value
+ * with no navigation-raceable body.
+ *
+ * `/api/rpc/<procedure>` accepts an empty JSON body for a no-input procedure
+ * and answers the same `{ json }` envelope the page's client reads, so this is
+ * the server value the UI renders. It mirrors the app's RPC link headers
+ * (`x-vault-session`), so it stays faithful if a vault-mode spec ever adopts it.
+ */
+export async function readRpc<T>(page: Page, procedure: string): Promise<T> {
+  const body = await page.evaluate(async (name) => {
+    const headers = new Headers({ "content-type": "application/json" });
+    // the same unlocked-owner header apps/web/src/lib/rpc.ts attaches; read the
+    // one storage key vault-client.ts writes (empty/null means no session). A
+    // blocked storage throws there too and must not fail the read.
+    let vaultToken: string | null = null;
+    try {
+      vaultToken = sessionStorage.getItem("dokan.vault.session");
+    } catch {
+      /* storage can be blocked by the webview; proceed without a vault session */
+    }
+    if (vaultToken !== null && vaultToken !== "") headers.set("x-vault-session", vaultToken);
+    const response = await fetch(`/api/rpc/${name}`, {
+      method: "POST",
+      headers,
+      body: "{}",
+      credentials: "include",
+    });
+    if (!response.ok) throw new Error(`${name} failed with HTTP ${response.status}`);
+    return response.json();
+  }, procedure);
+  if (body === null || !Object.prototype.hasOwnProperty.call(body, "json")) {
+    throw new Error(`${procedure}: unexpected oRPC envelope (no json field)`);
+  }
+  // SAFETY: page.evaluate cannot carry a generic across the browser boundary;
+  // the oRPC StandardRPCSerializer answers a successful call with
+  // `{ json: <declared output> }` (the browser-side `ok()` rejected a refusal),
+  // so the caller's T names the value at `json`.
+  return (body as { json: T }).json;
 }

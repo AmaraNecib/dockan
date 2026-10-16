@@ -631,7 +631,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     customersCreate: os.customersCreate.handler(
       guardedInput(async (input) =>
-        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+        withPartyPhoneRefusals("CUSTOMER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.createParty("customer", input);
             await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED CUSTOMER ${party.name}`, ref: party.id });
@@ -642,7 +642,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     customersUpdate: os.customersUpdate.handler(
       guardedInput(async (input) =>
-        withPartyPhoneConflict("CUSTOMER_PHONE_EXISTS", () =>
+        withPartyPhoneRefusals("CUSTOMER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.updateParty("customer", input.id, input);
             if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -682,7 +682,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     suppliersCreate: os.suppliersCreate.handler(
       guardedInput(async (input) =>
-        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+        withPartyPhoneRefusals("SUPPLIER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.createParty("supplier", input);
             await tx.insertActivity({ type: "PARTY_CREATED", summary: `PARTY_CREATED SUPPLIER ${party.name}`, ref: party.id });
@@ -693,7 +693,7 @@ export function createRpcRouter(deps: RpcDeps) {
     ),
     suppliersUpdate: os.suppliersUpdate.handler(
       guardedInput(async (input) =>
-        withPartyPhoneConflict("SUPPLIER_PHONE_EXISTS", () =>
+        withPartyPhoneRefusals("SUPPLIER_PHONE_EXISTS", () =>
           deps.store.withTransactionImmediate(async (tx) => {
             const party = await tx.updateParty("supplier", input.id, input);
             if (party === undefined) throw new ORPCError("NOT_FOUND", { message: "PARTY_NOT_FOUND" });
@@ -2129,15 +2129,25 @@ function isUniqueViolation(err: Error): boolean {
 }
 
 /**
- * Translate the store's party identity refusal (and a cross-process race that
- * lands on the partial phone unique index) into the role-specific CONFLICT key
- * the ui translates (issue 120).
+ * Translate the store's party identity refusals (issue 120 + issue 129) into
+ * the stable keys the ui translates. `PHONE_EXISTS` (and a cross-process race
+ * that lands on the partial phone unique index) is a role-specific CONFLICT;
+ * a non-numeric phone is a BAD_REQUEST. The api never ships display text.
  */
-async function withPartyPhoneConflict<T>(phoneKey: "CUSTOMER_PHONE_EXISTS" | "SUPPLIER_PHONE_EXISTS", fn: () => Promise<T>): Promise<T> {
+async function withPartyPhoneRefusals<T>(phoneKey: "CUSTOMER_PHONE_EXISTS" | "SUPPLIER_PHONE_EXISTS", fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    if (err instanceof PartyError && err.code === "PHONE_EXISTS") throw new ORPCError("CONFLICT", { message: phoneKey });
+    if (err instanceof PartyError) {
+      // exhaustive over the union: a new PartyError code must be handled here,
+      // not silently mislabelled as a phone conflict
+      switch (err.code) {
+        case "INVALID_PHONE":
+          throw new ORPCError("BAD_REQUEST", { message: "INVALID_PARTY_PHONE" });
+        case "PHONE_EXISTS":
+          throw new ORPCError("CONFLICT", { message: phoneKey });
+      }
+    }
     if (err instanceof Error && isUniqueViolation(err)) throw new ORPCError("CONFLICT", { message: phoneKey });
     throw err;
   }

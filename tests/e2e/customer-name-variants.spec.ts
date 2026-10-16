@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { actAndAck, rpcOutput } from "./rpc-helpers";
+import { actAndAck, readRpc } from "./rpc-helpers";
 
 /**
  * #130 — the picker's duplicate-name warning folds alef/ya name variants, so a
@@ -112,15 +112,17 @@ test("picker warns on an alef/ya name variant and still creates the second recor
 type CustomerListPayload = { items: Array<{ name: string }> };
 
 /**
- * Load /customers and return the ACKED list payload. Presence is taken from the
- * payload, never from the DOM: `parties-page-customer` renders while the query
- * is still pending and a row count has no auto-wait, so either could read a
- * saved customer as absent and skip it silently (#189 review).
+ * Load the list route and return the server's `customersList` payload. Presence
+ * is taken from a server read, never from the DOM: `parties-page-customer`
+ * renders while the query is still pending, and a negative DOM check can pass
+ * while that pending query would still find the row, so a saved customer could
+ * read as absent and be skipped silently (#189 review).
  */
 async function readCustomers(page: Page): Promise<CustomerListPayload> {
-  return rpcOutput<CustomerListPayload>(
-    await actAndAck(page, "customersList", async () => {
-      await page.goto("/customers");
-    }),
-  );
+  // Navigate first, then read the server list directly. Arming an ack around
+  // the `goto` matched a `customersList` response issued by the document being
+  // replaced, and Playwright discarded its body ("navigated away from") before
+  // the ack could read it — the #209 CI failure. `readRpc` has no such body.
+  await page.goto("/customers");
+  return readRpc<CustomerListPayload>(page, "customersList");
 }

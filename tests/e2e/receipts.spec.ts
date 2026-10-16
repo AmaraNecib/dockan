@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
-import { actAndAck, rpcOutput, saveQuickAdd } from "./rpc-helpers";
+import { actAndAck, saveQuickAdd } from "./rpc-helpers";
 import { chooseSelectOption } from "./select-helpers";
 
 /**
@@ -79,16 +79,14 @@ test("invoice print button → receipt document with identity, totals and paymen
   // Wait on the api acknowledgement, not a 5 s UI poll: under CI load the write
   // can outlast the default expect window even though it lands (issue 179).
   // The number asserted below is the one the server actually allocated.
-  const saved = await rpcOutput<{ invoiceNumber: string }>(
-    await actAndAck(page, "invoicesCreate", async () => {
-      await page.getByTestId("sale-save").click();
-      // submit() refuses client-side before sending anything (empty cart, a
-      // party that still needs picking, an over-total paid amount) and records
-      // that refusal synchronously: asserting it away keeps such a regression a
-      // named failure here instead of a wait for a request never sent
-      await expect(page.getByTestId("sale-error")).toHaveCount(0);
-    }),
-  );
+  const saved = await actAndAck<{ invoiceNumber: string }>(page, "invoicesCreate", async () => {
+    await page.getByTestId("sale-save").click();
+    // submit() refuses client-side before sending anything (empty cart, a
+    // party that still needs picking, an over-total paid amount) and records
+    // that refusal synchronously: asserting it away keeps such a regression a
+    // named failure here instead of a wait for a request never sent
+    await expect(page.getByTestId("sale-error")).toHaveCount(0);
+  });
   // the contract guarantees the server-issued number's INV-<digits> shape
   const number = saved.invoiceNumber;
   expect(number).toMatch(/^INV-\d+$/);

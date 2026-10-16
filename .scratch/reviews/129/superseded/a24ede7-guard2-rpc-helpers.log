@@ -1,0 +1,17 @@
+$ playwright test "tests/e2e/rpc-helpers.spec.ts"
+[WebServer] @dokan/api start: [2026-10-15T21:08:57] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4700
+[WebServer] @dokan/web dev: 9:08:58 PM [vite] (client) Re-optimizing dependencies because lockfile has changed
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 780 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5700/
+
+Running 4 tests using 1 worker
+
+  ok 1 tests\e2e\rpc-helpers.spec.ts:61:1 › actAndAck reports the action error, not a refused RPC, with no unhandled rejection (5.0s)
+  ok 2 tests\e2e\rpc-helpers.spec.ts:104:1 › an action that throws before the armed read is awaited leaves no unhandled refusal (2.7s)
+  ok 3 tests\e2e\rpc-helpers.spec.ts:142:1 › actAndAck still reports a refused RPC when the action completes (2.6s)
+  ok 4 tests\e2e\rpc-helpers.spec.ts:161:1 › actAndAck surfaces an action that throws before its RPC is issued (2.6s)
+
+  4 passed (17.9s)

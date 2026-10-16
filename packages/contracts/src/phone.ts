@@ -61,6 +61,47 @@ export function foldArabicDigits(raw: string): string {
   });
 }
 
+/** A numeric identity: digits, at most one leading `+`. */
+const PARTY_PHONE_NUMERIC_RE = /^\+?\d+$/;
+
+/**
+ * The one cleaning shared by the phone predicate and the canonicalizer: fold
+ * Arabic-Indic (٠-٩) and Extended Arabic-Indic (۰-۹) digits to ASCII, strip
+ * invisible bidi marks, then the separators space/dot/parens/dash. Defined once
+ * so the rule and the stored identity cannot drift apart (wisdom
+ * 2026-10-01: the separator-only and bidi-mark bugs recurred when cleaning
+ * drifted between call sites).
+ */
+function cleanPhoneText(raw: string): string {
+  return foldArabicDigits(raw).replace(PHONE_INVISIBLE_RE, "").replace(/[\s.()-]/g, "");
+}
+
+/**
+ * The phone-text rule (issue 129): a present phone is a valid identity only
+ * when it is numeric after the SAME cleaning `normalizePartyPhone` applies —
+ * fold Arabic-Indic (٠-٩) and Extended Arabic-Indic (۰-۹) digits to ASCII,
+ * strip invisible bidi marks, strip the separators space/dot/parens/dash —
+ * optionally with one leading `+`.
+ *
+ * Absent, empty or separator-only text is valid: the phone is optional and
+ * clears to unset, so a walk-in with no number still saves. Arabic-Indic
+ * digits are ACCEPTED and normalised to Western because the owner's Arabic
+ * keyboard produces them by default (issue #108); rejecting them would lock
+ * the owner out of the primary input.
+ *
+ * Deliberately NOT the Algerian-mobile shape: `normalizePartyPhone` keeps a
+ * shop landline (`023551234`) and a foreign number (`+33123456789`) storable,
+ * so requiring the mobile regex here would reject a legitimate identity.
+ * Shared by the api store (authoritative) and the web forms; the contract
+ * schema stays length-only (oRPC collapses a refine message to a generic
+ * "Input validation failed", so the store's stable key is what the ui names).
+ */
+export function isPartyPhoneText(raw: string | null | undefined): boolean {
+  if (raw === null || raw === undefined) return true;
+  const cleaned = cleanPhoneText(raw);
+  return cleaned === "" || PARTY_PHONE_NUMERIC_RE.test(cleaned);
+}
+
 /**
  * Identity key for a customer/supplier phone (issue 120). Absent, empty or
  * separator-only clears the value (null, so SQLite keeps treating unset
@@ -69,18 +110,20 @@ export function foldArabicDigits(raw: string): string {
  * form; anything else is cleaned of separators and kept verbatim, so a shop
  * landline stays storable.
  * Shared by the api store, the uniqueness rule and the web picker's matching.
+ * A caller that persists a NEW value must first accept it with
+ * `isPartyPhoneText` (issue 129); this function stays permissive so legacy
+ * rows still match themselves and `displayAlgerianPhone` renders them.
  */
 export function normalizePartyPhone(raw: string | null | undefined): string | null {
   if (raw === null || raw === undefined) return null;
   const trimmed = raw.trim();
   if (trimmed === "") return null;
-  const cleaned = foldArabicDigits(trimmed).replace(PHONE_INVISIBLE_RE, "");
+  const cleaned = cleanPhoneText(trimmed);
   const mobile = normalizeAlgerianPhone(cleaned);
   if (mobile !== null) return mobile;
-  const fallback = cleaned.replace(/[\s.()-]/g, "");
   // "..." / " - " / a lone bidi mark clean away to nothing: an unset phone,
   // never an empty-string identity that the second walk-in would collide on
-  return fallback === "" ? null : fallback;
+  return cleaned === "" ? null : cleaned;
 }
 
 /** The better-auth username: the normalized phone without the leading +. */

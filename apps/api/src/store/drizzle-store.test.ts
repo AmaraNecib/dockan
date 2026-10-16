@@ -770,6 +770,26 @@ describe("parties (issue 120): identity, delete rule, detail, backfill", () => {
     await expect(store.createParty("customer", { name: "خام-٢", phone: "0550123456" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
   });
 
+  it("rejects non-numeric phone text as an identity (issue 129)", async () => {
+    await expect(store.createParty("customer", { name: "هاتف-نص", phone: "abc" })).rejects.toMatchObject({ code: "INVALID_PHONE" });
+    await expect(store.createParty("customer", { name: "هاتف-مختلط", phone: "12a34" })).rejects.toMatchObject({ code: "INVALID_PHONE" });
+    await expect(store.createParty("supplier", { name: "مورد-نص", phone: "هاتف" })).rejects.toMatchObject({ code: "INVALID_PHONE" });
+    // the refused record was not created
+    expect((await store.listParties("customer")).some((c) => c.name === "هاتف-نص")).toBe(false);
+
+    // an update is refused the same way; a name-only edit and a clear still work
+    const party = await store.createParty("customer", { name: "هاتف-سليم", phone: "0550111222" });
+    await expect(store.updateParty("customer", party.id, { phone: "abc" })).rejects.toMatchObject({ code: "INVALID_PHONE" });
+    const renamed = await store.updateParty("customer", party.id, { name: "هاتف-سليم-٢" });
+    expect(renamed?.phone).toBe("+213550111222");
+    expect((await store.updateParty("customer", party.id, { phone: null }))?.phone).toBeNull();
+
+    // Arabic-Indic digits are accepted and normalise to the one canonical identity
+    const arabic = await store.createParty("customer", { name: "هاتف-عربي", phone: "٠٥٥٠٩٨٧٦٥٤" });
+    expect(arabic.phone).toBe("+213550987654");
+    await expect(store.createParty("customer", { name: "هاتف-لاتيني", phone: "0550987654" })).rejects.toMatchObject({ code: "PHONE_EXISTS" });
+  });
+
   it("hard-deletes only a party with zero invoices (the delete rule)", async () => {
     const empty = await store.createParty("customer", { name: `حذف-${stamp()}` });
     expect(await store.deleteParty("customer", empty.id)).toBe("DELETED");

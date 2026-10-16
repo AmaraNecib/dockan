@@ -37,7 +37,7 @@ mock.module("@/lib/rpc", () => ({
   orpc: {},
 }));
 
-const { hasPreferenceWrite, parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } =
+const { hasPreferenceWrite, onPreferenceWriteSettled, parseBooleanPreference, readPreferences, serializeBooleanPreference, usePreference } =
   await import("./preferences");
 
 function Probe({ prefKey = "ui.test.a" }: { prefKey?: string } = {}) {
@@ -252,6 +252,28 @@ describe("preferences client (issue 97 follow-up)", () => {
     const healed = await mountProbe();
     expect(await waitFor(() => text(healed.host, "value") === "true")).toBe(true);
     await healed.unmount();
+  });
+
+  it("notifies observers of a settled write and forgets a failed one", async () => {
+    const events: Array<{ key: string; ok: boolean }> = [];
+    const unsubscribe = onPreferenceWriteSettled((key, ok) => events.push({ key, ok }));
+    const handle = await mountProbe("ui.test.e");
+    expect(await waitFor(() => text(handle.host, "loading") === "false")).toBe(true);
+
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='set']")?.click());
+    expect(await waitFor(() => events.length === 1)).toBe(true);
+    expect(events[0]).toEqual({ key: "ui.test.e", ok: true });
+    // a landed write is a choice the legacy import must not overtake
+    expect(hasPreferenceWrite("ui.test.e")).toBe(true);
+
+    failWrite = true;
+    await act(async () => handle.host.querySelector<HTMLButtonElement>("[data-testid='unset']")?.click());
+    expect(await waitFor(() => events.length === 2)).toBe(true);
+    expect(events[1]).toEqual({ key: "ui.test.e", ok: false });
+    // a failed write is not a choice, so the import may take over
+    expect(hasPreferenceWrite("ui.test.e")).toBe(false);
+    unsubscribe();
+    await handle.unmount();
   });
 
   it("picks up a preference changed outside this window on focus", async () => {

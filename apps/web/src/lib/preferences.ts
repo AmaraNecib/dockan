@@ -62,13 +62,35 @@ export interface Preference<T> {
   writeFailed: boolean;
 }
 
-// Keys the owner has written this page session. The one-time legacy import
-// consults this so a background migration can never overtake a newer choice.
+// Keys whose write this page session still owes: in flight, or already landed.
+// A failed write is removed (it is not a choice), so the one-time legacy import
+// can take over a value the server rejected. The import consults this so a
+// background migration can never overtake a newer choice that will land.
 const writtenKeys = new Set<string>();
 
-/** True once this page session issued a write for `key`. */
+/** True while this page session has a write for `key` in flight or landed. */
 export function hasPreferenceWrite(key: string): boolean {
   return writtenKeys.has(key);
+}
+
+type PreferenceWriteListener = (key: string, ok: boolean) => void;
+const writeSettledListeners = new Set<PreferenceWriteListener>();
+
+/**
+ * Observe each preference write as it settles, after any queued follow-up.
+ * The legacy sidebar import re-runs on a failed write through this: without it,
+ * a write the import skipped for and that then failed leaves the sidebar at the
+ * default until the next launch (issue #115). Returns an unsubscribe.
+ */
+export function onPreferenceWriteSettled(listener: PreferenceWriteListener): () => void {
+  writeSettledListeners.add(listener);
+  return () => {
+    writeSettledListeners.delete(listener);
+  };
+}
+
+function notifyPreferenceWriteSettled(key: string, ok: boolean): void {
+  for (const listener of writeSettledListeners) listener(key, ok);
 }
 
 /**
@@ -112,10 +134,12 @@ export function usePreference<T>(
     setPending(true);
     setWriteFailed(false);
     writtenKeys.add(key);
+    let failed = false;
     void writePreference(key, serialize(next))
       .then((stored) => {
         if (stored === null) {
           // the write failed; the server value stands and the caller is told
+          failed = true;
           setWriteFailed(true);
           return;
         }
@@ -132,7 +156,15 @@ export function usePreference<T>(
         const queuedNext = queued.current;
         queued.current = null;
         // two fast toggles must leave the server on the last one, not the first
-        if (queuedNext !== null) send(queuedNext.next);
+        if (queuedNext !== null) {
+          // the queued write owns the outcome; it notifies when it settles
+          send(queuedNext.next);
+          return;
+        }
+        // a failed write never became a choice, so the legacy import may take
+        // over the value the server rejected
+        if (failed) writtenKeys.delete(key);
+        notifyPreferenceWriteSettled(key, !failed);
       });
   }
 

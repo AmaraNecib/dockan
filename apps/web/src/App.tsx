@@ -11,7 +11,7 @@ import { readVaultSessionToken } from "./lib/vault-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { rpcClient } from "./lib/rpc";
 import { readSetupToken } from "./lib/setup-token";
-import { PREFERENCES_QUERY_KEY } from "./lib/preferences";
+import { PREFERENCES_QUERY_KEY, onPreferenceWriteSettled } from "./lib/preferences";
 import { SIDEBAR_COLLAPSED_KEY, migrateLegacySidebarCollapsed } from "./components/app/sidebar-state";
 
 /** The field an auth error points the owner back to; null means the summary. */
@@ -295,19 +295,53 @@ function VaultOwnerGate({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** One-time background import of the pre-server sidebar preference. */
+/**
+ * One-time background import of the pre-server sidebar preference, plus a
+ * retry when the owner's competing write loses.
+ *
+ * The import must never block the scanner, so it runs once per mount and skips
+ * itself while the owner's write is in flight (that write should win). But if
+ * that write fails, the skipped import would leave the sidebar at the default
+ * until the next launch; the settled-write subscription re-runs the import
+ * instead (issue #115). The import's own direct write does not notify, so this
+ * cannot loop.
+ */
 function useSidebarPreferenceMigration(enabled: boolean): void {
   const queryClient = useQueryClient();
   const migrationStarted = useRef(false);
+
   useEffect(() => {
-    if (!enabled || migrationStarted.current) return;
-    migrationStarted.current = true;
-    void migrateLegacySidebarCollapsed().then((imported) => {
-      if (imported === null) return;
-      queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) =>
-        previous === undefined ? previous : { ...previous, [SIDEBAR_COLLAPSED_KEY]: imported },
-      );
-      void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+    if (!enabled) return;
+
+    let importing = false;
+    const importLegacy = () => {
+      if (importing) return;
+      importing = true;
+      void migrateLegacySidebarCollapsed()
+        .then((imported) => {
+          if (imported === null) return;
+          // install the imported value so the sidebar does not wait for the
+          // next refetch, then reconcile the full map
+          queryClient.setQueryData<Preferences>(PREFERENCES_QUERY_KEY, (previous) =>
+            previous === undefined ? previous : { ...previous, [SIDEBAR_COLLAPSED_KEY]: imported },
+          );
+          void queryClient.invalidateQueries({ queryKey: PREFERENCES_QUERY_KEY });
+        })
+        .finally(() => {
+          importing = false;
+        });
+    };
+
+    // one-shot per mount: StrictMode's double effect must not import twice
+    if (!migrationStarted.current) {
+      migrationStarted.current = true;
+      importLegacy();
+    }
+
+    // ...but a competing write that fails means the import was skipped for a
+    // choice that never landed, so re-run it now (issue #115)
+    return onPreferenceWriteSettled((key, ok) => {
+      if (key === SIDEBAR_COLLAPSED_KEY && !ok) importLegacy();
     });
   }, [enabled, queryClient]);
 }

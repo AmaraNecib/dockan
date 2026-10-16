@@ -250,6 +250,17 @@ changed as a result:
 | The 96 `afterAll` cannot be falsified by any run (it only proves the script exited 0) | **Accepted, deferred** — the schema-vs-DELETE-list drift guard would close it; it needs a maintained exclusion list, so it is in Deferred rather than bolted on |
 | No green full-suite run on the final commit (the three extra `DELETE`s change what the seven specs between `96-…` and `debts` see) | **Attempted six times, not achieved, recorded.** Row 3b and `round3/full-suite-final.log`: the final commit's best run is 92/93, and the one failure is the shared `signIn` wait timing out on a machine running another crew lane (suite wall time 13–17 m against 11.9 m). Every flaking spec passes alone on this code. The full ordering green on the fix itself is row 3 (run A, `f5b8b0d`); the only behaviour `7e6622e` adds on top is three extra `DELETE`s, whose own before/after probe is row 6 |
 
+## Decisions taken after the third (final verification) round
+
+Two lenses ran over the post-round-2 delta (`7e6622e...dc00913`) against the
+whole lane. No blockers. What changed as a result:
+
+| Finding | Decision |
+| --- | --- |
+| `order3-before.log` did not name the failing test — every `ok` line was there, but the `1) …` identity line had been filtered out, so the log alone did not prove *which* file failed at the base | **Fixed** — the log was regenerated and now carries `1) tests\e2e\debts.spec.ts:14:1` beside the `1200 دج` / `3200 دج` pair. (The same review claimed the log cited `debts.spec.ts:35`; that line appears nowhere in it — `35` is the *post-fix* declaration, and the regenerated log shows the base line, `14`, verified with `git show 294a9af:tests/e2e/debts.spec.ts`) |
+| The lane had no `<head-sha>-test-audit.md` / `-code-review.md` in the required evidence path, and the round-3 `.log` files carry no SHA in their names | **Fixed** — `.scratch/reviews/96/dc00913-test-audit.md` and `dc00913-code-review.md`, both naming the reviewed commit and the commands behind every claim |
+| The end-state assertion could have been vacuous (reading `""` from an empty form that never had a value) | **Verified non-vacuous, nothing to change** — `expense-amount` is a controlled input (`value={amount}`), so it can only read `""` after `onSuccess` cleared the just-filled value |
+
 ## Deferred
 
 - `expense-reports.spec.ts:77`'s global row count and its sort assertions could
@@ -271,7 +282,7 @@ on those ports killed and `.dokan-port` removed first (wisdom
 
 | # | Command | Result |
 | --- | --- |
-| 1a | `bunx playwright test 01-empty-states 96-returns-supplier-action debts` — **before** | **1 failed, 8 passed** · `Received "3200 دج"` at `debts.spec.ts:77` |
+| 1a | `bunx playwright test 01-empty-states 96-returns-supplier-action debts` — **before**, base versions of the two changed specs (`round3/order3-before.log`) | **1 failed, 8 passed** · `1) tests\e2e\debts.spec.ts:14:1` · `Expected "1200 دج"` / `Received "3200 دج"` (`:77` is the assertion line; `:14` is the base test's declaration) |
 | 1b | the same three files — **after** (`round3/order3-after.log`) | **9 passed**, including both 96 tests and their own assertions |
 | 2 | `bunx playwright test tests/e2e/debts.spec.ts` (`round3/debts-alone.log`) | **1 passed** (alone, with its new `beforeAll`) |
 | 3 | `bun run test:e2e` full ordering at `f5b8b0d` (`round3/full-suite-flakes.log` run A) | **93 passed, 0 failed** (11.9 m) |

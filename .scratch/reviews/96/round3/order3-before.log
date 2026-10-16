@@ -1,14 +1,15 @@
-  ok 1 tests\e2e\01-empty-states.spec.ts:19:1 › categories: the empty state focuses the adjacent add field (13.0s)
-  ok 2 tests\e2e\01-empty-states.spec.ts:32:1 › items: the empty state opens the add tab once a category exists (9.1s)
-  ok 3 tests\e2e\01-empty-states.spec.ts:52:1 › invoices: the empty state links to a new sale and a new purchase (11.3s)
-  ok 4 tests\e2e\01-empty-states.spec.ts:66:1 › expenses: the history empty state focuses the record field (6.6s)
-  ok 5 tests\e2e\01-empty-states.spec.ts:78:1 › reports: the breakdown empty state links to recording an expense (5.2s)
-  ok 6 tests\e2e\01-empty-states.spec.ts:91:1 › read-only lists explain what fills them instead of faking an action (4.8s)
-  ok 7 tests\e2e\96-returns-supplier-action.spec.ts:26:1 › a purchase invoice points at the supplier account, not a dead return form (#96 round 2) (9.1s)
-  ok 8 tests\e2e\96-returns-supplier-action.spec.ts:87:1 › a saved return shows its card with no dead action while the history is stale (#96 round 2) (10.1s)
+  ok 1 tests\e2e\01-empty-states.spec.ts:19:1 › categories: the empty state focuses the adjacent add field (8.2s)
+  ok 2 tests\e2e\01-empty-states.spec.ts:32:1 › items: the empty state opens the add tab once a category exists (5.1s)
+  ok 3 tests\e2e\01-empty-states.spec.ts:52:1 › invoices: the empty state links to a new sale and a new purchase (3.9s)
+  ok 4 tests\e2e\01-empty-states.spec.ts:66:1 › expenses: the history empty state focuses the record field (3.9s)
+  ok 5 tests\e2e\01-empty-states.spec.ts:78:1 › reports: the breakdown empty state links to recording an expense (4.2s)
+  ok 6 tests\e2e\01-empty-states.spec.ts:91:1 › read-only lists explain what fills them instead of faking an action (3.8s)
+  ok 7 tests\e2e\96-returns-supplier-action.spec.ts:26:1 › a purchase invoice points at the supplier account, not a dead return form (#96 round 2) (10.3s)
+  ok 8 tests\e2e\96-returns-supplier-action.spec.ts:87:1 › a saved return shows its card with no dead action while the history is stale (#96 round 2) (9.7s)
+  1) tests\e2e\debts.spec.ts:14:1 › debts screen: both directions grouped with totals, counts, and drill-down 
     Error: expect(locator).toContainText(expected) failed
     Expected substring: "1200 دج"
     Received string:    "3200 دج"
     test-results\debts-debts-screen-both-di-4330a-otals-counts-and-drill-down\test-failed-1.png
   1 failed
-  8 passed (1.7m)
+  8 passed (1.5m)

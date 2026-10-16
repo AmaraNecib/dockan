@@ -869,6 +869,23 @@ describe("SalePage quick-add stock (issue #119)", () => {
     expect(lastCreateInput).not.toHaveProperty("stockOnHand");
   });
 
+  it("creates with the same cost and sell when they are typed in Arabic-Indic digits (#225)", async () => {
+    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
+    const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
+    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
+    const toExtended = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
+    const host = await mountSale();
+    await openQuick(host);
+    await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
+    // the ASCII twin of `fillQuick`'s 100 / 200, one script per field
+    await setNamed(host, "quickCost", toArabicIndic("100"));
+    await setNamed(host, "quickSell", toExtended("200"));
+    await submitQuick(host);
+
+    // identical payload to the ASCII case above: the reader only moved the script
+    expect(lastCreateInput).toMatchObject({ name: "منتج سريع", categoryId: "cat-1", costPrice: 100, sellingPrice: 200 });
+  });
+
   it("treats an explicit 0 as zero stock, not as a missing value or an error", async () => {
     const host = await mountSale();
     await openQuick(host);

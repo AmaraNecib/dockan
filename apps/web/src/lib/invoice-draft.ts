@@ -216,11 +216,12 @@ export function purchaseUnitPrice(line: PurchaseDraftLine): number {
  * zero (as it always was, `Number("") === 0`), a whole non-negative number is
  * that value, and anything else keeps the previous value instead of
  * transiently billing the line at zero mid-edit. The reader is deliberately
- * the same `Number` check the page used before #146, so no reachable input
- * changes which number the line bills.
+ * the same `Number` check the page used before #146, now digit-normalised
+ * (`parseLooseNumber`), so no reachable ASCII input changes which number the
+ * line bills and an Arabic-Indic draft reads like its ASCII twin (#225).
  */
 export function nextUnitCost(value: string, previous: number): number {
-  const parsed = Number(value);
+  const parsed = parseLooseNumber(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : previous;
 }
 

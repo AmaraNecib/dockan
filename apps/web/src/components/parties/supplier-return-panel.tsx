@@ -8,7 +8,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-import { parseWholeAmount } from "@/lib/amount-parse";
+import { parseLooseNumber, parseWholeAmount } from "@/lib/amount-parse";
 
 import { tError } from "@/lib/i18n";
 import { orpc } from "@/lib/rpc";
@@ -68,7 +68,9 @@ export function SupplierReturnPanel({
       return qty > 0 ? sum + qty * line.unitPrice : sum;
     }, 0);
   }, [detail.data, quantities]);
-  const value = mode === "INVOICE_LINKED" ? invoiceValue : Number(amount) || 0;
+  // the free-standing amount keeps the loose `Number` read it always had, now
+  // digit-normalised: an Arabic-Indic draft reads like its ASCII twin (#225)
+  const value = mode === "INVOICE_LINKED" ? invoiceValue : parseLooseNumber(amount) || 0;
   const parsedQuantities = parseReturnQuantities(quantities);
   const invoiceReady = "lines" in parsedQuantities;
   const parsedCash = parseCashBackDraft(cashBack);

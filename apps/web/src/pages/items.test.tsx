@@ -1164,3 +1164,32 @@ describe("inline item edit", () => {
     expect(el<HTMLButtonElement>('[data-testid="edit-item-item-2"]').disabled).toBe(false);
   });
 });
+
+/**
+ * #225 — the live profit preview reads the same cost/sell drafts the save path
+ * reads. An Arabic-Indic draft must preview the figure it will save (ASCII did
+ * via `Number`, Arabic used to show `…`), so the preview cannot disagree with
+ * the value the form stores.
+ */
+describe("add item form profit preview (#225)", () => {
+  it("previews and saves the same profit for an Arabic-Indic draft as for ASCII", async () => {
+    await mount();
+    await openAddTab();
+    const preview = () => document.querySelector('[data-testid="profit-preview"]')?.textContent ?? "";
+
+    setInput("item-cost", "100");
+    setInput("item-sell", "180");
+    expect(preview()).toContain("80");
+
+    // ١٠٠ / ١٨٠ — the same profit, not the `…` the ASCII-only reader rendered
+    setInput("item-cost", "١٠٠");
+    setInput("item-sell", "١٨٠");
+    expect(preview()).toContain("80");
+
+    // and the same draft saves as the numbers the preview promised
+    setInput("item-name", "بطارية بأرقام");
+    click("item-save");
+    await waitFor(() => createInputs.length === 1);
+    expect(createInputs[0]).toMatchObject({ name: "بطارية بأرقام", costPrice: 100, sellingPrice: 180 });
+  });
+});

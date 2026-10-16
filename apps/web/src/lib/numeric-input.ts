@@ -7,11 +7,18 @@
  * the operator never saw. These parse the digits they actually typed and return
  * `null` for everything else, including values too large to represent exactly
  * (`Number.isSafeInteger`).
+ *
+ * The digit script is normalised through the one shared reader
+ * (`normalizeArabicIndicDigits`, #210/#225), so an Arabic-Indic `٥` reads as
+ * five wherever an ASCII `5` does. ASCII input is untouched: the strict
+ * digits-only test and the `Number` read keep the exact meaning they had.
  */
 
-/** A plain non-negative whole number: digits only, no sign, no exponent. */
+import { normalizeArabicIndicDigits } from "./amount-parse";
+
+/** A plain non-negative whole number: digits only (either script), no sign, no exponent. */
 export function parseWholeNumber(text: string): number | null {
-  const trimmed = text.trim();
+  const trimmed = normalizeArabicIndicDigits(text).trim();
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number(trimmed);
   return Number.isSafeInteger(parsed) ? parsed : null;
@@ -44,7 +51,8 @@ export function resolveOpeningStock(text: string, required: boolean): OpeningSto
   return { ok: true, value: parsed };
 }
 
-/** A whole number that may be negative: stock movements in and out. */
+/** A whole number that may be negative: stock movements in and out. The sign
+ * stays the ASCII `-`; only the digit script is widened (#225). */
 export function parseSignedWholeNumber(text: string): number | null {
   const trimmed = text.trim();
   if (trimmed.startsWith("-")) {

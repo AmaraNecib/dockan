@@ -256,6 +256,20 @@ describe("returnQuantityError (per-line return cap boundary)", () => {
     expect(returnQuantityError("abc", 4)).toBe("INVALID");
     expect(returnQuantityError("1e1", 4)).toBe("INVALID");
   });
+
+  it("reads both Arabic-Indic scripts exactly like ASCII (#225)", () => {
+    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
+    const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
+    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
+    const toExtended = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
+    expect(returnQuantityError("٥", 9)).toBeNull();
+    // script-for-script identity on the whole boundary set, including the
+    // forms the strict reader refuses
+    for (const draft of ["", "   ", "1", "4", "5", "0", "-1", "1.5", "abc", "1e1"]) {
+      expect(returnQuantityError(toArabicIndic(draft), 4)).toBe(returnQuantityError(draft, 4));
+      expect(returnQuantityError(toExtended(draft), 4)).toBe(returnQuantityError(draft, 4));
+    }
+  });
 });
 
 describe("remainingReturnableFor (history-aware remaining)", () => {
@@ -352,6 +366,18 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("المتبقي");
     expect(lastCreateInput).toBeNull();
+  });
+
+  it("previews and submits an Arabic-Indic quantity as the same number as ASCII (#225)", async () => {
+    renderPanel(makeInvoice([saleLine()]));
+    const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
+    typeInto(input, "٢");
+    // the valueTotal projection must read the SAME reader the validator does: 2 ×
+    // 900 net = 1800, not 0 (the #229 preview/submit split, on the customer side)
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("1800 دج");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput).toMatchObject({ lines: [{ invoiceLineId: LINE_ID, quantity: 2 }] });
   });
 
   it("blocks a non-numeric draft and refuses an empty return", () => {

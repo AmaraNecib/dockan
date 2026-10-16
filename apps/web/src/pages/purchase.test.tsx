@@ -47,6 +47,8 @@ function clearPurchaseRecorder() {
 }
 /** every itemsCreate the mocked quick-add performed, in order (issue #146) */
 const createdItems: Array<{ name: string; categoryId: string }> = [];
+/** the full itemsCreate input per quick-add, for field-level assertions (#225) */
+const createdItemInputs: Array<{ name: string; categoryId: string; costPrice?: number; sellingPrice?: number; lowStockThreshold?: number }> = [];
 /** the invoice shape the completion card reads, so a test can override it */
 interface PurchaseInvoiceResult {
   id: string;
@@ -90,8 +92,9 @@ mock.module("@/lib/rpc", () => ({
     itemsCreate: {
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
-        mutationFn: async (input: { name: string; categoryId: string }) => {
+        mutationFn: async (input: { name: string; categoryId: string; costPrice?: number; sellingPrice?: number; lowStockThreshold?: number }) => {
           createdItems.push({ name: input.name, categoryId: input.categoryId });
+          createdItemInputs.push(input);
           // Fixture fiction: one item id per distinct name. The real server has no
           // name uniqueness, so a same-name quick-add creates a second item. Here
           // it lets a test say "re-adding the same name replaces that line" while
@@ -160,6 +163,7 @@ mock.module("@/lib/rpc", () => ({
 // calls. Clearing in place keeps any alias valid.
 beforeEach(() => {
   createdItems.length = 0;
+  createdItemInputs.length = 0;
 });
 
 const { LinkProposalPanel, PurchasePage } = await import("./purchase");
@@ -947,6 +951,29 @@ describe("PurchasePage quantity draft (#146)", () => {
     await act(async () => setValue(quantityField(container), "٥"));
     await save(container);
     expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 5, unitPrice: 1200 }]);
+  });
+
+  it("quick-adds with Arabic-Indic cost, sell and threshold exactly like ASCII (#225)", async () => {
+    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
+    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
+    const { container } = await mountPage();
+    await toggleQuick(container);
+    // the ASCII twin of 100 is the `fillQuick` cost; sell and threshold are the
+    // remaining two loose `Number` fields on the form
+    await fillQuick(container, "منتج بأرقام", "1", toArabicIndic("100"));
+    const form = quickForm(container);
+    if (form === null) throw new Error("the quick-add form is not open");
+    await act(async () => {
+      setValue(form.querySelector<HTMLInputElement>('input[name="quickSell"]')!, toArabicIndic("200"));
+      setValue(form.querySelector<HTMLInputElement>('input[name="quickThreshold"]')!, toArabicIndic("5"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      await chooseOption(categoryTrigger(container)!, "تصنيف");
+    });
+    await submitQuick(container);
+
+    expect(createdItemInputs[0]).toMatchObject({ name: "منتج بأرقام", costPrice: 100, sellingPrice: 200, lowStockThreshold: 5 });
   });
 
   it("refuses a multi-line cart with an emptied line and saves once it is fixed", async () => {

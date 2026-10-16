@@ -8,7 +8,7 @@
   tier follows the failure mode, not the diff size. The brief recorded Standard;
   the failure-mode read makes High-assurance the defensible tier, and the
   High-assurance gates ran: **Debate**, test-audit and code-review.
-- Base: `origin/develop` @ `850d1f7`. The brief's stack base
+- Base: `origin/develop` @ `6708324`. The brief's stack base
   (`origin/fix-210-arabic-indic-money` @ `afe15fe`) was **merged into `develop`
   while this lane ran** (PR #229/#210), and `develop` has since also merged
   #225 (`nextUnitCost` + the remaining ASCII-only readers) and #226, then #235
@@ -60,7 +60,7 @@ ASCII-only readers (`nextUnitCost`, `numeric-input.ts`, the quick-add fields)
 through the same normaliser before this lane landed, so they inherit the strip.
 The function keeps its exported name because the brief names it, and only two
 production modules (`lib/invoice-draft.ts`, `lib/numeric-input.ts`) import the
-function itself (~15 modules import the module). The doc comment now states the
+function itself (~17 modules import the module). The doc comment now states the
 widened contract where the name under-describes it. A rename (`normalizeMoneyDraft`) was considered and
 rejected: it would churn the reader modules #225 edits for no behavioural gain.
 
@@ -116,9 +116,10 @@ no warning, on that argument.
 Deliberately **not** dropped:
 
 - Interior ALM/RLM and the RTL isolates LRI/RLI/FSI/PDI can reorder a digit run
-  (see the table). The interior LRM/LRE/RLE/PDF do *not* reorder a digit run
-  (measured), but the rule keys on position, so they are refused with the rest —
-  a lost acceptance, never a lost value. Refused, not removed.
+  (see the table). The interior LRM/LRE/RLE/PDF do *not* reorder two adjacent
+  digits, but can still reorder a grouped run — and the rule keys on position
+  anyway, so every interior mark is refused with the rest: a lost acceptance,
+  never a lost value. Refused, not removed.
 - U+202D LRO and U+202E RLO — forced display order. Refused, not removed.
 - U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER and U+FEFF (ZWNBSP/BOM): invisible
   format characters, but not `Bidi_Control`. ZWSP/WJ still fail the strict
@@ -166,6 +167,10 @@ mark-only draft is «nothing chosen» in both.
    pre-existing refusals kept visible, and `nextUnitCost` pinned at its #225
    behaviour (a marked/Arabic-Indic value now reads; an edge mark blanks to the
    cleared-field zero; an interior mark keeps the previous cost).
+   `apps/web/src/lib/numeric-input.test.ts` gets the same edge/interior pins for
+   the #225-routed `parseWholeNumber` / `parseSignedWholeNumber` /
+   `resolveOpeningStock`, so every reader the shared normalizer reaches is
+   pinned.
 3. `tests/e2e/sale-checkout.spec.ts` — a paste-shaped end-to-end pin: the sale
    quantity, price override and discount are filled with RLM-prefixed
    Arabic-Indic text, the field is asserted to still *hold* the mark (so the pin

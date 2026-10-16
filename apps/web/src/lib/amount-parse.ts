@@ -10,8 +10,9 @@
  * both use this one reader, so a grouped string can never mean two numbers.
  *
  * `normalizeArabicIndicDigits` is the one normalisation step they all share: it
- * maps either Arabic digit script and drops the pasted bidi marks at the edge of
- * a draft (#227), so a value typed or pasted reads the same.
+ * maps either Arabic digit script and drops a pasted bidi mark at the edge of a
+ * draft (#227), so a pasted number reads like the same number typed. (An
+ * interior pasted mark is left in place and refused — see the helper below.)
  */
 
 /** Otherwise-valid thousands separators between 3-digit groups (comma,

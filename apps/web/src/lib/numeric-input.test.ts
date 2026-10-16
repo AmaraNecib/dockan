@@ -86,4 +86,26 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     // zero is still refused when the path promised an opening movement
     expect(resolveOpeningStock("۰", true)).toEqual({ ok: false, reason: "required" });
   });
+
+  it("reads an edge pasted bidi mark like the typed digit, and refuses an interior one (#227)", () => {
+    // these readers inherit the shared normaliser, so the #227 edge strip applies
+    // here too. The mark is BUILT, because that is how the clipboard delivers it.
+    const RLM = "\u200f";
+    expect(parseWholeNumber(`${RLM}٥`)).toBe(5);
+    expect(parseWholeNumber(`٥${RLM}`)).toBe(5);
+    expect(parseWholeNumber(`${RLM}٥${RLM}`)).toBe(5);
+    // the signed reader tests `startsWith("-")` before it normalises, so an edge
+    // mark in front of the sign keeps the draft unreadable — a safe refusal
+    expect(parseSignedWholeNumber(`${RLM}-٥`)).toBeNull();
+    expect(parseSignedWholeNumber("-٥")).toBe(-5);
+    expect(resolveOpeningStock(` \u200f٧ `, false)).toEqual({ ok: true, value: 7 });
+    // an interior mark can reorder the run in the RTL page, so it is refused
+    expect(parseWholeNumber(`٥${RLM}٥`)).toBeNull();
+    expect(parseWholeNumber(`1${RLM}000`)).toBeNull();
+    // a mark-only draft is refused, never read as zero
+    expect(parseWholeNumber(RLM)).toBeNull();
+    expect(resolveOpeningStock(RLM, false)).toEqual({ ok: false, reason: "invalid" });
+    // ASCII identity, unchanged
+    expect(parseWholeNumber("123")).toBe(123);
+  });
 });

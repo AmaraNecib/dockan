@@ -1,22 +1,21 @@
 ---
 name: capture-wisdom
-description: "Parent-session only: read and write .agents/wisdom/*.md when the same failure has occurred more than once. Lanes report lessons; they never write these files."
+description: "Read .agents/wisdom/*.md before starting a task; only the parent session writes them, and only when the same failure has occurred more than once. Lanes report lessons; they never write these files."
 argument-hint: "What repeated lesson to capture, or what task you're starting that might benefit from past wisdom"
 ---
 
 # Capture Wisdom
 
-**Parent session only.** A lane never writes `.agents/wisdom/` — it puts the
-lesson in its `crew_report` and lets the parent decide. The rule exists because
-the opposite was measurable: 45 commits on `develop` touch `.agents/wisdom/`, six
-files carry edits from more than one commit, and the owner resolved the same
-conflict by hand, while two lanes declined to record a lesson at all because the
-write would have marked their own review evidence stale.
+**Writing is parent-session only.** Every lane reads `.agents/wisdom/` before it
+starts and reports which lessons it applied; no lane writes these files. A lane
+puts a candidate lesson in its `crew_report` and the parent decides. The rule
+exists because the opposite was measurable: lane-written lessons collided and the
+owner resolved the same conflict by hand, and two lanes declined to record a
+lesson because the write would have marked their own review evidence stale (the
+numbers are in `AGENTS.md`, Authority).
 
-Read `.agents/wisdom/*.md` at the start of any task. Every lane does the same and
-reports which lessons it applied; wisdom is read-only for a lane, and the file is
-written only from the parent session. Write to them only when the criterion below
-is met.
+Read `.agents/wisdom/*.md` at the start of any task. Write to them only when the
+criterion below is met, and only from the parent session.
 
 ## When to write
 

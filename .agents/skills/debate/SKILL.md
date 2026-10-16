@@ -94,8 +94,7 @@ record.
 Save the full findings to `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
 This file is used by guard to verify review completeness before push.
 
-The caller (feature-implement) will publish a summary as a PR comment after
-the PR is opened.
+The parent session publishes a summary as a PR comment after the PR is opened.
 
 ### 7. Proceed
 

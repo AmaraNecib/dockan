@@ -48,6 +48,7 @@ itself. Uses the Husky pre-push hook when the hook is available.
 [ ] bun run test — all tests pass?
 [ ] bun run test:e2e — passes? (when UI flows changed)
 [ ] git status — working tree clean?
+[ ] No push, no PR and no merge — those are parent-only (`feature-implement` step 10)
 ```
 
 ### Review evidence checks
@@ -86,16 +87,17 @@ get the docs-only exemption.
 
 ## Phase 3 — Pre-report
 
-Run before reporting a local handoff or remote merge-readiness.
+Run before the parent reports a local handoff or remote merge-readiness.
 
 ```
 [ ] Local checks green (typecheck, lint, tests, e2e when relevant, Rust when relevant)
 [ ] Review evidence current for the selected tier
 [ ] Greptile CLI result is for the final HEAD and has no actionable findings
 [ ] CI — required checks green on GitHub (when the branch is pushed)
+[ ] The push and the PR came from the parent, and the merge only on the owner's word
 [ ] PR description — accurate and complete
 [ ] Any deferred items — documented with follow-up issues
-[ ] Wisdom — the parent captured it only if the pattern repeated (lanes report lessons; they never write `.agents/wisdom/`)
+[ ] (Parent) Wisdom — captured only if the pattern repeated; lanes report lessons and never write `.agents/wisdom/`
 ```
 
 ## When a check fails

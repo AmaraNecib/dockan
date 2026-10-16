@@ -1,6 +1,6 @@
 ---
 name: feature-implement
-description: "Mandatory lifecycle orchestrator for code-changing issues. Delegates to implement, debate, guard, code-review, capture-wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
+description: "Mandatory lifecycle orchestrator for code-changing issues. Delegates to implement, debate, guard and code-review; the parent session runs capture-wisdom. Read this first when the user says 'work on issue #N' or 'implement this feature'."
 ---
 
 # Feature Implementation Orchestration
@@ -15,8 +15,9 @@ PR, CI/Greptile, merge-on-owner-word and wisdom. The lane's last act is
 **Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
 what bears on the task, and say in your `crew_report` which lessons you applied —
 and which you deliberately did not. Wisdom is read-only for a lane; a candidate
-lesson goes in the `lesson` field of `crew_report`. The parent decides whether the
-pattern repeated enough to write an entry.
+lesson goes in the `lesson` field of `crew_report` (a harness without that field
+carries it in the report summary). The parent decides whether the pattern
+repeated enough to write an entry.
 
 ## Enforced order
 
@@ -171,8 +172,8 @@ PR comment.
 **Parent-owned.** `.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
 (cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
-A lane cannot trigger CI or a Greptile review at all — it cannot push (step 10) —
-so this wait belongs to the parent, never the lane.
+A lane cannot trigger CI or a Greptile review at all, because it cannot push
+(step 10). This wait belongs to the parent, never the lane.
 
 Then trigger Greptile:
 - CLI path (preferred): run the `cli-review` skill (`greptile review --json`) against the pinned base
@@ -194,7 +195,7 @@ The parent runs `guard` Phase 3. Verifies:
 - Any deferred items — documented with follow-up issues
 
 There is **no lane wisdom step.** A lane states in `crew_report` which lessons it
-applied and carries any candidate lesson in the `lesson` field; the parent writes
+applied and carries any candidate lesson in its `crew_report`; the parent writes
 a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
 occurred more than once.
 
@@ -204,15 +205,15 @@ Report to the user: PR link, check status (local + CI), Greptile verdict, any de
 
 ## Merge rules
 
-**Merge only when the owner says to merge.** The agent never merges on its own
-initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
-anchored to the current head SHA, and every CI check green is the **bar to ask** —
-not permission to proceed.
+**Parent-only — a lane never merges at all.** The parent session merges only when
+the owner says to merge, whatever the review says. A 5/5 Greptile verdict with no
+findings, anchored to the current head SHA, and every CI check green is the **bar
+to ask** — not permission to proceed.
 
 Ask, and wait. Do not treat a clean review as consent, and do not merge "since it
 is green anyway".
 
-Merge command:
+**Parent-only command:**
 ```bash
 gh pr merge <num> --squash --subject "<title> (closes #<issue>)"
 ```
@@ -235,4 +236,4 @@ it merges, whatever Greptile says.
 | Guard Phase 2 not run | Step 9 — guard pre-push |
 | Lane done, not pushed | Parent only — Step 10 (push + PR) |
 | Greptile not clean | Step 11 — CI + Greptile |
-| All done | Step 12 — guard pre-report → Step 13 — report |
+| All done | Parent only — Steps 12-13 (guard pre-report, then report to the owner) |

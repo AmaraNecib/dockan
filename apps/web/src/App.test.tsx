@@ -405,8 +405,10 @@ describe("login failures name the problem (issue #100)", () => {
     await submitForm(host);
 
     // a field-less failure is its own live region: that is the only
-    // announcement path, and it is the summary that takes focus
-    const alert = host.querySelector('[role="alert"]');
+    // announcement path, and it is the summary that takes focus. Select it by
+    // id so the role assertion is a real check, not a restatement of the
+    // selector.
+    const alert = host.querySelector("#login-error");
     expect(alert?.getAttribute("role")).toBe("alert");
     // exactly one live region: a field-less failure has no second path
     expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
@@ -417,7 +419,7 @@ describe("login failures name the problem (issue #100)", () => {
     expect(signInArgs?.username).toBe("213550123123");
     // the copy names both fields, so the summary carries the message and no
     // single field is blamed (the field's own aria-invalid would lie)
-    expect(document.activeElement).toBe(host.querySelector('[role="alert"]'));
+    expect(document.activeElement).toBe(alert);
     expect(inputByName(host, "password").getAttribute("aria-invalid")).toBe("false");
   });
 
@@ -733,7 +735,11 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    // SETUP_ALREADY_DONE hands off to the login form and the notice is reported
+    // there, so the summary is the login page's live region
+    const alert = host.querySelector("#login-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("SETUP_ALREADY_DONE"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);
@@ -755,7 +761,9 @@ describe("auth transport failures stay calm (issue #100)", () => {
     setInputValue(inputByName(host, "password"), "abcd");
     await submitForm(host);
 
-    const alert = host.querySelector('[role="alert"]');
+    const alert = host.querySelector("#setup-error");
+    expect(alert?.getAttribute("role")).toBe("alert");
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("SETUP_LOCKED"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(firstTimeSetupCalls).toBe(1);

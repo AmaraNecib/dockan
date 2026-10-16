@@ -227,12 +227,15 @@ describe("every router refusal stays translatable (issue #113)", () => {
     expect(routerRefusals().length).toBeGreaterThan(40);
   });
 
-  it("still reads the identifier-forwarded refusals from their unions", () => {
-    // if one of these shapes changes, `routerRefusals` stops seeing those codes
-    // and the parity loop would pass while silently dropping them
-    expect(readFileSync(routerSource, "utf8")).toMatch(/message:\s*error\.code/);
-    expect(readFileSync(routerSource, "utf8")).toMatch(/message:\s*phoneKey/);
-    expect(readFileSync(ledgerSource, "utf8")).toMatch(/readonly code:/);
+  it("names the identifier-forwarded refusals it reads from unions", () => {
+    // a named-type refactor (phoneKey: PartyPhoneKey) would make the union
+    // extractor return nothing while the shape guard above still passes, so the
+    // codes are named here and a refactor fails loudly instead of losing them
+    expect(routerRefusals()).toEqual(expect.arrayContaining([
+      "STOCK_NEGATIVE",
+      "CUSTOMER_PHONE_EXISTS",
+      "SUPPLIER_PHONE_EXISTS",
+    ]));
   });
 
   it("gives every refusal real Arabic copy, never the silent fallback", () => {

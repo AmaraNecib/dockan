@@ -125,9 +125,10 @@ The scan is not only `message: "CODE"` literals: two producers forward the code
 by identifier, which a regex cannot see, so their source unions are read too —
 `message: error.code` (`StockLedgerError.code` in `apps/api/src/lib/stock-ledger.ts`)
 and `message: phoneKey` (`withPartyPhoneRefusals`' inline union). A third test
-fails if those forwarding shapes change, so the scan cannot silently lose them.
-This closes the audit finding that the first version enumerated 46 literals but
-missed `STOCK_NEGATIVE`, `CUSTOMER_PHONE_EXISTS`, `SUPPLIER_PHONE_EXISTS`.
+names the three forwarded codes, so a refactor that stops the scan reading them
+fails loudly instead of silently losing coverage. This closes the audit finding
+that the first version enumerated 46 literals but missed `STOCK_NEGATIVE`,
+`CUSTOMER_PHONE_EXISTS`, `SUPPLIER_PHONE_EXISTS`.
 
 A non-empty scan assertion (`> 40`) guards against a broken path/regex passing
 every loop vacuously. The scan finds `PREFERENCE_NOT_WRITABLE`; its Arabic copy

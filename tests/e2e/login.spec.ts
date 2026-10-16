@@ -56,9 +56,11 @@ test("a malformed phone names the phone, not the password", async ({ page }) => 
   // a field error is announced through the field's description, not a second
   // live region (issue #113)
   const alert = page.locator("#login-error");
-  await expect(alert).not.toHaveAttribute("role", "alert");
   // the phone runs are wrapped in LTR isolates so the sign cannot be displaced
   await expect(alert).toHaveText("رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل \u20660550123123\u2069 أو \u2066+213550123123\u2069.");
+  // checked after the text attaches, so the negated matcher cannot pass while
+  // the paragraph is still detached
+  await expect(alert).not.toHaveAttribute("role", "alert");
   // the phone is the field to fix, so focus lands there
   await expect(page.getByLabel("رقم الهاتف")).toBeFocused();
 });
@@ -72,8 +74,9 @@ test("an empty login field shows Arabic copy, never the browser bubble", async (
 
   await page.getByTestId("login-submit").click();
   const alert = page.locator("#login-error");
-  await expect(alert).not.toHaveAttribute("role", "alert");
   await expect(alert).toHaveText("رقم الهاتف غير صالح. اكتبه بالصيغة الجزائرية مثل \u20660550123123\u2069 أو \u2066+213550123123\u2069.");
+  // after the text attaches, so the negated matcher is meaningful
+  await expect(alert).not.toHaveAttribute("role", "alert");
   await expect(page.getByLabel("رقم الهاتف")).toBeFocused();
   // the native rule still holds (required → valueMissing), but noValidate means
   // the browser never gets to render its bubble

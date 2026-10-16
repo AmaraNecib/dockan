@@ -1,0 +1,216 @@
+{
+  "$comment": "Path -> Playwright spec map for the CI e2e selector. Read by scripts/e2e-selection.ts. FAIL CLOSED: a changed file that matches neither always_full, a feature rule, nor skip_e2e forces a full e2e run. Adding a spec without wiring it here fails scripts/e2e-selection.test.ts. Precedence per file is always_full -> features -> skip_e2e -> full.",
+
+  "always_full": [
+    "$comment: the harness itself — changing anything here changes how every spec runs",
+    "playwright.config.ts",
+    "tests/e2e/**",
+    "tests/e2e-selection.map.json",
+    "scripts/e2e-selection.ts",
+    "scripts/wipe-e2e.mjs",
+    "scripts/reset-e2e-preferences.mjs",
+    "scripts/reset-e2e-records.mjs",
+    "packages/e2e-support/**",
+
+    "$comment: build and module graph — one changed line can change how every spec is bundled",
+    "package.json",
+    "bun.lock",
+    "turbo.json",
+    "**/tsconfig*.json",
+    "apps/web/package.json",
+    "apps/api/package.json",
+    "packages/*/package.json",
+    ".dokan-port",
+
+    "$comment: web entry, shared chrome and primitives — every screen renders through these",
+    "apps/web/vite.config.ts",
+    "apps/web/index.html",
+    "apps/web/public/**",
+    "apps/web/src/index.css",
+    "apps/web/src/main.tsx",
+    "apps/web/src/App.tsx",
+    "apps/web/src/router.tsx",
+    "apps/web/src/components/app/**",
+    "apps/web/src/components/ui/**",
+    "apps/web/src/hooks/**",
+    "apps/web/src/lib/**",
+    "apps/web/src/components/print-sheet.tsx",
+
+    "$comment: the API is one router over one store — a changed line can move any screen, so no per-module rule is claimed",
+    "apps/api/src/app.ts",
+    "apps/api/src/main.ts",
+    "apps/api/src/config.ts",
+    "apps/api/src/db/**",
+    "apps/api/src/store/**",
+    "apps/api/src/rpc/**",
+    "apps/api/src/lib/**",
+
+    "$comment: the wire contract is read by every screen",
+    "packages/contracts/**"
+  ],
+
+  "skip_e2e": [
+    "$comment: no browser surface — checks and rust still run",
+    "**/*.md",
+    "docs/**",
+    ".github/**",
+    ".agents/**",
+    ".claude/**",
+    ".scratch/**",
+    ".migration/**",
+    "skills-lock.json",
+    "oxlint.config.ts",
+    "tools/**",
+    ".gitignore",
+    ".husky/**",
+    "scripts/sync-claude-skills.ts",
+    "scripts/sync-claude-skills.test.ts",
+    "apps/desktop/**",
+
+    "$comment: unit tests and their harness never reach the browser; a feature rule above still wins for the test files it names",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "apps/web/src/tests/**"
+  ],
+
+  "features": [
+    {
+      "$comment": "catalog + stock: item, category and stock screens",
+      "match": [
+        "apps/web/src/pages/items.tsx",
+        "apps/web/src/pages/items.test.tsx",
+        "apps/web/src/pages/categories.tsx",
+        "apps/web/src/pages/stock.tsx",
+        "apps/web/src/pages/stock.test.tsx",
+        "apps/web/src/components/catalog/**"
+      ],
+      "specs": [
+        "items-flow.spec.ts",
+        "items-categories.spec.ts",
+        "catalog-scan.spec.ts",
+        "stock-ledger.spec.ts",
+        "pagination.spec.ts",
+        "arabic-search.spec.ts"
+      ]
+    },
+    {
+      "$comment": "sale checkout, and the write-window/learnability invariants that exercise it",
+      "match": ["apps/web/src/pages/sale.tsx", "apps/web/src/pages/sale.test.tsx"],
+      "specs": [
+        "sale-checkout.spec.ts",
+        "no-write-window.spec.ts",
+        "pagination.spec.ts",
+        "completion-screens.spec.ts",
+        "learnability.spec.ts"
+      ]
+    },
+    {
+      "match": ["apps/web/src/pages/purchase.tsx", "apps/web/src/pages/purchase.test.tsx"],
+      "specs": ["purchase-intake.spec.ts"]
+    },
+    {
+      "$comment": "invoice list/detail and the shared invoice header",
+      "match": [
+        "apps/web/src/pages/invoice.tsx",
+        "apps/web/src/pages/invoices.tsx",
+        "apps/web/src/pages/invoice.test.tsx",
+        "apps/web/src/pages/invoices.test.tsx",
+        "apps/web/src/pages/invoice-returns.test.tsx",
+        "apps/web/src/components/invoice-header.tsx",
+        "apps/web/src/components/invoice-header.test.tsx"
+      ],
+      "specs": ["invoice-payments.spec.ts", "invoice-print-a4.spec.ts", "pagination.spec.ts"]
+    },
+    {
+      "$comment": "the printable receipt document and the invoice print route",
+      "match": [
+        "apps/web/src/pages/receipt-print.tsx",
+        "apps/web/src/components/receipt-view.tsx",
+        "apps/web/src/components/receipt-view.test.tsx"
+      ],
+      "specs": ["receipts.spec.ts", "invoice-print-a4.spec.ts"]
+    },
+    {
+      "$comment": "the returns flow and its voucher document",
+      "match": [
+        "apps/web/src/pages/returns.tsx",
+        "apps/web/src/pages/returns.test.tsx",
+        "apps/web/src/pages/return-print.tsx",
+        "apps/web/src/components/return-voucher-view.tsx"
+      ],
+      "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts"]
+    },
+    {
+      "$comment": "customers + suppliers: list, detail, and every panel under components/parties",
+      "match": [
+        "apps/web/src/pages/parties.tsx",
+        "apps/web/src/pages/parties.test.tsx",
+        "apps/web/src/pages/party-detail.tsx",
+        "apps/web/src/pages/party-detail.test.tsx",
+        "apps/web/src/components/parties/**"
+      ],
+      "specs": [
+        "customers.spec.ts",
+        "customer-name-variants.spec.ts",
+        "supplier-account.spec.ts",
+        "arabic-search.spec.ts",
+        "pagination.spec.ts"
+      ]
+    },
+    {
+      "$comment": "opening-balance / supplier-return documents",
+      "match": [
+        "apps/web/src/pages/supplier-opening-balance.tsx",
+        "apps/web/src/pages/supplier-opening-balance.test.tsx",
+        "apps/web/src/pages/supplier-return-print.tsx",
+        "apps/web/src/pages/supplier-return-print.test.tsx"
+      ],
+      "specs": ["supplier-adjustment.spec.ts", "supplier-account.spec.ts"]
+    },
+    {
+      "match": ["apps/web/src/pages/debts.tsx", "apps/web/src/pages/debts.test.tsx"],
+      "specs": ["debts.spec.ts"]
+    },
+    {
+      "$comment": "profit report and the expense history that feeds it",
+      "match": [
+        "apps/web/src/pages/reports.tsx",
+        "apps/web/src/pages/reports.test.tsx",
+        "apps/web/src/pages/expenses.tsx",
+        "apps/web/src/pages/expenses.test.tsx"
+      ],
+      "specs": ["expense-reports.spec.ts", "completion-screens.spec.ts"]
+    },
+    {
+      "match": ["apps/web/src/pages/activity.tsx", "apps/web/src/pages/activity.test.tsx"],
+      "specs": ["activity.spec.ts"]
+    },
+    {
+      "match": ["apps/web/src/pages/backups.tsx"],
+      "specs": ["backups.spec.ts"]
+    },
+    {
+      "match": ["apps/web/src/pages/diagnostics.tsx", "apps/web/src/pages/diagnostics.test.tsx"],
+      "specs": ["diagnostics.spec.ts"]
+    },
+    {
+      "$comment": "settings, theme/preferences, and the vault unlock surface",
+      "match": ["apps/web/src/pages/settings.tsx"],
+      "specs": ["settings.spec.ts", "vault.spec.ts", "learnability.spec.ts"]
+    },
+    {
+      "match": ["apps/web/src/components/vault/**"],
+      "specs": ["vault.spec.ts"]
+    },
+    {
+      "$comment": "the dashboard carries onboarding and the low-stock view",
+      "match": ["apps/web/src/pages/dashboard.tsx", "apps/web/src/pages/dashboard.test.tsx"],
+      "specs": ["00-onboarding.spec.ts", "items-categories.spec.ts"]
+    },
+    {
+      "$comment": "auth is the one API area with dedicated specs; the rest of apps/api is critical",
+      "match": ["apps/api/src/auth/**"],
+      "specs": ["login.spec.ts", "00-onboarding.spec.ts"]
+    }
+  ]
+}

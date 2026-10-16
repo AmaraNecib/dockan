@@ -1,17 +1,89 @@
 # CI
 
-`.github/workflows/ci.yml` runs on every pull request targeting `develop` and
-every push to `develop`. It is the server-side twin of the local Guard checks
-in `engineering-workflow.md`.
+`.github/workflows/ci.yml` runs on every pull request targeting `develop`, every
+push to `develop`, and on manual dispatch. It is the server-side twin of the
+local Guard checks in `engineering-workflow.md`.
 
 | Job | Steps |
 | --- | --- |
-| `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun audit` |
-| `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
-| `rust` | `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
+| `changes` | fetch-depth-0 checkout, `git diff` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `desktop` outputs the other jobs read |
+| `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
+| `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
+| `rust` | gated on the `changes` job's `desktop` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 
-The three jobs are independent. A typecheck/lint/test failure and a Playwright
-flake are visible without one hiding the other.
+`checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
+`skip` or a non-desktop diff skips those jobs; the scope decision is echoed on
+the e2e job summary. If the `changes` job itself fails, its outputs are empty
+and both consumers read that as "run": the gates use `!cancelled()` with an
+empty-tolerant comparison, so an infra failure widens the run instead of
+silently narrowing it. A typecheck/lint/test failure and a Playwright flake are
+visible without one hiding the other.
+
+## PR scope decision (issue 226)
+
+The PR jobs are narrowed by changed path so a docs-only or web-only PR does not
+pay for the Windows crate build, and a feature PR runs only the specs its paths
+reach. `push: develop` is never narrowed: it is the only run that sees the exact
+merged tree, and it is the backstop that makes narrowing a PR safe.
+
+- `e2e` runs `full` on a push, `full` on a PR carrying the `e2e:full` label, the
+  selected specs otherwise, and is skipped only when nothing in the diff can
+  reach a browser.
+- `rust` runs when a path that can end up inside the crate, or drive its
+  `build.rs`, changed: anything under `apps/desktop/src-tauri/` or
+  `apps/desktop/scripts/`, or `apps/desktop/package.json`. It stays on
+  `windows-latest` — the ACL/`capabilities` guard is a Windows-app guard, and
+  `desktop-installer.yml` runs only on a tag, so it cannot replace a PR gate.
+- The production `vite build` that used to ride along in the `rust` job moved
+  into `checks`, so gating rust off web-only diffs does not also remove the only
+  PR-time production build (the `e2e` job runs `vite dev`, and `turbo test`
+  builds workspace dependencies, not the web app).
+- The manual `workflow_dispatch` input is `full` or `skip` and always runs the
+  `rust` job: it is the escape hatch when the selector is distrusted.
+
+### Fail-closed path -> spec map
+
+`scripts/e2e-selection.ts` is a pure `selectSpecs(changed, map)` plus a CLI, and
+`tests/e2e-selection.map.json` is the checked-in artifact. Precedence per file is
+**critical (`always_full`) -> feature rule -> `skip_e2e` -> full**. An empty
+diff, a critical path (the router and entry points, `store/**`, `rpc/**`,
+`db/**`, the API bootstrap, `packages/contracts/**`, `apps/web/src/lib/**`,
+`bun.lock`, the harness itself), or a path the map does not know forces the
+whole suite. The selector never reads free text; the only overrule is the
+`e2e:full` PR label, and it is recorded on the PR.
+
+`scripts/e2e-selection.test.ts` runs inside `bun run test` (`turbo test` then
+`bun test ./scripts/`) and fails when a spec on disk is unreachable from every
+feature rule, when a rule names a spec that does not exist, or when a pattern
+matches nothing. A stale map therefore costs minutes, never coverage.
+
+Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
+
+- `apps/web/src/lib/**`, `components/app/**`, `components/ui/**` and `hooks/**`
+  are **critical**, not feature rules. Every screen renders through the shell,
+  the primitives and the shared helpers, so a changed line there can move any
+  screen; claiming a per-screen rule would be a guess.
+- `apps/web/src/components/print-sheet.tsx` is critical for the same reason: the
+  invoice, receipt and return documents share its print layout.
+- The whole of `apps/api/**` except `auth/**` is critical. The API is a single
+  router over a single store; the map does not claim to trace which API module
+  reaches which screen. `apps/api/src/auth/**` is the one API area with a
+  dedicated spec (`login.spec.ts`, `00-onboarding.spec.ts`).
+- `packages/e2e-support/**` is critical: it resolves the vault ports every vault
+  run depends on.
+- `apps/desktop/**` is **skipped**: the Playwright suite drives the web dev
+  server, not the Tauri binary. The crate is covered by the `rust` job instead.
+- `**/*.test.ts`, `**/*.test.tsx` and `apps/web/src/tests/**` are skipped: unit
+  tests and their harness never reach the browser. A test file a feature rule
+  names explicitly still wins, because feature rules are checked before
+  `skip_e2e`.
+- `.github/**` is skipped: CI configuration cannot change what the browser
+  renders, and the workflow itself is covered by the `checks` job's workflow
+  tests (`apps/desktop/scripts/ci-workflow.test.ts`).
+
+Selecting fewer specs changes which tests run, not how the servers start: a
+subset run still boots the config's shared API+web pair and is wiped/reseeded
+from `E2E_DATA_DIR` (see the vault section below).
 
 ## e2e failure evidence
 
@@ -142,10 +214,16 @@ Two preconditions are part of the job because `build.rs` needs them before
   that path is absent. The release workflow gets this from tauri's
   `beforeBuildCommand`, which does not run for a bare `cargo test`.
 
-The job has no `paths:` filter. A filtered job reports "skipped", and a skipped
-required check never satisfies branch protection, so a docs-only PR would stay
-pending forever. The trade-off is that the job runs (and pays the cold-build
-cost) on every PR; the rust-cache keeps the warm path cheap.
+The job has no trigger-level `paths:` filter. A filtered trigger makes the
+*whole* workflow report "skipped", and a skipped required check never satisfies
+branch protection, so a docs-only PR would stay pending forever. Issue 226 gates
+the job on the `changes` job's `desktop` output instead, so the trigger stays
+unfiltered and the job still reports on every event (it is the job that is
+skipped, not the workflow). The same caveat applies to that skipped job: if the
+owner ever makes `rust` or `e2e` a required check, the skipped run needs a
+reporting shim (a `continue-on-error` twin, or a tiny always-running job that
+asserts the result) before it can count as green. Until then nothing is stuck,
+and the rust-cache keeps the warm path cheap when the gate does open.
 
 ## Required checks — manual step
 
@@ -164,6 +242,12 @@ block a merge. Making the `rust` job (or any check) required is a repository
 setting the workflow itself cannot apply — it must be done by a repo admin in
 branch protection. Until the owner selects it, `rust` still runs and reports on
 every PR, but a red run does not block a merge.
+
+Since #226, `rust` and `e2e` are skipped for diffs that cannot reach them. A
+required check must be present and green on every PR, so before making either
+one required the owner has to add the reporting shim described in the Rust
+section above; otherwise a docs-only or web-only PR waits on a check that will
+never run. This is the reason the trigger itself is not filtered.
 
 ## Desktop release (manual + version tags)
 

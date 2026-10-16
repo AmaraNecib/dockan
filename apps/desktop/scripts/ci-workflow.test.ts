@@ -1,10 +1,14 @@
 /**
- * Invariants for the PR CI workflow (issue 154). The Rust capability guards
- * added in #153 only gate a merge if a job in this workflow actually runs
- * `cargo test` in the desktop crate, so these tests assert that job exists,
- * that its steps execute the real commands (not comments or `echo` no-ops),
- * that cargo runs in the crate directory, and that neither a `paths:` filter
- * nor a job-level `if:` can silently stop the guards on a pull request.
+ * Invariants for the PR CI workflow (issue 154, extended by issue 226). The
+ * Rust capability guards added in #153 only gate a merge if a job in this
+ * workflow actually runs `cargo test` in the desktop crate, so these tests
+ * assert that job exists, that its steps execute the real commands (not
+ * comments or `echo` no-ops), that cargo runs in the crate directory, and that
+ * its path gate runs it for every crate-affecting diff. Issue 226 replaced the
+ * always-run trade-off with a diff decision: the trigger keeps no `paths:`
+ * filter, a `changes` job computes `desktop`, and the rust job's only gate is
+ * that output. The tests below pin the detector to the crate paths, so a
+ * tightened regex cannot silently drop the guard.
  *
  * The workflow is parsed with the shared `workflow-utils` helpers, so comments
  * are stripped, block scalars are dedented and line endings are normalised the
@@ -69,28 +73,30 @@ function invokesCargoTest(run: string): boolean {
 
 /**
  * True when one argv is exactly the e2e log pipeline:
- * `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`.
+ * `bun run test:e2e 2>&1 | tee e2e-logs/playwright.log`, or the affected form
+ * `bun run test:e2e $E2E_SPECS 2>&1 | tee e2e-logs/playwright.log`.
  *
  * Every leg is load-bearing for #197: `argv[0] === "bun"` keeps `echo ... | tee`
  * or a separate line from satisfying the guard, `2>&1` merges the stderr carrying
  * the Playwright-managed server logs, and the tee must write the exact path the
  * upload step collects. The shape is pinned end to end (`--list`, an extra token,
  * or a reordered redirect must not satisfy it): a suite invoked with a flag that
- * lists rather than runs would still leave a log file that proves nothing.
+ * lists rather than runs would still leave a log file that proves nothing. #226
+ * added the optional spec list, but it must be exactly the `$E2E_SPECS` token,
+ * so `--list` or any other flag still fails the guard.
  * `set -o pipefail` and `shell: bash` keep a red suite red, but they say nothing
  * about where its output goes, so deleting this pipeline would leave them green
  * while the evidence disappears.
  */
 function pipesSuiteToTee(argv: readonly string[], logPath: string): boolean {
+  if (argv[0] !== "bun" || argv[1] !== "run" || argv[2] !== "test:e2e") return false;
+  const rest = argv[3] === "$E2E_SPECS" ? argv.slice(4) : argv.slice(3);
   return (
-    argv.length === 7 &&
-    argv[0] === "bun" &&
-    argv[1] === "run" &&
-    argv[2] === "test:e2e" &&
-    argv[3] === "2>&1" &&
-    argv[4] === "|" &&
-    argv[5] === "tee" &&
-    argv[6] === logPath
+    rest.length === 4 &&
+    rest[0] === "2>&1" &&
+    rest[1] === "|" &&
+    rest[2] === "tee" &&
+    rest[3] === logPath
   );
 }
 
@@ -102,6 +108,22 @@ function jobField(source: string, jobName: string, key: string): string {
     if (match !== null) return match[1].trim();
   }
   return "";
+}
+
+/** The only Rust gate #226 allows: the `changes` job's diff decision. */
+const DESKTOP_GATE = "!cancelled() && needs.changes.outputs.desktop != 'false'";
+
+/**
+ * True when a rust-job condition runs it for every crate-affecting diff.
+ * Anything keyed off the event type (`push`) can drop the PR gate, and an empty
+ * condition is the pre-#226 always-run behaviour; both must fail so the gate
+ * cannot be deleted (or hollowed out) without a conscious test edit. A
+ * `changes` failure leaves the output empty, and `!= 'false'` runs the crate in
+ * that case, which is the fail-closed direction.
+ */
+function isDesktopGate(condition: string): boolean {
+  const expression = condition.replace(/^\$\{\{\s*|\s*\}\}$/gu, "").trim();
+  return expression === DESKTOP_GATE;
 }
 
 describe("PR CI workflow", () => {
@@ -167,6 +189,16 @@ describe("PR CI workflow", () => {
     expect(jobTimeout - runTimeout).toBeGreaterThanOrEqual(E2E_SETUP_AND_UPLOAD_ALLOWANCE_MINUTES);
   });
 
+  it("keeps the production web build in checks", () => {
+    // #226 gates the rust job on desktop paths. The rust job used to carry the
+    // only PR-time `vite build`; that gate moves to `checks`, and this pins it
+    // so a later cleanup cannot drop the production build entirely.
+    const checks = parseSteps(WORKFLOW_SOURCE, "checks");
+    expect(stepNamed(checks, "Build web frontend").run).toBe(
+      "bun run --filter @dokan/web build",
+    );
+  });
+
   it("uploads the evidence a red e2e run leaves behind (#197)", () => {
     const e2eSteps = parseSteps(WORKFLOW_SOURCE, "e2e");
     const upload = stepNamed(e2eSteps, "Upload e2e failure evidence");
@@ -207,6 +239,20 @@ describe("PR CI workflow", () => {
   it("rejects an e2e run whose log capture was deleted or mangled", () => {
     const pipeline = ["bun", "run", "test:e2e", "2>&1", "|", "tee", E2E_LOG_PATH];
     expect(pipesSuiteToTee(pipeline, E2E_LOG_PATH)).toBe(true);
+    // #226: the affected form adds exactly the spec-list token and nothing else
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "$E2E_SPECS", "2>&1", "|", "tee", E2E_LOG_PATH],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(true);
+    // a token after the spec list is no longer just the spec list
+    expect(
+      pipesSuiteToTee(
+        ["bun", "run", "test:e2e", "$E2E_SPECS", "--list", "2>&1", "|", "tee", E2E_LOG_PATH],
+        E2E_LOG_PATH,
+      ),
+    ).toBe(false);
 
     // the regression #197 fixed: no tee, so nothing reaches the upload
     expect(pipesSuiteToTee(["bun", "run", "test:e2e"], E2E_LOG_PATH)).toBe(false);
@@ -263,22 +309,56 @@ describe("PR CI workflow", () => {
     expect(clippy.condition).toBe("");
   });
 
-  it("does not put the Rust job behind a paths filter", () => {
+  it("does not put the whole workflow behind a trigger-level paths filter", () => {
     const triggers = onLines(WORKFLOW_SOURCE).join("\n");
     expect(triggers).toContain("pull_request:");
     expect(triggers).toContain("branches: [develop]");
-    // A `paths:`/`paths-ignore:` filter makes the job report "skipped"; if the
-    // owner marks it required, a skipped check never satisfies branch
-    // protection and the PR is stuck pending forever. No filter, no trap.
+    // A `paths:`/`paths-ignore:` filter on the trigger makes the whole workflow
+    // (including `checks`) report "skipped" on a docs-only PR; if the owner
+    // marks a job required, a skipped check never satisfies branch protection
+    // and the PR is stuck pending forever (#154). Scope is a job decision
+    // instead, so every suite still reports on every event.
     expect(triggers).not.toContain("paths");
   });
 
-  it("does not let a job-level if: skip the Rust job on pull requests", () => {
-    // A job-level `if:` is the other way to silently disable the guards: a
-    // condition like `github.event_name == 'push'` leaves every step assertion
-    // above green while the rust job never runs on a PR. No condition at all
-    // is the strongest form of "always runs on pull_request".
-    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
+  it("gates the Rust job on crate-affecting paths, not on the event type", () => {
+    // Issue 226 made the job-level `if:` the only gate. A condition on the
+    // event type (`push`) would leave every step assertion above green while
+    // the rust job never runs on a PR; an empty condition is the old
+    // always-run behaviour. Both must fail.
+    expect(isDesktopGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
+    expect(isDesktopGate("github.event_name == 'push'")).toBe(false);
+    expect(isDesktopGate("")).toBe(false);
+    // `${{ }}` is optional YAML dressing; the expression is what must match.
+    expect(isDesktopGate("${{ " + DESKTOP_GATE + " }}")).toBe(true);
+  });
+
+  it("detects every crate-affecting path for the Rust gate", () => {
+    const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
+    const match = /grep -qE '([^']+)'/u.exec(decide.run);
+    if (match === null) throw new Error("The changes job has no desktop grep");
+    const desktopPath = new RegExp(match[1], "u");
+    const cratePaths = [
+      "apps/desktop/src-tauri/src/lib.rs",
+      "apps/desktop/src-tauri/capabilities/default.json",
+      "apps/desktop/src-tauri/permissions/vault.toml",
+      "apps/desktop/src-tauri/build.rs",
+      "apps/desktop/src-tauri/Cargo.toml",
+      "apps/desktop/src-tauri/tauri.conf.json",
+      "apps/desktop/scripts/sidecar.ts",
+      "apps/desktop/package.json",
+    ];
+    for (const cratePath of cratePaths) {
+      expect(desktopPath.test(cratePath), `${cratePath} must mark the diff as desktop`).toBe(true);
+    }
+    for (const other of [
+      "apps/web/src/pages/items.tsx",
+      "apps/api/src/rpc/router.ts",
+      "packages/contracts/src/core.ts",
+      "docs/ci.md",
+    ]) {
+      expect(desktopPath.test(other), `${other} must not mark the diff as desktop`).toBe(false);
+    }
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {
@@ -397,10 +477,10 @@ describe("PR CI workflow", () => {
       "        working-directory: apps/desktop/src-tauri",
       "        run: cargo test",
     ].join("\n");
-    // the mutation is detected: a non-empty condition is not "" ...
-    expect(jobField(pushOnly, RUST_JOB, "if")).toBe("github.event_name == 'push'");
-    // ... and the real workflow must not have one
-    expect(jobField(WORKFLOW_SOURCE, RUST_JOB, "if")).toBe("");
+    // the mutation is detected: a push-only condition is not the crate gate ...
+    expect(isDesktopGate(jobField(pushOnly, RUST_JOB, "if"))).toBe(false);
+    // ... and the real workflow must use the diff decision
+    expect(isDesktopGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
   });
 
   it("does not accept a cargo test that only appears in a comment", () => {

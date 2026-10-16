@@ -269,24 +269,33 @@ refused it.
 
 ## The fix
 
-Normalise the **whole signed draft** first, judge it, and only then remove the
-sign. `-` is content to `stripEdgeBidiMarks`, so a mark that was interior in the
-signed draft is still interior when the shared normaliser runs, and the strict
-digits test refuses it. The magnitude is read through a new private
-`readNormalizedDigits` that only tests and converts — it never normalises — so
-the edge strip cannot run a second time on a string whose sign has just left. One
-normaliser remains; `readNormalizedDigits` is a read, not a second normaliser.
+Normalise the **whole signed draft** first, judge it sign-aware, and only then
+remove the sign. `-` is content to `stripEdgeBidiMarks`, so a mark that was
+interior in the signed draft is still interior when the shared normaliser runs,
+and the sign-aware gate `/^-\s*\d+$/` refuses it. The magnitude is then read
+through a new private `readNormalizedDigits` that only tests and converts — it
+never normalises — so the edge strip cannot run a second time on a string whose
+sign has just left. One normaliser remains; `readNormalizedDigits` is a read,
+not a second normaliser.
 
 `parseWholeNumber` now delegates to the same `readNormalizedDigits`
-(`readNormalizedDigits(normalizeArabicIndicDigits(text).trim())`), so there is
-still exactly one strict-read implementation and no drift.
+(`readNormalizedDigits(normalizeArabicIndicDigits(text).trim())`). That
+centralises the strict read **inside `numeric-input.ts`** and stops the two
+readers in the file from drifting; it is not a repo-wide claim —
+`parseWholeAmount`/`parseWholePercentage` (`amount-parse.ts`) and
+`parseQuantityDraft` (`invoice-draft.ts`) still inline an equivalent strict read.
+The surviving constraint is the one that matters: **one shared normaliser**, and
+no reader normalises a substring after a sign or separator has been removed.
 
 What is deliberately **not** changed: a mark *in front of the sign*
-(`"\u200f-٥"`) stays refused. Round 1 pinned that as a safe refusal, and
-accepting it would be a separate behaviour change (an edge mark before a sign)
-that wants its own browser proof of display order. This round only re-classifies
-interior marks; it does not widen the strip and it does not widen acceptance
-beyond the finding.
+(`"\u200f-٥"`) stays refused. This round also keeps the raw-draft
+`startsWith("-")` gate that makes that a refusal — a pre-normalisation decision
+of the same *shape* as the bug, but a safe one: it only ever turns an acceptance
+into a refusal (`parseWholeNumber` cannot accept a `-`), never a wrong value.
+Round 1 pinned it, and accepting a leading edge mark before a sign would be a
+separate behaviour change that wants its own browser proof of display order. This
+round only re-classifies interior marks; it does not widen the strip and it does
+not widen acceptance beyond the finding.
 
 ## Class sweep — every reader that splits, trims or removes before normalising
 
@@ -294,7 +303,11 @@ beyond the finding.
 position, where content is “not whitespace and not a mark”. A pre-step turns an
 interior mark into an edge mark only if it removes **content** from one side of
 it. Whitespace is not content, so `.trim()` before normalising cannot re-parent a
-mark; a removed **sign** or **separator** is content and can.
+mark; a removed **sign** or **separator** is content and can. Note the raw
+`startsWith("-")` gate is *also* a pre-normalisation decision: it chooses which
+reader runs before the shared normaliser sees the draft. It is listed below as
+“no” because it can only force a refusal, never re-parent a mark, but it is the
+same shape and is deliberately preserved (see «The fix»).
 
 | reader / call site | pre-normalisation step | affected? | why |
 | --- | --- | --- | --- |
@@ -318,15 +331,17 @@ why the tier stays High-assurance.
 
 ## Planned tests
 
-- `apps/web/src/lib/numeric-input.test.ts` — a dedicated ordering pin:
-  - `normalizeArabicIndicDigits("-\u200f5")` **keeps** the mark (proof it was
-    interior to the signed draft), and
-  - `parseSignedWholeNumber("-\u200f5")` is `null` for both Arabic digit scripts
-    and a grouped interior mark,
-  - positive controls: an edge mark still strips (`"\u200f٥"` → 5), `-5` and
-    `-٥` still read.
-  The value assertion is the *ordering* detector: re-create the old two-step
-  order and it fails with `-5` where `null` is required.
+- `apps/web/src/lib/numeric-input.test.ts` — two `it`s:
+  - the **ordering pin**: `normalizeArabicIndicDigits("-\u200f5")` **keeps** the
+    mark (proof it was interior to the signed draft), while
+    `parseSignedWholeNumber` returns `null` for the mark after the sign in both
+    Arabic digit scripts, a doubled mark, and a grouped interior mark. The value
+    assertion is the detector: re-create the old two-step order and it fails with
+    `-5` where `null` is required.
+  - the **control pin**: an edge mark before the sign stays a refusal, a trailing
+    edge mark still strips (`"-5\u200f"` → -5), LRO/RLO refuse edge and interior,
+    `-5`/`-٥`/`"\u200f٥"` still read, the pre-existing `"- 5"` → -5 is locked,
+    and blank / lone `-` / the signed safe-integer boundary are pinned.
 - No new e2e: the affected consumer (stock form) has no flow in
   `sale-checkout.spec.ts`; the round's verification re-runs that spec to prove the
   shared readers did not move. The unit pin is the regression gate.
@@ -338,10 +353,14 @@ why the tier stays High-assurance.
   is named for the contract and is the only strict read; a comment on
   `parseSignedWholeNumber` states the ordering, and the mutation proof shows the
   pin fails when it is violated.
-- **Behaviour drift on `"- 5"`.** The magnitude still `.trim()`s, so the
-  pre-existing acceptance of a space between sign and digits is preserved.
+- **Behaviour drift on `"- 5"`.** The sign-aware gate allows `\s*` between the
+  sign and the digits, so the pre-existing acceptance of a space between them is
+  preserved and now pinned.
 - **The round-1 leading-edge refusal.** Preserved deliberately (see above), so no
   existing round-1 pin is weakened.
+- **`-0` returns `-0`.** Pre-existing round-1 behaviour; the stock form refuses
+  it through `parsedDelta === 0`, so it is invisible today. Left as-is and named
+  as a candidate follow-up, not changed quietly.
 
 ## Mutation proof (plan; observed results go in the evidence file)
 
@@ -355,5 +374,10 @@ why the tier stays High-assurance.
 
 - `\u200f-٥` (edge mark before a sign) stays a refusal; accepting it is its own
   behaviour change with an RTL display-order proof.
+- `-0` reads as `-0` (pre-existing); normalising it to `0` is a separate reader
+  change with no reachable owner-visible effect today.
+- De-duplicating the strict read across `amount-parse.ts`, `invoice-draft.ts` and
+  `numeric-input.ts` behind one helper is a repo-wide refactor, not this fix; the
+  constraint here is the single shared **normaliser**, which holds.
 - The round-1 «one blank predicate» deferral (`percentageDraftInvalid`,
   `resolveInitialPaid`) is unchanged.

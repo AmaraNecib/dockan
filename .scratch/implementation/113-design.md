@@ -105,7 +105,7 @@ evidence were used:
    alone changes no observable behaviour;
 2. **mechanical** — every moved function body in `auth-errors.tsx` is
    byte-identical to the hunk removed from `App.tsx`; the only deltas are
-   `export`, the import list, and the item-1 `field`/`role` addition.
+   `export`, reworded doc comments, and the item-1 `field`/`role` addition.
 
 ### 3. Parity test: every router refusal is translatable
 

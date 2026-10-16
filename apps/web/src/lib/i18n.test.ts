@@ -229,7 +229,7 @@ describe("every router refusal stays translatable (issue #113)", () => {
 
   it("names the identifier-forwarded refusals it reads from unions", () => {
     // a named-type refactor (phoneKey: PartyPhoneKey) would make the union
-    // extractor return nothing while the shape guard above still passes, so the
+    // extractor return nothing while the count guard above still passes, so the
     // codes are named here and a refactor fails loudly instead of losing them
     expect(routerRefusals()).toEqual(expect.arrayContaining([
       "STOCK_NEGATIVE",

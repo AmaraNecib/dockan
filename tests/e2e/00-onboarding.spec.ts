@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { signIn } from "./auth-helpers";
+import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
 
@@ -146,6 +146,37 @@ test("dismissing the panel survives a reload", async ({ page }) => {
   await page.reload();
   await expect(page.getByTestId("dashboard-page")).toBeVisible();
   await expect(page.getByTestId("getting-started")).toHaveCount(0);
+});
+
+test("a dismissed panel returns after the settings escape hatch", async ({ page }) => {
+  await signIn(page);
+  await expect(page.getByTestId("getting-started")).toBeVisible();
+  await page.getByTestId("getting-started-dismiss").click();
+  await expect(page.getByTestId("getting-started")).toHaveCount(0);
+
+  // a fresh load proves the dismissal was persisted, not just local state
+  await page.reload();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("getting-started")).toHaveCount(0);
+
+  // the escape hatch lives in settings; the switch reads off after a dismissal
+  await openSystemNav(page);
+  await page.getByRole("link", { name: "الإعدادات" }).click();
+  await expect(page.getByRole("heading", { name: "إعدادات المتجر" })).toBeVisible();
+  const toggle = page.getByTestId("settings-getting-started-toggle");
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+
+  // back on the dashboard the teaching surface is back
+  await page.getByRole("link", { name: "الرئيسية" }).click();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("getting-started")).toBeVisible();
+
+  // and it stays back after another load: server state, not this session
+  await page.reload();
+  await expect(page.getByTestId("dashboard-page")).toBeVisible();
+  await expect(page.getByTestId("getting-started")).toBeVisible();
 });
 
 test("completing every step removes the panel", async ({ page }) => {

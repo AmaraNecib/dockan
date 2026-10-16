@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
 
+import { GettingStartedSetting } from "../components/app/getting-started-setting";
 import { VaultSettings } from "../components/vault/vault-settings";
 import { inputClass } from "@/components/ui/input";
 import { orpc } from "../lib/rpc";
@@ -149,6 +150,8 @@ export function SettingsPage() {
           </button>
         </form>
       )}
+
+      <GettingStartedSetting />
 
       <VaultSettings />
     </section>

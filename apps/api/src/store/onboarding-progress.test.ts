@@ -208,4 +208,32 @@ describe("recordOnboardingCompletion (issue 97 follow-up)", () => {
     expect(await store.recordOnboardingCompletion()).toBe(true);
     expect((await store.getPreferences())[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
   });
+
+  itHeavy("composes the read and write without re-entering the store queue (issue #115)", async () => {
+    const store = await freshStore();
+    await createItem(store, "بطارية");
+    await seedInvoice(store, { invoiceNumber: "ONB-C3", kind: "PURCHASE", totalAmount: 500, paidAmount: 500, remainingAmount: 0 });
+    await seedInvoice(store, { invoiceNumber: "ONB-C4", kind: "SALE", totalAmount: 900, paidAmount: 400, remainingAmount: 500 });
+
+    // `recordOnboardingCompletion` runs inside one serialized queue slot. If it
+    // reached the *serialized* port methods again (e.g. a refactor binds `this`
+    // to the wrapped store rather than the raw one), the nested `runSerialized`
+    // would wait on the job it is already inside: a self-deadlock on the single
+    // connection. This bounded race turns that hang into a named failure instead
+    // of a whole-file timeout. Mutation-verified: with `this` bound to the
+    // wrapped store the race reports the "deadlock" sentinel; with the raw
+    // closures it resolves boolean. (Dropping `.bind(raw)` while still using
+    // `this.*` fails a different way — a TypeError — which is also a failure.)
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      store.recordOnboardingCompletion(),
+      new Promise<"deadlock">((resolve) => {
+        timer = setTimeout(() => resolve("deadlock"), 15_000);
+      }),
+    ]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+    expect(result).toBe(true);
+    expect((await store.getPreferences())[ONBOARDING_COMPLETED_PREFERENCE_KEY]).toBe("true");
+  });
 });

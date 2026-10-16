@@ -1375,6 +1375,59 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     return rows[0] !== undefined;
   };
 
+  /**
+   * The getting-started progress read, as a raw closure (issue #115).
+   *
+   * `recordOnboardingCompletion` composes a read and a write, and must NOT
+   * re-enter `serializeStore`'s queue: the wrapper already runs the composed
+   * call inside one `runSerialized` slot, and a nested `runSerialized` on the
+   * single SQLite connection is a self-deadlock. Declaring the pieces as
+   * closures (not port methods reached through `this`) makes that safety
+   * structural and visible at the composition site, instead of depending on
+   * the wrapper's `.bind(raw)` staying in place.
+   */
+  const readOnboardingProgress = async (): Promise<OnboardingProgress> => {
+    // One EXISTS read for the getting-started checklist (issue 97). Each flag
+    // names a real record — an item, a purchase invoice, a sale invoice, a
+    // party-attributed unpaid SALE debt — so no client-settable flag can mark
+    // a step done. The debt predicate mirrors the SALE direction of
+    // dashboardSummary/debtSummaries, so the step agrees with the "owed to us"
+    // group on the /debts screen it links to.
+    // SAFETY: the SELECT is four EXISTS subqueries, so sqlite always returns
+    // exactly one row carrying these aliases as INTEGER 0/1 values.
+    const rows = (await db.all(sql`
+      SELECT
+        EXISTS(SELECT 1 FROM items) AS has_items,
+        EXISTS(SELECT 1 FROM invoices WHERE kind = 'SALE') AS has_sale,
+        EXISTS(SELECT 1 FROM invoices WHERE kind = 'PURCHASE') AS has_purchase,
+        EXISTS(
+          SELECT 1 FROM invoices
+          WHERE kind = 'SALE' AND remaining_amount > 0
+            AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
+        ) AS has_debt`)) as Array<{
+      has_items: number;
+      has_sale: number;
+      has_purchase: number;
+      has_debt: number;
+    }>;
+    const row = rows[0];
+    return {
+      hasItems: row?.has_items === 1,
+      hasPurchase: row?.has_purchase === 1,
+      hasSale: row?.has_sale === 1,
+      hasDebt: row?.has_debt === 1,
+    };
+  };
+
+  /** The preference upsert, as a raw closure for the same reason as above. */
+  const upsertPreference = async (key: string, value: string): Promise<void> => {
+    await db
+      .insert(preferences)
+      .values({ key, value })
+      .onConflictDoUpdate({ target: preferences.key, set: { value } })
+      .run();
+  };
+
   const store: StorePort = {
     setup,
 
@@ -2627,48 +2680,22 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       };
     },
 
-    async onboardingProgress(): Promise<OnboardingProgress> {
-      // One EXISTS read for the getting-started checklist (issue 97). Each flag
-      // names a real record — an item, a purchase invoice, a sale invoice, a
-      // party-attributed unpaid SALE debt — so no client-settable flag can mark
-      // a step done. The debt predicate mirrors the SALE direction of
-      // dashboardSummary/debtSummaries, so the step agrees with the "owed to us"
-      // group on the /debts screen it links to.
-      // SAFETY: the SELECT is four EXISTS subqueries, so sqlite always returns
-      // exactly one row carrying these aliases as INTEGER 0/1 values.
-      const rows = (await db.all(sql`
-        SELECT
-          EXISTS(SELECT 1 FROM items) AS has_items,
-          EXISTS(SELECT 1 FROM invoices WHERE kind = 'SALE') AS has_sale,
-          EXISTS(SELECT 1 FROM invoices WHERE kind = 'PURCHASE') AS has_purchase,
-          EXISTS(
-            SELECT 1 FROM invoices
-            WHERE kind = 'SALE' AND remaining_amount > 0
-              AND (counterparty_id IS NOT NULL OR counterparty_name IS NOT NULL)
-          ) AS has_debt`)) as Array<{
-        has_items: number;
-        has_sale: number;
-        has_purchase: number;
-        has_debt: number;
-      }>;
-      const row = rows[0];
-      return {
-        hasItems: row?.has_items === 1,
-        hasPurchase: row?.has_purchase === 1,
-        hasSale: row?.has_sale === 1,
-        hasDebt: row?.has_debt === 1,
-      };
-    },
+    onboardingProgress: readOnboardingProgress,
 
     async recordOnboardingCompletion(): Promise<boolean> {
       // Idempotent and re-checked: the milestone is written only while every
       // real record still exists, so a retry can never mark a half-done
-      // checklist. Runs inside the caller's queue slot (this.* is the raw
-      // object), so the read and the write cannot interleave with a rival.
-      const progress = await this.onboardingProgress();
+      // checklist.
+      // SAFETY: composed from the raw closures above, never through the
+      // serialized port methods. Re-entering `runSerialized` on the single
+      // connection would self-deadlock; see readOnboardingProgress (issue #115).
+      // The closure write also bypasses the wrapper's own dirty/persist seam, so
+      // this method MUST stay in MUTATING_METHODS: the wrapper is what marks the
+      // vault image dirty and persists it after the composed job.
+      const progress = await readOnboardingProgress();
       const completed = progress.hasItems && progress.hasPurchase && progress.hasSale && progress.hasDebt;
       if (!completed) return false;
-      await this.setPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
+      await upsertPreference(ONBOARDING_COMPLETED_PREFERENCE_KEY, "true");
       return true;
     },
     // --- activities + settings ----------------------------------------------
@@ -2763,13 +2790,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       const rows = await db.select({ key: preferences.key, value: preferences.value }).from(preferences);
       return Object.fromEntries(rows.map((row) => [row.key, row.value]));
     },
-    async setPreference(key: string, value: string) {
-      await db
-        .insert(preferences)
-        .values({ key, value })
-        .onConflictDoUpdate({ target: preferences.key, set: { value } })
-        .run();
-    },
+    setPreference: upsertPreference,
 
     // --- backup --------------------------------------------------------------
     async copyDatabaseTo(destPath: string) {

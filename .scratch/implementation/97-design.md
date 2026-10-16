@@ -63,8 +63,39 @@ onboardingProgress(): Promise<OnboardingProgress>;
 
 ### `apps/api/src/store/drizzle-store.ts`
 
-One SQL read of four `EXISTS` subqueries (`onboardingProgress`). No new tables,
-no writes, no change to any existing query.
+One SQL read of four `EXISTS` subqueries (`onboardingProgress`).
+
+> **Follow-up (PR #104, issue #97): this section was stale.** The original
+> claim here was "No new tables, no writes, no change to any existing query".
+> The follow-up added the `preferences` key/value table and a write path beside
+> the read, so the Interfaces list below is the current one. Details of the
+> migration are in "PR #104 follow-up" at the end of this doc.
+
+```ts
+// apps/api/src/db/schema.ts — one new table (not the store-identity `settings`)
+preferences: (key TEXT PRIMARY KEY, value TEXT NOT NULL)
+
+// apps/api/src/store/port.ts
+getPreferences(): Promise<Record<string, string>>;
+setPreference(key: string, value: string): Promise<void>;
+onboardingProgress(): Promise<OnboardingProgress>;   // the FOUR-EXISTS read
+recordOnboardingCompletion(): Promise<boolean>;      // re-check + idempotent milestone
+
+// packages/contracts/src/app-contract.ts
+preferencesGet:  oc.output(preferencesGetOutputSchema);
+preferencesSet:  oc.input(preferencesSetInputSchema).output(preferencesSetOutputSchema);
+onboardingComplete: oc.output(onboardingCompleteOutputSchema);
+
+// apps/web/src/lib/preferences.ts — the shared client write/read seam
+readPreferences(): Promise<Preferences>;
+writePreference(key: string, value: string): Promise<string | null>;
+usePreference<T>(key, defaultValue, parse, serialize): Preference<T>;
+```
+
+The store's single connection is unchanged: `recordOnboardingCompletion`
+composes the progress read and the preference upsert in one queue slot, and
+the milestone key (`ONBOARDING_COMPLETED_PREFERENCE_KEY`) is server-owned —
+`preferencesSet` accepts it only as a clear (`"false"`).
 
 ### `apps/api/src/rpc/router.ts`
 

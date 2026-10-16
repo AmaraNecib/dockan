@@ -4330,6 +4330,27 @@ describe("UI preferences (issue 97 follow-up)", () => {
     });
   });
 
+  it("accepts clearing the milestone, but never setting it (issue #115)", async () => {
+    // the server owns the milestone, so a client may only take it away: this is
+    // the settings "show getting started" reset. Setting it back stays refused.
+    await client.preferencesSet({ key: "ui.onboarding.completed", value: "false" });
+    const { values } = await client.preferencesGet();
+    expect(values["ui.onboarding.completed"]).toBe("false");
+
+    await expect(
+      client.preferencesSet({ key: "ui.onboarding.completed", value: "true" }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    // the clear is exact: only "false" is a reset, never another falsy spelling
+    for (const value of ["yes", "0", "False", ""]) {
+      await expect(
+        client.preferencesSet({ key: "ui.onboarding.completed", value }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
+    // a refused write changed nothing
+    const after = await client.preferencesGet();
+    expect(after.values["ui.onboarding.completed"]).toBe("false");
+  });
+
   it("still accepts the shell keys the owner owns", async () => {
     await client.preferencesSet({ key: "ui.sidebar.collapsed", value: "true" });
     await client.preferencesSet({ key: "ui.onboarding.dismissed", value: "true" });

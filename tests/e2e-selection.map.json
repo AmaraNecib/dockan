@@ -216,9 +216,9 @@
       "specs": ["diagnostics.spec.ts"]
     },
     {
-      "$comment": "settings, theme/preferences, and the vault unlock surface",
+      "$comment": "settings, theme/preferences, and the vault unlock surface; settings.tsx also hosts the getting-started escape hatch, so 00-onboarding.spec.ts rides this rule (#115)",
       "match": ["apps/web/src/pages/settings.tsx"],
-      "specs": ["settings.spec.ts", "vault.spec.ts", "learnability.spec.ts"]
+      "specs": ["settings.spec.ts", "vault.spec.ts", "learnability.spec.ts", "00-onboarding.spec.ts"]
     },
     {
       "match": ["apps/web/src/components/vault/**"],

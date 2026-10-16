@@ -31,7 +31,13 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({
           id: "inv-1",
           kind: "PURCHASE",
-          lines: [{ id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 0, netTotal: 0 }],
+          // two fixtures, not one: l1 keeps the zero-price "free line" case
+          // alive (#229 finding 2) while l2 gives the #210 preview pins a
+          // non-zero product, so a wrong reader shows 400000/600 not 0
+          lines: [
+            { id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 0, netTotal: 0 },
+            { id: "l2", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 400, netTotal: 2000 },
+          ],
         }),
       }),
     },
@@ -119,6 +125,14 @@ function confirmButton() {
   return host.querySelector<HTMLButtonElement>('[data-testid="supplier-return-confirm"]');
 }
 
+/** The previewed return value as a number. The rendered element is "label: 2000 دج",
+ * so extract the last digit run instead of substring-matching (a bare
+ * `toContain("0")` also matches 400000, the value the old loose reader showed). */
+function previewAmount(): number {
+  const text = host.querySelector('[data-testid="supplier-return-value"]')?.textContent ?? "";
+  return Number(text.match(/(\d+)(?!.*\d)/u)?.[1] ?? Number.NaN);
+}
+
 async function submit() {
   const form = host.querySelector<HTMLFormElement>('[data-testid="supplier-return-panel"]');
   await act(async () => {
@@ -153,8 +167,14 @@ async function openSelect(testId: string, optionText: string) {
 describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
   it("enables submit for a valid quantity on a free line (zero return value)", async () => {
     await render();
+    // l1 is the zero-price line, so the return value stays 0: a change that
+    // wrongly disabled zero-value returns must fail here (#229 finding 2)
     typeInto("supplier-return-qty-l1", "1");
+    expect(previewAmount()).toBe(0);
     expect(confirmButton()?.disabled).toBe(false);
+    // and the zero-value return is actually saved, not blocked at submit
+    await submit();
+    expect(submitted[0]).toMatchObject({ invoiceId: "inv-1", lines: [{ invoiceLineId: "l1", quantity: 1 }] });
   });
 
   it("rejects a fractional quantity instead of silently dropping it", async () => {
@@ -162,6 +182,38 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     typeInto("supplier-return-qty-l1", "1.5");
     expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).not.toBeNull();
     expect(confirmButton()?.disabled).toBe(true);
+  });
+
+  it("previews and saves the same Arabic-Indic quantity draft (#210)", async () => {
+    await render();
+    // l2 is the priced line, so a miscounted quantity shows up in the money
+    typeInto("supplier-return-qty-l2", "٥");
+    expect(previewAmount()).toBe(2000);
+    // submit the SAME draft that was previewed: swapping to ASCII first would
+    // pass even if saving stopped reading Arabic digits (#229 finding 1)
+    await submit();
+    expect(submitted[0]).toMatchObject({ lines: [{ invoiceLineId: "l2", quantity: 5 }] });
+  });
+
+  it("previews zero for a draft the submit path refuses, never a value it will not send (#210)", async () => {
+    await render();
+    // l2 is the priced line, so the pre-#210 loose reader renders 400000
+    // (`1e3`) / 600 (`1.5`) instead of 0: only exact preview values pin it
+    typeInto("supplier-return-qty-l2", "1e3");
+    expect(previewAmount()).toBe(0);
+    typeInto("supplier-return-qty-l2", "1.5");
+    expect(previewAmount()).toBe(0);
+    expect(confirmButton()?.disabled).toBe(true);
+  });
+
+  it("accepts an Arabic-Indic quantity on the free-standing path (#210)", async () => {
+    await render();
+    await openSelect("supplier-return-mode", "بدون فاتورة");
+    await openSelect("supplier-return-item", "هدية");
+    typeInto("supplier-return-quantity", "٥");
+    typeInto("supplier-return-amount", "300");
+    await submit();
+    expect(submitted[0]).toMatchObject({ supplierId: "sup-1", itemId: "item-1", quantity: 5, amount: 300 });
   });
 
   it("rejects a malformed cash-back instead of omitting the refund", async () => {

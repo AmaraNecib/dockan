@@ -14,6 +14,7 @@ import {
   lineQuantity,
   nextPaymentPair,
   nextUnitCost,
+  nonNegativeOr,
   parseQuantityDraft,
   paymentPairUnchanged,
   purchaseUnitPrice,
@@ -208,13 +209,31 @@ describe("sale line pricing", () => {
     expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "12.5" })).toBe(true);
   });
 
-  it("keeps the override reader ASCII-only while the quantity reader accepts Arabic-Indic (#198 scope)", () => {
-    // the #198 decision widened quantities only. `Number("٥")` is NaN, so the
-    // price-override reader still refuses it, exactly as before.
-    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "٥" })).toBe(true);
-    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "٥٠" })).toBe(true);
-    // the same digit in a quantity now resolves
-    expect(parseQuantityDraft("٥")).toBe(5);
+  it("bills Arabic-Indic and Extended Arabic-Indic override digits like ASCII (#210)", () => {
+    expect(saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "AMOUNT", overrideValue: "٩٠٠" })).toBe(900);
+    expect(saleUnitPrice({ ...saleLine("a", "1", 500), overrideType: "PERCENTAGE", overrideValue: "٨٠" })).toBe(400);
+    expect(saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "PERCENTAGE", overrideValue: "۸۰" })).toBe(800);
+    // validate and bill agree on the same Arabic draft
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "٩٠٠" })).toBe(false);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "٥٠" })).toBe(false);
+    expect(saleOverrideInvalid({ overrideType: "PERCENTAGE", overrideValue: "١٠١" })).toBe(true);
+    expect(saleOverrideInvalid({ overrideType: "AMOUNT", overrideValue: "١٢.٥" })).toBe(true);
+    // the same typed value bills the same in both scripts
+    for (const [ascii, arabic] of [["900", "٩٠٠"], ["0", "٠"]] as const) {
+      expect(saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "AMOUNT", overrideValue: arabic })).toBe(
+        saleUnitPrice({ ...saleLine("a", "1", 1000), overrideType: "AMOUNT", overrideValue: ascii }),
+      );
+    }
+  });
+
+  it("normalizes Arabic-Indic digits in the loose money read without tightening it (#210)", () => {
+    expect(nonNegativeOr("٥", 0)).toBe(5);
+    expect(nonNegativeOr("۵۰۰", 0)).toBe(500);
+    // the ASCII looseness the sale override/discount always had is preserved
+    expect(nonNegativeOr("1e3", 0)).toBe(1000);
+    expect(nonNegativeOr("", 7)).toBe(0);
+    expect(nonNegativeOr("-5", 7)).toBe(7);
+    expect(nonNegativeOr("abc", 7)).toBe(7);
   });
 });
 
@@ -453,6 +472,17 @@ describe("draft totals (money math pinned)", () => {
     expect(discountAmountFor(0, "PERCENTAGE", "50")).toBe(0);
   });
 
+  it("reads Arabic-Indic discount digits exactly like ASCII (#210)", () => {
+    expect(discountAmountFor(2700, "AMOUNT", "١٠٠")).toBe(100);
+    expect(discountAmountFor(400, "PERCENTAGE", "١٠")).toBe(40);
+    for (const [type, ascii, arabic] of [
+      ["AMOUNT", "100", "١٠٠"],
+      ["PERCENTAGE", "10", "۱۰"],
+    ] as const) {
+      expect(discountAmountFor(2700, type, arabic)).toBe(discountAmountFor(2700, type, ascii));
+    }
+  });
+
   it("pins the sale cases from the brief and the e2e spec", () => {
     // 3 × 900 (amount override) − amount discount 100
     const first = draftTotals(
@@ -590,11 +620,16 @@ describe("resolveInitialPaid (what the invoice carries)", () => {
     expect(resolveInitialPaid(2000, " 1 000 ", "50")).toEqual({ ok: true, paid: 1000 });
   });
 
-  it("pins the amount and percentage readers' digit asymmetry (pre-existing)", () => {
-    // the amount reader accepts Arabic-Indic digits; the percentage reader is
-    // ASCII-only. Unchanged by #146, but the pair is shared now.
+  it("reads the amount and percentage pair in either digit script alike (#210)", () => {
+    // #146 shared the pair; #210 widens BOTH readers, so the digit script no
+    // longer decides whether a resolution is accepted. A percentage draft is a
+    // validity gate only: the amount stays the paid value.
     expect(resolveInitialPaid(1000, "٤٠٠", "")).toEqual({ ok: true, paid: 400 });
-    expect(resolveInitialPaid(1000, "٤٠٠", "٤٠")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "٤٠٠", "٤٠")).toEqual({ ok: true, paid: 400 });
+    expect(resolveInitialPaid(1000, "٤٠٠", "٤٠")).toEqual(resolveInitialPaid(1000, "400", "40"));
+    // the percentage reader still caps at 100 and rejects a decimal draft
+    expect(resolveInitialPaid(1000, "", "١٠١")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, "", "١٢.٥")).toEqual({ ok: false });
   });
 
   it("refuses an over-total payment instead of letting the api reject it", () => {

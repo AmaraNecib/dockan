@@ -6,6 +6,7 @@ import { inputClass } from "@/components/ui/input";
 import {
   amountFromPercentage,
   parseGroupedAmount,
+  parseLooseNumber,
   parseWholeAmount,
   parseWholePercentage,
   percentageDraftInvalid,
@@ -19,6 +20,7 @@ import { cn } from "@/lib/utils";
 export {
   amountFromPercentage,
   parseGroupedAmount,
+  parseLooseNumber,
   parseWholeAmount,
   parseWholePercentage,
   percentageDraftInvalid,
@@ -58,8 +60,9 @@ export function percentageEdited(referenceTotal: number | null | undefined, perc
     return { amount: String(amountFromPercentage(referenceTotal, parsed)), percentage: percentageDraft };
   }
   // a percentage above 100 is the one draft the component clamps rather than
-  // rejecting: the cap keeps the amount from ever exceeding the reference
-  const numeric = Number(percentageDraft.trim());
+  // rejecting: the cap keeps the amount from ever exceeding the reference. The
+  // fallback reads through the normalizer so `«١٥٠»` clamps like `"150"`.
+  const numeric = parseLooseNumber(percentageDraft);
   if (percentageDraft.trim() !== "" && Number.isFinite(numeric) && numeric > 100) {
     return { amount: String(referenceTotal), percentage: "100" };
   }

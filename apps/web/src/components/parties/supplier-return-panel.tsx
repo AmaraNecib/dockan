@@ -5,9 +5,10 @@ import { useTranslation } from "react-i18next";
 import type { Invoice } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
+import { parseWholeAmount } from "@/lib/amount-parse";
 
 import { tError } from "@/lib/i18n";
 import { orpc } from "@/lib/rpc";
@@ -60,8 +61,11 @@ export function SupplierReturnPanel({
   const invoiceValue = useMemo(() => {
     if (detail.data === undefined) return 0;
     return detail.data.lines.reduce((sum, line) => {
-      const qty = Number(quantities[line.id] ?? "0");
-      return Number.isFinite(qty) && qty > 0 ? sum + qty * line.unitPrice : sum;
+      // The same reader as `parseReturnQuantities`, so the preview can never sum
+      // a line the submit path refuses (`1e3`, `5.5`) or, before #210, read an
+      // Arabic-Indic digit as zero while the submit path read it as five.
+      const qty = parseWholeAmount(quantities[line.id] ?? "0") ?? 0;
+      return qty > 0 ? sum + qty * line.unitPrice : sum;
     }, 0);
   }, [detail.data, quantities]);
   const value = mode === "INVOICE_LINKED" ? invoiceValue : Number(amount) || 0;

@@ -28,7 +28,8 @@ interface CapturedInvoiceInput {
   counterpartyId?: string;
   counterpartyName?: string;
   initialPaid?: number;
-  lines?: Array<{ itemId: string; quantity: number }>;
+  discount?: { type: string; value: number };
+  lines?: Array<{ itemId: string; quantity: number; priceOverride?: { type: string; value: number } }>;
 }
 
 /** Subset of the tanstack mutation options the page passes through. */
@@ -1263,20 +1264,40 @@ describe("SalePage commit order (#198)", () => {
     expect(lastInvoiceInput?.lines).toEqual([{ itemId: "item-1984", quantity: 5 }]);
   });
 
-  it("keeps the discount reader ASCII-only while the quantity accepts Arabic-Indic (#198 scope)", async () => {
+  it("submits a sale typed in Arabic-Indic digits as the same payload as ASCII (#210)", async () => {
     const host = await mountSale();
     await scan("1985"); // 1 x 1000
-    // the quantity draft accepts the digit...
+    // quantity, price override, and discount all typed with Arabic-Indic digits
     await act(async () => setElementValue(quantityField(host), "٥"));
-    // ...but the discount draft reads `Number`, so «٥» is not a number to it
+    await act(async () => {
+      await chooseOption(lineOverrideType(host, 0), "مبلغ");
+    });
+    const value = lineOverrideValue(host);
+    if (value === null) throw new Error("missing override value");
+    await act(async () => setElementValue(value, "٩٠٠"));
     const trigger = host.querySelector<HTMLButtonElement>('[data-testid="sale-discount-type"]');
     if (trigger === null) throw new Error("missing discount select");
     await act(async () => {
       await chooseOption(trigger, "مبلغ");
     });
-    await act(async () => setInput(host, "sale-discount-value", "٥"));
+    await act(async () => setInput(host, "sale-discount-value", "١٠٠"));
+    // the preview reads the same numbers the submit will send: 5 × 900 − 100
+    expect(totalAmount(host)).toBe(4400);
     await act(async () => saveButton(host).click());
-    expect(errorText(host)).toContain(i18n.t("saleInvalidDiscount"));
-    expect(lastInvoiceInput).toBeNull();
+    expect(lastInvoiceInput?.lines).toEqual([
+      { itemId: "item-1985", quantity: 5, priceOverride: { type: "AMOUNT", value: 900 } },
+    ]);
+    expect(lastInvoiceInput?.discount).toEqual({ type: "AMOUNT", value: 100 });
+    expect(errorText(host)).toBe("");
+  });
+
+  it("links an Arabic-Indic paid percentage to the total like ASCII (#210)", async () => {
+    const host = await mountSale();
+    await scan("1986"); // 1 x 1000
+    await act(async () => setInput(host, "sale-paid-percentage", "٥٠"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
+    // the ASCII draft links to the same amount
+    await act(async () => setInput(host, "sale-paid-percentage", "50"));
+    expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
   });
 });

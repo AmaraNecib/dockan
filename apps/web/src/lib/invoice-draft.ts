@@ -4,6 +4,7 @@ import {
   amountFromPercentage,
   normalizeArabicIndicDigits,
   parseGroupedAmount,
+  parseLooseNumber,
   parseWholePercentage,
   percentageDraftInvalid,
   percentageFromAmount,
@@ -71,11 +72,9 @@ export const MAX_DRAFT_QUANTITY = 1_000_000;
  *
  * Digits are normalized with the same reader the amount fields use, so an
  * Arabic-Indic `٥` bills five units instead of refusing a number the owner can
- * plainly read (#198 decision). This is the quantity draft only: the sale
- * price-override and discount inputs still read `Number` and reject
- * Arabic-Indic digits, and the initial-payment percentage reader stays
- * ASCII-only. The reader stays digits-only: no grouping separators, exactly as
- * before.
+ * plainly read (#198 decision). The sale price-override and discount inputs now
+ * share that reader too (#210), so the same typed value resolves in every field.
+ * The reader stays digits-only: no grouping separators, exactly as before.
  */
 export function parseQuantityDraft(draft: string): number {
   const trimmed = normalizeArabicIndicDigits(draft).trim();
@@ -173,9 +172,9 @@ export function firstCommitError<T extends DraftLine>(checks: CommitChecks<T>): 
   return null;
 }
 
-/** A non-negative numeric draft, or `fallback` when it is unreadable. */
+/** A non-negative numeric draft in either digit script, or `fallback` when it is unreadable. */
 export function nonNegativeOr(value: string, fallback: number): number {
-  const parsed = Number(value);
+  const parsed = parseLooseNumber(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
@@ -200,7 +199,7 @@ export function saleUnitPrice(line: SaleDraftLine): number {
 export function saleOverrideInvalid(line: Pick<SaleDraftLine, "overrideType" | "overrideValue">): boolean {
   if (line.overrideType === "") return false;
   if (line.overrideValue.trim() === "") return true;
-  const value = Number(line.overrideValue);
+  const value = parseLooseNumber(line.overrideValue);
   if (!Number.isFinite(value)) return true;
   if (line.overrideType === "AMOUNT") return !Number.isInteger(value) || value < 0;
   return !Number.isInteger(value) || value < 0 || value > 100;

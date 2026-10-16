@@ -13,7 +13,7 @@ import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
 import { cn } from "@/lib/utils";
-import { parseGroupedAmount, percentageDraftInvalid } from "@/lib/amount-parse";
+import { parseGroupedAmount, parseLooseNumber, percentageDraftInvalid } from "@/lib/amount-parse";
 import {
   draftTotals,
   firstCommitError,
@@ -248,7 +248,7 @@ export function SalePage() {
     // before the values derived from them: a cleared quantity or an over-100%
     // discount zeroes the total, and a payment typed against the old total
     // would otherwise fail the amount-vs-total check and mask the real problem.
-    const parsedDiscount = Number(discountValue);
+    const parsedDiscount = parseLooseNumber(discountValue);
     const discountInvalid =
       discountType !== "" &&
       (!Number.isFinite(parsedDiscount) ||
@@ -276,7 +276,7 @@ export function SalePage() {
         quantity: parseQuantityDraft(line.quantityDraft),
       };
       if (line.overrideType !== "") {
-        invoiceLine.priceOverride = { type: line.overrideType, value: Number(line.overrideValue) };
+        invoiceLine.priceOverride = { type: line.overrideType, value: parseLooseNumber(line.overrideValue) };
       }
       return invoiceLine;
     });

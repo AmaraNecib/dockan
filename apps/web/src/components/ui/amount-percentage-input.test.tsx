@@ -111,6 +111,15 @@ describe("amount/percentage linked math (#162)", () => {
     expect(percentageEdited(9_999, "1000")).toEqual({ amount: "9999", percentage: "100" });
   });
 
+  it("links Arabic-Indic percentage digits like their ASCII value, including the over-100 clamp (#210)", () => {
+    expect(percentageEdited(30_000, "٥٠")).toEqual({ amount: "15000", percentage: "٥٠" });
+    expect(percentageEdited(30_000, "۱۰۰")).toEqual({ amount: "30000", percentage: "۱۰۰" });
+    // the clamp fallback must normalise too: raw Number("١٥٠") is NaN, which
+    // would otherwise leave the draft unclamped and the amount empty
+    expect(percentageEdited(30_000, "١٥٠")).toEqual({ amount: "30000", percentage: "100" });
+    expect(percentageEdited(30_000, "150")).toEqual(percentageEdited(30_000, "١٥٠"));
+  });
+
   it("flags a non-empty invalid percentage draft so callers cannot treat it as blank", () => {
     expect(percentageDraftInvalid("12.5")).toBe(true);
     expect(percentageDraftInvalid("abc")).toBe(true);

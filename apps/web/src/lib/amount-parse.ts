@@ -2,9 +2,9 @@
  * #180 — the single grouped-amount parser shared by every money input.
  *
  * `parseWholeAmount` / `parseWholePercentage` are the strict digits-only
- * readers; `parseGroupedAmount` additionally accepts valid 3-digit thousands
- * grouping (comma, whitespace, Arabic thousands separator) and Arabic-Indic
- * digits, and REJECTS decimals and malformed separators instead of deleting a
+ * readers (either digit script, #210); `parseGroupedAmount` additionally accepts
+ * valid 3-digit thousands grouping (comma, whitespace, Arabic thousands
+ * separator), and REJECTS decimals and malformed separators instead of deleting a
  * separator and returning a different number (the reported `1 000,00` → 100000
  * silent 100× bug). The bulk opening balance and the single-entry money fields
  * both use this one reader, so a grouped string can never mean two numbers.
@@ -20,8 +20,8 @@ const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
  * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
  * form and leave every other character untouched. One normalizer for the amount
  * and invoice-draft readers, so a digit one accepts the other cannot reject (the
- * #198 quantity/amount mismatch). It does NOT widen the readers that stay
- * ASCII-only on purpose (`parseWholeAmount`, `parseWholePercentage`).
+ * #198 quantity/amount mismatch). Every money reader in this module normalises
+ * through it, so a value typed in either script reads the same (#210).
  */
 export function normalizeArabicIndicDigits(draft: string): string {
   return draft
@@ -29,21 +29,36 @@ export function normalizeArabicIndicDigits(draft: string): string {
     .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
 }
 
-/** A digits-only whole-DZD draft, or null when it is not a usable integer. */
+/**
+ * A digits-only whole-DZD draft in either digit script, or null when it is not
+ * a usable integer. The ASCII read is unchanged: `normalizeArabicIndicDigits`
+ * leaves every ASCII code point untouched.
+ */
 export function parseWholeAmount(draft: string): number | null {
-  const trimmed = draft.trim();
+  const trimmed = normalizeArabicIndicDigits(draft).trim();
   if (trimmed === "" || !/^\d+$/u.test(trimmed)) return null;
   const value = Number(trimmed);
   return Number.isSafeInteger(value) ? value : null;
 }
 
-/** A digits-only 0..100 whole-percentage draft, or null when unusable. */
+/** A digits-only 0..100 whole-percentage draft in either digit script, or null when unusable. */
 export function parseWholePercentage(draft: string): number | null {
-  const trimmed = draft.trim();
+  const trimmed = normalizeArabicIndicDigits(draft).trim();
   if (trimmed === "" || !/^\d+$/u.test(trimmed)) return null;
   const value = Number(trimmed);
   if (!Number.isSafeInteger(value) || value > 100) return null;
   return value;
+}
+
+/**
+ * The permissive numeric read the sale override/discount drafts always used
+ * (`Number(draft)`), with digits normalized first. It is deliberately NOT a
+ * strict reader: `1e3`, `0x10`, `12.5`, and `"" → 0` keep the behaviour they had,
+ * so widening the digit script cannot tighten an ASCII value. Only the digit
+ * script moves; ASCII input is `Number(draft)` untouched.
+ */
+export function parseLooseNumber(draft: string): number {
+  return Number(normalizeArabicIndicDigits(draft));
 }
 
 /**

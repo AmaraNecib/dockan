@@ -1,4 +1,4 @@
-# Design: #226 — affected-only e2e on PR, and gate rust on desktop paths
+# Design: #226 — affected-only e2e on PR, and gate rust on the diff
 
 **Tier:** Standard (CI / workflow / test / docs).
 **Base:** `origin/develop` @ `a52084d` (the lane branch is cut from it).
@@ -40,7 +40,7 @@ for the `changes` CI job.
 ## Workflow shape
 
 - New `changes` job (ubuntu, ~10 s): fetch-depth 0, diff
-  `merge-base(base, head)..head`, run the selector, and compute a `desktop`
+  `merge-base(base, head)..head`, run the selector, and compute a `rust`
   output with one `grep -E`.
 - `checks`: unchanged, plus a production `vite build`. The web build used to
   ride along in the `rust` job; gating rust off web-only diffs would otherwise
@@ -48,8 +48,11 @@ for the `changes` CI job.
   `turbo test` only builds workspace dependencies).
 - `e2e`: `needs: changes`, `if: e2e_mode != 'skip'`, expands `E2E_SPECS` into
   `bun run test:e2e $E2E_SPECS`.
-- `rust`: `needs: changes`, `if: desktop == 'true'`. Still `windows-latest`.
-- Triggers: `pull_request`/`push`/`workflow_dispatch` as today, **no**
+- `rust`: `needs: changes`, `if: rust != 'false'`. Still `windows-latest`.
+  `rust` is true for the crate, its scripts, and the sidecar inputs `build.rs`
+  fingerprints (`apps/api/**`, `packages/contracts/**`, `bun.lock`, the root
+  `tsconfig.base.json` and `package.json`).
+- Triggers: `pull_request`/`push`/`workflow_dispatch`, **no**
   trigger-level `paths`/`paths-ignore`. A trigger filter would delete `checks`
   on a docs-only PR and trap a required status check; the `changes` job decides
   scope per suite instead.
@@ -64,7 +67,7 @@ for the `changes` CI job.
   currently pins "no job-level `if:` on rust" and the exact e2e pipeline
   `bun run test:e2e 2>&1 | tee …`. The new design gates rust by path and adds
   `$E2E_SPECS`. The #197 evidence guarantees and the crate-dir/toolchain/OS
-  assertions are preserved; a new assertion pins the desktop detector to the
+  assertions are preserved; a new assertion pins the rust detector to the
   crate paths.
 - One real spec end to end: `bun run test:e2e tests/e2e/expense-reports.spec.ts`.
 

@@ -52,10 +52,15 @@ export function globToRegExp(pattern: string): RegExp {
 const commented = (patterns: string[]) => patterns.filter((p) => !p.startsWith("$comment"));
 
 export function loadMap(path = MAP_PATH): SelectionMap {
-  // SAFETY: the map is a checked-in artifact and `scripts/e2e-selection.test.ts`
-  // validates its shape on every run; a malformed file throws here rather than
-  // classifying a path as mapped.
-  return JSON.parse(readFileSync(path, "utf8")) as SelectionMap;
+  // SAFETY: the map is a checked-in artifact and the next lines validate the
+  // shape selectSpecs reads; a mismatch throws rather than classifying a path
+  // as mapped.
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<SelectionMap>;
+  if (!Array.isArray(parsed.always_full) || !Array.isArray(parsed.skip_e2e) || !Array.isArray(parsed.features)) {
+    throw new Error(`e2e-selection map at ${path} must have always_full, skip_e2e and features arrays`);
+  }
+  // SAFETY: the three arrays checked above are the whole shape selectSpecs reads.
+  return parsed as SelectionMap;
 }
 
 export function selectSpecs(changed: string[], map: SelectionMap = loadMap()): Scope {

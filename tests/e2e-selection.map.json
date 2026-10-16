@@ -2,7 +2,7 @@
   "$comment": "Path -> Playwright spec map for the CI e2e selector. Read by scripts/e2e-selection.ts. FAIL CLOSED: a changed file that matches neither always_full, a feature rule, nor skip_e2e forces a full e2e run. Adding a spec without wiring it here fails scripts/e2e-selection.test.ts. Precedence per file is always_full -> features -> skip_e2e -> full.",
 
   "always_full": [
-    "$comment: the harness itself — changing anything here changes how every spec runs",
+    "$comment: the Playwright setup and its helpers; a change here changes how every spec runs",
     "playwright.config.ts",
     "tests/e2e/**",
     "tests/e2e-selection.map.json",
@@ -12,7 +12,7 @@
     "scripts/reset-e2e-records.mjs",
     "packages/e2e-support/**",
 
-    "$comment: build and module graph — one changed line can change how every spec is bundled",
+    "$comment: build and module graph; one changed line can change how every spec is bundled",
     "package.json",
     "bun.lock",
     "turbo.json",
@@ -22,7 +22,7 @@
     "packages/*/package.json",
     ".dokan-port",
 
-    "$comment: web entry, shared chrome and primitives — every screen renders through these",
+    "$comment: web entry, shared chrome and shared primitives; every screen renders through these",
     "apps/web/vite.config.ts",
     "apps/web/index.html",
     "apps/web/public/**",
@@ -36,7 +36,11 @@
     "apps/web/src/lib/**",
     "apps/web/src/components/print-sheet.tsx",
 
-    "$comment: the API is one router over one store — a changed line can move any screen, so no per-module rule is claimed",
+    "$comment: components imported by more than one page (catalog by items/sale/purchase, parties by parties/party-detail/sale/purchase); a rule would under-select, so they are critical",
+    "apps/web/src/components/catalog/**",
+    "apps/web/src/components/parties/**",
+
+    "$comment: the API is one router over one store; a changed line can move any screen, so no per-module rule is claimed",
     "apps/api/src/app.ts",
     "apps/api/src/main.ts",
     "apps/api/src/config.ts",
@@ -50,7 +54,7 @@
   ],
 
   "skip_e2e": [
-    "$comment: no browser surface — checks and rust still run",
+    "$comment: no browser surface; checks and rust still run",
     "**/*.md",
     "docs/**",
     ".github/**",
@@ -81,8 +85,7 @@
         "apps/web/src/pages/items.test.tsx",
         "apps/web/src/pages/categories.tsx",
         "apps/web/src/pages/stock.tsx",
-        "apps/web/src/pages/stock.test.tsx",
-        "apps/web/src/components/catalog/**"
+        "apps/web/src/pages/stock.test.tsx"
       ],
       "specs": [
         "items-flow.spec.ts",
@@ -109,7 +112,7 @@
       "specs": ["purchase-intake.spec.ts"]
     },
     {
-      "$comment": "invoice list/detail and the shared invoice header",
+      "$comment": "invoice list/detail and the shared invoice header, which the purchase page also renders",
       "match": [
         "apps/web/src/pages/invoice.tsx",
         "apps/web/src/pages/invoices.tsx",
@@ -119,7 +122,12 @@
         "apps/web/src/components/invoice-header.tsx",
         "apps/web/src/components/invoice-header.test.tsx"
       ],
-      "specs": ["invoice-payments.spec.ts", "invoice-print-a4.spec.ts", "pagination.spec.ts"]
+      "specs": [
+        "invoice-payments.spec.ts",
+        "invoice-print-a4.spec.ts",
+        "pagination.spec.ts",
+        "purchase-intake.spec.ts"
+      ]
     },
     {
       "$comment": "the printable receipt document and the invoice print route",
@@ -141,13 +149,12 @@
       "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts"]
     },
     {
-      "$comment": "customers + suppliers: list, detail, and every panel under components/parties",
+      "$comment": "customers + suppliers list and detail pages",
       "match": [
         "apps/web/src/pages/parties.tsx",
         "apps/web/src/pages/parties.test.tsx",
         "apps/web/src/pages/party-detail.tsx",
-        "apps/web/src/pages/party-detail.test.tsx",
-        "apps/web/src/components/parties/**"
+        "apps/web/src/pages/party-detail.test.tsx"
       ],
       "specs": [
         "customers.spec.ts",

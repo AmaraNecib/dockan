@@ -12,7 +12,7 @@
 # PR scope (issue 226): a `changes` job turns the diff into an e2e scope and a
 # rust on/off decision, so a docs-only or a web-only PR does not pay for the
 # Windows crate build, and a feature PR runs only the specs its paths reach.
-# The push-to-develop run stays full: it is the only run that sees the exactly
+# The push-to-develop run stays full: it is the only run that sees the exact
 # merged tree. Precedence in the map is critical -> feature -> skip -> full, so
 # a path the map does not know costs minutes, never coverage.
 name: CI
@@ -22,16 +22,10 @@ on:
     branches: [develop]
   push:
     branches: [develop]
-  # Manual escape hatch. `full` re-runs every suite whatever the diff says, so
-  # a human who distrusts the selector is never stuck; `skip` is for exercising
-  # the wiring without paying for a run.
+  # Manual escape hatch: a dispatch re-runs every suite whatever the diff says,
+  # so a human who distrusts the selector is never stuck. It carries no input,
+  # because a hand-typed scope would be an unrecorded override of the map.
   workflow_dispatch:
-    inputs:
-      e2e_mode:
-        description: How much Playwright to run
-        type: choice
-        options: [full, skip]
-        default: full
 
 # A newer push to the same ref makes the older run irrelevant.
 concurrency:
@@ -51,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      desktop: ${{ steps.decide.outputs.desktop }}
+      rust: ${{ steps.decide.outputs.rust }}
       e2e_mode: ${{ steps.decide.outputs.e2e_mode }}
       e2e_specs: ${{ steps.decide.outputs.e2e_specs }}
       e2e_reason: ${{ steps.decide.outputs.e2e_reason }}
@@ -102,7 +96,7 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ]; then
             printf 'mode=full\nspecs=\nreason=merge to develop\n' > scope.txt
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            printf 'mode=${{ inputs.e2e_mode }}\nspecs=\nreason=manual dispatch\n' > scope.txt
+            printf 'mode=full\nspecs=\nreason=manual dispatch\n' > scope.txt
           elif [ "${{ github.event_name }}" = "pull_request" ] && \
                [ "${{ contains(github.event.pull_request.labels.*.name, 'e2e:full') }}" = "true" ]; then
             # The label is the only way a person or an agent can overrule the
@@ -118,15 +112,15 @@ jobs:
           echo "e2e_mode=$mode"    >> "$GITHUB_OUTPUT"
           echo "e2e_specs=$specs"  >> "$GITHUB_OUTPUT"
           echo "e2e_reason=$reason" >> "$GITHUB_OUTPUT"
-          # `desktop` gates the crate: only a path that can end up inside it, or
-          # drive its build.rs, counts. A design note under apps/desktop/docs
-          # does not. `*` is the unknown-diff sentinel from the step above, and a
-          # manual dispatch runs the whole gate on purpose.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
-             grep -qE '^(\*|apps/desktop/(src-tauri|scripts)/|apps/desktop/package\.json$)' changed.txt; then
-            echo "desktop=true"  >> "$GITHUB_OUTPUT"
+          # `rust` gates the crate. It is true for a path that can end up inside
+          # the crate or drive its build.rs: the desktop crate, its scripts, and
+          # the sidecar inputs build.rs fingerprints (apps/api, the contracts
+          # package, bun.lock, the root tsconfig and package.json). `*` is the
+          # unknown-diff sentinel from the step above.
+          if grep -qE '^(\*|apps/desktop/(src-tauri|scripts)/.*|apps/desktop/package\.json|apps/api/(src/.*|package\.json|tsconfig\.json)|packages/contracts/.*|bun\.lock|tsconfig\.base\.json|package\.json)$' changed.txt; then
+            echo "rust=true"  >> "$GITHUB_OUTPUT"
           else
-            echo "desktop=false" >> "$GITHUB_OUTPUT"
+            echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
 
   checks:
@@ -173,7 +167,7 @@ jobs:
         run: bun run test
 
       # The production bundle used to be built only by the `rust` job. Now that
-      # rust runs for desktop paths alone, this cross-platform build keeps the
+      # rust runs for crate-affecting paths alone, this cross-platform build keeps the
       # gate: it is the only PR-time `vite build` (the e2e job runs `vite dev`,
       # and `turbo test` builds workspace dependencies, not the web app).
       - name: Build web frontend
@@ -317,14 +311,13 @@ jobs:
     needs: changes
     # 1,057 of the 2,302 billed minutes in Oct 1-16 were this job (windows at
     # 2x), and most of them ran for diffs that cannot reach the crate. This
-    # `if` is the single largest saving in the file. The `changes` job's
-    # `desktop` output is true for everything under apps/desktop/src-tauri and
-    # apps/desktop/scripts and for apps/desktop/package.json, so a crate, ACL
-    # or sidecar change still runs it; only a diff that cannot compile into the
-    # crate (web, api, docs, ci) is skipped. `!cancelled()` makes a `changes`
-    # failure fail closed: an empty `desktop` runs the crate instead of
-    # skipping it.
-    if: ${{ !cancelled() && needs.changes.outputs.desktop != 'false' }}
+    # `if` is the single largest saving in the file. The `changes` job's `rust`
+    # output is true for the crate, its scripts, and the sidecar inputs
+    # build.rs fingerprints, so a crate, ACL, sidecar or api/contracts change
+    # still runs it; only a diff that cannot compile into the crate (web, docs,
+    # ci) is skipped. `!cancelled()` makes a `changes` failure fail closed: an
+    # empty `rust` runs the crate instead of skipping it.
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
     # windows-latest on purpose: desktop-installer.yml already proves this
     # crate compiles and links there, and the Windows image ships stable Rust,
     # rustup and the WebView2 runtime. A Linux runner would need the

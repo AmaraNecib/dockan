@@ -6,18 +6,18 @@ local Guard checks in `engineering-workflow.md`.
 
 | Job | Steps |
 | --- | --- |
-| `changes` | fetch-depth-0 checkout, `git diff` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `desktop` outputs the other jobs read |
+| `changes` | fetch-depth-0 checkout, `git diff` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `rust` outputs the other jobs read |
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
-| `rust` | gated on the `changes` job's `desktop` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
+| `rust` | gated on the `changes` job's `rust` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 
 `checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
-`skip` or a non-desktop diff skips those jobs; the scope decision is echoed on
-the e2e job summary. If the `changes` job itself fails, its outputs are empty
-and both consumers read that as "run": the gates use `!cancelled()` with an
-empty-tolerant comparison, so an infra failure widens the run instead of
-silently narrowing it. A typecheck/lint/test failure and a Playwright flake are
-visible without one hiding the other.
+`skip` or a diff that cannot reach the crate skips those jobs; the scope
+decision is on the e2e job summary. If the `changes` job itself fails, its
+outputs are empty and both consumers read that as "run": the gates use
+`!cancelled()` with an empty-tolerant comparison, so an infra failure widens
+the run instead of silently narrowing it. A typecheck/lint/test failure and a
+Playwright flake are visible without one hiding the other.
 
 ## PR scope decision (issue 226)
 
@@ -30,16 +30,21 @@ merged tree, and it is the backstop that makes narrowing a PR safe.
   selected specs otherwise, and is skipped only when nothing in the diff can
   reach a browser.
 - `rust` runs when a path that can end up inside the crate, or drive its
-  `build.rs`, changed: anything under `apps/desktop/src-tauri/` or
-  `apps/desktop/scripts/`, or `apps/desktop/package.json`. It stays on
-  `windows-latest` — the ACL/`capabilities` guard is a Windows-app guard, and
-  `desktop-installer.yml` runs only on a tag, so it cannot replace a PR gate.
+  `build.rs`, changed. That is the crate itself and its scripts
+  (`apps/desktop/src-tauri/**`, `apps/desktop/scripts/**`,
+  `apps/desktop/package.json`) plus the sidecar inputs `build.rs` fingerprints
+  (`apps/api/**`, `packages/contracts/**`, `bun.lock`, `tsconfig.base.json` and
+  the root `package.json`), because `build.rs` compiles the api sidecar and
+  re-runs when those change. It stays on `windows-latest`: the
+  ACL/`capabilities` guard is a Windows-app guard, and `desktop-installer.yml`
+  runs only on a tag, so it cannot replace a PR gate.
 - The production `vite build` that used to ride along in the `rust` job moved
   into `checks`, so gating rust off web-only diffs does not also remove the only
   PR-time production build (the `e2e` job runs `vite dev`, and `turbo test`
   builds workspace dependencies, not the web app).
-- The manual `workflow_dispatch` input is `full` or `skip` and always runs the
-  `rust` job: it is the escape hatch when the selector is distrusted.
+- `workflow_dispatch` takes no input and runs every suite, including `rust`.
+  It is the escape hatch when the selector is distrusted; it deliberately has
+  no scope input, so there is no hand-typed override to record.
 
 ### Fail-closed path -> spec map
 
@@ -65,6 +70,10 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   screen; claiming a per-screen rule would be a guess.
 - `apps/web/src/components/print-sheet.tsx` is critical for the same reason: the
   invoice, receipt and return documents share its print layout.
+- `apps/web/src/components/catalog/**` and `apps/web/src/components/parties/**`
+  are critical too. The item picker is imported by the items, sale and purchase
+  pages, and the party panels by the parties, party-detail, sale and purchase
+  pages, so a single feature rule would under-select.
 - The whole of `apps/api/**` except `auth/**` is critical. The API is a single
   router over a single store; the map does not claim to trace which API module
   reaches which screen. `apps/api/src/auth/**` is the one API area with a
@@ -217,7 +226,7 @@ Two preconditions are part of the job because `build.rs` needs them before
 The job has no trigger-level `paths:` filter. A filtered trigger makes the
 *whole* workflow report "skipped", and a skipped required check never satisfies
 branch protection, so a docs-only PR would stay pending forever. Issue 226 gates
-the job on the `changes` job's `desktop` output instead, so the trigger stays
+the job on the `changes` job's `rust` output instead, so the trigger stays
 unfiltered and the job still reports on every event (it is the job that is
 skipped, not the workflow). The same caveat applies to that skipped job: if the
 owner ever makes `rust` or `e2e` a required check, the skipped run needs a

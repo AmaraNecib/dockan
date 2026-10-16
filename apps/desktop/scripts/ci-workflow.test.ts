@@ -6,7 +6,7 @@
  * comments or `echo` no-ops), that cargo runs in the crate directory, and that
  * its path gate runs it for every crate-affecting diff. Issue 226 replaced the
  * always-run trade-off with a diff decision: the trigger keeps no `paths:`
- * filter, a `changes` job computes `desktop`, and the rust job's only gate is
+ * filter, a `changes` job computes `rust`, and the rust job's only gate is
  * that output. The tests below pin the detector to the crate paths, so a
  * tightened regex cannot silently drop the guard.
  *
@@ -111,7 +111,7 @@ function jobField(source: string, jobName: string, key: string): string {
 }
 
 /** The only Rust gate #226 allows: the `changes` job's diff decision. */
-const DESKTOP_GATE = "!cancelled() && needs.changes.outputs.desktop != 'false'";
+const RUST_GATE = "!cancelled() && needs.changes.outputs.rust != 'false'";
 
 /**
  * True when a rust-job condition runs it for every crate-affecting diff.
@@ -121,9 +121,9 @@ const DESKTOP_GATE = "!cancelled() && needs.changes.outputs.desktop != 'false'";
  * `changes` failure leaves the output empty, and `!= 'false'` runs the crate in
  * that case, which is the fail-closed direction.
  */
-function isDesktopGate(condition: string): boolean {
+function isRustGate(condition: string): boolean {
   const expression = condition.replace(/^\$\{\{\s*|\s*\}\}$/gu, "").trim();
-  return expression === DESKTOP_GATE;
+  return expression === RUST_GATE;
 }
 
 describe("PR CI workflow", () => {
@@ -190,7 +190,7 @@ describe("PR CI workflow", () => {
   });
 
   it("keeps the production web build in checks", () => {
-    // #226 gates the rust job on desktop paths. The rust job used to carry the
+    // #226 gates the rust job on crate-affecting paths. The rust job used to carry the
     // only PR-time `vite build`; that gate moves to `checks`, and this pins it
     // so a later cleanup cannot drop the production build entirely.
     const checks = parseSteps(WORKFLOW_SOURCE, "checks");
@@ -326,19 +326,20 @@ describe("PR CI workflow", () => {
     // event type (`push`) would leave every step assertion above green while
     // the rust job never runs on a PR; an empty condition is the old
     // always-run behaviour. Both must fail.
-    expect(isDesktopGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
-    expect(isDesktopGate("github.event_name == 'push'")).toBe(false);
-    expect(isDesktopGate("")).toBe(false);
+    expect(isRustGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
+    expect(isRustGate("github.event_name == 'push'")).toBe(false);
+    expect(isRustGate("")).toBe(false);
     // `${{ }}` is optional YAML dressing; the expression is what must match.
-    expect(isDesktopGate("${{ " + DESKTOP_GATE + " }}")).toBe(true);
+    expect(isRustGate("${{ " + RUST_GATE + " }}")).toBe(true);
   });
 
   it("detects every crate-affecting path for the Rust gate", () => {
     const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
     const match = /grep -qE '([^']+)'/u.exec(decide.run);
-    if (match === null) throw new Error("The changes job has no desktop grep");
-    const desktopPath = new RegExp(match[1], "u");
+    if (match === null) throw new Error("The changes job has no rust grep");
+    const rustPath = new RegExp(match[1], "u");
     const cratePaths = [
+      // the crate, its ACL and its build script
       "apps/desktop/src-tauri/src/lib.rs",
       "apps/desktop/src-tauri/capabilities/default.json",
       "apps/desktop/src-tauri/permissions/vault.toml",
@@ -347,18 +348,60 @@ describe("PR CI workflow", () => {
       "apps/desktop/src-tauri/tauri.conf.json",
       "apps/desktop/scripts/sidecar.ts",
       "apps/desktop/package.json",
+      // the sidecar inputs build.rs fingerprints
+      "apps/api/src/main.ts",
+      "apps/api/package.json",
+      "apps/api/tsconfig.json",
+      "packages/contracts/src/core.ts",
+      "packages/contracts/package.json",
+      "bun.lock",
+      "tsconfig.base.json",
+      "package.json",
+      // the unknown-diff sentinel must gate rust ON (fail closed)
+      "*",
     ];
     for (const cratePath of cratePaths) {
-      expect(desktopPath.test(cratePath), `${cratePath} must mark the diff as desktop`).toBe(true);
+      expect(rustPath.test(cratePath), `${cratePath} must mark the diff as rust`).toBe(true);
     }
     for (const other of [
       "apps/web/src/pages/items.tsx",
-      "apps/api/src/rpc/router.ts",
-      "packages/contracts/src/core.ts",
+      "apps/desktop/docs/design.md",
       "docs/ci.md",
+      "README.md",
     ]) {
-      expect(desktopPath.test(other), `${other} must not mark the diff as desktop`).toBe(false);
+      expect(rustPath.test(other), `${other} must not mark the diff as rust`).toBe(false);
     }
+  });
+
+  it("keeps the fail-closed shell wiring for the diff decision", () => {
+    const changes = parseSteps(WORKFLOW_SOURCE, "changes");
+    const diff = stepNamed(changes, "Compute the changed-file list");
+    // a new branch / unknown base must assume everything changed
+    expect(diff.run).toContain("0000000000000000000000000000000000000000");
+    expect(diff.run).toContain("merge-base");
+    const decide = stepNamed(changes, "Decide the scope");
+    // the only overrule is the recorded PR label
+    expect(decide.run).toContain("e2e:full");
+    expect(decide.run).toContain("github.event.pull_request.labels");
+    // a push to develop is never narrowed; a dispatch runs full
+    expect(decide.run).toContain("merge to develop");
+    expect(decide.run).toContain("manual dispatch");
+    // a hand-typed scope would be an unrecorded override (invariant 5)
+    expect(onLines(WORKFLOW_SOURCE).join("\n")).not.toContain("inputs:");
+    // the e2e job fails closed when `changes` fails
+    const e2eIf = jobField(WORKFLOW_SOURCE, "e2e", "if");
+    expect(e2eIf).toContain("!cancelled()");
+    expect(e2eIf).toContain("e2e_mode != 'skip'");
+  });
+
+  it("parses as YAML, not only as the workflow-utils line parser", () => {
+    // workflow-utils splits lines; it would accept a stray-indent or stray
+    // colon that GitHub refuses. Bun ships a YAML parser, so parse for real.
+    // SAFETY: Bun.YAML.parse returns `unknown`; only `jobs` is read, and the
+    // assertions below pin its keys.
+    const doc = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs?: object };
+    expect(doc.jobs).toBeDefined();
+    expect(Object.keys(doc.jobs ?? {})).toEqual(["changes", "checks", "e2e", "rust"]);
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {
@@ -478,9 +521,9 @@ describe("PR CI workflow", () => {
       "        run: cargo test",
     ].join("\n");
     // the mutation is detected: a push-only condition is not the crate gate ...
-    expect(isDesktopGate(jobField(pushOnly, RUST_JOB, "if"))).toBe(false);
+    expect(isRustGate(jobField(pushOnly, RUST_JOB, "if"))).toBe(false);
     // ... and the real workflow must use the diff decision
-    expect(isDesktopGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
+    expect(isRustGate(jobField(WORKFLOW_SOURCE, RUST_JOB, "if"))).toBe(true);
   });
 
   it("does not accept a cargo test that only appears in a comment", () => {

@@ -16,12 +16,23 @@
 
 import { normalizeArabicIndicDigits } from "./amount-parse";
 
+/**
+ * Read an ALREADY-normalised non-negative whole-number draft: digits only, no
+ * sign, no exponent, no bidi mark. Callers must pass the output of
+ * `normalizeArabicIndicDigits` — the name is the ordering contract. Normalising
+ * the string again after a sign or separator has been removed is exactly how an
+ * interior mark moves to the edge and gets silently stripped (#227 round 2), so
+ * this function only tests and converts, never normalises.
+ */
+function readNormalizedDigits(draft: string): number | null {
+  if (!/^\d+$/.test(draft)) return null;
+  const parsed = Number(draft);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 /** A plain non-negative whole number: digits only (either script), no sign, no exponent. */
 export function parseWholeNumber(text: string): number | null {
-  const trimmed = normalizeArabicIndicDigits(text).trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) ? parsed : null;
+  return readNormalizedDigits(normalizeArabicIndicDigits(text).trim());
 }
 
 /**
@@ -55,9 +66,15 @@ export function resolveOpeningStock(text: string, required: boolean): OpeningSto
  * stays the ASCII `-`; only the digit script is widened (#225). */
 export function parseSignedWholeNumber(text: string): number | null {
   const trimmed = text.trim();
-  if (trimmed.startsWith("-")) {
-    const magnitude = parseWholeNumber(trimmed.slice(1));
-    return magnitude === null ? null : -magnitude;
-  }
-  return parseWholeNumber(trimmed);
+  // A mark in front of the sign keeps the raw draft unsigned, so the shared
+  // reader refuses the `-` — a safe refusal pinned since #227 round 1.
+  if (!trimmed.startsWith("-")) return parseWholeNumber(trimmed);
+  // Normalise the WHOLE signed draft, judge it, and only then remove the sign.
+  // `-` is content to `stripEdgeBidiMarks`, so a mark that is interior in the
+  // signed draft stays interior here and `readNormalizedDigits` refuses it.
+  // Slicing the sign off first and letting `parseWholeNumber` re-normalise would
+  // move that mark to the magnitude's edge and silently strip it
+  // (`"-\u200f5"` → -5) — the #227 round-2 finding.
+  const magnitude = readNormalizedDigits(normalizeArabicIndicDigits(trimmed).slice(1).trim());
+  return magnitude === null ? null : -magnitude;
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
+import { normalizeArabicIndicDigits } from "./amount-parse";
 import { parseSignedWholeNumber, parseWholeNumber, resolveOpeningStock } from "./numeric-input";
 
 /**
@@ -107,5 +108,24 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     expect(resolveOpeningStock(RLM, false)).toEqual({ ok: false, reason: "invalid" });
     // ASCII identity, unchanged
     expect(parseWholeNumber("123")).toBe(123);
+  });
+
+  it("judges the whole signed draft before dropping the sign, so an interior mark after `-` is refused (#227 round 2)", () => {
+    const RLM = "\u200f";
+    // `-` is content, so a mark between it and the digits is INTERIOR in the
+    // signed draft and the shared normaliser keeps it...
+    expect(normalizeArabicIndicDigits(`-${RLM}5`)).toBe(`-${RLM}5`);
+    // ...so the signed reader must judge the whole draft BEFORE it removes the
+    // sign. This is the ordering pin: strip the `-` first and normalise the
+    // remainder, and the now-leading mark is stripped as if it were an edge
+    // mark, so `-5` falls out of an interior-mark draft and these fail.
+    expect(parseSignedWholeNumber(`-${RLM}5`)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}\u0665`)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}\u06F5`)).toBeNull();
+    expect(parseSignedWholeNumber(`-1${RLM}000`)).toBeNull();
+    // controls: an edge mark is still stripped, and the sign still reads
+    expect(parseSignedWholeNumber(`${RLM}5`)).toBe(5);
+    expect(parseSignedWholeNumber(`-5`)).toBe(-5);
+    expect(parseSignedWholeNumber(`-\u0665`)).toBe(-5);
   });
 });

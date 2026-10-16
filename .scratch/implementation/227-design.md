@@ -224,3 +224,136 @@ mark-only draft is «nothing chosen» in both.
 - No display change: the draft string held in React state keeps the marks as
   pasted; only the reader drops the edge ones.
 - The «one blank predicate» unification above (deferred).
+
+---
+
+# Round 2 — the signed reader defeats the interior-mark rule (PR #239 Greptile)
+
+- Tier: **High-assurance** (unchanged). Justification: the reader under fix is the
+  stock movement delta (`stock.tsx` submit → `stockAddManual`), so a wrong read
+  can drive stock below zero or record a removal the owner did not type —
+  failure mode (1), the same money/quantity class round 1 recorded. The tier
+  follows the failure mode, not the diff size.
+- Base for the round's delta: PR #239 head `baa4cfa` (code head `e472d5b`); the
+  PR's merge-base with `origin/develop` is `6708324`. Round 1 fired on `develop`
+  `6708324` and `develop` has since taken `#113`; this round does not rebase —
+  the parent owns the pre-merge rebase, and rebasing would rewrite the round-1
+  commits the PR history already carries.
+- Authority: commit only. The lane does **not** push, open a PR or merge.
+
+## The finding
+
+`apps/web/src/lib/numeric-input.ts:56` (round-1 line). `parseSignedWholeNumber`
+ran `trim()` and then **stripped the `-` before normalising** the magnitude:
+
+```ts
+const trimmed = text.trim();
+if (trimmed.startsWith("-")) {
+  const magnitude = parseWholeNumber(trimmed.slice(1)); // normalises HERE
+  ...
+```
+
+`parseWholeNumber` calls the shared `normalizeArabicIndicDigits`, whose
+`stripEdgeBidiMarks` decides edge-vs-interior by the first and last *content*
+character. `-` is content, so in the signed draft `"-\u200f5"` the mark is
+interior and would be kept — but by the time the normaliser ran, the `-` had
+already been sliced off, so the mark looked leading and was stripped. The stock
+form then accepted `-5` and submitted a removal the interior-mark rule exists to
+refuse: **the rule and the code agreed on the documented case and disagreed on a
+reachable one.**
+
+Pre-fix behaviour, stated explicitly: `parseSignedWholeNumber("-\u200f5")`
+returned **`-5`** (must be `null`). Its unsigned siblings
+(`parseWholeNumber("-\u200f5")`, `parseWholeAmount`, `parseLooseNumber`) already
+refused it.
+
+## The fix
+
+Normalise the **whole signed draft** first, judge it, and only then remove the
+sign. `-` is content to `stripEdgeBidiMarks`, so a mark that was interior in the
+signed draft is still interior when the shared normaliser runs, and the strict
+digits test refuses it. The magnitude is read through a new private
+`readNormalizedDigits` that only tests and converts — it never normalises — so
+the edge strip cannot run a second time on a string whose sign has just left. One
+normaliser remains; `readNormalizedDigits` is a read, not a second normaliser.
+
+`parseWholeNumber` now delegates to the same `readNormalizedDigits`
+(`readNormalizedDigits(normalizeArabicIndicDigits(text).trim())`), so there is
+still exactly one strict-read implementation and no drift.
+
+What is deliberately **not** changed: a mark *in front of the sign*
+(`"\u200f-٥"`) stays refused. Round 1 pinned that as a safe refusal, and
+accepting it would be a separate behaviour change (an edge mark before a sign)
+that wants its own browser proof of display order. This round only re-classifies
+interior marks; it does not widen the strip and it does not widen acceptance
+beyond the finding.
+
+## Class sweep — every reader that splits, trims or removes before normalising
+
+`stripEdgeBidiMarks` keys edge-vs-interior on the first/last **content**
+position, where content is “not whitespace and not a mark”. A pre-step turns an
+interior mark into an edge mark only if it removes **content** from one side of
+it. Whitespace is not content, so `.trim()` before normalising cannot re-parent a
+mark; a removed **sign** or **separator** is content and can.
+
+| reader / call site | pre-normalisation step | affected? | why |
+| --- | --- | --- | --- |
+| `parseSignedWholeNumber` (`numeric-input.ts`) | `startsWith("-")` + `slice(1)` | **YES — fixed** | removes the content `-` before normalising, re-parenting an interior mark to the magnitude edge |
+| `parseWholeNumber` (`numeric-input.ts`) | `.trim()` after normalise | no | trim drops only whitespace (non-content); normalisation runs on the whole draft |
+| `parseWholeAmount` / `parseWholePercentage` (`amount-parse.ts`) | `.trim()` after normalise | no | same |
+| `parseLooseNumber` (`amount-parse.ts`) | none (`Number(normalize(...))`) | no | normalises the whole draft; an interior mark survives as `Cf` and `Number` yields `NaN` |
+| `parseGroupedAmount` (`amount-parse.ts`) | `.trim()`; `STRIP_GROUPING` | no | separator removal runs **after** the grouping regex has already rejected any draft containing a mark, so it never sees one |
+| `percentageDraftInvalid` (`amount-parse.ts`) | `draft.trim()` blank test | no | whitespace only; `parseWholePercentage` still normalises the whole draft |
+| `parseQuantityDraft` (`invoice-draft.ts`) | `.trim()` after normalise | no | same as `parseWholeNumber` |
+| `draftBlank` (`invoice-draft.ts`) | `.trim()` after normalise | no | same |
+| `nextUnitCost` (`invoice-draft.ts`) | none — `parseLooseNumber` | no | round 1's one *value* change (mark-only → cleared-field zero) stands, disclosed + pinned; the ordering class does not reach it |
+| `resolveOpeningStock` (`numeric-input.ts`) | `text.trim()` before `parseWholeNumber` | no | trims whitespace only; `parseWholeNumber` normalises the whole remainder, and a sign is never split |
+| page wrappers (`invoice.tsx`, `items.tsx`, `sale.tsx`, `supplier-opening-draft.ts`) | `.trim()` blank checks / `.trim()` before a reader | no | whitespace only; the readers still normalise their whole input |
+| `.replace()` before a money read | none in a money reader | no | the only pre-normalisation `replace` is `STRIP_GROUPING` (after validation); the `auth-client.ts` `\D` strip is the phone reader, out of scope |
+
+**Result of the sweep: exactly one affected reader, `parseSignedWholeNumber`.**
+Its only production consumer is the stock movement delta in
+`apps/web/src/pages/stock.tsx` (submit + the removal/cost-field switch), which is
+why the tier stays High-assurance.
+
+## Planned tests
+
+- `apps/web/src/lib/numeric-input.test.ts` — a dedicated ordering pin:
+  - `normalizeArabicIndicDigits("-\u200f5")` **keeps** the mark (proof it was
+    interior to the signed draft), and
+  - `parseSignedWholeNumber("-\u200f5")` is `null` for both Arabic digit scripts
+    and a grouped interior mark,
+  - positive controls: an edge mark still strips (`"\u200f٥"` → 5), `-5` and
+    `-٥` still read.
+  The value assertion is the *ordering* detector: re-create the old two-step
+  order and it fails with `-5` where `null` is required.
+- No new e2e: the affected consumer (stock form) has no flow in
+  `sale-checkout.spec.ts`; the round's verification re-runs that spec to prove the
+  shared readers did not move. The unit pin is the regression gate.
+
+## Implementation risks
+
+- **A second normalisation hiding the first.** The whole risk is that some path
+  still normalises after the sign/separator comes off. `readNormalizedDigits`
+  is named for the contract and is the only strict read; a comment on
+  `parseSignedWholeNumber` states the ordering, and the mutation proof shows the
+  pin fails when it is violated.
+- **Behaviour drift on `"- 5"`.** The magnitude still `.trim()`s, so the
+  pre-existing acceptance of a space between sign and digits is preserved.
+- **The round-1 leading-edge refusal.** Preserved deliberately (see above), so no
+  existing round-1 pin is weakened.
+
+## Mutation proof (plan; observed results go in the evidence file)
+
+1. Re-create the round-1 order in `parseSignedWholeNumber`
+   (`parseWholeNumber(trimmed.slice(1))` after `startsWith("-")`).
+2. Run `bun test apps/web/src/lib/numeric-input.test.ts`.
+3. Show the ordering pin fails with `-5` vs `null` and the reason.
+4. Revert; confirm `git status` clean and the suite green.
+
+## Deliberately out of scope (round 2)
+
+- `\u200f-٥` (edge mark before a sign) stays a refusal; accepting it is its own
+  behaviour change with an RTL display-order proof.
+- The round-1 «one blank predicate» deferral (`percentageDraftInvalid`,
+  `resolveInitialPaid`) is unchanged.

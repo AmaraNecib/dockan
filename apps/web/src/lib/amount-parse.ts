@@ -20,13 +20,18 @@ const STRIP_GROUPING = /[,\s\u066C\u00A0]/gu;
 const ARABIC_INDIC_DIGITS = /[\u0660-\u0669]/gu;
 const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
 /**
- * The Unicode `Bidi_Control` characters — the zero-width marks whose only job is
- * to order a run of text: U+061C (ALM), U+200E/U+200F (LRM/RLM) and the explicit
- * embeddings/isolates U+202A..U+202E, U+2066..U+2069. A number copied out of
- * RTL text carries one (#227). None is a digit, a sign, a grouping or a decimal
- * separator, so a money draft can never legitimately contain one.
+ * The invisible bidi marks a paste carries that cannot change *which* number the
+ * owner typed (#227): U+061C (ALM), U+200E/U+200F (LRM/RLM), the embeddings
+ * U+202A..U+202C (LRE/RLE/PDF) and the isolates U+2066..U+2069 (LRI/RLI/FSI/PDI).
+ *
+ * The directional *overrides* U+202D (LRO) and U+202E (RLO) are deliberately
+ * NOT here: an override displays a run in forced order, so the logical digit
+ * characters a paste carries can differ from the number the owner saw (#227
+ * review). A draft containing one still fails the strict readers — a safe
+ * refusal, never a different number. Note also that a mark is zero-width: none
+ * is a digit, a sign, a grouping or a decimal separator.
  */
-const BIDI_CONTROL = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
+const PASTED_BIDI_MARKS = /[\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/gu;
 
 /**
  * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
@@ -39,7 +44,7 @@ const BIDI_CONTROL = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
  */
 export function normalizeArabicIndicDigits(draft: string): string {
   return draft
-    .replace(BIDI_CONTROL, "")
+    .replace(PASTED_BIDI_MARKS, "")
     .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
     .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
-import { normalizeArabicIndicDigits, parseGroupedAmount, parseLooseNumber, parseWholeAmount, parseWholePercentage } from "./amount-parse";
+import { normalizeArabicIndicDigits, parseGroupedAmount, parseLooseNumber, parseWholeAmount, parseWholePercentage, percentageDraftInvalid } from "./amount-parse";
 
 /**
  * #180 — the single grouped-amount parser. Both the bulk opening-balance rows
@@ -165,8 +165,8 @@ describe("Arabic-Indic digits in the money readers (#210)", () => {
 
 /**
  * #227 — a number copied out of RTL text commonly carries an invisible
- * directional mark (RLM/LRM/ALM). The shared normalizer drops the Unicode
- * `Bidi_Control` set before a reader trims, so the paste reads like the typed
+ * directional mark (RLM/LRM/ALM). The shared normalizer drops the invisible
+ * pasted bidi marks before a reader trims, so the paste reads like the typed
  * value. The marks are BUILT here (never typed as an invisible literal, which
  * would be unreadable in source) because that is how the owner really gets the
  * string: the clipboard, not the keyboard.
@@ -177,25 +177,26 @@ describe("bidi formatting marks in the money readers (#227)", () => {
   const ALM = "\u061c";
   /** The paste shape: a mark glued to the draft, front, middle or back. */
   const pasted = (mark: string, draft: string) => `${mark}${draft}`;
-  /** Every code point with the Unicode `Bidi_Control` property, by name. */
-  const BIDI_CONTROL_POINTS: ReadonlyArray<readonly [name: string, mark: string]> = [
+  /**
+   * Every mark the strip drops, by name. The directional overrides LRO/RLO are
+   * deliberately absent — see the boundary test below.
+   */
+  const STRIPPED_BIDI_MARKS: ReadonlyArray<readonly [name: string, mark: string]> = [
     ["ALM", "\u061c"],
     ["LRM", "\u200e"],
     ["RLM", "\u200f"],
     ["LRE", "\u202a"],
     ["RLE", "\u202b"],
     ["PDF", "\u202c"],
-    ["LRO", "\u202d"],
-    ["RLO", "\u202e"],
     ["LRI", "\u2066"],
     ["RLI", "\u2067"],
     ["FSI", "\u2068"],
     ["PDI", "\u2069"],
   ];
 
-  it("normalizeArabicIndicDigits drops every Bidi_Control mark, each named code point included", () => {
-    // a loop over the property, not a sample: a typo'd range boundary fails here
-    for (const [name, mark] of BIDI_CONTROL_POINTS) {
+  it("normalizeArabicIndicDigits drops every pasted bidi mark, each named code point included", () => {
+    // a loop over the set, not a sample: a typo'd range boundary fails here
+    for (const [name, mark] of STRIPPED_BIDI_MARKS) {
       expect([name, normalizeArabicIndicDigits(`${mark}١٢٣${mark}`)]).toEqual([name, "123"]);
     }
     expect(normalizeArabicIndicDigits(pasted(RLM, "٥"))).toBe("5");
@@ -208,8 +209,8 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(normalizeArabicIndicDigits("")).toBe("");
   });
 
-  it("leaves a non-Bidi_Control invisible alone, so the strip's boundary is pinned", () => {
-    // ZWSP, word-joiner and BOM are format characters but NOT Bidi_Control;
+  it("leaves an invisible outside the set alone, so both strip boundaries are pinned", () => {
+    // ZWSP, word-joiner and BOM are format characters but not pasted bidi marks;
     // widening the strip to the whole Cf category would start deleting these
     // and must fail. (BOM is separately dropped by `trim()`, which is ES
     // WhiteSpace — that is pre-existing, not this strip.)
@@ -221,6 +222,14 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     // BOM survives the strip but `trim()` drops it (ECMAScript WhiteSpace), so
     // it reads through the pre-existing path — this strip is not what handles it
     expect(parseWholeAmount("\ufeff5")).toBe(5);
+    // LRO/RLO are Bidi_Control but can display a run in forced (reversed) order,
+    // so the logical characters a paste carries may differ from what the owner
+    // saw. They stay: a draft carrying one is refused, never mis-read.
+    expect(normalizeArabicIndicDigits("\u202d")).toBe("\u202d");
+    expect(normalizeArabicIndicDigits("\u202e")).toBe("\u202e");
+    expect(parseWholeAmount("\u202e123")).toBeNull();
+    expect(parseWholeAmount("\u202d123")).toBeNull();
+    expect(parseWholeAmount("\u202e٥")).toBeNull();
   });
 
   it("parseWholeAmount reads a pasted amount at the front, middle and back, and is ASCII-identical", () => {
@@ -263,6 +272,10 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholePercentage(pasted(RLM, "٥٠٫٥"))).toBeNull();
     // a mark-only draft is not a percentage either
     expect(parseWholePercentage(RLM)).toBeNull();
+    // and the caller-level percentage guard still refuses it (a pre-existing
+    // raw-trim guard, deliberately left for the deferred «one blank predicate»
+    // ticket — pinned here so the deferral is visible, not silent)
+    expect(percentageDraftInvalid(RLM)).toBe(true);
     // the ASCII path is unchanged
     expect(parseWholePercentage("100")).toBe(100);
     expect(parseWholePercentage(pasted(RLM, "100"))).toBe(parseWholePercentage("100"));

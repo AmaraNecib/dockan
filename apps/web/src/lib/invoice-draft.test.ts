@@ -165,11 +165,27 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
     expect(saleOverrideInvalid(override)).toBe(false);
     expect(discountAmountFor(1000, "AMOUNT", pasted("١٠٠"))).toBe(100);
     expect(resolveInitialPaid(1000, pasted("٢٠٠"), "")).toEqual({ ok: true, paid: 200 });
+    // the percentage branch of the price is pinned with a mark too, not only the
+    // AMOUNT branch: 10% of the default 1000
+    const percentage: SaleDraftLine = { ...saleLine("a"), overrideType: "PERCENTAGE", overrideValue: pasted("١٠") };
+    expect(saleOverrideInvalid(percentage)).toBe(false);
+    expect(saleUnitPrice(percentage)).toBe(100);
     // a mark-only discount is a zero discount, i.e. the same as none chosen —
     // the discount has no «free line» hole, so accepting it cannot bill wrongly
     expect(discountAmountFor(1000, "AMOUNT", RLM)).toBe(0);
     // the same drafts without the mark stay what they already were
     expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
+  });
+
+  it("pins the pre-existing refusals a mark-only draft still gets (#227)", () => {
+    // Not the free-line hole: these guards are raw-trim and refuse. Pinned so the
+    // deferred «one blank predicate» ticket has a starting point, and so a future
+    // edit cannot flip them silently. The unit-cost field is outside the
+    // normalizer entirely (#225) and keeps its previous value either way.
+    expect(resolveInitialPaid(1000, RLM, "")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, ` ${RLM} `, "")).toEqual({ ok: false });
+    expect(nextUnitCost(`\u200f400`, 1200)).toBe(1200);
+    expect(nextUnitCost("٥٠٠", 1200)).toBe(1200);
   });
 
   it("treats a mark-only override as «nothing chosen», never a free line (#227)", () => {

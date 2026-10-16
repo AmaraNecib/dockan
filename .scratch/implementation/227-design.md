@@ -12,7 +12,7 @@
   while this lane ran**, so the brief's stack base (`origin/fix-210-arabic-indic-money`
   @ `afe15fe`) is no longer the base: the three lane commits were rebased onto
   the current `origin/develop` (merge-base with the old base is `a52084d1`).
-  Overlap analysis: `git diff origin/develop...HEAD` touches only the 7 #227
+  Overlap analysis: `git diff origin/develop...HEAD` touches only the 6 #227
   files; no #229-owned file is re-touched, and `develop` contains neither
   `BIDI_CONTROL` nor `draftBlank`, so nothing is duplicated from the merged
   #210/#229 content.
@@ -62,45 +62,57 @@ the `#225` lane that edits the same readers.
 
 ## Which marks, and why stripping is safe
 
-Strip every code point with the Unicode `Bidi_Control` property — the characters
-whose *only* purpose is to change the rendering order of text:
+Strip the zero-width directional marks a paste carries that cannot change
+*which* number the owner typed:
 
 - U+061C ARABIC LETTER MARK (ALM)
 - U+200E LEFT-TO-RIGHT MARK (LRM)
 - U+200F RIGHT-TO-LEFT MARK (RLM)
-- U+202A..U+202E (LRE, RLE, PDF, LRO, RLO) — embeddings/overrides
+- U+202A..U+202C (LRE, RLE, PDF) — embeddings and their terminator
 - U+2066..U+2069 (LRI, RLI, FSI, PDI) — isolates
 
-The brief named at least ALM/LRM/RLM; the explicit embeddings and isolates are
-the same kind of character (zero-width, invisible, directional-only), produced
-by bidi-aware editors (Word/Excel/PDF copy) rather than by a keyboard. The
-safety argument below applies to them unchanged, so excluding them would leave
-the same paste bug reachable through a different code point. Widening costs
-nothing: none of these can be a digit, a sign, a group separator or a decimal
-separator.
+The brief named at least ALM/LRM/RLM; the embeddings, PDF and isolates are the
+same kind of character (zero-width, invisible, directional-only), produced by
+bidi-aware editors (Word/Excel/PDF copy) rather than by a keyboard. For all ten
+the safety argument below holds unchanged, so excluding them would leave the
+same paste bug reachable through a different code point.
 
-**No legitimate money draft contains any of them.** A money draft is digits (one
-of three scripts), an optional `-`, grouping separators (`,` whitespace, U+066C
-Arabic thousands separator, U+00A0) and a decimal separator (`.` or U+066B) —
-plus, on the loose reader, the `e`/`x`/`.` of `Number()`'s grammar. Every one of
-those is a *visible* character; a `Bidi_Control` code point renders as nothing
-and only exists to order a run of text. It therefore cannot be typed as part of
-a number and can only be paste noise, so silently dropping it cannot turn one
-owner's number into a different number — it can only turn a refusal into the
-read the owner intended. Stripping is silent, with no warning, on that argument.
+**Excluded on purpose: the directional overrides U+202D (LRO) and U+202E
+(RLO).** They are `Bidi_Control` too, but an override renders the following run
+in *forced* order, so a digit run inside one is displayed reversed (`123` shows
+as `321`) while the logical characters a paste carries are still `123`. Dropping
+the override would read a different number from the one the owner saw — exactly
+the failure this ticket exists to remove. So they stay: a draft carrying one
+fails the strict readers, a safe refusal, never a different number. (This is the
+one narrowing the first review round surfaced; the earlier draft stripped all
+twelve `Bidi_Control` code points and claimed number-preservation for all of
+them.)
+
+**No legitimate money draft contains any of the ten.** A money draft is digits
+(one of three scripts), an optional `-`, grouping separators (`,` whitespace,
+U+066C Arabic thousands separator, U+00A0) and — on the loose reader only — the
+`e`/`x`/`.` of `Number()`'s grammar. Every one of those is a *visible*
+character; any of the ten marks renders as nothing and only exists to order a run
+of text. It therefore cannot be typed as part of a number and can only be paste
+noise, so silently dropping it cannot turn one owner's number into a different
+number — it can only turn a refusal into the read the owner intended. Stripping
+is silent, with no warning, on that argument.
 
 Deliberately **not** stripped:
 
+- U+202D LRO and U+202E RLO: `Bidi_Control`, but they can reverse the displayed
+  run — see above. Refused, not removed.
 - U+200B ZERO WIDTH SPACE, U+2060 WORD JOINER and U+FEFF (ZWNBSP/BOM):
-  invisible format characters, but not directional (`Bidi_Control` is false), so
-  they are outside this ticket's scope. ZWSP/WJ still fail the strict readers —
-  a safe refusal, never a wrong number. U+FEFF also fails the *strip*, but it is
-  ECMAScript `WhiteSpace`, so `String.prototype.trim()` already dropped it before
-  #227; that read-through is pre-existing and pinned, not something this strip
-  handles.
-- U+00A0 NBSP and U+066C/U+066B: legitimate separators, already the reader's
-  grammar; stripping them here would delete a real separator and invent a
-  different number.
+  invisible format characters, but not `Bidi_Control`, so they are outside this
+  ticket's scope. ZWSP/WJ still fail the strict readers — a safe refusal, never a
+  wrong number. U+FEFF also survives the *strip*, but it is ECMAScript
+  `WhiteSpace`, so `String.prototype.trim()` already dropped it before #227; that
+  read-through is pre-existing and pinned, not something this strip handles.
+- U+00A0 NBSP and U+066C: legitimate grouping separators in the reader's
+  grammar. U+066B (Arabic decimal separator) is a *visible* numeric separator, not
+  a bidi mark, so stripping it would delete a real separator and invent a
+  different number (`٥٫٥` → `55`) — no reader accepts it today, but that is a
+  refusal, not a licence to delete it.
 
 ## Interfaces / dependencies
 
@@ -114,12 +126,13 @@ chosen» in both — see the Risks section.
 ## Planned tests
 
 1. `apps/web/src/lib/amount-parse.test.ts` — a new `#227` describe:
-   - `normalizeArabicIndicDigits` drops each of the twelve `Bidi_Control` code
-     points (a loop, so a typo'd range cannot pass) and leaves a mark-free draft
-     byte-identical (ASCII identity, and the legitimate `1٬000` unchanged).
-   - a negative boundary: non-`Bidi_Control` invisibles (U+200B ZWSP, U+2060
-     word joiner, U+FEFF BOM) are left untouched, so a future widening to
-     `\p{Cf}` fails a pin. U+FEFF is additionally pinned as *reading through*
+   - `normalizeArabicIndicDigits` drops each of the ten stripped marks (a loop,
+     so a typo'd range cannot pass) and leaves a mark-free draft byte-identical
+     (ASCII identity, and the legitimate `1٬000` unchanged).
+   - both strip boundaries: non-`Bidi_Control` invisibles (U+200B ZWSP, U+2060
+     word joiner, U+FEFF BOM) and the LRO/RLO overrides U+202D/U+202E are left
+     untouched, so a future widening to `\p{Cf}` or to the full property fails a
+     pin. U+FEFF is additionally pinned as *reading through*
      (`parseWholeAmount("\ufeff5")` = 5) because it is ECMAScript `WhiteSpace`
      and `trim()` — not this strip — drops it.
    - each reader: `parseWholeAmount`, `parseWholePercentage`,
@@ -145,7 +158,7 @@ chosen» in both — see the Risks section.
 
 ## Implementation risks
 
-- **Over-stripping.** Bounded by the `Bidi_Control` set: no marked code point is
+- **Over-stripping.** Bounded by the ten-mark set: no stripped code point is
   part of any reader's grammar, and the negative controls above prove the strip
   cannot legalise a draft whose *visible* text is malformed grouping or a
   mark-only draft. (An embedded mark inside `1,<mark>000` does read as `1000` —
@@ -172,7 +185,7 @@ chosen» in both — see the Risks section.
   payment path (mark-only would become «nothing paid now»), so it wants its own
   ticket rather than a #227 side effect. `draftBlank` is the seed of that
   predicate and its doc comment says so.
-- **ASCII identity.** The strip only ever removes a `Bidi_Control` code point;
+- **ASCII identity.** The strip only ever removes one of the ten marks;
   `normalizeArabicIndicDigits("123")` is `"123"` and every existing ASCII pin is
   re-run unchanged.
 - **Mutation proof.** Manual and local-only: revert the strip, observe the #227
@@ -186,5 +199,9 @@ chosen» in both — see the Risks section.
   readers" scope, not this strip; no reader changes here.
 - `parseWholeNumber` / `parseSignedWholeNumber` in `lib/numeric-input.ts`
   (opening-stock fields) — same #225 boundary.
+- The quick-add price drafts (`sale.tsx` `Number(fields.cost/sell)`, `purchase.tsx`
+  `Number(fields.unitCost/sellPrice)`) are ASCII-only money drafts that bypass the
+  normalizer, so a pasted Arabic-Indic or marked value does not reach them. Same
+  #225 boundary; named so the partial coverage is visible, not implied.
 - No display change: the draft string held in React state keeps the marks as
   pasted; only the reader strips them.

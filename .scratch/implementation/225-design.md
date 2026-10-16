@@ -10,8 +10,11 @@ it moves no money arithmetic, no rounding, and no schema, so the High-assurance
 triggers (money-value math, auth, schema bump) do not fire. It touches invoice
 quantity/amount *drafts*, not the money math that prices them.
 
-Base (stack): `origin/fix-210-arabic-indic-money` @ `afe15fe` — PR #229's head,
-per the brief. Do **not** rebase onto `develop`.
+Base: `origin/develop` @ `c3f8544` — #229 landed on `develop` (squashed as
+`acc0071`) while this branch was in review, so the branch was rebased onto
+develop (its four commits cherry-picked cleanly; none of the 17 files it touches
+differ between the old `afe15fe` base and current `develop`, so there is no #229
+overlap to drop). It is now an ordinary PR against `develop`, not a stack.
 
 ## Reader inventory (enumerated from the code, not the brief)
 
@@ -42,7 +45,7 @@ Deliberately **out of scope** (not money/quantity readers; recorded, not fixed):
 - `apps/web/src/components/parties/party-settle.ts` `invoiceSequence` — the invoice number's trailing ASCII sequence, not an owner draft.
 - `apps/web/src/pages/activity.tsx` `Number(debt)` — a value already parsed by the API, not a draft.
 - `apps/web/src/lib/vault-client.ts` `Number.parseInt(raw, 10)` — a stored port/token read, not an owner-typed amount.
-- the Arabic decimal separator `٫` (U+066B) and Arabic thousands separator `٬` (U+066C) in the *loose* readers: #225 widens the digit *script* only, so `١٢٫٥` stays refused exactly as `12.5` is accepted by `parseLooseNumber`'s `Number` and rejected by the strict readers. Widening separators is a behaviour change the brief did not ask for and was left alone.
+- the Arabic decimal separator `٫` (U+066B) and Arabic thousands separator `٬` (U+066C) in the *loose* readers: #225 widens the digit *script* only. The loose readers keep `Number`, so ASCII `12.5` is still accepted while the Arabic-decimal twin `١٢٫٥` reads `NaN`, and the strict readers reject both. The asymmetry is deliberate — widening separators is a behaviour change the brief did not ask for and was left alone.
 
 ## Public API / the one shared reader
 
@@ -120,6 +123,15 @@ discriminating: reverting `nextUnitCost` to `Number(value)` fails
 
 Playwright: `bun run test:e2e tests/e2e/sale-checkout.spec.ts` (a single spec
 needs no lane slot) — 4 passed on ports 4357/5197.
+
+## Rebase and overlap analysis (post-#229 merge)
+
+#229 merged to `develop` after this branch was written. The branch was
+cherry-picked onto `origin/develop` @ `c3f8544`; `git diff` confirms all 17 files
+it touches are byte-identical between the reviewed base `afe15fe` and current
+`develop`, so nothing re-lands #229 and nothing of #225 duplicates it. The only
+#229 surface touched is `amount-parse.test.ts`, which merely moves its local
+digit translators into the shared `apps/web/src/tests/arabic-digits.ts`.
 
 ## Implementation risks
 

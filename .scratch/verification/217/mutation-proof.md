@@ -1,5 +1,7 @@
 # #217 mutation proof — is the cross-action test discriminating?
 
+Reviewed HEAD: `aef379d` (base `e71b2b1`; proof re-run at this SHA).
+
 The bug is latent: every write in the pre-change component is paired, so the
 two-state and single-value shapes are behaviourally identical on all reachable
 paths. Therefore the new test **cannot fail against the unmodified component** by

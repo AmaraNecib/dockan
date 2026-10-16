@@ -77,14 +77,37 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 
 ## Review tiers
 
-| Tier | Applies to | Required review |
-| --- | --- | --- |
-| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/) | Guard Phase 1 → quality check → report |
-| Standard | Code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → test-audit → code-review → guard 2 → Greptile → guard 3 |
-| High-assurance | Auth/RBAC, backup/restore, invoice & debt money calculations, security, a schema-version bump | Standard plus debate |
+**The tier follows the failure mode, never the diff size.** Ask what the change
+can break, not how many lines it touches. A 600-line PR that only adds a screen
+is Standard; a 12-line PR under `apps/api/src/auth/**` is High-assurance.
 
-High-assurance examples in Dokan: stock quantity going below zero, average-cost recomputation,
-payment amounts exceeding invoice totals, debt direction (who owes whom), auth login.
+| Tier | Decision: what the change can break | Required review |
+| --- | --- | --- |
+| Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
+| Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → test-audit → code-review → guard 2 → Greptile → guard 3 |
+| High-assurance | The diff can violate one of the named failure modes below | Standard plus debate |
+
+**High-assurance means the diff can make any of these true:**
+
+1. Stock quantity goes below zero, or an average cost is recomputed wrongly.
+2. A payment exceeds its invoice total, or a total is computed wrongly.
+3. Debt direction is wrong (who owes whom).
+4. A login, session, RBAC or secret-handling rule is bypassed.
+5. A backup/restore loses or corrupts data.
+
+Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
+schema-version bump are **examples that hint at a failure mode, never a test**.
+The same goes for paths such as `apps/api/src/auth/**` or `store/**`. A path that
+matches one of these does not by itself make a change High-assurance; a path that
+matches none does not exempt it. Money only travels through *some* store
+functions, so `store/**` is not blanket High-assurance, and naming that pattern
+would make every lane High-assurance forever. Dokan examples that exercise these
+modes: stock quantity going below zero, average-cost recomputation, payment
+amounts exceeding invoice totals, debt direction (who owes whom), auth login.
+
+Every lane **records its chosen tier and a one-line justification in its design
+doc** (`.scratch/implementation/<issue-id>-design.md`), so the choice is
+reviewable next to the verdict instead of being invisible.
 
 ## Tickets and specs
 

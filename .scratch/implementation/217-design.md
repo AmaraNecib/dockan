@@ -111,22 +111,33 @@ Unit (`apps/web/src/components/vault/vault-gate.test.tsx`, real `VaultGate`):
    behaviour change".
 
 E2E (`tests/e2e/vault.spec.ts`): extend the existing restart/unlock test (no new
-flow, no extra KDF call) to assert the passphrase stops being `aria-invalid`
-once the field-less wrong-passphrase server error replaces the field-blamed
-validation error — the cross-action transition, proved in a real browser.
+flow, no extra KDF call) with a positive control (the empty-submit refusal marks
+the field `aria-invalid`) and a negative (the field-less wrong-passphrase server
+error drops that mark). This is a same-screen behaviour pin over the real HTTP
+path, not the cross-screen #217 transition -- that is proved by the unit test
+and its mutation.
 
 ## Mutation proof (discriminating test)
 
 Because the bug is latent, the new test **cannot** fail against the unfixed
 component by construction — the two shapes produce identical behaviour while
 every write is paired. "The test passes" is therefore not evidence that it is
-discriminating. To prove it is, the drift #109 hit is reintroduced as a
-temporary mutation: the component's `fail` is changed so a fieldless call only
-writes the message, leaving the previous `errorField` in place, i.e. the exact
-two-state drift. The new cross-action test must **fail** under that mutation
-(the passphrase field would still be blamed after the fieldless server error),
-and pass again once the mutation is reverted. The exact mutation, the command
-and both results are recorded in the verification evidence.
+discriminating, and the brief's literal criterion is unsatisfiable for a
+black-box DOM test. To prove the test is discriminating anyway, the #109 drift
+is reintroduced as a temporary mutation: every field-less write is made to leave
+the previous `errorField` in place (unpaired `fail`, unpaired `run` reset, and
+both screen-change handlers), i.e. the exact two-state drift. The cross-action
+test then **fails** (`Expected "false", Received "true"`), and passes again once
+the mutation is reverted.
+
+The guard is **chain-level, not unit-level**: no isolated unpaired write fails
+the test — ablations `[A]` (`run` reset + both screen handlers) and `[B]`
+(`fail` alone) both pass, because a paired write elsewhere clears the blame. The
+minimal failing set is the chain `{fail, run-reset, use-recovery, back}`. That
+is the honest weakness: the test catches the drift shape only when the whole
+chain diverges, which is exactly what the single value makes impossible. The
+exact mutation, the ablation table and both results are recorded in
+`.scratch/verification/217/`.
 
 ## Implementation risks
 

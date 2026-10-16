@@ -1,0 +1,30 @@
+(fail) vault gate keeps one failure value (issue #217) > a failing recovery action never keeps the empty-passphrase blame, and editing cannot hide the server error [446.66ms]
+(pass) vault gate keeps one failure value (issue #217) > a field-less failure clears the field blame it replaced [45.41ms]
+ 19 pass
+ 1 fail
+ 86 expect() calls
+(fail) vault gate keeps one failure value (issue #217) > a failing recovery action never keeps the empty-passphrase blame, and editing cannot hide the server error [64.79ms]
+(pass) vault gate keeps one failure value (issue #217) > a field-less failure clears the field blame it replaced [47.21ms]
+(pass) VaultGate > creates the vault, shows the recovery key once, and requires the save acknowledgement [31.28ms]
+(pass) VaultGate > takes the passphrase over the desktop broker when the status says so (issue #141) [19.84ms]
+(pass) VaultGate > acknowledges the recovery key over the broker after first-run setup (issue #141) [43.03ms]
+(pass) VaultGate > shows the recovery key while the plaintext sweep is still pending (round-3 finding 1) [22.19ms]
+(pass) VaultGate > shows the plaintext warning when the follow-up arrives (round-3 finding 1) [59.28ms]
+(pass) VaultGate > warns the owner when the sweep outcome is unknown instead of showing the clean story (round-4 finding) [47.39ms]
+(pass) VaultGate > shows the Arabic refusal for a wrong passphrase and keeps the form usable [18.34ms]
+(pass) VaultGate > unlocks with a recovery key through the recovery screen [30.15ms]
+(pass) VaultGate > warns when setup could not remove plaintext files (finding 2) [18.39ms]
+(pass) VaultGate > rejects a whitespace-only passphrase before any request (normalized floor) [18.04ms]
+(pass) VaultGate > states the unrecoverable case on the first-run screen before anything is created [10.83ms]
+(pass) VaultGate > renders both setup passphrase fields with an identical app-controlled reveal (issue #167) [9.97ms]
+(pass) VaultGate > keeps the setup eye after a double toggle and still submits (issue #167) [23.70ms]
+
+ 19 pass
+ 1 fail
+ 86 expect() calls
+Ran 20 tests across 1 file. [1306.00ms]
+
+=== assertion failure under the drift mutation ===
+Expected: "false"
+Received: "true"
+at vault-gate.test.tsx:233 (returned passphrase kept aria-invalid after the fieldless failure)

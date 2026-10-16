@@ -1,0 +1,28 @@
+diff --git a/apps/web/src/components/vault/vault-gate.tsx b/apps/web/src/components/vault/vault-gate.tsx
+--- a/apps/web/src/components/vault/vault-gate.tsx
++++ b/apps/web/src/components/vault/vault-gate.tsx
+@@ -163,7 +163,6 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
+     busyRef.current = true;
+     setBusy(true);
+     setError(null);
+-    setErrorField(null);
+     try {
+       await action();
+     } catch (err) {
+@@ -295,7 +294,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
+           <button type="submit" className="rounded-lg bg-primary py-2 text-primary-foreground hover:bg-primary/80 disabled:opacity-50" disabled={busy} data-testid="vault-recovery-submit">
+             {busy ? t("vaultWorking") : t("vaultUnlock")}
+           </button>
+-          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setError(null); setErrorField(null); }}>
++          <button type="button" className="text-sm text-muted-foreground underline" onClick={() => { setScreen("primary"); setError(null); }}>
+             {t("vaultBackToPassphrase")}
+           </button>
+         </form>
+@@ -444,7 +443,6 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
+           onClick={() => {
+             setScreen("recovery-unlock");
+             setError(null);
+-            setErrorField(null);
+           }}
+           data-testid="vault-use-recovery"
+         >

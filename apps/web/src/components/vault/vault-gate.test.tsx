@@ -94,6 +94,11 @@ const GATE_FIELD_TEST_IDS = ["vault-passphrase", "vault-passphrase-confirm", "va
  * with the alert, not just the one that was blamed before: a regression that
  * reassigns the blame to a different input must not slip through. Also pins the
  * alert's `id`, so a dangling `aria-describedby` cannot survive.
+ *
+ * It only sees mounted inputs, so where the previously-blamed field matters,
+ * call it on a screen that mounts that field (the wrong-passphrase test) -- on
+ * the recovery screen it proves the recovery field is clean, and the
+ * cross-action test's return leg covers the unmounted passphrase.
  */
 function expectNoFieldBlamed(host: HTMLElement): void {
   const alert = host.querySelector("[data-testid='vault-error']");
@@ -221,9 +226,10 @@ describe("vault gate keeps one failure value (issue #217)", () => {
     setValue(host, "vault-recovery-input", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BD");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
 
-    // ... and returning to the passphrase form must not resurrect the blame
-    // the screen change dropped: the back handler is one setFailure(null), and
-    // the drift mutation is exactly the version that leaves it behind.
+    // returning to the passphrase form must not resurrect the blame the screen
+    // change dropped. This leg fails only under the chained drift (unpaired
+    // `fail` + `run` reset + both screen handlers), not a single unpaired
+    // write; that chain is the drift shape the single value makes impossible.
     const back = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.trim() === i18n.t("vaultBackToPassphrase"));
     if (back === undefined) throw new Error("missing back-to-passphrase button");
     await act(async () => {
@@ -259,6 +265,8 @@ describe("vault gate keeps one failure value (issue #217)", () => {
     await submit(host, "vault-recovery-submit");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("VAULT_UNEXPECTED"));
     expectNoFieldBlamed(host);
+    // ... and the field-less failure is announced from the alert, which takes focus
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="vault-error"]'));
 
     // ... and editing the field cannot swallow the server error
     setValue(host, "vault-recovery-input", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BD");

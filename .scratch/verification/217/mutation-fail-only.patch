@@ -1,0 +1,12 @@
+diff --git a/apps/web/src/components/vault/vault-gate.tsx b/apps/web/src/components/vault/vault-gate.tsx
+--- a/apps/web/src/components/vault/vault-gate.tsx
++++ b/apps/web/src/components/vault/vault-gate.tsx
+@@ -145,7 +145,7 @@ export function VaultGate({ status, onUnlocked }: { status: VaultStatus; onUnloc
+     retryAfterMs?: number,
+   ): void => {
+     setError(message);
+-    setErrorField(field);
++    if (field !== null) setErrorField(field);
+     if (field === "passphrase") passphraseRef.current?.focus();
+     if (field === "confirm") confirmRef.current?.focus();
+     if (field === "recovery") recoveryRef.current?.focus();

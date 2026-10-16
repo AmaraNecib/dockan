@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { SaleDraftProvider } from "@/components/app/sale-draft";
 
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
 
@@ -870,16 +871,12 @@ describe("SalePage quick-add stock (issue #119)", () => {
   });
 
   it("creates with the same cost and sell when they are typed in Arabic-Indic digits (#225)", async () => {
-    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
-    const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
-    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
-    const toExtended = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
     const host = await mountSale();
     await openQuick(host);
     await act(async () => setInput(host, "sale-quick-name", "منتج سريع"));
     // the ASCII twin of `fillQuick`'s 100 / 200, one script per field
     await setNamed(host, "quickCost", toArabicIndic("100"));
-    await setNamed(host, "quickSell", toExtended("200"));
+    await setNamed(host, "quickSell", toExtendedArabicIndic("200"));
     await submitQuick(host);
 
     // identical payload to the ASCII case above: the reader only moved the script

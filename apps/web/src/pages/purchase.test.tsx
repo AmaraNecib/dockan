@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
+import { toArabicIndic } from "../tests/arabic-digits";
 import { chooseOption } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
 
@@ -954,8 +955,6 @@ describe("PurchasePage quantity draft (#146)", () => {
   });
 
   it("quick-adds with Arabic-Indic cost, sell and threshold exactly like ASCII (#225)", async () => {
-    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
-    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
     const { container } = await mountPage();
     await toggleQuick(container);
     // the ASCII twin of 100 is the `fillQuick` cost; sell and threshold are the
@@ -974,6 +973,14 @@ describe("PurchasePage quantity draft (#146)", () => {
     await submitQuick(container);
 
     expect(createdItemInputs[0]).toMatchObject({ name: "منتج بأرقام", costPrice: 100, sellingPrice: 200, lowStockThreshold: 5 });
+  });
+
+  it("lands an Arabic-Indic quick-add cost on the purchase line it adds (#225)", async () => {
+    // the create form has TWO cost readers: the item it saves and the line it
+    // lands (`addItem`, purchase.tsx:107). The line's unitPrice pins the second.
+    const { container } = await mountWithLine("1", toArabicIndic("1200"));
+    await save(container);
+    expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 1, unitPrice: 1200 }]);
   });
 
   it("refuses a multi-line cart with an emptied line and saves once it is fixed", async () => {

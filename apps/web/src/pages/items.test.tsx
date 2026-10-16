@@ -1180,11 +1180,13 @@ describe("add item form profit preview (#225)", () => {
     setInput("item-cost", "100");
     setInput("item-sell", "180");
     expect(preview()).toContain("80");
+    expect(preview()).not.toContain("…");
 
     // ١٠٠ / ١٨٠ — the same profit, not the `…` the ASCII-only reader rendered
     setInput("item-cost", "١٠٠");
     setInput("item-sell", "١٨٠");
     expect(preview()).toContain("80");
+    expect(preview()).not.toContain("…");
 
     // and the same draft saves as the numbers the preview promised
     setInput("item-name", "بطارية بأرقام");

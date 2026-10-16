@@ -41,6 +41,8 @@ Deliberately **out of scope** (not money/quantity readers; recorded, not fixed):
 - `apps/web/src/lib/dates.ts` — date parts; a separate digit concern.
 - `apps/web/src/components/parties/party-settle.ts` `invoiceSequence` — the invoice number's trailing ASCII sequence, not an owner draft.
 - `apps/web/src/pages/activity.tsx` `Number(debt)` — a value already parsed by the API, not a draft.
+- `apps/web/src/lib/vault-client.ts` `Number.parseInt(raw, 10)` — a stored port/token read, not an owner-typed amount.
+- the Arabic decimal separator `٫` (U+066B) and Arabic thousands separator `٬` (U+066C) in the *loose* readers: #225 widens the digit *script* only, so `١٢٫٥` stays refused exactly as `12.5` is accepted by `parseLooseNumber`'s `Number` and rejected by the strict readers. Widening separators is a behaviour change the brief did not ask for and was left alone.
 
 ## Public API / the one shared reader
 
@@ -81,7 +83,8 @@ validator (`^\d+$`) already refuses to submit. It now reads through
 `parseWholeAmount`, so projection and submit agree on every draft (the same
 split #229 fixed in the supplier-return preview). `1e3` therefore projects as
 "not a line" instead of 1000 — but it could never have been submitted before, so
-no saved number changes.
+no saved number changes. The agreement is pinned by
+`invoice-returns.test.tsx` ("projects only drafts the validator will submit").
 
 ## Dependencies
 
@@ -108,8 +111,15 @@ Unit / page tests, one per widened reader plus an ASCII-identity pin:
 - `apps/web/src/pages/items.test.tsx` — the profit preview shows the same figure
   for an Arabic and an ASCII cost/sell draft.
 
+Each page test that translates a draft uses the shared, hand-written scripts in
+`apps/web/src/tests/arabic-digits.ts` (never the production normaliser, which
+would make the pin tautological). One mutation was run to prove a pin is
+discriminating: reverting `nextUnitCost` to `Number(value)` fails
+`nextUnitCost ... reads both Arabic-Indic scripts exactly like ASCII (#225)`
+(expected 900, received 1200), and the revert was restored before commit.
+
 Playwright: `bun run test:e2e tests/e2e/sale-checkout.spec.ts` (a single spec
-needs no lane slot).
+needs no lane slot) — 4 passed on ports 4357/5197.
 
 ## Implementation risks
 

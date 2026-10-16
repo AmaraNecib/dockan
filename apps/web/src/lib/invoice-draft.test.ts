@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
+
 import type { Item } from "@dokan/contracts";
 
 import {
@@ -170,16 +172,13 @@ describe("nextUnitCost (the purchase line's controlled money field)", () => {
   });
 
   it("reads both Arabic-Indic scripts exactly like ASCII (#225)", () => {
-    const ARABIC = "٠١٢٣٤٥٦٧٨٩";
-    const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
-    const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
-    const toExtended = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
     expect(nextUnitCost("٩٠٠", 1200)).toBe(900);
     expect(nextUnitCost("۵۰۰", 1200)).toBe(500);
-    // the whole draft set, script-for-script: the loose ASCII meaning is the pin
-    for (const draft of ["", "   ", " 42 ", "900", "0", "1e3", "0x10", "1.5", "-5", "abc"]) {
+    // the whole draft set, script-for-script: the loose ASCII meaning is the pin,
+    // including the documented precision quirk and the refusal forms
+    for (const draft of ["", "   ", " 42 ", "900", "0", "1e3", "0x10", "1.5", "-5", "abc", "9007199254740993"]) {
       expect(nextUnitCost(toArabicIndic(draft), 1200)).toBe(nextUnitCost(draft, 1200));
-      expect(nextUnitCost(toExtended(draft), 1200)).toBe(nextUnitCost(draft, 1200));
+      expect(nextUnitCost(toExtendedArabicIndic(draft), 1200)).toBe(nextUnitCost(draft, 1200));
     }
   });
 });

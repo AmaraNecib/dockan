@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { parseSignedWholeNumber, parseWholeNumber, resolveOpeningStock } from "./numeric-input";
 
 /**
@@ -54,18 +55,13 @@ describe("resolveOpeningStock (shared opening-stock rule, issue #125)", () => {
  * exact meaning they had.
  */
 describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
-  const ARABIC = "٠١٢٣٤٥٦٧٨٩";
-  const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
-  const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
-  const toExtended = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
-
   it("parseWholeNumber reads both Arabic scripts exactly like ASCII", () => {
     expect(parseWholeNumber("٥")).toBe(5);
     expect(parseWholeNumber("٤٢")).toBe(42);
     expect(parseWholeNumber("۵۰۰")).toBe(500);
     for (const draft of ["0", "7", "0042", " 42 ", "1000000"]) {
       expect(parseWholeNumber(toArabicIndic(draft))).toBe(parseWholeNumber(draft));
-      expect(parseWholeNumber(toExtended(draft))).toBe(parseWholeNumber(draft));
+      expect(parseWholeNumber(toExtendedArabicIndic(draft))).toBe(parseWholeNumber(draft));
     }
   });
 

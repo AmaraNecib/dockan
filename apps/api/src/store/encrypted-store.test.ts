@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect } from "bun:test";
 import { itHeavy } from "../test-support/heavy";
 import fs from "node:fs";
 import os from "node:os";
@@ -232,7 +232,7 @@ describe("vault-mode store", () => {
     await reopened.close();
   });
 
-  it("does not release the store queue before a direct write is durable (finding: deferred snapshot)", async () => {
+  itHeavy("does not release the store queue before a direct write is durable (finding: deferred snapshot)", async () => {
     const { conn, store } = await freshVault();
     // widen the write window so a pre-fix queue release would be observable
     const realSerialize = conn.raw.serialize.bind(conn.raw);
@@ -257,7 +257,7 @@ describe("vault-mode store", () => {
     await conn.close();
   });
 
-  it("close() awaits an in-flight persist before releasing the handle", async () => {
+  itHeavy("close() awaits an in-flight persist before releasing the handle", async () => {
     const { conn, store } = await freshVault();
     const realSerialize = conn.raw.serialize.bind(conn.raw);
     conn.raw.serialize = () => {

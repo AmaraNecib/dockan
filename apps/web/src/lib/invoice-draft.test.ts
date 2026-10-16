@@ -180,12 +180,19 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
   it("pins the pre-existing refusals a mark-only draft still gets (#227)", () => {
     // Not the free-line hole: these guards are raw-trim and refuse. Pinned so the
     // deferred «one blank predicate» ticket has a starting point, and so a future
-    // edit cannot flip them silently. The unit-cost field is outside the
-    // normalizer entirely (#225) and keeps its previous value either way.
+    // edit cannot flip them silently.
     expect(resolveInitialPaid(1000, RLM, "")).toEqual({ ok: false });
     expect(resolveInitialPaid(1000, ` ${RLM} `, "")).toEqual({ ok: false });
-    expect(nextUnitCost(`\u200f400`, 1200)).toBe(1200);
-    expect(nextUnitCost("٥٠٠", 1200)).toBe(1200);
+    // The purchase unit-cost field is a controlled money field, not a draft: an
+    // edge mark normalises to blank, and blank is the documented explicit zero
+    // (the same read an empty field gets). A marked/Arabic-Indic value now reads
+    // through the same normaliser (#225 routed it, so the #227 edge strip applies
+    // here too), and an interior mark is refused (`parseLooseNumber` → NaN →
+    // keeps the previous cost).
+    expect(nextUnitCost(`\u200f`, 1200)).toBe(0);
+    expect(nextUnitCost(`\u200f400`, 1200)).toBe(400);
+    expect(nextUnitCost("٥٠٠", 1200)).toBe(500);
+    expect(nextUnitCost(`4${RLM}00`, 1200)).toBe(1200);
   });
 
   it("treats a mark-only override as «nothing chosen», never a free line (#227)", () => {

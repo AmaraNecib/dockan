@@ -232,17 +232,21 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholeAmount("\u202e٥")).toBeNull();
   });
 
-  it("parseWholeAmount reads a pasted amount at the front, middle and back, and is ASCII-identical", () => {
+  it("parseWholeAmount reads a pasted amount at either edge and is ASCII-identical", () => {
     expect(parseWholeAmount(pasted(RLM, "٥"))).toBe(5);
     expect(parseWholeAmount(pasted(LRM, "٤٢"))).toBe(42);
     expect(parseWholeAmount(pasted(ALM, "٥"))).toBe(5);
     expect(parseWholeAmount(pasted(RLM, "123"))).toBe(123);
-    // a mark in the middle of a number concatenates across it, like a typed run
-    expect(parseWholeAmount(`1${RLM}2`)).toBe(12);
-    expect(parseWholeAmount(`1${RLM}2`)).toBe(parseWholeAmount("12"));
     // a trailing mark is at least as common when copying from RTL paragraphs
     expect(parseWholeAmount(`٥${RLM}`)).toBe(5);
     expect(parseWholeAmount(`${RLM}١٢٣${LRM}`)).toBe(123);
+    // an INTERIOR mark is left in place and the draft is refused, because in the
+    // RTL page it reorders the digit run (`1\u200f2` renders as `21`, verified in
+    // Chromium) — a refusal, never a number the owner did not see
+    expect(parseWholeAmount(`1${RLM}2`)).toBeNull();
+    expect(parseWholeAmount(`1${RLM}000`)).toBeNull();
+    expect(parseWholeAmount(`12${ALM}3`)).toBeNull();
+    expect(parseWholeAmount(`1${LRM}2`)).toBeNull();
     // the ASCII path is unchanged, and a mark-prefixed ASCII number agrees
     expect(parseWholeAmount("123")).toBe(123);
     expect(parseWholeAmount(pasted(RLM, "123"))).toBe(parseWholeAmount("123"));
@@ -255,6 +259,8 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholeAmount(pasted(RLM, "٥٫٥"))).toBeNull();
     expect(parseWholeAmount(pasted(RLM, "1e3"))).toBeNull();
     expect(parseWholeAmount(pasted(RLM, "-5"))).toBeNull();
+    // an interior mark around the sign is the same refusal
+    expect(parseWholeAmount(`-${RLM}5`)).toBeNull();
   });
 
   it("parseWholeAmount keeps the safe-integer ceiling with a pasted cap value", () => {
@@ -286,9 +292,11 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseGroupedAmount(pasted(LRM, "1,000"))).toBe(1000);
     expect(parseGroupedAmount(pasted(LRM, "25 000"))).toBe(25000);
     // an embedded mark does not legalise a draft whose VISIBLE text is bad
-    // grouping; visible-valid grouping still reads through it
+    // grouping, and one inside visible-valid grouping is refused too (it would
+    // reorder in the RTL page)
     expect(parseGroupedAmount(`1,${RLM}5`)).toBeNull();
-    expect(parseGroupedAmount(`1,${RLM}000`)).toBe(1000);
+    expect(parseGroupedAmount(`1,${RLM}000`)).toBeNull();
+    expect(parseGroupedAmount(`1${RLM} 000`)).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1,5"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1 000,00"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1,0000"))).toBeNull();

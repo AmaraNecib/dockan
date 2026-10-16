@@ -43,11 +43,13 @@ import { fileURLToPath } from "node:url";
  * must be the normaliser's OWN result: its closing parenthesis is matched, so
  * `normalizeArabicIndicDigits(prefix).concat(draft).trim()` is raw even though it
  * begins with the normaliser's name. (b) A comment is a TOKEN SEPARATOR, so
- * removing one leaves a space: `const` + block comment + `trimmed = draft.trim()`
- * no longer fuses into `consttrimmed` and loses the declaration. (c)
- * `breaksStatement` tracks nested templates the same way `scanSource` does, so a
- * `;` in a nested template's TEXT (`${flag ? `;` : draft}`) is not a statement
- * break.
+ * removing one leaves a space where two word characters would otherwise fuse:
+ * `const` + block comment + `trimmed = draft.trim()` no longer becomes
+ * `consttrimmed` and loses the declaration, while a comment between `draft.` and
+ * `trim()` still reads as `draft.trim()`. (c) `breaksStatement` tracks nested
+ * templates the same
+ * way `scanSource` does, so a `;` in a nested template's TEXT
+ * (`${flag ? `;` : draft}`) is not a statement break.
  *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
@@ -76,9 +78,19 @@ import { fileURLToPath } from "node:url";
  * no-change from round 2, not a ceiling: now that `${...}` is handled as code,
  * blanking only a template's TEXT is possible and would remove those false
  * positives without hiding a gate inside `${}` — a deferred follow-up, not part
- * of this change. Regex literals
- * are not parsed, so a regex holding a quote or a `/*` can mis-scope or HIDE every
- * later gate in the file (the unsafe direction) — a deferred follow-up, not a
+ * of this change. Two more false POSITIVES are stated rather than fixed, because
+ * a fourth hand-rolled lexer would grow the leak surface this brief already calls
+ * the problem. (1) `normalisesWholeValue` tracks quotes flat (the bug round 4
+ * fixed in `breaksStatement`), so a normaliser whose argument holds a nested
+ * template is reported as raw
+ * (`normalizeArabicIndicDigits(`${a ? `)` : b}`).trim()`); and
+ * `withoutSubscripts` strips a `[`/`]` inside a string argument, so
+ * `normalizeArabicIndicDigits(draft.replace("[", "")).trim()` is reported too.
+ * Both over-report a correctly normalised value (the safe direction: a raw gate is
+ * never hidden by them) and both go away with the AST walk. Regex literals
+ * are not parsed, so a regex holding a quote, a backtick or a `/*` can mis-scope
+ * or HIDE every later gate in the file (the unsafe direction) — in
+ * `breaksStatement` as well as `scanSource` — a deferred follow-up, not a
  * dismissal. Every gate of the matched forms is caught; this comment is the honest
  * boundary of that claim.
  */
@@ -109,6 +121,17 @@ const OPENERS = "([{";
 const CLOSERS = ")]}";
 const STATEMENT_KEYWORD =
   /^\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
+
+/**
+ * Whether the two characters would FUSE into a different token if a removed
+ * comment left no separator between them (`const` + `trimmed` -> `consttrimmed`).
+ * Only that boundary gets a space: anywhere else the comment is dropped as it was
+ * before, so a chain it interrupted (a comment between `draft.` and `trim()`)
+ * stays `draft.trim()` and is still matched (#244 round 4 review).
+ */
+const isWordCharacter = (char: string) => /[\w$#]/.test(char) || char.charCodeAt(0) > 127;
+const fusesTokens = (left: string | undefined, right: string | undefined) =>
+  left !== undefined && right !== undefined && isWordCharacter(left) && isWordCharacter(right);
 
 /**
  * Whether a statement break sits between `=` and the `.trim()` at bracket depth 0,
@@ -297,11 +320,13 @@ function scanSource(source: string): ScanResult {
     if (region.kind === "block") {
       if (char === "*" && next === "/") {
         regions.pop();
-        // a comment is a token SEPARATOR, not nothing: `const/* note */trimmed`
-        // must not fuse into `consttrimmed`, which loses the declaration and
-        // the gate that follows it. One space at the end is enough, and it
-        // keeps every offset in `out` (and so every brace pair) consistent.
-        out += " ";
+        // a comment is a token SEPARATOR, not nothing: `const` + comment +
+        // `trimmed` must not fuse into `consttrimmed`, which loses the
+        // declaration and the gate that follows it. It only needs a space where
+        // two word characters would fuse; elsewhere dropping it keeps every
+        // offset (and every brace pair) as it was, and keeps a chain it
+        // interrupted (`draft./* note */trim()`) matchable.
+        if (fusesTokens(out[out.length - 1], source[i + 2])) out += " ";
         i += 1;
       } else if (char === "\n") {
         out += "\n";

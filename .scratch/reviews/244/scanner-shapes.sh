@@ -63,6 +63,7 @@ const cases: Array<[string, string]> = [
   ["ASI mis-attribution", 'const t = foo\nbar.trim();\nconst b = t === "";'],
   ["appended normalised prefix", 'const t = normalizeArabicIndicDigits(prefix).concat(draft).trim();\nconst b = t === "";'],
   ["block comment joins tokens", 'const/* c */t = draft.trim();\nconst b = t === "";'],
+  ["comment inside a chain", 'const t = draft./* c */trim();\nconst b = t === "";'],
   ["nested template", 'const t = `${flag ? `;` : draft}`.trim();\nconst b = t === "";'],
 ];
 for (const [name, source] of cases) {

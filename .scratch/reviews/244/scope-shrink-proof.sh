@@ -10,8 +10,10 @@
 # Round 4 (Greptile finding 4): a NON-ZERO mutated run is not a detection. The
 # script now requires
 #   * a GREEN baseline before the mutation, and
-#   * the EXPECTED failing assertion ("keeps every raw verdict present in the
-#     source") in the mutated output, read BEFORE the restored run overwrites it.
+#   * the EXPECTED failing assertion — the scope one, "names only files inside the
+#     scanned scope" — in the mutated output, read BEFORE the restored run
+#     overwrites it. (The raw-verdict test fails with it, but the scope assertion
+#     is what this proof is about.)
 # A runner error during the mutated run (a crash with no failing test) therefore
 # fails the proof instead of printing PASSED.
 #
@@ -57,7 +59,7 @@ status=0
 if [ "$mutated" -eq 0 ]; then
   echo "PROBLEM: a shrunken scanned surface stayed green"
   status=1
-elif ! grep -qE '\(fail\).*keeps every raw verdict present in the source' "$OUT_MUTATED"; then
+elif ! grep -qE '\(fail\).*names only files inside the scanned scope' "$OUT_MUTATED"; then
   echo "PROBLEM: exit $mutated without the expected failing assertion — a crashed runner is not a detection"
   status=1
 fi

@@ -13,7 +13,9 @@ type SeedRequest =
   | {
       procedure: "stockAddManual";
       input: { itemId: string; delta: number; unitCost?: number; kind?: "PURCHASE" | "MANUAL_ADJUSTMENT"; occurredAt?: string };
-    };
+    }
+  | { procedure: "itemsUpdate"; input: { id: string; costPrice?: number } }
+  | { procedure: "preferencesSet"; input: { key: string; value: string } };
 
 /** Call one oRPC procedure from the page and return its declared output. */
 async function rpc<T>(page: Page, request: SeedRequest): Promise<T> {
@@ -217,5 +219,61 @@ test("a future-dated purchase recorded before a cost correction is flagged as su
   await expect(futureRow.getByTestId("history-superseded")).toBeVisible();
   await expect(futureRow.getByTestId("history-superseded")).not.toHaveText("historySupersededByCorrection");
   await expect(correctionRow.getByTestId("history-superseded")).toHaveCount(0);
+  await expect(page.getByTestId("history-superseded")).toHaveCount(1);
+});
+
+/**
+ * Issue #215 — the badge must survive pagination. The correction is recorded
+ * after the future-dated inflow but drawn above it, and a page of two rows puts
+ * the correction on page 1 and the superseded inflow alone on page 2. Recording
+ * order (`seq`) on the wire carries the precedence across the page boundary, so
+ * page 2 still badges the row. Before the change the page-local comparison saw
+ * no correction on page 2 and showed nothing.
+ */
+test("a superseded row is badged even when its correction is on a prior page", async ({ page }) => {
+  const stamp = Date.now().toString();
+  const itemName = `ترتيب-تسجيل-${stamp}`;
+  await signIn(page);
+
+  const categories = await rpc<{ items: Array<{ id: string }> }>(page, { procedure: "categoriesList", input: {} });
+  const item = await rpc<{ id: string }>(page, {
+    procedure: "itemsCreate",
+    input: { name: itemName, categoryId: categories.items[0]!.id, costPrice: 100, sellingPrice: 200, lowStockThreshold: 0 },
+  });
+  // recorded order: future inflow, ordinary inflow, then the correction. The
+  // dates put the correction (wall clock) above the future row and below the
+  // ordinary one, so only the future row earns the badge.
+  await rpc(page, {
+    procedure: "stockAddManual",
+    input: { itemId: item.id, delta: 10, unitCost: 200, kind: "PURCHASE", occurredAt: "2999-01-01T00:00:00" },
+  });
+  await rpc(page, {
+    procedure: "stockAddManual",
+    input: { itemId: item.id, delta: 5, unitCost: 100, kind: "PURCHASE", occurredAt: "2025-01-01T00:00:00" },
+  });
+  await rpc(page, { procedure: "itemsUpdate", input: { id: item.id, costPrice: 300 } });
+  // two rows per page: page 1 = [ordinary, correction], page 2 = [future].
+  // Set the size, then open the item's own history route directly: the shared
+  // e2e database holds many items, and paging the items list at size 2 would
+  // hide the seeded row.
+  await rpc(page, { procedure: "preferencesSet", input: { key: "ui.pageSize", value: "2" } });
+  await page.goto(`/items/${item.id}/history`);
+  await expect(page.getByTestId("history-table")).toBeVisible();
+
+  const rows = page.getByTestId("history-table").locator("tbody tr");
+  // page 1 draws the correction, but the row it supersedes is not on this page
+  await expect(rows).toHaveCount(2);
+  await expect(page.getByTestId("history-superseded")).toHaveCount(0);
+
+  await page.getByTestId("history-pager-page-2").click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText("01/01/2999");
+  await expect(rows.first().getByTestId("history-superseded")).toBeVisible();
+  // issue 222: the correction is on page 1, so the badge must not send the
+  // owner "above" to a row this page does not draw — and it must still name the
+  // correction, not render empty and pass the negative vacuously
+  const badge = rows.first().getByTestId("history-superseded");
+  await expect(badge).toContainText("تصحيح التكلفة");
+  await expect(badge).not.toContainText("أعلاه");
   await expect(page.getByTestId("history-superseded")).toHaveCount(1);
 });

@@ -219,6 +219,105 @@ function isCostCorrection(movement: LedgerMovement): movement is LedgerMovement 
 }
 
 /**
+ * Recording order of the correction that supersedes each date-ordered history
+ * row (issue 215), aligned to the requested window; `null` when no correction
+ * supersedes it.
+ *
+ * A row `r` is superseded when a correction `c` is drawn ABOVE it in the
+ * date-ordered list (`j < i`) and was RECORDED after it (`c.seq > r.seq`).
+ * Replay walks the ledger in recording order and splits it at each correction,
+ * so such a correction overwrote the row's contribution to the weighted
+ * average even though the view draws the row below it. Only inflows
+ * (`delta > 0`) can move the average, so outflows and the correction rows
+ * themselves are never flagged (issue 151 invariant).
+ *
+ * The reported `seq` is the NEAREST qualifying correction drawn above the row,
+ * matching issue 151's fallback: it is the correction the view draws directly
+ * above the row, which is the one the badge points at. With several later
+ * corrections above the row this need not be the first one that terminated the
+ * row's replay segment; the view only needs the field's presence, so the value
+ * stays the nearest referent.
+ *
+ * `seq` (the store rowid) is the authoritative recording order, and a
+ * correction recorded later with an equal `occurredAt` is drawn BELOW the row
+ * (seq breaks the date tie), so the strict comparison needs no same-second
+ * guard. Indexing the ledger above the window is what lets a correction on a
+ * prior page badge its superseded row on a later one.
+ *
+ * Issue 222: the query is answered against a one-pass index of the corrections
+ * drawn so far instead of walking every earlier movement per inflow. A
+ * correction recorded before a later one with a `seq` at least as large is
+ * dominated — the later one is nearer and qualifies at least as often — so
+ * dropping it leaves the index in position order with a strictly DECREASING
+ * `seq`. The nearest qualifying correction is then the topmost index entry with
+ * `seq > row.seq`: the top itself when it qualifies, else a binary search over
+ * the deeper (larger-`seq`) entries. This is O(n log n) for a ledger with
+ * corrections and O(n) for one without, against the old O(n²) rescan.
+ *
+ * The result is aligned to the requested window `[from, to)` — the page the
+ * caller renders — defaulting to the whole list. The index is built by walking
+ * the ledger only up to `to`, so a page row never re-scans the rows above it;
+ * rows below `from` are read once, for their corrections, and still badge rows
+ * inside the window. That bounds the walk to the window's end.
+ */
+export function supersededByCorrectionSeq(
+  rows: readonly HistoryRow[],
+  from = 0,
+  to = rows.length,
+): Array<number | null> {
+  const start = Math.max(0, Math.min(from, rows.length));
+  const end = Math.max(start, Math.min(to, rows.length));
+  const superseded: Array<number | null> = Array.from({ length: end - start }, () => null);
+  // Recording order of the corrections drawn so far, nearest last. `seq` is
+  // strictly decreasing toward the top; dominated entries are never pushed.
+  const correctionSeqs: number[] = [];
+  for (let i = 0; i < end; i++) {
+    const row = rows[i];
+    if (row === undefined) continue;
+    if (isCostCorrection(row)) {
+      if (row.seq === undefined) continue;
+      let top = correctionSeqs[correctionSeqs.length - 1];
+      while (top !== undefined && top <= row.seq) {
+        correctionSeqs.pop();
+        top = correctionSeqs[correctionSeqs.length - 1];
+      }
+      correctionSeqs.push(row.seq);
+      continue;
+    }
+    if (row.delta <= 0 || row.seq === undefined) continue;
+    // rows below the window are never answered; only the index they feed matters
+    if (i < start) continue;
+    // the top is the nearest correction; when it was recorded after the row it
+    // is the answer without a search
+    const nearest = correctionSeqs[correctionSeqs.length - 1];
+    if (nearest === undefined) continue;
+    let answer: number | null = null;
+    if (nearest > row.seq) {
+      answer = nearest;
+    } else {
+      // the top does not qualify; deeper entries hold larger `seq` and may, so
+      // binary-search the topmost one that still exceeds the row's
+      let lo = 0;
+      let hi = correctionSeqs.length - 1;
+      let found: number | null = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const seq = correctionSeqs[mid];
+        if (seq !== undefined && seq > row.seq) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (found !== null) answer = correctionSeqs[found] ?? null;
+    }
+    if (i >= start && answer !== null) superseded[i - start] = answer;
+  }
+  return superseded;
+}
+
+/**
  * Recording order — the ledger's append order — by store rowid. A caller's
  * appended candidate has no seq yet and is recorded last. Pure-math callers
  * without seq fall back to input order, which is their append order. This is

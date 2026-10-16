@@ -11,7 +11,7 @@ import type { AppLogger } from "../lib/logger";
 import type { StorePort } from "../store/port";
 import { PartyError, SupplierAdjustmentError } from "../store/port";
 import type { BetterAuthInstance } from "../auth/auth";
-import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON } from "../lib/stock-ledger";
+import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
 import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
@@ -611,9 +611,15 @@ export function createRpcRouter(deps: RpcDeps) {
         // `stockAfter` is cumulative, so the whole ledger is projected first;
         // only the projected rows are sliced. `total` is the full ledger count.
         const movements = await deps.store.listStockMovements(item.id);
-        const projected = historyWithRemaining(movements).map(({ seq: _seq, ...rest }) => rest);
+        const projected = historyWithRemaining(movements);
         const { limit, offset } = resolvePagination(input);
-        const rows = projected.slice(offset, offset + limit);
+        const page = projected.slice(offset, offset + limit);
+        // Precedence is resolved for the page's window only (issue 222). The
+        // index still walks the ledger above the page, so a correction on a
+        // prior page badges its superseded row (issue 215) without re-scanning
+        // those rows for every page row.
+        const superseded = supersededByCorrectionSeq(projected, offset, offset + page.length);
+        const rows = page.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
         // the last running balance IS stock on hand (same delta sum)
         const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
         return { movements: rows, total: movements.length, stockOnHand };

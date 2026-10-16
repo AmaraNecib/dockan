@@ -175,19 +175,32 @@ describe("bidi formatting marks in the money readers (#227)", () => {
   const RLM = "\u200f";
   const LRM = "\u200e";
   const ALM = "\u061c";
-  const RLE = "\u202b";
-  const PDF = "\u202c";
-  const LRI = "\u2066";
-  const PDI = "\u2069";
-  /** The paste shape: a mark glued to the front of the digit string. */
+  /** The paste shape: a mark glued to the draft, front, middle or back. */
   const pasted = (mark: string, draft: string) => `${mark}${draft}`;
+  /** Every code point with the Unicode `Bidi_Control` property, by name. */
+  const BIDI_CONTROL_POINTS: ReadonlyArray<readonly [name: string, mark: string]> = [
+    ["ALM", "\u061c"],
+    ["LRM", "\u200e"],
+    ["RLM", "\u200f"],
+    ["LRE", "\u202a"],
+    ["RLE", "\u202b"],
+    ["PDF", "\u202c"],
+    ["LRO", "\u202d"],
+    ["RLO", "\u202e"],
+    ["LRI", "\u2066"],
+    ["RLI", "\u2067"],
+    ["FSI", "\u2068"],
+    ["PDI", "\u2069"],
+  ];
 
-  it("normalizeArabicIndicDigits drops every Bidi_Control mark and leaves a mark-free draft alone", () => {
+  it("normalizeArabicIndicDigits drops every Bidi_Control mark, each named code point included", () => {
+    // a loop over the property, not a sample: a typo'd range boundary fails here
+    for (const [name, mark] of BIDI_CONTROL_POINTS) {
+      expect([name, normalizeArabicIndicDigits(`${mark}١٢٣${mark}`)]).toEqual([name, "123"]);
+    }
     expect(normalizeArabicIndicDigits(pasted(RLM, "٥"))).toBe("5");
     expect(normalizeArabicIndicDigits(pasted(LRM, "١٠٠"))).toBe("100");
     expect(normalizeArabicIndicDigits(pasted(ALM, "42"))).toBe("42");
-    expect(normalizeArabicIndicDigits(`${RLE}١٢٣${PDF}`)).toBe("123");
-    expect(normalizeArabicIndicDigits(`${LRI}١٢٣${PDI}`)).toBe("123");
     expect(normalizeArabicIndicDigits(`${RLM}1,000${LRM}`)).toBe("1,000");
     // ASCII identity: no mark in, nothing dropped, character for character
     expect(normalizeArabicIndicDigits("123")).toBe("123");
@@ -195,23 +208,47 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(normalizeArabicIndicDigits("")).toBe("");
   });
 
-  it("parseWholeAmount reads a pasted Arabic-Indic amount and is ASCII-identical without a mark", () => {
+  it("leaves a non-Bidi_Control invisible alone, so the strip's boundary is pinned", () => {
+    // ZWSP, word-joiner and BOM are format characters but NOT Bidi_Control;
+    // widening the strip to the whole Cf category would start deleting these
+    // and must fail. (BOM is separately dropped by `trim()`, which is ES
+    // WhiteSpace — that is pre-existing, not this strip.)
+    expect(normalizeArabicIndicDigits("\u200b")).toBe("\u200b");
+    expect(normalizeArabicIndicDigits("\u2060")).toBe("\u2060");
+    expect(normalizeArabicIndicDigits("\ufeff")).toBe("\ufeff");
+    expect(parseWholeAmount("\u200b5")).toBeNull();
+    expect(parseWholeAmount("\u20605")).toBeNull();
+  });
+
+  it("parseWholeAmount reads a pasted amount at the front, middle and back, and is ASCII-identical", () => {
     expect(parseWholeAmount(pasted(RLM, "٥"))).toBe(5);
     expect(parseWholeAmount(pasted(LRM, "٤٢"))).toBe(42);
     expect(parseWholeAmount(pasted(ALM, "٥"))).toBe(5);
-    // the ASCII path is unchanged, and a mark-prefixed ASCII number now agrees
-    // with the bare one instead of being refused
-    expect(parseWholeAmount("123")).toBe(123);
     expect(parseWholeAmount(pasted(RLM, "123"))).toBe(123);
+    // a mark in the middle of a number concatenates across it, like a typed run
+    expect(parseWholeAmount(`1${RLM}2`)).toBe(12);
+    expect(parseWholeAmount(`1${RLM}2`)).toBe(parseWholeAmount("12"));
+    // a trailing mark is at least as common when copying from RTL paragraphs
+    expect(parseWholeAmount(`٥${RLM}`)).toBe(5);
+    expect(parseWholeAmount(`${RLM}١٢٣${LRM}`)).toBe(123);
+    // the ASCII path is unchanged, and a mark-prefixed ASCII number agrees
+    expect(parseWholeAmount("123")).toBe(123);
     expect(parseWholeAmount(pasted(RLM, "123"))).toBe(parseWholeAmount("123"));
-    expect(parseWholeAmount(pasted(RLM, "123"))).toBe(parseWholeAmount(pasted(LRM, "123")));
     // a mark-only draft strips to "" and is still refused: the strip cannot
     // invent a number out of a bare mark
     expect(parseWholeAmount(RLM)).toBeNull();
     expect(parseWholeAmount("")).toBeNull();
-    // the mark is not a digit and not a separator, so a marked decimal still fails
+    // the mark is not a digit and not a separator, so a marked decimal, sign
+    // or exponent still fails on the strict reader
     expect(parseWholeAmount(pasted(RLM, "٥٫٥"))).toBeNull();
     expect(parseWholeAmount(pasted(RLM, "1e3"))).toBeNull();
+    expect(parseWholeAmount(pasted(RLM, "-5"))).toBeNull();
+  });
+
+  it("parseWholeAmount keeps the safe-integer ceiling with a pasted cap value", () => {
+    expect(parseWholeAmount(pasted(RLM, "9007199254740991"))).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parseWholeAmount(pasted(RLM, "9007199254740992"))).toBeNull();
+    expect(parseWholeAmount(pasted(RLM, "٥5"))).toBe(55); // mixed script + mark
   });
 
   it("parseWholePercentage reads a pasted percentage and still caps at 100", () => {
@@ -219,6 +256,8 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseWholePercentage(pasted(LRM, "٥٠"))).toBe(50);
     expect(parseWholePercentage(pasted(ALM, "100"))).toBe(100);
     expect(parseWholePercentage(pasted(RLM, "١٠١"))).toBeNull();
+    expect(parseWholePercentage(pasted(RLM, "101"))).toBeNull();
+    expect(parseWholePercentage(pasted(RLM, "٥٠٫٥"))).toBeNull();
     // the ASCII path is unchanged
     expect(parseWholePercentage("100")).toBe(100);
     expect(parseWholePercentage(pasted(RLM, "100"))).toBe(parseWholePercentage("100"));
@@ -228,7 +267,10 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseGroupedAmount(pasted(RLM, "١٬٠٠٠"))).toBe(1000);
     expect(parseGroupedAmount(pasted(LRM, "1,000"))).toBe(1000);
     expect(parseGroupedAmount(pasted(LRM, "25 000"))).toBe(25000);
-    // stripping a mark cannot legalise grouping the reader rejects
+    // an embedded mark does not legalise a draft whose VISIBLE text is bad
+    // grouping; visible-valid grouping still reads through it
+    expect(parseGroupedAmount(`1,${RLM}5`)).toBeNull();
+    expect(parseGroupedAmount(`1,${RLM}000`)).toBe(1000);
     expect(parseGroupedAmount(pasted(RLM, "1,5"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1 000,00"))).toBeNull();
     expect(parseGroupedAmount(pasted(RLM, "1,0000"))).toBeNull();
@@ -240,8 +282,11 @@ describe("bidi formatting marks in the money readers (#227)", () => {
     expect(parseLooseNumber(pasted(LRM, "-٥"))).toBe(-5);
     expect(parseLooseNumber(pasted(ALM, "12.5"))).toBe(12.5);
     expect(parseLooseNumber(pasted(RLM, "١e٣"))).toBe(1000);
-    // a mark-only draft strips to "": the loose reader's documented "" → 0
-    expect(parseLooseNumber(RLM)).toBe(parseLooseNumber(""));
+    expect(parseLooseNumber(pasted(RLM, "0x10"))).toBe(16);
+    // a mark-only draft strips to "": the loose reader's documented "" → 0,
+    // pinned as a literal so a change to either side fails here
+    expect(parseLooseNumber(RLM)).toBe(0);
+    expect(parseLooseNumber("")).toBe(0);
     // the ASCII path is unchanged
     expect(parseLooseNumber("12.5")).toBe(12.5);
   });

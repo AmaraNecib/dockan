@@ -165,6 +165,22 @@ describe("bidi formatting marks in the draft readers (#227)", () => {
     // the same drafts without the mark stay what they already were
     expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
   });
+
+  it("treats a mark-only override as «nothing chosen», never a free line (#227)", () => {
+    // pasting a marked value and deleting the digits leaves the invisible mark;
+    // a bidi mark is Cf, not whitespace, so a raw trim() would read it as a
+    // chosen value while the loose reader bills it as 0. It must be refused,
+    // exactly like an empty override, and must price at the default.
+    for (const overrideType of ["AMOUNT", "PERCENTAGE"] as const) {
+      const markOnly: SaleDraftLine = { ...saleLine("a"), overrideType, overrideValue: RLM };
+      expect(saleOverrideInvalid(markOnly)).toBe(true);
+      expect(saleUnitPrice(markOnly)).toBe(1000);
+    }
+    // whitespace around the mark is the same draft
+    expect(saleOverrideInvalid({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: ` ${RLM} ` })).toBe(true);
+    // and a mark that still carries digits is unaffected
+    expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: pasted("٩٠٠") })).toBe(900);
+  });
 });
 
 describe("nextUnitCost (the purchase line's controlled money field)", () => {

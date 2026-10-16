@@ -348,11 +348,19 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   // 4500, amount discount 100, total 4400 — the numbers the typed #210 draft
   // gives, so a paste must not be refused where typing is accepted.
   const rlm = "\u200f";
-  await page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`).fill(`${rlm}٥`);
+  const quantity = page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`);
+  await quantity.fill(`${rlm}٥`);
+  // the field really holds the invisible mark, so the pin cannot pass by
+  // normalising the value before the parser ever sees it
+  await expect(quantity).toHaveValue(`${rlm}٥`);
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
-  await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill(`${rlm}٩٠٠`);
+  const overrideValue = page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`);
+  await overrideValue.fill(`${rlm}٩٠٠`);
+  await expect(overrideValue).toHaveValue(`${rlm}٩٠٠`);
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
-  await page.getByTestId("sale-discount-value").fill(`${rlm}١٠٠`);
+  const discountValue = page.getByTestId("sale-discount-value");
+  await discountValue.fill(`${rlm}١٠٠`);
+  await expect(discountValue).toHaveValue(`${rlm}١٠٠`);
   await expect(page.getByTestId("sale-subtotal")).toContainText("4500");
   await expect(page.getByTestId("sale-total")).toContainText("4400");
 

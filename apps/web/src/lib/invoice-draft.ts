@@ -179,13 +179,26 @@ export function nonNegativeOr(value: string, fallback: number): number {
 }
 
 /**
+ * True when a draft carries no value once the shared digits + bidi
+ * normalisation is applied. A paste can leave an invisible mark behind
+ * (`"\u200f"`, the #227 mark stripped by `normalizeArabicIndicDigits`), and a
+ * bidi mark is a `Cf` format character, not whitespace — so a raw `.trim()`
+ * check reads it as a chosen value, while the loose `Number()` bills it as 0.
+ * Both the price and the guard go through this one predicate, so a mark-only
+ * draft is «nothing chosen» in both, exactly as an empty draft is.
+ */
+function draftBlank(draft: string): boolean {
+  return normalizeArabicIndicDigits(draft).trim() === "";
+}
+
+/**
  * The unit price a SALE line bills at: the item's selling price, negotiated by
  * the line's override when one is chosen. AMOUNT is the price itself; a
  * PERCENTAGE is a share of the default price; both round to whole DZD.
  */
 export function saleUnitPrice(line: SaleDraftLine): number {
   const value = nonNegativeOr(line.overrideValue, line.item.sellingPrice);
-  if (line.overrideValue.trim() === "") return line.item.sellingPrice;
+  if (draftBlank(line.overrideValue)) return line.item.sellingPrice;
   if (line.overrideType === "AMOUNT") return Math.round(value);
   if (line.overrideType === "PERCENTAGE") return Math.round((line.item.sellingPrice * value) / 100);
   return line.item.sellingPrice;
@@ -194,11 +207,13 @@ export function saleUnitPrice(line: SaleDraftLine): number {
 /**
  * A chosen price override must carry a usable value: empty input parses to 0
  * (`Number("") === 0`) and would bill the line as free while the preview still
- * shows the default price, so it is rejected before submission.
+ * shows the default price, so it is rejected before submission. A draft that is
+ * blank after normalisation — a bare pasted bidi mark (#227) — is the same free
+ * line and is rejected by the same check.
  */
 export function saleOverrideInvalid(line: Pick<SaleDraftLine, "overrideType" | "overrideValue">): boolean {
   if (line.overrideType === "") return false;
-  if (line.overrideValue.trim() === "") return true;
+  if (draftBlank(line.overrideValue)) return true;
   const value = parseLooseNumber(line.overrideValue);
   if (!Number.isFinite(value)) return true;
   if (line.overrideType === "AMOUNT") return !Number.isInteger(value) || value < 0;

@@ -1,11 +1,13 @@
 # #227 — strip bidi formatting marks from money drafts (design)
 
-- Tier: **Standard** — the delta only widens *input normalisation* (drops code
-  points that can never be part of a numeric grammar); it changes no arithmetic,
-  no rounding, and no other accepted-value semantics, and the ASCII identity is
-  pinned. #210 was High-assurance because it changed the digits the readers
-  *compute* from; this ticket adds no computed value, only a paste that used to
-  be refused.
+- Tier: **Standard** as the brief records, with the tension stated: the delta only
+  widens *input normalisation* (drops code points that can never be part of a
+  numeric grammar); it changes no arithmetic, no rounding, and no other
+  accepted-value semantics, and the ASCII identity is pinned. The workflow's
+  High-assurance clause names «invoice & debt money calculations», and #210 —
+  the same readers — was High-assurance, so the High-assurance **Debate** gate
+  was run as well (evidence `227/<sha>-debate.md`). Re-tiering is the parent's
+  call; the stricter gate is satisfied either way.
 - Base (the stack): `origin/fix-210-arabic-indic-money` @ `afe15fe` — the PR
   #229 head. Merge-base with `origin/develop` is `a52084d1`. This lane is a
   stack on #229 as the brief requires: no rebase onto `develop`, nothing #229
@@ -43,9 +45,13 @@ reader funnels through it:
 | `parseQuantityDraft` | `lib/invoice-draft.ts` |
 
 Adding the strip there and nowhere else means the paste fix cannot be half
-applied: a reader that normalises cannot be left out. The function keeps its
-exported name (the brief names it and 10 modules import it); the doc comment
-now states it also drops the marks.
+applied: every reader that normalises is covered. The function keeps its
+exported name because the brief names it, and only one production module
+(`lib/invoice-draft.ts`) imports the function itself (the test imports it too;
+~15 modules import the module). The doc comment now states the widened contract
+where the name under-describes it. A rename (`normalizeMoneyDraft`) was
+considered and rejected: it would churn reader modules the parallel `#225` lane
+is editing for no behavioural gain.
 
 ## Which marks, and why stripping is safe
 
@@ -95,20 +101,27 @@ untouched.
 ## Planned tests
 
 1. `apps/web/src/lib/amount-parse.test.ts` — a new `#227` describe:
-   - `normalizeArabicIndicDigits` drops each mark class and leaves a mark-free
-     draft byte-identical (ASCII identity, and the legitimate `1٬000` unchanged).
+   - `normalizeArabicIndicDigits` drops each of the twelve `Bidi_Control` code
+     points (a loop, so a typo'd range cannot pass) and leaves a mark-free draft
+     byte-identical (ASCII identity, and the legitimate `1٬000` unchanged).
+   - a negative boundary: non-`Bidi_Control` invisibles (U+200B ZWSP, U+FEFF)
+     are left untouched, so a future widening to `\p{Cf}` fails a pin.
    - each reader: `parseWholeAmount`, `parseWholePercentage`,
      `parseGroupedAmount`, `parseLooseNumber`.
    - the ASCII-identity case: `parseWholeAmount("\u200f123")` = `123` and plain
      `123` unchanged, asserted equal to each other.
    - a paste-shaped case: the mark is **built** (`const RLM = "\u200f"` +
-     digit string), never typed as an invisible literal.
-   - negative controls: a mark-only draft still refuses; a marked decimal still
-     refuses; stripping the mark cannot legalise bad grouping (`"\u200f1,5"`).
+     digit string), never typed as an invisible literal. Marks are pinned
+     leading, trailing and mid-number (a mid-number mark concatenates:
+     `1\u200f2` = 12).
+   - negative controls: a mark-only draft still refuses; a marked decimal and a
+     marked sign still refuse on the strict readers; an embedded mark cannot
+     legalise *visible* bad grouping (`1,\u200f5` → null) though it does read
+     visible-valid grouping (`1,\u200f000` → 1000).
 2. `apps/web/src/lib/invoice-draft.test.ts` — `parseQuantityDraft` pinned with a
-   pasted draft, plus the sale money path behind it (`saleUnitPrice`,
-   `saleOverrideInvalid`, `discountAmountFor`, `resolveInitialPaid`) so the
-   draft → bill seam is pinned, not only the leaf reader.
+   pasted draft, the sale money path behind it (`saleUnitPrice`,
+   `saleOverrideInvalid`, `discountAmountFor`, `resolveInitialPaid`), and the
+   mark-only override pinned as invalid + default-priced (the regression above).
 3. `tests/e2e/sale-checkout.spec.ts` — a paste-shaped end-to-end pin: the sale
    quantity, price override and discount are filled with RLM-prefixed
    Arabic-Indic text, the totals are asserted, and the invoice saves. `.fill()`
@@ -118,7 +131,20 @@ untouched.
 
 - **Over-stripping.** Bounded by the `Bidi_Control` set: no marked code point is
   part of any reader's grammar, and the negative controls above prove the strip
-  cannot legalise a malformed grouped draft or a mark-only draft.
+  cannot legalise a draft whose *visible* text is malformed grouping or a
+  mark-only draft. (An embedded mark inside `1,<mark>000` does read as `1000` —
+  the visible text is the valid `1,000`, the correct read, not a legalised
+  malformed draft.)
+- **A normalisation that empties a non-empty draft.** Stripping turns `"\u200f"`
+  into `""`, and two guards in `lib/invoice-draft.ts` tested blankness on the raw
+  `.trim()` (a bidi mark is `Cf`, not whitespace). Left alone, a mark-only sale
+  override would have parsed to `0` and billed the line free — the hole
+  `saleOverrideInvalid` exists to close. Both now share a `draftBlank` predicate
+  that blanks through the same normalizer; the pins assert the mark-only override
+  is refused and prices at the default, not zero. Every other raw-blank-then-
+  parse guard was audited and already refuses a mark-only draft
+  (`percentageDraftInvalid`, `resolveInitialPaid`, `parseReturnQuantities`,
+  `parseCashBackDraft`, `saleDebt`).
 - **ASCII identity.** The strip only ever removes a `Bidi_Control` code point;
   `normalizeArabicIndicDigits("123")` is `"123"` and every existing ASCII pin is
   re-run unchanged.

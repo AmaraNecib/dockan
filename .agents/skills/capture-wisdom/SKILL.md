@@ -1,21 +1,32 @@
 ---
 name: capture-wisdom
-description: "Read and write .agents/wisdom/*.md files. Use at start of a task (read wisdom), after solving a bug (write wisdom), at end of a session (write wisdom)."
-argument-hint: "What lesson to capture or what task you're starting that might benefit from past wisdom"
+description: "Read .agents/wisdom/*.md before starting a task; only the parent session writes them, and only when the same failure has occurred more than once. Lanes report lessons; they never write these files."
+argument-hint: "What repeated lesson to capture, or what task you're starting that might benefit from past wisdom"
 ---
 
 # Capture Wisdom
 
-Read `.agents/wisdom/*.md` at the start of any task. Write to them when
-you learn something worth remembering.
+**Writing is parent-session only.** Every lane reads `.agents/wisdom/` before it
+starts and reports which lessons it applied; no lane writes these files. A lane
+puts a candidate lesson in its `crew_report` and the parent decides. The rule
+exists because the opposite was measurable: lane-written lessons collided and the
+owner resolved the same conflict by hand, and two lanes declined to record a
+lesson because the write would have marked their own review evidence stale (the
+numbers are in `AGENTS.md`, Authority).
+
+Read `.agents/wisdom/*.md` at the start of any task. Write to them only when the
+criterion below is met, and only from the parent session.
 
 ## When to write
 
-- A CodeRabbit finding surprised you
-- A bug took more than 15 minutes to diagnose
-- An adversarial review found a real issue
-- You notice the same issue across multiple PRs
-- You're about to end a session
+**The same failure has occurred more than once.** One occurrence is a report
+line, not wisdom. The parent is the only one who sees several lanes' reports, so
+the parent is the only one who can tell the difference.
+
+- The same failure appeared in two or more lanes' reports or PRs
+- A bug took more than 15 minutes to diagnose and recurred
+- An adversarial review found the same real issue twice
+- A CodeRabbit/Greptile finding surprised you twice
 
 ## File conventions
 

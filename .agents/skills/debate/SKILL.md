@@ -79,22 +79,22 @@ Fix all items classified as "Fix it" above. Commit fixes.
 ### 5. Document remaining items
 
 For everything deferred or dismissed, each non-dismissed item needs a path
-forward — either a fix now, a GitHub issue, or a wisdom entry.
+forward — either a fix now, a GitHub issue, or a lesson for the parent to
+record.
 
 | Decision | Required action |
 |----------|----------------|
 | Fixed | Committed — no further action |
 | Deferred (expensive or out of scope) | **Create a GitHub issue.** Reference it in the PR. |
 | Dismissed (false alarm) | Note in PR that it was considered and dismissed. |
-| Pattern worth remembering | **Write to `.agents/wisdom/`** using capture-wisdom. |
+| Pattern worth remembering | **Put it in the report** — the parent owns `.agents/wisdom/` and writes an entry only when the pattern repeats. |
 
 ### 6. Save evidence
 
 Save the full findings to `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
-This file is used by guard to verify review completeness before push.
+This file is used by guard to verify review completeness before the parent pushes.
 
-The caller (feature-implement) will publish a summary as a PR comment after
-the PR is opened.
+The parent session publishes a summary as a PR comment after the PR is opened.
 
 ### 7. Proceed
 

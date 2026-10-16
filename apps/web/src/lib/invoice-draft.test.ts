@@ -135,6 +135,38 @@ describe("parseQuantityDraft (the one quantity parser both screens use)", () => 
   });
 });
 
+/**
+ * #227 — a quantity or money draft pasted out of RTL text carries an invisible
+ * directional mark. The one normalizer behind the quantity reader and the
+ * amount readers drops it, so the paste reads like the typed value here too.
+ * The mark is BUILT, because that is how the clipboard delivers it.
+ */
+describe("bidi formatting marks in the draft readers (#227)", () => {
+  const RLM = "\u200f";
+  const pasted = (draft: string) => `${RLM}${draft}`;
+
+  it("parseQuantityDraft reads a pasted quantity like the typed digit", () => {
+    expect(parseQuantityDraft(pasted("٥"))).toBe(5);
+    expect(parseQuantityDraft(pasted("5"))).toBe(5);
+    expect(parseQuantityDraft(pasted("٤٢"))).toBe(42);
+    expect(quantityDraftInvalid(pasted("٥"))).toBe(false);
+    // the ASCII path is unchanged, and a bare mark is still a cleared draft
+    expect(parseQuantityDraft("5")).toBe(5);
+    expect(parseQuantityDraft(RLM)).toBe(0);
+    expect(quantityDraftInvalid(RLM)).toBe(true);
+  });
+
+  it("carries a pasted draft through the sale money path (override, discount, payment)", () => {
+    const override: SaleDraftLine = { ...saleLine("a"), overrideType: "AMOUNT", overrideValue: pasted("٩٠٠") };
+    expect(saleUnitPrice(override)).toBe(900);
+    expect(saleOverrideInvalid(override)).toBe(false);
+    expect(discountAmountFor(1000, "AMOUNT", pasted("١٠٠"))).toBe(100);
+    expect(resolveInitialPaid(1000, pasted("٢٠٠"), "")).toEqual({ ok: true, paid: 200 });
+    // the same drafts without the mark stay what they already were
+    expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
+  });
+});
+
 describe("nextUnitCost (the purchase line's controlled money field)", () => {
   it("treats a cleared field as an explicit zero, matching the previous contract", () => {
     expect(nextUnitCost("", 1200)).toBe(0);

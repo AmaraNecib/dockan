@@ -15,16 +15,27 @@
 const STRIP_GROUPING = /[,\s\u066C\u00A0]/gu;
 const ARABIC_INDIC_DIGITS = /[\u0660-\u0669]/gu;
 const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
+/**
+ * The Unicode `Bidi_Control` characters — the zero-width marks whose only job is
+ * to order a run of text: U+061C (ALM), U+200E/U+200F (LRM/RLM) and the explicit
+ * embeddings/isolates U+202A..U+202E, U+2066..U+2069. A number copied out of
+ * RTL text carries one (#227). None is a digit, a sign, a grouping or a decimal
+ * separator, so a money draft can never legitimately contain one.
+ */
+const BIDI_CONTROL = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
 
 /**
  * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
- * form and leave every other character untouched. One normalizer for the amount
- * and invoice-draft readers, so a digit one accepts the other cannot reject (the
- * #198 quantity/amount mismatch). Every money reader in this module normalises
- * through it, so a value typed in either script reads the same (#210).
+ * form, drop the invisible bidi marks a paste carries, and leave every other
+ * character untouched. One normalizer for the amount and invoice-draft readers,
+ * so a digit one accepts the other cannot reject (the #198 quantity/amount
+ * mismatch). Every money reader in this module normalises through it, so a
+ * value typed in either script — or pasted out of RTL text (#227) — reads the
+ * same (#210).
  */
 export function normalizeArabicIndicDigits(draft: string): string {
   return draft
+    .replace(BIDI_CONTROL, "")
     .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
     .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
 }

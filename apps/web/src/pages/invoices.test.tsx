@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import { chooseOption } from "../tests/select-driver";
 
 /**
  * The kind and status filters clear themselves with an empty-valued "All"
@@ -101,6 +102,13 @@ const waitFor = async (predicate: () => boolean) => {
   }
   throw new Error("condition not met within timeout");
 };
+
+/**
+ * What the keyboard is actually on, as a testid. Node identity works too, but a
+ * failing Bun assertion then serialises the whole element it received: a red run
+ * costs minutes of output formatting instead of one string diff.
+ */
+const focusedTestId = () => document.activeElement?.getAttribute("data-testid") ?? null;
 
 async function mountPage() {
   const container = document.createElement("div");
@@ -244,5 +252,31 @@ describe("InvoicesPage empty states (issue #96)", () => {
     expect(page.empty()).toBeNull();
     // focus lands on the filter that caused the empty view, not the body
     expect(document.activeElement).toBe(page.kindFilter());
+  });
+
+  it("focuses the status filter, not the kind filter, when status changed last", async () => {
+    const page = await mountPage();
+
+    // kind FIRST, so `kind !== ""` stays true while status is what empties the
+    // list: the old rule (`kind !== "" ? kind : status`) is only distinguishable
+    // from "focus the last changed filter" in exactly this order
+    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterSale"));
+    await waitFor(() => page.numbers().length === 1);
+    expect(requests.at(-1)?.kind).toBe("SALE");
+
+    // then status: neither seeded row is PARTIAL, so this empties the list
+    await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusPartial"));
+    await waitFor(() => page.empty() !== null);
+    expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
+
+    // a keyboard user activates the button they tabbed to
+    page.emptyAction()!.focus();
+    act(() => page.emptyAction()?.click());
+    await waitFor(() => page.numbers().length === 2);
+    expect(page.empty()).toBeNull();
+
+    // status is what narrowed the view to nothing, even though kind is set too:
+    // focus must not go to a control that did not empty it
+    expect(focusedTestId()).toBe("invoices-status-filter");
   });
 });

@@ -80,6 +80,11 @@ export function ExpensesPage() {
   const [sortBy, setSortBy] = useState<"occurredAt" | "amount">("occurredAt");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const pager = usePagination();
+  /** the testid of the history filter the owner last CHANGED. After clearing,
+   * focus returns to that control, because it is what emptied the view; an
+   * "always the range preset" rule would send a keyboard user to a control that
+   * never narrowed the list (issue #96 round 4, the invoice rule at 5144100) */
+  const lastHistoryFilterRef = useRef<string | null>(null);
 
   const createExpense = useMutation(
     orpc.expensesCreate.mutationOptions({
@@ -116,6 +121,7 @@ export function ExpensesPage() {
 
   const toggleCategory = (id: string) => {
     pager.reset();
+    lastHistoryFilterRef.current = `expense-filter-${id}`;
     setSelectedCategoryIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -129,6 +135,19 @@ export function ExpensesPage() {
   const historyFiltersActive = preset !== "CURRENT_MONTH" || selectedCategoryIds.size > 0;
 
   function clearHistoryFilters(): void {
+    // the clicked button is replaced by the table (or by an action-less empty
+    // state), so focus is handed to a control that survives BEFORE the button
+    // unmounts (issue #96 round 4 -- the same class as the invoice clear at
+    // 5144100). The target is the filter that emptied the view; the range preset
+    // is the fallback because it is always rendered, including when that
+    // filter's own control is gone.
+    const last = lastHistoryFilterRef.current;
+    const previous =
+      last === null ? null : document.querySelector<HTMLElement>(`[data-testid="${last}"]`);
+    const target =
+      previous ?? document.querySelector<HTMLElement>('[data-testid="expense-range-preset"]');
+    target?.focus();
+    lastHistoryFilterRef.current = null;
     pager.reset();
     setPreset("CURRENT_MONTH");
     setCustomFrom(OPEN_BOUND);
@@ -152,6 +171,9 @@ export function ExpensesPage() {
   ): void {
     const next = editDateBound(previous, text);
     setBound(next);
+    // the bounds live under the range control: the fields themselves unmount when
+    // the window resets, so they cannot be the focus target after a clear
+    lastHistoryFilterRef.current = "expense-range-preset";
     if (next.bound !== previous.bound) pager.reset();
   }
 
@@ -462,7 +484,10 @@ export function ExpensesPage() {
               {t("expensesRange")}
               <Select
                 value={preset}
-                onValueChange={(value) => applyFilterChange(toPreset(value ?? ""), preset, setPreset)}
+                onValueChange={(value) => {
+                  lastHistoryFilterRef.current = "expense-range-preset";
+                  applyFilterChange(toPreset(value ?? ""), preset, setPreset);
+                }}
                 items={PRESET_KEYS.map((key) => ({ value: key, label: t(`rangePreset_${key}`) }))}
               >
                 <SelectTrigger className="w-full" data-testid="expense-range-preset">
@@ -542,6 +567,7 @@ export function ExpensesPage() {
                 // the active pill is a no-op: resetting here would move a later
                 // page with no filter change (finding 2's class)
                 if (selectedCategoryIds.size === 0) return;
+                lastHistoryFilterRef.current = "expense-filter-all";
                 setSelectedCategoryIds(new Set());
                 pager.reset();
               }}

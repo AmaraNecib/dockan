@@ -78,6 +78,10 @@ let listItems: ExpenseRow[] = [];
 let listTotal = 0;
 /** makes the history read reject, so the error branch is distinguishable from empty */
 let listFails = false;
+/** when set, a filtered read is empty while the default window still returns
+ * `listItems`: the "filtered empty, but the default month has rows" case that
+ * clearing must hand focus out of (issue #96 round 4) */
+let filteredEmpty = false;
 
 const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseCategory => ({
   id,
@@ -134,6 +138,10 @@ mock.module("@/lib/rpc", () => ({
           queryKey: ["expenses", input],
           queryFn: async () => {
             if (listFails) throw new Error("LIST_FAILED");
+            const filtering =
+              (input?.categoryIds?.length ?? 0) > 0 ||
+              (input?.preset !== undefined && input.preset !== "CURRENT_MONTH");
+            if (filteredEmpty && filtering) return { items: [], total: 0 };
             return { items: listItems, total: listTotal };
           },
         };
@@ -228,9 +236,15 @@ async function mountPage(queryClient: QueryClient) {
   };
 }
 
+/** What the keyboard is actually on, as a testid. Comparing DOM nodes makes
+ * Bun serialise a whole element tree when the assertion fails: minutes of
+ * output formatting on a red run instead of an instant string diff. */
+const focusedTestId = () => document.activeElement?.getAttribute("data-testid") ?? null;
+
 beforeEach(() => {
   listItems = [];
   listTotal = 0;
+  filteredEmpty = false;
 });
 
 describe("ExpensesPage — create a category inline (issue #99)", () => {
@@ -1214,6 +1228,123 @@ describe("ExpensesPage — history empty state (issue #96)", () => {
 
     await ui.click("expenses-empty-action");
     expect(await ui.waitFor(() => ui.query("expenses-empty")?.textContent?.includes(i18n.t("expensesEmptyHint")) === true)).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps focus on the category that emptied the filtered view when clearing", async () => {
+    // the default month has a row; selecting a second category the read does not
+    // contain empties the filtered view, and the default month still has rows --
+    // so clearing replaces the empty state itself (issue #96 round 4)
+    categoriesFixture = [category("cat-1", "كراء المحل"), category("cat-2", "كهرباء")];
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
+
+    await ui.click("expense-filter-cat-2");
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+    expect(ui.query("expenses-empty-action")?.textContent).toBe(i18n.t("expensesEmptyClearFilters"));
+
+    // a keyboard user activates the button they tabbed to: focus it first, so the
+    // assertion below cannot be satisfied by focus that a previous interaction
+    // left lying on the right control (issue #96 round 4)
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    // the clicked button was replaced by the table, so focus must land on a
+    // control that survives -- and it follows the filter that emptied the view
+    // (the pill), not the range preset that never narrowed it
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-filter-cat-2");
+
+    await ui.unmount();
+  });
+
+  it("falls back to the range preset when the window emptied the view", async () => {
+    // no category is selected, so the window is what emptied the view: focus
+    // must come back to the range control that changed it
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
+
+    await openSelect(ui.query("expense-range-preset")!);
+    const shorterWindow = await findOption(i18n.t("rangePreset_7D"));
+    expect(shorterWindow).not.toBeNull();
+    await activateOption(shorterWindow!);
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    // the select hands focus back to its trigger when it closes, so the button
+    // must be focused explicitly or this assertion would pass on unfixed code
+    // by inheriting that focus (the test would then prove nothing)
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-range-preset");
+
+    await ui.unmount();
+  });
+
+  it("returns focus to the all-categories pill when the owner last touched it", async () => {
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    // a window with no rows: the history is empty whatever the categories are
+    await openSelect(ui.query("expense-range-preset")!);
+    const shorterWindow = await findOption(i18n.t("rangePreset_7D"));
+    expect(shorterWindow).not.toBeNull();
+    await activateOption(shorterWindow!);
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    await ui.click("expense-filter-cat-1");
+    await ui.click("expense-filter-all");
+
+    // the last change was the pill, and the window is still empty, so the clear
+    // button remains and focus must go back to the pill itself
+    const action = ui.query<HTMLButtonElement>("expenses-empty-action");
+    expect(action).not.toBeNull();
+    action!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-filter-all");
 
     await ui.unmount();
   });

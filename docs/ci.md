@@ -6,14 +6,16 @@ local Guard checks in `engineering-workflow.md`.
 
 | Job | Steps |
 | --- | --- |
-| `changes` | fetch-depth-0 checkout, `git diff` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `rust` outputs the other jobs read |
+| `changes` | fetch-depth-0 checkout, `git diff --no-renames` of the PR (or push), then `scripts/e2e-selection.ts` and one `grep -E` turn the file list into the `e2e_mode`, `e2e_specs` and `rust` outputs the other jobs read, and write the scope decision to the run summary |
 | `checks` | `bun install --frozen-lockfile`, `bun run typecheck`, `bun run lint`, `bun run test`, `bun run --filter @dokan/web build`, `bun audit` |
 | `e2e` | `bunx playwright install --with-deps chromium`, then `bun run test:e2e` (with the mapped spec list when the diff is affected) on CI-only ports (`DOKAN_PORT=5317`, `DOKAN_WEB_PORT=6173`), teed to `e2e-logs/playwright.log`; uploads `test-results/` + `e2e-logs/` as the `playwright-e2e-failure-<attempt>` artifact on any non-success outcome |
 | `rust` | gated on the `changes` job's `rust` output; `bun install --frozen-lockfile`, `bun run --filter @dokan/web build`, then `cargo test` and `cargo clippy -- -D warnings` in `apps/desktop/src-tauri` |
 
 `checks` always runs. `e2e` and `rust` read the `changes` outputs, so an e2e
 `skip` or a diff that cannot reach the crate skips those jobs; the scope
-decision is on the e2e job summary. If the `changes` job itself fails, its
+decision is written to the **`changes` job summary**, not the skipped job's, so
+a `skip` decision is explained on the run itself. If the `changes` job itself
+fails, its
 outputs are empty and both consumers read that as "run": the gates use
 `!cancelled()` with an empty-tolerant comparison, so an infra failure widens
 the run instead of silently narrowing it. A typecheck/lint/test failure and a
@@ -28,7 +30,15 @@ merged tree, and it is the backstop that makes narrowing a PR safe.
 
 - `e2e` runs `full` on a push, `full` on a PR carrying the `e2e:full` label, the
   selected specs otherwise, and is skipped only when nothing in the diff can
-  reach a browser.
+  reach a browser. The `pull_request` trigger subscribes to `labeled` (alongside
+  the default `opened`, `synchronize` and `reopened`) so adding `e2e:full` to an
+  already-open PR starts a run — GitHub dispatches no event for a label change
+  otherwise, which left the escape hatch silently inert (#231).
+- The changed-file list is collected with `git diff --no-renames`, so a rename
+  is listed as a delete plus an add. Rename detection reports only the
+  destination, which would hide a file moved out of `apps/desktop/src-tauri/**`
+  from the `rust` gate; listing both sides runs the gates whichever way a file
+  moved, and can only over-run them (#231).
 - `rust` runs when a path that can end up inside the crate, or drive its
   `build.rs`, changed. The crate itself and its scripts are
   `apps/desktop/src-tauri/**`, `apps/desktop/scripts/**` and
@@ -76,6 +86,18 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   are critical too. The item picker is imported by the items, sale and purchase
   pages, and the party panels by the parties, party-detail, sale and purchase
   pages, so a single feature rule would under-select.
+- `apps/web/src/components/vault/vault-gate.tsx` is **critical**, not a
+  vault-only feature rule. `RequireSession` renders the gate before any route,
+  and its `useVaultStatus` also drives the legacy plaintext startup, so a change
+  there can change how every spec boots (#231). Its sibling `vault-settings.tsx`
+  keeps the narrow `vault.spec.ts` rule.
+- The invoice rule carries `returns.spec.ts`, because the invoice page renders
+  the new-return `ReturnsPanel` that spec drives, and the purchase rule carries
+  `learnability.spec.ts`, whose short-window cases pin the purchase form and its
+  pinned bar (#231).
+- `phone-identity.spec.ts` and `rpc-helpers.spec.ts` (#209) ride the parties
+  rule: both drive the customers page (`customersList`, and `actAndAck` over
+  `customersCreate`).
 - The whole of `apps/api/**` except `auth/**` is critical. The API is a single
   router over a single store; the map does not claim to trace which API module
   reaches which screen. `apps/api/src/auth/**` is the one API area with a
@@ -226,15 +248,15 @@ Two preconditions are part of the job because `build.rs` needs them before
   `beforeBuildCommand`, which does not run for a bare `cargo test`.
 
 The job has no trigger-level `paths:` filter. A filtered trigger makes the
-*whole* workflow report "skipped", and a skipped required check never satisfies
-branch protection, so a docs-only PR would stay pending forever. Issue 226 gates
+*whole* workflow report "skipped": GitHub creates no check run at all, so a
+required check would stay pending forever on a docs-only PR. Issue 226 gates
 the job on the `changes` job's `rust` output instead, so the trigger stays
 unfiltered and the job still reports on every event (it is the job that is
-skipped, not the workflow). The same caveat applies to that skipped job: if the
-owner ever makes `rust` or `e2e` a required check, the skipped run needs a
-reporting shim (a `continue-on-error` twin, or a tiny always-running job that
-asserts the result) before it can count as green. Until then nothing is stuck,
-and the rust-cache keeps the warm path cheap when the gate does open.
+skipped, not the workflow). A job skipped by a job-level `if:` reports a
+`skipped` check, which GitHub counts as a successful required status (only
+`success`, `skipped` and `neutral` satisfy branch protection), so `rust` and
+`e2e` can be made required without a reporting shim. The rust-cache keeps the
+warm path cheap when the gate does open.
 
 ## Required checks — manual step
 
@@ -255,10 +277,10 @@ branch protection. Until the owner selects it, `rust` still runs and reports on
 every PR, but a red run does not block a merge.
 
 Since #226, `rust` and `e2e` are skipped for diffs that cannot reach them. A
-required check must be present and green on every PR, so before making either
-one required the owner has to add the reporting shim described in the Rust
-section above; otherwise a docs-only or web-only PR waits on a check that will
-never run. This is the reason the trigger itself is not filtered.
+job-level skip reports a `skipped` check, which GitHub treats as a successful
+required status, so both can be selected above without a reporting shim. What
+would break is a trigger-level `paths:` filter (it deletes the workflow's check
+runs entirely), which is why the trigger itself is kept unfiltered.
 
 ## Desktop release (manual + version tags)
 

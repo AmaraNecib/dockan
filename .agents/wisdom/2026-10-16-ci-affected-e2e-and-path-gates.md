@@ -42,16 +42,60 @@ in a YAML `run:` is untested logic: have the workflow test extract the real
 pattern from the step and assert one positive and one negative path (JS `RegExp`
 is only an approximation of ERE, so keep the pattern hand-escaped).
 
-## Skip a suite by path and a required check can never be green
-A trigger-level `paths:` filter or a job-level `if:` makes the job report
-"skipped". If the owner later marks that check required, the PR waits forever on
-a check that will not run. This repo has no required checks today, so the gate is
-safe; the assumption is written next to it in `docs/ci.md` and the workflow guard
-(`apps/desktop/scripts/ci-workflow.test.ts`) keeps the trigger unfiltered.
+## A job-level skip is a green required check; only a trigger filter strands one
+A job skipped by a job-level `if:` still reports a check run, with conclusion
+`skipped`. GitHub counts `successful`, `skipped` and `neutral` as satisfying a
+required status check (`github/docs`: *About protected branches* — "Required
+status checks must have a `successful`, `skipped`, or `neutral` status";
+*Troubleshooting required status checks* — "Successful check statuses are
+`success`, `skipped`, and `neutral`"). So a path-gated job can be made required
+without a reporting shim. A workflow excluded by a trigger-level `paths:` filter
+is different: it creates no check run at all, so a required check stays pending
+forever. The first draft of #226 claimed both needed a shim; Greptile caught it
+and the claim was removed (#231).
 
-**Always**: pair a path gate with a sentence stating the branch-protection
-assumption, and if the check must become required, add a small always-running
-shim that reports the real result.
+**Always**: gate a job with an `if:` on a `changes` output, never a trigger
+`paths:` filter, and say that the skipped job still reports a green check.
+
+## Rename detection hides the side of a path gate that matters
+`git diff --name-only` reports only the *destination* of a detected rename. A
+file moved out of `apps/desktop/src-tauri/**` therefore listed its ungated
+destination, the `rust` grep saw no crate path, and the job that must compile
+the crate it just lost was skipped. `git diff --no-renames` lists the move as a
+delete plus an add, so both sides appear and either direction opens the gate.
+The guard test builds a throwaway repo, `git mv`s a crate file out and back, and
+asserts the plain `--name-only` output omits the old path (#231).
+
+**Always**: collect a gate's changed-file list with `--no-renames`, and test the
+rename direction that removes a gated file, not only the one that adds it.
+
+## A label is not a trigger until `pull_request.types` lists `labeled`
+The `e2e:full` escape hatch read the PR label but the trigger only fired on the
+three defaults (`opened`, `synchronize`, `reopened`), so adding the label to an
+already-open PR started nothing. Specifying `types:` also *replaces* the
+defaults, so all four must be listed (#231).
+
+**Always**: when a workflow reads `github.event.pull_request.labels`, pin the
+trigger `types:` to include `labeled` and assert the whole list in the guard.
+
+## A skip explanation must live in the job that always runs
+`if: e2e_mode != 'skip'` is exactly the condition that skips the e2e job, so a
+scope summary written inside that job never publishes the reason nothing ran.
+The summary belongs in `changes`, which always runs (use `if: always()` so it
+still fires when the decision itself fails) (#231).
+
+**Always**: write the run summary in the always-running decision job, never in
+a consumer that the decision can skip.
+
+## A self-guard cannot protect the wiring that runs it
+The `bun run test` → `bun test ./scripts/` assertion lived inside the scripts
+suite: removing the scripts command from `package.json` also stopped the
+assertion from running, so the guard disabled itself. It now lives in
+`apps/desktop/scripts/ci-workflow.test.ts`, reached through `turbo test` (#231).
+
+**Always**: put a wiring assertion in a suite the wire does not run, and note
+that nesting a guard inside its own trigger only proves the two are broken
+together.
 
 ## Let the drift guard see uncommitted files
 `scripts/e2e-selection.test.ts` fails when a spec on disk is unreachable from

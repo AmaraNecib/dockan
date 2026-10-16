@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,8 +9,10 @@ import { globToRegExp, loadMap, selectSpecs } from "./e2e-selection";
 // This file is the reason the map can be trusted. It is cheap (no browser, no
 // server) and runs inside `bun run test` (`turbo test` then `bun test ./scripts/`),
 // so a stale map fails that job instead of silently disarming the suite. The
-// last test asserts that wiring, so removing `bun test ./scripts/` cannot
-// retire this guard quietly.
+// wiring assertion that `bun run test` still runs this suite deliberately lives
+// in `apps/desktop/scripts/ci-workflow.test.ts`: an assertion inside this file
+// could not catch its own removal when the command that runs it was removed too
+// (#231).
 const ROOT = join(import.meta.dir, "..");
 const SPEC_DIR = join(ROOT, "tests", "e2e");
 const CLI = join(ROOT, "scripts", "e2e-selection.ts");
@@ -185,6 +187,45 @@ describe("e2e-selection behaviour", () => {
     expect(parties.reason).toContain("critical path");
   });
 
+  test("an invoice page edit runs the new-return form's spec (#231)", () => {
+    // invoice.tsx renders ReturnsPanel (the new-return form), and returns.spec.ts
+    // drives that panel through the invoice page. Dropping it let an
+    // invoice.tsx edit pass PR checks without the browser covering the return
+    // form.
+    const scope = selectSpecs(["apps/web/src/pages/invoice.tsx"], map);
+    expect(scope.mode).toBe("affected");
+    expect(scope.specs).toContain("returns.spec.ts");
+  });
+
+  test("a purchase page edit runs the short-window learnability checks (#231)", () => {
+    // learnability.spec.ts pins the purchase form and its pinned bar at the two
+    // short window heights; a purchase.tsx edit must not skip them.
+    const scope = selectSpecs(["apps/web/src/pages/purchase.tsx"], map);
+    expect(scope.mode).toBe("affected");
+    expect(scope.specs).toContain("learnability.spec.ts");
+  });
+
+  test("the vault gate is critical: shared startup, not a vault-only rule (#231)", () => {
+    // RequireSession renders the gate before any route, and its useVaultStatus
+    // drives the legacy plaintext startup too, so a gate edit can change how
+    // every spec boots. The vault-only sibling keeps its narrow rule.
+    const gate = selectSpecs(["apps/web/src/components/vault/vault-gate.tsx"], map);
+    expect(gate.mode).toBe("full");
+    expect(gate.reason).toContain("critical path");
+    const settings = selectSpecs(["apps/web/src/components/vault/vault-settings.tsx"], map);
+    expect(settings.mode).toBe("affected");
+    expect(settings.specs).toEqual(["vault.spec.ts"]);
+  });
+
+  test("the #209 specs are reachable from the parties rule", () => {
+    // PR #209 added phone-identity.spec.ts and rpc-helpers.spec.ts while this
+    // branch was open; the drift guard fails until they are mapped. Both drive
+    // the customers page (party phone identity, actAndAck over customersCreate).
+    const scope = selectSpecs(["apps/web/src/pages/parties.tsx"], map);
+    expect(scope.specs).toContain("phone-identity.spec.ts");
+    expect(scope.specs).toContain("rpc-helpers.spec.ts");
+  });
+
   test("shared web code is critical, not a feature rule", () => {
     // lib/ is read by every screen; a change there must run the whole suite.
     const scope = selectSpecs(["apps/web/src/lib/receipt.ts"], map);
@@ -245,14 +286,5 @@ describe("e2e-selection CLI", () => {
       status = (error as { status?: number }).status ?? 0;
     }
     expect(status).toBe(2);
-  });
-});
-
-describe("e2e-selection wiring", () => {
-  test("`bun run test` runs the scripts suite, so this guard cannot be retired", () => {
-    // SAFETY: package.json is this repo's own file; the `toContain` below is
-    // the assertion that the field exists with the expected value.
-    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> };
-    expect(pkg.scripts.test).toContain("bun test ./scripts/");
   });
 });

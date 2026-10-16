@@ -15,11 +15,21 @@
 # The push-to-develop run stays full: it is the only run that sees the exact
 # merged tree. Precedence in the map is critical -> feature -> skip -> full, so
 # a path the map does not know costs minutes, never coverage.
+#
+# #231 review fixes, all in this file: the diff is collected with `--no-renames`
+# so both sides of a move are seen, the PR trigger subscribes to `labeled` so the
+# `e2e:full` escape hatch starts a run, and the scope summary is published by
+# `changes` so a `skip` decision is explained on the run itself.
 name: CI
 
 on:
   pull_request:
     branches: [develop]
+    # `labeled` is the `e2e:full` escape hatch: GitHub dispatches no event for a
+    # label change unless it is listed, so without it adding the label to an
+    # open PR starts nothing. Listing `types:` replaces the default set
+    # (opened, synchronize, reopened), so all four are named.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [develop]
   # Manual escape hatch: a dispatch re-runs every suite whatever the diff says,
@@ -82,7 +92,13 @@ jobs:
             # as if this PR made them. If merge-base itself fails (unrelated
             # histories) the tip is the fallback, which can only over-list.
             root="$(git merge-base "$base" "$head" 2>/dev/null || echo "$base")"
-            git diff --name-only "$root" "$head" > changed.txt
+            # `--no-renames` lists a detected rename as a delete plus an add.
+            # Without it the diff reports only the destination, so a file moved
+            # out of `apps/desktop/src-tauri/**` would list its ungated
+            # destination and the rust gate would skip a crate that just lost a
+            # file. Both directions are therefore listed and run the gate; a
+            # rename can only over-run it, never under-run it.
+            git diff --no-renames --name-only "$root" "$head" > changed.txt
           fi
           echo "--- changed files ---"; cat changed.txt
 
@@ -123,6 +139,32 @@ jobs:
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # The summary lives here, not in the `e2e` job: a `skip` decision is
+      # exactly when that job does not run, so a summary written there would
+      # never explain why nothing ran (#231). `always()` still publishes it when
+      # the decision itself failed, where the outputs are empty.
+      - name: Report the scope decision
+        if: always()
+        env:
+          E2E_MODE: ${{ steps.decide.outputs.e2e_mode }}
+          E2E_REASON: ${{ steps.decide.outputs.e2e_reason }}
+          E2E_SPECS_OUT: ${{ steps.decide.outputs.e2e_specs }}
+          RUST_RUNS: ${{ steps.decide.outputs.rust }}
+        run: |
+          {
+            echo "### CI scope"
+            echo ""
+            echo "e2e: \`${E2E_MODE:-unknown}\`"
+            echo ""
+            echo "\`${E2E_REASON:-no reason recorded — the decision may have failed}\`"
+            if [ -n "$E2E_SPECS_OUT" ]; then
+              echo ""
+              echo "Specs: \`$E2E_SPECS_OUT\`"
+            fi
+            echo ""
+            echo "rust: \`${RUST_RUNS:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     name: typecheck, lint, test, audit
@@ -189,12 +231,14 @@ jobs:
   e2e:
     name: playwright e2e
     needs: changes
-    # A skip is not silent: the decision is written to the job summary below,
+    # A skip is not silent: the decision is written to the `changes` job's
+    # summary (not this job's — a skip is exactly when this job does not run),
     # and the push-to-develop run always reports `full`. `!cancelled()` (not a
     # bare read of the output) makes a `changes` failure fail closed: an empty
-    # `e2e_mode` runs the whole suite instead of skipping it. No required status
-    # check is configured on `develop`; if the owner adds one, a path filter on
-    # a required check needs a reporting shim (see docs/ci.md).
+    # `e2e_mode` runs the whole suite instead of skipping it. A skipped job-level
+    # gate satisfies a required status check (the check reports `skipped`, which
+    # GitHub counts as successful); only a trigger-level `paths:` filter would
+    # leave a required check pending (see docs/ci.md).
     if: ${{ !cancelled() && needs.changes.outputs.e2e_mode != 'skip' }}
     runs-on: ubuntu-latest
     # The job budget has to cover SETUP + the run step's own limit + the upload,
@@ -230,25 +274,9 @@ jobs:
       - name: Install Playwright browser
         run: bunx playwright install --with-deps chromium
 
-      # The scope decision is machine-readable on the job summary, so a reviewer
-      # can see what ran and why without reading the `changes` log. The outputs
-      # arrive as env, never interpolated into the script: a reason carries a
-      # changed file name, which is PR-controlled input.
-      - name: Report the scope decision
-        env:
-          E2E_MODE: ${{ needs.changes.outputs.e2e_mode }}
-          E2E_REASON: ${{ needs.changes.outputs.e2e_reason }}
-          E2E_SPECS_OUT: ${{ needs.changes.outputs.e2e_specs }}
-        run: |
-          {
-            echo "### e2e scope: $E2E_MODE"
-            echo ""
-            echo "\`$E2E_REASON\`"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$E2E_SPECS_OUT" ]; then
-            echo "Specs: \`$E2E_SPECS_OUT\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
+      # The scope decision is published by the `changes` job: its step summary is
+      # the one place a `skip` decision is visible, because that is exactly when
+      # this job does not run (#231).
 
       - name: Run Playwright e2e
         # pipefail is load-bearing: without it the step exits with tee's status

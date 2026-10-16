@@ -36,6 +36,9 @@
     "apps/web/src/lib/**",
     "apps/web/src/components/print-sheet.tsx",
 
+    "$comment: the vault gate wraps every screen — RequireSession renders it before any route — and its useVaultStatus drives the legacy plaintext startup too, so a changed line can change how any spec boots. Not a vault-only feature rule (#231)",
+    "apps/web/src/components/vault/vault-gate.tsx",
+
     "$comment: components imported by more than one page (catalog by items/sale/purchase, parties by parties/party-detail/sale/purchase); a rule would under-select, so they are critical",
     "apps/web/src/components/catalog/**",
     "apps/web/src/components/parties/**",
@@ -108,11 +111,12 @@
       ]
     },
     {
+      "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231)",
       "match": ["apps/web/src/pages/purchase.tsx", "apps/web/src/pages/purchase.test.tsx"],
-      "specs": ["purchase-intake.spec.ts"]
+      "specs": ["purchase-intake.spec.ts", "learnability.spec.ts"]
     },
     {
-      "$comment": "invoice list/detail and the shared invoice header, which the purchase page also renders",
+      "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231)",
       "match": [
         "apps/web/src/pages/invoice.tsx",
         "apps/web/src/pages/invoices.tsx",
@@ -126,7 +130,8 @@
         "invoice-payments.spec.ts",
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
-        "purchase-intake.spec.ts"
+        "purchase-intake.spec.ts",
+        "returns.spec.ts"
       ]
     },
     {
@@ -149,7 +154,7 @@
       "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts"]
     },
     {
-      "$comment": "customers + suppliers list and detail pages",
+      "$comment": "customers + suppliers list and detail pages; phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride the same page (#209 drift)",
       "match": [
         "apps/web/src/pages/parties.tsx",
         "apps/web/src/pages/parties.test.tsx",
@@ -159,9 +164,11 @@
       "specs": [
         "customers.spec.ts",
         "customer-name-variants.spec.ts",
+        "phone-identity.spec.ts",
         "supplier-account.spec.ts",
         "arabic-search.spec.ts",
-        "pagination.spec.ts"
+        "pagination.spec.ts",
+        "rpc-helpers.spec.ts"
       ]
     },
     {

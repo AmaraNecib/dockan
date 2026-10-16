@@ -13,10 +13,16 @@
  * The workflow is parsed with the shared `workflow-utils` helpers, so comments
  * are stripped, block scalars are dedented and line endings are normalised the
  * same way as the desktop-installer workflow tests.
+ *
+ * #231 added the review-round guards: `--no-renames` (both sides of a rename),
+ * the `labeled` trigger, the decision step reaching `full` for a labeled PR, and
+ * the root-`test`-script wiring assertion moved out of the scripts suite.
  */
 
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -108,6 +114,75 @@ function jobField(source: string, jobName: string, key: string): string {
     if (match !== null) return match[1].trim();
   }
   return "";
+}
+
+/** The rust-path ERE the `changes` job greps changed.txt with, as a string. */
+function rustPathPattern(): string {
+  const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
+  const match = /grep -qE '([^']+)' changed\.txt/u.exec(decide.run);
+  if (match === null) throw new Error("The changes job has no rust grep");
+  return match[1];
+}
+
+/**
+ * Run the `changes` decision script with the two GitHub expressions it
+ * interpolates resolved (event name, and whether the PR carries `e2e:full`).
+ * An expression left unresolved throws, so a new one cannot pass the test while
+ * the step is only partially executed.
+ */
+function runDecide(
+  run: string,
+  event: { eventName: string; hasFullLabel: boolean },
+) {
+  const script = run
+    .replace(
+      /\$\{\{\s*contains\(github\.event\.pull_request\.labels\.\*\.name, 'e2e:full'\)\s*\}\}/gu,
+      event.hasFullLabel ? "true" : "false",
+    )
+    .replace(/\$\{\{\s*github\.event_name\s*\}\}/gu, event.eventName);
+  const unresolved = /\$\{\{[^}]*\}\}/u.exec(script);
+  if (unresolved !== null) throw new Error(`unhandled expression in the decide step: ${unresolved[0]}`);
+
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-decide-"));
+  try {
+    const outputFile = path.join(dir, "github-output");
+    // the decision step's rust grep reads changed.txt; an empty file keeps it
+    // quiet and yields rust=false in the branches that do not run the selector
+    writeFileSync(path.join(dir, "changed.txt"), "");
+    const scope = execFileSync("bash", ["-euo", "pipefail", "-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      env: shellEnv({ GITHUB_OUTPUT: outputFile }),
+    });
+    return { scope, outputs: readFileSync(outputFile, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** process.env as string values, plus `extra` — execFileSync rejects undefined. */
+function shellEnv(extra: Record<string, string>) {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  return { ...env, ...extra };
+}
+
+/** A throwaway git repo for the diff commands; `fn` runs inside it. */
+function withTempRepo(fn: (git: (...args: string[]) => string, dir: string) => void): void {
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-rename-"));
+  const git = (...args: string[]): string =>
+    execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "ci-workflow-test@example.com");
+    git("config", "user.name", "ci-workflow-test");
+    git("config", "commit.gpgsign", "false");
+    fn(git, dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 /** The only Rust gate #226 allows: the `changes` job's diff decision. */
@@ -334,10 +409,7 @@ describe("PR CI workflow", () => {
   });
 
   it("detects every crate-affecting path for the Rust gate", () => {
-    const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
-    const match = /grep -qE '([^']+)' changed\.txt/u.exec(decide.run);
-    if (match === null) throw new Error("The changes job has no rust grep");
-    const rustPath = new RegExp(match[1], "u");
+    const rustPath = new RegExp(rustPathPattern(), "u");
     const cratePaths = [
       // the crate, its ACL and its build script
       "apps/desktop/src-tauri/src/lib.rs",
@@ -374,6 +446,119 @@ describe("PR CI workflow", () => {
     ]) {
       expect(rustPath.test(other), `${other} must not mark the diff as rust`).toBe(false);
     }
+  });
+
+  it("collects both sides of a rename, so a move across the rust gate still runs it", () => {
+    // #231: `git diff --name-only` reports only the destination of a detected
+    // rename, so a file moved out of `apps/desktop/src-tauri/**` listed an
+    // ungated path and the crate that just lost a file was skipped. The diff
+    // must ask for `--no-renames`, which lists the move as delete + add.
+    const diff = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Compute the changed-file list");
+    expect(diff.run).toContain("--no-renames");
+
+    const rustPath = new RegExp(rustPathPattern(), "u");
+    const crateFile = "apps/desktop/src-tauri/src/lib.rs";
+    const outsideFile = "apps/desktop/lib.rs";
+    const lines = (output: string): string[] => output.split("\n").filter(Boolean);
+
+    withTempRepo((git, dir) => {
+      mkdirSync(path.join(dir, "apps/desktop/src-tauri/src"), { recursive: true });
+      writeFileSync(path.join(dir, crateFile), "pub fn guard() {}\n");
+      git("add", "-A");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD").trim();
+
+      // OUT of the gate: the crate loses a file, so the deleted side is what
+      // must keep the gate open.
+      git("mv", crateFile, outsideFile);
+      git("commit", "-qm", "move out");
+      const movedOut = git("diff", "--no-renames", "--name-only", base, "HEAD");
+      expect(lines(movedOut)).toContain(crateFile);
+      expect(lines(movedOut).some((file) => rustPath.test(file))).toBe(true);
+      // The pre-#231 command hid the gate side entirely. Rename detection is
+      // forced on so the contrast holds whatever the host's git config says.
+      const withoutFix = git("-c", "diff.renames=true", "diff", "--name-only", base, "HEAD");
+      expect(lines(withoutFix)).not.toContain(crateFile);
+
+      // INTO the gate: a plain file becomes a crate input, so the added side
+      // must open the gate.
+      git("mv", outsideFile, "apps/desktop/src-tauri/src/recovered.rs");
+      git("commit", "-qm", "move in");
+      const movedIn = git("diff", "--no-renames", "--name-only", base, "HEAD");
+      expect(lines(movedIn)).toContain("apps/desktop/src-tauri/src/recovered.rs");
+      expect(lines(movedIn).some((file) => rustPath.test(file))).toBe(true);
+    });
+  });
+
+  it("subscribes to `labeled` so the e2e:full escape hatch starts a run (#231)", () => {
+    const triggers = onLines(WORKFLOW_SOURCE).join("\n");
+    // A `types:` list replaces the default events, so `labeled` is not enough on
+    // its own: the three defaults must stay or a push/PR stops triggering.
+    expect(triggers).toMatch(/^\s{4}types:\s*\[opened, synchronize, reopened, labeled\]$/mu);
+  });
+
+  it("reaches `full` for a labeled pull_request event (#231)", () => {
+    // The trigger (pinned by the `types:` test above) is what makes GitHub
+    // dispatch; this proves the decision then classifies the event as full. The
+    // two tests are the proof together: the `types:` assertion fails if the
+    // trigger is reverted, this one fails if the label branch is.
+    const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
+    const labeled = runDecide(decide.run, { eventName: "pull_request", hasFullLabel: true });
+    expect(labeled.scope).toContain("mode=full");
+    expect(labeled.scope).toContain("reason=e2e:full label");
+    expect(labeled.outputs).toContain("e2e_mode=full");
+    // a push to develop is full for a different reason; the branch still runs
+    const pushed = runDecide(decide.run, { eventName: "push", hasFullLabel: false });
+    expect(pushed.scope).toContain("reason=merge to develop");
+  });
+
+  it("publishes the skip explanation from the always-running changes job (#231)", () => {
+    // Finding 4: the summary used to live in the `e2e` job, which a `skip`
+    // decision does not run, so nothing explained the skip. Pin the home (it
+    // must be a `changes` step, so a revert to `e2e` fails `stepNamed`) and the
+    // behaviour (it writes the mode, reason and rust decision).
+    const summary = stepNamed(
+      parseSteps(WORKFLOW_SOURCE, "changes"),
+      "Report the scope decision",
+    );
+    expect(summary.condition).toBe("always()");
+    expect(
+      parseSteps(WORKFLOW_SOURCE, "e2e").some((step) => step.name === "Report the scope decision"),
+    ).toBe(false);
+
+    const dir = mkdtempSync(path.join(tmpdir(), "ci-summary-"));
+    try {
+      const summaryFile = path.join(dir, "step-summary");
+      execFileSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+        cwd: dir,
+        encoding: "utf8",
+        env: shellEnv({
+          GITHUB_STEP_SUMMARY: summaryFile,
+          E2E_MODE: "skip",
+          E2E_REASON: "no browser-reachable path changed",
+          E2E_SPECS_OUT: "",
+          RUST_RUNS: "false",
+        }),
+      });
+      const written = readFileSync(summaryFile, "utf8");
+      expect(written).toContain("e2e: `skip`");
+      expect(written).toContain("no browser-reachable path changed");
+      expect(written).toContain("rust: `false`");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the root `test` script running the scripts suite (#231)", () => {
+    // This assertion used to live in scripts/e2e-selection.test.ts, where
+    // removing `bun test ./scripts/` from the root script also stopped the
+    // assertion from running. This suite is reached through `turbo test`, so it
+    // still runs — and fails — after the scripts suite is disconnected.
+    // SAFETY: package.json is this repo's own file; `scripts` is the field read.
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(import.meta.dir, "../../../package.json"), "utf8"),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts.test).toContain("bun test ./scripts/");
   });
 
   it("keeps the fail-closed shell wiring for the diff decision", () => {

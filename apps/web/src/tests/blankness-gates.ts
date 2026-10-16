@@ -36,18 +36,23 @@ import { fileURLToPath } from "node:url";
  * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
  * receiver that is NOT a plain member chain (`f().trim() === ""`,
  * `(draft as string).trim()`, `(draft).trim()`, `draft!.trim()`,
- * `drafts[\n id\n].trim()`, `x.trimStart() === ""`; the two-step form
- * `const t = f().trim()` IS caught), a blank operand that is not a `""`/`''`
- * literal (an empty template), a value assigned after a bare `let t; t = d.trim()`
- * or aliased (`const u = t`), a second declarator on one line
- * (`const t = d.trim(), u = e.trim()`), a destructuring binding, a gate in a file
- * that parses numerics without importing `amount-parse`/`numeric-input` — none of
- * those is caught. A declaration bound by `var` is not seen at all (its gate is
- * missed), and a `var`, parameter or `catch` binding can be attributed to a
- * same-named visible declaration (false positive); an ASI-ambiguous
- * `const t = foo` followed by `bar.trim();` attributes that `.trim()` to `t`
- * (false positive with invented receiver text), and so does an arrow/callback
- * body on the right-hand side (`const t = xs.map((x) => x.trim())`). A string or
+ * `draft.trim().trim()`, `drafts[
+ id
+].trim()`, `x.trimStart() === ""`,
+ * `draft.trim () === ""`; the two-step form `const t = f().trim()` IS caught), a
+ * blank operand that is not a `""`/`''` literal (an empty template), a value
+ * assigned after a bare `let t; t = d.trim()` or aliased (`const u = t`), a second
+ * declarator on one line (`const t = d.trim(), u = e.trim()`), a destructuring
+ * binding, a `switch (t) { case "": }` after a raw trim, a gate in a file that
+ * parses numerics without importing `amount-parse`/`numeric-input` — none of those
+ * is caught. A declaration bound by `var` is not seen at all (its gate is missed),
+ * and a `var`, parameter or `catch` binding can be attributed to a same-named
+ * visible declaration (false positive); an ASI-ambiguous `const t = foo` followed
+ * by `bar.trim();`, a continuation line (`const t = foo
+ + bar.trim()`), or an
+ * arrow/callback body on the right-hand side (`const t = xs.map((x) => x.trim())`,
+ * whose canonical text then also loses the closing bracket) attributes that
+ * `.trim()` to `t` (false positive with invented receiver text). A string or
  * template literal whose TEXT looks like a gate is scanned as code: blanking the
  * body was rejected because it would also hide a real gate inside a template
  * `${}` expression, which is the unsafe direction for a ratchet. Regex literals
@@ -59,8 +64,8 @@ import { fileURLToPath } from "node:url";
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
-/** A member/chain receiver, e.g. `value.amount`, `drafts[line.id]`. */
-const CHAIN = String.raw`[A-Za-z_$][\w$]*(?:\s*(?:\.[A-Za-z_$][\w$]*|\[[^\]\n]+\]))*`;
+/** A member/chain receiver, e.g. `value.amount`, `drafts[line.id]`, `a?.b`, `this.#draft`. */
+const CHAIN = String.raw`[A-Za-z_$#][\w$]*(?:\s*(?:\??\.[A-Za-z_$#][\w$]*|\??\.?\[[^\]\n]+\]))*`;
 const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
 const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)`, "g");
 const PAREN_FWD = new RegExp(
@@ -77,7 +82,7 @@ const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\s*
  * The start of a two-step declaration. The right-hand side is read separately so
  * it may cross a line break (`const trimmed =\n  draft.trim();`).
  */
-const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*`, "g");
+const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=;]+)?=\s*`, "g");
 const DECL_TRIM = String.raw`\.trim\(\)`;
 const OPENERS = "([{";
 const CLOSERS = ")]}";

@@ -250,6 +250,34 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     ).toEqual(['s.ts::(drafts[id] ?? fallback).trim() !== ""']);
   });
 
+  it("catches a type-annotated two-step declaration (#244 round 2)", () => {
+    const synthetic = [
+      "export function f(draft: string) {",
+      "  const trimmed: string = draft.trim();",
+      '  if (trimmed === "") return null;',
+      "  let other: string | null = draft.trim();",
+      '  if (other === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+      'synthetic.ts::other === "" [draft.trim()]',
+    ]);
+  });
+
+  it("keeps a ?. chain receiver whole, including an optional subscript and a private field (#244 round 2)", () => {
+    expect(findBlanknessGates('const a = box?.value.trim() === "";', "s.ts").map((gate) => gate.signature)).toEqual([
+      's.ts::box?.value.trim() === ""',
+    ]);
+    expect(findBlanknessGates('const a = drafts?.[id].trim() === "";', "s.ts").map((gate) => gate.signature)).toEqual([
+      's.ts::drafts?.[id].trim() === ""',
+    ]);
+    expect(findBlanknessGates('const a = this.#draft.trim() === "";', "s.ts").map((gate) => gate.signature)).toEqual([
+      's.ts::this.#draft.trim() === ""',
+    ]);
+  });
+
   it("does not attribute a reversed property read to a visible raw declaration (#244 round 2, precision)", () => {
     const synthetic = [
       "export function f(draft: string) {",

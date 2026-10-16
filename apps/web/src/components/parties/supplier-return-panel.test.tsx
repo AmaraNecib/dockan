@@ -31,7 +31,13 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({
           id: "inv-1",
           kind: "PURCHASE",
-          lines: [{ id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 400, netTotal: 2000 }],
+          // two fixtures, not one: l1 keeps the zero-price "free line" case
+          // alive (#229 finding 2) while l2 gives the #210 preview pins a
+          // non-zero product, so a wrong reader shows 400000/600 not 0
+          lines: [
+            { id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 0, netTotal: 0 },
+            { id: "l2", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 400, netTotal: 2000 },
+          ],
         }),
       }),
     },
@@ -161,8 +167,14 @@ async function openSelect(testId: string, optionText: string) {
 describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
   it("enables submit for a valid quantity on a free line (zero return value)", async () => {
     await render();
+    // l1 is the zero-price line, so the return value stays 0: a change that
+    // wrongly disabled zero-value returns must fail here (#229 finding 2)
     typeInto("supplier-return-qty-l1", "1");
+    expect(previewAmount()).toBe(0);
     expect(confirmButton()?.disabled).toBe(false);
+    // and the zero-value return is actually saved, not blocked at submit
+    await submit();
+    expect(submitted[0]).toMatchObject({ invoiceId: "inv-1", lines: [{ invoiceLineId: "l1", quantity: 1 }] });
   });
 
   it("rejects a fractional quantity instead of silently dropping it", async () => {
@@ -172,24 +184,24 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     expect(confirmButton()?.disabled).toBe(true);
   });
 
-  it("previews an Arabic-Indic quantity as the value it submits (#210)", async () => {
+  it("previews and saves the same Arabic-Indic quantity draft (#210)", async () => {
     await render();
-    typeInto("supplier-return-qty-l1", "٥");
+    // l2 is the priced line, so a miscounted quantity shows up in the money
+    typeInto("supplier-return-qty-l2", "٥");
     expect(previewAmount()).toBe(2000);
-    typeInto("supplier-return-qty-l1", "5");
-    expect(previewAmount()).toBe(2000);
-    // preview and submit read the same draft: type ٥, submit 5
+    // submit the SAME draft that was previewed: swapping to ASCII first would
+    // pass even if saving stopped reading Arabic digits (#229 finding 1)
     await submit();
-    expect(submitted[0]).toMatchObject({ lines: [{ invoiceLineId: "l1", quantity: 5 }] });
+    expect(submitted[0]).toMatchObject({ lines: [{ invoiceLineId: "l2", quantity: 5 }] });
   });
 
   it("previews zero for a draft the submit path refuses, never a value it will not send (#210)", async () => {
     await render();
-    // `Number` read `1e3` as 1000 and `1.5` as a fractional sum; both render a
-    // number containing a zero, so this asserts the exact preview value
-    typeInto("supplier-return-qty-l1", "1e3");
+    // l2 is the priced line, so the pre-#210 loose reader renders 400000
+    // (`1e3`) / 600 (`1.5`) instead of 0: only exact preview values pin it
+    typeInto("supplier-return-qty-l2", "1e3");
     expect(previewAmount()).toBe(0);
-    typeInto("supplier-return-qty-l1", "1.5");
+    typeInto("supplier-return-qty-l2", "1.5");
     expect(previewAmount()).toBe(0);
     expect(confirmButton()?.disabled).toBe(true);
   });

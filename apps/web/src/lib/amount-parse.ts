@@ -20,8 +20,8 @@ const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
  * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
  * form and leave every other character untouched. One normalizer for the amount
  * and invoice-draft readers, so a digit one accepts the other cannot reject (the
- * #198 quantity/amount mismatch). Every money reader below normalises through
- * it, so a value typed in either script reads the same (#210).
+ * #198 quantity/amount mismatch). Every money reader in this module normalises
+ * through it, so a value typed in either script reads the same (#210).
  */
 export function normalizeArabicIndicDigits(draft: string): string {
   return draft

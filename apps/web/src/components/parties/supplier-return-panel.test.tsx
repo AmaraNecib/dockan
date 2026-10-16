@@ -31,7 +31,7 @@ mock.module("@/lib/rpc", () => ({
         queryFn: async () => ({
           id: "inv-1",
           kind: "PURCHASE",
-          lines: [{ id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 0, netTotal: 0 }],
+          lines: [{ id: "l1", itemId: "item-1", description: "هدية", quantity: 5, unitPrice: 400, netTotal: 2000 }],
         }),
       }),
     },
@@ -161,6 +161,25 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     await render();
     typeInto("supplier-return-qty-l1", "1.5");
     expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).not.toBeNull();
+    expect(confirmButton()?.disabled).toBe(true);
+  });
+
+  it("previews an Arabic-Indic quantity as the same value the ASCII draft reads (#210)", async () => {
+    await render();
+    typeInto("supplier-return-qty-l1", "٥");
+    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("2000");
+    typeInto("supplier-return-qty-l1", "5");
+    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("2000");
+  });
+
+  it("previews zero for a draft the submit path refuses, never a value it will not send (#210)", async () => {
+    await render();
+    // `Number` read `1e3` as 1000 and `1.5` as a fractional sum, but the
+    // submit path reads through parseWholeAmount and refuses both
+    typeInto("supplier-return-qty-l1", "1e3");
+    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("0");
+    typeInto("supplier-return-qty-l1", "1.5");
+    expect(host.querySelector('[data-testid="supplier-return-value"]')?.textContent).toContain("0");
     expect(confirmButton()?.disabled).toBe(true);
   });
 

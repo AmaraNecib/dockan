@@ -48,8 +48,12 @@ only the submit path there would preview 0 and submit 5.
   - `discountInvalid` and the submitted `priceOverride.value` read through
     `parseLooseNumber`, so validate/preview/submit agree.
 - `supplier-return-panel.tsx`
-  - the invoice-linked preview reads through `parseLooseNumber` (keeps the
-    historical loose sum for a fractional draft, but normalises digits).
+  - the invoice-linked preview reads the **same** `parseWholeAmount` the submit
+    path uses (`parseWholeAmount(draft) ?? 0`), so preview and submit agree on
+    every draft: an Arabic digit previews and submits the same number, and a
+    draft submit refuses (`1e3`, `5.5`) contributes 0 to the preview instead of
+    a value that will never be sent. Review round found the first attempt
+    (`parseLooseNumber`) kept the preview/submit split; fixed before push.
 
 ## Why this cannot move an ASCII money value
 
@@ -70,7 +74,7 @@ reads are equal, plus the pre-existing ASCII values stay in the existing tests.
 
 | Risk | Mitigation |
 |---|---|
-| A reader is widened for Arabic but a sibling still reads raw `Number`, so preview/submit disagree | Find every reader of the **same draft**; the supplier-return preview is the one hit. Property tests compare reader outputs. |
+| A reader is widened for Arabic but a sibling still reads raw `Number`, so preview/submit disagree | Find every reader of the **same draft**; the supplier-return preview is the one hit, and it now shares `parseWholeAmount` with the submit path (`supplier-return-panel.test.tsx` pins preview == submit). Property tests compare reader outputs. |
 | The loose `Number` predicate changes for ASCII (e.g. rejecting `1e3` where it was accepted) | Do NOT switch these to a strict reader; normalise then `Number`. Pinned (`parseLooseNumber("1e3") === 1000`). |
 | `parseWholeAmount` widening leaks into a caller that is deliberately strict | Its callers are supplier-return quantities and the `amount-percentage-input` re-export; both are number drafts the ticket wants widened. Audit: `rg parseWholeAmount`. |
 | Decimal Arabic separator `٫` (U+066B) accidentally normalised | The normaliser maps digits only; `«٥٫٥»` still fails the digits-only test. Pinned. |
@@ -90,7 +94,9 @@ with its own money review):
   `parseSignedWholeNumber`), used by items/stock/quick-add.
 
 None of them becomes *inconsistent with itself* by this change: they do not read
-any draft that a widened reader also reads.
+any draft that a widened reader also reads. The remaining readers are tracked as
+**#225** (a follow-up issue created from review round 1), so #210 does not claim
+"every numeric input" is done.
 
 ## Tests
 
@@ -109,6 +115,9 @@ Unit (`bun test`):
   wholly-Arabic draft exactly like its ASCII twin (and still caps at 100).
 - `supplier-return-draft.test.ts` — `parseReturnQuantities` accepts `٥` and `۵`,
   rejects `«٥٫٥»`, and equals the ASCII read.
+- `supplier-return-panel.test.tsx` — the invoice-linked **preview** reads an
+  Arabic-Indic quantity as the same value as ASCII, and previews 0 for a draft
+  the submit path refuses (`1e3`, `5.5`) rather than a value it will not send.
 - `amount-percentage-input.test.tsx` — `percentageEdited` clamps `«١٥٠»` to 100
   and links `«٥٠»` to half.
 - `sale.test.tsx` (page level) — a sale typed entirely in Arabic-Indic

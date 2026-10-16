@@ -30,10 +30,10 @@ export async function openSelect(trigger: HTMLElement): Promise<void> {
  * otherwise resolve to the stale one. */
 export async function findOption(label: string, trigger?: HTMLElement): Promise<HTMLElement | null> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const controlledId = trigger?.getAttribute("aria-controls") ?? null;
+    const controlledId = trigger?.getAttribute("aria-controls");
     const options = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"));
     const inScope =
-      controlledId === null
+      controlledId === null || controlledId === undefined || controlledId === ""
         ? options
         : options.filter((option) => option.closest("[role='listbox']")?.id === controlledId);
     const option = inScope.find((element) => element.textContent?.trim() === label);

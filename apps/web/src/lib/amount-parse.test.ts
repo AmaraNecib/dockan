@@ -137,5 +137,24 @@ describe("Arabic-Indic digits in the money readers (#210)", () => {
     expect(parseLooseNumber("")).toBe(0);
     expect(Number.isNaN(parseLooseNumber("abc"))).toBe(true);
     expect(Number.isNaN(parseLooseNumber("٥٫٥"))).toBe(true);
+    // Number trims, so a padded draft still reads; the ASCII twin does too
+    expect(parseLooseNumber(" ٥٠ ")).toBe(50);
+    expect(parseLooseNumber(" ٥٠ ")).toBe(parseLooseNumber(" 50 "));
+    expect(parseLooseNumber("٠")).toBe(0);
+    expect(parseLooseNumber("-٥")).toBe(-5);
+  });
+
+  it("normalises each digit independently, so a mixed-script draft concatenates (#210)", () => {
+    // the normalizer is per-character: «٥5» is two digits, not one. Pinned so a
+    // mixed paste has a stated meaning instead of an accidental one.
+    expect(parseWholeAmount("٥5")).toBe(55);
+    expect(parseWholeAmount("٥5")).toBe(parseWholeAmount("55"));
+    expect(parseWholeAmount("٥۵")).toBe(55);
+  });
+
+  it("keeps the strict readers' safe-integer ceiling in either script (#210)", () => {
+    expect(parseWholeAmount("9007199254740991")).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parseWholeAmount(toArabicIndic("9007199254740991"))).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parseWholeAmount(toArabicIndic("9007199254740992"))).toBeNull();
   });
 });

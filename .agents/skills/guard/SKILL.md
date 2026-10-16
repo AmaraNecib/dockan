@@ -95,7 +95,7 @@ Run before reporting a local handoff or remote merge-readiness.
 [ ] CI — required checks green on GitHub (when the branch is pushed)
 [ ] PR description — accurate and complete
 [ ] Any deferred items — documented with follow-up issues
-[ ] Wisdom captured when a durable lesson was learned
+[ ] Wisdom — the parent captured it only if the pattern repeated (lanes report lessons; they never write `.agents/wisdom/`)
 ```
 
 ## When a check fails

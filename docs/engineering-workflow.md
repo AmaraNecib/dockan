@@ -26,6 +26,8 @@ cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- -D warni
 ## Feature lifecycle
 
 ```
+Read .agents/wisdom/ — read-only for lanes; report the lessons you applied
+    ↓
 Ticket/spec (.scratch/issues/ or GitHub issue)
     ↓
 Pin review tier + base SHA (merge-base with develop)
@@ -46,15 +48,19 @@ Code-review — Standards + Spec axes against pinned base SHA
     ↓
 Guard Phase 2 — pre-push gate
     ↓
+crew_report — the lane stops here
+    ↓
 ── parent-owned from here ──
     ↓
-Push + PR
+Push + open PR
     ↓
 Greptile review (cli-review skill or @greptile-apps on the PR)
     ↓
 Guard Phase 3 — pre-report gate
     ↓
-Capture wisdom + report
+Capture wisdom (repeated pattern only) + report to the owner
+    ↓
+Merge — only on the owner's explicit word
 ```
 
 A **worker lane stops at Guard Phase 2** and reports (`crew_report`); the parent
@@ -108,7 +114,16 @@ reviewable next to the verdict instead of being invisible.
 - Designs live in `.scratch/implementation/<issue-id>-design.md`.
 - Review evidence lives in `.scratch/reviews/<issue-id>/<head-sha>-<gate>.md`. Evidence filenames
   must contain the exact reviewed HEAD SHA; any later reviewable-file change makes evidence stale.
-- Durable lessons go to `.agents/wisdom/`.
+- **Wisdom: parent-owned generation, every lane's consumption.** A lane reads
+  `.agents/wisdom/` before it starts, applies what bears on its task and says in
+  its `crew_report` which lessons it applied (and which it deliberately did not)
+  — reading is the lane's job even though writing is not. Wisdom is **read-only
+  for a lane**: its `crew_report` may carry a candidate lesson in the `lesson`
+  field, but only the parent writes the file, and only when the same failure has
+  occurred more than once (one occurrence is a report line, not wisdom). This
+  also keeps `.agents/wisdom/**` out of every lane diff, so a lane's review
+  evidence can no longer go stale from a wisdom write it made to satisfy the
+  rulebook.
 
 ## Source-only change policy
 
@@ -127,7 +142,8 @@ Stage named source/config/test/evidence files only. Never use `git add -A`.
 **Merge only when the owner says to merge.** The agent never merges on its own
 initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to ask** —
-not permission to proceed. Squash merges only.
+not permission to proceed. Squash merges only. The merge belongs to the parent
+session; a lane never merges at all.
 
 A **CI change** (anything under `.github/`) goes to the owner for the diff before
 it merges, whatever Greptile says. Merge order matters when two PRs share a

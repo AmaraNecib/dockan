@@ -6,8 +6,17 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 # Feature Implementation Orchestration
 
 **Start here.** This is the mandatory entry point for all feature work.
-Read `docs/engineering-workflow.md` first. Capture durable lessons in
-`.agents/wisdom/`.
+Read `docs/engineering-workflow.md` first.
+
+**A lane stops at step 9 (Guard Phase 2).** Steps 10-13 are parent-owned: push,
+PR, CI/Greptile, merge-on-owner-word and wisdom. The lane's last act is
+`crew_report`; it never pushes, never opens a PR and never merges.
+
+**Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
+what bears on the task, and say in your `crew_report` which lessons you applied —
+and which you deliberately did not. Wisdom is read-only for a lane; a candidate
+lesson goes in the `lesson` field of `crew_report`. The parent decides whether the
+pattern repeated enough to write an entry.
 
 ## Enforced order
 
@@ -135,14 +144,17 @@ Run `guard` Phase 2. Verifies:
   - If any reviewable file changed → evidence is **STALE**, must regenerate
   - If only non-reviewable files (.gitignore, LICENSE, .scratch/) → valid
 
-### 10. Push + PR
+### 10. Report to the parent — the parent owns push and PR
 
-**Parent-owned.** A worker lane stops at step 9 (Guard Phase 2) and reports; the
-parent session pushes, opens the PR and drives the review rounds. A lane that
-pushes is violating its authority boundary, not helping.
+**A lane stops at step 9.** Its last act is `crew_report`. It does not push, does
+not open a PR and does not merge — running any command below is a breach of its
+authority boundary, not help. The parent session pushes the lane's branch, opens
+the PR and drives the review rounds.
 
 Branch naming: `feat/<issue-id>-<short-description>`, `fix/<issue-id>-<description>`,
 `refactor/<issue-id>-<description>`, or `agent/<description>`.
+
+**Parent-only — a lane must not run these:**
 
 ```bash
 git push origin <branch-name>
@@ -151,13 +163,16 @@ gh pr create --base develop \
   --body "See .scratch/reviews/<issue-id>/ for review evidence"
 ```
 
-After opening the PR, publish a concise review-evidence summary as a PR comment.
+After opening the PR, the parent publishes a concise review-evidence summary as a
+PR comment.
 
 ### 11. CI + Greptile
 
 **Parent-owned.** `.github/workflows/ci.yml` runs three jobs on every PR to
 `develop`: `checks` (typecheck, lint, test, audit), `e2e` (Playwright) and `rust`
 (cargo test + clippy). Poll them in-session with `sleep`, never by polling a lane.
+A lane cannot trigger CI or a Greptile review at all — it cannot push (step 10) —
+so this wait belongs to the parent, never the lane.
 
 Then trigger Greptile:
 - CLI path (preferred): run the `cli-review` skill (`greptile review --json`) against the pinned base
@@ -171,14 +186,17 @@ line evidence instead of re-implementing the fix.
 
 Repeat until Greptile passes with no actionable findings.
 
-### 12. Guard pre-report (Phase 3) + Capture wisdom
+### 12. Guard pre-report (Phase 3) — parent-owned
 
-Run `guard` Phase 3. Verifies:
+The parent runs `guard` Phase 3. Verifies:
 - Checks — local gates green, plus CI when the branch has it
 - PR description — accurate and complete
 - Any deferred items — documented with follow-up issues
 
-Then run `capture-wisdom` to save any lessons learned.
+There is **no lane wisdom step.** A lane states in `crew_report` which lessons it
+applied and carries any candidate lesson in the `lesson` field; the parent writes
+a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
+occurred more than once.
 
 ### 13. Report
 
@@ -215,6 +233,6 @@ it merges, whatever Greptile says.
 | No test audit | Step 7 — test audit |
 | No code-review | Step 8 — code-review |
 | Guard Phase 2 not run | Step 9 — guard pre-push |
-| Not pushed | Step 10 — push + PR |
+| Lane done, not pushed | Parent only — Step 10 (push + PR) |
 | Greptile not clean | Step 11 — CI + Greptile |
 | All done | Step 12 — guard pre-report → Step 13 — report |

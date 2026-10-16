@@ -1,5 +1,27 @@
 # Agent notes
 
+## Authority
+
+- **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
+  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree, commits its diff
+  and calls `crew_report`. It **never** runs `git push`, **never** opens a PR
+  (`gh pr create`) and **never** merges. `feature-implement` step 10 is
+  parent-only.
+- **The parent session owns push, PR, review and merge.** The parent pushes the
+  lane's branch, opens the PR, requests Greptile review, drives the rounds and
+  merges — only when the owner says so (see `Merging`).
+- **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
+  lane reads `.agents/wisdom/` before it starts, applies what bears on its task
+  and says in its `crew_report` which lessons it applied — and which it
+  deliberately did not. Wisdom is **read-only for a lane**: it never writes the
+  file. A candidate lesson goes in the `lesson` field of `crew_report`.
+- **The parent writes the entry, and only for a repeated pattern.** One
+  occurrence is a report line, not wisdom; the parent records it when the same
+  failure shows up across reports. Measured reason: 45 commits on `develop` touch
+  `.agents/wisdom/` and six of those files carry edits from more than one commit,
+  so lane-written lessons collided and the owner resolved the same conflict by
+  hand.
+
 ## e2e ports and lanes
 
 `DOKAN_PORT`/`DOKAN_WEB_PORT` isolate the shared api/web pair, and the vault
@@ -19,7 +41,7 @@ expected by `crew-watch`. `herdr workspace rename <id> <label>` takes the label
 positionally (no `--label` flag).
 
 **Three lanes at a time, and an idle lane is a wasted one.** Close a lane's
-workspace the moment its work is pushed: a lane waiting on review (or on a
+workspace the moment it reports its work: a lane waiting on review (or on a
 rebase) is doing nothing while it holds RAM and CPU. Close first, then start the
 next lane in the freed slot. Prefer lanes that touch disjoint files; when two
 lanes share a store/router, nominate which one lands first and rebase the other

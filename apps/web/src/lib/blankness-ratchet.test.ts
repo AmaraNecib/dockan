@@ -1,0 +1,143 @@
+import { describe, expect, it } from "bun:test";
+
+import { findBlanknessGates, numericReaderFiles, scanNumericDraftReaders } from "../tests/blankness-gates";
+
+/**
+ * #244 — the ratchet for raw-`.trim()` blankness gates on numeric drafts.
+ *
+ * #238 gave blankness one predicate (`draftBlank`) and converted four sites, but
+ * left a HAND-MAINTAINED list of the remaining raw-`.trim()` gates. Review round
+ * 1 on #243 found three more that the list missed. The defect is the
+ * enumeration, not the three sites: a hand-written list cannot be trusted to be
+ * complete, so every review round can find "three more" and "did we get them
+ * all?" is unanswerable by inspection.
+ *
+ * This test answers it. It scans every numeric-draft reader (every non-test
+ * source file that imports `amount-parse` / `numeric-input`, plus the two reader
+ * modules) for raw-`.trim()` blankness gates and fails on any gate that is not in
+ * `CLASSIFIED`. A new gate is therefore red until its author either converts it
+ * to `draftBlank` or writes the reason it must stay a raw trim.
+ *
+ * The classification is a SET assertion, not a line count: line numbers drift
+ * with every edit, the gate's own text does not. The scanner lives in
+ * `src/tests/blankness-gates.ts`.
+ */
+
+/**
+ * The whole enumeration. `raw` gates must stay raw (non-numeric text/date, or a
+ * deliberate UX work-indicator); `draftBlank` gates were converted and must be
+ * ABSENT — re-introducing one is the mutation this ratchet must catch.
+ */
+interface Classification {
+  readonly verdict: "raw" | "draftBlank";
+  readonly reason: string;
+}
+
+const TEXT = "text field, not a numeric draft: a mark-only paste is real content, not blank";
+const DATE = "date field: a mark-only draft is still an unreadable date, never blank";
+const BARCODE = "barcode is an identity code, not a numeric draft; a mark-only draft is content";
+const DIRTY = "unsaved-work indicator, not a value decision: a pasted mark is work the discard warning must keep";
+const CONVERT = "numeric-draft blankness gate tracked by #244; this entry flips to draftBlank when the site is converted";
+
+const CLASSIFIED = new Map<string, Classification>([
+  ["components/parties/customer-settle-panel.tsx::value.amount.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["components/parties/supplier-adjust-panel.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
+  ["components/parties/supplier-adjust-panel.tsx::amountDraft.trim() === \"\"", { verdict: "raw", reason: CONVERT }],
+  ["components/parties/supplier-adjust-panel.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["components/parties/supplier-pay-panel.tsx::value.amount.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["components/parties/supplier-pay-panel.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["components/parties/supplier-return-draft.ts::trimmed === \"\" [draft.trim()]", { verdict: "raw", reason: CONVERT }],
+  ["components/parties/supplier-return-panel.tsx::draft.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["components/parties/supplier-return-panel.tsx::reason.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["components/ui/amount-percentage-input.tsx::percentageDraft.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["lib/numeric-input.ts::trimmed === \"\" [text.trim()]", { verdict: "raw", reason: CONVERT }],
+  ["lib/supplier-opening-draft.ts::raw.trim() === \"\"", { verdict: "raw", reason: CONVERT }],
+  ["lib/supplier-opening-draft.ts::input.amount.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["lib/supplier-opening-draft.ts::name === \"\" [input.name.trim()]", { verdict: "raw", reason: TEXT }],
+  ["pages/expenses.tsx::name === \"\" [newCategoryName.trim()]", { verdict: "raw", reason: TEXT }],
+  ["pages/expenses.tsx::dateText === \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
+  ["pages/expenses.tsx::dateText !== \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
+  ["pages/expenses.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/invoice.tsx::note.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/invoice.tsx::trimmed === \"\" [draft.trim()]", { verdict: "raw", reason: CONVERT }],
+  ["pages/invoice.tsx::(drafts[line.id] ?? \"\").trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["pages/invoice.tsx::reason.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/invoice.tsx::notes.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/items.tsx::thresholdText === \"\" [threshold.trim()]", { verdict: "raw", reason: CONVERT }],
+  ["pages/items.tsx::barcode.trim() !== \"\"", { verdict: "raw", reason: BARCODE }],
+  ["pages/items.tsx::name === \"\" [draft.name.trim()]", { verdict: "raw", reason: TEXT }],
+  ["pages/items.tsx::thresholdText !== \"\" [draft.threshold.trim()]", { verdict: "raw", reason: CONVERT }],
+  ["pages/purchase.tsx::supplier.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/purchase.tsx::notes.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/purchase.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
+  ["pages/purchase.tsx::savedInvoice.counterpartyName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::quick.fields.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::quick.fields.barcode.trim() !== \"\"", { verdict: "raw", reason: BARCODE }],
+  ["pages/sale.tsx::quick.fields.cost.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
+  ["pages/sale.tsx::quick.fields.sell.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
+  ["pages/sale.tsx::customer.name.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::discountValue.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
+  ["pages/sale.tsx::payment.amount.trim() !== \"\"", { verdict: "raw", reason: DIRTY }],
+  ["pages/sale.tsx::savedSale.counterpartyName.trim() !== \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::customer.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::fields.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
+  ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "raw", reason: CONVERT }],
+  ["pages/supplier-opening-balance.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
+  ["pages/supplier-opening-balance.tsx::newName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/supplier-opening-balance.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+]);
+
+describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
+  const sources = numericReaderFiles();
+  const gates = scanNumericDraftReaders();
+  const present = new Map(gates.map((gate) => [gate.signature, gate]));
+
+  it("scans the numeric-draft reader surface (non-vacuous)", () => {
+    expect(sources).toContain("lib/amount-parse.ts");
+    expect(sources).toContain("pages/invoice.tsx");
+    expect(sources.length).toBeGreaterThan(10);
+    expect(gates.length).toBeGreaterThan(20);
+  });
+
+  it("classifies every detected gate, so a new gate cannot slip in unclassified", () => {
+    const unclassified = gates
+      .filter((gate) => !CLASSIFIED.has(gate.signature))
+      .map((gate) => `${gate.file}:${gate.line} ${gate.signature}`);
+    expect(unclassified).toEqual([]);
+  });
+
+  it("keeps every gate marked raw (a silent conversion loses its classification)", () => {
+    const missing = [...CLASSIFIED]
+      .filter(([signature, classification]) => classification.verdict === "raw" && !present.has(signature))
+      .map(([signature]) => signature);
+    expect(missing).toEqual([]);
+  });
+
+  it("has every converted gate absent, so reverting one reddens this ratchet", () => {
+    const regressed = [...CLASSIFIED]
+      .filter(([signature, classification]) => classification.verdict === "draftBlank" && present.has(signature))
+      .map(([signature]) => signature);
+    expect(regressed).toEqual([]);
+  });
+
+  it("the scanner finds a synthetic unclassified gate (scanner self-test)", () => {
+    const synthetic = [
+      "export function f(draft: string) {",
+      '  if (draft.trim() === "") return null;',
+      "  return draft;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draft.trim() === ""',
+    ]);
+  });
+
+  it("the scanner ignores a normalised receiver and a comment (not a raw gate)", () => {
+    const synthetic = [
+      '// if (draft.trim() === "") is discussed here',
+      'export const blank = (draft: string) => normalizeArabicIndicDigits(draft).trim() === "";',
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts")).toEqual([]);
+  });
+});

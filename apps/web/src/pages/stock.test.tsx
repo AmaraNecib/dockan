@@ -187,4 +187,14 @@ describe("superseded-row copy", () => {
     expect(copy.length).toBeGreaterThan(0);
     expect(copy).not.toBe("historySupersededByCorrection");
   });
+
+  it("makes no page-relative claim, so it reads correctly cross-page", () => {
+    // issue 222: the correction a badge points at can sit on a prior page, so
+    // the copy must state the recording order, never a page position
+    const copy = t("historySupersededByCorrection");
+    expect(copy).toContain("قبل");
+    for (const pageWord of ["أعلاه", "أعلى", "بالأعلى", "فوق", "أسفل", "صفحة", "تحت", "أدناه"]) {
+      expect(copy).not.toContain(pageWord);
+    }
+  });
 });

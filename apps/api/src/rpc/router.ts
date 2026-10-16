@@ -610,14 +610,16 @@ export function createRpcRouter(deps: RpcDeps) {
         }
         // `stockAfter` is cumulative, so the whole ledger is projected first;
         // only the projected rows are sliced. `total` is the full ledger count.
-        // Precedence is resolved on the whole projection, not the page, so a
-        // correction on a prior page still badges its superseded row (issue 215).
         const movements = await deps.store.listStockMovements(item.id);
         const projected = historyWithRemaining(movements);
-        const superseded = supersededByCorrectionSeq(projected);
-        const annotated = projected.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
         const { limit, offset } = resolvePagination(input);
-        const rows = annotated.slice(offset, offset + limit);
+        const page = projected.slice(offset, offset + limit);
+        // Precedence is resolved for the page's window only (issue 222). The
+        // index still walks the ledger above the page, so a correction on a
+        // prior page badges its superseded row (issue 215) without re-scanning
+        // those rows for every page row.
+        const superseded = supersededByCorrectionSeq(projected, offset, offset + page.length);
+        const rows = page.map((row, index) => ({ ...row, supersededBySeq: superseded[index] ?? null }));
         // the last running balance IS stock on hand (same delta sum)
         const stockOnHand = projected.at(-1)?.stockAfter ?? 0;
         return { movements: rows, total: movements.length, stockOnHand };

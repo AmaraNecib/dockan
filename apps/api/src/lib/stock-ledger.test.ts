@@ -465,3 +465,135 @@ describe("supersededByCorrectionSeq (issue 215)", () => {
     expect(rows).toEqual(snapshot);
   });
 });
+
+describe("supersededByCorrectionSeq — an index, not a rescan (issue 222)", () => {
+  const inflow = (seq: number): HistoryRow => ({
+    kind: "PURCHASE",
+    delta: 10,
+    unitCost: 100,
+    reason: null,
+    occurredAt: "2026-10-15T10:00:00",
+    seq,
+    stockAfter: 0,
+  });
+  const correctionAt = (seq: number): HistoryRow => ({
+    ...inflow(0),
+    delta: 0,
+    unitCost: 300,
+    reason: COST_CORRECTION_REASON,
+    seq,
+  });
+
+  it("still reports the nearest correction when the qualifying one is deep in the index", () => {
+    // corrections in decreasing seq in this order, so none dominates another;
+    // the index grows to its full length. A row recorded after seq 1 but before
+    // seq 2 is superseded by seq 2 — the topmost entry above the row's order,
+    // reachable only past the smaller top entries.
+    const rows: HistoryRow[] = [];
+    for (let seq = 9; seq >= 1; seq--) rows.push(correctionAt(seq));
+    rows.push(inflow(1));
+    expect(supersededByCorrectionSeq(rows).at(-1)).toBe(2);
+  });
+
+  it("aligns the answer to the requested page window, using corrections above it", () => {
+    // issue 222: the page is answered against a window; row 0 (the correction)
+    // is outside it but still badges the rows inside, and the result carries
+    // only the window's rows
+    const rows = [correctionAt(3), inflow(1), inflow(2)];
+    expect(supersededByCorrectionSeq(rows, 1, 3)).toEqual([3, 3]);
+    expect(supersededByCorrectionSeq(rows, 2, 3)).toEqual([3]);
+    expect(supersededByCorrectionSeq(rows, 0, 1)).toEqual([null]);
+    // a window past the end is empty, not an error
+    expect(supersededByCorrectionSeq(rows, 5, 9)).toEqual([]);
+    expect(supersededByCorrectionSeq(rows, 3, 1)).toEqual([]);
+  });
+
+  it("answers each window as the whole-ledger answer sliced", () => {
+    const rows = [correctionAt(5), inflow(1), correctionAt(2), inflow(3), inflow(4)];
+    const full = supersededByCorrectionSeq(rows);
+    for (let from = 0; from <= rows.length; from++) {
+      for (let to = from; to <= rows.length; to++) {
+        expect(supersededByCorrectionSeq(rows, from, to)).toEqual(full.slice(from, to));
+      }
+    }
+  });
+
+  it("keeps the nearest qualifying correction through a pop chain", () => {
+    // c5 then c2 then c7: c7 dominates and pops both, so the rows below it see
+    // only c7 — the pop chain must not drop a surviving qualifier
+    const rows = [correctionAt(5), correctionAt(2), correctionAt(7), inflow(1), inflow(6)];
+    expect(supersededByCorrectionSeq(rows)).toEqual([null, null, null, 7, 7]);
+  });
+
+  it("collapses an equal-seq correction pair to the nearer one", () => {
+    expect(supersededByCorrectionSeq([correctionAt(3), correctionAt(3), inflow(1)])).toEqual([null, null, 3]);
+  });
+
+  it("answers a window from a deep index built above it", () => {
+    // two corrections above the window; the nearer (seq 2) does not qualify the
+    // row recorded at seq 3, the farther (seq 5) does, so the window row needs
+    // the binary search over an index built from rows outside the window
+    const rows = [correctionAt(5), correctionAt(2), inflow(3)];
+    expect(supersededByCorrectionSeq(rows, 2, 3)).toEqual([5]);
+  });
+
+  // Counts field reads, so the complexity guard never depends on wall-clock
+  // time and cannot flake on a loaded host.
+  const reads = { count: 0 };
+  const counting = (row: HistoryRow): HistoryRow => ({
+    kind: row.kind,
+    occurredAt: row.occurredAt,
+    stockAfter: row.stockAfter,
+    get delta() {
+      reads.count++;
+      return row.delta;
+    },
+    get unitCost() {
+      reads.count++;
+      return row.unitCost;
+    },
+    get reason() {
+      reads.count++;
+      return row.reason;
+    },
+    get seq() {
+      reads.count++;
+      return row.seq;
+    },
+  });
+  const measure = (build: (n: number) => HistoryRow[], n: number): number => {
+    reads.count = 0;
+    supersededByCorrectionSeq(build(n).map((row) => counting(row)));
+    return reads.count;
+  };
+
+  it("does about linear work for 2N rows as for N when there are no corrections", () => {
+    // the reported case: the old scan walked every earlier movement for each
+    // inflow (~4× the work at 2N), the index reads a constant number of fields
+    // per row and never touches the correction index
+    const build = (n: number): HistoryRow[] => Array.from({ length: n }, (_, i) => inflow(i + 1));
+    const n = 500;
+    const small = measure(build, n);
+    const large = measure(build, 2 * n);
+    expect(small).toBeGreaterThan(0);
+    expect(large / small).toBeLessThanOrEqual(2.5);
+  });
+
+  it("stays about linear when the qualifying correction is buried under smaller ones", () => {
+    // This is the branch a quadratic rescan lived in: for every row the nearest
+    // correction above does NOT qualify (its seq equals the row's), and only a
+    // farther, larger-seq correction does. The old scan walked every nearer
+    // correction; the index binary-searches them.
+    const build = (n: number): HistoryRow[] => {
+      const rows: HistoryRow[] = [correctionAt(2 * n)];
+      for (let seq = n - 1; seq >= 1; seq--) rows.push(correctionAt(seq));
+      for (let i = 0; i < n; i++) rows.push(inflow(n - 1));
+      return rows;
+    };
+    const n = 250;
+    const small = measure(build, n);
+    const large = measure(build, 2 * n);
+    expect(small).toBeGreaterThan(0);
+    expect(large / small).toBeLessThanOrEqual(3);
+  });
+});

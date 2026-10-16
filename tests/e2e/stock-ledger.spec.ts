@@ -269,5 +269,11 @@ test("a superseded row is badged even when its correction is on a prior page", a
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText("01/01/2999");
   await expect(rows.first().getByTestId("history-superseded")).toBeVisible();
+  // issue 222: the correction is on page 1, so the badge must not send the
+  // owner "above" to a row this page does not draw — and it must still name the
+  // correction, not render empty and pass the negative vacuously
+  const badge = rows.first().getByTestId("history-superseded");
+  await expect(badge).toContainText("تصحيح التكلفة");
+  await expect(badge).not.toContainText("أعلاه");
   await expect(page.getByTestId("history-superseded")).toHaveCount(1);
 });

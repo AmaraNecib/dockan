@@ -430,17 +430,22 @@ describe("items page tabs", () => {
     }
   });
 
-  it("offers no add action when the category read failed, because the form cannot be completed (#96)", async () => {
+  it("points at the categories screen when the category read failed (#96)", async () => {
     categoriesListFails = true;
     items = [];
     await mountEmpty();
 
+    // wait for the rejected read to settle — while pending the add button shows
+    await waitFor(
+      () => document.querySelector('[data-testid="items-empty-action"]')?.getAttribute("href")?.includes("/categories") === true,
+    );
     const empty = el<HTMLElement>('[data-testid="items-empty"]');
-    expect(empty.textContent).toContain(i18n.t("itemsEmptyHint"));
-    // the add form refuses without a category; a dead-end button must not ship.
-    // wait for the rejected read to settle — the action exists while it is pending
-    await waitFor(() => document.querySelector('[data-testid="items-empty-action"]') === null);
-    expect(document.querySelector('[data-testid="items-empty-action"]')).toBeNull();
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyCategoriesUnavailable"));
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyCategoriesUnavailableHint"));
+    // the add form refuses without a category; a dead-end button must not ship
+    const action = el<HTMLAnchorElement>('[data-testid="items-empty-action"]');
+    expect(action.textContent).toBe(i18n.t("itemsEmptyCategoriesUnavailableAction"));
+    expect(action.getAttribute("href")?.split("?")[0]).toBe("/categories");
   });
 
   it("defaults to the products table and hides the add panel", async () => {

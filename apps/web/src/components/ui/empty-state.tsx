@@ -12,7 +12,9 @@ interface EmptyStateProps {
   /** The one pressable next step, or one primary plus at most one secondary.
    * Omit entirely on a read-only list with no honest action. */
   action?: ReactNode;
-  /** Extra classes for the surface the state sits on (border, background, spacing). */
+  /** Put the state on the standard bordered card surface. */
+  card?: boolean;
+  /** Extra classes for spacing that is specific to the call site. */
   className?: string;
   /** Lets a spec scope its assertions to this state instead of the whole page. */
   testId?: string;
@@ -29,10 +31,14 @@ interface EmptyStateProps {
  * one primary step (a second, quieter link is allowed when a list genuinely
  * has two origins, e.g. sale vs purchase invoices).
  */
-export function EmptyState({ title, hint, icon, action, className, testId }: EmptyStateProps) {
+export function EmptyState({ title, hint, icon, action, card = false, className, testId }: EmptyStateProps) {
   return (
     <div
-      className={cn("flex flex-col items-center gap-2 px-4 py-8 text-center", className)}
+      className={cn(
+        "flex flex-col items-center gap-2 px-4 py-8 text-center",
+        card && "rounded border border-border bg-card",
+        className,
+      )}
       data-testid={testId}
     >
       {icon !== undefined && (

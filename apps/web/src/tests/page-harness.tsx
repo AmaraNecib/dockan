@@ -8,10 +8,9 @@ import type { ReactNode } from "react";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
- * Shared page-test harness (issue #96 review): every page spec otherwise
- * reimplemented the same mount + act-wrapped poll + unmount dance. One
- * definition keeps the act() convention and the timeout behaviour identical
- * across specs.
+ * Shared page-test harness (issue #96 review). The new empty-state specs use
+ * it; the older page specs keep their private mount helpers until they are
+ * touched, so this is the one definition new specs start from.
  */
 
 export function testQueryClient(): QueryClient {

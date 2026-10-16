@@ -153,7 +153,8 @@ export function ReportsPage() {
           {report.data.byCategory.length === 0 ? (
             <EmptyState
               testId="report-breakdown-empty"
-              className="mt-2 rounded border border-border bg-card"
+              card
+              className="mt-2"
               title={t("reportsEmpty")}
               hint={t("reportsEmptyHint")}
               action={

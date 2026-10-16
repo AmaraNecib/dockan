@@ -119,7 +119,8 @@ export function ActivityLogPage() {
       ) : activities.data.total === 0 ? (
         <EmptyState
           testId="activity-empty"
-          className="mt-4 rounded border border-border bg-card"
+          card
+          className="mt-4"
           title={t("activityEmpty")}
           hint={t("activityEmptyHint")}
         />

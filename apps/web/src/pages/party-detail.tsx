@@ -439,7 +439,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
             ) : (invoiceList.data?.total ?? 0) === 0 ? (
               <EmptyState
                 testId="party-invoices-empty"
-                className="rounded border border-border bg-card"
+                card
                 title={showUnpaidOnly && !partyHasNoInvoices ? t("partyNoUnpaid") : t("partyInvoicesEmpty")}
                 hint={showUnpaidOnly && !partyHasNoInvoices ? t("partyNoUnpaidHint") : t("partyInvoicesEmptyHint")}
               />
@@ -488,7 +488,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
               ) : (entryList.data?.total ?? 0) === 0 ? (
                 <EmptyState
                   testId="supplier-account-empty"
-                  className="rounded border border-border bg-card"
+                  card
                   title={t("supplierAccountEmpty")}
                   hint={t("supplierAccountEmptyHint")}
                 />
@@ -532,7 +532,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
             ) : (paymentList.data?.total ?? 0) === 0 ? (
               <EmptyState
                 testId="party-payments-empty"
-                className="rounded border border-border bg-card"
+                card
                 title={t("partyPaymentsEmpty")}
                 hint={t("partyPaymentsEmptyHint")}
               />

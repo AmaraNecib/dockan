@@ -46,7 +46,7 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
     return (
       <EmptyState
         testId="returns-list-empty"
-        className="rounded border border-border bg-card"
+        card
         title={t("returnsEmpty")}
         hint={t("returnsEmptyHint")}
       />
@@ -227,7 +227,7 @@ export function SupplierReturnsList() {
     return (
       <EmptyState
         testId="supplier-returns-empty"
-        className="rounded border border-border bg-card"
+        card
         title={t("supplierReturnsEmpty")}
         hint={t("supplierReturnsEmptyHint")}
       />

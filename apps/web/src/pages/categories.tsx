@@ -65,7 +65,8 @@ export function CategoriesPage() {
       ) : categories.data.items.length === 0 ? (
         <EmptyState
           testId="categories-empty"
-          className="mt-4 rounded border border-border bg-card"
+          card
+          className="mt-4"
           title={t("categoriesEmpty")}
           hint={t("categoriesEmptyHint")}
           action={

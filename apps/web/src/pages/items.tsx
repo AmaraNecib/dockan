@@ -791,25 +791,29 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
 
   if (items.data.total === 0) {
     // a fresh install has no item category, and the add form requires one it
-    // cannot create. Point at the categories screen instead of opening a form
-    // the owner cannot complete (issue #96). A failed category read is worse:
-    // the add form can never be completed, so no action is offered at all.
+    // cannot create. A failed category read is the same dead end. In both cases
+    // point at the categories screen instead of opening a form the owner cannot
+    // complete (issue #96).
     const noCategories = categories.data?.items.length === 0;
     const categoriesUnavailable = categories.isError;
+    const titleKey = categoriesUnavailable ? "itemsEmptyCategoriesUnavailable" : noCategories ? "itemsEmptyNoCategory" : "itemsEmpty";
+    const hintKey = categoriesUnavailable ? "itemsEmptyCategoriesUnavailableHint" : noCategories ? "itemsEmptyNoCategoryHint" : "itemsEmptyHint";
+    const actionKey = categoriesUnavailable ? "itemsEmptyCategoriesUnavailableAction" : "itemsEmptyNoCategoryAction";
     return (
       <EmptyState
         testId="items-empty"
-        className="mt-6 rounded border border-border bg-card"
-        title={t(noCategories ? "itemsEmptyNoCategory" : "itemsEmpty")}
-        hint={t(noCategories ? "itemsEmptyNoCategoryHint" : "itemsEmptyHint")}
+        card
+        className="mt-6"
+        title={t(titleKey)}
+        hint={t(hintKey)}
         action={
-          noCategories ? (
+          noCategories || categoriesUnavailable ? (
             <Button asChild size="lg" variant="outline">
               <Link to="/categories" data-testid="items-empty-action">
-                {t("itemsEmptyNoCategoryAction")}
+                {t(actionKey)}
               </Link>
             </Button>
-          ) : categoriesUnavailable ? undefined : (
+          ) : (
             <Button size="lg" onClick={onAddItem} data-testid="items-empty-action">
               {t("itemsEmptyAction")}
             </Button>

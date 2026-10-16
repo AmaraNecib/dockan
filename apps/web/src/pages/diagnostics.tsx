@@ -120,7 +120,8 @@ export function DiagnosticsPage() {
       ) : logs.data.lines.length === 0 ? (
         <EmptyState
           testId="diagnostics-empty"
-          className="mt-4 rounded border border-border bg-card"
+          card
+          className="mt-4"
           title={t("diagnosticsEmpty")}
           hint={t("diagnosticsEmptyHint")}
         />

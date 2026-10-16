@@ -112,7 +112,8 @@ export function InvoicesPage() {
       ) : list.data.total === 0 ? (
         <EmptyState
           testId="invoices-empty"
-          className="mt-4 rounded border border-border bg-card"
+          card
+          className="mt-4"
           title={t("invoicesEmpty")}
           hint={t(kind === "" && status === "" ? "invoicesEmptyHint" : "invoicesEmptyFilteredHint")}
           action={

@@ -575,7 +575,7 @@ export function ExpensesPage() {
         ) : history.data === undefined || history.data.total === 0 ? (
           <EmptyState
             testId="expenses-empty"
-            className="rounded border border-border bg-card"
+            card
             title={t(noExpenseCategories ? "expensesEmptyNoCategory" : "expensesEmpty")}
             hint={
               historyFiltersActive

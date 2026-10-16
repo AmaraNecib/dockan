@@ -46,6 +46,36 @@ Screenshots: `.scratch/reviews/96/screenshots/{before,after}/<n>-<screen>.png`
   this query/period", not "nothing exists yet"; they already name the cause and
   are left unchanged.
 
+## Review dispositions (rounds 1–2)
+
+Evidence: `9c856bb-*.md` (round 1), `5a05144-*.md` (round 2); no blockers in either.
+
+Fixed after round 1 / round 2:
+
+- **items, failed category read** — the add action opened a form the owner can
+  never complete (`submit` refuses without a category). It now has its own copy
+  and a link to `/categories`, pinned by `items.test.tsx`.
+- **Duplicated surface class** — the `className`-only prop moved the duplicated
+  `rounded border border-border bg-card` into 12 call sites; `EmptyState` now
+  takes `card` and the copies are gone.
+- Coverage pins added: link-proposals copy + no control, invoice just-saved hint,
+  invoices status-filter clear + focus return, and an i18n key-completeness spec
+  (`toContain(i18n.t(key))` alone passes when the key is missing).
+- `page-harness.tsx` comment no longer overclaims adoption.
+
+Deliberate, with reason:
+
+- **expenses failed history read** now shows the error, not "no expenses": a
+  failed read is not an empty state, and the empty copy would be untrue.
+- **invoices filtered copy with zero invoices total** — "no invoices match the
+  filter" is vacuously true; clearing the filter lands on the unfiltered empty
+  state with its create actions, so the flow self-corrects.
+- **items action while the category read is pending** — the button is usable if
+  the read succeeds and is replaced by the `/categories` link if it fails;
+  gating on `!isPending` would instead flash a control-less state.
+- **focus idiom** varies (ref / helper / querySelector) where the surrounding
+  component already owned one; no single idiom was worth the churn.
+
 ## Verification
 
 - `bun run typecheck` — exit 0

@@ -1,5 +1,5 @@
 import { implement, ORPCError } from "@orpc/server";
-import { dokanContract, normalizeBarcode, normalizeTextKey, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
+import { dokanContract, normalizeBarcode, normalizeTextKey, ONBOARDING_COMPLETED_PREFERENCE_KEY, resolvePagination, type InvoiceDetail, type InvoiceLine } from "@dokan/contracts";
 import { randomUUID } from "node:crypto";
 
 import type { AppConfig } from "../config";
@@ -28,6 +28,18 @@ import { localDate, localDateTime } from "../lib/logger";
  * records — is server-owned, so a client cannot fake it.
  */
 const CLIENT_WRITABLE_PREFERENCE_KEYS = new Set(["ui.sidebar.collapsed", "ui.onboarding.dismissed", "ui.pageSize"]);
+
+/**
+ * The one server-owned preference a client may write, and only when clearing
+ * it (issue #115). The completion milestone is derived from shop records, so
+ * writing `"true"` stays refused: it would hide the checklist with nothing
+ * behind it. Clearing it (`"false"`) is the settings "show getting started"
+ * reset; the server re-records the milestone whenever it next observes all
+ * four real records.
+ */
+function isClearablePreference(key: string, value: string): boolean {
+  return key === ONBOARDING_COMPLETED_PREFERENCE_KEY && value === "false";
+}
 import type { ReportRangePreset } from "@dokan/contracts";
 import { resolveBoundsWindow, resolveReportRange } from "../lib/report-ranges";
 import { computeProfitReport, sortExpenses, type ProfitReportRange } from "../lib/profit-report";
@@ -2091,9 +2103,10 @@ export function createRpcRouter(deps: RpcDeps) {
     preferencesSet: os.preferencesSet.handler(
       guardedInput(async (input) => {
         // the completion milestone is derived from shop records, so a client
-        // must not be able to write it: setting it would hide the checklist
-        // forever with nothing behind it. Only the keys the owner owns pass.
-        if (!CLIENT_WRITABLE_PREFERENCE_KEYS.has(input.key)) {
+        // must not be able to set it: setting it would hide the checklist
+        // forever with nothing behind it. Only the keys the owner owns pass,
+        // plus clearing the milestone back to "false" (issue #115).
+        if (!CLIENT_WRITABLE_PREFERENCE_KEYS.has(input.key) && !isClearablePreference(input.key, input.value)) {
           throw new ORPCError("BAD_REQUEST", { message: "PREFERENCE_NOT_WRITABLE" });
         }
         await deps.store.setPreference(input.key, input.value);

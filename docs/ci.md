@@ -112,7 +112,9 @@ Most rows are obvious page -> specs pairs. The non-obvious ones are deliberate:
   already carries `returns.spec.ts` and `purchase-intake.spec.ts` for the shared
   `ReturnsPanel` and `InvoiceHeader`), and `categories.tsx`, `invoices.tsx`,
   `receipt-print.tsx`, `return-print.tsx` and `settings.tsx`, whose components
-  are rendered by that page alone (#231).
+  are rendered by that page alone (#231). `settings.tsx`'s rule still carries
+  `00-onboarding.spec.ts`, because the page now hosts the getting-started
+  escape hatch that spec drives (#115).
 - The `debts.tsx` rule carries `supplier-adjustment.spec.ts` (the supplier-credit
   label and total on /debts) and the `activity.tsx` rule carries
   `backups.spec.ts` (the activity table's backup-filename render). The `sale.tsx`

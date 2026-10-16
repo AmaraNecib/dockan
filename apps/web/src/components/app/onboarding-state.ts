@@ -19,3 +19,36 @@ export function useOnboardingDismissed() {
 export function useOnboardingCompleted() {
   return usePreference(ONBOARDING_COMPLETED_KEY, false, parseBooleanPreference, serializeBooleanPreference);
 }
+
+/**
+ * One control over the two persisted flags that hide the checklist (issue
+ * #115). The settings escape hatch must clear BOTH: `hidden = dismissed ||
+ * completed`, so clearing one and leaving the other is the one-way door the
+ * issue reports. Clearing `completed` only unsets the milestone — the server
+ * re-records it whenever all four real records are observed, so a shop that is
+ * genuinely complete has nothing to re-show.
+ */
+export function useGettingStartedVisibility() {
+  const dismissed = useOnboardingDismissed();
+  const completed = useOnboardingCompleted();
+
+  function setVisible(next: boolean): void {
+    if (next) {
+      // completed first: while it is set the panel can never render, whatever
+      // `dismissed` says
+      completed.setValue(false);
+      dismissed.setValue(false);
+      return;
+    }
+    dismissed.setValue(true);
+  }
+
+  return {
+    visible: !dismissed.value && !completed.value,
+    setVisible,
+    isPending: dismissed.isPending || completed.isPending,
+    isError: dismissed.isError || completed.isError,
+    isWriting: dismissed.isWriting || completed.isWriting,
+    writeFailed: dismissed.writeFailed || completed.writeFailed,
+  };
+}

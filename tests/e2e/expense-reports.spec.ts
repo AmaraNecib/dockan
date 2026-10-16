@@ -195,11 +195,16 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
   await actAndAck(page, "expensesCreate", async () => {
     await page.getByTestId("expense-save").click();
   });
+  // the ack resolves at the response body, which is BEFORE React's success
+  // handler clears the amount. Waiting for that cleared end state is what makes
+  // the next fill un-raceable, rather than only unlikely to be wiped
+  await expect(page.getByTestId("expense-amount")).toHaveValue("");
   await selectExpenseCategory(page, "سحوبات المالك");
   await page.getByTestId("expense-amount").fill(String(withdrawalAmount));
   await actAndAck(page, "expensesCreate", async () => {
     await page.getByTestId("expense-save").click();
   });
+  await expect(page.getByTestId("expense-amount")).toHaveValue("");
   await page.goto("/reports");
   await expect.poll(async () => readAbs("report-operating")).toBe(baselineOperatingAbs + rentAmount);
   await expect.poll(async () => readAbs("report-withdrawals")).toBe(baselineWithdrawalsAbs + withdrawalAmount);

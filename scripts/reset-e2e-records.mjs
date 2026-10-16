@@ -30,8 +30,9 @@ try {
   // children before parents; FKs are off on this connection but the order is
   // still the safe one if that ever changes. Every SHOP-RECORD table in
   // apps/api/src/db/schema.ts is listed here; the named survivors are settings,
-  // the auth tables, the expense categories (a seeded default) and the number
-  // sequences (invoice numbering must stay honest).
+  // the auth tables, the expense categories (a seeded default) and the three
+  // number sequences (invoice, customer-return and supplier-return numbering
+  // must stay honest).
   db.exec(`
     DELETE FROM supplier_return_lines;
     DELETE FROM supplier_returns;

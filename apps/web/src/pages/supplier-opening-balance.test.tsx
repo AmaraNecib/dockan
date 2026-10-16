@@ -42,6 +42,14 @@ const BASE_SUPPLIERS = [
   { id: "s-2", name: "مورد بلا حركات", accountBalance: 0, accountEntryCount: 0 },
   { id: "s-3", name: "مورد رصيد سالب", accountBalance: -300, accountEntryCount: 1 },
 ];
+/** #207 — two suppliers with no account entries. The boundary reject tests use
+ * these as their batch: with no supplier carrying entries, a dropped guard must
+ * SEND the batch, so `captured === null` is discriminating on its own instead of
+ * leaning on the confirmation precondition to swallow the write. */
+const TWO_NO_ENTRY_SUPPLIERS = [
+  { id: "s-a", name: "مورد أ", accountBalance: 0, accountEntryCount: 0 },
+  { id: "s-b", name: "مورد ب", accountBalance: 0, accountEntryCount: 0 },
+];
 let suppliers = BASE_SUPPLIERS;
 /** #183 — set when the page reads the full party list; it must never do so. */
 let suppliersListUsed = false;
@@ -286,6 +294,41 @@ function dispatchClickOn(testId: string, init: MouseEventInit) {
   act(() => clickTarget(testId).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init })));
 }
 
+/**
+ * #207 — the scaffold the #203 conversions share, in one place.
+ *
+ * A test that asserts "nothing was sent" passes for the wrong reason unless a
+ * valid batch exists that WOULD be sent once the guard under test is removed.
+ * Two unrelated guards used to mask those assertions: the empty-batch check and
+ * the confirmation precondition. One valid row for row 1 defeats both: in the
+ * default fixture that row is s-2, and in TWO_NO_ENTRY_SUPPLIERS it is s-b, both
+ * with no account entries. It keeps `totalRows > 0`, and its supplier has no
+ * entries, so no confirmation dialog can swallow the submit.
+ *
+ * `arm` then builds the failure under test; it may be async because the
+ * read-failure cases refetch and `settle()` first. The form is submitted through
+ * `requestSubmit()`, never `clickOn("opening-balance-save")`: the save control is
+ * disabled exactly where these tests live, React swallows a click on a disabled
+ * control, and the request would never run.
+ *
+ * `validRowAmount: null` skips the default row for a test that builds its whole
+ * valid batch in `arm` (the over-limit cases, or a valid typed-name row); those
+ * still get the drift-prone half, the submit itself. The default row is row 1,
+ * whose supplier carries no entries in every fixture this file uses; a fixture
+ * with entries on row 1 would open the confirmation dialog instead of sending,
+ * so keep that invariant when adding callers. Reject-side assertions stay in the
+ * test body afterwards (a blocked submit leaves the visible state unchanged); an
+ * accept-side test may assert the enabled control from inside `arm`, before the
+ * submit.
+ */
+async function submitForm(arm: () => void | Promise<void>, validRowAmount: string | null = "300"): Promise<void> {
+  if (validRowAmount !== null) typeIntoRow(1, validRowAmount);
+  await arm();
+  await act(async () => {
+    host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+  });
+}
+
 /** Render, type a supplier that already carries entries, open the confirmation,
  * then refuse the confirmed save as a stale destination and park the recovery
  * lookup that refusal starts. Callers decide which gesture lands while the lookup
@@ -452,15 +495,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // a valid row on s-2 (no entries) beside the invalid one keeps totalRows > 0,
     // so the empty-batch check cannot mask the block: the invalid-row guard itself
     // must stop the request, and without it the valid row would be sent
-    typeIntoRow(1, "300");
-    typeIntoRow(0, "abc");
+    await submitForm(() => typeIntoRow(0, "abc"));
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 
@@ -469,14 +508,88 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // a valid row on s-2 beside the rejected one, so the empty-batch check cannot
     // mask the block and a dropped guard would send the valid row
-    typeIntoRow(1, "300");
-    typeIntoRow(0, "1 000,00");
+    await submitForm(() => typeIntoRow(0, "1 000,00"));
 
     expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    expect(captured).toBeNull();
+  });
+
+  it("rejects a negative amount draft instead of saving its magnitude (issue 207)", async () => {
+    // two no-entry suppliers: a parser that accepted or stripped the sign would
+    // send the valid row plus the negative one, so `captured === null` alone
+    // fails. The `<= 0` branch itself is pinned by the two amount-0 tests.
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
+    render();
+    await settle();
+    await submitForm(() => typeIntoRow(0, "-5"));
+
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
+  it("accepts amount 1 at the low end of the accepted range (issue 207)", async () => {
+    render();
+    await settle();
+    // the enabled control is part of the tripwire, asserted inside the arm: this
+    // boundary must NOT be blocked like the reject cases above
+    await submitForm(() => {
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, "1");
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", amount: 1 });
+  });
+
+  it("rejects amount 0, one below the accepted range (issue 207)", async () => {
+    // two no-entry suppliers, so a dropped `<= 0` check sends the batch and the
+    // `captured === null` assertion fails on its own
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
+    render();
+    await settle();
+    await submitForm(() => typeIntoRow(0, "0"));
+
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
+  it("accepts the largest safe amount, the high end of the accepted range (issue 207)", async () => {
+    render();
+    await settle();
+    // enabled-control tripwire, as for amount 1 above
+    await submitForm(() => {
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, String(Number.MAX_SAFE_INTEGER));
+    expect(captured?.rows).toHaveLength(1);
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", amount: Number.MAX_SAFE_INTEGER });
+  });
+
+  it("rejects an amount one above the largest safe integer (issue 207)", async () => {
+    // two no-entry suppliers, so a dropped safe-integer check sends the batch and
+    // the `captured === null` assertion fails on its own
+    suppliers = TWO_NO_ENTRY_SUPPLIERS;
+    render();
+    await settle();
+    await submitForm(() => typeIntoRow(0, String(Number.MAX_SAFE_INTEGER + 1)));
+
+    expect(host.querySelector('[data-testid="opening-balance-amount-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
+  it("rejects amount 0 in the typed new row (issue 207)", async () => {
+    render();
+    await settle();
+    // the typed row has its own `amount <= 0` branch, separate from the existing
+    // rows' reader; the helper's valid row keeps the batch non-empty
+    await submitForm(() => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "0");
     });
+
+    expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
     expect(captured).toBeNull();
   });
 
@@ -484,14 +597,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     // a valid row so the empty-batch check cannot mask the incomplete-name block
-    typeIntoRow(1, "300");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ");
+    await submitForm(() => setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ"));
 
     expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 
@@ -507,17 +616,71 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
     expect(inputs).toHaveLength(200);
-    // batched into one render for the same #193 reason as the round-5 case below
-    fillAmounts(Array.from(inputs), (index) => String(index + 1));
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+    // the whole valid batch is the 200 rows plus the typed row, so `null` stops
+    // the helper adding its own valid no-entry row
+    await submitForm(() => {
+      // batched into one render for the same #193 reason as the round-5 case below
+      fillAmounts(Array.from(inputs), (index) => String(index + 1));
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+    }, null);
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+
+  it("saves a batch of exactly the 200-row limit at the boundary (issue 207)", async () => {
+    suppliers = Array.from({ length: 200 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(200);
+    // the whole valid batch is built here, so `null` stops the helper adding a
+    // row; exactly the cap is allowed, only a larger batch is blocked
+    await submitForm(() => {
+      // batched into one render, the same #193 cost guard as the over-limit case
+      fillAmounts(Array.from(inputs), () => "1");
+      expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+      expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(false);
+    }, null);
+    expect(captured?.rows).toHaveLength(200);
+    // every row keeps its own amount, so the cap is not met by dropping or
+    // duplicating a row
+    expect(captured?.rows.every((row) => row.amount === 1)).toBe(true);
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+
+  it("saves a typed row that brings the batch to exactly the 200-row limit (issue 207)", async () => {
+    // 199 filled rows plus the typed row is exactly the cap and must save. That
+    // the cap COUNTS the typed row is pinned by the over-limit test above (200
+    // filled plus a typed row is 201 and must block).
+    suppliers = Array.from({ length: 199 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(199);
+    // the whole valid batch is built here, so `null` stops the helper adding a row
+    await submitForm(() => {
+      fillAmounts(Array.from(inputs), () => "1");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+    }, null);
+
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
+    expect(captured?.rows).toHaveLength(200);
+    expect(captured?.rows.at(-1)).toMatchObject({ newSupplierName: "مورد إضافي", amount: 1 });
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
   it("invalidates the real debts and dashboard keys after saving (Greptile finding 5)", async () => {
@@ -1157,15 +1320,13 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // an explicit row for s-2 (no entries, so no confirmation can mask the guard)
     // plus a typed name that folds to the same name
-    typeIntoRow(1, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    await submitForm(() => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    }, "700");
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 
@@ -1183,22 +1344,21 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // a valid typed-name row on s-2 (no cached entries). Filling it first keeps
     // totalRows > 0, so the empty-batch check cannot be what blocks the request:
     // only the failed-read guard can, and without it this row would be sent.
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+    // `null` skips the helper's own row: the typed row is this test's valid batch.
+    await submitForm(async () => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
 
-    // the summary read now fails on refetch: its counts are no longer trustworthy
-    accountsShouldFail = true;
-    await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
-    });
-    await settle();
+      // the summary read now fails on refetch: its counts are no longer trustworthy
+      accountsShouldFail = true;
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey: ["suppliersAccountSummaries"] });
+      });
+      await settle();
+    }, null);
+
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    // requestSubmit bypasses the disabled button, so this proves the guard in
-    // save()/submit() blocks, not just the disabled attribute
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 
@@ -1207,21 +1367,22 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // a valid typed-name row on s-2 (no cached entries), so totalRows > 0 and the
     // empty-batch check cannot be what blocks the request; without the guard the
-    // row would be sent with the conflict list unknown
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+    // row would be sent with the conflict list unknown. `null` skips the helper's
+    // own row: the typed row is this test's valid batch.
+    await submitForm(async () => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
 
-    // the names read now fails on refetch: the conflict list is no longer trusted
-    namesShouldFail = true;
-    await act(async () => {
-      await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
-    });
-    await settle();
+      // the names read now fails on refetch: the conflict list is no longer trusted
+      namesShouldFail = true;
+      await act(async () => {
+        await queryClient!.invalidateQueries({ queryKey: ["suppliersListNames"] });
+      });
+      await settle();
+    }, null);
+
     expect(host.querySelector('[data-testid="opening-balance-error"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 
@@ -1242,8 +1403,14 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     await settle();
 
-    // the same `listFailed` flag disables the control and backs the guard in save():
-    // the disabled assertion is what proves the owner cannot fire this write
+    // Known exception (#207): do NOT "fix" this by weakening the assertion.
+    // `captured === null` here is masked by the disabled control, not by a guard
+    // this test reaches: the same `listFailed` flag both disables this button and
+    // backs `save()`, and React suppresses `onClick` on a control whose memoized
+    // `props.disabled` is true, so `save(true)` is unreachable through the UI.
+    // The disabled assertion is the real evidence the owner cannot fire the
+    // write; making the save(`true`) branch reachable needs a PRODUCTION change
+    // and belongs in its own issue. Removing it would make this test vacuous.
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-confirm-save"]')?.disabled).toBe(true);
     await act(async () => {
       clickOn("opening-balance-confirm-save");
@@ -1434,9 +1601,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     const rowAmount = () => host.querySelectorAll('[data-testid="opening-balance-row"]')[1]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value;
 
     // s-2 has no entries, so no confirmation dialog can mask the conflict guard
-    typeIntoRow(1, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    await submitForm(() => {
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    }, "700");
 
     // the row keeps the owner's earlier 700; the inline draft is left for the
     // conflict guard to flag rather than clobbering or double-posting
@@ -1447,9 +1615,6 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // conflict is visible and blocks the save before any request.
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
-    await act(async () => {
-      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
-    });
     expect(captured).toBeNull();
   });
 

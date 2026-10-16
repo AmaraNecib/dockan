@@ -140,6 +140,95 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     expect(findBlanknessGates(synthetic, "synthetic.ts")).toEqual([]);
   });
 
+  it("catches a gate whose comparison is split across two lines (#244 round 2, finding 1)", () => {
+    const synthetic = [
+      "export function f(draft: string) {",
+      "  if (draft.trim()",
+      '    === "") return null;',
+      "  return draft;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::draft.trim() === ""',
+    ]);
+  });
+
+  it("keeps the two-step gate on a line that also holds an inline gate (#244 round 2, finding 1)", () => {
+    const synthetic = [
+      "export function f(draft: string, name: string) {",
+      "  const trimmed = draft.trim();",
+      '  if (name.trim() === "" || trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::name.trim() === ""',
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("catches a declaration split across two lines (#244 round 2, finding 1 same class)", () => {
+    const synthetic = [
+      "export function f(draft: string) {",
+      "  const trimmed =",
+      "    draft.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("does not let an inner normalised declaration mask an outer raw gate (#244 round 2, finding 2)", () => {
+    const synthetic = [
+      "export function outer(draft: string) {",
+      "  const trimmed = draft.trim();",
+      "  {",
+      "    const trimmed = normalizeArabicIndicDigits(draft).trim();",
+      "    void trimmed;",
+      "  }",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(synthetic, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+  });
+
+  it("pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4)", () => {
+    const forward = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(forward, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::trimmed === "" [draft.trim()]',
+    ]);
+    const reversed = [
+      "export function f(draft: string) {",
+      "  const trimmed = draft.trim();",
+      '  if ("" === trimmed) return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(reversed, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::"" === trimmed [draft.trim()]',
+    ]);
+    const normalisedDeclaration = [
+      "export function f(draft: string) {",
+      "  const trimmed = normalizeArabicIndicDigits(draft).trim();",
+      '  if (trimmed === "" || "" !== trimmed) return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(normalisedDeclaration, "synthetic.ts")).toEqual([]);
+  });
+
   it("scans the reversed, .length, parenthesised and optional-chained gate forms", () => {
     expect(findBlanknessGates('const a = "" === draft.trim();', "s.ts").map((gate) => gate.signature)).toEqual([
       's.ts::"" === draft.trim()',

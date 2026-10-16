@@ -16,12 +16,22 @@ import { fileURLToPath } from "node:url";
  * with every edit, the gate's own text does not. `?.trim()` canonicalises to
  * `.trim()`; two identical gate texts in one file collapse to one signature.
  *
+ * Round 2 (#244): every matcher runs over the WHOLE comment-stripped source and
+ * claims its match span, instead of walking line by line. A comparison split
+ * across two lines is therefore still one gate, and an inline gate on a line no
+ * longer hides a two-step gate beside it (`if (inline) continue` is gone). A
+ * declaration is visible to a comparison only when the brace pairs enclosing the
+ * declaration also enclose the comparison, so a normalised declaration in an
+ * inner block cannot mask an outer raw check.
+ *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
  * a negation on a call-expression receiver (`f().trim()`), or in a file that
  * parses numerics without importing `amount-parse`/`numeric-input`, is NOT
- * caught. Every gate of the matched forms is caught; this comment is the honest
- * boundary of that claim.
+ * caught. Scope visibility is brace-pair ancestry over `const`/`let` — `var`
+ * hoisting is not modelled, and regex literals are not parsed, so an unbalanced
+ * `{`/`}` inside one could shift a scope chain. Every gate of the matched forms
+ * is caught; this comment is the honest boundary of that claim.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -35,10 +45,23 @@ const PAREN_FWD = new RegExp(
   "g",
 );
 const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\??\.trim\(\)\.length\s*(===|!==|==|!=)\s*0`, "g");
-const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*?)\.trim\(\)`, "g");
-const USE = new RegExp(
-  String.raw`(?:""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)` +
-    String.raw`|\b([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(?:""|'')`,
+/**
+ * The start of a two-step declaration. The right-hand side is read separately so
+ * it may cross a line break (`const trimmed =\n  draft.trim();`).
+ */
+const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*`, "g");
+const DECL_TRIM = String.raw`\.trim\(\)`;
+/**
+ * Anything between `=` and the `.trim()` that ends the statement means the
+ * `.trim()` belongs to a later statement, not this declaration.
+ */
+const STATEMENT_BREAK = /[;}]|\n\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
+const USE_FWD = new RegExp(
+  String.raw`\b([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(""|'')`,
+  "g",
+);
+const USE_REV = new RegExp(
+  String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b`,
   "g",
 );
 /** A receiver already put through the one normaliser is not a RAW trim. */
@@ -105,61 +128,166 @@ function stripComments(source: string): string {
 
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 
+interface Span {
+  readonly start: number;
+  readonly end: number;
+}
+
+interface BracePair {
+  readonly open: number;
+  readonly close: number;
+}
+
+interface Declaration {
+  readonly name: string;
+  /** The expression the `.trim()` was called on, e.g. `draft` or
+   * `normalizeArabicIndicDigits(draft)`, collapsed to one line. */
+  readonly rhs: string;
+  readonly offset: number;
+  readonly enclosing: readonly BracePair[];
+}
+
+/** The 1-based line a character offset sits on. */
+function lineAt(text: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset; i += 1) if (text[i] === "\n") line += 1;
+  return line;
+}
+
+/** Matched brace pairs, ignoring braces inside string and template literals. */
+function bracePairs(text: string): BracePair[] {
+  const stack: number[] = [];
+  const pairs: BracePair[] = [];
+  let quote: "'" | '"' | "`" | null = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quote !== null) {
+      if (char === "\\") i += 1;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === "`") quote = char;
+    else if (char === "{") stack.push(i);
+    else if (char === "}") {
+      const open = stack.pop();
+      if (open !== undefined) pairs.push({ open, close: i });
+    }
+  }
+  return pairs;
+}
+
+/** The brace pairs enclosing one offset — the scope chain of a token. */
+function enclosing(pairs: readonly BracePair[], offset: number): BracePair[] {
+  return pairs.filter((pair) => pair.open < offset && offset < pair.close);
+}
+
+/**
+ * Every `const`/`let X = <expr>.trim()` in the text, with its scope chain. The
+ * right-hand side may cross line breaks; a statement break before the `.trim()`
+ * means the `.trim()` is not this declaration's.
+ */
+function collectDeclarations(text: string, braces: readonly BracePair[]): Declaration[] {
+  const trimCalls: number[] = [];
+  for (const match of text.matchAll(new RegExp(DECL_TRIM, "g"))) trimCalls.push(match.index);
+  const declarations: Declaration[] = [];
+  for (const match of text.matchAll(DECL)) {
+    const offset = match.index;
+    const afterEquals = offset + match[0].length;
+    const trimOffset = trimCalls.find((candidate) => candidate >= afterEquals);
+    if (trimOffset === undefined) continue;
+    const rhsRegion = text.slice(afterEquals, trimOffset);
+    if (STATEMENT_BREAK.test(rhsRegion)) continue;
+    declarations.push({
+      name: match[1]!,
+      rhs: collapse(rhsRegion),
+      offset,
+      enclosing: enclosing(braces, offset),
+    });
+  }
+  return declarations;
+}
+
+/**
+ * The innermost declaration of `name` that is visible at `offset`: earlier in the
+ * file, and whose scope chain is a prefix of the comparison's. A declaration in a
+ * nested block therefore cannot mask an outer one of the same name (#244 round 2,
+ * finding 2).
+ */
+function visibleDeclaration(
+  declarations: readonly Declaration[],
+  name: string,
+  offset: number,
+  comparisonScope: readonly BracePair[],
+): Declaration | undefined {
+  let found: Declaration | undefined;
+  for (const declaration of declarations) {
+    if (declaration.name !== name || declaration.offset >= offset) continue;
+    const visible = declaration.enclosing.every((pair) =>
+      comparisonScope.some((scope) => scope.open === pair.open),
+    );
+    if (visible) found = declaration;
+  }
+  return found;
+}
+
 /** Every raw-`.trim()` blankness gate in one source string. */
 export function findBlanknessGates(source: string, file: string): BlanknessGate[] {
-  const lines = stripComments(source).split("\n");
-  const declarations: Array<{ name: string; rhs: string; index: number }> = [];
-  for (const [index, line] of lines.entries()) {
-    for (const match of line.matchAll(DECL)) {
-      declarations.push({ name: match[1]!, rhs: collapse(match[2]!), index });
-    }
-  }
+  const text = stripComments(source);
+  const braces = bracePairs(text);
+  const declarations = collectDeclarations(text, braces);
 
-  const gates = new Map<string, BlanknessGate>();
-  const add = (line: number, canonical: string) => {
+  const bySignature = new Map<string, { offset: number; gate: BlanknessGate }>();
+  const claimed: Span[] = [];
+  const overlaps = (span: Span) =>
+    claimed.some((existing) => span.start < existing.end && existing.start < span.end);
+  const record = (offset: number, canonical: string) => {
     const signature = `${file}::${canonical}`;
-    if (!gates.has(signature)) gates.set(signature, { file, line: line + 1, signature });
+    if (bySignature.has(signature)) return;
+    bySignature.set(signature, { offset, gate: { file, line: lineAt(text, offset), signature } });
   };
 
-  for (const [index, line] of lines.entries()) {
-    let inline = false;
-    for (const match of line.matchAll(INLINE_FWD)) {
-      inline = true;
-      if (NORMALISED.test(match[1]!)) continue;
-      add(index, `${collapse(match[1]!)}.trim() ${match[2]} ""`);
+  // Inline forms first: they are the more specific match, and claiming their span
+  // stops a broader matcher reading a two-step gate out of their middle.
+  const claimInline = (regex: RegExp, receiverGroup: number, canonical: (match: RegExpExecArray) => string) => {
+    for (const match of text.matchAll(regex)) {
+      const start = match.index;
+      const span = { start, end: start + match[0].length };
+      if (overlaps(span)) continue;
+      claimed.push(span);
+      if (NORMALISED.test(match[receiverGroup] ?? "")) continue;
+      record(start, canonical(match));
     }
-    for (const match of line.matchAll(PAREN_FWD)) {
-      inline = true;
-      if (NORMALISED.test(match[1]!)) continue;
-      add(index, `(${collapse(match[1]!)} ?? "").trim() ${match[3]} ""`);
-    }
-    for (const match of line.matchAll(INLINE_REV)) {
-      inline = true;
-      if (NORMALISED.test(match[3]!)) continue;
-      add(index, `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
-    }
-    for (const match of line.matchAll(INLINE_LEN)) {
-      inline = true;
-      if (NORMALISED.test(match[1]!)) continue;
-      add(index, `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
-    }
-    // A two-step gate reuses a variable declared from a raw `.trim()` earlier in
-    // the file. Skip lines that are an inline gate so the operand is not counted
-    // twice.
-    if (inline) continue;
-    for (const match of line.matchAll(USE)) {
-      const name = match[2] ?? match[3];
-      const operator = match[1] ?? match[4];
-      if (name === undefined || operator === undefined) continue;
-      let declaration: { name: string; rhs: string; index: number } | undefined;
-      for (const candidate of declarations) {
-        if (candidate.name === name && candidate.index <= index) declaration = candidate;
-      }
+  };
+
+  claimInline(INLINE_FWD, 1, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
+  claimInline(
+    PAREN_FWD,
+    1,
+    (match) => `(${collapse(match[1]!)} ?? "").trim() ${match[3]} ""`,
+  );
+  claimInline(INLINE_REV, 3, (match) => `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
+  claimInline(INLINE_LEN, 1, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
+
+  // Two-step: `const X = <expr>.trim(); … X === ""`, in either operand order.
+  const claimTwoStep = (regex: RegExp, reversed: boolean) => {
+    for (const match of text.matchAll(regex)) {
+      const start = match.index;
+      const span = { start, end: start + match[0].length };
+      if (overlaps(span)) continue;
+      const name = (reversed ? match[3] : match[1]) ?? "";
+      const operator = match[2] ?? "";
+      const declaration = visibleDeclaration(declarations, name, start, enclosing(braces, start));
       if (declaration === undefined || NORMALISED.test(declaration.rhs)) continue;
-      add(index, `${name} ${operator} "" [${declaration.rhs}.trim()]`);
+      claimed.push(span);
+      const suffix = `[${declaration.rhs}.trim()]`;
+      record(start, reversed ? `"" ${operator} ${name} ${suffix}` : `${name} ${operator} "" ${suffix}`);
     }
-  }
-  return [...gates.values()];
+  };
+
+  claimTwoStep(USE_FWD, false);
+  claimTwoStep(USE_REV, true);
+
+  return [...bySignature.values()].sort((a, b) => a.offset - b.offset).map((entry) => entry.gate);
 }
 
 function walk(dir: string, out: string[] = []): string[] {

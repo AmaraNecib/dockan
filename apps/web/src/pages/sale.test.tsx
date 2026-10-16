@@ -177,6 +177,10 @@ describe("saleDebt (pre-commit customer debt preview)", () => {
   it("treats an empty or zero paid draft as the whole total becoming debt", () => {
     expect(saleDebt(1000, "")).toEqual({ valid: true, debt: 1000 });
     expect(saleDebt(1000, "0")).toEqual({ valid: true, debt: 1000 });
+    // #238: a mark-only draft is blank through the shared predicate, so the
+    // preview mirrors `resolveInitialPaid` (unpaid) instead of reporting invalid
+    expect(saleDebt(1000, "\u200f")).toEqual({ valid: true, debt: 1000 });
+    expect(saleDebt(1000, " \u200f ")).toEqual({ valid: true, debt: 1000 });
   });
 
   it("leaves the remainder as debt after a partial payment", () => {

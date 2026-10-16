@@ -367,3 +367,67 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
 });
+
+test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `دفع-تصنيف-${stamp}`;
+  const amountItem = `دفع-مبلغ-${stamp}`;
+  const percentageItem = `دفع-نسبة-${stamp}`;
+  const rlm = "\u200f";
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  async function quickAdd(name: string, sell: string) {
+    await page.getByTestId("sale-quick-add").click();
+    await page.getByTestId("sale-quick-name").fill(name);
+    await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+    await page.getByLabel("سعر الشراء (دج)").fill("400");
+    await page.getByLabel("سعر البيع (دج)").fill(sell);
+    await page.getByTestId("sale-quick-stock").fill("5");
+    await saveQuickAdd(page, {
+      procedure: "itemsCreateWithStock",
+      save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+      error: page.getByTestId("sale-error"),
+      lines: page.getByTestId("sale-lines"),
+      itemName: name,
+      quantityLabel: "الكمية",
+    });
+    await expect(page.getByTestId("sale-lines")).toContainText(name);
+  }
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+
+  // A mark-only AMOUNT on the pair, the shape left after deleting the digits of
+  // a pasted value. Before #238 the raw-trim guard read the invisible mark as a
+  // chosen value and refused the save as «invalid payment»; the one shared
+  // predicate reads it as blank = «nothing paid now», so the invoice saves with
+  // the whole 1000 as debt.
+  await quickAdd(amountItem, "1000");
+  const paid = page.getByTestId("sale-paid");
+  await paid.fill(rlm);
+  // the field really holds the invisible mark, so the pin cannot pass by the
+  // browser normalising it before the guard sees it
+  await expect(paid).toHaveValue(rlm);
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("sale-saved-debt")).toContainText("1000");
+
+  // A mark-only PERCENTAGE is the same «not chosen» on the other side of the
+  // pair: the amount clears and the save is recorded as unpaid, not refused by
+  // the percentage guard.
+  await page.getByTestId("sale-new").click();
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await quickAdd(percentageItem, "1000");
+  const paidPercentage = page.getByTestId("sale-paid-percentage");
+  await paidPercentage.fill(rlm);
+  await expect(paidPercentage).toHaveValue(rlm);
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("sale-saved-debt")).toContainText("1000");
+});

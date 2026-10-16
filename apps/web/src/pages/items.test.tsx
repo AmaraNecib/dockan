@@ -9,7 +9,7 @@ import * as routerModule from "@tanstack/react-router";
 // SAFETY: only this flag is written; globalThis keeps every other property.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
 /** Row shape the page reads from itemsList (see ItemListItem). */
 interface FixtureItem {
@@ -1179,13 +1179,13 @@ describe("add item form profit preview (#225)", () => {
 
     setInput("item-cost", "100");
     setInput("item-sell", "180");
-    expect(preview()).toContain("80");
-    expect(preview()).not.toContain("…");
+    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
 
-    // ١٠٠ / ١٨٠ — the same profit, not the `…` the ASCII-only reader rendered
+    // ١٠٠ / ۱۸۰ — the same profit, not the `…` the ASCII-only reader rendered.
+    // The sell draft is Extended Arabic-Indic, so both scripts are exercised.
     setInput("item-cost", "١٠٠");
-    setInput("item-sell", "١٨٠");
-    expect(preview()).toContain("80");
+    setInput("item-sell", "۱۸۰");
+    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
     expect(preview()).not.toContain("…");
 
     // and the same draft saves as the numbers the preview promised

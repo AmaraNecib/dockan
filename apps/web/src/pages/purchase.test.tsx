@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
-import { toArabicIndic } from "../tests/arabic-digits";
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { chooseOption } from "../tests/select-driver";
 import { routerMock } from "../tests/router-mock";
 
@@ -963,7 +963,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     const form = quickForm(container);
     if (form === null) throw new Error("the quick-add form is not open");
     await act(async () => {
-      setValue(form.querySelector<HTMLInputElement>('input[name="quickSell"]')!, toArabicIndic("200"));
+      setValue(form.querySelector<HTMLInputElement>('input[name="quickSell"]')!, toExtendedArabicIndic("200"));
       setValue(form.querySelector<HTMLInputElement>('input[name="quickThreshold"]')!, toArabicIndic("5"));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });

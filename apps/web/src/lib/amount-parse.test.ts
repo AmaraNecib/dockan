@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
 import { normalizeArabicIndicDigits, parseGroupedAmount, parseLooseNumber, parseWholeAmount, parseWholePercentage } from "./amount-parse";
 
 /**
@@ -87,11 +88,6 @@ describe("normalizeArabicIndicDigits", () => {
  * move; only the digit script does.
  */
 describe("Arabic-Indic digits in the money readers (#210)", () => {
-  const ARABIC = "٠١٢٣٤٥٦٧٨٩";
-  const EXTENDED = "۰۱۲۳۴۵۶۷۸۹";
-  const toArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => ARABIC[Number(digit)]!);
-  const toExtendedArabicIndic = (ascii: string) => ascii.replace(/\d/gu, (digit) => EXTENDED[Number(digit)]!);
-
   it("parseWholeAmount reads both Arabic scripts exactly like ASCII", () => {
     expect(parseWholeAmount("٥")).toBe(5);
     expect(parseWholeAmount("٤٢")).toBe(42);

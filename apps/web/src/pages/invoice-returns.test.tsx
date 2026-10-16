@@ -262,7 +262,7 @@ describe("returnQuantityError (per-line return cap boundary)", () => {
     expect(returnQuantityError("٥", 9)).toBeNull();
     // script-for-script identity on the whole boundary set, including the
     // forms the strict reader refuses
-    for (const draft of ["", "   ", "1", "4", "5", "0", "-1", "1.5", "abc", "1e1"]) {
+    for (const draft of ["", "   ", "1", "4", "5", "0", "-1", "1.5", "abc", "1e1", "9007199254740993"]) {
       expect(returnQuantityError(toArabicIndic(draft), 4)).toBe(returnQuantityError(draft, 4));
       expect(returnQuantityError(toExtendedArabicIndic(draft), 4)).toBe(returnQuantityError(draft, 4));
     }

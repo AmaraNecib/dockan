@@ -59,7 +59,7 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     expect(parseWholeNumber("٥")).toBe(5);
     expect(parseWholeNumber("٤٢")).toBe(42);
     expect(parseWholeNumber("۵۰۰")).toBe(500);
-    for (const draft of ["0", "7", "0042", " 42 ", "1000000"]) {
+    for (const draft of ["0", "7", "0042", " 42 ", "1000000", "9007199254740993"]) {
       expect(parseWholeNumber(toArabicIndic(draft))).toBe(parseWholeNumber(draft));
       expect(parseWholeNumber(toExtendedArabicIndic(draft))).toBe(parseWholeNumber(draft));
     }
@@ -67,8 +67,8 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
 
   it("keeps the strict ASCII semantics (identity pin)", () => {
     // the exact forms the reader was written to refuse, plus the Arabic decimal
-    // separator, which is not a digit
-    for (const draft of ["", "   ", "1e3", "0x10", "12.5", "-5", "abc", "٥٫٥"]) {
+    // separator and an Arabic-script negative, neither of which is a digit
+    for (const draft of ["", "   ", "1e3", "0x10", "12.5", "-5", "-٥", "abc", "٥٫٥"]) {
       expect(parseWholeNumber(draft)).toBeNull();
     }
   });

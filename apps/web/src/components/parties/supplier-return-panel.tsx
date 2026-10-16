@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { Invoice } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
-import { parseWholeAmount } from "@/components/ui/amount-percentage-input";
+import { parseLooseNumber, parseWholeAmount } from "@/components/ui/amount-percentage-input";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -60,7 +60,7 @@ export function SupplierReturnPanel({
   const invoiceValue = useMemo(() => {
     if (detail.data === undefined) return 0;
     return detail.data.lines.reduce((sum, line) => {
-      const qty = Number(quantities[line.id] ?? "0");
+      const qty = parseLooseNumber(quantities[line.id] ?? "0");
       return Number.isFinite(qty) && qty > 0 ? sum + qty * line.unitPrice : sum;
     }, 0);
   }, [detail.data, quantities]);

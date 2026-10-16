@@ -23,12 +23,20 @@ export async function openSelect(trigger: HTMLElement): Promise<void> {
   });
 }
 
-/** Wait for a portalled option whose text contains `label`, or null. */
-export async function findOption(label: string): Promise<HTMLElement | null> {
+/** Wait for a portalled option whose text contains `label`, or null. When a
+ * trigger is given, only options in the listbox that trigger controls are
+ * considered: Base UI leaves a closed popup mounted, so two selects that share
+ * an option label (the sale override and discount both offer "مبلغ") would
+ * otherwise resolve to the stale one. */
+export async function findOption(label: string, trigger?: HTMLElement): Promise<HTMLElement | null> {
   for (let attempt = 0; attempt < 100; attempt++) {
-    const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find(
-      (element) => element.textContent?.trim() === label,
-    );
+    const controlledId = trigger?.getAttribute("aria-controls") ?? null;
+    const options = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"));
+    const inScope =
+      controlledId === null
+        ? options
+        : options.filter((option) => option.closest("[role='listbox']")?.id === controlledId);
+    const option = inScope.find((element) => element.textContent?.trim() === label);
     if (option !== undefined) return option;
     await settle();
   }
@@ -47,7 +55,7 @@ export async function activateOption(option: HTMLElement): Promise<void> {
 /** Open `trigger` and activate the option labelled `label`. */
 export async function chooseOption(trigger: HTMLElement, label: string): Promise<void> {
   await openSelect(trigger);
-  const option = await findOption(label);
+  const option = await findOption(label, trigger);
   if (option === null) throw new Error(`select option not found: ${label}`);
   await activateOption(option);
 }

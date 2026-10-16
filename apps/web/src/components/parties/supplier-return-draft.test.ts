@@ -32,6 +32,21 @@ describe("parseReturnQuantities", () => {
     expect(parseReturnQuantities({})).toEqual({ error: true });
     expect(parseReturnQuantities({ a: "", b: "" })).toEqual({ error: true });
   });
+
+  it("accepts Arabic-Indic and Extended Arabic-Indic quantities like ASCII (#210)", () => {
+    expect(parseReturnQuantities({ a: "٥" })).toEqual({ lines: [{ invoiceLineId: "a", quantity: 5 }] });
+    expect(parseReturnQuantities({ a: "۵", b: "٢" })).toEqual({
+      lines: [
+        { invoiceLineId: "a", quantity: 5 },
+        { invoiceLineId: "b", quantity: 2 },
+      ],
+    });
+    // the same typed value is the same return line in both scripts
+    expect(parseReturnQuantities({ a: "٤٢" })).toEqual(parseReturnQuantities({ a: "42" }));
+    // the Arabic decimal separator is not a digit: a fractional draft still fails
+    expect(parseReturnQuantities({ a: "٥٫٥" })).toEqual({ error: true });
+    expect(parseReturnQuantities({ a: "١٢.٥" })).toEqual({ error: true });
+  });
 });
 
 describe("parseCashBackDraft", () => {

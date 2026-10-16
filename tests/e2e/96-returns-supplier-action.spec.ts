@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
@@ -20,6 +22,29 @@ import { saveQuickAdd } from "./rpc-helpers";
  * The stale window is held open deterministically (the returnsForInvoice
  * response is gated), never raced by timing.
  */
+
+/**
+ * Own the shared database back to a clean state when this file ends.
+ *
+ * The suite runs every spec against ONE sqlite database in path order with
+ * `workers: 1`. The first test below records a purchase with
+ * `purchase-paid` = 0, so its whole 2000 دج lands in the /debts "we owe"
+ * group — which `debts.spec.ts` asserts exactly (count 1, total 1200 دج).
+ * Without this reset that spec reads "3200 دج" and CI is red on a file this
+ * spec never touches (#96 round 3).
+ *
+ * `afterAll`, not `afterEach`: the file's two tests share one leak and one
+ * reset covers both. It also runs when a test FAILS, which is the case that
+ * would otherwise leave the rows behind for every later spec.
+ */
+test.afterAll(() => {
+  execFileSync("bun", ["scripts/reset-e2e-records.mjs"], {
+    cwd: process.cwd(),
+    // respect a harness-supplied data dir; only default when none is set
+    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+});
 
 test.describe.configure({ mode: "serial" });
 

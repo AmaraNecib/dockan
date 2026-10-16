@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
@@ -11,6 +13,31 @@ import { openItemsTab } from "./items-helpers";
  * groups (owedToUs / weOwe) with per-person remaining totals and invoice
  * counts, and clicking a person must open that person's unpaid invoices.
  */
+
+/**
+ * Own the precondition instead of borrowing it.
+ *
+ * The assertions below are EXACT GLOBAL figures — the "we owe" group is
+ * 1200 دج over one invoice, "owed to us" 1500 دج over one. Those are only true
+ * statements on a database holding exactly this spec's records, so the spec
+ * resets shop records first, the way `00-onboarding.spec.ts` and
+ * `01-empty-states.spec.ts` already do. Every other spec here asserts counts
+ * it filtered by a name it created; this is the one that reads the database's
+ * sum, so it is the one that has to own the database's starting state.
+ *
+ * Relying on the previous spec's tidiness is exactly what broke CI: the
+ * round-2 `96-returns-supplier-action.spec.ts` leaves an unpaid purchase of
+ * 2000 دج, and that group read "3200 دج" (#96 round 3).
+ */
+test.beforeAll(() => {
+  execFileSync("bun", ["scripts/reset-e2e-records.mjs"], {
+    cwd: process.cwd(),
+    // respect a harness-supplied data dir; only default when none is set
+    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+});
+
 test("debts screen: both directions grouped with totals, counts, and drill-down", async ({ page }) => {
   // 0. sign in (first-run setup on a clean room, login afterwards)
   await signIn(page);

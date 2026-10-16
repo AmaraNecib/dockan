@@ -16,12 +16,23 @@
 
 import { normalizeArabicIndicDigits } from "./amount-parse";
 
+/**
+ * Read a normalised whole-number draft: digits only, no sign, no exponent,
+ * safe-integer bounded. `parseWholeNumber` passes `normalizeArabicIndicDigits`
+ * output; `parseSignedWholeNumber` passes the magnitude of a draft it has
+ * ALREADY judged sign-aware. Neither call may normalise again — a second edge
+ * strip would drop a mark that was interior to the signed draft and was just
+ * refused (#227 round 2). Tests and converts only; never normalises.
+ */
+function readNormalizedDigits(draft: string): number | null {
+  if (!/^\d+$/.test(draft)) return null;
+  const parsed = Number(draft);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 /** A plain non-negative whole number: digits only (either script), no sign, no exponent. */
 export function parseWholeNumber(text: string): number | null {
-  const trimmed = normalizeArabicIndicDigits(text).trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) ? parsed : null;
+  return readNormalizedDigits(normalizeArabicIndicDigits(text).trim());
 }
 
 /**
@@ -55,9 +66,20 @@ export function resolveOpeningStock(text: string, required: boolean): OpeningSto
  * stays the ASCII `-`; only the digit script is widened (#225). */
 export function parseSignedWholeNumber(text: string): number | null {
   const trimmed = text.trim();
-  if (trimmed.startsWith("-")) {
-    const magnitude = parseWholeNumber(trimmed.slice(1));
-    return magnitude === null ? null : -magnitude;
-  }
-  return parseWholeNumber(trimmed);
+  // A mark in front of the sign keeps the raw draft unsigned, so the shared
+  // reader refuses the `-` — a safe refusal pinned since #227 round 1.
+  // Accepting it is a separate behaviour change (an edge mark before a sign)
+  // that wants its own RTL display-order proof; deferred, not dismissed.
+  if (!trimmed.startsWith("-")) return parseWholeNumber(trimmed);
+  // Judge the WHOLE normalised signed draft while the sign is still attached.
+  // `-` is content to `stripEdgeBidiMarks`, so a mark that is interior in the
+  // signed draft stays interior here and this sign-aware gate refuses it.
+  // Slicing the sign off first and letting `parseWholeNumber` re-normalise would
+  // re-parent that mark to the magnitude's edge and silently strip it
+  // (`"-\u200f5"` → -5) — the #227 round-2 finding. `\s*` keeps the
+  // pre-existing `"- 5"` read, pinned below.
+  const normalized = normalizeArabicIndicDigits(trimmed).trim();
+  if (!/^-\s*\d+$/u.test(normalized)) return null;
+  const magnitude = readNormalizedDigits(normalized.slice(1).trim());
+  return magnitude === null ? null : -magnitude;
 }

@@ -307,3 +307,63 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
 });
+
+test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the typed one (#227)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `بيع-لصق-تصنيف-${stamp}`;
+  const itemName = `بيع-لصق-${stamp}`;
+  const barcode = `SALE-BIDI-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.keyboard.type(barcode, { delay: 8 });
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("unknown-scan-dialog")).toBeVisible();
+  await page.getByTestId("scan-create-stock").click();
+  await expect(page.getByTestId("sale-quick-form")).toBeVisible();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("400");
+  await page.getByLabel("سعر البيع (دج)").fill("1000");
+  await page.getByTestId("sale-quick-stock").fill("5");
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
+
+  // The paste shape: the invisible RIGHT-TO-LEFT MARK (U+200F) glued to the
+  // front of Arabic-Indic digits, as the clipboard delivers a copy out of RTL
+  // text. `fill` sets the value in one shot, the way a paste does. 5 × 900 =
+  // 4500, amount discount 100, total 4400 — the numbers the typed #210 draft
+  // gives, so a paste must not be refused where typing is accepted.
+  const rlm = "\u200f";
+  const quantity = page.getByTestId("sale-lines").getByLabel(`${itemName}: الكمية`);
+  await quantity.fill(`${rlm}٥`);
+  // the field really holds the invisible mark, so the pin cannot pass by
+  // normalising the value before the parser ever sees it
+  await expect(quantity).toHaveValue(`${rlm}٥`);
+  await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
+  const overrideValue = page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`);
+  await overrideValue.fill(`${rlm}٩٠٠`);
+  await expect(overrideValue).toHaveValue(`${rlm}٩٠٠`);
+  await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
+  const discountValue = page.getByTestId("sale-discount-value");
+  await discountValue.fill(`${rlm}١٠٠`);
+  await expect(discountValue).toHaveValue(`${rlm}١٠٠`);
+  await expect(page.getByTestId("sale-subtotal")).toContainText("4500");
+  await expect(page.getByTestId("sale-total")).toContainText("4400");
+
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+});

@@ -135,6 +135,83 @@ describe("parseQuantityDraft (the one quantity parser both screens use)", () => 
   });
 });
 
+/**
+ * #227 — a quantity or money draft pasted out of RTL text carries an invisible
+ * directional mark. The one normalizer behind the quantity reader and the
+ * amount readers drops it, so the paste reads like the typed value here too.
+ * The mark is BUILT, because that is how the clipboard delivers it.
+ */
+describe("bidi formatting marks in the draft readers (#227)", () => {
+  const RLM = "\u200f";
+  const pasted = (draft: string) => `${RLM}${draft}`;
+
+  it("parseQuantityDraft reads a pasted quantity like the typed digit", () => {
+    expect(parseQuantityDraft(pasted("٥"))).toBe(5);
+    expect(parseQuantityDraft(pasted("5"))).toBe(5);
+    expect(parseQuantityDraft(pasted("٤٢"))).toBe(42);
+    expect(quantityDraftInvalid(pasted("٥"))).toBe(false);
+    // the cap is applied after the strip, exactly as it is after the digit map
+    expect(parseQuantityDraft(pasted("1000000"))).toBe(1_000_000);
+    expect(parseQuantityDraft(pasted("1000001"))).toBe(0);
+    // the ASCII path is unchanged, and a bare mark is still a cleared draft
+    expect(parseQuantityDraft("5")).toBe(5);
+    expect(parseQuantityDraft(RLM)).toBe(0);
+    expect(quantityDraftInvalid(RLM)).toBe(true);
+  });
+
+  it("carries a pasted draft through the sale money path (override, discount, payment)", () => {
+    const override: SaleDraftLine = { ...saleLine("a"), overrideType: "AMOUNT", overrideValue: pasted("٩٠٠") };
+    expect(saleUnitPrice(override)).toBe(900);
+    expect(saleOverrideInvalid(override)).toBe(false);
+    expect(discountAmountFor(1000, "AMOUNT", pasted("١٠٠"))).toBe(100);
+    expect(resolveInitialPaid(1000, pasted("٢٠٠"), "")).toEqual({ ok: true, paid: 200 });
+    // the percentage branch of the price is pinned with a mark too, not only the
+    // AMOUNT branch: 10% of the default 1000
+    const percentage: SaleDraftLine = { ...saleLine("a"), overrideType: "PERCENTAGE", overrideValue: pasted("١٠") };
+    expect(saleOverrideInvalid(percentage)).toBe(false);
+    expect(saleUnitPrice(percentage)).toBe(100);
+    // a mark-only discount is a zero discount, i.e. the same as none chosen —
+    // the discount has no «free line» hole, so accepting it cannot bill wrongly
+    expect(discountAmountFor(1000, "AMOUNT", RLM)).toBe(0);
+    // the same drafts without the mark stay what they already were
+    expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: "900" })).toBe(900);
+  });
+
+  it("pins the pre-existing refusals a mark-only draft still gets (#227)", () => {
+    // Not the free-line hole: these guards are raw-trim and refuse. Pinned so the
+    // deferred «one blank predicate» ticket has a starting point, and so a future
+    // edit cannot flip them silently.
+    expect(resolveInitialPaid(1000, RLM, "")).toEqual({ ok: false });
+    expect(resolveInitialPaid(1000, ` ${RLM} `, "")).toEqual({ ok: false });
+    // The purchase unit-cost field is a controlled money field, not a draft: an
+    // edge mark normalises to blank, and blank is the documented explicit zero
+    // (the same read an empty field gets). A marked/Arabic-Indic value now reads
+    // through the same normaliser (#225 routed it, so the #227 edge strip applies
+    // here too), and an interior mark is refused (`parseLooseNumber` → NaN →
+    // keeps the previous cost).
+    expect(nextUnitCost(`\u200f`, 1200)).toBe(0);
+    expect(nextUnitCost(`\u200f400`, 1200)).toBe(400);
+    expect(nextUnitCost("٥٠٠", 1200)).toBe(500);
+    expect(nextUnitCost(`4${RLM}00`, 1200)).toBe(1200);
+  });
+
+  it("treats a mark-only override as «nothing chosen», never a free line (#227)", () => {
+    // pasting a marked value and deleting the digits leaves the invisible mark;
+    // a bidi mark is Cf, not whitespace, so a raw trim() would read it as a
+    // chosen value while the loose reader bills it as 0. It must be refused,
+    // exactly like an empty override, and must price at the default.
+    for (const overrideType of ["AMOUNT", "PERCENTAGE"] as const) {
+      const markOnly: SaleDraftLine = { ...saleLine("a"), overrideType, overrideValue: RLM };
+      expect(saleOverrideInvalid(markOnly)).toBe(true);
+      expect(saleUnitPrice(markOnly)).toBe(1000);
+    }
+    // whitespace around the mark is the same draft
+    expect(saleOverrideInvalid({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: ` ${RLM} ` })).toBe(true);
+    // and a mark that still carries digits is unaffected
+    expect(saleUnitPrice({ ...saleLine("a"), overrideType: "AMOUNT", overrideValue: pasted("٩٠٠") })).toBe(900);
+  });
+});
+
 describe("nextUnitCost (the purchase line's controlled money field)", () => {
   it("treats a cleared field as an explicit zero, matching the previous contract", () => {
     expect(nextUnitCost("", 1200)).toBe(0);

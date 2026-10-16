@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { toArabicIndic, toExtendedArabicIndic } from "../tests/arabic-digits";
+import { normalizeArabicIndicDigits } from "./amount-parse";
 import { parseSignedWholeNumber, parseWholeNumber, resolveOpeningStock } from "./numeric-input";
 
 /**
@@ -85,5 +86,70 @@ describe("Arabic-Indic digits in the whole-number readers (#225)", () => {
     expect(resolveOpeningStock("۷", true)).toEqual({ ok: true, value: 7 });
     // zero is still refused when the path promised an opening movement
     expect(resolveOpeningStock("۰", true)).toEqual({ ok: false, reason: "required" });
+  });
+
+  it("reads an edge pasted bidi mark like the typed digit, and refuses an interior one (#227)", () => {
+    // these readers inherit the shared normaliser, so the #227 edge strip applies
+    // here too. The mark is BUILT, because that is how the clipboard delivers it.
+    const RLM = "\u200f";
+    expect(parseWholeNumber(`${RLM}٥`)).toBe(5);
+    expect(parseWholeNumber(`٥${RLM}`)).toBe(5);
+    expect(parseWholeNumber(`${RLM}٥${RLM}`)).toBe(5);
+    // the signed reader tests `startsWith("-")` before it normalises, so an edge
+    // mark in front of the sign keeps the draft unreadable — a safe refusal
+    expect(parseSignedWholeNumber(`${RLM}-٥`)).toBeNull();
+    expect(parseSignedWholeNumber("-٥")).toBe(-5);
+    expect(resolveOpeningStock(` \u200f٧ `, false)).toEqual({ ok: true, value: 7 });
+    // an interior mark can reorder the run in the RTL page, so it is refused
+    expect(parseWholeNumber(`٥${RLM}٥`)).toBeNull();
+    expect(parseWholeNumber(`1${RLM}000`)).toBeNull();
+    // a mark-only draft is refused, never read as zero
+    expect(parseWholeNumber(RLM)).toBeNull();
+    expect(resolveOpeningStock(RLM, false)).toEqual({ ok: false, reason: "invalid" });
+    // ASCII identity, unchanged
+    expect(parseWholeNumber("123")).toBe(123);
+  });
+
+  it("judges the whole signed draft before dropping the sign, so an interior mark after `-` is refused (#227 round 2)", () => {
+    const RLM = "\u200f";
+    const five = `-${RLM}5`;
+    // `-` is content, so the mark is INTERIOR to the signed draft and the shared
+    // normaliser keeps it...
+    expect(normalizeArabicIndicDigits(five)).toBe(five);
+    // ...so the signed reader must judge the whole draft BEFORE it removes the
+    // sign. This is the ordering pin: strip the `-` first and normalise the
+    // remainder, and the now-leading mark is stripped as if it were an edge
+    // mark, so `-5` falls out of an interior-mark draft and these fail.
+    expect(parseSignedWholeNumber(five)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}${toArabicIndic("5")}`)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}${toExtendedArabicIndic("5")}`)).toBeNull();
+    expect(parseSignedWholeNumber(`-${RLM}${RLM}5`)).toBeNull();
+    expect(parseSignedWholeNumber(`-1${RLM}000`)).toBeNull();
+  });
+
+  it("keeps the edge, override and ASCII rules on a signed draft (#227 round 2)", () => {
+    const RLM = "\u200f";
+    // An edge mark is stripped at the draft edge—but a mark in FRONT of the sign
+    // keeps the draft unsigned, so the shared reader refuses the `-` (the
+    // round-1 pin, preserved; accepting it is a separate behaviour change).
+    expect(parseSignedWholeNumber(`${RLM}-5`)).toBeNull();
+    expect(parseSignedWholeNumber(`-5${RLM}`)).toBe(-5);
+    expect(parseSignedWholeNumber(`${RLM}-5${RLM}`)).toBeNull();
+    // the directional overrides are never dropped, edge or interior
+    expect(parseSignedWholeNumber("\u202e-5")).toBeNull();
+    expect(parseSignedWholeNumber("-\u202e5")).toBeNull();
+    expect(parseSignedWholeNumber("\u202d-5")).toBeNull();
+    // the sign path itself is unchanged: ASCII, both Arabic scripts, blank, lone sign
+    expect(parseSignedWholeNumber("-5")).toBe(-5);
+    expect(parseSignedWholeNumber(`-${toArabicIndic("5")}`)).toBe(-5);
+    expect(parseSignedWholeNumber(`${RLM}5`)).toBe(5);
+    // pre-existing: whitespace around the sign trims, so `- 5` still reads
+    expect(parseSignedWholeNumber("- 5")).toBe(-5);
+    expect(parseSignedWholeNumber("")).toBeNull();
+    expect(parseSignedWholeNumber("   ")).toBeNull();
+    expect(parseSignedWholeNumber("-")).toBeNull();
+    // the safe-integer ceiling applies to the magnitude, sign or not
+    expect(parseSignedWholeNumber("-9007199254740991")).toBe(Number.MIN_SAFE_INTEGER);
+    expect(parseSignedWholeNumber("-9007199254740993")).toBeNull();
   });
 });

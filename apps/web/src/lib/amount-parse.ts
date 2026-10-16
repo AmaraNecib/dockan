@@ -8,6 +8,11 @@
  * separator and returning a different number (the reported `1 000,00` → 100000
  * silent 100× bug). The bulk opening balance and the single-entry money fields
  * both use this one reader, so a grouped string can never mean two numbers.
+ *
+ * `normalizeArabicIndicDigits` is the one normalisation step they all share: it
+ * maps either Arabic digit script and drops a pasted bidi mark at the edge of a
+ * draft (#227), so a pasted number reads like the same number typed. (An
+ * interior pasted mark is left in place and refused — see the helper below.)
  */
 
 /** Otherwise-valid thousands separators between 3-digit groups (comma,
@@ -15,16 +20,58 @@
 const STRIP_GROUPING = /[,\s\u066C\u00A0]/gu;
 const ARABIC_INDIC_DIGITS = /[\u0660-\u0669]/gu;
 const EXTENDED_ARABIC_INDIC_DIGITS = /[\u06F0-\u06F9]/gu;
+/**
+ * The invisible bidi marks a paste can carry at the *edge* of a numeric draft:
+ * U+061C (ALM), U+200E/U+200F (LRM/RLM), the embeddings U+202A..U+202C
+ * (LRE/RLE/PDF) and the isolates U+2066..U+2069 (LRI/RLI/FSI/PDI).
+ *
+ * Only *edge* occurrences are dropped (#227). A mark *inside* a draft can split
+ * a digit run and let the RTL page reorder it — measured in Chromium with
+ * `dir="rtl"`, `1\u200f2` renders as `21` — so reading the logical order would
+ * return a number the owner never saw. An interior mark is left in place, which
+ * makes the strict readers refuse the draft: a safe refusal, never a different
+ * number.
+ *
+ * The directional *overrides* U+202D (LRO) and U+202E (RLO) are never dropped,
+ * edge or not: an override displays a run in forced order, so the logical digit
+ * characters a paste carries can differ from the number the owner saw.
+ */
+const PASTED_BIDI_MARKS = /[\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/gu;
+/** Draft content for the edge test: not whitespace and not one of the marks. */
+const DRAFT_CONTENT = /[^\s\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/u;
+
+/**
+ * Drop the pasted bidi marks that sit outside the draft's content — leading,
+ * trailing, or among surrounding whitespace, which is the shape a copy out of
+ * RTL text produces. A mark with content on both sides is left for the reader to
+ * refuse (see `PASTED_BIDI_MARKS`).
+ */
+function stripEdgeBidiMarks(draft: string): string {
+  const first = draft.search(DRAFT_CONTENT);
+  if (first === -1) return draft.replace(PASTED_BIDI_MARKS, "");
+  let last = first;
+  for (let index = draft.length - 1; index > first; index -= 1) {
+    if (DRAFT_CONTENT.test(draft[index] ?? "")) {
+      last = index;
+      break;
+    }
+  }
+  return draft.replace(PASTED_BIDI_MARKS, (mark: string, offset: number) =>
+    offset < first || offset > last ? "" : mark,
+  );
+}
 
 /**
  * Map Arabic-Indic (`٥`) and Extended Arabic-Indic (`۵`) digits to their ASCII
- * form and leave every other character untouched. One normalizer for the amount
- * and invoice-draft readers, so a digit one accepts the other cannot reject (the
- * #198 quantity/amount mismatch). Every money reader in this module normalises
- * through it, so a value typed in either script reads the same (#210).
+ * form, drop the pasted bidi marks at the edge of a draft, and leave every other
+ * character untouched. One normalizer for the amount and invoice-draft readers,
+ * so a digit one accepts the other cannot reject (the #198 quantity/amount
+ * mismatch). Every money reader in this module normalises through it, so a
+ * value typed in either script — or pasted out of RTL text (#227) — reads the
+ * same (#210).
  */
 export function normalizeArabicIndicDigits(draft: string): string {
-  return draft
+  return stripEdgeBidiMarks(draft)
     .replace(ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x0660))
     .replace(EXTENDED_ARABIC_INDIC_DIGITS, (digit) => String(digit.charCodeAt(0) - 0x06f0));
 }

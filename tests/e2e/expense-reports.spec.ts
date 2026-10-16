@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption, expectSelectOption } from "./select-helpers";
-import { saveQuickAdd } from "./rpc-helpers";
+import { actAndAck, saveQuickAdd } from "./rpc-helpers";
 
 /**
  * Expenses + profit reports. Specs share one wiped-at-boot sqlite
@@ -234,8 +234,41 @@ test("profit report reconciles revenue, COGS, expenses, withdrawals and the resu
 
 test("profit report range preset is the themed select and switches the window", async ({ page }) => {
   await ensureAuthed(page);
+  const stamp = Date.now().toString();
+  const categoryName = `مخصص-${stamp}`;
+  // Two expenses in a category of this test's own, on two days no other spec
+  // writes to (expenses are only ever recorded by this spec). The custom
+  // windows below have an exact expected total from these two rows alone, so
+  // they pin the query — not the period line. A handler that only relabels the
+  // output while it re-queries the default window reports the current month's
+  // figure (or everything) here instead and fails.
+  const seeded = [
+    { day: "10/06/2024", at: "10/06/2024 12:00", amount: 4321 },
+    { day: "11/06/2024", at: "11/06/2024 12:00", amount: 555 },
+  ];
+
+  await page.goto("/expenses");
+  await page.getByTestId("expense-category-add").click();
+  await page.getByTestId("expense-category-name").fill(categoryName);
+  await page.getByTestId("expense-category-create").click();
+  await expect(page.getByTestId("expense-category-created")).toContainText(categoryName);
+  for (const entry of seeded) {
+    await page.getByTestId("expense-amount").fill(String(entry.amount));
+    await page.getByTestId("expense-date").fill(entry.at);
+    // await each write's own acknowledgement, never a bare click: the report
+    // reads below must not race an unconfirmed create
+    await actAndAck(page, "expensesCreate", async () => {
+      await page.getByTestId("expense-save").click();
+    });
+  }
+
   await page.goto("/reports");
   await expect(page.getByTestId("reports-page")).toBeVisible();
+  const readAbs = async (testid: string) => Math.abs(parseAmount(await page.getByTestId(testid).textContent()));
+
+  // the default preset is the current month, so the 2024 rows are invisible:
+  // this is the baseline the custom window must move away from and back to
+  const defaultOperatingAbs = await readAbs("report-operating");
 
   // The native <select> that fell back to OS rendering is gone: the control is
   // the themed trigger and choosing a preset opens, selects and closes it.
@@ -255,12 +288,36 @@ test("profit report range preset is the themed select and switches the window", 
   const reportTo = page.getByTestId("report-custom-to");
   await expect(reportFrom).toHaveAttribute("type", "text");
   await expect(reportTo).toHaveAttribute("type", "text");
-  await reportFrom.fill("01/01/2020 00:00");
-  await reportTo.fill("31/01/2020 23:59");
-  await expect(page.getByTestId("report-range-label")).toContainText("01/01/2020");
-  await expect(page.getByTestId("report-range-label")).toContainText("31/01/2020");
+
+  // issue #114 — the period line is not the proof; the FIGURES are. One day at
+  // a time, then both: each window's operating figure is the exact sum of the
+  // seeded rows it contains, and the breakdown traces it to the category.
+  const seededRow = () => page.getByTestId("report-breakdown").locator("tbody tr", { hasText: categoryName });
+  const expectWindow = async (from: string, to: string, amount: number, count: number) => {
+    await reportFrom.fill(`${from} 00:00`);
+    await reportTo.fill(`${to} 23:59`);
+    await expect(page.getByTestId("report-range-label")).toContainText(from);
+    await expect.poll(async () => readAbs("report-operating")).toBe(amount);
+    await expect(seededRow().locator("td").nth(1)).toHaveText(String(count));
+    await expect.poll(async () => parseAmount(await seededRow().locator("td").nth(2).textContent())).toBe(amount);
+  };
+  await expectWindow(seeded[0]!.day, seeded[0]!.day, seeded[0]!.amount, 1);
+  // the second day alone: every earlier window starts on the first day, so an
+  // ignored customFrom would still return the first day's total — only a
+  // later start hides it and pins the start bound
+  await expectWindow(seeded[1]!.day, seeded[1]!.day, seeded[1]!.amount, 1);
+  // widening the window includes both days: a handler that drops either bound
+  // (or re-queries the default) cannot land on this sum
+  await expectWindow(seeded[0]!.day, seeded[1]!.day, seeded[0]!.amount + seeded[1]!.amount, 2);
+
+  // switching the preset away re-issues the query: the custom window's figure
+  // is gone and the current month is back to the baseline read before it
+  await chooseSelectOption(page, trigger, "الشهر الحالي");
+  await expect(page.getByTestId("report-custom-from")).toHaveCount(0);
+  await expect.poll(async () => readAbs("report-operating")).toBe(defaultOperatingAbs);
 
   // an impossible bound is refused visibly rather than widening the window
+  await chooseSelectOption(page, trigger, "فترة مخصصة");
   await reportFrom.fill("31/02/2020 00:00");
   await reportFrom.blur();
   await expect(page.getByTestId("report-custom-from-error")).toContainText("01/10/2026 00:34");

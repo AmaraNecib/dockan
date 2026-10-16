@@ -221,7 +221,9 @@ describe("vault gate keeps one failure value (issue #217)", () => {
     setValue(host, "vault-recovery-input", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BD");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("VAULT_RECOVERY_LIMIT"));
 
-    // ... and the abandoned passphrase blame must not resurrect on the way back
+    // ... and returning to the passphrase form must not resurrect the blame
+    // the screen change dropped: the back handler is one setFailure(null), and
+    // the drift mutation is exactly the version that leaves it behind.
     const back = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.trim() === i18n.t("vaultBackToPassphrase"));
     if (back === undefined) throw new Error("missing back-to-passphrase button");
     await act(async () => {
@@ -249,8 +251,11 @@ describe("vault gate keeps one failure value (issue #217)", () => {
     expect(recovery?.getAttribute("aria-describedby")).toBe("vault-error");
     expect(recovery?.getAttribute("aria-invalid")).toBe("true");
 
-    // the next failure names no field, so the old blame must go with the copy
+    // editing the blamed field drops the blame before any new attempt
     setValue(host, "vault-recovery-input", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BC");
+    expect(host.querySelector('[data-testid="vault-error"]')).toBeNull();
+
+    // the next failure names no field, so the old blame must go with the copy
     await submit(host, "vault-recovery-submit");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("VAULT_UNEXPECTED"));
     expectNoFieldBlamed(host);
@@ -258,6 +263,20 @@ describe("vault gate keeps one failure value (issue #217)", () => {
     // ... and editing the field cannot swallow the server error
     setValue(host, "vault-recovery-input", "ABCD-EFGH-IJKL-MNPQ-RSTU-VWXY-Z234-567A-BD");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("VAULT_UNEXPECTED"));
+  });
+
+  it("editing one field drops only its own blame, never another field's", async () => {
+    const host = await mount(statusFor("unconfigured"), () => undefined);
+    // an empty passphrase blames the passphrase field
+    await submit(host, "vault-setup-submit");
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("true");
+
+    // editing the confirm field is not a fix for the passphrase blame
+    setValue(host, "vault-passphrase-confirm", "some confirm text");
+    expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toBe(i18n.t("vaultPassphraseTooShort"));
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("true");
+    expect(passphrase?.getAttribute("aria-describedby")).toBe("vault-error");
   });
 });
 
@@ -463,6 +482,10 @@ describe("VaultGate", () => {
     setValue(host, "vault-passphrase", "wrong passphrase");
     await submit(host, "vault-unlock-submit");
     expect(host.querySelector('[data-testid="vault-error"]')?.textContent).toContain("كلمة المرور غير صحيحة");
+    // the server failure names no field, so the passphrase carries no blame
+    const passphrase = host.querySelector<HTMLInputElement>('[data-testid="vault-passphrase"]');
+    expect(passphrase?.getAttribute("aria-invalid")).toBe("false");
+    expect(passphrase?.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("unlocks with a recovery key through the recovery screen", async () => {

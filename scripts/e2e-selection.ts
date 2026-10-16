@@ -56,10 +56,25 @@ export function loadMap(path = MAP_PATH): SelectionMap {
   // shape selectSpecs reads; a mismatch throws rather than classifying a path
   // as mapped.
   const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<SelectionMap>;
-  if (!Array.isArray(parsed.always_full) || !Array.isArray(parsed.skip_e2e) || !Array.isArray(parsed.features)) {
-    throw new Error(`e2e-selection map at ${path} must have always_full, skip_e2e and features arrays`);
+  const wellFormed =
+    Array.isArray(parsed.always_full) &&
+    Array.isArray(parsed.skip_e2e) &&
+    Array.isArray(parsed.features) &&
+    // An empty `match` or `specs` is the fail-open shape: the file counts as a
+    // feature hit and picks nothing, which selectSpecs turns into `skip`.
+    parsed.features.every(
+      (feature) =>
+        Array.isArray(feature.match) &&
+        feature.match.length > 0 &&
+        Array.isArray(feature.specs) &&
+        feature.specs.length > 0,
+    );
+  if (!wellFormed) {
+    throw new Error(
+      `e2e-selection map at ${path} must have always_full, skip_e2e and non-empty features arrays`,
+    );
   }
-  // SAFETY: the three arrays checked above are the whole shape selectSpecs reads.
+  // SAFETY: the arrays checked above are the whole shape selectSpecs reads.
   return parsed as SelectionMap;
 }
 

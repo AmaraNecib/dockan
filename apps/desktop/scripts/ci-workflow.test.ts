@@ -335,7 +335,7 @@ describe("PR CI workflow", () => {
 
   it("detects every crate-affecting path for the Rust gate", () => {
     const decide = stepNamed(parseSteps(WORKFLOW_SOURCE, "changes"), "Decide the scope");
-    const match = /grep -qE '([^']+)'/u.exec(decide.run);
+    const match = /grep -qE '([^']+)' changed\.txt/u.exec(decide.run);
     if (match === null) throw new Error("The changes job has no rust grep");
     const rustPath = new RegExp(match[1], "u");
     const cratePaths = [
@@ -357,6 +357,9 @@ describe("PR CI workflow", () => {
       "bun.lock",
       "tsconfig.base.json",
       "package.json",
+      // future root-level toolchain inputs
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
       // the unknown-diff sentinel must gate rust ON (fail closed)
       "*",
     ];
@@ -401,7 +404,7 @@ describe("PR CI workflow", () => {
     // assertions below pin its keys.
     const doc = Bun.YAML.parse(WORKFLOW_SOURCE) as { jobs?: object };
     expect(doc.jobs).toBeDefined();
-    expect(Object.keys(doc.jobs ?? {})).toEqual(["changes", "checks", "e2e", "rust"]);
+    expect(Object.keys(doc.jobs ?? {}).sort()).toEqual(["changes", "checks", "e2e", "rust"]);
   });
 
   it("builds the web frontend before cargo, because build.rs requires it", () => {

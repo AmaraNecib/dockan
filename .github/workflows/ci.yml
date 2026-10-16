@@ -114,10 +114,11 @@ jobs:
           echo "e2e_reason=$reason" >> "$GITHUB_OUTPUT"
           # `rust` gates the crate. It is true for a path that can end up inside
           # the crate or drive its build.rs: the desktop crate, its scripts, and
-          # the sidecar inputs build.rs fingerprints (apps/api, the contracts
-          # package, bun.lock, the root tsconfig and package.json). `*` is the
-          # unknown-diff sentinel from the step above.
-          if grep -qE '^(\*|apps/desktop/(src-tauri|scripts)/.*|apps/desktop/package\.json|apps/api/(src/.*|package\.json|tsconfig\.json)|packages/contracts/.*|bun\.lock|tsconfig\.base\.json|package\.json)$' changed.txt; then
+          # the sidecar inputs build.rs fingerprints (the api sources and their
+          # configs, the contracts package, bun.lock, the root tsconfig and
+          # package.json), plus a future rust-toolchain.toml / .cargo config.
+          # `*` is the unknown-diff sentinel from the step above.
+          if grep -qE '^(\*|apps/desktop/(src-tauri|scripts)/.*|apps/desktop/package\.json|rust-toolchain\.toml|\.cargo/.*|apps/api/(src/.*|package\.json|tsconfig\.json)|packages/contracts/.*|bun\.lock|tsconfig\.base\.json|package\.json)$' changed.txt; then
             echo "rust=true"  >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"

@@ -50,8 +50,9 @@ for the `changes` CI job.
   `bun run test:e2e $E2E_SPECS`.
 - `rust`: `needs: changes`, `if: rust != 'false'`. Still `windows-latest`.
   `rust` is true for the crate, its scripts, and the sidecar inputs `build.rs`
-  fingerprints (`apps/api/**`, `packages/contracts/**`, `bun.lock`, the root
-  `tsconfig.base.json` and `package.json`).
+  fingerprints (`apps/api/src/**`, `apps/api/{package,tsconfig}.json`,
+  `packages/contracts/**`, `bun.lock`, `tsconfig.base.json`, the root
+  `package.json`, `rust-toolchain.toml`, `.cargo/**`).
 - Triggers: `pull_request`/`push`/`workflow_dispatch`, **no**
   trigger-level `paths`/`paths-ignore`. A trigger filter would delete `checks`
   on a docs-only PR and trap a required status check; the `changes` job decides

@@ -37,6 +37,7 @@ describe("e2e-selection map", () => {
     expect(Array.isArray(map.features)).toBe(true);
     for (const feature of map.features) {
       expect(Array.isArray(feature.match)).toBe(true);
+      expect(Array.isArray(feature.specs)).toBe(true);
       expect(feature.match.length).toBeGreaterThan(0);
       // An empty `specs` would classify the file as "feature hit" and then
       // pick nothing, which selectSpecs turns into `skip`: a silent disarm.
@@ -83,6 +84,11 @@ describe("e2e-selection map", () => {
     writeFileSync(file, JSON.stringify({ always_full: [] }));
     try {
       expect(() => loadMap(file)).toThrow(/must have always_full/);
+      writeFileSync(
+        file,
+        JSON.stringify({ always_full: [], skip_e2e: [], features: [{ match: ["x"], specs: [] }] }),
+      );
+      expect(() => loadMap(file)).toThrow(/non-empty features/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -107,7 +113,7 @@ describe("e2e-selection map", () => {
     expect(scope.specs).toEqual([]);
   });
 
-  test("a critical path beats a skip rule and a feature rule", () => {
+  test("a critical path beats a skip rule", () => {
     const scope = selectSpecs(["docs/readme.md", "apps/api/src/rpc/router.ts"], map);
     expect(scope.mode).toBe("full");
   });
@@ -125,7 +131,9 @@ describe("e2e-selection behaviour", () => {
   });
 
   test("fail-closed on a blank diff", () => {
-    expect(selectSpecs(["", "   ", "\n"], map).mode).toBe("full");
+    const scope = selectSpecs(["", "   ", "\n"], map);
+    expect(scope.mode).toBe("full");
+    expect(scope.reason).toContain("empty diff");
   });
 
   test("docs-only diff skips e2e", () => {
@@ -167,14 +175,21 @@ describe("e2e-selection behaviour", () => {
 
   test("a component imported by more than one page is critical, not a feature rule", () => {
     // components/catalog is imported by items, sale and purchase; a single
-    // feature rule would under-select, so it must force the full suite.
-    expect(selectSpecs(["apps/web/src/components/catalog/item-picker-dialog.tsx"], map).mode).toBe("full");
-    expect(selectSpecs(["apps/web/src/components/parties/party-picker.tsx"], map).mode).toBe("full");
+    // feature rule would under-select, so it must force the full suite. Assert
+    // the reason too: `full` is also what an unmapped path produces.
+    const catalog = selectSpecs(["apps/web/src/components/catalog/item-picker-dialog.tsx"], map);
+    expect(catalog.mode).toBe("full");
+    expect(catalog.reason).toContain("critical path");
+    const parties = selectSpecs(["apps/web/src/components/parties/party-picker.tsx"], map);
+    expect(parties.mode).toBe("full");
+    expect(parties.reason).toContain("critical path");
   });
 
   test("shared web code is critical, not a feature rule", () => {
     // lib/ is read by every screen; a change there must run the whole suite.
-    expect(selectSpecs(["apps/web/src/lib/receipt.ts"], map).mode).toBe("full");
+    const scope = selectSpecs(["apps/web/src/lib/receipt.ts"], map);
+    expect(scope.mode).toBe("full");
+    expect(scope.reason).toContain("critical path");
   });
 
   test("an unlisted unit test is inert", () => {
@@ -201,14 +216,20 @@ describe("e2e-selection CLI", () => {
   test("emits the mode/specs/reason contract the workflow parses", () => {
     const dir = mkdtempSync(join(tmpdir(), "e2e-cli-"));
     const changed = join(dir, "changed.txt");
-    writeFileSync(changed, "apps/web/src/pages/debts.tsx\n");
+    const run = (lines: string) => {
+      writeFileSync(changed, lines);
+      return execFileSync(process.execPath, [CLI, changed], { cwd: ROOT, encoding: "utf8" });
+    };
     try {
-      const out = execFileSync(process.execPath, [CLI, changed], { cwd: ROOT, encoding: "utf8" });
-      expect(out).toContain("mode=affected\n");
+      const affected = run("apps/web/src/pages/debts.tsx\n");
+      expect(affected).toContain("mode=affected\n");
       // ci.yml word-splits this line into Playwright positional filters, so the
       // tests/e2e/ prefix and the space join are part of the contract.
-      expect(out).toContain("specs=tests/e2e/debts.spec.ts\n");
-      expect(out).toMatch(/^reason=.+$/mu);
+      expect(affected).toContain("specs=tests/e2e/debts.spec.ts\n");
+      expect(affected).toMatch(/^reason=.+$/mu);
+      // full and skip both emit an empty specs line, never a stale one
+      expect(run("apps/api/src/rpc/router.ts\n")).toContain("mode=full\nspecs=\n");
+      expect(run("docs/ci.md\n")).toContain("mode=skip\nspecs=\n");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

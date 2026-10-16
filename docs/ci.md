@@ -30,14 +30,16 @@ merged tree, and it is the backstop that makes narrowing a PR safe.
   selected specs otherwise, and is skipped only when nothing in the diff can
   reach a browser.
 - `rust` runs when a path that can end up inside the crate, or drive its
-  `build.rs`, changed. That is the crate itself and its scripts
-  (`apps/desktop/src-tauri/**`, `apps/desktop/scripts/**`,
-  `apps/desktop/package.json`) plus the sidecar inputs `build.rs` fingerprints
-  (`apps/api/**`, `packages/contracts/**`, `bun.lock`, `tsconfig.base.json` and
-  the root `package.json`), because `build.rs` compiles the api sidecar and
-  re-runs when those change. It stays on `windows-latest`: the
-  ACL/`capabilities` guard is a Windows-app guard, and `desktop-installer.yml`
-  runs only on a tag, so it cannot replace a PR gate.
+  `build.rs`, changed. The crate itself and its scripts are
+  `apps/desktop/src-tauri/**`, `apps/desktop/scripts/**` and
+  `apps/desktop/package.json`. `build.rs` also fingerprints the api sources and
+  their configs (`apps/api/src/**`, `apps/api/package.json`,
+  `apps/api/tsconfig.json`), the `packages/contracts/**` package, `bun.lock`,
+  `tsconfig.base.json` and the root `package.json`, because it compiles the api
+  sidecar and re-runs when those change. A `rust-toolchain.toml` or `.cargo/**`
+  counts too. It stays on `windows-latest`: the ACL/`capabilities` guard is a
+  Windows-app guard, and `desktop-installer.yml` runs only on a tag, so it
+  cannot replace a PR gate.
 - The production `vite build` that used to ride along in the `rust` job moved
   into `checks`, so gating rust off web-only diffs does not also remove the only
   PR-time production build (the `e2e` job runs `vite dev`, and `turbo test`

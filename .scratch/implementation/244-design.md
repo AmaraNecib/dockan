@@ -183,3 +183,32 @@ Failing-first: the three scanner fixtures fail on the pre-fix scanner with `[]`
 (`ratchet-first-red.log`); the proof demo exits 1 on the old scripts with the
 false pass shown and 0 on the new; `gate-set-diff` stays `ADDED []` / `REMOVED []`
 (32 gates) against every earlier ref. Tier unchanged: High-assurance.
+
+## Review round 3 (independent lenses at `9219369`)
+
+Seven read-only sub-agents (debate critic + defender, test-audit edge/coverage/
+quality, code-review standards + spec). The lenses found two real defects in the
+round-3 work itself, both of the class this ticket exists to end:
+
+- **An inner `{...}` inside `${}` ended the code region early** (`scanSource`
+  popped the region on any `}`, not the interpolation's own). A gate after a
+  nested object literal or arrow body inside `${}` was read as template TEXT
+  again, so its comments survived and hid the gate. Fixed with a failing-first
+  fixture; the region now carries the index of its own `${`.
+- **A normaliser that is only an argument was still skipped**
+  (`f(normalizeArabicIndicDigits(id)).trim()`), because the skip tested mere
+  presence in the receiver. The test is now anchored to the call that wraps the
+  value (`NORMALISED_VALUE`).
+- Two smaller ones: `breaksStatement` is now string-aware (a `d["}"]` key no
+  longer reads as a statement break), and `gate-set-diff` enforces its own empty
+  ADDED/REMOVED instead of printing it (it could pass vacuously).
+
+Deferred with a stated reason, not silently: blanking a template's TEXT is now
+safe (the `${}` half is code either way) and would only remove false positives;
+the e2e row lookup does not reset the pager; the mutation proof reverts whole
+files, so it is a file-level detector (wisdom
+`2026-10-16-latent-shape-mutation-proof.md`), and `branch-pin-proof.sh` covers
+matcher call sites only, with the `scanSource` internals pinned by fixtures.
+
+Evidence: `.scratch/reviews/244/b0f2c64-{debate,test-audit,code-review}.md` and
+the `b0f2c64-*.log` proofs.

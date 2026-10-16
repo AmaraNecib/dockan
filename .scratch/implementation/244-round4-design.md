@@ -76,17 +76,15 @@ The script accepted any nonzero mutated run as a detection and could print
 
 Fix, the same standard the mutation and branch-pin proofs already use:
 - require a **green baseline** before the mutation;
-- require the **expected failing assertion**
-  (`(fail) … keeps every raw verdict present in the source`) in the mutated
-  output, read **before** the restored run overwrites it (separate `mktemp` output
-  files, not one shared `$OUT`).
+- require the **expected failing assertion** — the scope one,
+  `(fail) … names only files inside the scanned scope` — in the mutated output,
+  read **before** the restored run overwrites it (separate `mktemp` output files,
+  not one shared `$OUT`).
 
 Failing-first demo: `.scratch/reviews/244/scope-shrink-guard-demo.sh` runs the old
 and new script against a throwaway repo whose shrink makes the ratchet **crash**
 (no failing test). Old → exit 0, "PASSED"; new → exit 1, "without the expected
-failing assertion". The expected assertion is the scope one,
-`(fail) … names only files inside the scanned scope`. Evidence log:
-`<sha>-scope-shrink-guard-demo.log`.
+failing assertion". Evidence log: `<sha>-scope-shrink-guard-demo.log`.
 
 ### 5. Probe files can collide (`.scratch/reviews/244/gate-set-diff.sh`, `scanner-shapes.sh`)
 

@@ -90,9 +90,9 @@ import { fileURLToPath } from "node:url";
  * never hidden by them) and both go away with the AST walk. Regex literals
  * are not parsed, so a regex holding a quote, a backtick or a `/*` can mis-scope
  * or HIDE every later gate in the file (the unsafe direction) — in
- * `breaksStatement` as well as `scanSource` — a deferred follow-up, not a
- * dismissal. Every gate of the matched forms is caught; this comment is the honest
- * boundary of that claim.
+ * `breaksStatement` and `normalisesWholeValue` as well as `scanSource` — a
+ * deferred follow-up, not a dismissal. Every gate of the matched forms is caught;
+ * this comment is the honest boundary of that claim.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -127,9 +127,11 @@ const STATEMENT_KEYWORD =
  * comment left no separator between them (`const` + `trimmed` -> `consttrimmed`).
  * Only that boundary gets a space: anywhere else the comment is dropped as it was
  * before, so a chain it interrupted (a comment between `draft.` and `trim()`)
- * stays `draft.trim()` and is still matched (#244 round 4 review).
+ * stays `draft.trim()` and is still matched (#244 round 4 review). `#` is NOT a
+ * word character: `this.#` + comment + `draft` must stay `this.#draft`, not
+ * `this.# draft`, or the receiver is attributed to an invented `draft`.
  */
-const isWordCharacter = (char: string) => /[\w$#]/.test(char) || char.charCodeAt(0) > 127;
+const isWordCharacter = (char: string) => /[\w$]/.test(char) || char.charCodeAt(0) > 127;
 const fusesTokens = (left: string | undefined, right: string | undefined) =>
   left !== undefined && right !== undefined && isWordCharacter(left) && isWordCharacter(right);
 
@@ -255,9 +257,10 @@ function normalisesWholeValue(receiver: string): boolean {
  * (`drafts[normalizeArabicIndicDigits(id)].trim()`, round-3 finding 2). Stripping
  * the subscript leaves `drafts`, so the declaration is reported; a normaliser
  * over the value (`normalizeArabicIndicDigits(drafts[id]).trim()`) keeps its name
- * and is still skipped. The resulting text is then tested against
- * `NORMALISED_VALUE`, not mere presence, so a normaliser that is only an ARGUMENT
- * of another call (`f(normalizeArabicIndicDigits(id)).trim()`) is still raw.
+ * and is still skipped. The resulting text is then passed to
+ * `normalisesWholeValue` (not matched by mere presence), so a normaliser that is
+ * only an ARGUMENT of another call (`f(normalizeArabicIndicDigits(id)).trim()`) is
+ * still raw.
  */
 function withoutSubscripts(receiver: string): string {
   let out = "";

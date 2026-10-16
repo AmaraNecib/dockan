@@ -619,6 +619,19 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     expect(findBlanknessGates(insideChain, "synthetic.ts").map((gate) => gate.signature)).toEqual([
       'synthetic.ts::trimmed === "" [draft.trim()]',
     ]);
+    // a private-field receiver must not gain a space at the `#`
+    const privateField = [
+      "class Box {",
+      '  #draft = "";',
+      "  blank() {",
+      '    if (this.#/* gap */draft.trim() === "") return true;',
+      "    return false;",
+      "  }",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(privateField, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+      'synthetic.ts::this.#draft.trim() === ""',
+    ]);
   });
 
   it("does not read a `;` inside a nested template as a statement break (#244 round 4, finding 3)", () => {

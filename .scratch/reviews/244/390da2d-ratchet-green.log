@@ -1,0 +1,15 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\blankness-ratchet.test.ts:
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.08ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every detected gate, so a new gate cannot slip in unclassified [0.09ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every gate marked raw (a silent conversion loses its classification) [0.12ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.09ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.10ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner ignores a normalised receiver and a comment (not a raw gate) [0.07ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.22ms]
+
+ 7 pass
+ 0 fail
+ 13 expect() calls
+Ran 7 tests across 1 file. [290.00ms]

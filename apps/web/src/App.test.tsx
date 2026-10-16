@@ -408,6 +408,8 @@ describe("login failures name the problem (issue #100)", () => {
     // announcement path, and it is the summary that takes focus
     const alert = host.querySelector('[role="alert"]');
     expect(alert?.getAttribute("role")).toBe("alert");
+    // exactly one live region: a field-less failure has no second path
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(1);
     expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
     expect(alert?.textContent).not.toBe(i18n.t("unexpected"));
     expect(signInCalls).toBe(1);
@@ -433,8 +435,10 @@ describe("login failures name the problem (issue #100)", () => {
     expect(phone.getAttribute("aria-invalid")).toBe("true");
     expect(phone.getAttribute("aria-describedby")).toBe("login-error");
     // the paragraph is a plain description, not a live region too: otherwise a
-    // screen reader announces the sentence on insertion and again on focus
+    // screen reader announces the sentence on insertion and again on focus.
+    // No live region anywhere: the field's description is the only path.
     expect(host.querySelector("#login-error")?.getAttribute("role")).toBeNull();
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(0);
   });
 
   it("stops the phone field at the longest accepted form", async () => {
@@ -515,6 +519,26 @@ describe("login failures name the problem (issue #100)", () => {
     // a new node is what a screen reader notices; React keeps the old one if
     // the key does not change
     expect(second).not.toBe(first);
+  });
+
+  it("a field-less failure after a field failure becomes a live region again", async () => {
+    needsSetup = false;
+    const host = await mountAuthGate();
+
+    // a phone-blamed failure is read through the field: no live region at all
+    setInputValue(inputByName(host, "username"), "12345");
+    setInputValue(inputByName(host, "password"), "abcd");
+    await submitForm(host);
+    expect(host.querySelectorAll('[role="alert"]').length).toBe(0);
+
+    // the next failure blames no field, so the summary must become the live
+    // region and take focus — the role is a per-failure contract, not fixed
+    signInResult = { error: { code: "INVALID_USERNAME_OR_PASSWORD", status: 401 } };
+    setInputValue(inputByName(host, "username"), "0550123123");
+    await submitForm(host);
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toBe(i18n.t("AUTH_INVALID_CREDENTIALS"));
+    expect(document.activeElement).toBe(alert);
   });
 });
 

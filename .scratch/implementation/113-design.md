@@ -70,10 +70,14 @@ Pins (issue requirement: assert one path per case, not an attribute):
 
 - **field-blamed** (phone, short password, owner/store name): paragraph is read
   by id `#login-error` / `#setup-error`, the blamed field is focused with
-  `aria-invalid`/`aria-describedby`, and the paragraph's `role` is `null`;
+  `aria-invalid`/`aria-describedby`, and `querySelectorAll('[role="alert"]')` is
+  **empty** — no live region anywhere, so there is no second announcement path;
 - **field-less** (credentials, lockout, unknown, transport, setup conflict):
-  the paragraph is found by `[role="alert"]`, has `role === "alert"`, and takes
-  focus.
+  the paragraph is found by `[role="alert"]`, `role === "alert"`, it is the
+  **only** live region (`length === 1`), and it takes focus;
+- **transition**: a field-less failure after a field-blamed one flips the
+  summary back to a live region and focuses it (the role is per-failure, not
+  fixed for the form).
 
 ### 2. Extract the helpers to `apps/web/src/lib/auth-errors.tsx`
 
@@ -91,20 +95,24 @@ churn the issue did not ask for. `App.tsx` keeps only the gate, the two legacy
 forms, and their submit logic.
 
 Pure-move proof: the cherry-pick landed the move and the item-1 role change in
-one commit, so "tests untouched" cannot prove the move alone. Instead the move
-is proven mechanically — the body of every moved function in
-`auth-errors.tsx` is byte-identical to the hunk removed from `App.tsx`; the
-only deltas are `export`, the import list, and the item-1 `field`/`role`
-addition to `AuthErrorAlert`. `git show 6fd2f47 -- apps/web/src/App.tsx
-apps/web/src/lib/auth-errors.tsx` is that diff.
+one commit, so "tests untouched" cannot prove the move alone. Two lines of
+evidence were used:
+
+1. **empirical** — on a scratch edit that reverted only the item-1 `field`/`role`
+   addition (auth-errors.tsx always `role="alert"`, App.tsx call sites without
+   `field`), the pre-#113 `App.test.tsx` from `origin/develop` (all 23
+   `[role="alert"]` queries, zero test edits) ran **34 pass / 0 fail**. The move
+   alone changes no observable behaviour;
+2. **mechanical** — every moved function body in `auth-errors.tsx` is
+   byte-identical to the hunk removed from `App.tsx`; the only deltas are
+   `export`, the import list, and the item-1 `field`/`role` addition.
 
 ### 3. Parity test: every router refusal is translatable
 
 `serverErrorKey` falls back to `errorGeneric` silently, so a missing key is
 invisible. A source-scanning parity test in `i18n.test.ts` (same style as
-`cell-ltr.test.ts`) reads `apps/api/src/rpc/router.ts`, extracts every
-`message: "…"` value (46 today; the adjustment refusal table at lines 180–186
-also funnels into `ORPCError`), and asserts for each:
+`cell-ltr.test.ts`) reads `apps/api/src/rpc/router.ts`, extracts every message
+the router can hand the client, and asserts for each:
 
 - it matches the SCREAMING_SNAKE contract `serverErrorKey` gates on — this is
   the item-3 pin: a future non-conforming producer fails here instead of
@@ -113,10 +121,18 @@ also funnels into `ORPCError`), and asserts for each:
   `INVALID_PARTY_PHONE` → `partyPhoneInvalid` is allowed);
 - `tError(code)` is real, non-empty Arabic distinct from the raw code.
 
+The scan is not only `message: "CODE"` literals: two producers forward the code
+by identifier, which a regex cannot see, so their source unions are read too —
+`message: error.code` (`StockLedgerError.code` in `apps/api/src/lib/stock-ledger.ts`)
+and `message: phoneKey` (`withPartyPhoneRefusals`' inline union). A third test
+fails if those forwarding shapes change, so the scan cannot silently lose them.
+This closes the audit finding that the first version enumerated 46 literals but
+missed `STOCK_NEGATIVE`, `CUSTOMER_PHONE_EXISTS`, `SUPPLIER_PHONE_EXISTS`.
+
 A non-empty scan assertion (`> 40`) guards against a broken path/regex passing
 every loop vacuously. The scan finds `PREFERENCE_NOT_WRITABLE`; its Arabic copy
-ships. **The regex is not changed** — the issue calls the change optional and
-speculative.
+ships. **The `SERVER_ERROR_KEY` regex is not changed** — the issue calls the
+change optional and speculative.
 
 ### 4. The login e2e asserts an allowed key set
 
@@ -180,3 +196,10 @@ Commands, exit codes and observed failures go in
   paragraph but is not re-announced as a live region; the field keeps focus and
   its description. Accepted: the issue trades the double announcement for the
   field description, and only field-less failures must re-announce.
+- **Focus is synchronous with the blame (dismissed, documented).** `show()`
+  calls `target.focus()` before React commits the field's `aria-describedby`, so
+  in a strict reading the description is attached a tick after focus lands.
+  This is the pre-existing, reviewed project pattern (`vault-gate.tsx:153-155`,
+  `vault-settings.tsx:125`) and React flushes the attribute before the
+  assistive tech reads the focus announcement; changing it for the auth forms
+  alone would diverge from the vault forms. Left as-is and recorded here.

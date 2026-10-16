@@ -188,22 +188,51 @@ describe("opening-balance refusals stay translatable (review round 3)", () => {
  */
 describe("every router refusal stays translatable (issue #113)", () => {
   const routerSource = new URL("../../../api/src/rpc/router.ts", import.meta.url);
-  const messageField = /message:\s*"([^"]+)"/g;
+  const ledgerSource = new URL("../../../api/src/lib/stock-ledger.ts", import.meta.url);
+  const messageField = /message:\s*"([^"]*)"/g;
   const screamingSnake = /^[A-Z][A-Z0-9_]*$/;
 
+  function quotedIn(text: string): string[] {
+    const codes: string[] = [];
+    for (const match of text.matchAll(/"([^"]+)"/g)) {
+      if (match[1] !== undefined) codes.push(match[1]);
+    }
+    return codes;
+  }
+
+  /**
+   * Every message the router can hand the client. Most are `message: "CODE"`
+   * literals. Two are forwarded by identifier and a regex cannot see their
+   * value, so their source unions are read instead: `message: error.code`
+   * (`StockLedgerError`) and `message: phoneKey` (`withPartyPhoneRefusals`).
+   * The guard below fails if those shapes change, so this scan cannot silently
+   * lose them.
+   */
   function routerRefusals(): string[] {
-    const source = readFileSync(routerSource, "utf8");
+    const router = readFileSync(routerSource, "utf8");
     const codes = new Set<string>();
-    for (const match of source.matchAll(messageField)) {
+    for (const match of router.matchAll(messageField)) {
       const code = match[1];
+      // an empty `message: ""` is added so the SCREAMING_SNAKE check below
+      // fails on it instead of it slipping through unseen
       if (code !== undefined) codes.add(code);
     }
+    for (const code of quotedIn(/phoneKey:\s*([^,)]+)/.exec(router)?.[1] ?? "")) codes.add(code);
+    for (const code of quotedIn(/readonly code:\s*([^,)]+)/.exec(readFileSync(ledgerSource, "utf8"))?.[1] ?? "")) codes.add(code);
     return [...codes].sort();
   }
 
   it("scans the real router, not an empty list", () => {
     // a moved file or a broken regex would otherwise pass every check below
     expect(routerRefusals().length).toBeGreaterThan(40);
+  });
+
+  it("still reads the identifier-forwarded refusals from their unions", () => {
+    // if one of these shapes changes, `routerRefusals` stops seeing those codes
+    // and the parity loop would pass while silently dropping them
+    expect(readFileSync(routerSource, "utf8")).toMatch(/message:\s*error\.code/);
+    expect(readFileSync(routerSource, "utf8")).toMatch(/message:\s*phoneKey/);
+    expect(readFileSync(ledgerSource, "utf8")).toMatch(/readonly code:/);
   });
 
   it("gives every refusal real Arabic copy, never the silent fallback", () => {

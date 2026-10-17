@@ -44,12 +44,14 @@ import type { Database } from "bun:sqlite";
  * It also carries `returns.spreads_across_invoices` — which allocation rule a
  * debt offset was PROMISED under: the tab-wide default (acceptance may relieve
  * the party's other open invoices) or the owner's explicit, this-invoice-only
- * choice. A version-5 build does not know the column, so it writes every new
- * return as own-invoice-only: a defaulted return whose own invoice's debt shrank
- * between recording and acceptance (a payment in between) would then leave its
- * leftover debt permanently unrelieved instead of spreading it, and the owner's
- * approved rule would silently stop applying. A v5 build MUST therefore refuse
- * the version-6 database (ADR-0008 §4.5).
+ * choice. A version-5 build knows neither column: its `returnsAccept` applies
+ * the promise to the return's own invoice ONLY — an excess stays unapplied,
+ * there is no cross-invoice loop — and its `insertReturn` leaves
+ * `spreads_across_invoices` at its 0 default. A defaulted return whose own
+ * invoice's debt shrank between recording and acceptance (a payment in between)
+ * would therefore leave its leftover debt permanently unrelieved instead of
+ * spreading it, and the owner's approved rule would silently stop applying. A
+ * v5 build MUST therefore refuse the version-6 database (ADR-0008 §4.5).
  */
 export const CURRENT_SCHEMA_VERSION = 6;
 

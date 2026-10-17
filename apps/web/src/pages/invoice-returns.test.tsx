@@ -199,6 +199,19 @@ afterEach(() => {
   host.remove();
 });
 
+/**
+ * The request the mocked `returnsCreate` recorded. Reading the input with a
+ * bare `?.` would yield `undefined` BOTH after a correct submission and when
+ * `submit()` exited early, so an omitted-field check passed vacuously. Failing
+ * here first makes "the request was recorded" a precondition of that check
+ * (Greptile #269: "tests pass without saving").
+ */
+function recordedCreateInput() {
+  expect(lastCreateInput).not.toBeNull();
+  // SAFETY: the expectation above proves the mocked returnsCreate ran
+  return lastCreateInput!;
+}
+
 function renderPanel(invoice: InvoiceDetail) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const root = createRoot(host);
@@ -915,7 +928,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     // untouched: no method is claimed, so the SERVER applies its own default
-    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+    expect(recordedCreateInput().cashPaidOut).toBeUndefined();
   });
 
   it("pre-selects cash when the customer owes nothing (#256)", async () => {
@@ -947,7 +960,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     // untouched: the server derives the same split from fresh debt
-    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+    expect(recordedCreateInput().cashPaidOut).toBeUndefined();
   });
 
   it("pre-selects all-debt and points at the party's tab when the debt is on another invoice (#256 round 2)", async () => {
@@ -964,7 +977,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-debt-default-note"]')?.textContent).toContain("الأقدم");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
-    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+    expect(recordedCreateInput().cashPaidOut).toBeUndefined();
   });
 
   it("keeps the explicit all-debt cap on THIS invoice, and warns about it (#256 round 2)", async () => {
@@ -999,7 +1012,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
-    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+    expect(recordedCreateInput().cashPaidOut).toBeUndefined();
   });
 
   it("re-derives the pre-selected method after a return is saved, so the next return still previews (#256 round 3)", async () => {

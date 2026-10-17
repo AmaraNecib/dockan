@@ -8,14 +8,14 @@ import { activitySummaryTags } from "@dokan/contracts";
  * #253 — the audit log must never show a raw summary tag. The API writes
  * `<TAG> <fields…>` template literals; the web page has one branch per tag in
  * `activitySummaryTags`. This test keeps the two in step on the SERVER side:
+ * every `summary:` literal tag the api writes is a member of the shared
+ * vocabulary, so a new activity type fails HERE, before the web can leak it.
  *
- *   1. every `summary:` literal tag the api writes is a member of the shared
- *      vocabulary (a new activity type fails HERE, before the web can leak it);
- *   2. every member is actually emitted (no dead vocabulary entry).
- *
- * The four VAULT_* tags are emitted through `recordFailure(event)`
- * (`summary: `${event} ${timestamp}``), not a literal template, so they are
- * excluded from direction 2 and covered by the web enumeration instead.
+ * Deliberately one-directional: `PASSWORD_RESET` is a carried-over type with no
+ * current emit site, and the four VAULT_* tags come through
+ * `recordFailure(event)` rather than a literal template. The web enumeration
+ * asserts a branch for every member, which is the direction that catches a raw
+ * leak.
  */
 
 const srcRoot = fileURLToPath(new URL("../", import.meta.url));

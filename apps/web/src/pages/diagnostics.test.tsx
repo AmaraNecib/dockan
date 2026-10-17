@@ -117,12 +117,15 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     seen.n = 0;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     queryClient.clear();
     // teardown any mount left behind by a failed assertion — a dangling root
-    // would leak DOM (and act() warnings) into the next test in the file
+    // would leak DOM (and act() warnings) into the next test in the file. The
+    // unmount runs INSIDE act() or it is itself what produces the warning.
     for (const { root, container } of mountedRoots) {
-      root.unmount();
+      await act(async () => {
+        root.unmount();
+      });
       container.remove();
     }
     mountedRoots = [];

@@ -63,4 +63,29 @@ describe("api log events match the shared vocabulary (#253)", () => {
       .map(([event, file]) => `${event} (${file})`);
     expect(offenders).toEqual([]);
   });
+
+  /**
+   * The web's `logMessageCopy` maps `event::message` exactly. If the api rewords
+   * a startup sentence the web silently falls back to raw English while the web
+   * test (which re-hardcodes the same pair) stays green. Pin the pairs the web
+   * translates against the real api literals.
+   */
+  const TRANSLATED_STARTUP_MESSAGES: [string, string][] = [
+    ["FIRST_TIME_SETUP", "owner account created"],
+    ["VAULT_CREATED", "vault created and unlocked"],
+    ["VAULT_SETUP_DONE", "vault created; recovery key shown once"],
+    ["SERVER_BOOT_DONE", "database and auth ready"],
+    ["SERVER_BOOT_DONE", "vault store and auth ready"],
+    ["SERVER_STARTED", "Dokan API booted"],
+    ["VAULT_PASSPHRASE_CHANGED", "vault passphrase changed"],
+    ["VAULT_PASSPHRASE_RESET", "vault passphrase set from a recovery key"],
+  ];
+
+  it("still logs the exact startup sentences the web translates", () => {
+    const sources = walkTs(srcRoot).map((file) => readFileSync(file, "utf8")).join("\n");
+    const missing = TRANSLATED_STARTUP_MESSAGES
+      .filter(([event, message]) => !sources.includes(`"${event}", "${message}"`))
+      .map(([event, message]) => `${event}: ${message}`);
+    expect(missing).toEqual([]);
+  });
 });

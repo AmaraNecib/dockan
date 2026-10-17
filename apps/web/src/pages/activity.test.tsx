@@ -71,6 +71,9 @@ describe("activity summary tokens render translated copy", () => {
       const rendered = activitySummaryText(t, summary);
 
       expect(rendered).not.toContain(tag);
+      // every branch must produce copy; an implementation returning "" would
+      // otherwise pass the SETTINGS_UPDATED case, whose `keeps` is empty
+      expect(rendered.trim().length).toBeGreaterThan(0);
       for (const field of keeps) expect(rendered).toContain(field);
     });
   }
@@ -125,6 +128,13 @@ describe("activity summary tokens render translated copy", () => {
     expect(withdrawal).not.toBe(ordinary);
     expect(withdrawal).toContain("سحب");
     expect(ordinary).toContain("إيجار");
+    // not just "different": the raw token must be gone from both
+    expect(withdrawal).not.toContain("WITHDRAWAL");
+    expect(ordinary).not.toContain("NORMAL");
+  });
+
+  it("renders the settings row as copy, not an empty string", () => {
+    expect(activitySummaryText(t, "SETTINGS_UPDATED")).toBe(t("activitySettingsUpdated"));
   });
 
   it("keeps the debt figure only for a return that was settled against debt", () => {
@@ -133,6 +143,16 @@ describe("activity summary tokens render translated copy", () => {
 
     expect(withDebt).not.toBe(withoutDebt);
     expect(withDebt).toContain("500");
+    expect(withDebt).not.toContain("RETURN_RECORDED");
+    expect(withoutDebt).not.toContain("RETURN_RECORDED");
+  });
+
+  it("leaves an unknown direction token raw rather than inventing a direction", () => {
+    // the server enum writes only WE_OWE/THEY_OWE; anything else is corruption,
+    // and defaulting it to "we owe" would silently invert who owes whom
+    expect(activitySummaryText(t, "SUPPLIER_OPENING_BALANCE FOO 100000 محمد")).toBe(
+      "SUPPLIER_OPENING_BALANCE FOO 100000 محمد",
+    );
   });
 
   it("renders pre-token Arabic rows raw, so no migration is needed", () => {

@@ -131,11 +131,13 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   // #253 — the two supplier-account tags that shipped without a branch, so the
   // audit log showed `SUPPLIER_OPENING_BALANCE THEY_OWE 100000 …` verbatim.
   // The direction word comes from the supplier-account labels (one mapping).
-  if (tag === "SUPPLIER_ADJUSTMENT" && tokens.length >= 4) {
-    return t("activitySupplierAdjustment", { direction: t(adjustmentDirectionKey(tokens[1] ?? null)), amount: tokens[2], name: tokens.slice(3).join(" ") });
-  }
-  if (tag === "SUPPLIER_OPENING_BALANCE" && tokens.length >= 4) {
-    return t("activitySupplierOpeningBalance", { direction: t(adjustmentDirectionKey(tokens[1] ?? null)), amount: tokens[2], name: tokens.slice(3).join(" ") });
+  // Only the two tokens the server enum can write are accepted: an unknown
+  // token falls through to the raw row (a visible bug) instead of defaulting to
+  // a direction word, which would silently misstate who owes whom.
+  if ((tag === "SUPPLIER_ADJUSTMENT" || tag === "SUPPLIER_OPENING_BALANCE") && tokens.length >= 4 && (tokens[1] === "WE_OWE" || tokens[1] === "THEY_OWE")) {
+    const direction = t(adjustmentDirectionKey(tokens[1]));
+    const body = { direction, amount: tokens[2], name: tokens.slice(3).join(" ") };
+    return tag === "SUPPLIER_ADJUSTMENT" ? t("activitySupplierAdjustment", body) : t("activitySupplierOpeningBalance", body);
   }
   // the pre-unlock vault failures are stored as `<event> <timestamp>`
   if (tag === "VAULT_UNLOCK_FAILED" && tokens.length >= 2) return t("activityVaultUnlockFailed", { at: tokens.slice(1).join(" ") });

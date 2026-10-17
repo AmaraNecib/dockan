@@ -1,0 +1,22 @@
+[WebServer] @dokan/api start: [2026-10-17T11:06:26] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4910
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 3481 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5910/
+
+Running 10 tests using 1 worker
+
+  ok  1 tests\e2e\supplier-adjustment.spec.ts:63:1 › supplier adjustment: a bulk رصيد افتتاحي and a linked خصم agree with the invoice (20.0s)
+  ok  2 tests\e2e\supplier-adjustment.spec.ts:184:1 › a folded opening-balance name lands on the supplier the dialog names (issue 184) (4.9s)
+  ok  3 tests\e2e\supplier-adjustment.spec.ts:225:1 › cancelling while the name lookup is pending writes nothing (issue 184 review round 1) (7.9s)
+  ok  4 tests\e2e\supplier-adjustment.spec.ts:270:1 › cancelling the dialog during a re-submit's lookup does not re-open it (issue 184 review round 2) (7.4s)
+  ok  5 tests\e2e\supplier-adjustment.spec.ts:341:1 › leaving via the back link while the lookup is pending writes nothing (issue 184 review round 1) (8.9s)
+  ok  6 tests\e2e\supplier-adjustment.spec.ts:374:1 › browser back while the name lookup is pending writes nothing (issue 184 review round 1) (11.2s)
+  ok  7 tests\e2e\supplier-adjustment.spec.ts:409:1 › leaving via the sidebar while the name lookup is pending writes nothing (issue 184 review round 2) (8.8s)
+  ok  8 tests\e2e\supplier-adjustment.spec.ts:447:1 › editing the typed name away from the confirmed one keeps the batch saveable (issue 184 review round 1) (6.9s)
+  ok  9 tests\e2e\supplier-adjustment.spec.ts:512:1 › a refresh that removes a filled row's supplier names the loss and blocks the save (#204) (5.3s)
+  ok 10 tests\e2e\supplier-adjustment.spec.ts:543:1 › a refresh that removes an unfilled row's supplier drops it without a warning (#204) (5.2s)
+[WebServer] @dokan/web dev: Exited with code 1
+
+  10 passed (1.7m)

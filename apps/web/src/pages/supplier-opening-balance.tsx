@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { focusByTestId } from "@/lib/focus";
+import { supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
 import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
@@ -716,6 +717,16 @@ export function SupplierOpeningBalancePage() {
     }
   }
 
+  /** #252 — the direction Selects' value→label map. `SelectValue` renders the
+   * raw value when the root has no `items` map, which is how the trigger showed
+   * `WE_OWE` while its own popup showed the Arabic labels. One map, built from
+   * one direction→key function, so the trigger, the options and every read-only
+   * direction column cannot drift apart. */
+  const directionItems = [
+    { value: "WE_OWE", label: t(supplierDirectionKey("WE_OWE")) },
+    { value: "THEY_OWE", label: t(supplierDirectionKey("THEY_OWE")) },
+  ];
+
   return (
     <section data-testid="opening-balance-page">
       <Link
@@ -834,7 +845,7 @@ export function SupplierOpeningBalancePage() {
                         )}
                       </td>
                       <td className="p-2">
-                        <Select value={draft.direction} onValueChange={(next) => setRow(supplier.id, { direction: asDirection(next) })}>
+                        <Select items={directionItems} value={draft.direction} onValueChange={(next) => setRow(supplier.id, { direction: asDirection(next) })}>
                           <SelectTrigger className="w-28" data-testid="opening-balance-direction">
                             <SelectValue />
                           </SelectTrigger>
@@ -900,7 +911,7 @@ export function SupplierOpeningBalancePage() {
                       </td>
                       <td className="p-2 text-muted-foreground">—</td>
                       <td className="p-2">
-                        <Select value={typedRow.direction} onValueChange={(next) => setTypedRow(typedRow.id, { direction: asDirection(next) })}>
+                        <Select items={directionItems} value={typedRow.direction} onValueChange={(next) => setTypedRow(typedRow.id, { direction: asDirection(next) })}>
                           <SelectTrigger className="w-28" data-testid={`opening-balance-typed-direction-${index}`}>
                             <SelectValue />
                           </SelectTrigger>

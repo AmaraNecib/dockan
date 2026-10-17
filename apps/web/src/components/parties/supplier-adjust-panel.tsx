@@ -223,7 +223,7 @@ export function SupplierAdjustPanel({
           <div className="flex flex-wrap items-end gap-3">
             <div className="grid gap-1 text-sm">
               {t("supplierPayInvoiceLabel")}
-              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")}>
+              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")} items={openInvoices.map((invoice) => ({ value: invoice.id, label: invoice.invoiceNumber }))}>
                 <SelectTrigger className="w-56" data-testid="supplier-adjust-invoice">
                   <SelectValue />
                 </SelectTrigger>

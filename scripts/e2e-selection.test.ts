@@ -212,7 +212,7 @@ describe("e2e-selection behaviour", () => {
     expect(page.reason).toContain("critical path");
     const rule = selectSpecs(["apps/web/src/pages/purchase.test.tsx"], map);
     expect(rule.mode).toBe("affected");
-    expect(rule.specs).toEqual(["learnability.spec.ts", "purchase-intake.spec.ts"]);
+    expect(rule.specs).toEqual(["learnability.spec.ts", "purchase-inline-product.spec.ts", "purchase-intake.spec.ts"]);
   });
 
   test("a debts page edit runs the supplier-credit checks (#231)", () => {

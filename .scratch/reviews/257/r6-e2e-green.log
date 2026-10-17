@@ -1,0 +1,15 @@
+$ playwright test "tests/e2e/purchase-inline-product.spec.ts"
+[WebServer] @dokan/api start: [2026-10-17T20:42:37] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4700
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 767 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5700/
+
+Running 3 tests using 1 worker
+
+  ok 1 tests\e2e\purchase-inline-product.spec.ts:14:1 › purchase line: create the product inline, keep the typed line, stock it by the invoice (8.4s)
+  ok 2 tests\e2e\purchase-inline-product.spec.ts:126:1 › purchase line: a create from a zero-cost line is allowed and the invoice prices the product (4.8s)
+  ok 3 tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the frozen draft and the cancel that outlives it (#257 rounds 4-5) (4.5s)
+
+  3 passed (23.8s)

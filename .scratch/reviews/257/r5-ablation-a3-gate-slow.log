@@ -1,0 +1,14 @@
+$ playwright test purchase-inline-product.spec.ts -g "frozen while the save is in flight"
+[WebServer] @dokan/api start: [2026-10-17T19:12:52] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4700
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 678 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5700/
+
+Running 1 test using 1 worker
+
+[ablation] routePending while the frozen checks run = true
+  ok 1 tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the invoice draft is frozen while the save is in flight (#257 round 4) (12.5s)
+
+  1 passed (17.7s)

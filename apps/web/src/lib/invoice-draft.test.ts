@@ -22,6 +22,7 @@ import {
   purchaseUnitPrice,
   quantityDraftInvalid,
   removeDraftLine,
+  replaceDraftLineItem,
   resolvedInitialPaid,
   resolveInitialPaid,
   saleOverrideInvalid,
@@ -407,6 +408,50 @@ describe("draft line list", () => {
     expect(firstLineError([first, second], errorFor)).toBe("quantity");
   });
 
+  it("puts a different item on a line in place, keeping its quantity and cost (#257)", () => {
+    const lines = [purchaseLine("a", "3", 900), purchaseLine("b", "1", 500)];
+    const replaced = replaceDraftLineItem(lines, "a", item("fresh"));
+    // position is preserved: the owner's line stays where it was
+    expect(replaced.map((line) => line.item.id)).toEqual(["fresh", "b"]);
+    expect(replaced[0]!.quantityDraft).toBe("3");
+    expect(replaced[0]!.unitCost).toBe(900);
+    // the other line is untouched
+    expect(replaced[1]).toEqual(lines[1]!);
+  });
+
+  it("leaves the draft alone for an unknown line id (#257)", () => {
+    const lines = [purchaseLine("a", "3", 900)];
+    expect(replaceDraftLineItem(lines, "missing", item("fresh"))).toEqual(lines);
+    expect(replaceDraftLineItem([], "a", item("fresh"))).toEqual([]);
+  });
+
+  it("merges into a line that already holds the incoming item, keeping one line per item (#257)", () => {
+    // one line per item is the invariant every other line operation and the
+    // React key depend on, so a replacement that would duplicate an item folds
+    // the replaced line's quantity into the line that already has it.
+    const lines = [purchaseLine("a", "3", 900), purchaseLine("b", "2", 500)];
+    const merged = replaceDraftLineItem(lines, "a", lines[1]!.item);
+    expect(merged.map((line) => line.item.id)).toEqual(["b"]);
+    expect(merged[0]!.quantityDraft).toBe("5");
+    expect(merged[0]!.unitCost).toBe(500);
+  });
+
+  it("clamps the merge at the cap instead of zeroing the surviving line (#257)", () => {
+    const lines = [purchaseLine("a", "2", 900), purchaseLine("b", "1000000", 500)];
+    const merged = replaceDraftLineItem(lines, "a", lines[1]!.item);
+    expect(merged).toHaveLength(1);
+    expect(lineQuantity(merged[0]!)).toBe(1_000_000);
+  });
+
+  it("leaves the line alone when the incoming item is the one it already holds (#257 review round 1)", () => {
+    // the line's own picker can be pointed at the product it already shows; the
+    // survivor lookup matches the target itself, and dropping it would delete the
+    // line with the quantity and cost the owner typed
+    const lines = [purchaseLine("a", "3", 900)];
+    expect(replaceDraftLineItem(lines, "a", lines[0]!.item)).toEqual(lines);
+    expect(replaceDraftLineItem(lines, "a", lines[0]!.item)).toHaveLength(1);
+  });
+
   it("applies every reducer action in order (the React surface)", () => {
     let lines: SaleDraftLine[] = [];
     lines = draftReducer(lines, { type: "add", line: saleLine("a") });
@@ -421,7 +466,12 @@ describe("draft line list", () => {
     expect(lines[0]!.overrideValue).toBe("900");
 
     lines = draftReducer(lines, { type: "add", line: saleLine("b") });
-    lines = draftReducer(lines, { type: "remove", itemId: "a" });
+    lines = draftReducer(lines, { type: "replace", itemId: "a", item: item("c") });
+    expect(lines.map((line) => line.item.id)).toEqual(["c", "b"]);
+    expect(lines[0]!.quantityDraft).toBe("5");
+    expect(lines[0]!.overrideType).toBe("AMOUNT");
+
+    lines = draftReducer(lines, { type: "remove", itemId: "c" });
     expect(lines.map((line) => line.item.id)).toEqual(["b"]);
 
     expect(draftReducer(lines, { type: "reset" })).toEqual([]);

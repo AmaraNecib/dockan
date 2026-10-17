@@ -1,0 +1,94 @@
+[WebServer] @dokan/api start: [2026-10-17T16:30:48] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4700
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 1537 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5700/
+
+Running 2 tests using 1 worker
+
+  x  1 tests\e2e\purchase-inline-product.spec.ts:14:1 › purchase line: create the product inline, keep the typed line, stock it by the invoice (28.5s)
+  x  2 tests\e2e\purchase-inline-product.spec.ts:123:1 › purchase line: a create from a zero-cost line is allowed and the invoice prices the product (17.9s)
+
+
+  1) tests\e2e\purchase-inline-product.spec.ts:14:1 › purchase line: create the product inline, keep the typed line, stock it by the invoice 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByTestId('purchase-saved-number')
+    Expected substring: "INV-"
+    Received string:    "تم حفظ الفاتورة رقم SUP-0001"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByTestId('purchase-saved-number')
+        12 × locator resolved to <span data-testid="purchase-saved-number">تم حفظ الفاتورة رقم SUP-0001</span>
+           - unexpected value "تم حفظ الفاتورة رقم SUP-0001"
+
+
+      92 |   //    quantity as its initial stock — no separate stock write anywhere
+      93 |   await page.getByTestId("purchase-save").click();
+    > 94 |   await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+         |                                                           ^
+      95 |
+      96 |   const catalog = await readRpc<{ items: Array<{ id: string; name: string; costPrice: number; sellingPrice: number; stockOnHand: number; categoryName: string | null }> }>(page, "itemsAll");
+      97 |   const row = catalog.items.find((item) => item.id === created.id);
+        at D:\projects\mani-worktrees\feat-257-inline-product-round3\tests\e2e\purchase-inline-product.spec.ts:94:59
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-4569e-ine-stock-it-by-the-invoice\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\purchase-inline-product-pu-4569e-ine-stock-it-by-the-invoice\error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-4569e-ine-stock-it-by-the-invoice\trace.zip
+    Usage:
+
+        npx playwright show-trace test-results\purchase-inline-product-pu-4569e-ine-stock-it-by-the-invoice\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) tests\e2e\purchase-inline-product.spec.ts:123:1 › purchase line: a create from a zero-cost line is allowed and the invoice prices the product 
+
+    Error: expect(locator).toContainText(expected) failed
+
+    Locator: getByTestId('purchase-saved-number')
+    Expected substring: "INV-"
+    Received string:    "تم حفظ الفاتورة رقم SUP-0002"
+    Timeout: 5000ms
+
+    Call log:
+      - Expect "toContainText" with timeout 5000ms
+      - waiting for getByTestId('purchase-saved-number')
+        13 × locator resolved to <span data-testid="purchase-saved-number">تم حفظ الفاتورة رقم SUP-0002</span>
+           - unexpected value "تم حفظ الفاتورة رقم SUP-0002"
+
+
+      180 |   await expect(page.getByTestId("purchase-total")).toContainText("2700");
+      181 |   await page.getByTestId("purchase-save").click();
+    > 182 |   await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+          |                                                           ^
+      183 |
+      184 |   const afterSave = await readRpc<{ items: Array<{ id: string; costPrice: number; sellingPrice: number; stockOnHand: number }> }>(page, "itemsAll");
+      185 |   expect(afterSave.items.find((item) => item.id === created.id)).toMatchObject({
+        at D:\projects\mani-worktrees\feat-257-inline-product-round3\tests\e2e\purchase-inline-product.spec.ts:182:59
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-803e0--invoice-prices-the-product\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\purchase-inline-product-pu-803e0--invoice-prices-the-product\error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-803e0--invoice-prices-the-product\trace.zip
+    Usage:
+
+        npx playwright show-trace test-results\purchase-inline-product-pu-803e0--invoice-prices-the-product\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2 failed
+    tests\e2e\purchase-inline-product.spec.ts:14:1 › purchase line: create the product inline, keep the typed line, stock it by the invoice 
+    tests\e2e\purchase-inline-product.spec.ts:123:1 › purchase line: a create from a zero-cost line is allowed and the invoice prices the product 

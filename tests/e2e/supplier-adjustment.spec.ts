@@ -98,7 +98,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("purchase-paid").fill("0");
   await page.getByTestId("purchase-save").click();
   await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
-  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  // SAFETY: the saved card always formats purchase numbers as SUP-<digits>
   const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
 
   // 3. the bulk رصيد افتتاحي screen: THREE new suppliers in one pass (#255). The

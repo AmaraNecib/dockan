@@ -1,0 +1,55 @@
+$ playwright test purchase-inline-product.spec.ts -g "frozen while the save is in flight"
+[WebServer] @dokan/api start: [2026-10-17T19:13:22] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4700
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 627 ms
+[WebServer] @dokan/web dev: 
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5700/
+
+Running 1 test using 1 worker
+
+  x  1 tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the invoice draft is frozen while the save is in flight (#257 round 4) (12.2s)
+
+
+  1) tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the invoice draft is frozen while the save is in flight (#257 round 4) 
+
+    Error: expect(locator).toBeFocused() failed
+
+    Locator:  getByTestId('purchase-lines')
+    Expected: focused
+    Received: inactive
+    Timeout:  5000ms
+
+    Call log:
+      - Expect "toBeFocused" with timeout 5000ms
+      - waiting for getByTestId('purchase-lines')
+        14 × locator resolved to <table tabindex="-1" class="w-full" aria-label="أسطر الفاتورة" data-testid="purchase-lines">…</table>
+           - unexpected value "inactive"
+
+
+      315 |     await page.getByTestId("line-product-cancel").click();
+      316 |     await expect(lineForm).toHaveCount(0);
+    > 317 |     await expect(lines).toBeFocused();
+          |                         ^
+      318 |
+      319 |     // …and no timer released this request: every assertion above ran while it was
+      320 |     // still held, which is the sequencing a wall-clock window could not promise
+        at D:\projects\mani-worktrees\feat-257-inline-product-round5\tests\e2e\purchase-inline-product.spec.ts:317:25
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-b86a4-e-is-in-flight-257-round-4-\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\purchase-inline-product-pu-b86a4-e-is-in-flight-257-round-4-\error-context.md
+
+    attachment #3: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\purchase-inline-product-pu-b86a4-e-is-in-flight-257-round-4-\trace.zip
+    Usage:
+
+        npx playwright show-trace test-results\purchase-inline-product-pu-b86a4-e-is-in-flight-257-round-4-\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the invoice draft is frozen while the save is in flight (#257 round 4) 
+error: script "test:e2e" exited with code 1

@@ -96,11 +96,13 @@ import { fileURLToPath } from "node:url";
  * `normalizeArabicIndicDigits(draft.replace("[", "")).trim()` is reported too.
  * Both over-report a correctly normalised value (the safe direction: a raw gate is
  * never hidden by them) and both go away with the AST walk. JSX inside `${...}`
- * is handled only for the unmatched-closer half above (round 5): a `}` or a quote
- * in JSX child text is still read as code, because telling the JSX `}` from the
- * interpolation's own `}` needs the tag walk an AST gives for free. The three
- * recorded round-5 fixtures (the `)`/`]` fix and the pre-existing `}` result) pin
- * what is actually claimed. Regex literals
+ * is handled only for the unmatched-closer half above (round 5): a `}`, a quote
+ * or a comment opener (`/*`, `//`) in JSX child text is still read as code,
+ * because telling the JSX `}` from the interpolation's own `}` needs the tag walk
+ * an AST gives for free — and a `/*` there HIDES the gate and every later gate in
+ * the file, the same unsafe direction as a regex literal. The three recorded
+ * round-5 fixtures (the `)`/`]` fix and the pre-existing `}` result) pin what is
+ * actually claimed. Regex literals
  * are not parsed, so a regex holding a quote, a backtick or a `/*` can mis-scope
  * or HIDE every later gate in the file (the unsafe direction) — in
  * `breaksStatement` and `normalisesWholeValue` as well as `scanSource` — a

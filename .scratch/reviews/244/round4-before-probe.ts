@@ -7,9 +7,13 @@
 // It extracts the PRE-FIX scanner with `git show <sha>:…` into a PRIVATE temp
 // directory, imports it from there, and prints each shape's result on the
 // round-3 scanner (1af565f), the round-4 scanner (ef32177) and the working tree.
-// It NEVER writes `apps/web/src/tests/blankness-gates.ts`, so an uncommitted
-// scanner edit cannot be lost — it hashes the real file before and after and
-// exits 1 if the bytes changed at all.
+// It NEVER writes the scanner file, so an uncommitted scanner edit cannot be
+// lost — it hashes the real file before and after and exits 1 if the bytes
+// changed at all.
+//
+// `ROUND4_PROBE_TARGET` overrides the file that is hashed and imported, so
+// `probe-safety-demo.sh` can add a marker edit to a COPY and prove the probe
+// leaves it byte-identical without touching the worktree.
 //
 // The round-4 version of this file printed reproduction steps that overwrote the
 // scanner and restored it with `git checkout --`, which destroys uncommitted
@@ -26,28 +30,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url)); // .scratch/reviews/244/
 const repoRoot = join(here, "..", "..", "..");
-const target = join(repoRoot, "apps/web/src/tests/blankness-gates.ts");
 const PROBE_FILE = "apps/web/src/tests/blankness-gates.ts";
+const target = process.env.ROUND4_PROBE_TARGET ?? join(repoRoot, PROBE_FILE);
 const PRE_FIX_SHA = "1af565f"; // round 3 head: flat backticks, no frame stack
 const REGRESSED_SHA = "ef32177"; // round 4 head: `${}` frames, JSX read as code
 
 const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const before = digest(target);
-
-const dir = mkdtempSync(join(tmpdir(), "round4-before-probe-"));
-const extract = (sha: string, name: string) => {
-  const path = join(dir, name);
-  writeFileSync(path, execFileSync("git", ["-C", repoRoot, "show", `${sha}:${PROBE_FILE}`]));
-  return path;
-};
-const preFixPath = extract(PRE_FIX_SHA, "pre-fix.ts");
-const regressedPath = extract(REGRESSED_SHA, "regressed.ts");
-
-const { findBlanknessGates: findFixed } = await import(
-  pathToFileURL(target).href
-);
-const { findBlanknessGates: findPreFix } = await import(pathToFileURL(preFixPath).href);
-const { findBlanknessGates: findRegressed } = await import(pathToFileURL(regressedPath).href);
 
 const cases: Array<[string, string]> = [
   [
@@ -78,22 +67,34 @@ const cases: Array<[string, string]> = [
   ],
 ];
 
-const verdict = (gates: string[]) => (gates.length === 0 ? "[] (ESCAPES)" : "caught");
-console.log(`${"shape".padEnd(46)} ${"round-3".padEnd(13)} ${"round-4".padEnd(13)} fixed`);
-for (const [name, source] of cases) {
-  const preFix = findPreFix(source, "s.tsx").map((gate) => gate.signature);
-  const regressed = findRegressed(source, "s.tsx").map((gate) => gate.signature);
-  const fixed = findFixed(source, "s.tsx").map((gate) => gate.signature);
-  console.log(
-    `${name.padEnd(46)} ${verdict(preFix).padEnd(13)} ${verdict(regressed).padEnd(13)} ${verdict(fixed)}`,
-  );
-}
+const dir = mkdtempSync(join(tmpdir(), "round4-before-probe-"));
+try {
+  const extract = (sha: string, name: string) => {
+    const path = join(dir, name);
+    writeFileSync(path, execFileSync("git", ["-C", repoRoot, "show", `${sha}:${PROBE_FILE}`]));
+    return path;
+  };
+  const { findBlanknessGates: findFixed } = await import(pathToFileURL(target).href);
+  const { findBlanknessGates: findPreFix } = await import(pathToFileURL(extract(PRE_FIX_SHA, "pre-fix.ts")).href);
+  const { findBlanknessGates: findRegressed } = await import(pathToFileURL(extract(REGRESSED_SHA, "regressed.ts")).href);
 
-rmSync(dir, { recursive: true, force: true });
+  const verdict = (gates: string[]) => (gates.length === 0 ? "[] (ESCAPES)" : "caught");
+  console.log(`${"shape".padEnd(46)} ${"round-3".padEnd(13)} ${"round-4".padEnd(13)} fixed`);
+  for (const [name, source] of cases) {
+    const preFix = findPreFix(source, "s.tsx").map((gate) => gate.signature);
+    const regressed = findRegressed(source, "s.tsx").map((gate) => gate.signature);
+    const fixed = findFixed(source, "s.tsx").map((gate) => gate.signature);
+    console.log(
+      `${name.padEnd(46)} ${verdict(preFix).padEnd(13)} ${verdict(regressed).padEnd(13)} ${verdict(fixed)}`,
+    );
+  }
+} finally {
+  rmSync(dir, { recursive: true, force: true });
+}
 
 const after = digest(target);
 if (after !== before) {
-  console.error(`FAIL: ${PROBE_FILE} changed during the probe (${before} -> ${after})`);
+  console.error(`FAIL: ${target} changed during the probe (${before} -> ${after})`);
   process.exit(1);
 }
-console.log(`\ntarget untouched: ${PROBE_FILE} is byte-identical (sha256 ${before})`);
+console.log(`\ntarget untouched: ${target} is byte-identical (sha256 ${before})`);

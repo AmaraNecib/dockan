@@ -670,7 +670,8 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
       's.tsx::trimmed === "" [`${flag ? <span>]</span> : draft}`.trim()]',
     ]);
     // a `}` in JSX child text was already caught before this change (it closes
-    // the interpolation, then the following `${...}` reopens one); it stays caught
+    // the interpolation early in both passes, and the rest of the template is
+    // read as text); it stays caught
     const closingBrace = closingParen.replace("<span>)</span>", "<span>}</span>");
     expect(findBlanknessGates(closingBrace, "s.tsx").map((gate) => gate.signature)).toEqual([
       's.tsx::trimmed === "" [`${flag ? <span>}</span> : draft}`.trim()]',

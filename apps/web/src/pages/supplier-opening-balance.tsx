@@ -17,7 +17,6 @@ import { focusByTestId } from "@/lib/focus";
 import { supplierBalanceDirectionKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
-import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
 import {
   MAX_OPENING_BALANCE_ROWS,
   droppedFilledDrafts,

@@ -162,4 +162,3 @@ describe("supplier-direction labels (issue 252)", () => {
     expect(message).not.toContain(i18n.t("supplierAdjustDirectionWeOwe"));
   });
 });
-});

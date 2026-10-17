@@ -3,7 +3,7 @@
 A supplier's old or standalone debt has no invoice to enter, so the account needs
 a way to write a number directly. We added one **append-only** entry kind,
 `ADJUSTMENT` (تسوية), carrying a **direction** — **يسالنا** (`WE_OWE`, the shop
-owes more, +) or **نسالوه** (`THEY_OWE`, the shop owes less, −) — an amount, a
+owes more, −) or **نسالوه** (`THEY_OWE`, the shop owes less, +) — an amount, a
 reason, and a date. A mistake is another تسوية with a reason, never a delete.
 
 The owner's decision: the adjustment takes an **optional invoice link**.

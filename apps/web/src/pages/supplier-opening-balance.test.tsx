@@ -1986,6 +1986,14 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     return clickTarget<HTMLButtonElement>("opening-balance-save");
   }
 
+  /** The testid of the focused control (its tag name when it carries none), so a
+   * failed focus assertion prints two short strings instead of two React DOM
+   * trees. */
+  function activeControlTestId(): string {
+    const active = document.activeElement;
+    return active?.getAttribute("data-testid") ?? active?.tagName ?? "none";
+  }
+
   /** Every typed draft row in the table, in order. A prefix count, because a
    * per-row testid of its own (`typed-row-0`) is true whether or not its siblings
    * rendered. */
@@ -2101,6 +2109,36 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     clickOn("opening-balance-typed-remove-0");
     expect(document.activeElement).toBe(clickTarget("opening-balance-add-row"));
   });
+
+  it("moves focus to an enabled control when the add control is at the row cap", async () => {
+    suppliers = Array.from({ length: 200 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    // 200 filled rows put the batch exactly at the contract's row cap, so the add
+    // control is disabled — and a disabled element cannot receive focus
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    expect(inputs).toHaveLength(200);
+    fillAmounts(Array.from(inputs), () => "1");
+    expect(clickTarget<HTMLButtonElement>("opening-balance-add-row").disabled).toBe(true);
+
+    // the owner removes the last typed draft: its remove control unmounts with its
+    // row, and the control the page used to fall back to is the disabled add. Focus
+    // must land on a control that can still take it, not on document.body
+    // (Greptile round 5).
+    act(() => clickTarget("opening-balance-typed-remove-0").focus());
+    clickOn("opening-balance-typed-remove-0");
+    // focus must be on a control that can still take it, not on document.body
+    expect(activeControlTestId()).toBe("opening-balance-save");
+    // positive control for the assertion above: the fallback target is focusable
+    // by construction, so a passing `toBe` cannot come from a disabled element
+    expect(saveButton().disabled).toBe(false);
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 
   it("keeps each row's direction and sends it with that row", async () => {
     render();

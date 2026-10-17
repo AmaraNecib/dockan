@@ -129,6 +129,12 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await expect(page.getByTestId("opening-balance-typed-amount-0")).toHaveValue("800");
   await expect(page.getByTestId("opening-balance-save")).toHaveText("حفظ 3 تسويات");
 
+  // count EVERY matching write, not just the first: `waitForResponse` resolves on
+  // the first response and cannot see a second request (review round 6 finding 2)
+  const openingRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) openingRequests.push(request.url());
+  });
   const openingWrite = page.waitForResponse(
     (response) => response.url().includes("/api/rpc/suppliersOpeningBalances") && response.request().method() === "POST",
   );
@@ -141,14 +147,20 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
 
   const saved = page.getByTestId("opening-balance-saved");
   await expect(saved).toBeVisible();
-  await expect(saved).toContainText(openingSupplierName);
-  await expect(saved).toContainText("800 دج");
-  // every added row landed with ITS OWN amount, not just its name: a batch that
-  // shifted amounts between rows would still name all three suppliers
-  await expect(saved).toContainText(secondOpeningSupplier);
-  await expect(saved).toContainText("150 دج");
-  await expect(saved).toContainText(thirdOpeningSupplier);
-  await expect(saved).toContainText("250 دج");
+  // exactly one write reached the server: the count is read after the app's own
+  // completion signal (the saved card) and demands one, so a second opening-balance
+  // request fails HERE even though the first response still carries `created: 3`
+  // (review round 6 finding 2)
+  expect(openingRequests).toHaveLength(1);
+
+  // every added row landed with ITS OWN amount, not just its name: each assertion
+  // is scoped to the row that names the supplier, so a batch that swapped 150 and
+  // 250 between rows — which still names all three — cannot pass (review round 6
+  // finding 1). Rows are found by their EXACT name because the three share a prefix.
+  const savedRow = (name: string) => saved.getByTestId("opening-balance-saved-row").filter({ has: page.getByText(name, { exact: true }) });
+  await expect(savedRow(openingSupplierName)).toContainText("800 دج");
+  await expect(savedRow(secondOpeningSupplier)).toContainText("150 دج");
+  await expect(savedRow(thirdOpeningSupplier)).toContainText("250 دج");
   await page.getByTestId("opening-balance-done").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 

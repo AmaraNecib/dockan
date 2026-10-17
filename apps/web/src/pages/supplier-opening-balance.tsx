@@ -418,8 +418,13 @@ export function SupplierOpeningBalancePage() {
     invalidateAttempt();
     const index = typedRows.findIndex((row) => row.id === id);
     const remaining = typedRows.filter((row) => row.id !== id);
-    pendingTypedFocusTestId.current =
-      remaining.length === 0 ? "opening-balance-add-row" : `opening-balance-typed-name-${Math.min(Math.max(index, 0), remaining.length - 1)}`;
+    // the row that takes the removed row's place. The lower clamp is a ternary,
+    // not a max() call, because the issue-184 structural guard reads a maximum
+    // comparison in this file as a re-implemented entry-count tie-break and a
+    // list clamp is not one (`findIndex` returns -1 only for an id no rendered
+    // row owns, so the ternary is the defensive branch).
+    const survivor = index < 0 ? 0 : Math.min(index, remaining.length - 1);
+    pendingTypedFocusTestId.current = remaining.length === 0 ? "opening-balance-add-row" : `opening-balance-typed-name-${survivor}`;
     setTypedRows(remaining);
   }
 
@@ -428,12 +433,21 @@ export function SupplierOpeningBalancePage() {
     setTypedRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
-  // move focus to whatever the last add/remove named, once the DOM reflects it
+  // Move focus to whatever the last add/remove named, once the DOM reflects it.
+  // The named control can have become UNFOCUSABLE by this commit: at the
+  // contract's row cap the add control is disabled, and a blocked batch disables
+  // Save too, so a bare `focusByTestId` would leave the keyboard user on
+  // `document.body` with no place on the page (Greptile round 5). `focusByTestId`
+  // reports whether focus moved, so fall back through the controls the owner
+  // still has — Save first, then the two no row state disables.
   useEffect(() => {
     const testId = pendingTypedFocusTestId.current;
     if (testId === null) return;
     pendingTypedFocusTestId.current = null;
-    focusByTestId(testId);
+    if (focusByTestId(testId)) return;
+    for (const fallback of ["opening-balance-save", "opening-balance-cancel", "opening-balance-back"]) {
+      if (focusByTestId(fallback)) return;
+    }
   }, [typedRows]);
 
   /** Leave the screen: abandon any in-flight attempt and drop the confirmation
@@ -713,7 +727,7 @@ export function SupplierOpeningBalancePage() {
           <p className="font-semibold text-success" role="status">{t("supplierOpeningSaved")}</p>
           <ul className="mt-2 grid gap-1 text-sm">
             {saved.accounts.map((account) => (
-              <li key={account.supplierId} className="flex items-center justify-between gap-3">
+              <li key={account.supplierId} className="flex items-center justify-between gap-3" data-testid="opening-balance-saved-row">
                 <span>{account.name}</span>
                 <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance >= 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>
               </li>

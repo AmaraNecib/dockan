@@ -470,7 +470,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
 
     const rowTrigger = clickTarget("opening-balance-direction");
-    const newTrigger = clickTarget("opening-balance-new-direction");
+    const newTrigger = clickTarget("opening-balance-typed-direction-0");
     // the trigger also carries the chevron icon; the label lives in the SelectValue
     // span, the element Base UI resolves from the root's `items` map
     const labelOf = (trigger: Element) => trigger.querySelector('[data-slot="select-value"]')?.textContent;
@@ -496,8 +496,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await activateOption(theyOweOption!);
     expect(labelOf(newTrigger)).toBe("نسالوه");
 
-    setInput(clickTarget("opening-balance-new-name"), "مورد اتجاه ٢٥٢");
-    setInput(clickTarget("opening-balance-new-amount"), "700");
+    setInput(clickTarget("opening-balance-typed-name-0"), "مورد اتجاه ٢٥٢");
+    setInput(clickTarget("opening-balance-typed-amount-0"), "700");
     await act(async () => {
       clickOn("opening-balance-save");
     });

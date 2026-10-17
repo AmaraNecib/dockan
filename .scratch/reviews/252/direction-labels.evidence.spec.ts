@@ -26,8 +26,8 @@ test("#252 — the direction control's labels", async ({ page }) => {
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(supplierName);
-  await page.getByTestId("opening-balance-new-amount").fill("800");
+  await page.getByTestId("opening-balance-typed-name-0").fill(supplierName);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("800");
   await page.screenshot({ path: `${DIR}/00-new-row.png` });
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();

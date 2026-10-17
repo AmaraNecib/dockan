@@ -9,6 +9,7 @@ import base from "./playwright.config";
 export default defineConfig({
   ...base,
   testDir: "./.scratch/reviews/252",
+  testMatch: "**/direction-labels.evidence.spec.ts",
   outputDir: "./.scratch/reviews/252/pw-output",
   use: { ...base.use, video: "on", viewport: { width: 1280, height: 820 } },
 });

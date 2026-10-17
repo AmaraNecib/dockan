@@ -145,3 +145,18 @@ set.
 - Any other raw-value trigger outside `apps/web/src` (none found; sweep over every
   `<SelectValue` site, 24 sites) would escape the guard. Stated as the guard's
   boundary.
+
+## Round 4 — Greptile round 3 at `da26070f` (PR #267)
+
+Tier re-recorded: **Standard**. Same justification as above; this round's diff is
+prose in the shared contract + ADR, one validation string, the evidence config and
+a pinning test — the sign path is untouched.
+
+- Finding 1 (the contract still reverses directions): `core.ts` fixed at :525-526
+  (the WE_OWE/THEY_OWE gloss), :1069-1070 (the schema doc) and :1099 (the refusal
+  text); the same reversed pair in `docs/adr/0010` at :5-6 and the version-2 build
+  example at :43. New assertion in `supplier-entry-display.test.ts` resolves the
+  expected word from the i18n pair the picker renders, so the two cannot drift
+  apart again.
+- Finding 2 (the walkthrough collects broken tests): `testMatch` added to
+  `.scratch/reviews/252/playwright.evidence.config.ts`.

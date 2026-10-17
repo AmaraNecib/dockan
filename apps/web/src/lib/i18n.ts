@@ -259,7 +259,10 @@ const resources = {
       itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       stockUnitCostInvalid: "أدخل تكلفة وحدة صحيحة (عدد صحيح 0 أو أكثر)",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
-      itemsProfitPerUnit: "الربح لكل وحدة: {{profit}} دج",
+      itemsProfitPerUnit: "الربح لكل وحدة: <money/>",
+      // the same sentence doubles as the products-table column header, where an
+      // amount and its unit would dangle; the header is its own key
+      itemsProfitPerUnitHeader: "الربح لكل وحدة",
       itemsUncategorized: "بدون تصنيف",
       // server error keys -> user text
       AUTH_REQUIRED: "تسجيل الدخول مطلوب",

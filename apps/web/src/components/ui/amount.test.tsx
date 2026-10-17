@@ -84,6 +84,25 @@ describe("Money / Amount — one money display (issue #254)", () => {
     expect(currency.textContent).toBe("دج");
   });
 
+  it("keeps both runs in one right-to-left wrapper, so the currency cannot wrap alone (#254 round 3)", () => {
+    // supplier-opening-balance.tsx:792 renders <Amount> as a direct child of a
+    // `flex flex-wrap` row. As two sibling spans the runs became two flex ITEMS,
+    // so a narrow row could push the currency onto a line without its number.
+    const host = render(<Amount value={92500} />);
+    const { figures, currency } = runs(host);
+    const wrapper = figures.parentElement;
+    expect(wrapper).not.toBeNull();
+    expect(currency.parentElement).toBe(wrapper);
+    // one RTL paragraph for the pair, the figures still the only LTR isolate
+    expect(wrapper?.getAttribute("dir")).toBe("rtl");
+    expect(figures.getAttribute("dir")).toBe("ltr");
+    // atomic: without nowrap the item can shrink BETWEEN its runs, which only
+    // moves the split inside the wrapper instead of removing it
+    expect(wrapper?.classList.contains("whitespace-nowrap")).toBe(true);
+    // the flex row that holds it now sees ONE item, not two
+    expect(host.firstElementChild).toBe(wrapper);
+  });
+
   it("applies the caller's className to the currency, not only the figures (#254 round 2)", () => {
     // stock.tsx passes `text-foreground` inside a `text-muted-foreground`
     // paragraph. #254 moved the class to the figures run only, so the currency
@@ -124,9 +143,9 @@ describe("one currency placement (issue #254)", () => {
    * reaches `<Money>`. The call-site scan above cannot see a translated
    * sentence because the call site holds only a key (#254 round 2).
    */
-  function catalogMoneyTemplateOffenders(): string[] {
+  function catalogMoneyTemplateOffenders(source: string): string[] {
     const offenders: string[] = [];
-    for (const line of readFileSync(I18N_MODULE, "utf8").split("\n")) {
+    for (const line of source.split("\n")) {
       const entry = /^\s*([A-Za-z0-9_]+):\s*"(.*)",\s*$/.exec(line);
       if (entry === null) continue;
       const key = entry[1] ?? "";
@@ -166,14 +185,12 @@ describe("one currency placement (issue #254)", () => {
     expect(files).toContain(AMOUNT_MODULE);
   });
 
-  it("catches money assembled by a translated sentence, and pins the one deferral", () => {
-    const offenders = catalogMoneyTemplateOffenders();
-    // non-vacuous: the detector does fire on a real entry
-    expect(offenders).toContain("itemsProfitPerUnit");
-    // itemsProfitPerUnit is the documented deferral: the same key is the
-    // items-table header with `profit: ""`, so routing it through the primitive
-    // needs a separate header key (see .scratch/implementation/254-design.md).
-    // Every other money sentence now carries a <money/> component tag instead.
-    expect(offenders).toEqual(["itemsProfitPerUnit"]);
+  it("catches money assembled by a translated sentence, and finds none left", () => {
+    // non-vacuous: the detector fires on the shape `itemsProfitPerUnit` had
+    // before round 3 routed it too — a raw amount beside the currency literal.
+    expect(catalogMoneyTemplateOffenders('      sampleMoney: "تسجيل دفعة {{amount}} دج",\n')).toEqual(["sampleMoney"]);
+    // every real catalog entry now carries a <money/> component tag instead, so
+    // no translated sentence can render digits or a currency of its own.
+    expect(catalogMoneyTemplateOffenders(readFileSync(I18N_MODULE, "utf8"))).toEqual([]);
   });
 });

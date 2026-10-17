@@ -548,6 +548,54 @@ test("a refresh that removes a filled row's supplier names the loss and blocks t
 });
 
 /**
+ * #254 round 3 — the removed-row amount is a direct child of a `flex flex-wrap`
+ * row, so as two sibling spans it was two flex ITEMS: a narrow row could push
+ * the currency onto a line without its number. Both runs are one atomic RTL
+ * wrapper now, so squeezing the row to the digits' own width must still leave
+ * the currency on the digits' line.
+ */
+test("the removed-row amount keeps its currency beside its digits in a narrow row (#254 round 3)", async ({ page }) => {
+  // a narrow phone, because the finding is about wrapping
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  const supplierName = `مورد-ضيق-${Date.now()}`;
+  const supplier = await rpc<{ id: string }>(page, "suppliersCreate", { name: supplierName });
+
+  const amount = await openBalanceAmountFor(page, supplierName);
+  await amount.fill("700");
+  await rpc(page, "suppliersDelete", { id: supplier.id });
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+
+  const row = page.getByTestId("opening-balance-removed-row");
+  const figures = row.getByTestId("money-figures");
+  const currency = row.getByTestId("money-currency");
+  await expect(figures).toBeVisible();
+  await expect(currency).toBeVisible();
+
+  // exactly as wide as the digits: the currency cannot fit beside them on this
+  // line, so a splittable amount pushes it onto the next one
+  const digits = await figures.boundingBox();
+  expect(digits).not.toBeNull();
+  await row.evaluate((element, width) => {
+    // SAFETY: the locator is `opening-balance-removed-row`, an `<li>` in the page's own
+    // markup, so the element is an HTMLElement at runtime and it has a style object.
+    (element as HTMLElement).style.maxWidth = `${width}px`;
+  }, Math.ceil(digits?.width ?? 0) + 2);
+
+  // widen again so the still shows the SAME squeezed row: at 390 px the nav
+  // sheet covers it, and the squeezed row is what is measured either way
+  await page.setViewportSize({ width: 1000, height: 844 });
+  await captureEvidence(page, "money-narrow-row");
+
+  const figureBox = await figures.boundingBox();
+  const currencyBox = await currency.boundingBox();
+  expect(figureBox).not.toBeNull();
+  expect(currencyBox).not.toBeNull();
+  // the same line: under half an em of vertical drift
+  expect(Math.abs((figureBox?.y ?? 0) - (currencyBox?.y ?? 0))).toBeLessThan(4);
+});
+
+/**
  * The negative #204 pins: an UNFILLED row whose supplier vanishes on the same
  * refresh still drops without a warning, so ordinary refreshes stay quiet.
  */

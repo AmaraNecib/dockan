@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import { parseDateTimeText } from "../lib/dates";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
+import { focusedTestId } from "../tests/page-harness";
 
 interface ExpenseCategory {
   id: string;
@@ -235,11 +236,6 @@ async function mountPage(queryClient: QueryClient) {
     },
   };
 }
-
-/** What the keyboard is actually on, as a testid. Comparing DOM nodes makes
- * Bun serialise a whole element tree when the assertion fails: minutes of
- * output formatting on a red run instead of an instant string diff. */
-const focusedTestId = () => document.activeElement?.getAttribute("data-testid") ?? null;
 
 beforeEach(() => {
   listItems = [];
@@ -1178,6 +1174,7 @@ describe("ExpensesPage — history empty state (issue #96)", () => {
     listItems = [];
     listTotal = 0;
     listFails = false;
+    filteredEmpty = false;
     lastListInput = null;
   });
 
@@ -1254,6 +1251,8 @@ describe("ExpensesPage — history empty state (issue #96)", () => {
     expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
     expect(ui.query("expenses-empty")).toBeNull();
 
+    // the pills arrive with the category read, which can settle after the rows
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") !== null)).toBe(true);
     await ui.click("expense-filter-cat-2");
     expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
     expect(ui.query("expenses-empty-action")?.textContent).toBe(i18n.t("expensesEmptyClearFilters"));
@@ -1333,6 +1332,7 @@ describe("ExpensesPage — history empty state (issue #96)", () => {
     await activateOption(shorterWindow!);
     expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
 
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-1") !== null)).toBe(true);
     await ui.click("expense-filter-cat-1");
     await ui.click("expense-filter-all");
 
@@ -1345,6 +1345,45 @@ describe("ExpensesPage — history empty state (issue #96)", () => {
 
     expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
     expect(focusedTestId()).toBe("expense-filter-all");
+
+    await ui.unmount();
+  });
+
+  it("falls back to the range preset when the recorded pill is gone", async () => {
+    categoriesFixture = [category("cat-1", "كراء المحل"), category("cat-2", "كهرباء")];
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") !== null)).toBe(true);
+    await ui.click("expense-filter-cat-2");
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    // the category list loses that pill while its filter is still applied, so the
+    // recorded focus target is gone by the time the clear runs: focus must land on
+    // the fallback instead of being dropped a second time
+    categoriesFixture = [category("cat-1", "كراء المحل")];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") === null)).toBe(true);
+    expect(ui.query("expenses-empty-action")).not.toBeNull();
+
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-range-preset");
 
     await ui.unmount();
   });

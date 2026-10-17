@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import { focusedTestId } from "../tests/page-harness";
 import { chooseOption } from "../tests/select-driver";
 
 /**
@@ -103,13 +104,6 @@ const waitFor = async (predicate: () => boolean) => {
   throw new Error("condition not met within timeout");
 };
 
-/**
- * What the keyboard is actually on, as a testid. Node identity works too, but a
- * failing Bun assertion then serialises the whole element it received: a red run
- * costs minutes of output formatting instead of one string diff.
- */
-const focusedTestId = () => document.activeElement?.getAttribute("data-testid") ?? null;
-
 async function mountPage() {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -142,32 +136,6 @@ async function mountPage() {
   };
 }
 
-function openPopup(trigger: HTMLElement) {
-  act(() => {
-    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-  });
-}
-
-/** choose the option whose visible label matches the translated string */
-async function choose(testId: string, label: string) {
-  const trigger = document.querySelector<HTMLElement>(`[data-testid='${testId}']`)!;
-  openPopup(trigger);
-  await waitFor(() => document.querySelectorAll("[role='option']").length > 0);
-  const option = Array.from(document.querySelectorAll<HTMLElement>("[role='option']")).find((element) =>
-    element.textContent?.includes(label),
-  );
-  if (option === undefined) throw new Error(`no option labelled ${label}`);
-  act(() => {
-    // Base UI items arm mouse selection on pointerdown, then commit on click.
-    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
-    option.dispatchEvent(
-      new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }),
-    );
-  });
-}
-
 describe("InvoicesPage filters", () => {
   it("sends no filter initially, then narrows by kind and clears it again", async () => {
     const page = await mountPage();
@@ -177,13 +145,13 @@ describe("InvoicesPage filters", () => {
     expect(requests[0]).toEqual({ kind: undefined, status: undefined, limit: 10, offset: 0 });
 
     // apply: the request narrows and the list follows
-    await choose("invoices-kind-filter", i18n.t("invoicesFilterSale"));
+    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterSale"));
     await waitFor(() => page.numbers().length === 1);
     expect(requests.at(-1)?.kind).toBe("SALE");
     expect(page.numbers()).toEqual(["INV-0001"]);
 
     // clear through the empty-valued "All" option: the parameter must disappear
-    await choose("invoices-kind-filter", i18n.t("invoicesFilterAll"));
+    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterAll"));
     await waitFor(() => page.numbers().length === 2);
     expect(requests.at(-1)?.kind).toBeUndefined();
     expect(page.numbers()).toEqual(["INV-0001", "INV-0002"]);
@@ -192,12 +160,12 @@ describe("InvoicesPage filters", () => {
   it("narrows by payment status and clears it again", async () => {
     const page = await mountPage();
 
-    await choose("invoices-status-filter", i18n.t("invoicesStatusPaid"));
+    await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusPaid"));
     await waitFor(() => page.numbers().length === 1);
     expect(requests.at(-1)?.status).toBe("PAID");
     expect(page.numbers()).toEqual(["INV-0002"]);
 
-    await choose("invoices-status-filter", i18n.t("invoicesStatusAll"));
+    await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusAll"));
     await waitFor(() => page.numbers().length === 2);
     expect(requests.at(-1)?.status).toBeUndefined();
   });
@@ -222,7 +190,7 @@ describe("InvoicesPage empty states (issue #96)", () => {
     const page = await mountPage();
 
     // neither seeded row is PARTIAL, so a status-only filter empties the list
-    await choose("invoices-status-filter", i18n.t("invoicesStatusPartial"));
+    await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusPartial"));
     await waitFor(() => page.empty() !== null);
 
     expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
@@ -241,7 +209,7 @@ describe("InvoicesPage empty states (issue #96)", () => {
     allInvoices.push(seedInvoices[0]!);
     const page = await mountPage();
 
-    await choose("invoices-kind-filter", i18n.t("invoicesFilterPurchase"));
+    await chooseOption(page.kindFilter()!, i18n.t("invoicesFilterPurchase"));
     await waitFor(() => page.empty() !== null);
     expect(page.empty()?.textContent).toContain(i18n.t("invoicesEmptyFilteredHint"));
     expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
@@ -267,6 +235,7 @@ describe("InvoicesPage empty states (issue #96)", () => {
     // then status: neither seeded row is PARTIAL, so this empties the list
     await chooseOption(page.statusFilter()!, i18n.t("invoicesStatusPartial"));
     await waitFor(() => page.empty() !== null);
+    expect(requests.at(-1)).toMatchObject({ kind: "SALE", status: "PARTIAL" });
     expect(page.emptyAction()?.textContent).toBe(i18n.t("invoicesEmptyClearFilters"));
 
     // a keyboard user activates the button they tabbed to

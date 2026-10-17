@@ -171,10 +171,12 @@ export function ExpensesPage() {
   ): void {
     const next = editDateBound(previous, text);
     setBound(next);
-    // the bounds live under the range control: the fields themselves unmount when
-    // the window resets, so they cannot be the focus target after a clear
-    lastHistoryFilterRef.current = "expense-range-preset";
-    if (next.bound !== previous.bound) pager.reset();
+    if (next.bound !== previous.bound) {
+      // an APPLIED bound is a window change, and the fields themselves unmount when
+      // the window resets, so the range control is the focus target after a clear
+      lastHistoryFilterRef.current = "expense-range-preset";
+      pager.reset();
+    }
   }
 
   /**

@@ -73,3 +73,11 @@ export async function unmountAllMountedPages(): Promise<void> {
   mountedPages.length = 0;
   for (const page of pages) await page.unmount();
 }
+
+/**
+ * What the keyboard is actually on, as a testid. Node identity works too, but a
+ * failing Bun assertion then serialises the whole element it received: a red run
+ * costs minutes of output formatting instead of one string diff.
+ */
+export const focusedTestId = (): string | null =>
+  document.activeElement?.getAttribute("data-testid") ?? null;

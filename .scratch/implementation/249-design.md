@@ -9,6 +9,8 @@
   **not** merged; `git merge-base origin/develop HEAD` == `746ff93` (#238/#243).
 - Authority: commit only. This lane does **not** push, open a PR, merge or write
   `.agents/wisdom/`.
+- **Rebase (PR #251):** rebased onto `origin/develop` `b517553` after #246
+  squash-merged; see `.scratch/reviews/249/6b3f0ee-rebase-onto-develop.md`.
 - Specification: the issue brief
   `.scratch/sessions/crew/briefs/issue-249-ast-walk.md` (owner-approved
   replacement, round 4 of #244).

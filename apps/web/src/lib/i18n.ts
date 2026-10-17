@@ -693,9 +693,9 @@ const resources = {
       // #256 round 2 — the default takes the refund off the party's WHOLE tab
       // ("in this invoice or in another invoice"), so the panel names both the
       // split and the fact that the debt may sit on other invoices
-      returnsDebtSplitDefault: "الافتراضي: يُصفَّر الدين ({{debt}} دج) ويُردّ الباقي {{cash}} دج نقداً.",
+      returnsDebtSplitDefault: "الافتراضي: يُصفَّر الدين (<debt/>) ويُردّ الباقي <cash/> نقداً.",
       returnsDebtDefaultConfirm: "اعتمد الافتراضي المحسوب",
-      returnsDebtAcrossInvoices: "الخصم الافتراضي يأخذ من دين الزبون كاملاً ({{debt}} دج) — ويُوزَّع على فواتيره المفتوحة من الأقدم أولاً.",
+      returnsDebtAcrossInvoices: "الخصم الافتراضي يأخذ من دين الزبون كاملاً (<debt/>) — ويُوزَّع على فواتيره المفتوحة من الأقدم أولاً.",
       returnsPartyDebt: "دين الزبون كاملاً",
       returnsCashNow: "نقداً الآن",
       returnsDebtOffset: "خصم من الدين",
@@ -1002,7 +1002,7 @@ const resources = {
       supplierReturnInvalidDraft: "تحقق من الكميات والمبالغ المدخلة: يجب أن تكون أعداداً صحيحة",
       // #256 — the default refund method, shown before saving
       supplierReturnDefaultDebt: "الافتراضي: يُخصم من الدين الذي علينا للمورّد (لا نقد)",
-      supplierReturnDefaultCash: "الافتراضي: استرجاع {{amount}} دج نقداً من المورّد",
+      supplierReturnDefaultCash: "الافتراضي: استرجاع <money/> نقداً من المورّد",
       supplierRefundTitle: "استرداد رصيد من المورّد",
       supplierRefundReference: "الرصيد المتاح",
       supplierRefundSave: "تسجيل الاسترداد",

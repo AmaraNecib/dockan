@@ -882,11 +882,21 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             <div className="grid gap-2 rounded border border-border bg-muted/30 p-2" data-testid="returns-debt-default-note">
               <p className="text-xs text-muted-foreground">
                 {settlementDefault.method === "SPLIT"
-                  ? t("returnsDebtSplitDefault", { debt: partyDebt ?? invoice.remainingAmount, cash: derivedSplit?.cashPaidOut ?? 0 })
-                  : t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}
+                  ? (
+                    <Trans
+                      i18nKey="returnsDebtSplitDefault"
+                      components={{
+                        debt: <Amount value={partyDebt ?? invoice.remainingAmount} />,
+                        cash: <Amount value={derivedSplit?.cashPaidOut ?? 0} />,
+                      }}
+                    />
+                  )
+                  : <Trans i18nKey="returnsDebtAcrossInvoices" components={{ debt: <Amount value={partyDebt ?? invoice.remainingAmount} /> }} />}
               </p>
               {settlementDefault.method === "SPLIT" && crossInvoiceDebt > 0 && (
-                <p className="text-xs text-muted-foreground">{t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}</p>
+                <p className="text-xs text-muted-foreground">
+                  <Trans i18nKey="returnsDebtAcrossInvoices" components={{ debt: <Amount value={partyDebt ?? invoice.remainingAmount} /> }} />
+                </p>
               )}
             </div>
           )}

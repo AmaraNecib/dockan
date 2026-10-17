@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent 
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 
 import { normalizeTextKey, type SupplierAdjustmentDirection } from "@dokan/contracts";
 
@@ -11,13 +12,31 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
-import { parseGroupedAmount } from "@/lib/amount-parse";
 import { tError } from "@/lib/i18n";
+import { focusByTestId } from "@/lib/focus";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
-import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus, type RemovedFilledDraft } from "@/lib/supplier-opening-draft";
+import {
+  MAX_OPENING_BALANCE_ROWS,
+  droppedFilledDrafts,
+  duplicateTypedRowIds,
+  isOpeningBatchOverLimit,
+  newOpeningRowStatus,
+  openingRowStatus,
+  type NewOpeningRowStatus,
+  type RemovedFilledDraft,
+} from "@/lib/supplier-opening-draft";
 
 type RowDraft = { direction: SupplierAdjustmentDirection; amount: string; name?: string };
+
+/** #255 — one typed (new-supplier) draft row. Keyed by a CLIENT row id, never a
+ * supplier id: two drafts naming alike are two rows, and adding a row can never
+ * collapse onto — or overwrite — another row's text. */
+type TypedRow = { id: string; name: string; direction: SupplierAdjustmentDirection; amount: string };
+
+/** A blank typed row. The page opens with one, so the single-row flow the owner
+ * already knows keeps working, and every added row is the same shape. */
+const blankTypedRow = (id: string): TypedRow => ({ id, name: "", direction: "WE_OWE", amount: "" });
 
 /** The server's resolved destination for a typed name (issue 184). Never
  * computed here: the client renders exactly what `suppliersResolveName` returns. */
@@ -72,13 +91,21 @@ export function SupplierOpeningBalancePage() {
   // from `drafts`: the draft is gone, but the loss must stay visible (and block
   // the save) until the owner acknowledges it.
   const [removedFilled, setRemovedFilled] = useState<RemovedFilledDraft[]>([]);
-  const [newName, setNewName] = useState("");
-  const [newDirection, setNewDirection] = useState<SupplierAdjustmentDirection>("WE_OWE");
-  const [newAmount, setNewAmount] = useState("");
+  // #255 — the typed drafts. A list, not three scalars: the page accepts a 200-row
+  // batch, so dozens of new parties must be typed in one pass instead of one save
+  // each.
+  const [typedRows, setTypedRows] = useState<TypedRow[]>(() => [blankTypedRow("typed-1")]);
+  /** Monotonic row ids, so a removed row's id is never reused (a stale ref or a
+   * late resolve can no longer address the row that took its place). */
+  const nextTypedRowId = useRef(2);
+  /** The row an add just appended, focused once it has mounted: the whole point
+   * of #255 is typing many parties without leaving the keyboard. */
+  const pendingTypedFocusId = useRef<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  // the destination the server named, tagged with the exact lookup key it answered
-  // for; the dialog renders it verbatim and an edit invalidates it (issue 184)
-  const [typedResolution, setTypedResolution] = useState<{ key: string; supplier: ResolvedSupplier | null } | null>(null);
+  // the destinations the server named, tagged with the exact batch key they
+  // answered for; the dialog renders them verbatim and an edit invalidates the
+  // whole set (issue 184, generalised to N rows by #255)
+  const [typedResolution, setTypedResolution] = useState<{ key: string; destinations: Record<string, ResolvedSupplier | null> } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ created: number; accounts: Array<{ supplierId: string; name: string; balance: number }> } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -196,47 +223,76 @@ export function SupplierOpeningBalancePage() {
   );
   const invalidExisting = existingRows.filter((row) => row.state.status === "invalid");
 
-  const newRow = newOpeningRowStatus({ name: newName, amount: newAmount, existingNames: suppliers.map((supplier) => supplier.name) });
-  // a typed name is a NAME: the server is the only resolver. A "duplicate" draft
-  // is not an error by itself; the pre-submit guard blocks it only when it
-  // collides with a row the owner already picked.
-  const newRowError =
-    newRow.status === "incomplete"
-      ? t("supplierOpeningNewIncomplete")
-      : newRow.status === "invalid"
-        ? t("supplierOpeningRowInvalid")
-        : null;
+  // #255 — one status per typed row, from the same reader the lib uses for a
+  // single inline supplier. "duplicate" (a name that folds onto an EXISTING
+  // supplier) is not an error: the server resolves it onto that account, which is
+  // exactly what `newSupplierName` means. Only a blank or unreadable draft keeps a
+  // row out of the batch.
+  const supplierNames = useMemo(() => suppliers.map((supplier) => supplier.name), [suppliers]);
+  const typedRowStates = useMemo(
+    () => typedRows.map((row) => ({ row, status: newOpeningRowStatus({ name: row.name, amount: row.amount, existingNames: supplierNames }) })),
+    [typedRows, supplierNames],
+  );
+  const readyTypedRows = useMemo(
+    () =>
+      typedRowStates.flatMap(({ row, status }) =>
+        status.status === "filled" || status.status === "duplicate"
+          ? [{ id: row.id, name: status.name, direction: row.direction, amount: status.amount }]
+          : [],
+      ),
+    [typedRowStates],
+  );
+  // #255 — two typed rows that fold onto one supplier are one account entered
+  // twice: the api refuses the WHOLE batch for it (DUPLICATE_OPENING_BALANCE_ROW),
+  // so every amount in it would be lost. Block the same shape here first.
+  const duplicateTypedIds = useMemo(() => new Set(duplicateTypedRowIds(typedRows)), [typedRows]);
+  // recomputed per render like `filledExisting` itself, which is a fresh filter
+  // every render: a memo here would only look like one
+  const pickedSupplierIds = new Set(filledExisting.map((row) => row.supplier.id));
+  const pickedSupplierNames = new Set(filledExisting.map((row) => normalizeTextKey(row.supplier.name)));
 
-  // Round 5 — the typed name is its own outgoing row, sent as newSupplierName and
-  // never moved onto another supplier's row. One resolver: the server.
-  const typedNameKey = newName.trim() === "" ? null : normalizeTextKey(newName);
-  const typedAmount = parseGroupedAmount(newAmount);
-  const typedRowReady = typedNameKey !== null && typedAmount !== null && typedAmount > 0;
-  // #184 — the resolution input and the key that tags its answer, derived once so
-  // they cannot disagree. The key is the row signature the server resolves
-  // against, so a change to any of the five fields invalidates the snapshot.
-  const typedLookup = useMemo(() => {
-    if (typedNameKey === null || typedAmount === null || typedAmount <= 0 || occurredAt === null) return null;
-    const input = { name: newName.trim(), direction: newDirection, amount: typedAmount, occurredAt, reason: reasonDraft.trim() === "" ? undefined : reasonDraft.trim() };
-    return { input, key: JSON.stringify([input.name, input.direction, input.amount, input.occurredAt, input.reason ?? null]) };
-  }, [typedNameKey, typedAmount, newDirection, newName, occurredAt, reasonDraft]);
-  const resolveInput = typedLookup?.input ?? null;
-  const resolveKey = typedLookup?.key ?? null;
-  // the destination snapshot is only used while it belongs to the CURRENT lookup
-  // fields, so a stale snapshot can never block a valid edited batch
-  const typedDestination = typedResolution !== null && typedResolution.key === resolveKey ? typedResolution.supplier : null;
-  // the confirmation is stale the moment the typed row's lookup fields move (or a
+  // #184 — the resolution input and the key that tags its answer, derived per row
+  // and folded into ONE batch key so a change to any field of any row invalidates
+  // the snapshot for all of them. The key is the row signature the server resolves
+  // against, plus the row id so two identical rows keep their own answers.
+  const typedLookups = useMemo(() => {
+    if (readyTypedRows.length === 0 || occurredAt === null) return [];
+    const reason = reasonDraft.trim() === "" ? undefined : reasonDraft.trim();
+    return readyTypedRows.map((row) => {
+      const input = { name: row.name, direction: row.direction, amount: row.amount, occurredAt, reason };
+      return { id: row.id, input, key: JSON.stringify([row.id, input.name, input.direction, input.amount, input.occurredAt, input.reason ?? null]) };
+    });
+  }, [readyTypedRows, occurredAt, reasonDraft]);
+  const resolveKey = typedLookups.length === 0 ? null : JSON.stringify(typedLookups.map((lookup) => lookup.key));
+  // the destination snapshot is only used while it belongs to the CURRENT batch,
+  // so a stale snapshot can never block (or mis-name) a valid edited batch
+  const resolvedDestinations = typedResolution !== null && typedResolution.key === resolveKey ? typedResolution.destinations : null;
+  const destinationFor = (rowId: string): ResolvedSupplier | null => resolvedDestinations?.[rowId] ?? null;
+  // the confirmation is stale the moment the typed rows' lookup fields move (or a
   // typed row appears while an existing-rows-only confirmation is open), so the
   // dialog cannot act on an old snapshot for even one commit (review round 1 F3)
   const confirmStale = typedResolution === null ? resolveKey !== null : typedResolution.key !== resolveKey;
-  // guard: a typed name that folds onto a row the owner already picked must not be
-  // sent (the same account twice). Folded names are a local, tie-break-free
-  // check; the resolved id comes from the server. One function so the render-time
-  // banner and the submit-time guard cannot drift apart.
-  const foldedConflict = typedRowReady && filledExisting.some((row) => normalizeTextKey(row.supplier.name) === typedNameKey);
-  const conflictsWithFilled = (destination: ResolvedSupplier | null) =>
-    typedRowReady && (foldedConflict || (destination !== null && filledExisting.some((row) => row.supplier.id === destination.id)));
-  const typedNameConflict = conflictsWithFilled(typedDestination);
+  // guard: a typed row that folds onto — or resolves to — an account another row
+  // already carries must not be sent (the same account twice). Folded names are a
+  // local, tie-break-free check; the resolved id comes from the server. One
+  // predicate so the render-time row error and the submit-time guard cannot drift
+  // apart.
+  function rowOnPickedSupplier(row: { id: string; name: string }, destination: ResolvedSupplier | null): boolean {
+    if (pickedSupplierNames.has(normalizeTextKey(row.name))) return true;
+    return destination !== null && pickedSupplierIds.has(destination.id);
+  }
+  const conflictsWithFilled = (destinations: Record<string, ResolvedSupplier | null> | null) =>
+    readyTypedRows.some((row) => rowOnPickedSupplier(row, destinations?.[row.id] ?? null));
+  /** The message shown under a typed row, in the order the owner can act on it:
+   * finish the row, fix its amount, drop the duplicate, pick another supplier. */
+  function typedRowError(row: TypedRow, status: NewOpeningRowStatus): string | null {
+    if (status.status === "incomplete") return t("supplierOpeningNewIncomplete");
+    if (status.status === "invalid") return t("supplierOpeningRowInvalid");
+    if (duplicateTypedIds.has(row.id)) return t("supplierOpeningDuplicateRow");
+    if (rowOnPickedSupplier(row, destinationFor(row.id))) return t("supplierOpeningRowHasAmount");
+    return null;
+  }
+  const typedRowErrorMessages = typedRowStates.map(({ row, status }) => typedRowError(row, status));
 
   // a change to the typed row's lookup fields means the confirmation named an
   // account for a now-outdated row: close it, drop the snapshot, and invalidate
@@ -272,27 +328,28 @@ export function SupplierOpeningBalancePage() {
     };
   }, []);
 
-  const totalRows = filledExisting.length + (typedRowReady && !typedNameConflict ? 1 : 0);
+  const totalRows = filledExisting.length + readyTypedRows.filter((row) => !duplicateTypedIds.has(row.id) && !rowOnPickedSupplier(row, destinationFor(row.id))).length;
   const overLimit = isOpeningBatchOverLimit(totalRows);
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows.
-  // `typedNameConflict` includes the server-resolved id, so editing a row onto the
-  // account the dialog named re-blocks the dialog too (issue 177 round 5 / #184).
+  // A typed row's error includes the server-resolved id, so editing a row onto the
+  // account the dialog named re-blocks the dialog too (issue 177 round 5 / #184);
+  // with N rows the FIRST row that has something to say is the one named, so the
+  // banner and the row's own message always agree.
+  const firstTypedRowError = typedRowErrorMessages.find((message) => message !== null) ?? null;
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
     : invalidExisting.length > 0
       ? t("supplierOpeningFixRows")
-      : typedNameConflict
-        ? t("supplierOpeningRowHasAmount")
-        : newRowError;
+      : firstTypedRowError;
   // #204 — an unacknowledged dropped amount blocks the save on its own, so the
   // owner cannot confirm a batch while still believing the removed row is in it.
   const hasRemovedFilled = removedFilled.length > 0;
   // the confirmation dialog names every account the batch will write to, including
-  // the server's resolved name for the typed row, so a confirmed save never lands
+  // the server's resolved name for each typed row, so a confirmed save never lands
   // on an unnamed account
   const confirmNames = [
     ...filledExisting.filter((row) => (row.supplier.accountEntryCount ?? 0) > 0).map((row) => row.supplier.name),
-    ...(typedRowReady && !typedNameConflict ? [typedDestination?.name ?? newName.trim()] : []),
+    ...readyTypedRows.filter((row) => !duplicateTypedIds.has(row.id) && !rowOnPickedSupplier(row, destinationFor(row.id))).map((row) => destinationFor(row.id)?.name ?? row.name),
   ].filter((name, index, all) => all.findIndex((other) => normalizeTextKey(other) === normalizeTextKey(name)) === index);
   // forward confirmExisting only for the rows the dialog actually named (their
   // cached count shows history); a stale count is resolved by the refusal round-trip
@@ -317,10 +374,43 @@ export function SupplierOpeningBalancePage() {
     closeConfirm();
   }
 
-  /** Remember the server's answer under the exact lookup key it answered for. */
-  function rememberResolution(supplier: ResolvedSupplier | null) {
-    setTypedResolution(resolveKey === null ? null : { key: resolveKey, supplier });
+  /** Remember the server's answers under the exact batch key they answered for. */
+  function rememberResolution(destinations: Record<string, ResolvedSupplier | null>) {
+    setTypedResolution(resolveKey === null ? null : { key: resolveKey, destinations });
   }
+
+  /** #255 — append a blank typed row and focus its name field, so the owner can
+   * type the next party without reaching for the mouse. Refused at the contract's
+   * row cap: a row added there could only make the batch unsavable. */
+  function addTypedRow() {
+    if (totalRows >= MAX_OPENING_BALANCE_ROWS) return;
+    invalidateAttempt();
+    const id = `typed-${nextTypedRowId.current}`;
+    nextTypedRowId.current += 1;
+    pendingTypedFocusId.current = id;
+    setTypedRows((current) => [...current, blankTypedRow(id)]);
+  }
+
+  /** Drop one typed row. The rows after it keep their text and their order: they
+   * are drafts, not supplier rows, so a removal must never re-index anything. */
+  function removeTypedRow(id: string) {
+    invalidateAttempt();
+    setTypedRows((current) => current.filter((row) => row.id !== id));
+  }
+
+  function setTypedRow(id: string, patch: Partial<TypedRow>) {
+    invalidateAttempt();
+    setTypedRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  }
+
+  // focus the row an add just appended, once it is in the document
+  useEffect(() => {
+    const id = pendingTypedFocusId.current;
+    if (id === null) return;
+    pendingTypedFocusId.current = null;
+    const index = typedRows.findIndex((row) => row.id === id);
+    if (index >= 0) focusByTestId(`opening-balance-typed-name-${index}`);
+  }, [typedRows]);
 
   /** Leave the screen: abandon any in-flight attempt and drop the confirmation
    * before navigating, so a late resolve cannot write (review round 1 finding 1).
@@ -330,12 +420,16 @@ export function SupplierOpeningBalancePage() {
     void navigate({ to: "/suppliers" });
   }
 
-  /** Ask the server which account this typed name resolves to (issue 184). The
-   * only resolver; a `null` answer means a write would create a new supplier. */
-  async function resolveTypedDestination(): Promise<ResolvedSupplier | null> {
-    if (resolveInput === null) return null;
-    const result = await queryClient.fetchQuery(orpc.suppliersResolveName.queryOptions({ input: resolveInput }));
-    return result.supplier;
+  /** Ask the server which account each typed row resolves to (issue 184 / #255).
+   * The only resolver; a `null` answer means a write would create a new supplier. */
+  async function resolveTypedDestinations(): Promise<Record<string, ResolvedSupplier | null>> {
+    const entries = await Promise.all(
+      typedLookups.map(async (lookup) => {
+        const result = await queryClient.fetchQuery(orpc.suppliersResolveName.queryOptions({ input: lookup.input }));
+        return [lookup.id, result.supplier] as const;
+      }),
+    );
+    return Object.fromEntries(entries);
   }
 
   /** Any edit to the outgoing batch invalidates an in-flight submit: the lookup
@@ -409,7 +503,7 @@ export function SupplierOpeningBalancePage() {
     return true;
   }
 
-  async function save(confirmExisting: boolean, destination: ResolvedSupplier | null) {
+  async function save(confirmExisting: boolean, destinations: Record<string, ResolvedSupplier | null> | null) {
     if (occurredAt === null) return;
     // a failed read must block the dialog path too, and it must be the failure
     // AT WRITE TIME: this function can run from a continuation that outlived the
@@ -458,21 +552,18 @@ export function SupplierOpeningBalancePage() {
             amount: row.state.amount,
             confirmExisting: forwardsConfirm(confirmExisting, row.supplier.accountEntryCount),
           })),
-          // a typed name travels as a NAME; the server is the only resolver. Only a
-          // destination the server named (and the dialog showed) forwards
-          // confirmExisting, and the named id travels as a consistency check so a
-          // draft edited while the dialog was open cannot land elsewhere (issue 184).
-          ...(typedRowReady
-            ? [
-                {
-                  newSupplierName: newName.trim(),
-                  direction: newDirection,
-                  amount: typedAmount ?? 0,
-                  confirmExisting: forwardsConfirm(confirmExisting, destination?.accountEntryCount),
-                  expectedSupplierId: destination?.id ?? null,
-                },
-              ]
-            : []),
+          // #255 — every typed row travels as a NAME; the server is the only
+          // resolver. Only a destination the server named (and the dialog showed)
+          // forwards confirmExisting, and the named id travels as a per-row
+          // consistency check so a draft edited while the dialog was open cannot
+          // land elsewhere (issue 184).
+          ...readyTypedRows.map((row) => ({
+            newSupplierName: row.name,
+            direction: row.direction,
+            amount: row.amount,
+            confirmExisting: forwardsConfirm(confirmExisting, destinations?.[row.id]?.accountEntryCount),
+            expectedSupplierId: destinations?.[row.id]?.id ?? null,
+          })),
         ],
       });
       await Promise.all([
@@ -496,9 +587,9 @@ export function SupplierOpeningBalancePage() {
       if (err instanceof Error && (err.message.includes("OPENING_BALANCE_EXISTS") || err.message.includes("OPENING_BALANCE_TARGET_CHANGED"))) {
         await Promise.all(supplierReadQueryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })));
         try {
-          const destination = await resolveTypedDestination();
+          const destinations = await resolveTypedDestinations();
           if (!mountedRef.current || resolveKeyRef.current !== saveResolveKey || dismissalRef.current !== saveDismissal) return;
-          rememberResolution(destination);
+          rememberResolution(destinations);
           setConfirming(true);
         } catch (resolveError) {
           // a dismissal must survive a FAILED recovery too: otherwise the error the
@@ -533,40 +624,40 @@ export function SupplierOpeningBalancePage() {
     // fields invalidates it, so a late resolve can never reach save()
     const attempt = attemptRef.current + 1;
     attemptRef.current = attempt;
-    // the server's resolution is the only source of the typed row's destination
-    // (issue 184): ask it before deciding what the dialog must name. A batch with
-    // no typed name stays synchronous — there is nothing to resolve.
-    const destination = resolveInput === null ? null : await resolveForSubmit(attempt);
+    // the server's resolution is the only source of every typed row's destination
+    // (issue 184): ask it per row before deciding what the dialog must name. A
+    // batch with no typed row stays synchronous — there is nothing to resolve.
+    const destinations = typedLookups.length === 0 ? null : await resolveForSubmit(attempt);
     if (attempt !== attemptRef.current) return; // left or the lookup fields changed
-    if (destination === undefined) return; // resolve failed; the error is already shown
+    if (destinations === undefined) return; // resolve failed; the error is already shown
     // a read that failed while the lookup was in flight must not name a dialog
     // either: the counts `confirmNames` would show, and the gate `save` applies,
     // come from the same render this continuation outlived (Greptile round 3
     // class fix). The failure banner is already on screen, so stop silently the
     // way the entry guard does.
     if (liveListFailure() !== null) return;
-    const conflict = conflictsWithFilled(destination);
+    const conflict = conflictsWithFilled(destinations);
     if (conflict) {
       setError(t("supplierOpeningRowHasAmount"));
       return;
     }
     const existingNeedsConfirm = filledExisting.some((row) => (row.supplier.accountEntryCount ?? 0) > 0);
-    if (existingNeedsConfirm || (destination?.accountEntryCount ?? 0) > 0) {
-      rememberResolution(destination);
+    if (existingNeedsConfirm || typedLookups.some((lookup) => (destinations?.[lookup.id]?.accountEntryCount ?? 0) > 0)) {
+      rememberResolution(destinations ?? {});
       setConfirming(true);
       return;
     }
-    await save(false, destination);
+    await save(false, destinations);
   }
 
   /** `submit`'s resolve with the UI guards a bare read needs: a pending flag so
    * a double-click cannot run two, and an error surface instead of an unhandled
    * rejection. `undefined` means it failed and the error is shown. */
-  async function resolveForSubmit(attempt: number): Promise<ResolvedSupplier | null | undefined> {
+  async function resolveForSubmit(attempt: number): Promise<Record<string, ResolvedSupplier | null> | undefined> {
     resolvingRef.current = true;
     setResolving(true);
     try {
-      return await resolveTypedDestination();
+      return await resolveTypedDestinations();
     } catch (err) {
       if (attempt === attemptRef.current && mountedRef.current) setError(tError(err instanceof Error ? err.message : undefined));
       return undefined;
@@ -722,60 +813,71 @@ export function SupplierOpeningBalancePage() {
                     </tr>
                   );
                 })}
-                <tr className="border-b bg-accent/40" data-testid="opening-balance-new">
-                  <td className="p-2">
-                    <input
-                      className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                      value={newName}
-                      onChange={(event) => {
-                        invalidateAttempt();
-                        setNewName(event.target.value);
-                      }}
-                      maxLength={200}
-                      placeholder={t("supplierOpeningNewRow")}
-                      aria-label={t("supplierOpeningNewRow")}
-                      aria-invalid={newRow.status === "invalid"}
-                      data-testid="opening-balance-new-name"
-                    />
-                    {newRowError !== null && (
-                      <p className="mt-1 text-xs text-destructive" role="alert" data-testid="opening-balance-new-error">
-                        {newRowError}
-                      </p>
-                    )}
-                  </td>
-                  <td className="p-2 text-muted-foreground">—</td>
-                  <td className="p-2">
-                    <Select
-                      value={newDirection}
-                      onValueChange={(next) => {
-                        invalidateAttempt();
-                        setNewDirection(asDirection(next));
-                      }}
-                    >
-                      <SelectTrigger className="w-28" data-testid="opening-balance-new-direction">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="WE_OWE">{t("supplierAdjustDirectionWeOwe")}</SelectItem>
-                        <SelectItem value="THEY_OWE">{t("supplierAdjustDirectionTheyOwe")}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </td>
-                  <td className="p-2">
-                    <input
-                      className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      value={newAmount}
-                      onChange={(event) => {
-                        invalidateAttempt();
-                        setNewAmount(event.target.value);
-                      }}
-                      aria-label={t("supplierOpeningNewRow")}
-                      data-testid="opening-balance-new-amount"
-                    />
-                  </td>
-                </tr>
+                {/* #255 — one row per typed (new-supplier) draft. Keyed by the row's
+                    own id so adding or removing a row never moves another row's text,
+                    and indexed in the testids because the draft list is positional. */}
+                {typedRows.map((typedRow, index) => {
+                  const typedState = typedRowStates[index]?.status;
+                  const typedError = typedRowErrorMessages[index] ?? null;
+                  const typedName = typedRow.name.trim();
+                  return (
+                    <tr key={typedRow.id} className="border-b bg-accent/40" data-testid={`opening-balance-typed-row-${index}`}>
+                      <td className="p-2">
+                        <div className="flex items-center gap-1">
+                          <input
+                            className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                            value={typedRow.name}
+                            onChange={(event) => setTypedRow(typedRow.id, { name: event.target.value })}
+                            maxLength={200}
+                            placeholder={t("supplierOpeningNewRow")}
+                            aria-label={t("supplierOpeningNewRow")}
+                            aria-invalid={typedState?.status === "invalid" || typedError !== null}
+                            data-testid={`opening-balance-typed-name-${index}`}
+                          />
+                          <button
+                            type="button"
+                            className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                            aria-label={typedName === "" ? t("supplierOpeningRemoveRow") : `${t("supplierOpeningRemoveRow")} ${typedName}`}
+                            onClick={() => removeTypedRow(typedRow.id)}
+                            disabled={submitting || bulk.isPending}
+                            data-testid={`opening-balance-typed-remove-${index}`}
+                          >
+                            <X size={16} aria-hidden="true" />
+                          </button>
+                        </div>
+                        {typedError !== null && (
+                          <p className="mt-1 text-xs text-destructive" role="alert" data-testid={`opening-balance-typed-error-${index}`}>
+                            {typedError}
+                          </p>
+                        )}
+                      </td>
+                      <td className="p-2 text-muted-foreground">—</td>
+                      <td className="p-2">
+                        <Select value={typedRow.direction} onValueChange={(next) => setTypedRow(typedRow.id, { direction: asDirection(next) })}>
+                          <SelectTrigger className="w-28" data-testid={`opening-balance-typed-direction-${index}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="WE_OWE">{t("supplierAdjustDirectionWeOwe")}</SelectItem>
+                            <SelectItem value="THEY_OWE">{t("supplierAdjustDirectionTheyOwe")}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </td>
+                      <td className="p-2">
+                        <input
+                          className="h-9 w-32 rounded-lg border border-input bg-background px-3 text-sm"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          value={typedRow.amount}
+                          onChange={(event) => setTypedRow(typedRow.id, { amount: event.target.value })}
+                          aria-label={t("supplierOpeningNewRow")}
+                          aria-invalid={typedState?.status === "invalid"}
+                          data-testid={`opening-balance-typed-amount-${index}`}
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -819,6 +921,18 @@ export function SupplierOpeningBalancePage() {
             <Button type="submit" disabled={submitting || resolving || bulk.isPending || dateInvalid || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-save">
               {t("supplierOpeningSave", { count: totalRows })}
             </Button>
+            {/* #255 — the owner's ask: press it and another blank row appears, so
+                several parties are entered and saved in one pass. Disabled at the
+                contract's row cap, where a further row could only fail to save. */}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={addTypedRow}
+              disabled={submitting || resolving || bulk.isPending || listPending || listFailed || totalRows >= MAX_OPENING_BALANCE_ROWS}
+              data-testid="opening-balance-add-row"
+            >
+              {t("supplierOpeningAddRow")}
+            </Button>
             <Button type="button" variant="outline" onClick={leave} disabled={submitting || bulk.isPending} data-testid="opening-balance-cancel">
               {t("partyCancel")}
             </Button>
@@ -839,7 +953,7 @@ export function SupplierOpeningBalancePage() {
                 ))}
               </ul>
               <div className="mt-3 flex gap-2">
-                <Button type="button" onClick={() => void save(true, typedDestination)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-confirm-save">
+                <Button type="button" onClick={() => void save(true, resolvedDestinations)} disabled={submitting || resolving || bulk.isPending || listFailed || blockedReason !== null || hasRemovedFilled} data-testid="opening-balance-confirm-save">
                   {t("supplierOpeningConfirmSave")}
                 </Button>
                 <Button type="button" variant="outline" onClick={abandonAttempt} disabled={submitting || bulk.isPending} data-testid="opening-balance-confirm-cancel">

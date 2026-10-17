@@ -58,7 +58,11 @@ export type NewOpeningRowStatus =
   | { status: "untouched" }
   | { status: "incomplete" }
   | { status: "invalid" }
-  | { status: "duplicate" }
+  // #255 — the name folds onto a supplier that already exists. Not an error: the
+  // server resolves such a row onto that account, which is exactly what
+  // `newSupplierName` means. It carries the parsed fields because the row is still
+  // a usable outgoing row.
+  | { status: "duplicate"; name: string; amount: number }
   | { status: "filled"; name: string; amount: number };
 
 /** The inline new-supplier row: empty is untouched; a name XOR an amount is
@@ -72,8 +76,33 @@ export function newOpeningRowStatus(input: { name: string; amount: string; exist
   const amount = parseGroupedAmount(input.amount);
   if (amount === null || amount <= 0) return { status: "invalid" };
   const folded = normalizeTextKey(name);
-  if (input.existingNames.some((existing) => normalizeTextKey(existing) === folded)) return { status: "duplicate" };
+  if (input.existingNames.some((existing) => normalizeTextKey(existing) === folded)) return { status: "duplicate", name, amount };
   return { status: "filled", name, amount };
+}
+
+/**
+ * #255 — two typed (new-supplier) rows whose names fold to one key are one
+ * supplier entered twice: the api refuses that batch outright
+ * (`DUPLICATE_OPENING_BALANCE_ROW`), so every amount in it is lost at once. The
+ * page blocks the same shape on the client, off this one predicate, so the
+ * client and the server agree by construction on what "the same name" means
+ * (`normalizeTextKey`, ADR-0007).
+ *
+ * A blank name carries no identity: blank and mark-only drafts all fold to `""`
+ * and are NOT duplicates of each other, they are simply rows not filled in yet.
+ * Every member of a clash is returned, not just the later one, because either
+ * side is the row the owner can edit.
+ */
+export function duplicateTypedRowIds(rows: readonly { id: string; name: string }[]): string[] {
+  const idsByKey = new Map<string, string[]>();
+  for (const row of rows) {
+    const key = normalizeTextKey(row.name);
+    if (key === "") continue;
+    const ids = idsByKey.get(key);
+    if (ids === undefined) idsByKey.set(key, [row.id]);
+    else ids.push(row.id);
+  }
+  return [...idsByKey.values()].flatMap((ids) => (ids.length > 1 ? ids : []));
 }
 
 /** The contract's row cap (`supplierOpeningBalancesInputSchema.rows.max(200)`). */

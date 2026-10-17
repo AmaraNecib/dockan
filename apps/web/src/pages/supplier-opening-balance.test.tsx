@@ -338,8 +338,8 @@ async function submitForm(arm: () => void | Promise<void>, validRowAmount: strin
 async function openConfirmWithRefusedSaveHeld() {
   render();
   await settle();
-  setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
-  setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+  setInput(clickTarget<HTMLInputElement>("opening-balance-typed-name-0"), "مورد له حركات");
+  setInput(clickTarget<HTMLInputElement>("opening-balance-typed-amount-0"), "500");
   await act(async () => {
     clickOn("opening-balance-save");
   });
@@ -389,8 +389,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
     // row 0 (already has entries) stays empty; row 1 gets an amount
     typeIntoRow(1, "300");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جملة");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "800");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد جملة");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "800");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -437,10 +437,10 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(creditCell).toContain("يسالنا");
 
     // a typed name is its own row: it is never moved onto an existing row
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     expect(rows[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("");
-    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("500");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')?.value).toBe("500");
   });
 
   it("surfaces the confirmation dialog when the server refuses a stale-expectation row (round 5)", async () => {
@@ -584,11 +584,11 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the typed row has its own `amount <= 0` branch, separate from the existing
     // rows' reader; the helper's valid row keeps the batch non-empty
     await submitForm(() => {
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "0");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد جديد تماما");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "0");
     });
 
-    expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-0"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
     expect(captured).toBeNull();
   });
@@ -597,9 +597,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     // a valid row so the empty-batch check cannot mask the incomplete-name block
-    await submitForm(() => setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورّد بلا مبلغ"));
+    await submitForm(() => setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورّد بلا مبلغ"));
 
-    expect(host.querySelector('[data-testid="opening-balance-new-error"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-0"]')).not.toBeNull();
     expect(host.querySelector<HTMLButtonElement>('[data-testid="opening-balance-save"]')?.disabled).toBe(true);
     expect(captured).toBeNull();
   });
@@ -621,8 +621,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await submitForm(() => {
       // batched into one render for the same #193 reason as the round-5 case below
       fillAmounts(Array.from(inputs), (index) => String(index + 1));
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد إضافي");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "1");
     }, null);
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
@@ -674,8 +674,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // the whole valid batch is built here, so `null` stops the helper adding a row
     await submitForm(() => {
       fillAmounts(Array.from(inputs), () => "1");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إضافي");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "1");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد إضافي");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "1");
     }, null);
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).toBeNull();
@@ -710,8 +710,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("sends a typed name as newSupplierName with the named id as a consistency check (round 5 / #184)", async () => {
     render();
     await settle();
-    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
-    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!;
 
     // the typed name matches s-1, but the draft stays inline (no row move)
     setInput(nameInput, "مورد له حركات");
@@ -738,8 +738,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     typeIntoRow(0, "700");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
 
     // the folded names differ, so the local banner cannot see it; the submit
     // still refuses to send two rows to one account
@@ -756,8 +756,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "اسم مختلف");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "اسم مختلف");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -783,9 +783,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveByKey.set(normalizeTextKey("اسم مختلف"), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
     render();
     await settle();
-    const nameField = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const nameField = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!;
     setInput(nameField, "اسم مختلف");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -807,8 +807,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveFails = true;
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -828,8 +828,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     racedAfterRefusal = { key: normalizeTextKey(typed), supplier: { id: "s-moved", name: "مورد بديل", accountEntryCount: 4 } };
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -855,8 +855,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -887,8 +887,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // opens the confirmation dialog instead of writing directly
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -994,15 +994,15 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // an owner who tabbed back into an amount field can still dismiss it
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
     expect(host.querySelector('[data-testid="opening-balance-confirm"]')).not.toBeNull();
 
     // Focus is outside the dialog subtree, in an input behind it
-    const amount = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    const amount = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!;
     amount.focus();
     await act(async () => {
       amount.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -1015,8 +1015,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // destination still re-opens the dialog and names it
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1057,8 +1057,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("disables the confirm button while a re-submit's lookup is pending (review round 2)", async () => {
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1087,8 +1087,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("cancels the open confirmation on Escape (review round 2 / web interface guidelines)", async () => {
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1108,8 +1108,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد إغلاق تماما");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد إغلاق تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1133,8 +1133,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد جديد تماما");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد جديد تماما");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1168,8 +1168,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     render();
     await settle();
-    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد ميدان تماما");
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!;
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد ميدان تماما");
     setInput(amountInput, "300");
     await act(async () => {
       clickOn("opening-balance-save");
@@ -1198,8 +1198,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1251,9 +1251,9 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveByKey.set(normalizeTextKey("مورد آخر"), { id: "s-9", name: "مورد آخر", accountEntryCount: 0 });
     render();
     await settle();
-    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!;
     setInput(nameInput, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     // the confirmation opens naming s-1
     await act(async () => {
@@ -1287,8 +1287,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("names the destination supplier in the confirmation dialog (round 5)", async () => {
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -1304,8 +1304,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     resolveByKey.set(normalizeTextKey(typed), { id: "s-1", name: "مورد له حركات", accountEntryCount: 3 });
     render();
     await settle();
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typed);
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, typed);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -1321,8 +1321,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // an explicit row for s-2 (no entries, so no confirmation can mask the guard)
     // plus a typed name that folds to the same name
     await submitForm(() => {
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد  بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
     }, "700");
 
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
@@ -1346,8 +1346,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // only the failed-read guard can, and without it this row would be sent.
     // `null` skips the helper's own row: the typed row is this test's valid batch.
     await submitForm(async () => {
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "400");
 
       // the summary read now fails on refetch: its counts are no longer trustworthy
       accountsShouldFail = true;
@@ -1370,8 +1370,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // row would be sent with the conflict list unknown. `null` skips the helper's
     // own row: the typed row is this test's valid batch.
     await submitForm(async () => {
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد بلا حركات");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "400");
 
       // the names read now fails on refetch: the conflict list is no longer trusted
       namesShouldFail = true;
@@ -1438,8 +1438,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       await settle();
       // a new supplier (the resolver answers null) with no entries: this row
       // takes the direct-save path the finding names
-      setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
-      setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+      setInput(clickTarget<HTMLInputElement>("opening-balance-typed-name-0"), "مورد جديد تماما");
+      setInput(clickTarget<HTMLInputElement>("opening-balance-typed-amount-0"), "500");
       await act(async () => {
         clickOn("opening-balance-save");
       });
@@ -1491,8 +1491,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     // beforeEach resolves "مورد له حركات" to s-1 (accountEntryCount 3)
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد له حركات");
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "500");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-name-0"), "مورد له حركات");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-amount-0"), "500");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1523,8 +1523,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     // "مورد  رصيد سالب" (double space) folds to s-3's "مورد رصيد سالب"
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  رصيد سالب");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "250");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد  رصيد سالب");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "250");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -1543,8 +1543,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("does not cut off an owner still typing a new name that starts like an existing one (round 5)", async () => {
     render();
     await settle();
-    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
-    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!;
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!;
 
     // amount first, then the owner focuses the name field and starts typing a
     // name whose prefix matches an existing supplier
@@ -1574,12 +1574,12 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
   it("submits a focused duplicate name on Enter instead of reporting nothing entered (round 5)", async () => {
     render();
     await settle();
-    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!;
+    const nameInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!;
     await act(async () => {
       nameInput.focus();
     });
     setInput(nameInput, "مورد له حركات");
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "500");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
 
     // the name field is still focused when the owner presses Enter: the row must
     // count as filled via the resolved supplier, not report "nothing entered"
@@ -1602,14 +1602,14 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
 
     // s-2 has no entries, so no confirmation dialog can mask the conflict guard
     await submitForm(() => {
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد  بلا حركات");
-      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "300");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد  بلا حركات");
+      setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "300");
     }, "700");
 
     // the row keeps the owner's earlier 700; the inline draft is left for the
     // conflict guard to flag rather than clobbering or double-posting
     expect(rowAmount()).toBe("700");
-    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')?.value).toBe("300");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')?.value).toBe("300");
 
     // nothing is sent: one opening balance per supplier, never two entries. The
     // conflict is visible and blocks the save before any request.
@@ -1629,8 +1629,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     await settle();
 
     typeIntoRow(0, "800"); // s-1 has entries, so the batch needs confirmation
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, typedName);
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!, "400");
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, typedName);
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "400");
 
     await act(async () => {
       clickOn("opening-balance-save");
@@ -1809,8 +1809,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     typeIntoRow(0, "100");
     typeIntoRow(1, "300");
     // a typed name forces the resolver to be awaited before save() runs
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-name-0"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-amount-0"), "50");
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -1889,8 +1889,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     render();
     await settle();
     typeIntoRow(0, "100");
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-name"), "مورد جديد تماما");
-    setInput(clickTarget<HTMLInputElement>("opening-balance-new-amount"), "50");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-name-0"), "مورد جديد تماما");
+    setInput(clickTarget<HTMLInputElement>("opening-balance-typed-amount-0"), "50");
 
     // reset the names query while its replacement read is held, then let the
     // reset render while `data` is undefined: an undefined list must NOT read as
@@ -1945,8 +1945,8 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     fillAmounts(Array.from(inputs).slice(0, 200), () => "1");
 
     // the typed name matches the 201st supplier, so the batch is 201 rows
-    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-amount"]')!;
-    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-new-name"]')!, "مورد 200");
+    const amountInput = host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!;
+    setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد 200");
     setInput(amountInput, "5");
     await act(async () => {
       host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
@@ -1955,5 +1955,156 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     // 200 filled + the resolved row is over the cap: the page blocks, never sends
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')?.textContent).toContain("200");
     expect(captured).toBeNull();
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+});
+
+/**
+ * #255 — the owner migrates a paper book, so dozens of opening balances are typed
+ * in one sitting. The page already accepted a 200-row batch; only the typed
+ * (new-supplier) draft was one row at a time, so five new parties cost five saves.
+ * Row 0 is the row the page opens with, rows 1.. are added with the add control.
+ */
+describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
+  function typedNameInput(index: number): HTMLInputElement {
+    const el = host.querySelector<HTMLInputElement>(`[data-testid="opening-balance-typed-name-${index}"]`);
+    if (el === null) throw new Error(`missing typed name input for draft row ${index}`);
+    return el;
+  }
+
+  function typedAmountInput(index: number): HTMLInputElement {
+    const el = host.querySelector<HTMLInputElement>(`[data-testid="opening-balance-typed-amount-${index}"]`);
+    if (el === null) throw new Error(`missing typed amount input for draft row ${index}`);
+    return el;
+  }
+
+  function fillTypedRow(index: number, name: string, amount: string) {
+    setInput(typedNameInput(index), name);
+    setInput(typedAmountInput(index), amount);
+  }
+
+  function saveButton(): HTMLButtonElement {
+    return clickTarget<HTMLButtonElement>("opening-balance-save");
+  }
+
+  it("adds five rows and saves them in ONE request", async () => {
+    render();
+    await settle();
+
+    const names = ["مورد أ", "مورد ب", "مورد ج", "مورد د", "مورد ه"];
+    for (let index = 1; index < names.length; index += 1) clickOn("opening-balance-add-row");
+    names.forEach((name, index) => fillTypedRow(index, name, String((index + 1) * 100)));
+
+    expect(host.querySelectorAll('[data-testid="opening-balance-typed-row-0"]')).toHaveLength(1);
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the acceptance criterion: five parties, five settlements, one write
+    expect(mutationCalls).toBe(1);
+    expect(captured?.rows).toHaveLength(5);
+    expect(captured?.rows.map((row) => row.newSupplierName)).toEqual(names);
+    expect(captured?.rows.map((row) => row.amount)).toEqual([100, 200, 300, 400, 500]);
+    // every one of them is a NAMED row: the server resolves each, none is retargeted
+    expect(captured?.rows.every((row) => row.supplierId === undefined && row.expectedSupplierId === null)).toBe(true);
+  });
+
+  it("keeps each typed row's own text when another row is added", async () => {
+    render();
+    await settle();
+
+    fillTypedRow(0, "مورد أول", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد ثان", "400");
+
+    // the first row is a different draft: adding a row must not move or clear it
+    expect(typedNameInput(0).value).toBe("مورد أول");
+    expect(typedAmountInput(0).value).toBe("300");
+    expect(typedNameInput(1).value).toBe("مورد ثان");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows.map((row) => row.newSupplierName)).toEqual(["مورد أول", "مورد ثان"]);
+  });
+
+  it("removes exactly the row its control belongs to", async () => {
+    render();
+    await settle();
+
+    fillTypedRow(0, "مورد يبقى", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد يُزال", "400");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(2, "مورد أخير", "500");
+
+    clickOn("opening-balance-typed-remove-1");
+    // the survivors keep their order and their 2-row index ids
+    expect(host.querySelectorAll('[data-testid="opening-balance-typed-name-0"]')).toHaveLength(1);
+    expect(typedNameInput(1).value).toBe("مورد أخير");
+    expect(host.querySelector('[data-testid="opening-balance-typed-name-2"]')).toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(mutationCalls).toBe(1);
+    expect(captured?.rows.map((row) => row.newSupplierName)).toEqual(["مورد يبقى", "مورد أخير"]);
+  });
+
+  it("blocks the save when two rows name the same supplier", async () => {
+    render();
+    await settle();
+
+    // folded by normalizeTextKey: the server refuses such a batch outright
+    // (DUPLICATE_OPENING_BALANCE_ROW), which would lose every amount in it
+    fillTypedRow(0, "مورد  مكرر", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد مكرر", "400");
+
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-1"]')?.textContent).toContain("صفّ آخر");
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("counts every added row on the save button, in the Arabic plural form", async () => {
+    render();
+    await settle();
+
+    const label = () => saveButton().textContent ?? "";
+    expect(label()).toBe("حفظ 0 تسوية");
+
+    fillTypedRow(0, "مورد أ", "100");
+    expect(label()).toBe("حفظ تسوية واحدة");
+
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد ب", "200");
+    expect(label()).toBe("حفظ تسويتين");
+
+    clickOn("opening-balance-add-row");
+    fillTypedRow(2, "مورد ج", "300");
+    expect(label()).toBe("حفظ 3 تسويات");
+  });
+
+  it("stops adding rows at the 200-row contract cap", async () => {
+    suppliers = Array.from({ length: 200 }, (_value, index) => ({
+      id: `bulk-${index}`,
+      name: `مورد ${index}`,
+      accountBalance: 0,
+      accountEntryCount: 0,
+    }));
+    render();
+    await settle();
+
+    const inputs = host.querySelectorAll<HTMLInputElement>('[data-testid="opening-balance-amount"]');
+    fillAmounts(Array.from(inputs), () => "1");
+    // the batch is already at the cap, so a further row could only make it too
+    // large: the control is disabled instead of adding a row that cannot save
+    expect(clickTarget<HTMLButtonElement>("opening-balance-add-row").disabled).toBe(true);
+    expect(host.querySelector('[data-testid="opening-balance-typed-name-1"]')).toBeNull();
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 });

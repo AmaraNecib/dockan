@@ -90,8 +90,10 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no unit cost (api falls back to the known cost)" }],
   ["pages/supplier-opening-balance.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
-  ["pages/supplier-opening-balance.tsx::newName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/supplier-opening-balance.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  // #255 — the typed rows are a list, so the remove control's label names the row
+  // it drops; that check is a name (text), never a numeric draft
+  ["pages/supplier-opening-balance.tsx::typedName === \"\" [typedRow.name.trim()]", { verdict: "raw", reason: TEXT }],
 ]);
 
 describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {

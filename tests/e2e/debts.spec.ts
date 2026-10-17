@@ -7,8 +7,18 @@ import { runE2eReset } from "./reset-helpers";
 
 // #254 evidence (#259): the money display is a VISUAL change, so this spec can
 // record a video at real user pace when a lane asks for one. CI never sets
-// E2E_VIDEO, so CI records nothing.
-test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
+// E2E_VIDEO, so CI records nothing. An evidence run records FULL HD — the default
+// 800x450 is too soft to judge a money format by — and only then changes the
+// viewport, so a normal run keeps the suite's own.
+const RECORDING = process.env.E2E_VIDEO === "1";
+test.use(
+  RECORDING
+    ? {
+        video: { mode: "on" as const, size: { width: 1920, height: 1080 } },
+        viewport: { width: 1920, height: 1080 },
+      }
+    : { video: "off" as const },
+);
 
 /**
  * Debts screen (/debts). After first-time setup, seed a

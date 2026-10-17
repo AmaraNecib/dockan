@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
+import { supplierAdjustInputSchema } from "@dokan/contracts";
+
 import i18n from "./i18n";
 
 import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey, supplierEntryDirectionKey, supplierEntrySign, supplierEntrySignLabel } from "./supplier-entry-display";
@@ -96,5 +98,28 @@ describe("supplier-direction labels (issue 252)", () => {
     expect(supplierBalanceDirectionKey(-300)).toBe("supplierAdjustDirectionTheyOwe");
     // zero reads as WE_OWE: the convention the saved-balance column already used
     expect(supplierBalanceDirectionKey(0)).toBe("supplierAdjustDirectionWeOwe");
+  });
+
+  /**
+   * Greptile round 3, finding 1: the shared contract's refusal text still said a
+   * linked reduction must be «يسالنا» (the WE_OWE word) while its own check
+   * REQUIRES `THEY_OWE`. The picker had already been corrected, so a developer
+   * reading the contract got the opposite advice. Resolve the expected word from
+   * the same i18n pair the picker renders, so the two readings can never drift
+   * apart again.
+   */
+  it("names the direction it actually requires in the linked-reduction refusal", () => {
+    const result = supplierAdjustInputSchema.safeParse({
+      supplierId: "00000000-0000-4000-8000-000000000000",
+      direction: "WE_OWE",
+      amount: 100,
+      invoiceId: "00000000-0000-4000-8000-000000000001",
+    });
+    expect(result.success).toBe(false);
+    const message = result.success ? "" : result.error.issues.map((issue) => issue.message).join(" ");
+    // the required direction is THEY_OWE, so the message must name its word …
+    expect(message).toContain(i18n.t("supplierAdjustDirectionTheyOwe"));
+    // … and must not name the word for the value it refuses
+    expect(message).not.toContain(i18n.t("supplierAdjustDirectionWeOwe"));
   });
 });

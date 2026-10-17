@@ -632,8 +632,8 @@ export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string
 export const supplierEntryKinds = ["PURCHASE", "PAYMENT", "RETURN", "REFUND", "ADJUSTMENT"] as const;
 export const supplierEntryKindSchema = z.enum(supplierEntryKinds);
 
-/** A manual adjustment's direction (issue 176). WE_OWE = «نسالوه» (the shop
- * owes the supplier more, +); THEY_OWE = «يسالنا» (the shop owes less, −). The
+/** A manual adjustment's direction (issue 176). WE_OWE = «يسالنا» (the shop
+ * owes the supplier more, +); THEY_OWE = «نسالوه» (the shop owes less, −). The
  * same two words will serve customers when their account lands. */
 export const supplierAdjustmentDirections = ["WE_OWE", "THEY_OWE"] as const;
 export const supplierAdjustmentDirectionSchema = z.enum(supplierAdjustmentDirections);
@@ -1176,8 +1176,8 @@ export const supplierRefundInputSchema = z.object({
 
 /**
  * #176 — a manual adjustment (تسوية): a signed number written straight on the
- * supplier account, with no invoice. `direction` carries «نسالوه» (WE_OWE, +)
- * or «يسالنا» (THEY_OWE, −). An optional `invoiceId` turns it into a
+ * supplier account, with no invoice. `direction` carries «يسالنا» (WE_OWE, +)
+ * or «نسالوه» (THEY_OWE, −). An optional `invoiceId` turns it into a
  * discount/write-off that reduces THAT invoice's remaining without cash; a
  * linked reduction only makes sense in the THEY_OWE direction, so the contract
  * refuses the contradiction before any store work. The linked amount may not
@@ -1206,7 +1206,7 @@ export const supplierAdjustInputSchema = z
   })
   .superRefine((value, ctx) => {
     if (value.invoiceId !== undefined && value.direction !== "THEY_OWE") {
-      ctx.addIssue({ code: "custom", message: "a linked adjustment must be يسالنا (it reduces the invoice)", path: ["direction"] });
+      ctx.addIssue({ code: "custom", message: "a linked adjustment must be نسالوه (it reduces the invoice)", path: ["direction"] });
     }
   });
 

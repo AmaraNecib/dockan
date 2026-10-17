@@ -10,6 +10,7 @@ import { parseGroupedAmount } from "@/lib/amount-parse";
 import { Pager } from "@/components/ui/pager";
 import { DateField } from "@/components/ui/date-field";
 import { inputClass } from "@/components/ui/input";
+import { focusByTestId } from "../lib/focus";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
 import { editDateBound, formatDateTime, nowDateTimeText, OPEN_BOUND, parseDateTimeText, type DateBound } from "../lib/dates";
@@ -142,11 +143,10 @@ export function ExpensesPage() {
     // is the fallback because it is always rendered, including when that
     // filter's own control is gone.
     const last = lastHistoryFilterRef.current;
-    const previous =
-      last === null ? null : document.querySelector<HTMLElement>(`[data-testid="${last}"]`);
-    const target =
-      previous ?? document.querySelector<HTMLElement>('[data-testid="expense-range-preset"]');
-    target?.focus();
+    // the mechanism reports whether focus moved, so the fallback is a deliberate
+    // branch instead of a silent second drop (issue #248)
+    const moved = last !== null && focusByTestId(last);
+    if (!moved) focusByTestId("expense-range-preset");
     lastHistoryFilterRef.current = null;
     pager.reset();
     setPreset("CURRENT_MONTH");

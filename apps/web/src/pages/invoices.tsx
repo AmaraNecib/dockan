@@ -7,6 +7,7 @@ import type { InvoiceKind } from "@dokan/contracts";
 
 import { orpc } from "../lib/rpc";
 import { formatDate } from "../lib/dates";
+import { focusByTestId } from "../lib/focus";
 import { usePagination } from "../hooks/use-pagination";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
@@ -151,7 +152,7 @@ export function InvoicesPage() {
                   setKind("");
                   setStatus("");
                   pager.reset();
-                  document.querySelector<HTMLElement>(`[data-testid="${filter}"]`)?.focus();
+                  focusByTestId(filter);
                 }}
               >
                 {t("invoicesEmptyClearFilters")}

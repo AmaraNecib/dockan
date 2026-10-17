@@ -85,6 +85,11 @@ A **CI change** (anything under `.github/`) always goes to the owner for the dif
 the class. Merge order matters when two PRs share a store/router: land the one that owns the
 write path first and rebase the other onto the new develop.
 
+**Provenance.** Every agent commit ends with `Model:` / `Thinking:` / `Harness:` / `Agent:`
+trailers, and the parent repeats them in the PR body and the evidence comment. That is how a
+defect is traced to the model and the thinking effort that produced it; the full form is in the
+gate doc §5. A human commit carries none of them.
+
 ## Waiting on CI / Greptile
 
 Do not hand the wait back to the user. After pushing and requesting

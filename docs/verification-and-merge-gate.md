@@ -83,28 +83,50 @@ parent's check, at merge time, every time.
 
 ## 3. Then the decision
 
-The class that decides **who merges** is **visual or not**, not inert or not. A diff the eye can
-judge is the owner's; everything else the parent may land itself once the gate is clean.
+Two questions decide whether the parent may merge without the owner. If **either** is "yes", the
+PR is the owner's.
 
-| the class | who decides | who reads the diff |
-| --- | --- | --- |
-| **VISUAL — anything a browser can render: `apps/web/**`, i18n/copy, CSS/tokens, image assets, or any diff the predicate marks `needsVisual`** | `OWNER` — the owner verifies the before/after packet at the head and says merge. | the owner |
-| **NON-VISUAL — everything the predicate does not mark `needsVisual`, including inert diffs (tests, `*.md`, docs, `.agents/`, `.scratch/`, fixtures)** | `AUTO` — the **parent is pre-authorised to merge it itself** when reasons 1-4 hold, every check is green or legitimately skipped, and GitHub reports `MERGEABLE`. | the predicate; no human reads it |
-| **anything under `.github/`** | `OWNER` — a CI change always goes to the owner for the diff, whatever the class. | the owner |
-| **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review. |
+1. **Does a human have to judge it?** The eye (visual), the words (copy), or a product/policy choice.
+2. **Would undoing it be expensive?** Data written, a published contract, a shipped release.
 
-A PR GitHub already reports `MERGED` is a fourth outcome, `MERGED`: a different question, not a
-decision, and the predicate reports it rather than answering the merge question. `scripts/**` that is
-not a test is deliberately code, not inert: a script can drive CI or a release, and guessing otherwise
-would be the wrong direction of error.
+| the class | who merges |
+| --- | --- |
+| **VISUAL**, or any **OWNER TRIGGER** below | `OWNER` |
+| everything else | `AUTO` — the parent merges when the four reasons hold, checks are green or legitimately skipped, and GitHub reports `MERGEABLE` |
+| **a wrong fact anywhere in the gate** | `REFUSED` — fix the fact, or the finding, and re-review |
 
-**Auto-merge is permission for the non-visual class, and only for it** (owner decision, 2026-10-17,
-class A). For `AUTO` the parent still posts the evidence comment at the head — then merges without
-waiting. For `OWNER` nothing changes: a 5/5 with no findings, anchored to the current head, with
-every check green, is the bar to *ask* — not permission.
+### The owner triggers
 
-The parent re-checks the class and the four reasons **at the current head, every time**. A push
-after a verdict voids it, and a PR that was non-visual before a push can be visual after it.
+The parent classifies from the diff. **ANY** hit makes it the owner's:
+
+- **Visual** — `apps/web/**`, i18n/copy, CSS/tokens, image assets, or `needsVisual`.
+- **Persisted shape** — a migration, `*.sql`, `schema-version`, a new/changed column or enum, or
+  anything that writes rows in a shape a later deploy must read.
+- **Published contract** — `packages/contracts/**`: RPC names, field meanings, the wire format.
+- **Money** — balance sign, rounding, tax, totals — any accounting invariant.
+- **Security** — auth, secrets, the vault, crypto.
+- **CI / release / build** — `.github/**`, release scripts, desktop packaging, version bumps.
+- **Outside state** — publishing, deploys, third-party notifications.
+- **A decision, not a fix** — a default, a policy, or wording a user will notice.
+- **Large or seam-crossing** — more than one package's logic in one diff.
+
+### The reversibility test (the tie-breaker)
+
+When the trigger list is silent, ask: *if this lands and is wrong, what does undoing it cost?*
+
+- a `git revert`, no data to repair, no user saw it, no external contract → **`AUTO`**.
+- a migration back, a data repair, a re-release, or a contract change → **`OWNER`**.
+
+### AUTO is permission, not a shortcut
+
+**Auto-merge is permission for the non-visual, reversible, no-decision class, and only for it**
+(owner decision, 2026-10-17). For `AUTO` the parent still posts the evidence comment at the head —
+then merges without waiting. For `OWNER` nothing changes: a 5/5 with no findings, anchored to the
+current head, with every check green, is the bar to *ask* — not permission.
+
+The parent re-checks the class, the triggers and the four reasons **at the current head, every
+time**. A push after a verdict voids it, and a diff that was reversible before a push can be
+irreversible after it. A `.github/` change is always the owner's, whatever else is true.
 
 ## 4. If it cannot merge now
 
@@ -125,6 +147,35 @@ item is blocked by setting its priority to `blocked` and naming the blocker in t
 named. Admission to a slot is separate and is decided by load through `crew-admit.ts`, which
 admits under 80% and sheds over 92%. A full Playwright suite needs an `e2e-slot.sh` lease,
 because more than two concurrent runs make the guards flaky.
+
+## 5. Provenance: every agent commit says who made it
+
+Every commit an agent writes ends with a provenance trailer, so a defect can be traced to the
+model, the harness and the thinking effort that produced it — and so an effort change can be
+tested against real outcomes instead of a feeling:
+
+```
+Model: opencode-go/deepseek-v4.1-flash
+Thinking: high
+Harness: t3-code
+Agent: crew-lane/269-round7
+```
+
+Rules:
+
+- `Model` is the exact provider/model string a harness will accept (the one in the composer's
+  catalogue), never a display label.
+- `Thinking` is the effort level **in force for that commit**. If it is unknown, write `unknown`;
+  never guess.
+- `Harness` is `t3-code`, `pi-cli`, or `herdr`.
+- `Agent` is the role: `parent`, `crew-lane/<issue>-<round>`, `delegate/<short-id>`.
+- A human-authored commit carries none of these; their absence means a human wrote it.
+- **Squash makes this cheap to lose.** The parent repeats the trailers in the PR body and in the
+  evidence comment, so the merge record keeps the provenance after the commit graph is flattened.
+
+The point is the correlation, not the ceremony: when a fix round exists, the trailers say which
+model at which effort needed how many rounds, and an effort change can be judged by whether the
+next round count drops.
 
 ## See also
 

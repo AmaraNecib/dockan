@@ -124,8 +124,11 @@ const MUTATIONS: readonly Mutation[] = [
     id: "M8",
     what: "reverse the signed-balance→direction rule",
     file: `${WEB}/src/lib/supplier-entry-display.ts`,
-    find: `  return supplierDirectionKey(balance >= 0 ? "WE_OWE" : "THEY_OWE");`,
-    replace: `  return supplierDirectionKey(balance < 0 ? "WE_OWE" : "THEY_OWE");`,
+    // PR #267 round 4, finding 1: the anchor kept the old
+    // `supplierDirectionKey(balance >= 0 …)` call while the helper now returned
+    // the label keys directly, so the gate reported M8 ANCHOR MISSING.
+    find: `  return supplierDirectionKey(balance > 0 ? "THEY_OWE" : "WE_OWE");`,
+    replace: `  return supplierDirectionKey(balance < 0 ? "THEY_OWE" : "WE_OWE");`,
     cwd: WEB,
     tests: ["src/lib/supplier-entry-display.test.ts", "src/pages/supplier-opening-balance.test.tsx"],
   },

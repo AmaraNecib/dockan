@@ -43,11 +43,17 @@ export function adjustmentDirectionKey(
  * that pairs a balance with «يسالنا»/«نسالوه»: a negative balance is the debt we
  * owe the supplier (`WE_OWE`); a positive one is the credit the supplier holds
  * for us (`THEY_OWE`). Zero reads as owed, matching `SupplierBalanceHeader`
- * (`owed = balance <= 0`) — nothing is held. */
+ * (`owed = balance <= 0`) — nothing is held.
+ *
+ * The sign decides the direction TOKEN; the token's label comes from
+ * `supplierDirectionKey`, so this file holds the pairing literal once. Written
+ * out here instead, it is a second reading of the same map, and
+ * `.scratch/reviews/252/rebase-verify-direction-labels.ts` (bullet 5) counts
+ * occurrences across the tree and rejects the second one. */
 export function supplierBalanceDirectionKey(
   balance: number,
 ): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
-  return balance > 0 ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+  return supplierDirectionKey(balance > 0 ? "THEY_OWE" : "WE_OWE");
 }
 
 /** The direction word for an ADJUSTMENT, or null for every other kind (whose

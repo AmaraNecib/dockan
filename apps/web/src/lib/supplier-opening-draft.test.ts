@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { parseGroupedAmount } from "./amount-parse";
-import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, newOpeningRowStatus, openingRowStatus, isOpeningBatchOverLimit } from "./supplier-opening-draft";
+import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, duplicateTypedRowIds, newOpeningRowStatus, openingRowStatus, isOpeningBatchOverLimit } from "./supplier-opening-draft";
 
 /**
  * Greptile round 1 finding 1: a "1,000" amount was rejected by the strict
@@ -72,15 +72,31 @@ describe("newOpeningRowStatus", () => {
 
   it("is invalid for a malformed amount and duplicate for an existing name", () => {
     expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "abc", existingNames })).toEqual({ status: "invalid" });
-    expect(newOpeningRowStatus({ name: "مورد البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
+    // #255 — a duplicate still carries the parsed fields: such a row is a usable
+    // outgoing row (the server resolves the name onto that account), so the page
+    // can send it instead of dropping the owner's amount
+    expect(newOpeningRowStatus({ name: "مورد البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate", name: "مورد البطاريات", amount: 800 });
     // normalizeTextKey (ADR-0007) collapses whitespace: a padded variant is
     // still the same supplier and must be caught as a duplicate
-    expect(newOpeningRowStatus({ name: "مورد  البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
+    expect(newOpeningRowStatus({ name: "مورد  البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate", name: "مورد  البطاريات", amount: 800 });
   });
 
   it("reads a mark-only amount as empty: a named row is incomplete, an unnamed one untouched (#244)", () => {
     expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "\u200f", existingNames })).toEqual({ status: "incomplete" });
     expect(newOpeningRowStatus({ name: "", amount: "\u200f", existingNames })).toEqual({ status: "untouched" });
+  });
+
+  it("refuses a name that folds to no identity, even with a positive amount (Greptile round 3 finding 2)", () => {
+    // RLM/ALM are Unicode Cf, not whitespace, so `name.trim()` keeps them while
+    // `normalizeTextKey` folds them to "". Such a row used to be FILLED, and its
+    // empty key was skipped by `duplicateTypedRowIds`, so the api normalized the
+    // whole batch to one empty key and refused it
+    // (DUPLICATE_OPENING_BALANCE_ROW), losing every amount in it.
+    for (const name of ["\u200f", "\u061c", "\u200e\u200f", " \u200f "]) {
+      expect(newOpeningRowStatus({ name, amount: "800", existingNames })).toEqual({ status: "incomplete" });
+    }
+    // the negative: a name that folds to a real key still fills the row
+    expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "800", existingNames })).toEqual({ status: "filled", name: "مورّد جديد", amount: 800 });
   });
 
   it("is filled with the trimmed name and the parsed amount", () => {
@@ -164,5 +180,35 @@ describe("MAX_OPENING_BALANCE_ROWS", () => {
     expect(isOpeningBatchOverLimit(199)).toBe(false);
     expect(isOpeningBatchOverLimit(200)).toBe(false);
     expect(isOpeningBatchOverLimit(201)).toBe(true);
+  });
+});
+
+/**
+ * #255 — two typed rows that fold to one supplier would double-post the same
+ * account, and the api refuses the WHOLE batch for it
+ * (`DUPLICATE_OPENING_BALANCE_ROW`), losing every amount in it. The page blocks
+ * the same shape on the client, off this one predicate.
+ */
+describe("duplicateTypedRowIds (issue 255)", () => {
+  const row = (id: string, name: string) => ({ id, name });
+
+  it("flags both rows whose names fold to one key", () => {
+    expect(duplicateTypedRowIds([row("a", "مورد  مكرر"), row("b", "مورد مكرر")])).toEqual(["a", "b"]);
+  });
+
+  it("folds mark-only pastes and invisible bidi text the same way the api does", () => {
+    expect(duplicateTypedRowIds([row("a", "مورد مكرر"), row("b", "مورد\u200f مكرر")])).toEqual(["a", "b"]);
+  });
+
+  it("never treats distinct names as duplicates", () => {
+    expect(duplicateTypedRowIds([row("a", "مورد أ"), row("b", "مورد ب")])).toEqual([]);
+  });
+
+  it("gives a blank or mark-only name no identity, so blank rows are not duplicates of each other", () => {
+    expect(duplicateTypedRowIds([row("a", ""), row("b", ""), row("c", "   "), row("d", "\u200f")])).toEqual([]);
+  });
+
+  it("reports every member of a three-way clash, not just the later pair", () => {
+    expect(duplicateTypedRowIds([row("a", "مورد"), row("b", "مورد "), row("c", " مورد")])).toEqual(["a", "b", "c"]);
   });
 });

@@ -101,23 +101,72 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>
   const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
 
-  // 3. the bulk رصيد افتتاحي screen: create a supplier inline with 800 نسالوه
+  // 3. the bulk رصيد افتتاحي screen: THREE new suppliers in one pass (#255). The
+  // owner types several parties and saves them in ONE request, so the add control
+  // must append a row, keep the rows already typed, and the saved card must name
+  // all three.
+  const secondOpeningSupplier = `${openingSupplierName}-2`;
+  const thirdOpeningSupplier = `${openingSupplierName}-3`;
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(openingSupplierName);
-  await page.getByTestId("opening-balance-new-amount").fill("800");
+  await page.getByTestId("opening-balance-typed-name-0").fill(openingSupplierName);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("800");
+
+  await page.getByTestId("opening-balance-add-row").click();
+  // the control focuses the row it added: the owner types the next party without
+  // reaching for the mouse
+  await expect(page.getByTestId("opening-balance-typed-name-1")).toBeFocused();
+  await page.keyboard.type(secondOpeningSupplier);
+  await page.getByTestId("opening-balance-typed-amount-1").fill("150");
+  await page.getByTestId("opening-balance-add-row").click();
+  await page.getByTestId("opening-balance-typed-name-2").fill(thirdOpeningSupplier);
+  await page.getByTestId("opening-balance-typed-amount-2").fill("250");
+
+  // the first row is its own draft, and the count on the save reads the Arabic
+  // plural for three
+  await expect(page.getByTestId("opening-balance-typed-name-0")).toHaveValue(openingSupplierName);
+  await expect(page.getByTestId("opening-balance-typed-amount-0")).toHaveValue("800");
+  await expect(page.getByTestId("opening-balance-save")).toHaveText("حفظ 3 تسويات");
+
+  // count EVERY matching write, not just the first: `waitForResponse` resolves on
+  // the first response and cannot see a second request (review round 6 finding 2)
+  const openingRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().includes("/api/rpc/suppliersOpeningBalances")) openingRequests.push(request.url());
+  });
+  const openingWrite = page.waitForResponse(
+    (response) => response.url().includes("/api/rpc/suppliersOpeningBalances") && response.request().method() === "POST",
+  );
   await page.getByTestId("opening-balance-save").click();
+  // SAFETY: the oRPC fetch link answers a successful procedure call with the
+  // `{ json: <declared output> }` envelope
+  const openingResult = (await (await openingWrite).json()) as { json: { created: number } };
+  // the acceptance criterion: three parties, three settlements, ONE request
+  expect(openingResult.json.created).toBe(3);
 
   const saved = page.getByTestId("opening-balance-saved");
   await expect(saved).toBeVisible();
-  await expect(saved).toContainText(openingSupplierName);
-  await expect(saved).toContainText("800 دج");
+  // exactly one write reached the server: the count is read after the app's own
+  // completion signal (the saved card) and demands one, so a second opening-balance
+  // request fails HERE even though the first response still carries `created: 3`
+  // (review round 6 finding 2)
+  expect(openingRequests).toHaveLength(1);
+
+  // every added row landed with ITS OWN amount, not just its name: each assertion
+  // is scoped to the row that names the supplier, so a batch that swapped 150 and
+  // 250 between rows — which still names all three — cannot pass (review round 6
+  // finding 1). Rows are found by their EXACT name because the three share a prefix.
+  const savedRow = (name: string) => saved.getByTestId("opening-balance-saved-row").filter({ has: page.getByText(name, { exact: true }) });
+  await expect(savedRow(openingSupplierName)).toContainText("800 دج");
+  await expect(savedRow(secondOpeningSupplier)).toContainText("150 دج");
+  await expect(savedRow(thirdOpeningSupplier)).toContainText("250 دج");
   await page.getByTestId("opening-balance-done").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 
-  // 4. the new supplier exists and carries its opening balance
-  await page.getByRole("link", { name: openingSupplierName }).click();
+  // 4. the new supplier exists and carries its opening balance. `exact` because
+  // the other two rows of the batch share this name as a prefix
+  await page.getByRole("link", { name: openingSupplierName, exact: true }).click();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("800 دج");
 
   // 5. the purchased supplier shows the charge
@@ -153,9 +202,9 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   const creditSupplierName = `رصيد-دائن-${stamp}`;
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
-  await page.getByTestId("opening-balance-new-name").fill(creditSupplierName);
-  await chooseSelectOption(page, page.getByTestId("opening-balance-new-direction"), "يسالنا");
-  await page.getByTestId("opening-balance-new-amount").fill("100000");
+  await page.getByTestId("opening-balance-typed-name-0").fill(creditSupplierName);
+  await chooseSelectOption(page, page.getByTestId("opening-balance-typed-direction-0"), "يسالنا");
+  await page.getByTestId("opening-balance-typed-amount-0").fill("100000");
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
 
@@ -188,8 +237,8 @@ test("a folded opening-balance name lands on the supplier the dialog names (issu
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(typedName);
-  await page.getByTestId("opening-balance-new-amount").fill("300");
+  await page.getByTestId("opening-balance-typed-name-0").fill(typedName);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("300");
   await page.getByTestId("opening-balance-save").click();
 
   // the dialog names the SERVER's resolved text, not the typed string
@@ -218,7 +267,7 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await signIn(page);
   const name = `مورد معلّق-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -230,12 +279,12 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(name);
-  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-typed-name-0").fill(name);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
   // arm the lookup acknowledgement BEFORE the click so the assertion is causally
   // ordered rather than a wall-clock wait
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   // leave while the lookup is still running
@@ -245,7 +294,7 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   // let the held lookup answer: the abandoned attempt must not write over the
   // window that follows the response, not just at the instant it lands
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 
   // and the name never materialized
@@ -276,7 +325,7 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   let markSecondOnWire: () => void = () => undefined;
   const secondOnWire = new Promise<void>((resolve) => { markSecondOnWire = resolve; });
   const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     lookups += 1;
     if (lookups === 2) {
       markSecondOnWire();
@@ -292,15 +341,15 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(carriedName);
-  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-typed-name-0").fill(carriedName);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
   // the first submit resolves and opens the dialog naming the carried account
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
 
   // a second main Save starts a NEW lookup while the dialog stays open
-  const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
   await secondOnWire; // the second resolve is on the wire and unanswered
 
@@ -313,7 +362,7 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   // re-open the dismissed dialog over a bounded window
   await secondLookup;
   expect(lookups).toBeGreaterThanOrEqual(2); // positive control: a second resolve ran
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
   await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
 
@@ -334,7 +383,7 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
   await signIn(page);
   const name = `مورد رجوع-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -346,16 +395,16 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(name);
-  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-typed-name-0").fill(name);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
   await page.getByTestId("opening-balance-back").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 
@@ -367,7 +416,7 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await signIn(page);
   const name = `مورد رجوع-متصفح-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -379,15 +428,15 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(name);
-  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-typed-name-0").fill(name);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   await page.goBack(); // router-driven unmount, no page onClick
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 
@@ -404,7 +453,7 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
 
   // hold the lookup open across the navigation, like the back-link / browser-back
   // tests; the sidebar has no page-level onClick to invalidate on
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -416,10 +465,10 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  await page.getByTestId("opening-balance-new-name").fill(name);
-  await page.getByTestId("opening-balance-new-amount").fill("500");
+  await page.getByTestId("opening-balance-typed-name-0").fill(name);
+  await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   // a sidebar link, not a page control: the unmount guard must invalidate
@@ -427,7 +476,7 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
   await expect(page.getByTestId("purchase-form")).toBeVisible();
 
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 
@@ -452,9 +501,9 @@ test("editing the typed name away from the confirmed one keeps the batch saveabl
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
-  const nameField = page.getByTestId("opening-balance-new-name");
+  const nameField = page.getByTestId("opening-balance-typed-name-0");
   await nameField.fill(typedName);
-  await page.getByTestId("opening-balance-new-amount").fill("300");
+  await page.getByTestId("opening-balance-typed-amount-0").fill("300");
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
 

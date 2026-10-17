@@ -1270,12 +1270,39 @@ export const supplierResolveNameInputSchema = z.object({
   reason: z.string().trim().max(500).nullable().optional(),
 });
 
+/** The supplier a write would land on, or null when the name is new and a write
+ * would create one. Shared by the single and batch resolve outputs (#184/#255). */
+export const resolvedSupplierSchema = z.object({ id: idSchema, name: z.string(), accountEntryCount: z.number().int().min(0) });
+
 export const supplierResolveNameOutputSchema = z.object({
-  /** the supplier a write would land on, or null when the name is new and a
-   * write would create one */
-  supplier: z
-    .object({ id: idSchema, name: z.string(), accountEntryCount: z.number().int().min(0) })
-    .nullable(),
+  supplier: resolvedSupplierSchema.nullable(),
+});
+
+/**
+ * #255 — resolve MANY typed names in one read. A per-row `suppliersResolveName`
+ * call rereads every supplier name and recomputes every account summary, so a
+ * full 200-row batch cost 200× the two lists; here they are read once and each
+ * row still gets its own signature probe through the same resolver.
+ */
+export const supplierResolveNamesInputSchema = z.object({
+  occurredAt: localDateTimeSchema,
+  reason: z.string().trim().max(500).nullable().optional(),
+  rows: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(200),
+        direction: supplierAdjustmentDirectionSchema,
+        amount: dinarsSchema.refine((v) => v > 0, "must be a positive amount"),
+      }),
+    )
+    .min(1)
+    .max(200),
+});
+
+export const supplierResolveNamesOutputSchema = z.object({
+  /** parallel to the input rows: the account each name would write to, or null
+   * for a name a write would create */
+  suppliers: z.array(resolvedSupplierSchema.nullable()),
 });
 
 export const returnLineInputSchema = z.object({
@@ -1672,6 +1699,8 @@ export type SupplierOpeningBalances = z.infer<typeof supplierOpeningBalancesInpu
 export type SupplierOpeningBalancesResult = z.infer<typeof supplierOpeningBalancesOutputSchema>;
 export type SupplierResolveName = z.infer<typeof supplierResolveNameInputSchema>;
 export type SupplierResolveNameResult = z.infer<typeof supplierResolveNameOutputSchema>;
+export type SupplierResolveNames = z.infer<typeof supplierResolveNamesInputSchema>;
+export type SupplierResolveNamesResult = z.infer<typeof supplierResolveNamesOutputSchema>;
 export type InvoiceListFilters = z.infer<typeof invoiceListInputSchema>;
 export type ItemListInput = z.infer<typeof itemListInputSchema>;
 export type ItemHistoryInput = z.infer<typeof itemHistoryInputSchema>;

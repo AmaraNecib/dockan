@@ -342,3 +342,20 @@ describe("every issue #96 empty-state key has real Arabic copy", () => {
     }
   });
 });
+
+/**
+ * #255 — the save button's count. `تسويات` is the Arabic 3–10 form only, so the
+ * counted-only copy read "حفظ 1 تسويات" and "حفظ 11 تسويات". Arabic has its own
+ * zero/one/two/few/many/other categories; each needs its own wording.
+ */
+describe("opening-balance save count follows the Arabic plural rules (issue 255)", () => {
+  it("words every Arabic plural category, never the counted-only form", () => {
+    expect(i18n.t("supplierOpeningSave", { count: 0 })).toBe("حفظ 0 تسوية");
+    expect(i18n.t("supplierOpeningSave", { count: 1 })).toBe("حفظ تسوية واحدة");
+    expect(i18n.t("supplierOpeningSave", { count: 2 })).toBe("حفظ تسويتين");
+    expect(i18n.t("supplierOpeningSave", { count: 3 })).toBe("حفظ 3 تسويات");
+    expect(i18n.t("supplierOpeningSave", { count: 10 })).toBe("حفظ 10 تسويات");
+    expect(i18n.t("supplierOpeningSave", { count: 11 })).toBe("حفظ 11 تسوية");
+    expect(i18n.t("supplierOpeningSave", { count: 200 })).toBe("حفظ 200 تسوية");
+  });
+});

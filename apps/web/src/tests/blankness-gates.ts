@@ -74,6 +74,15 @@ import ts from "typescript";
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
+/**
+ * Files that are in scope because they read a numeric draft, even though they no
+ * longer import the reader themselves: #255 moved the opening-balance typed-row
+ * reader into `lib/supplier-opening-draft.ts`, and this page's date and reason
+ * gates must keep being classified. The rule is the ROLE (a file that decides what
+ * a draft means), not the import.
+ */
+const EXPLICIT_READERS = ["pages/supplier-opening-balance.tsx"];
+
 /** Thrown when a raw `.trim()` sits in a blankness-test shape the walk does not
  * classify. Fail closed: an unhandled shape is a loud refusal, never a skip. */
 export class BlanknessScanError extends Error {
@@ -533,7 +542,8 @@ export function numericReaderFiles(): string[] {
   const imported = all.filter((path) =>
     /from\s+["'][^"']*\/(amount-parse|numeric-input)["']/.test(readFileSync(path, "utf8")),
   );
-  const selected = new Set([...readers, ...imported]);
+  const explicit = EXPLICIT_READERS.map((path) => join(srcRoot, path));
+  const selected = new Set([...readers, ...imported, ...explicit]);
   return [...selected].map((path) => relative(srcRoot, path).split("\\").join("/")).sort();
 }
 

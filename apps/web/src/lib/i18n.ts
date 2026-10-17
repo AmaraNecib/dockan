@@ -390,6 +390,7 @@ const resources = {
       purchasesLineProductCategory: "التصنيف",
       purchasesChangeItem: "تغيير المنتج",
       purchasesLineCreateCost: "تُسجَّل تكلفة المنتج من سعر الشراء على هذا السطر:",
+      purchasesLineCreatePending: "أكمل إنشاء المنتج على السطر أو ألغِه قبل حفظ الفاتورة",
       purchasesLineQty: "الكمية",
       purchasesLineCost: "تكلفة الوحدة (دج)",
       purchasesLinesTitle: "أسطر الفاتورة",

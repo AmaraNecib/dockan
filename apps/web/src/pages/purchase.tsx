@@ -94,6 +94,16 @@ interface FocusRequest {
   seq: number;
 }
 
+/**
+ * The line create whose landing is still owed (#257 review round 2): the item id
+ * it will re-point, and the attempt that owns it. `attempt` keeps an answered
+ * request from clearing a newer create's place in the queue.
+ */
+interface PendingLineCreate {
+  target: string;
+  attempt: number;
+}
+
 /** The create row's id, so the line's button can point `aria-controls` at it. */
 function lineCreateFormId(itemId: string): string {
   return `purchase-line-product-form-${itemId}`;
@@ -127,6 +137,12 @@ export function PurchasePage() {
    * attempt still on screen may re-point a line.
    */
   const lineAttemptRef = useRef(0);
+  /**
+   * The line create whose landing the invoice is still waiting for (#257 review
+   * round 2, F2). While it is set, `lines` still names the product being
+   * replaced, so a save would stock the wrong product and is refused.
+   */
+  const [lineCreatePending, setLineCreatePending] = useState<PendingLineCreate | null>(null);
   /**
    * The caret a commit owes. A create re-points the line and remounts its row
    * (the item id is the React key), and closing the form unmounts the field the
@@ -186,13 +202,43 @@ export function PurchasePage() {
     if (lineCreateOpen !== null) lineNameRef.current?.focus();
   }, [lineCreateOpen]);
 
+  // #257 review round 2 (F1) — the line the open form belongs to is gone: the
+  // owner deleted it, or re-pointed it from its own picker. The form must not
+  // outlive its line, or it comes back on a line that later reuses that item id
+  // with a draft nobody asked for; and the write must not re-point that new line
+  // when it answers. Abandoning the attempt settles both; the write still lands.
+  // The draft's target is the one that matters — every other path that clears the
+  // draft clears the pending in the same commit — so the pending target is only a
+  // defensive fallback.
+  const lineDraftTarget = lineDraft?.target ?? null;
+  const linePendingTarget = lineCreatePending?.target ?? null;
+  useEffect(() => {
+    const target = lineDraftTarget ?? linePendingTarget;
+    if (target === null) return;
+    if (lines.some((line) => line.item.id === target)) return;
+    abandonLineCreate();
+    setLineDraft(null);
+    setLineError(null);
+  }, [lines, lineDraftTarget, linePendingTarget]);
+
   function openLineCreate(itemId: string) {
-    lineAttemptRef.current += 1;
+    abandonLineCreate();
     setLineError(null);
     // the picker is an action on the same lines; leaving it open behind the form
     // would be two answers to "which line is this for" on one screen
     setPickerTarget(null);
     setLineDraft({ target: itemId, name: "", categoryId: lineCategory, sellPrice: "" });
+  }
+
+  /**
+   * Abandon the placement a line create owes (#257 review round 2). The write
+   * still lands as a server fact, but no line may be re-pointed by an attempt the
+   * owner has left, and the invoice save stops waiting for it. A retarget, an
+   * explicit cancel and a deleted target all go through here.
+   */
+  function abandonLineCreate() {
+    lineAttemptRef.current += 1;
+    setLineCreatePending(null);
   }
 
   /**
@@ -210,10 +256,11 @@ export function PurchasePage() {
 
   function closeLineCreate() {
     // abandoning the form abandons the landing, synchronously: a create that is
-    // already in flight must not re-point a line the owner has left. Cancel is
-    // never disabled — a hung write must not trap the owner.
+    // already in flight must not re-point a line the owner has left, and it is no
+    // longer an answer the invoice save has to wait for. Cancel is never disabled
+    // — a hung write must not trap the owner.
     const target = lineDraft?.target ?? null;
-    lineAttemptRef.current += 1;
+    abandonLineCreate();
     setLineDraft(null);
     setLineError(null);
     // the form unmounts out from under the caret, so hand it back to the button
@@ -361,12 +408,18 @@ export function PurchasePage() {
     // landing, never the write
     const attempt = lineAttemptRef.current;
     const target = current.target;
+    // the invoice save waits for this placement (#257 review round 2, F2): until
+    // the write answers, `lines` still names the product being replaced
+    setLineCreatePending({ target, attempt });
     const outcome = await new Promise<QuickAddOutcome>((resolve) => {
       createItem.mutate(
         { name, categoryId: current.categoryId, costPrice: line.unitCost, sellingPrice: sellPrice },
         { onSuccess: (item) => resolve({ ok: true, item }), onError: (err) => resolve({ ok: false, error: tError(err.message) }) },
       );
     });
+    // this attempt is answered, so it no longer holds the save back; the updater
+    // keeps a newer create's place in the queue if the owner already started one
+    setLineCreatePending((pending) => (pending?.attempt === attempt ? null : pending));
     // the product exists either way, so the catalogue refresh is unconditional
     void queryClient.invalidateQueries({ queryKey: orpc.itemsAll.queryKey() });
     if (attempt !== lineAttemptRef.current) return;
@@ -720,11 +773,23 @@ export function PurchasePage() {
           {lines.length > 0 && (
             <CheckoutBar testId="purchase-checkout-bar">
                 {error && <p className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="purchase-error" role="alert">{error}</p>}
+                {/* Why the save is disabled while a line create is in flight (#257
+                    review round 2, F2): until the write answers, `lines` still
+                    names the product being replaced, so a save here would stock
+                    the wrong one. The disabled save is the block; this line states
+                    the reason, because a disabled control with no stated reason is
+                    a dead end for a keyboard or screen-reader user. role="status"
+                    announces it without stealing focus. */}
+                {lineCreatePending !== null && (
+                  <p className="text-sm text-muted-foreground" role="status" data-testid="purchase-save-pending">
+                    {t("purchasesLineCreatePending")}
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="text-lg font-bold" data-testid="purchase-total">
                     {t("purchasesTotal")}: <Amount value={total} />
                   </p>
-                  <Button size="lg" className="min-w-44" type="button" onClick={submit} disabled={createInvoice.isPending} data-testid="purchase-save">
+                  <Button size="lg" className="min-w-44" type="button" onClick={submit} disabled={createInvoice.isPending || lineCreatePending !== null} data-testid="purchase-save">
                     {t("purchasesSave")}
                   </Button>
                 </div>

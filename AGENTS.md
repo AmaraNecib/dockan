@@ -71,15 +71,19 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 
 ## Merging
 
-**Merge only when the owner says to merge.** A lane never merges at all; the
-parent session merges only on the owner's word, whatever the review says — 5/5
-with no findings and every check green is the *bar to ask*, not permission. The
-gate is written down in
+**The class decides who merges.** A lane never merges. The parent session merges a
+**non-visual** diff itself once the gate is clean (owner decision, 2026-10-17, class A);
+a **visual** diff goes to the owner. The gate is written down in
 [`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md): the four reasons,
-the evidence form (visual vs measured) and the queue path when it cannot merge. A **CI change** (anything under `.github/`)
-additionally goes to the owner for the diff. Merge order matters when two PRs
-share a store/router: land the one that owns the write path first and rebase the
-other onto the new develop.
+the evidence form (visual vs measured), the visual/non-visual class, and the queue path.
+
+A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
+image assets. It is never auto-merged: the parent posts a before/after table plus the video
+at the head, and the owner says merge. Everything else is auto-merge eligible when all four
+reasons hold, every check is green or legitimately skipped, and GitHub reports `MERGEABLE`.
+A **CI change** (anything under `.github/`) always goes to the owner for the diff, whatever
+the class. Merge order matters when two PRs share a store/router: land the one that owns the
+write path first and rebase the other onto the new develop.
 
 ## Waiting on CI / Greptile
 

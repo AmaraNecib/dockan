@@ -83,10 +83,14 @@ parent's check, at merge time, every time.
 
 ## 3. Then the decision
 
-| the class | who decides |
-| --- | --- |
-| **inert diff (e.g. tests, any `*.md`, docs, `.agents/`, `.scratch/`, fixtures, `test-support/`)** | `AUTO` — the diff cannot reach the product, so its evidence form (§1) is the CI run and no reviewer reads the diff. The script selects the class; the parent still posts the evidence comment and still waits for the owner's word. |
-| **production code (including `scripts/` that is not a test), or anything under `.github/`** | `OWNER` — it is the owner's call, and a `.github/` diff always goes to the owner to read before merge. |
+The class that decides **who merges** is **visual or not**, not inert or not. A diff the eye can
+judge is the owner's; everything else the parent may land itself once the gate is clean.
+
+| the class | who decides | who reads the diff |
+| --- | --- | --- |
+| **VISUAL — anything a browser can render: `apps/web/**`, i18n/copy, CSS/tokens, image assets, or any diff the predicate marks `needsVisual`** | `OWNER` — the owner verifies the before/after packet at the head and says merge. | the owner |
+| **NON-VISUAL — everything the predicate does not mark `needsVisual`, including inert diffs (tests, `*.md`, docs, `.agents/`, `.scratch/`, fixtures)** | `AUTO` — the **parent is pre-authorised to merge it itself** when reasons 1-4 hold, every check is green or legitimately skipped, and GitHub reports `MERGEABLE`. | the predicate; no human reads it |
+| **anything under `.github/`** | `OWNER` — a CI change always goes to the owner for the diff, whatever the class. | the owner |
 | **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review. |
 
 A PR GitHub already reports `MERGED` is a fourth outcome, `MERGED`: a different question, not a
@@ -94,10 +98,13 @@ decision, and the predicate reports it rather than answering the merge question.
 not a test is deliberately code, not inert: a script can drive CI or a release, and guessing otherwise
 would be the wrong direction of error.
 
-`AUTO` selects the evidence bar and the review path, not permission. It waives neither reason 4 nor the owner's word below: the parent still posts the evidence comment at the head, and the owner still says merge. CI being sufficient is a statement about who reads the diff, never about who authorises the merge.
+**Auto-merge is permission for the non-visual class, and only for it** (owner decision, 2026-10-17,
+class A). For `AUTO` the parent still posts the evidence comment at the head — then merges without
+waiting. For `OWNER` nothing changes: a 5/5 with no findings, anchored to the current head, with
+every check green, is the bar to *ask* — not permission.
 
-**The owner merges.** A 5/5 with no findings, anchored to the current head, with every check
-green, is the bar to *ask* — not permission. The parent never merges on its own initiative.
+The parent re-checks the class and the four reasons **at the current head, every time**. A push
+after a verdict voids it, and a PR that was non-visual before a push can be visual after it.
 
 ## 4. If it cannot merge now
 

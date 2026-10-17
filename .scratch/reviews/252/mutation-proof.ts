@@ -77,10 +77,10 @@ const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: "M3",
-    what: "drop items={directionItems} from the new-row direction Select",
+    what: "drop items={directionItems} from the typed-row direction Select",
     file: `${WEB}/src/pages/supplier-opening-balance.tsx`,
-    find: `                    <Select\n                      items={directionItems}\n                      value={newDirection}`,
-    replace: `                    <Select\n                      value={newDirection}`,
+    find: `<Select items={directionItems} value={typedRow.direction} onValueChange={(next) => setTypedRow(typedRow.id, { direction: asDirection(next) })}>`,
+    replace: `<Select value={typedRow.direction} onValueChange={(next) => setTypedRow(typedRow.id, { direction: asDirection(next) })}>`,
     cwd: WEB,
     tests: ["src/pages/supplier-opening-balance.test.tsx", "src/lib/select-trigger-label.test.ts"],
   },

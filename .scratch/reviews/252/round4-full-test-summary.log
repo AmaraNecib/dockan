@@ -1,0 +1,17 @@
+# GREEN — full standing gate. command: bun run test   (cwd = repo root). Duration 4m54s.
+# This is a TRIMMED view of a 528KB verbatim capture: every workspace summary line, every
+# non-zero fail count, and the turbo footer. The only "fail" matches in the raw capture are
+# `VAULT_ATTEMPT_FAILED` retry log lines from the api suite; no test failed. Raw capture kept
+# by the lane runner only.
+
+@dokan/desktop:test: Ran 68 tests across 3 files. [12.56s]
+@dokan/e2e-support:test: Ran 22 tests across 1 file. [26.00ms]
+@dokan/api:test: Ran 936 tests across 44 files. [265.80s]
+@dokan/web:test: Ran 1289 tests across 79 files. [288.36s]
+ Tasks:    4 successful, 4 total
+Cached:    2 cached, 4 total
+  Time:    4m49.006s 
+Ran 74 tests across 2 files. [4.62s]
+EXIT=0
+
+# EXIT=0 (observed; zero "fail" counts non-zero in the capture)

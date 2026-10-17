@@ -7,10 +7,30 @@
  * restored. A `try/finally` restores the file even when the test spawn throws, and
  * every mutated file is compared to a pre-mutation sha256 at the end.
  *
- * Run: bun .scratch/reviews/252/mutation-proof.ts   (cwd = repo root)
+ * The gate refuses to score a mutation on an unhealthy test run (PR #267 round 4,
+ * findings #252-1 and #252-2):
+ *
+ *   1. A GREEN BASELINE runs first — every named suite, unmutated. A red or
+ *      crashed baseline stops the script before the first mutation, because no
+ *      mutation result means anything while the suites are unhealthy.
+ *   2. A NON-ZERO EXIT WITH NO NAMED "(fail)" LINE is a problem, not a catch: a
+ *      suite that cannot load its dependencies never ran an assertion, so it
+ *      cannot stand as evidence that the mutation was caught.
+ *
+ * Run:   bun .scratch/reviews/252/mutation-proof.ts            (cwd = repo root)
+ * Drill: MUTATION_PROOF_DRILL=1 bun .scratch/reviews/252/mutation-proof.ts
+ *        appends two deliberately bad mutations (a crash, and a change no chosen
+ *        suite asserts) and must exit 1 naming D1 and D2. That is the proof the
+ *        gate bites.
+ *
+ * Verdict logic + its regression tests: mutation-proof-gate.ts,
+ * mutation-proof-gate.test.ts (same directory).
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+import { gateProblem, runSuites } from "./mutation-proof-gate";
 
 const WEB = "apps/web";
 const API = "apps/api";
@@ -27,6 +47,8 @@ interface Mutation {
   readonly tests: readonly string[];
   /** what the mutation is */
   readonly what: string;
+  /** drill-only entries: their suites are deliberately broken, so keep them out of the baseline */
+  readonly excludeFromBaseline?: boolean;
 }
 
 const MUTATIONS: readonly Mutation[] = [
@@ -181,34 +203,81 @@ const MUTATIONS: readonly Mutation[] = [
   },
 ];
 
+const CRASH_FIXTURE = fileURLToPath(new URL("./fixtures/crashes-on-load.test.ts", import.meta.url));
+const HINT_ANCHOR = `supplierAdjustDirectionWeOweHint: "نحن ندين له — يزيد ما علينا"`;
+
+/**
+ * Known-bad mutations, only under MUTATION_PROOF_DRILL=1. Each one MUST be named
+ * as a problem; if either one is silently accepted, the gate has regressed.
+ */
+const DRILL_MUTATIONS: readonly Mutation[] = [
+  {
+    id: "D1",
+    what: "drill: the named suite cannot load a dependency, so no assertion ran (must NOT count as caught)",
+    file: `${WEB}/src/lib/i18n.ts`,
+    find: HINT_ANCHOR,
+    replace: `supplierAdjustDirectionWeOweHint: "drill: the anchor only has to exist"`,
+    cwd: WEB,
+    tests: [CRASH_FIXTURE],
+    excludeFromBaseline: true,
+  },
+  {
+    id: "D2",
+    what: "drill: a change none of the chosen suites asserts (must report did NOT redden)",
+    file: `${WEB}/src/lib/i18n.ts`,
+    find: HINT_ANCHOR,
+    replace: `supplierAdjustDirectionWeOweHint: "drill: the anchor only has to exist"`,
+    cwd: WEB,
+    tests: ["src/lib/select-trigger-label.test.ts"],
+  },
+];
+
+const drill = process.env.MUTATION_PROOF_DRILL === "1";
+const MUTATION_SET: readonly Mutation[] = drill ? [...MUTATIONS, ...DRILL_MUTATIONS] : MUTATIONS;
+
 function hash(file: string): string {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
-interface Outcome {
-  readonly exit: number;
-  readonly failures: string[];
-}
-
-function run(cwd: string, tests: readonly string[]): Outcome {
-  const proc = Bun.spawnSync(["bun", "test", ...tests], { cwd, stdout: "pipe", stderr: "pipe" });
-  const out = `${proc.stdout.toString()}\n${proc.stderr.toString()}`;
-  const failures = out
-    .split("\n")
-    .filter((line) => line.includes("(fail)"))
-    .map((line) => line.trim());
-  return { exit: proc.exitCode ?? -1, failures };
-}
-
 const originals = new Map<string, string>();
-for (const mutation of MUTATIONS) {
+for (const mutation of MUTATION_SET) {
   if (!originals.has(mutation.file)) originals.set(mutation.file, readFileSync(mutation.file, "utf8"));
 }
 const hashes = new Map([...originals.keys()].map((file) => [file, hash(file)]));
 
-console.log(`# ablation proof on HEAD (${MUTATIONS.length} mutations)\n`);
+if (drill) {
+  console.log("DRILL: D1 (crash, no named failure) and D2 (uncovered change) are deliberately bad.");
+  console.log("       Passing this drill means exit 1 with both named as problems.\n");
+}
+
+// --- phase 1: the baseline must be green before any mutation can count -------
+const baselineGroups = new Map<string, Set<string>>();
+for (const mutation of MUTATION_SET) {
+  if (mutation.excludeFromBaseline === true) continue;
+  const suites = baselineGroups.get(mutation.cwd) ?? new Set<string>();
+  for (const suite of mutation.tests) suites.add(suite);
+  baselineGroups.set(mutation.cwd, suites);
+}
+
+console.log("# phase 1 — green baseline (unmutated suites)");
+const baselineProblems: string[] = [];
+for (const [cwd, suites] of baselineGroups) {
+  const outcome = runSuites(cwd, [...suites].sort());
+  console.log(`  ${cwd}: ${suites.size} suite(s) exit=${outcome.exit} named failures=${outcome.failures.length}`);
+  for (const failure of outcome.failures) console.log(`      ${failure}`);
+  const problem = gateProblem(outcome, "baseline");
+  if (problem !== null) baselineProblems.push(`${cwd}: ${problem}`);
+}
+if (baselineProblems.length > 0) {
+  console.log(`\nBASELINE IS NOT GREEN — no mutation result can count:\n  ${baselineProblems.join("\n  ")}`);
+  process.exit(1);
+}
+console.log("  baseline green\n");
+
+// --- phase 2: every mutation must be caught by a NAMED test failure ---------
+console.log(`# phase 2 — ablation (${MUTATION_SET.length} mutations)\n`);
 const problems: string[] = [];
-for (const mutation of MUTATIONS) {
+for (const mutation of MUTATION_SET) {
   const original = originals.get(mutation.file)!;
   // these files are CRLF; the anchors are written LF so they stay readable
   const crlf = original.includes("\r\n");
@@ -222,14 +291,13 @@ for (const mutation of MUTATIONS) {
   }
   try {
     writeFileSync(mutation.file, original.replace(find, replace));
-    const outcome = run(mutation.cwd, mutation.tests);
+    const outcome = runSuites(mutation.cwd, mutation.tests);
     for (const failure of outcome.failures) console.log(`      ${failure}`);
-    console.log(`      exit=${outcome.exit}`);
-    if (outcome.exit === 0) {
-      problems.push(`${mutation.id} did NOT redden`);
-      console.log("      *** DID NOT REDDEN — this mutation is not covered ***");
-    } else if (outcome.failures.length === 0) {
-      console.log("      (failed without a named test line — check the log)");
+    console.log(`      exit=${outcome.exit} named failures=${outcome.failures.length}`);
+    const problem = gateProblem(outcome, "mutation");
+    if (problem !== null) {
+      problems.push(`${mutation.id} ${problem}`);
+      console.log(`      *** PROBLEM: ${problem} ***`);
     }
   } finally {
     writeFileSync(mutation.file, original);

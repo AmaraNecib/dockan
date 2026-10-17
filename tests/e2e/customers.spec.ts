@@ -69,7 +69,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("5");
   await page.getByTestId("purchase-paid").fill("800");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // 3. first sale: the customer is created inline with her phone
   await page.getByRole("link", { name: "المبيعات" }).click();
@@ -227,7 +227,7 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   await page.getByTestId("picker-dialog").getByRole("button", { name: new RegExp(itemName) }).first().click();
   await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("5");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // first sale (2 units) on credit: the OLDER invoice
   await page.getByRole("link", { name: "المبيعات" }).click();

@@ -1234,10 +1234,11 @@ export function createRpcRouter(deps: RpcDeps) {
           // (saleMovementTime bounds them), so the item history and day-level
           // stockAsOf slices agree with the invoice's business date.
           const backdated = input.invoiceDate !== undefined;
-          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // SAFETY: allocation is a database-atomic UPSERT inside the same
           // transaction as the invoice insert, so separate app processes
           // cannot select the same INV-#### between a read and the insert.
-          const invoiceNumber = await tx.allocateInvoiceNumber();
+          // #258 — the kind is passed in: a sale takes the INV series.
+          const invoiceNumber = await tx.allocateInvoiceNumber("SALE");
             const invoice = await tx.insertInvoice({
               invoiceNumber,
               kind: "SALE",
@@ -1316,10 +1317,11 @@ export function createRpcRouter(deps: RpcDeps) {
         const paidAmount = input.initialPaid ?? 0;
         if (paidAmount > totalAmount) throw new ORPCError("BAD_REQUEST", { message: "PAID_EXCEEDS_TOTAL" });
         const invoiceDate = input.invoiceDate ?? localDate();
-          // SAFETY: allocation is a database-atomic UPDATE inside the same
+          // SAFETY: allocation is a database-atomic UPSERT inside the same
           // transaction as the invoice insert, so separate app processes
-          // cannot select the same INV-#### between a read and the insert.
-          const invoiceNumber = await tx.allocateInvoiceNumber();
+          // cannot select the same SUP-#### between a read and the insert.
+          // #258 — the kind is passed in: a purchase takes its own SUP series.
+          const invoiceNumber = await tx.allocateInvoiceNumber("PURCHASE");
           const invoice = await tx.insertInvoice({
             invoiceNumber,
             kind: "PURCHASE",
@@ -1568,7 +1570,7 @@ export function createRpcRouter(deps: RpcDeps) {
 
           // SAFETY: allocation is a database-atomic UPDATE inside the same
           // transaction as the return insert, so separate app processes
-          // cannot select the same RTN-#### between a read and the insert.
+          // cannot select the same RET-#### between a read and the insert.
           const returnNumber = await tx.allocateReturnNumber();
           const occurredAt = localDateTime();
           const { id: returnId } = await tx.insertReturn({

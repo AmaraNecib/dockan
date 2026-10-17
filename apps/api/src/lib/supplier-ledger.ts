@@ -6,6 +6,8 @@
  * SQL.
  */
 
+import { documentNumberSequence } from "./document-number";
+
 export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
 
 /** The direction of a manual adjustment (issue 176). «نسالوه» = the shop owes
@@ -124,11 +126,9 @@ export interface Allocation {
   applied: number;
 }
 
-/** The trailing digits of an INV-%04d number; a non-numeric number sorts as 0. */
-function invoiceSequence(invoiceNumber: string): number {
-  const digits = /(\d+)\s*$/u.exec(invoiceNumber);
-  return digits === null ? 0 : Number(digits[1]);
-}
+/** #258 — the number format lives in one place (lib/document-number): a legacy
+ * INV-0001 and a new SUP-0002 order by their trailing digits. */
+const invoiceSequence = documentNumberSequence;
 
 /**
  * Spread `amount` over the still-owed invoices, **oldest first** (invoice date,

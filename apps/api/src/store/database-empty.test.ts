@@ -77,8 +77,8 @@ describe("databaseIsEmpty", () => {
   itHeavy("is false when the invoice number sequence has been used", async () => {
     const store = makeStore();
     await store.setup();
-    // setup seeds next_number = 1; one allocation proves an invoice existed
-    await store.allocateInvoiceNumber();
+    // no counter row exists yet; one allocation proves an invoice existed
+    await store.allocateInvoiceNumber("SALE");
 
     expect(await store.databaseIsEmpty()).toBe(false);
   });

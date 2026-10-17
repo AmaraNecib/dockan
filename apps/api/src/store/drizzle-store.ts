@@ -43,7 +43,8 @@ import type {
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, supplierBalance } from "../lib/supplier-ledger";
 import { localDateTime } from "../lib/logger";
@@ -1841,40 +1842,53 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // conditional UPDATE simply refuses. This pre-empts the BEGIN IMMEDIATE
     // hardening deferred in issue #43 for the payments path.
     withTransactionImmediate: <T>(fn: (tx: StorePort) => Promise<T>): Promise<T> => runTransaction(true, fn),
-    async allocateInvoiceNumber() {
-      // SAFETY: this statement has fixed SQL identifiers and no user input;
-      // SQLite serializes the UPDATE across database connections. Reading the
-      // existing maximum in the same statement also keeps manually inserted
-      // INV-* rows from moving the sequence backwards.
+    async allocateInvoiceNumber(kind) {
+      // #258 — one counter per kind, so INV and SUP each run a dense series and
+      // a purchase never consumes a sale's number. The UPSERT creates the row
+      // on first use, which is also the whole migration for an existing shop.
+      const prefix = invoiceNumberPrefixFor(kind);
+      const glob = documentNumberGlob(prefix);
+      // the '${prefix}-' offset in substr(); DOCUMENT_NUMBER_PREFIX_LENGTH is 4
+      const offset = DOCUMENT_NUMBER_PREFIX_LENGTH + 1;
+      // SAFETY: fixed SQL identifiers; the two bound values are the kind enum
+      // and a GLOB built from the frozen prefix record, so no user input
+      // reaches this statement. SQLite serializes the UPSERT across database
+      // connections, and the MAX() term inside the same statement keeps a
+      // manually inserted (or pre-#258) row from being reissued: the counter
+      // can never move backwards past an existing number. The cast names the
+      // one column the RETURNING clause emits.
       const rows = conn.raw
         .query(`
-          UPDATE invoice_number_sequence
-          SET next_number = MAX(
+          INSERT INTO invoice_number_counters (kind, next_number)
+          VALUES (
+            ?,
+            COALESCE((SELECT MAX(CAST(substr(invoice_number, ?) AS INTEGER)) FROM invoices WHERE invoice_number GLOB ?), 0) + 2
+          )
+          ON CONFLICT(kind) DO UPDATE SET next_number = MAX(
             next_number,
-            COALESCE((SELECT MAX(CASE
-              WHEN invoice_number GLOB 'INV-[0-9]*' THEN CAST(substr(invoice_number, 5) AS INTEGER)
-              ELSE 0
-            END) FROM invoices), 0) + 1
+            COALESCE((SELECT MAX(CAST(substr(invoice_number, ?) AS INTEGER)) FROM invoices WHERE invoice_number GLOB ?), 0) + 1
           ) + 1
-          WHERE id = 1
-          RETURNING printf('INV-%04d', next_number - 1) AS invoice_number
+          RETURNING next_number - 1 AS sequence
         `)
-        .all() as Array<{ invoice_number: string }>;
-      // SAFETY: setup seeds exactly one singleton row before store use; the
-      // UPDATE ... RETURNING therefore yields exactly one formatted number.
-      return firstRowOf(rows).invoice_number;
+        .all(kind, offset, glob, offset, glob) as Array<{ sequence: number }>;
+      // SAFETY: the UPSERT allocates exactly one sequence per call, so the
+      // RETURNING clause yields exactly one integer row.
+      return invoiceNumberFor(kind, firstRowOf(rows).sequence);
     },
     async lastInvoiceNumber() {
       // SAFETY: created_at has second granularity and id is a random UUID, so
       // "latest by row" can return a stale number when several invoices land
       // in the same second — the UNIQUE invoice_number would then 500. Take
-      // the numeric maximum of INV-%04d instead.
+      // the numeric maximum instead. #258 — the number now carries a kind
+      // prefix (INV / SUP), so the trailing digits are read whatever they are.
       const rows = await db.select({ invoiceNumber: invoices.invoiceNumber }).from(invoices);
       let best: string | undefined;
       let bestNum = -1;
       for (const row of rows) {
-        const parsed = Number.parseInt(row.invoiceNumber.replace(/^INV-/u, ""), 10);
-        if (Number.isSafeInteger(parsed) && parsed > bestNum) {
+        // a number that does not carry a PREFIX-NNNN shape is not a candidate
+        // (the tolerant sort reader would rank a test label by its timestamp)
+        const parsed = numberedDocumentSequence(row.invoiceNumber);
+        if (parsed !== undefined && parsed > bestNum) {
           bestNum = parsed;
           best = row.invoiceNumber;
         }
@@ -1885,24 +1899,27 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SAFETY: this statement has fixed SQL identifiers and no user input;
       // SQLite serializes the UPDATE across database connections. Reading the
       // existing maximum in the same statement also keeps manually inserted
-      // RTN-* rows from moving the sequence backwards.
+      // RET-* rows from moving the sequence backwards.
+      // #258 — the printed prefix is RET now. A pre-#258 shop's counter already
+      // counted its RTN rows, so its next return simply continues the numeric
+      // series (RTN-0005 → RET-0006) and no historical document is renumbered.
       const rows = conn.raw
         .query(`
           UPDATE return_number_sequence
           SET next_number = MAX(
             next_number,
             COALESCE((SELECT MAX(CASE
-              WHEN return_number GLOB 'RTN-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+              WHEN return_number GLOB 'RET-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
               ELSE 0
             END) FROM returns), 0) + 1
           ) + 1
           WHERE id = 1
-          RETURNING printf('RTN-%04d', next_number - 1) AS return_number
+          RETURNING next_number - 1 AS sequence
         `)
-        .all() as Array<{ return_number: string }>;
+        .all() as Array<{ sequence: number }>;
       // SAFETY: setup seeds exactly one singleton row before store use; the
-      // UPDATE ... RETURNING therefore yields exactly one formatted number.
-      return firstRowOf(rows).return_number;
+      // UPDATE ... RETURNING therefore yields exactly one allocated number.
+      return returnNumberFor(firstRowOf(rows).sequence);
     },
     async insertReturn(input: ReturnInsert) {
       const row = firstRowOf(
@@ -2757,11 +2774,16 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       if (adminMarker.length > 0) return false;
       const sequences = await Promise.all([
         db.select({ next: invoiceNumberSequence.nextNumber }).from(invoiceNumberSequence).limit(1),
+        // #258 — the per-kind counters are what allocations move now; the
+        // legacy singleton above is kept because a database claimed before
+        // #258 carries its evidence there and nowhere else.
+        db.select({ next: invoiceNumberCounters.nextNumber }).from(invoiceNumberCounters),
         db.select({ next: returnNumberSequence.nextNumber }).from(returnNumberSequence).limit(1),
       ]);
-      // A fresh setup seeds both sequences at 1; any allocation moves one
-      // past 1 (allocateInvoiceNumber / allocateReturnNumber).
-      return sequences.every((rows) => (rows[0]?.next ?? 1) <= 1);
+      // A fresh setup seeds the return sequence at 1 and creates no invoice
+      // counter row; any allocation moves one of them past 1
+      // (allocateInvoiceNumber / allocateReturnNumber).
+      return sequences.every((rows) => rows.every((row) => (row.next ?? 1) <= 1));
     },
     async getSetting(key: string) {
       const row = await db.select({ value: settings.value }).from(settings).where(eq(settings.key, key)).limit(1);

@@ -698,6 +698,8 @@ describe("purchase intake (ticket 29)", () => {
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
     const invoice = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
     expect(invoice.kind).toBe("SALE");
+    // #258 — a sale keeps the INV prefix
+    expect(invoice.invoiceNumber).toMatch(/^INV-\d{4}$/u);
     expect(invoice.totalAmount).toBe(item.sellingPrice);
     expect((await client.itemsHistory({ itemId: item.id })).stockOnHand).toBe(0);
   });
@@ -734,7 +736,8 @@ describe("purchase intake (ticket 29)", () => {
         { itemId: b.id, quantity: 10, unitPrice: 300 },
       ],
     });
-    expect(invoice.invoiceNumber).toMatch(/^INV-\d{4}$/u);
+    // #258 — a purchase invoice carries SUP in its own number
+    expect(invoice.invoiceNumber).toMatch(/^SUP-\d{4}$/u);
     expect(invoice.totalAmount).toBe(5 * 200 + 10 * 300); // 4000
     expect(invoice.paidAmount).toBe(1000);
     expect(invoice.remainingAmount).toBe(3000);
@@ -889,7 +892,7 @@ describe("purchase intake (ticket 29)", () => {
   it("concurrent invoice creates serialize into distinct invoice numbers", async () => {
     const item = await makeItem("تسابق-ترقيم", 50);
     // both selects used to run outside the serialized transaction and could
-    // mint the same INV-#### between SELECT and INSERT (UNIQUE -> 500)
+    // mint the same SUP-#### between SELECT and INSERT (UNIQUE -> 500)
     const results = await Promise.allSettled([
       client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
       client.invoicesCreate({ kind: "PURCHASE", lines: [{ itemId: item.id, quantity: 1, unitPrice: 50 }] }),
@@ -898,6 +901,9 @@ describe("purchase intake (ticket 29)", () => {
     expect(fulfilled).toHaveLength(2);
     const numbers = fulfilled.map((r) => r.value.invoiceNumber);
     expect(new Set(numbers).size).toBe(2);
+    // both concurrent purchases share the SUP series, so the two numbers are
+    // consecutive, not merely distinct
+    for (const number of numbers) expect(number).toMatch(/^SUP-\d{4}$/u);
   });
 
   it("double correction converges on the last corrected quantity instead of drifting", async () => {
@@ -3304,7 +3310,8 @@ describe("returns & refunds", () => {
 
     const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 2 }], reason: "الزبون بدل رأيه" });
 
-    expect(created.returnNumber).toMatch(/^RTN-/);
+    // #258 — a return number carries RET
+    expect(created.returnNumber).toMatch(/^RET-/);
     expect(created.invoiceId).toBe(sale.id);
     expect(created.invoiceNumber).toBe(sale.invoiceNumber);
     expect(created.status).toBe("PENDING_REVIEW");

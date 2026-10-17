@@ -183,7 +183,7 @@ test("completing every step removes the panel", async ({ page }) => {
   await expect(page.getByTestId("purchase-lines")).toContainText(itemName);
   await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("5");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // Sale with a named customer and a partial payment: a real debt exists.
   await page.goto("/sale");
@@ -198,7 +198,7 @@ test("completing every step removes the panel", async ({ page }) => {
   await page.getByTestId("sale-paid").fill("500");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
-  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  // SAFETY: the saved card always formats sale numbers as INV-<digits>
   const invoiceNumber = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
 
   await page.goto("/");

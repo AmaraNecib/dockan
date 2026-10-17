@@ -55,7 +55,7 @@ test("completion card opens the saved sale and the saved return's voucher", asyn
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
   await expect(page.getByTestId("returns-form")).toHaveCount(0);
-  const firstReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RTN-\d+/)![0]!;
+  const firstReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RET-\d+/)![0]!;
   await page.getByTestId("returns-open-voucher").click();
   await expect(page.getByTestId("return-voucher-page")).toBeVisible();
   await expect(page.getByTestId("return-voucher-number")).toContainText(firstReturn);
@@ -68,7 +68,7 @@ test("completion card opens the saved sale and the saved return's voucher", asyn
   await page.locator('[data-testid^="returns-qty-"]').fill("1");
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
-  const secondReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RTN-\d+/)![0]!;
+  const secondReturn = (await page.getByTestId("returns-done-number").innerText()).match(/RET-\d+/)![0]!;
   expect(secondReturn).not.toBe(firstReturn);
   await page.getByTestId("returns-open-voucher").click();
   await expect(page.getByTestId("return-voucher-page")).toBeVisible();

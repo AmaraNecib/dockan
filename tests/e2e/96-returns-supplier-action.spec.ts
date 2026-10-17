@@ -77,9 +77,9 @@ test("a purchase invoice points at the supplier account, not a dead return form 
   await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("2");
   await page.getByTestId("purchase-paid").fill("0");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
-  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
-  const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/INV-\d+/)![0]!;
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
+  // SAFETY: the saved card always formats purchase numbers as SUP-<digits>
+  const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
 
   // 3. open the purchase invoice
   await page.goto("/invoices");

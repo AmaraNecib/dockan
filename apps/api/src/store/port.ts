@@ -8,6 +8,7 @@ import type {
   ExpenseCategory,
   Invoice,
   InvoiceDetail,
+  InvoiceKind,
   InvoiceLine,
   InvoiceListFilters,
   Item,
@@ -379,9 +380,12 @@ export interface StorePort {
    * (SQLITE_BUSY_SNAPSHOT) against a second process writing the same file.
    * Use for money-math units (payments); plain reads keep withTransaction. */
   withTransactionImmediate<T>(fn: (tx: StorePort) => Promise<T>): Promise<T>;
-  /** Reserves the next invoice number atomically in the database. */
-  allocateInvoiceNumber(): Promise<string>;
-  /** Reserves the next return number (RTN-%04d) atomically in the database. */
+  /** Reserves the next invoice number for `kind` atomically in the database:
+   * INV-%04d for a sale, SUP-%04d for a supplier purchase (#258). Each kind
+   * owns its own counter, so one kind's documents never consume the other's
+   * numbers. */
+  allocateInvoiceNumber(kind: InvoiceKind): Promise<string>;
+  /** Reserves the next return number (RET-%04d) atomically in the database. */
   allocateReturnNumber(): Promise<string>;
   insertReturn(input: ReturnInsert): Promise<{ id: string }>;
   insertReturnLine(line: ReturnLineInsert): Promise<void>;

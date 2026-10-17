@@ -17,6 +17,8 @@ fresh clone has this document but not the scripts.
 | **visual** — anything the eye can judge | before/after images **and** a video at real user pace. A screenshot pair alone does not show a transition, a focus ring or a hover state. |
 | **not visual** — logic, a feature, a refactor, a fix | the **measurements**. Not "it works": the failing-first run (red before, green after), the ablation/mutation proof that the new guard actually bites, the before/after numbers, and the decisions taken and why. |
 
+An **inert** diff (§3) cannot reach the product, so its measurement is the CI run itself — still posted as the evidence comment reason 4 requires. The form changes; the obligation does not.
+
 The non-visual bar is the owner's own phrasing: *"You want evidence that it was right for you
 as the agent."* The parent has to be able to judge the change from the comment alone, without
 re-running it. A green check is not evidence that the right thing was built; it is evidence
@@ -83,7 +85,7 @@ parent's check, at merge time, every time.
 
 | the class | who decides |
 | --- | --- |
-| **inert diff (e.g. tests, any `*.md`, docs, `.agents/`, `.scratch/`, fixtures, `test-support/`)** | `AUTO` — CI is the evidence for a change that cannot reach the product. The script decides; the parent only executes. |
+| **inert diff (e.g. tests, any `*.md`, docs, `.agents/`, `.scratch/`, fixtures, `test-support/`)** | `AUTO` — the diff cannot reach the product, so its evidence form (§1) is the CI run and no reviewer reads the diff. The script selects the class; the parent still posts the evidence comment and still waits for the owner's word. |
 | **production code (including `scripts/` that is not a test), or anything under `.github/`** | `OWNER` — it is the owner's call, and a `.github/` diff always goes to the owner to read before merge. |
 | **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review. |
 
@@ -91,6 +93,8 @@ A PR GitHub already reports `MERGED` is a fourth outcome, `MERGED`: a different 
 decision, and the predicate reports it rather than answering the merge question. `scripts/**` that is
 not a test is deliberately code, not inert: a script can drive CI or a release, and guessing otherwise
 would be the wrong direction of error.
+
+`AUTO` selects the evidence bar and the review path, not permission. It waives neither reason 4 nor the owner's word below: the parent still posts the evidence comment at the head, and the owner still says merge. CI being sufficient is a statement about who reads the diff, never about who authorises the merge.
 
 **The owner merges.** A 5/5 with no findings, anchored to the current head, with every check
 green, is the bar to *ask* — not permission. The parent never merges on its own initiative.

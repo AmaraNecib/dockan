@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 // The guard behind issue #259's first acceptance criterion: "this rule is
@@ -16,7 +17,7 @@ import { dirname, join, resolve } from "node:path";
 // lane finding the rule, and a substring check passed all three (#259 test-audit).
 const ROOT = join(import.meta.dir, "..");
 const DOC_FILE = "verification-and-merge-gate.md";
-const DOC = join(ROOT, "docs", DOC_FILE);
+const DOC = resolve(ROOT, "docs", DOC_FILE);
 
 // Every tracked file a lane reads on the way to the gate. The lane launch prompt
 // and the brief template are harness-local too, so these are the tracked stand-ins.
@@ -43,22 +44,36 @@ const REQUIRED_FACTS: [name: string, fragment: string][] = [
   ["the non-visual form: failing-first", "the failing-first run"],
   ["the non-visual form: ablation proof", "ablation/mutation proof"],
   ["the AUTO class", "inert diff"],
+  ["the AUTO limit (no waiver)", "waives neither reason 4"],
   ["the OWNER class", "production code"],
   ["the MERGED outcome", "is a fourth outcome"],
 ];
 
 const read = (relative: string) => readFileSync(join(ROOT, relative), "utf8");
 
+/**
+ * Drop fenced code blocks and inline code spans. A link shown as an *example* is
+ * not a link a lane can click, and a substring match inside a fence stayed green
+ * while every lane's real link was gone.
+ */
+function withoutCode(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/~~~[\s\S]*?~~~/g, "")
+    .replace(/`[^`\n]*`/g, "");
+}
+
 /** True when `content` links to the canonical doc and the link target exists. */
-function linksToDoc(content: string, fromFile: string): boolean {
+export function linksToDoc(content: string, fromFile: string): boolean {
   // Accept the legal markdown destination forms a lane might use: a bare path, an
   // angle-bracket path, and either with a title. Reference-style links are not
   // matched; none of the three lane files uses them, and a miss reddens loudly
   // rather than passing a broken link.
-  for (const match of content.matchAll(/\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g)) {
+  for (const match of withoutCode(content).matchAll(/\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g)) {
     const target = (match[1] ?? match[2]).split("#")[0];
-    if (!target.endsWith(DOC_FILE)) continue;
-    if (existsSync(resolve(ROOT, dirname(fromFile), target))) return true;
+    // The target must BE the canonical doc, not merely share its basename: a
+    // link to another `verification-and-merge-gate.md` kept the old check green.
+    if (resolve(ROOT, dirname(fromFile), target) === DOC) return true;
   }
   return false;
 }
@@ -83,6 +98,34 @@ describe("the verification rule is discoverable (#259)", () => {
       expect(readFileSync(DOC, "utf8")).toContain(fragment);
     });
   }
+
+  test("a link to a same-named file elsewhere is not the canonical doc", () => {
+    // `endsWith(DOC_FILE)` accepted any existing file with the same basename, so a
+    // lane could point its readers at a different file and stay green. The fix
+    // resolves the target and compares it to DOC, so a same-named decoy must fail.
+    const decoyDir = mkdtempSync(join(tmpdir(), "vrule-"));
+    try {
+      const decoy = join(decoyDir, DOC_FILE);
+      writeFileSync(decoy, "# not the canonical doc\n");
+      expect(existsSync(decoy)).toBe(true);
+      expect(linksToDoc(`[the rule](<${decoy}>)`, "docs/engineering-workflow.md")).toBe(false);
+    } finally {
+      rmSync(decoyDir, { recursive: true, force: true });
+    }
+  });
+
+  test("a link-shaped example in a fenced code block does not count", () => {
+    // A fenced example is documentation about a link, not a link a lane can click.
+    expect(linksToDoc("```md\n[x](docs/verification-and-merge-gate.md)\n```", "AGENTS.md")).toBe(
+      false,
+    );
+  });
+
+  test("a link-shaped example in an inline code span does not count", () => {
+    expect(
+      linksToDoc("see `[x](docs/verification-and-merge-gate.md)` for the syntax", "AGENTS.md"),
+    ).toBe(false);
+  });
 
   test("the AUTO and OWNER rows still name their own classes", () => {
     // The fragments above are present even if the two rows are swapped; this

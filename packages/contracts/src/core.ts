@@ -217,7 +217,8 @@ export const invoiceLineSchema = z.object({
 
 export const invoiceSchema = z.object({
   id: idSchema,
-  /** auto-suggested (INV-0001) but editable, unique */
+  /** auto-suggested with the kind in it (INV-0001 for a sale, SUP-0001 for a
+   * supplier purchase — #258) but editable, unique */
   invoiceNumber: z.string().min(1),
   kind: invoiceKindSchema,
   /** known party from the customers/suppliers lists, when used */
@@ -616,7 +617,7 @@ export const returnLineSchema = z.object({
  */
 export const returnSchema = z.object({
   id: idSchema,
-  /** auto-suggested RTN-%04d, unique */
+  /** auto-suggested RET-%04d (#258; legacy rows carry RTN-%04d), unique */
   returnNumber: z.string().min(1),
   invoiceId: idSchema,
   /** denormalized for the voucher and list views (join is one-to-one) */

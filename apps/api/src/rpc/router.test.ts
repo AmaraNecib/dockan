@@ -902,8 +902,10 @@ describe("purchase intake (ticket 29)", () => {
     const numbers = fulfilled.map((r) => r.value.invoiceNumber);
     expect(new Set(numbers).size).toBe(2);
     // both concurrent purchases share the SUP series, so the two numbers are
-    // consecutive, not merely distinct
+    // consecutive, not merely distinct — a stray advance would break this
     for (const number of numbers) expect(number).toMatch(/^SUP-\d{4}$/u);
+    const sequences = numbers.map((number) => Number(number.slice(4))).sort((a, b) => a - b);
+    expect(sequences[1]).toBe(sequences[0]! + 1);
   });
 
   it("double correction converges on the last corrected quantity instead of drifting", async () => {

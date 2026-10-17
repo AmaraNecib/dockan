@@ -51,7 +51,9 @@ export function distributePayment(invoices: readonly Invoice[], amount: number):
   });
 }
 
-/** The trailing number of an INV-%04d number; a non-numeric number sorts as 0. */
+/** The trailing number of a document number (INV- / SUP- / RET-, #258); a
+ * non-numeric number sorts as 0. Mirrors the api's documentNumberSequence,
+ * which cannot be imported from apps/api. */
 function invoiceSequence(invoiceNumber: string): number {
   const digits = /(\d+)\s*$/u.exec(invoiceNumber);
   return digits === null ? 0 : Number(digits[1]);

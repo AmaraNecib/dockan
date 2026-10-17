@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  DOCUMENT_NUMBER_PREFIX_LENGTH,
   RETURN_NUMBER_PREFIX,
   documentNumberGlob,
   documentNumberSequence,
@@ -14,8 +15,9 @@ import {
 
 /**
  * #258 — the kind lives in the number itself: INV for a sale, SUP for a supplier
- * purchase, RET for a customer return. The store formats through this module, so
- * these are the only definitions of the format.
+ * purchase, RET for a customer return. The store formats invoice and
+ * customer-return numbers through this module, so these are the only
+ * definitions of THOSE formats (supplier returns still format PRT in SQL).
  */
 describe("document numbers (#258)", () => {
   it("gives every invoice kind its own three letters, and refuses an unknown one", () => {
@@ -38,6 +40,14 @@ describe("document numbers (#258)", () => {
     // %04d in SQL grows the same way; the TS formatter must not truncate
     expect(formatDocumentNumber("INV", 10_000)).toBe("INV-10000");
     expect(formatDocumentNumber("SUP", 123_456)).toBe("SUP-123456");
+    // 0 is not a legal sequence (counters start at 1) but the floor must not
+    // throw or truncate, so a malformed caller fails the assertion, not the app
+    expect(formatDocumentNumber("INV", 0)).toBe("INV-0000");
+    // the counter SQL slices the number off with substr(…, 5); every prefix must
+    // stay 3 letters + a dash or that offset silently mis-parses
+    for (const prefix of Object.values(invoiceNumberPrefixes)) {
+      expect(prefix).toHaveLength(DOCUMENT_NUMBER_PREFIX_LENGTH - 1);
+    }
   });
 
   it("numbers customer returns RET, replacing the legacy RTN prefix", () => {

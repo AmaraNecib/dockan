@@ -1126,9 +1126,11 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     backfillSupplierAccounts(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
-    // an existing database cannot both initialize a competing counter. The
-    // numeric expression preserves the old lastInvoiceNumber behavior for
-    // legacy/manual INV-* rows while the sequence owns future allocations.
+    // an existing database cannot both initialize a competing counter. #258 —
+    // nothing allocates from this singleton any more (allocateInvoiceNumber
+    // uses invoice_number_counters per kind); it survives as the "this database
+    // was claimed" evidence a pre-#258 shop carries, which databaseIsEmpty
+    // still reads.
     await db.run(sql`
       INSERT INTO invoice_number_sequence (id, next_number)
       SELECT 1, COALESCE((SELECT MAX(CASE
@@ -1138,8 +1140,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       WHERE NOT EXISTS (SELECT 1 FROM invoice_number_sequence WHERE id = 1)
     `);
 
-    // Same conditional seed for the return number sequence (RTN-%04d), so two
-    // processes booting an existing database converge on one counter.
+    // Same conditional seed for the return number sequence (RET-%04d, was
+    // RTN-%04d — the allocator scans both, so legacy rows still raise it), so
+    // two processes booting an existing database converge on one counter.
     await db.run(sql`
       INSERT INTO return_number_sequence (id, next_number)
       SELECT 1, COALESCE((SELECT MAX(CASE
@@ -1900,16 +1903,20 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       // SQLite serializes the UPDATE across database connections. Reading the
       // existing maximum in the same statement also keeps manually inserted
       // RET-* rows from moving the sequence backwards.
-      // #258 — the printed prefix is RET now. A pre-#258 shop's counter already
-      // counted its RTN rows, so its next return simply continues the numeric
-      // series (RTN-0005 → RET-0006) and no historical document is renumbered.
+      // #258 — the printed prefix is RET now, and the scan matches BOTH
+      // prefixes: a pre-#258 row carries RTN, and the setup seed runs only when
+      // the sequence row is absent, so a manually inserted RTN-0042 would
+      // otherwise let the next allocation reissue 0003 in the same series. The
+      // numeric part therefore continues (RTN-0005 → RET-0006) and no
+      // historical document is renumbered.
       const rows = conn.raw
         .query(`
           UPDATE return_number_sequence
           SET next_number = MAX(
             next_number,
             COALESCE((SELECT MAX(CASE
-              WHEN return_number GLOB 'RET-[0-9]*' THEN CAST(substr(return_number, 5) AS INTEGER)
+              WHEN return_number GLOB 'RET-[0-9]*' OR return_number GLOB 'RTN-[0-9]*'
+                THEN CAST(substr(return_number, 5) AS INTEGER)
               ELSE 0
             END) FROM returns), 0) + 1
           ) + 1

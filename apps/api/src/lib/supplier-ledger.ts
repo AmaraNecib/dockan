@@ -6,7 +6,9 @@
  * SQL.
  */
 
-import { documentNumberSequence } from "./document-number";
+/** #258 — the number format lives in one place: a legacy INV-0001 and a new
+ * SUP-0002 order by their trailing digits. */
+import { documentNumberSequence as invoiceSequence } from "./document-number";
 
 export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
 
@@ -126,9 +128,7 @@ export interface Allocation {
   applied: number;
 }
 
-/** #258 — the number format lives in one place (lib/document-number): a legacy
- * INV-0001 and a new SUP-0002 order by their trailing digits. */
-const invoiceSequence = documentNumberSequence;
+
 
 /**
  * Spread `amount` over the still-owed invoices, **oldest first** (invoice date,

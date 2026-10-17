@@ -224,7 +224,7 @@ describe("PartiesPage (issue 120)", () => {
     expect(host.querySelectorAll('[data-testid="party-row"]').length).toBe(2);
     const omarRow = Array.from(host.querySelectorAll<HTMLTableRowElement>('[data-testid="party-row"]')).find((r) => r.textContent?.includes("عماره"));
     expect(omarRow?.querySelector('[data-testid="party-row-count"]')?.textContent).toBe("3");
-    expect(omarRow?.querySelector('[data-testid="party-row-remaining"]')?.textContent).toContain("12000");
+    expect(omarRow?.querySelector('[data-testid="party-row-remaining"]')?.textContent).toContain("12,000");
 
     const search = host.querySelector<HTMLInputElement>('[data-testid="parties-search"]');
     await act(async () => {
@@ -283,7 +283,7 @@ describe("PartiesPage (issue 120)", () => {
     expect(host.querySelector('[data-testid="parties-page-supplier"]')).not.toBeNull();
     expect(host.querySelector('[data-testid="party-role-supplier"]')?.getAttribute("aria-current")).toBe("page");
     expect(host.textContent).toContain("مورد الاختبار");
-    expect(host.querySelector('[data-testid="party-row-remaining"]')?.textContent).toContain("1200");
+    expect(host.querySelector('[data-testid="party-row-remaining"]')?.textContent).toContain("1,200");
     // the invoiced supplier keeps its delete disabled; the empty one deletes
     expect(host.querySelectorAll<HTMLButtonElement>('[data-testid="party-row-delete"]')[0]?.disabled).toBe(true);
 
@@ -356,7 +356,7 @@ describe("PartyDetailPage (issue 120)", () => {
     await waitFor(() => host.querySelector('[data-testid="party-detail-name"]') !== null);
 
     expect(host.querySelector('[data-testid="party-detail-name"]')?.textContent).toBe("علي علي");
-    expect(host.querySelector('[data-testid="party-stat-partyStatsRemaining"]')?.textContent).toContain("1600");
+    expect(host.querySelector('[data-testid="party-stat-partyStatsRemaining"]')?.textContent).toContain("1,600");
     expect(host.querySelectorAll('[data-testid="party-tab-invoices"], [data-testid="party-tab-payments"], [data-testid="party-tab-info"]').length).toBe(3);
     // #174 — the tab rows arrive from a server page read, so await them
     await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 1);

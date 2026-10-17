@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { captureEvidence, expectCurrencyLeftOfFigures } from "./money-display-helpers";
 import { sampleNoWrite } from "./no-write-window";
 
 /** The inputs this spec sends over the issue-184 RPC helper. */
@@ -183,7 +184,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // 5. the purchased supplier shows the charge
   await page.goto("/suppliers");
   await page.getByRole("link", { name: supplierName }).click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("5000 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("5,000 دج");
 
   // 6. an invoice-linked خصم of 500: the balance and the invoice both drop
   await page.getByTestId("supplier-action-adjust").click();
@@ -192,9 +193,9 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("supplierAdjustPresetDiscount").click();
   await page.getByTestId("supplier-adjust-link").check();
   await chooseSelectOption(page, page.getByTestId("supplier-adjust-invoice"), invoiceNumber);
-  await expect(page.getByTestId("supplier-adjust-preview-remaining")).toContainText("4500 دج");
+  await expect(page.getByTestId("supplier-adjust-preview-remaining")).toContainText("4,500 دج");
   await page.getByTestId("supplier-adjust-confirm").click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("4500 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("4,500 دج");
 
   // the account row names the adjustment and its direction (linked خصم = THEY_OWE = نسالوه, #260)
   await page.getByTestId("party-tab-payments").click();
@@ -205,7 +206,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("party-tab-invoices").click();
   await page.getByTestId("party-invoices").getByRole("link", { name: invoiceNumber }).click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
-  await expect(page.getByTestId("invoice-remaining")).toHaveText("4500 دج");
+  await expect(page.getByTestId("invoice-remaining")).toHaveText("4,500 دج");
   await expect(page.getByTestId("invoice-returns-credit")).toHaveText("500 دج");
 
   // 8. #180 — a supplier whose account is net in credit shows the credit label
@@ -229,6 +230,19 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // currency suffix alone would also pass for a negative value
   await expect(page.getByTestId("debts-group-weowe-total")).toContainText("دج");
   await expect(page.getByTestId("debts-group-weowe-total")).not.toContainText("-");
+
+  // the lane's before/after image (#259) lands before the assertions the #254
+  // change moves; the credit row is already on the page
+  await captureEvidence(page, "debts-supplier-credit-row");
+
+  // #254 — the signed supplier-credit row: grouped digits, the sign INSIDE the
+  // isolated figures run (a sibling `−` is the run bidi displaced to the far end
+  // of the row), and the currency drawn to the LEFT of the figures.
+  const creditRow = page.getByTestId("debts-person").filter({ hasText: creditSupplierName });
+  const creditTotal = creditRow.getByTestId("debts-person-total");
+  await expect(creditTotal.getByTestId("money-figures")).toHaveText("− 100,000");
+  await expect(creditTotal).toContainText("− 100,000 دج");
+  await expectCurrencyLeftOfFigures(creditTotal);
 });
 
 /**

@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { displayAlgerianPhone } from "@dokan/contracts";
 
-import { formatPrintAmount } from "../lib/print-format";
+import { Money } from "@/components/ui/amount";
 
 /**
  * Printed documents — the shared A4 sheet primitives (issue #121). One sheet is
@@ -77,22 +77,13 @@ export function PrintSheet({
 }
 
 /**
- * A DZD amount as printed: Western grouped digits isolated LTR, then the DZD
- * currency from i18n as RTL text — which puts the currency to the LEFT of the
- * amount on the sheet.
- * (The screen's `Amount` component keeps both inside one LTR span, which reads
- * the other way around.)
+ * A DZD amount as printed. The sheet's own paper classes come from the shared
+ * money primitive (#254), so paper and screen share one formatter, one
+ * isolation and one currency placement — the currency is the RTL run after the
+ * isolated figures, which draws it to the LEFT of them on the sheet.
  */
 export function PrintAmount({ value }: { value: number }) {
-  const { t } = useTranslation();
-  return (
-    <>
-      <span dir="ltr" className="print-sheet-ltr">
-        {formatPrintAmount(value)}
-      </span>{" "}
-      <span className="print-sheet-cur">{t("dzd")}</span>
-    </>
-  );
+  return <Money value={value} amountClassName="print-sheet-ltr" currencyClassName="print-sheet-cur" />;
 }
 
 /** The columns every printed items table shares: a name and a quantity. */

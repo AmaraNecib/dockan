@@ -87,7 +87,7 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   // a fresh value after the cleared draft still works, and the total is intact
   await batteryQty.fill("2");
   await expect(batteryQty).toHaveValue("2");
-  await expect(page.getByTestId("purchase-total")).toContainText("5100");
+  await expect(page.getByTestId("purchase-total")).toContainText("5,100");
 
   await page.getByTestId("purchase-save").click();
   await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");

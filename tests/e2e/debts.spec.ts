@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { captureEvidence, expectCurrencyLeftOfFigures } from "./money-display-helpers";
 import { runE2eReset } from "./reset-helpers";
 
 /**
@@ -91,22 +92,33 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   await expect(page.getByText("مستحقات الموردين عندنا")).toBeVisible();
   // the whole app is an Arabic RTL screen (acceptance bullet)
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
+  // the lane's before/after image (#259) lands here, before the first assertion
+  // the #254 change moves
+  await captureEvidence(page, "debts-page");
 
   // group headers sum their persons: 1500 owed to us, 1200 owed to the supplier
-  await expect(page.getByTestId("debts-group-owed-total")).toContainText("1500 دج");
+  await expect(page.getByTestId("debts-group-owed-total")).toContainText("1,500 دج");
   await expect(page.getByTestId("debts-group-owed-count")).toHaveText("1");
-  await expect(page.getByTestId("debts-group-weowe-total")).toContainText("1200 دج");
+  await expect(page.getByTestId("debts-group-weowe-total")).toContainText("1,200 دج");
   await expect(page.getByTestId("debts-group-weowe-count")).toHaveText("1");
 
   // the customer owes us: one invoice, 1500 remaining
   const owedRow = page.getByTestId("debts-person").filter({ hasText: customerName });
-  await expect(owedRow).toContainText("1500 دج");
+  await expect(owedRow).toContainText("1,500 دج");
   await expect(owedRow.getByTestId("debts-person-count")).toContainText("1");
 
   // we owe the supplier: one invoice, 1200 remaining
   const weOweRow = page.getByTestId("debts-person").filter({ hasText: supplierName });
-  await expect(weOweRow).toContainText("1200 دج");
+  await expect(weOweRow).toContainText("1,200 دج");
   await expect(weOweRow.getByTestId("debts-person-count")).toContainText("1");
+
+  // 4b. #254 money display: the figures are grouped Western digits, and the
+  // currency is the RTL run AFTER the isolated figures — drawn to the LEFT of
+  // them in this RTL row. A separate placement (or a sibling sign) is what the
+  // ticket measured as `92500 د.ج −` reading left to right.
+  const weOweTotal = weOweRow.getByTestId("debts-person-total");
+  await expect(weOweTotal.getByTestId("money-figures")).toHaveText("1,200");
+  await expectCurrencyLeftOfFigures(weOweTotal);
 
   // directions stay in their own groups
   await expect(page.getByTestId("debts-group-owed")).toContainText(customerName);
@@ -118,8 +130,8 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   await owedRow.click();
   const invoiceTable = page.getByTestId("debts-page").getByTestId("debts-invoices");
   await expect(invoiceTable).toContainText("INV-");
-  await expect(invoiceTable.getByTestId("debts-invoice-row")).toContainText("1500 دج");
-  await expect(invoiceTable.getByTestId("debts-invoice-row")).toContainText("2000 دج");
+  await expect(invoiceTable.getByTestId("debts-invoice-row")).toContainText("1,500 دج");
+  await expect(invoiceTable.getByTestId("debts-invoice-row")).toContainText("2,000 دج");
 
   // collapsing removes the invoice list again
   await owedRow.click();

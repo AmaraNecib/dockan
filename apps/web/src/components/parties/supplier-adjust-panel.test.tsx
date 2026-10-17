@@ -149,7 +149,7 @@ describe("SupplierAdjustPanel (issue 176)", () => {
 
     // a fitting amount previews the invoice remaining after saving
     typeInto("supplier-adjust-amount", "500");
-    expect(host.querySelector('[data-testid="supplier-adjust-preview-remaining"]')?.textContent).toContain("4500");
+    expect(host.querySelector('[data-testid="supplier-adjust-preview-remaining"]')?.textContent).toContain("4,500");
   });
 
   // #260 (PR #271 Greptile finding): the preview's direction WORD must come from

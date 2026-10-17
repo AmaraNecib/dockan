@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
+import { logEventCopy, logMessageCopy } from "../lib/log-copy";
 
 /**
  * One parsed JSONL row. The api owns the shape (LogEntry in
@@ -57,7 +58,14 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
           {row.ts}
         </time>
         <span className={`rounded px-1.5 py-0.5 text-xs ${levelStyle[row.level]}`}>{row.level}</span>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground">{row.event}</span>
+        <span
+          className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+          data-testid="diagnostics-event"
+          data-event={row.event}
+          title={row.event}
+        >
+          {logEventCopy(t, row.event)}
+        </span>
         {row.code && (
           <span className="rounded bg-primary px-1.5 py-0.5 font-mono text-xs text-primary-foreground" dir="ltr" data-testid="diagnostics-code">
             {row.code}
@@ -69,7 +77,7 @@ function LogRowCard({ row, raw }: { row: LogRow | null; raw?: string }) {
           </span>
         )}
       </header>
-      <p className="mt-1.5 text-sm text-foreground">{row.message}</p>
+      <p className="mt-1.5 text-sm text-foreground">{logMessageCopy(t, row.event, row.message)}</p>
       {row.stack && (
         <details className="mt-1.5">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">{t("diagnosticsStack")}</summary>

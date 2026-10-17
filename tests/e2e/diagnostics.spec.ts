@@ -56,7 +56,9 @@ test("diagnostics viewer: guarded, in nav, shows today's tail with DKN codes", a
   // is the seeded row; a future spec that logs RPC errors later must not rely
   // on the same assumption
   await expect(page.getByTestId("diagnostics-row").first()).toBeVisible();
-  await expect(page.getByTestId("diagnostics-list")).toContainText("RPC_ERROR");
+  // #253 — the event badge renders Arabic; the raw code survives on data-event
+  await expect(page.getByTestId("diagnostics-list")).toContainText("خطأ في طلب");
+  await expect(page.getByTestId("diagnostics-event").first()).toHaveAttribute("data-event", "RPC_ERROR");
   const code = page.getByTestId("diagnostics-code").first();
   await expect(code).toHaveText(/^DKN-[0-9A-F]{8}$/);
 });

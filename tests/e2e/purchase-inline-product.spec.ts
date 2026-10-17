@@ -55,7 +55,7 @@ test("purchase line: create the product inline, keep the typed line, stock it by
   await lineQty.fill("3");
   await lineCost.fill("900");
   await expect(lineQty).toHaveValue("3");
-  await expect(page.getByTestId("purchase-total")).toContainText("2700");
+  await expect(page.getByTestId("purchase-total")).toContainText("2,700");
 
   // 3. «منتج جديد» on the line opens the inline form right there
   await page.getByTestId("purchase-lines").getByRole("button", { name: `منتج جديد: ${temporaryName}` }).click();
@@ -83,7 +83,7 @@ test("purchase line: create the product inline, keep the typed line, stock it by
   const createdQty = page.getByTestId("purchase-lines").getByLabel(`${productName}: الكمية`);
   await expect(createdQty).toHaveValue("3");
   await expect(page.getByTestId("purchase-lines").getByLabel(`${productName}: تكلفة الوحدة (دج)`)).toHaveValue("900");
-  await expect(page.getByTestId("purchase-total")).toContainText("2700");
+  await expect(page.getByTestId("purchase-total")).toContainText("2,700");
   // the create form closed and the caret is on the line's quantity
   await expect(page.getByTestId("purchase-line-product-form")).toHaveCount(0);
   await expect(createdQty).toBeFocused();
@@ -113,7 +113,7 @@ test("purchase line: create the product inline, keep the typed line, stock it by
   await page.goto("/items");
   const itemsRow = page.getByRole("row", { name: new RegExp(productName) });
   await expect(itemsRow).toBeVisible();
-  await expect(itemsRow.getByRole("cell", { name: "1400 دج", exact: true })).toBeVisible();
+  await expect(itemsRow.getByRole("cell", { name: "1,400 دج", exact: true })).toBeVisible();
   await expect(itemsRow.getByTestId("stock-after-cell")).toHaveText(/^3\b/);
 });
 
@@ -180,7 +180,7 @@ test("purchase line: a create from a zero-cost line is allowed and the invoice p
   // invoice prices the product
   const createdCost = page.getByTestId("purchase-lines").getByLabel(`${productName}: تكلفة الوحدة (دج)`);
   await createdCost.fill("900");
-  await expect(page.getByTestId("purchase-total")).toContainText("2700");
+  await expect(page.getByTestId("purchase-total")).toContainText("2,700");
   await page.getByTestId("purchase-save").click();
   await expect(page.getByTestId("purchase-saved-number")).toContainText(/SUP-\d+/);
 

@@ -1231,12 +1231,12 @@ describe("PurchasePage quantity draft (#146)", () => {
 
     it("creates the product on the line and keeps the quantity and unit cost the owner typed", async () => {
       const { container } = await mountWithTypedLine("2", "1200");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
 
       await openCreate(container, "item-منتج");
       expect(createRow(container)).not.toBeNull();
       // the form names the cost it will record, so the price is not a mystery
-      expect(createRow(container)?.textContent).toContain("1200");
+      expect(createRow(container)?.textContent).toContain("1,200");
       await fillCreate(container, { name: "منتج جديد" });
       await chooseLineCategory(container, "تصنيف");
       await submitCreate(container);
@@ -1254,7 +1254,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       // …and the typed values survived the replace
       expect(lineQty(container, "item-منتج جديد")?.value).toBe("2");
       expect(lineCost(container, "item-منتج جديد")?.value).toBe("1200");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
       // the caret is on the line's quantity: the cost is already typed
       expect(document.activeElement).toBe(lineQty(container, "item-منتج جديد"));
 
@@ -1285,7 +1285,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(createdItems).toHaveLength(0);
       expect(createRow(container)).not.toBeNull();
       expect(lineQty(container, "item-منتج")?.value).toBe("2");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
     });
 
     it("refuses a create with no category picked, naming the category", async () => {
@@ -1338,7 +1338,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     it("changes the product on a line from its own picker, keeping the typed values", async () => {
       catalogMatches = [{ item: catalogItem("other-1", "منتج آخر", 700), category: null, matchedBy: "NAME" }];
       const { container } = await mountWithTypedLine("3", "1200");
-      expect(totalText(container)).toContain("3600");
+      expect(totalText(container)).toContain("3,600");
 
       await pickForLine(container, "item-منتج", "منتج آخر");
 
@@ -1957,7 +1957,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       const rows = container.querySelectorAll('[data-testid="purchase-lines"] tbody tr');
       expect(rows).toHaveLength(1);
       expect(lineQty(container, "item-منتج ب")?.value).toBe("5");
-      expect(totalText(container)).toContain("4500");
+      expect(totalText(container)).toContain("4,500");
     });
 
     it("keeps the category pick for the next line create, and no leftover name", async () => {

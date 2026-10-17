@@ -55,6 +55,7 @@ describe("activity summary tokens render translated copy", () => {
     { tag: "VAULT_UNLOCK_FAILED", summary: "VAULT_UNLOCK_FAILED 2026-10-16T09:00:00", keeps: ["2026-10-16T09:00:00"] },
     { tag: "VAULT_RECOVERY_FAILED", summary: "VAULT_RECOVERY_FAILED 2026-10-16T09:00:00", keeps: ["2026-10-16T09:00:00"] },
     { tag: "VAULT_CHANGE_PASSPHRASE_FAILED", summary: "VAULT_CHANGE_PASSPHRASE_FAILED 2026-10-16T09:00:00", keeps: ["2026-10-16T09:00:00"] },
+    { tag: "VAULT_SETUP_RESUME_FAILED", summary: "VAULT_SETUP_RESUME_FAILED 2026-10-16T09:00:00", keeps: ["2026-10-16T09:00:00"] },
     { tag: "VAULT_RECOVERY_RESET_FAILED", summary: "VAULT_RECOVERY_RESET_FAILED 2026-10-16T09:00:00", keeps: ["2026-10-16T09:00:00"] },
   ];
 
@@ -178,6 +179,12 @@ describe("activity reference links", () => {
 
   it("links an item row to its history", () => {
     expect(activityRefLink(item)).toEqual({ to: "/items/$itemId/history", params: { itemId: "1111aaaa-2222" } });
+    // #253 round 2 — creating an item with opening stock stores
+    // ITEM_CREATED_WITH_STOCK with ref item.id (router.ts), so it links too
+    expect(activityRefLink({ summary: "ITEM_CREATED_WITH_STOCK 12 بطارية", ref: "1111aaaa-2222" })).toEqual({
+      to: "/items/$itemId/history",
+      params: { itemId: "1111aaaa-2222" },
+    });
   });
 
   it("links an invoice row to the invoice", () => {

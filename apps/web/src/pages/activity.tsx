@@ -43,7 +43,7 @@ export function activityRefLink(entry: { summary: string; ref: string | null }):
   const ref = entry.ref;
   if (ref === null || ref === "") return null;
   const [tag, role] = entry.summary.split(" ");
-  if (tag === "ITEM_CREATED" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
+  if (tag === "ITEM_CREATED" || tag === "ITEM_CREATED_WITH_STOCK" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
     return { to: "/items/$itemId/history", params: { itemId: ref } };
   }
   if (tag === "STOCK_LINKED" || tag === "SALE_CREATED" || tag === "PURCHASE_CREATED" || tag === "PAYMENT_RECORDED") {
@@ -144,6 +144,10 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   if (tag === "VAULT_RECOVERY_FAILED" && tokens.length >= 2) return t("activityVaultRecoveryFailed", { at: tokens.slice(1).join(" ") });
   if (tag === "VAULT_CHANGE_PASSPHRASE_FAILED" && tokens.length >= 2) return t("activityVaultChangePassphraseFailed", { at: tokens.slice(1).join(" ") });
   if (tag === "VAULT_RECOVERY_RESET_FAILED" && tokens.length >= 2) return t("activityVaultRecoveryResetFailed", { at: tokens.slice(1).join(" ") });
+  // #253 round 2 — a wrong passphrase while retrying an interrupted setup stores
+  // this tag in the throttle's pendingEvents; the next boot copies it into the
+  // activity log, so it needs the same branch as the other vault failures.
+  if (tag === "VAULT_SETUP_RESUME_FAILED" && tokens.length >= 2) return t("activityVaultSetupResumeFailed", { at: tokens.slice(1).join(" ") });
   if (tag === "EXPENSE_CATEGORY_CREATED" && tokens.length >= 3) {
     const name = tokens.slice(2).join(" ");
     return tokens[1] === "WITHDRAWAL"

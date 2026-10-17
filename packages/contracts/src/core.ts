@@ -107,6 +107,7 @@ export const activitySummaryTags = [
   "VAULT_RECOVERY_FAILED",
   "VAULT_CHANGE_PASSPHRASE_FAILED",
   "VAULT_RECOVERY_RESET_FAILED",
+  "VAULT_SETUP_RESUME_FAILED",
 ] as const;
 
 export type ActivitySummaryTag = (typeof activitySummaryTags)[number];
@@ -136,6 +137,7 @@ export const logEvents = [
   "VAULT_DISABLED",
   "VAULT_CREATED",
   "VAULT_UNLOCKED",
+  "VAULT_RECOVERY_UNLOCKED",
   "VAULT_SETUP_DONE",
   "VAULT_SETUP_FAILED",
   "VAULT_SETUP_BACKUP_FAILED",

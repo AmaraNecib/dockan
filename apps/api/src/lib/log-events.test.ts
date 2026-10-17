@@ -32,9 +32,17 @@ function walkTs(dir: string): string[] {
   return files;
 }
 
+/**
+ * The literal event codes the api passes to a log-writing call. `finishUnlock`
+ * is included because it takes the code as a parameter
+ * (`finishUnlock(core, masterKey, "VAULT_RECOVERY_UNLOCKED")`) and the
+ * logger call inside it uses the parameter, so the scan cannot see the
+ * literal without matching the caller (#253 round 2).
+ */
 const EMIT_SITES = [
   /logger\??\.(?:info|warn|error)\(\s*"([A-Z][A-Z0-9_]*)"/g,
   /(?:rotateSession|recordFailure)\("([A-Z][A-Z0-9_]*)"\)/g,
+  /finishUnlock\([^)]*?"([A-Z][A-Z0-9_]*)"\)/g,
 ];
 
 function emittedEvents(): Map<string, string> {

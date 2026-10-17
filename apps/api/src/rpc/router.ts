@@ -311,11 +311,13 @@ async function partyOutstandingDebt(
  * #256 — the default cash back on a purchase return: nothing while the signed
  * account still says the shop owes the supplier (the return reduces that debt),
  * the whole return value once nothing is owed either way. Read with the same
- * `supplierBalance` the ledger and the account header use.
+ * `supplierBalance` the ledger and the account header use, and under the SAME
+ * convention as the rest of the account: #260 made a NEGATIVE balance the debt
+ * the shop owes, so the polarity here is `balance < 0`.
  */
 async function defaultSupplierCashBack(tx: StorePort, supplierId: string, returnValue: number): Promise<number> {
-  const owed = supplierBalance(await tx.listSupplierEntries(supplierId));
-  return owed > 0 ? 0 : returnValue;
+  const balance = supplierBalance(await tx.listSupplierEntries(supplierId));
+  return balance < 0 ? 0 : returnValue;
 }
 
 /**

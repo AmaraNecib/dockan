@@ -318,11 +318,12 @@ describe("supplier return default refund method (#256)", () => {
   const defaultNote = () => host.querySelector('[data-testid="supplier-return-cash-default"]')?.textContent ?? "";
 
   it("says the default applies against the debt while the shop owes the supplier", async () => {
-    await render(1_500);
+    await render(-1_500);
     typeInto("supplier-return-qty-l2", "1");
-    // balance > 0 means the SHOP owes the supplier, so the copy must name the
-    // debt on OUR side (finding #256 round 3: «لنا عند المورّد» described money
-    // the supplier owes us — the opposite direction of the money that moves)
+    // #260 — a NEGATIVE balance means the SHOP owes the supplier, so the copy
+    // must name the debt on OUR side (finding #256 round 3: «لنا عند المورّد»
+    // described money the supplier owes us — the opposite direction of the
+    // money that moves)
     expect(defaultNote()).toContain("يُخصم من الدين");
     expect(defaultNote()).toContain("الدين الذي علينا للمورّد");
     expect(defaultNote()).not.toContain("لنا عند المورّد");

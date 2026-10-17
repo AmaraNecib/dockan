@@ -4273,8 +4273,9 @@ describe("purchase return default refund (#256)", () => {
     const returned = await client.suppliersReturn({ supplierId: supplier.id, invoiceId: purchase.id, lines: [{ invoiceLineId: purchase.lines[0]!.id, quantity: 1 }] });
     expect(returned.entries.find((entry) => entry.kind === "RETURN")).toMatchObject({ amount: 500 });
     expect(returned.entries.some((entry) => entry.kind === "REFUND")).toBe(false);
-    // the return reduced the debt instead of handing cash back
-    expect(returned.balance).toBe(500);
+    // the return reduced the debt instead of handing cash back; #260 reads a
+    // debt we owe as a NEGATIVE balance
+    expect(returned.balance).toBe(-500);
   });
 
   it("defaults to cash back when nothing is owed either way", async () => {
@@ -4294,7 +4295,8 @@ describe("purchase return default refund (#256)", () => {
     // nothing owed, yet the owner keeps the 300 as credit at the supplier
     const returned = await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 300, cashBack: 0 });
     expect(returned.entries.some((entry) => entry.kind === "REFUND")).toBe(false);
-    expect(returned.balance).toBe(-300);
+    // #260 — credit at the supplier is a POSITIVE balance
+    expect(returned.balance).toBe(300);
   });
 });
 

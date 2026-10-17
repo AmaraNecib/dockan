@@ -32,8 +32,9 @@ export function SupplierReturnPanel({
   onCancel,
 }: {
   supplierId: string;
-  /** the signed account balance: positive while the shop owes the supplier.
-   * The default cash back is derived from it (#256). */
+  /** the signed account balance under the #260 convention: negative while the
+   * shop owes the supplier, positive when the supplier owes us. The default
+   * cash back is derived from it (#256). */
   balance: number;
   invoices: readonly Invoice[];
   onDone: () => void;
@@ -85,8 +86,9 @@ export function SupplierReturnPanel({
   // supplier the return applies against that debt (no cash back); with nothing
   // owed either way the default is to get the money back as cash. An untouched
   // field submits no cashBack at all, so the SERVER derives it from the ledger
-  // it reads inside the write transaction.
-  const defaultCashBack = balance > 0 ? 0 : value;
+  // it reads inside the write transaction. #260: the debt we owe is a NEGATIVE
+  // balance, so the same polarity the server derives applies here.
+  const defaultCashBack = balance < 0 ? 0 : value;
   // a nonempty draft that is not a positive whole number must be rejected, not
   // silently dropped: otherwise the saved return differs from the preview
   const quantityDraftInvalid = !invoiceReady && Object.values(quantities).some((draft) => !draftBlank(draft));
@@ -262,7 +264,7 @@ export function SupplierReturnPanel({
         {t("returnsValue")}: <Amount value={value} />
       </p>
 
-      {!cashBackTouched.current && (balance > 0 || value > 0) && (
+      {!cashBackTouched.current && (balance < 0 || value > 0) && (
         <p className="text-xs text-muted-foreground" data-testid="supplier-return-cash-default">
           {defaultCashBack === 0
             ? t("supplierReturnDefaultDebt")

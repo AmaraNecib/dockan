@@ -91,6 +91,44 @@ same two keys, and the brief does not ask for them to move.
    swapped mapping (`:142` expects `يسالنا` on a THEY_OWE row; `:157` picks
    `يسالنا` to get a credit). Both move to `نسالوه`.
 
+## Sibling calques audited (brief "also in scope" 3)
+
+Recorded here because the audit has to leave a finding, not an aside in a commit
+body. On base `d843566`:
+
+- `تتابعي` (the expenses period enum): **absent**. `grep -rn 'تتابعي' apps/ tests/`
+  returns nothing; the period enum is the `rangePreset_*` family
+  (`i18n.ts:717-726`), all clean Arabic.
+- `السحب المالك)` (the expense category select's stray paren): **absent**. The
+  badge string is `i18n.ts:710 expensesWithdrawalBadge: "سحب المالك"`, and
+  `i18n.ts:84 activityExpenseCategoryCreatedWithdrawal: "…(سحب مالك)"`. Neither
+  carries a stray `)`. The `)` the brief saw in the select is the template's own
+  bracket in `expenses.tsx` (`` `${category.name} (${t("expensesWithdrawalBadge")})` ``),
+  which is deliberate.
+
+So the brief's premise is stale on this base; the audit is answered by absence,
+and no string changes are needed for it.
+
+## Review dispositions
+
+- Round 1 (`fd19ddd`, 5 sub-agents): two hard findings — `CONTEXT.md`'s Adjustment
+  glossary still documented the swapped mapping, and the evidence config claimed
+  "not committed" while committed — plus the "one map" claim being weaker than the
+  code, `walkTsx` duplicated from `cell-ltr.test.ts`, and four guard/test gaps.
+  All applied in `605f8c3`.
+- Round 2 (`605f8c3`, 5 sub-agents): the evidence logs carried no SHA and predated
+  the reviewed HEAD (documented-standard breach); the guard let `items={[] as
+  const}` / `items={EMPTY}` through; the «يسالنا» panel button's onClick was
+  unpinned; the positive control counted roots without a `SelectValue`. All applied
+  in `4458560`.
+- Round 3 (`4458560`, 4 sub-agents): recorded in
+  `.scratch/reviews/252/4458560-code-review.md` and `-test-audit.md`.
+
+Residual, deliberately not changed (judgement calls, not violations): the two
+one-line ternaries in `supplier-entry-display.ts` could fold into one
+`{labelKey, hintKey}` table; `directionItems` is rebuilt per render (two objects,
+no memo); the guard cannot see aliased/namespaced roots (stated in-file).
+
 ## Risks
 
 - The e2e spec pins the swap in two places; forgetting either leaves a test that

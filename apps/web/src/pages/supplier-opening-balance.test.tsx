@@ -10,7 +10,7 @@ import { normalizeTextKey } from "@dokan/contracts";
 import i18n from "../lib/i18n";
 
 import { routerMock } from "../tests/router-mock";
-import { activateOption, findOption, openSelect } from "../tests/select-driver";
+import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
 
 mock.module("@tanstack/react-router", () => routerMock());
 
@@ -503,6 +503,30 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     });
 
     expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد اتجاه ٢٥٢", direction: "THEY_OWE", amount: 700 });
+  });
+
+  /** The other half of acceptance 2 on this screen: the option that reads «يسالنا»
+   * (WE_OWE = we owe him) must SUBMIT WE_OWE. Moved off the default first, so an
+   * option that leaves the draft untouched cannot pass. */
+  it("#252 — choosing the 'we owe him' option submits WE_OWE", async () => {
+    render();
+    await settle();
+
+    // row 1 is s-2, which carries no account entries, so the save goes straight
+    // through without the confirmation dialog
+    const trigger = host.querySelectorAll<HTMLElement>('[data-testid="opening-balance-direction"]')[1]!;
+    const labelOf = () => trigger.querySelector('[data-slot="select-value"]')?.textContent;
+    await chooseOption(trigger, "نسالوه");
+    expect(labelOf()).toBe("نسالوه");
+    await chooseOption(trigger, "يسالنا");
+    expect(labelOf()).toBe("يسالنا");
+
+    typeIntoRow(1, "450");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", direction: "WE_OWE", amount: 450 });
   });
 
   it("surfaces the confirmation dialog when the server refuses a stale-expectation row (round 5)", async () => {

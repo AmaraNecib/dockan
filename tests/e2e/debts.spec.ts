@@ -5,6 +5,11 @@ import { openItemsTab } from "./items-helpers";
 import { captureEvidence, expectCurrencyLeftOfFigures } from "./money-display-helpers";
 import { runE2eReset } from "./reset-helpers";
 
+// #254 evidence (#259): the money display is a VISUAL change, so this spec can
+// record a video at real user pace when a lane asks for one. CI never sets
+// E2E_VIDEO, so CI records nothing.
+test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
+
 /**
  * Debts screen (/debts). After first-time setup, seed a
  * category + item, then create a sale with a typed customer and a partial

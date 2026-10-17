@@ -30,12 +30,10 @@ export default defineConfig({
     // on-first-retry would record nothing. The trace carries the DOM snapshots
     // and the /api/rpc request/response bodies that a bare 30s timeout cannot
     // attribute (wisdom 2026-10-14-e2e-ack-vs-test-budget); the screenshot and
-    // error-context.md land beside it. Video stays off by default: it adds
-    // per-test encoding cost on a sequential suite without answering anything
-    // the trace leaves open. A lane that must leave "real user pace" evidence
-    // for a change to how something LOOKS (#259) sets E2E_VIDEO=1 on that run
-    // and commits the recording under .scratch/reviews/<issue>/.
-    video: process.env.E2E_VIDEO === "1" ? "on" : "off",
+    // error-context.md land beside it. No video by default: it adds per-test
+    // encoding cost on a sequential suite without answering anything the trace
+    // leaves open. A spec that owes "real user pace" evidence (#259) opts in
+    // with `test.use({ video: ... })` instead of paying for it everywhere.
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },

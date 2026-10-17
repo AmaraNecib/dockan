@@ -14,6 +14,9 @@ export async function expectCurrencyLeftOfFigures(cell: Locator): Promise<void> 
   const currency = await cell.getByTestId("money-currency").boundingBox();
   expect(figures).not.toBeNull();
   expect(currency).not.toBeNull();
+  // a collapsed run would satisfy the comparison below by accident
+  expect(figures?.width ?? 0).toBeGreaterThan(0);
+  expect(currency?.width ?? 0).toBeGreaterThan(0);
   expect((currency?.x ?? 0) + (currency?.width ?? 0)).toBeLessThanOrEqual((figures?.x ?? Number.MAX_SAFE_INTEGER) + 1);
 }
 

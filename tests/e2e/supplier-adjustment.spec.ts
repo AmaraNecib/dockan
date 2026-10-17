@@ -5,6 +5,11 @@ import { openItemsTab } from "./items-helpers";
 import { captureEvidence, expectCurrencyLeftOfFigures } from "./money-display-helpers";
 import { sampleNoWrite } from "./no-write-window";
 
+// #254 evidence (#259): the money display is a VISUAL change, so this spec can
+// record a video at real user pace when a lane asks for one. CI never sets
+// E2E_VIDEO, so CI records nothing.
+test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
+
 /** The inputs this spec sends over the issue-184 RPC helper. */
 type RpcInput =
   | { name: string }

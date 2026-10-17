@@ -1,4 +1,4 @@
-[pickup] admission=HOLD budget=8 — both e2e slots are held — the one hard cap; CPU has no say here
+[pickup] admission=HOLD budget=5 — both e2e slots are held — the one hard cap; CPU has no say here
 [pickup] holding: the policy is not admitting. Nothing started.
 [why] every item below is held by the HOST, not by the queue: admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
 [why] #999: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)

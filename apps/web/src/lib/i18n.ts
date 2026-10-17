@@ -383,6 +383,13 @@ const resources = {
       purchasesQuickName: "اسم المنتج",
       purchasesQuickBarcode: "الباركود (اختياري)",
       purchasesQuickCategory: "التصنيف",
+      // #257 — create a product on the line the owner is already editing
+      purchasesLineNewProduct: "منتج جديد",
+      purchasesLineCreateSave: "إنشاء واختيار",
+      purchasesLineProductName: "اسم المنتج",
+      purchasesLineProductCategory: "التصنيف",
+      purchasesChangeItem: "تغيير المنتج",
+      purchasesLineCreateCost: "تُسجَّل تكلفة المنتج من سعر الشراء على هذا السطر:",
       purchasesLineQty: "الكمية",
       purchasesLineCost: "تكلفة الوحدة (دج)",
       purchasesLinesTitle: "أسطر الفاتورة",

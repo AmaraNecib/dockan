@@ -272,7 +272,41 @@ export function patchDraftLine<T extends DraftLine>(lines: readonly T[], itemId:
   return lines.map((entry) => (entry.item.id === itemId ? { ...entry, ...patch } : entry));
 }
 
-/** Drop one line. Removing the last line is the caller's cue to clear discounts. */
+/**
+ * Put a different item on one existing line, in place (#257): the line keeps its
+ * position, its raw quantity draft and its kind-specific fields (a purchase
+ * line's typed cost).
+ *
+ * The draft holds one line per item — every line operation and the React key are
+ * keyed by `item.id` — so an incoming item that already sits on another line
+ * must not produce a second line for it: the replaced line's effective quantity
+ * is added to that line (clamped at `MAX_DRAFT_QUANTITY`, like `addDraftLine`)
+ * and the replaced line disappears. Two consequences are deliberate and written
+ * down here because they read like bugs otherwise: the SURVIVOR's unit cost
+ * wins (the replaced line's typed cost is discarded with it), and the line the
+ * owner was acting on is no longer the line that exists afterwards — a caller
+ * that moves the caret must follow the survivor (`purchase.tsx` `landOnLine`).
+ * An unknown line id, and an item the line already holds, leave the draft alone.
+ */
+export function replaceDraftLineItem<T extends DraftLine>(lines: readonly T[], itemId: string, item: Item): T[] {
+  const target = lines.find((entry) => entry.item.id === itemId);
+  if (target === undefined) return [...lines];
+  // the line's own picker can be pointed at the item it already shows; without
+  // this the survivor lookup below matches the target itself and the line is
+  // dropped, losing the quantity and cost the owner typed (review round 1)
+  if (item.id === itemId) return [...lines];
+  const survivor = lines.find((entry) => entry.item.id === item.id);
+  if (survivor === undefined) return lines.map((entry) => (entry.item.id === itemId ? { ...entry, item } : entry));
+  return lines.flatMap((entry) => {
+    if (entry.item.id === itemId) return [];
+    if (entry.item.id !== item.id) return [entry];
+    return [{ ...entry, quantityDraft: String(Math.min(lineQuantity(entry) + lineQuantity(target), MAX_DRAFT_QUANTITY)) }];
+  });
+}
+
+/**
+ * Remove one line. Removing the last line is the caller's cue to clear discounts.
+ */
 export function removeDraftLine<T extends DraftLine>(lines: readonly T[], itemId: string): T[] {
   return lines.filter((entry) => entry.item.id !== itemId);
 }
@@ -281,6 +315,7 @@ export type DraftAction<T extends DraftLine> =
   | { type: "add"; line: T }
   | { type: "quantity"; itemId: string; draft: string }
   | { type: "patch"; itemId: string; patch: Partial<T> }
+  | { type: "replace"; itemId: string; item: Item }
   | { type: "remove"; itemId: string }
   | { type: "reset" };
 
@@ -296,6 +331,8 @@ export function draftReducer<T extends DraftLine>(lines: readonly T[], action: D
       return setDraftQuantity(lines, action.itemId, action.draft);
     case "patch":
       return patchDraftLine(lines, action.itemId, action.patch);
+    case "replace":
+      return replaceDraftLineItem(lines, action.itemId, action.item);
     case "remove":
       return removeDraftLine(lines, action.itemId);
     case "reset":

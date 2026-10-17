@@ -121,9 +121,9 @@
       ]
     },
     {
-      "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231). purchase.tsx is always_full (shared pickers + InvoiceHeader); the rule keeps the specs reachable for the unit-test sibling",
+      "$comment": "purchase intake, plus the learnability.spec.ts cases that pin the purchase form and its pinned bar at the two short window heights the owner uses (#231), and purchase-inline-product.spec.ts for the #257 line-scoped create. purchase.tsx is always_full (shared pickers + InvoiceHeader); the rule keeps the specs reachable for the unit-test sibling",
       "match": ["apps/web/src/pages/purchase.test.tsx"],
-      "specs": ["purchase-intake.spec.ts", "learnability.spec.ts"]
+      "specs": ["purchase-intake.spec.ts", "purchase-inline-product.spec.ts", "learnability.spec.ts"]
     },
     {
       "$comment": "invoice list/detail, the shared invoice header (which the purchase page also renders) and the new-return form (ReturnsPanel), which returns.spec.ts drives through the invoice page (#231)",

@@ -36,6 +36,13 @@ describe("openingRowStatus", () => {
     expect(openingRowStatus({ amount: "   " })).toEqual({ status: "untouched" });
   });
 
+  it("treats a mark-only pasted amount as untouched, not as an invalid row (#244)", () => {
+    // a bidi mark is Unicode Cf, not whitespace: the raw-`.trim()` gate read it
+    // as a filled row and the grouped reader then refused it
+    expect(openingRowStatus({ amount: "\u200f" })).toEqual({ status: "untouched" });
+    expect(openingRowStatus({ amount: " \u200f " })).toEqual({ status: "untouched" });
+  });
+
   it("fills a grouped amount (the reported 1,000 bug) instead of dropping it", () => {
     expect(openingRowStatus({ amount: "1,000" })).toEqual({ status: "filled", amount: 1000 });
   });
@@ -69,6 +76,11 @@ describe("newOpeningRowStatus", () => {
     // normalizeTextKey (ADR-0007) collapses whitespace: a padded variant is
     // still the same supplier and must be caught as a duplicate
     expect(newOpeningRowStatus({ name: "مورد  البطاريات", amount: "800", existingNames })).toEqual({ status: "duplicate" });
+  });
+
+  it("reads a mark-only amount as empty: a named row is incomplete, an unnamed one untouched (#244)", () => {
+    expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "\u200f", existingNames })).toEqual({ status: "incomplete" });
+    expect(newOpeningRowStatus({ name: "", amount: "\u200f", existingNames })).toEqual({ status: "untouched" });
   });
 
   it("is filled with the trimmed name and the parsed amount", () => {

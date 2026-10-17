@@ -15,6 +15,7 @@ import { orpc } from "../lib/rpc";
 import { inputClass } from "@/components/ui/input";
 import { usePagination } from "../hooks/use-pagination";
 import { Pager } from "@/components/ui/pager";
+import { draftBlank } from "@/lib/amount-parse";
 import { parseSignedWholeNumber, parseWholeNumber } from "../lib/numeric-input";
 import { formatDateTime } from "../lib/dates";
 
@@ -104,7 +105,7 @@ export function StockForm() {
     }
     // a removal cannot carry a unit cost: the api takes one only for stock in
     const parsedUnitCost = parsedDelta > 0 ? parseWholeNumber(unitCost) : null;
-    if (parsedDelta > 0 && unitCost.trim() !== "" && parsedUnitCost === null) {
+    if (parsedDelta > 0 && !draftBlank(unitCost) && parsedUnitCost === null) {
       setError(t("stockUnitCostInvalid"));
       return;
     }

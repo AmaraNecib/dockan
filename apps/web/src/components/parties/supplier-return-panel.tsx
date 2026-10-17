@@ -8,7 +8,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-import { parseLooseNumber, parseWholeAmount } from "@/lib/amount-parse";
+import { draftBlank, parseLooseNumber, parseWholeAmount } from "@/lib/amount-parse";
 
 import { tError } from "@/lib/i18n";
 import { orpc } from "@/lib/rpc";
@@ -77,7 +77,7 @@ export function SupplierReturnPanel({
   const cashInvalid = parsedCash === null;
   // a nonempty draft that is not a positive whole number must be rejected, not
   // silently dropped: otherwise the saved return differs from the preview
-  const quantityDraftInvalid = !invoiceReady && Object.values(quantities).some((draft) => draft.trim() !== "");
+  const quantityDraftInvalid = !invoiceReady && Object.values(quantities).some((draft) => !draftBlank(draft));
 
   function refresh() {
     return Promise.all([

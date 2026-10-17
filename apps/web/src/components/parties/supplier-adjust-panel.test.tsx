@@ -159,6 +159,16 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
   });
 
+  it("treats a mark-only amount as blank: no error text, confirm stays disabled (#244)", () => {
+    render();
+    // a bidi mark is Cf, not whitespace: the raw gate called it a chosen amount
+    // and showed the required-message, though the field holds no number
+    typeInto("supplier-adjust-amount", "\u200f");
+    expect(host.querySelector('[data-testid="supplier-adjust-error"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-adjust-confirm"]')?.disabled).toBe(true);
+    expect(captured).toBeNull();
+  });
+
   it("never auto-switches the linked invoice when the selected one is no longer open (Greptile finding 2)", () => {
     render([invoice({ id: "inv-a", invoiceNumber: "INV-A" }), invoice({ id: "inv-b", invoiceNumber: "INV-B" })]);
     clickOn("supplier-adjust-link");

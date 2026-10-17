@@ -1,0 +1,12 @@
+### guard Phase 1 at 25dfa92
+--- bun run typecheck
+
+ Tasks:    4 successful, 4 total
+Cached:    3 cached, 4 total
+  Time:    52.31s 
+
+typecheck exit: 0
+--- bun run lint
+$ oxlint
+lint exit: 0
+--- note: the harness heavy-run hook resolves e2e-slot.sh in a foreign project path (D:/projects/tuari_react_hono/.scratch/scripts/e2e-slot.sh) and blocks 'bun run test' even with a slot held; the narrowed affected suite above is the substitute.

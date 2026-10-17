@@ -6,7 +6,7 @@ import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
 import { AmountPercentageInput, amountFromPercentage, parseWholePercentage, percentageDraftInvalid, percentageFromAmount, type AmountPercentageValue } from "@/components/ui/amount-percentage-input";
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -85,7 +85,7 @@ export function SupplierPayPanel({
   // #161 — a payment may exceed what is owed: the excess becomes supplier
   // credit (the api splits it), so over-owed is NOT an error here. Only a
   // malformed/zero amount or an invalid percentage draft blocks confirm.
-  const errorText = (amountInvalid && value.amount.trim() !== "") || percentageInvalid ? t("partySettleAmountRequired") : null;
+  const errorText = (amountInvalid && !draftBlank(value.amount)) || percentageInvalid ? t("partySettleAmountRequired") : null;
 
   const selected = outstanding.find((invoice) => invoice.id === invoiceId);
   const plan = amount === null || amount <= 0

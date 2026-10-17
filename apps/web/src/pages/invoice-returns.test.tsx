@@ -253,6 +253,11 @@ describe("returnQuantityError (per-line return cap boundary)", () => {
     expect(returnQuantityError("   ", 4)).toBeNull();
   });
 
+  it("treats a mark-only line as untouched, never as INVALID (#244)", () => {
+    expect(returnQuantityError("\u200f", 4)).toBeNull();
+    expect(returnQuantityError(" \u200f ", 4)).toBeNull();
+  });
+
   it("accepts a whole positive quantity at or below the remaining amount", () => {
     expect(returnQuantityError("1", 4)).toBeNull();
     expect(returnQuantityError("4", 4)).toBeNull();
@@ -477,6 +482,27 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("اختر كمية");
     expect(lastCreateInput).toBeNull();
+  });
+
+  it("treats a mark-only quantity as an untouched line, so the form refuses an all-empty request (#244)", () => {
+    renderPanel(makeInvoice([saleLine()]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "\u200f");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    // mark-only is blank: no entered line, so the same "choose a quantity"
+    // refusal as an empty form — not the "invalid quantity" one
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toContain("اختر كمية");
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).not.toContain("أدخل كمية صحيحة");
+    expect(lastCreateInput).toBeNull();
+  });
+
+  it("drops a mark-only line while a valid line on the same form still submits (#244)", async () => {
+    renderPanel(makeInvoice([saleLine(), saleLine({ id: "00000000-0000-4000-8000-0000000000c9", description: "زيت" })]));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-زيت"]')!, "\u200f");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    // preview and payload agree: the mark-only line is not part of the return
+    expect(lastCreateInput).toMatchObject({ lines: [{ invoiceLineId: LINE_ID, quantity: 2 }] });
   });
 
   it("submits a valid return and announces success in a status role", async () => {

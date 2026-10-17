@@ -1,0 +1,21 @@
+### Guard Phase 1 (pre-commit) for #244 round 2
+
+$ bun run typecheck
+exit code: 0
+ Tasks:    4 successful, 4 total
+Cached:    3 cached, 4 total
+
+$ bun run lint
+exit code: 0
+
+$ bun run test
+exit code: 0
+@dokan/web:test: (pass) vault gate takes over native validation (issue #109) > editing a blamed field clears the Arabic error and aria-invalid [128.62ms]
+@dokan/web:test: (pass) vault gate keeps one failure value (issue #217) > a failing recovery action never keeps the empty-passphrase blame, and editing cannot hide the server error [105.86ms]
+@dokan/web:test: (pass) vault settings takes over native validation (issue #109) > associates the change-form error with the blamed field and clears it on edit [1003.82ms]
+@dokan/web:test: (pass) vault settings takes over native validation (issue #109) > a failed recovery-key action never keeps the empty-passphrase field blamed, and editing it cannot hide the server error [1040.61ms]
+ Tasks:    4 successful, 4 total
+Cached:    3 cached, 4 total
+ 73 pass
+ 0 fail
+

@@ -1,0 +1,32 @@
+### gate-set diff at c143fa8
+
+$ bash .scratch/reviews/244/gate-set-diff.sh 5fbe0f0
+reference 5fbe0f0 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+
+$ bash .scratch/reviews/244/gate-set-diff.sh ad884d1
+reference ad884d1 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+
+$ bash .scratch/reviews/244/gate-set-diff.sh f30581c
+reference f30581c gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+
+$ bash .scratch/reviews/244/gate-set-diff.sh f827d28
+reference f827d28 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+
+$ bash .scratch/reviews/244/gate-set-diff.sh ba5a0b0
+reference ba5a0b0 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+

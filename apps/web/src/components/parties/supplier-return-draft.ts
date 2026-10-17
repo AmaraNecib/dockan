@@ -1,4 +1,4 @@
-import { parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount, parseWholeAmount } from "@/lib/amount-parse";
 
 /**
  * #161 — the pure half of the supplier-return form's draft validation. A draft
@@ -21,9 +21,8 @@ export function parseReturnQuantities(
 ): { lines: ReturnLineDraft[] } | { error: true } {
   const lines: ReturnLineDraft[] = [];
   for (const [invoiceLineId, draft] of Object.entries(quantities)) {
-    const trimmed = draft.trim();
-    if (trimmed === "") continue;
-    const quantity = parseWholeAmount(trimmed);
+    if (draftBlank(draft)) continue;
+    const quantity = parseWholeAmount(draft);
     if (quantity === null || quantity <= 0) return { error: true };
     lines.push({ invoiceLineId, quantity });
   }
@@ -35,7 +34,6 @@ export function parseReturnQuantities(
  * A malformed or negative draft returns null (an error), never a silent zero.
  */
 export function parseCashBackDraft(draft: string): number | null {
-  const trimmed = draft.trim();
-  if (trimmed === "") return 0;
-  return parseGroupedAmount(trimmed);
+  if (draftBlank(draft)) return 0;
+  return parseGroupedAmount(draft);
 }

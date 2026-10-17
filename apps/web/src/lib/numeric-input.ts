@@ -14,7 +14,7 @@
  * digits-only test and the `Number` read keep the exact meaning they had.
  */
 
-import { normalizeArabicIndicDigits } from "./amount-parse";
+import { draftBlank, normalizeArabicIndicDigits } from "./amount-parse";
 
 /**
  * Read a normalised whole-number draft: digits only, no sign, no exponent,
@@ -54,9 +54,8 @@ export type OpeningStockResolution =
  * once; callers only choose the message per reason.
  */
 export function resolveOpeningStock(text: string, required: boolean): OpeningStockResolution {
-  const trimmed = text.trim();
-  if (trimmed === "") return required ? { ok: false, reason: "required" } : { ok: true, value: 0 };
-  const parsed = parseWholeNumber(trimmed);
+  if (draftBlank(text)) return required ? { ok: false, reason: "required" } : { ok: true, value: 0 };
+  const parsed = parseWholeNumber(text);
   if (parsed === null) return { ok: false, reason: "invalid" };
   if (required && parsed < 1) return { ok: false, reason: "required" };
   return { ok: true, value: parsed };

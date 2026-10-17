@@ -108,4 +108,13 @@ describe("SupplierPayPanel oldest-first preview (finding 4)", () => {
     expect(line?.textContent).toContain("1000");
     expect(host.querySelector('[data-testid="supplier-pay-credit"]')?.textContent).toContain("200");
   });
+
+  it("treats a mark-only amount as blank: no error text, confirm stays disabled (#244)", () => {
+    render(800);
+    // a bidi mark is Cf, not whitespace: the raw gate called it a chosen amount
+    // and showed the required-message, though the field holds no number
+    typeInto("supplier-pay-amount", "\u200f");
+    expect(host.querySelector('[data-testid="supplier-pay-error"]')).toBeNull();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="supplier-pay-confirm"]')?.disabled).toBe(true);
+  });
 });

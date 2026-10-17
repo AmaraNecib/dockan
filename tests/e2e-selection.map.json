@@ -99,6 +99,7 @@
       "specs": [
         "items-flow.spec.ts",
         "items-categories.spec.ts",
+        "blankness-mark-only.spec.ts",
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
         "pagination.spec.ts",

@@ -1,0 +1,6 @@
+### e2e green at b0f2c64
+
+$ DOKAN_PORT=4617 DOKAN_WEB_PORT=5617 bun run test:e2e tests/e2e/blankness-mark-only.spec.ts
+
+  ok 1 tests\e2e\blankness-mark-only.spec.ts:14:1 › a mark-only threshold is blank: the item saves with the default (#244) (10.2s)
+  1 passed (17.7s)

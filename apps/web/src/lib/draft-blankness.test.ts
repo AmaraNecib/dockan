@@ -4,6 +4,9 @@ import type { Item } from "@dokan/contracts";
 
 import { PASTED_BIDI_MARKS, draftBlank, percentageDraftInvalid } from "./amount-parse";
 import { nextUnitCost, resolveInitialPaid, saleOverrideInvalid, saleUnitPrice, type SaleDraftLine } from "./invoice-draft";
+import { resolveOpeningStock } from "./numeric-input";
+import { newOpeningRowStatus, openingRowStatus } from "./supplier-opening-draft";
+import { parseCashBackDraft, parseReturnQuantities } from "../components/parties/supplier-return-draft";
 
 /**
  * #238 — one blankness predicate, shared by every numeric-draft reader.
@@ -19,9 +22,12 @@ import { nextUnitCost, resolveInitialPaid, saleOverrideInvalid, saleUnitPrice, t
  * draft exactly as it judges an empty draft**, and a mark *inside* a draft is
  * still a refusal, never a blank. The sites this file covers are the ones the
  * shared predicate reaches: `saleUnitPrice`, `saleOverrideInvalid`,
- * `nextUnitCost`, `resolveInitialPaid`, `percentageDraftInvalid` and
- * `draftBlank` itself. Raw-`.trim()` gates outside that set are recorded as
- * follow-ups, not silently claimed (#238 design).
+ * `nextUnitCost`, `resolveInitialPaid`, `percentageDraftInvalid`, `draftBlank`
+ * itself and the #244 conversions (`resolveOpeningStock`, the opening-balance
+ * row readers, the return-quantity / cash-back readers, `parseCashBackDraft`).
+ * Raw-`.trim()` gates outside that set are held by the #244 ratchet
+ * (`blankness-ratchet.test.ts`), which fails on any unclassified gate instead of
+ * being recorded by hand.
  */
 
 const RLM = "\u200f";
@@ -101,6 +107,48 @@ const SITES: readonly Site[] = [
     chosenDraft: "400",
     blankVerdict: "true",
     chosenVerdict: "false",
+  },
+  {
+    name: "resolveOpeningStock (plain)",
+    judge: (draft) => JSON.stringify(resolveOpeningStock(draft, false)),
+    chosenDraft: "400",
+    blankVerdict: JSON.stringify({ ok: true, value: 0 }),
+    chosenVerdict: JSON.stringify({ ok: true, value: 400 }),
+  },
+  {
+    name: "resolveOpeningStock (required)",
+    judge: (draft) => JSON.stringify(resolveOpeningStock(draft, true)),
+    chosenDraft: "400",
+    blankVerdict: JSON.stringify({ ok: false, reason: "required" }),
+    chosenVerdict: JSON.stringify({ ok: true, value: 400 }),
+  },
+  {
+    name: "openingRowStatus",
+    judge: (draft) => JSON.stringify(openingRowStatus({ amount: draft })),
+    chosenDraft: "400",
+    blankVerdict: JSON.stringify({ status: "untouched" }),
+    chosenVerdict: JSON.stringify({ status: "filled", amount: 400 }),
+  },
+  {
+    name: "newOpeningRowStatus",
+    judge: (draft) => JSON.stringify(newOpeningRowStatus({ name: "س", amount: draft, existingNames: [] })),
+    chosenDraft: "400",
+    blankVerdict: JSON.stringify({ status: "incomplete" }),
+    chosenVerdict: JSON.stringify({ status: "filled", name: "س", amount: 400 }),
+  },
+  {
+    name: "parseReturnQuantities",
+    judge: (draft) => JSON.stringify(parseReturnQuantities({ line: draft })),
+    chosenDraft: "400",
+    blankVerdict: JSON.stringify({ error: true }),
+    chosenVerdict: JSON.stringify({ lines: [{ invoiceLineId: "line", quantity: 400 }] }),
+  },
+  {
+    name: "parseCashBackDraft",
+    judge: (draft) => String(parseCashBackDraft(draft)),
+    chosenDraft: "400",
+    blankVerdict: "0",
+    chosenVerdict: "400",
   },
 ];
 

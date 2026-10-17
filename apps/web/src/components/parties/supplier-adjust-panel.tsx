@@ -8,7 +8,7 @@ import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-import { parseGroupedAmount } from "@/lib/amount-parse";
+import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
@@ -74,7 +74,7 @@ export function SupplierAdjustPanel({
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
   const amountError =
     amount === null || amount <= 0
-      ? amountDraft.trim() === ""
+      ? draftBlank(amountDraft)
         ? null
         : t("supplierAdjustAmountRequired")
       : exceeds

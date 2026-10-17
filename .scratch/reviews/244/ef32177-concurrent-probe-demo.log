@@ -1,0 +1,13 @@
+### concurrent-probe demo at ef32177
+
+########## CASE A — OLD scanner-shapes.sh, a saved probe at the fixed path ##########
+old script exit code: 0
+CASE A: the old fixed path DELETED the saved probe — the finding reproduces
+
+########## CASE B — NEW scanner-shapes.sh, same saved probe, two runs at once ##########
+concurrent new-script exit codes: 0, 0
+CASE B: two concurrent runs green, the saved probe byte-identical, no leftover probe path
+
+########## RESULT ##########
+concurrent-probe demo PASSED (1 demonstrated collision, 1 required behaviour)
+exit: 0

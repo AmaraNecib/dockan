@@ -329,7 +329,7 @@ test("an accepted return relieves the party's older invoices, oldest first, and 
   await expect(page.getByTestId("returns-cash-now")).toHaveText(/^0\b/);
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
-  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RTN-\d+/)![0]!;
+  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RET-\d+/)![0]!;
 
   // while pending nothing moves (#68)
   await page.goto(`/invoices/${invoiceOld.id}`);

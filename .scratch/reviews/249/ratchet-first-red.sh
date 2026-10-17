@@ -17,12 +17,43 @@ SCANNER="apps/web/src/tests/blankness-gates.ts"
   exit 1
 }
 
+git rev-parse --verify --quiet "$REF" > /dev/null || {
+  echo "REFUSING: '$REF' is not a commit in this repo"
+  exit 1
+}
+git cat-file -e "$REF:$SCANNER" 2> /dev/null || {
+  echo "REFUSING: '$REF' has no $SCANNER"
+  exit 1
+}
+
 BACKUP="$(mktemp)"
 OUT="$(mktemp)"
 trap 'cp -p "$BACKUP" "$SCANNER"; rm -f "$BACKUP" "$OUT"' EXIT
 cp -p "$SCANNER" "$BACKUP"
 BEFORE="$(sha256sum "$SCANNER" | cut -d' ' -f1)"
-git show "$REF:$SCANNER" > "$SCANNER"
+
+# A green baseline first: it proves the harness and the dependency install are
+# healthy, so the red run below is attributable to the reference scanner rather
+# than to a broken setup (the same guard the AST branch-pin proof uses).
+( cd apps/web && bun test src/lib/blankness-ratchet.test.ts > "$OUT" 2>&1 )
+baseline=$?
+if [ "$baseline" -ne 0 ]; then
+  echo "FATAL: the working ratchet is not green before the reference scanner is dropped in"
+  grep -E '\(fail\)|error' "$OUT" | head -10
+  exit 1
+fi
+echo "baseline ratchet exit code: 0"
+
+# A failed read must not leave an EMPTY scanner behind: every test would fail for
+# the wrong reason and the non-zero exit would read as proof.
+if ! git show "$REF:$SCANNER" > "$SCANNER"; then
+  echo "FATAL: could not read $REF:$SCANNER"
+  exit 1
+fi
+[ -s "$SCANNER" ] || {
+  echo "FATAL: the reference scanner read as empty; a scan with no scanner proves nothing"
+  exit 1
+}
 
 ( cd apps/web && bun test src/lib/blankness-ratchet.test.ts ) > "$OUT" 2>&1
 code=$?
@@ -30,6 +61,21 @@ cat "$OUT"
 echo "=== reference $REF ratchet exit code: $code ==="
 grep -E '\(fail\)' "$OUT" || true
 grep -E '^ *[0-9]+ (pass|fail)' "$OUT" || true
+
+# A non-zero exit is not a detection: the suite must have RUN (passing tests) and
+# FAILED AN ASSERTION. An emptied scanner, a missing dependency or a crash all
+# exit non-zero with no `(fail)` line, and must not read as failing-first.
+passes="$(sed -n 's/^ *\([0-9][0-9]*\) pass.*$/\1/p' "$OUT" | head -1)"
+fails="$(sed -n 's/^ *\([0-9][0-9]*\) fail.*$/\1/p' "$OUT" | head -1)"
+if [ -z "$passes" ] || [ "$passes" -eq 0 ]; then
+  echo "PROBLEM: the suite reported no passing tests; a setup error is not a failing-first proof"
+  exit 1
+fi
+if ! grep -q '(fail)' "$OUT" || [ -z "$fails" ] || [ "$fails" -eq 0 ]; then
+  echo "PROBLEM: a non-zero exit with no assertion failure is not a detection"
+  exit 1
+fi
+echo "failing-first: $passes passed, $fails failed against $REF"
 
 cp -p "$BACKUP" "$SCANNER"
 AFTER="$(sha256sum "$SCANNER" | cut -d' ' -f1)"

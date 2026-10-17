@@ -892,4 +892,40 @@ describe("the AST blankness walk (#249)", () => {
     expect(signatures("const label = `x ${draft.trim()} y`;")).toEqual([]);
     expect(signatures("const b = current.name.trim() === current.baseline.name;")).toEqual([]);
   });
+
+  it("keeps a gate's identity when a comment moves into the receiver", () => {
+    // a comment inside a chain is trivia, not canonical text: the signature must
+    // match the uncommented form or a harmless comment edit invalidates a
+    // CLASSIFIED entry (and quietly re-tightens the ratchet).
+    expect(signatures('const b = draft./* gap */amount.trim() === "";')).toEqual([
+      's.ts::draft.amount.trim() === ""',
+    ]);
+    expect(
+      signatures(["const t = draft./* gap */amount.trim();", 'const b = t === "";'].join("\n")),
+    ).toEqual(['s.ts::t === "" [draft.amount.trim()]']);
+  });
+
+  it('keeps the `trim() ?? ""` fallback binding the regex scanner reported', () => {
+    // BEFORE this returned []: the initializer is a `??` expression, so `t` was
+    // not collected and `t === ""` found no declaration — a gate the regex
+    // scanner reported silently vanished instead of being refused.
+    expect(signatures(["const t = draft?.trim() ?? \"\";", 'const b = t === "";'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+    expect(signatures(["const t = draft.trim() ?? '';", 'if (t === "") return;'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+  });
+
+  it("refuses a truthiness test on a bound raw trim, not only on the call", () => {
+    const bind = "const t = draft.trim();\n";
+    expect(() => findBlanknessGates(`${bind}if (t) return;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}if (!t) return;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}const b = t ? 1 : 2;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}const b = t && other;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}while (t) {}`, "s.ts")).toThrow(/unhandled/i);
+    // ...but a comparison is the classified gate, and a value use is not a test
+    expect(signatures([bind, 'const b = t === "";'].join("\n"))).toEqual(['s.ts::t === "" [draft.trim()]']);
+    expect(signatures([bind, "void t;"].join("\n"))).toEqual([]);
+  });
 });

@@ -53,7 +53,12 @@ BRANCHES = [
     ("two-step string binding", "if (!ts.isIdentifier(expression)) return;", "if (true) return;"),
     ("inline length of trim", "if (isTrimCall(on)) {", "if (false) {"),
     ("two-step length binding", "if (!ts.isIdentifier(on)) return;", "if (true) return;"),
-    ("declaration collection", "if (isTrimCall(initializer)) {", "if (false) {"),
+    ("declaration collection", "if (trim !== undefined) {", "if (false) {"),
+    (
+        "trim default fallback",
+        "if (isTrimCall(left) && (isEmptyString(right) || isEmptyTemplate(right))) return left;",
+        "return undefined;",
+    ),
     ("normaliser skip", "return ts.isIdentifier(callee) && NORMALISERS.has(callee.text);", "return false;"),
     (
         "normaliser-call guard",
@@ -69,6 +74,11 @@ BRANCHES = [
     (
         "length truthiness refusal",
         "if (isLengthAccess(node) && isRawTrimExpression(node, node)) refuseIfTestPosition(node);",
+        ";",
+    ),
+    (
+        "bound truthiness refusal",
+        "if (declaration !== undefined && !declaration.normalised) refuseIfTestPosition(node);",
         ";",
     ),
 ]

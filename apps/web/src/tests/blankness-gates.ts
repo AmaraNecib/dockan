@@ -85,6 +85,16 @@ export interface BlanknessGate {
 
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 
+/**
+ * A receiver's canonical text, with comment trivia dropped and whitespace
+ * collapsed, so a comment edit cannot change a gate's identity. The printer
+ * drops only comments — text inside a literal (`a["//"]`, a template) is
+ * preserved — which a second hand-rolled comment stripper could not promise.
+ */
+const RECEIVER_PRINTER = ts.createPrinter({ removeComments: true });
+const receiverText = (expression: ts.Expression): string =>
+  collapse(RECEIVER_PRINTER.printNode(ts.EmitHint.Unspecified, expression, expression.getSourceFile()));
+
 const COMPARISON_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsEqualsToken,
   ts.SyntaxKind.EqualsEqualsEqualsToken,
@@ -147,6 +157,23 @@ function isNormalisedReceiver(expression: ts.Expression): boolean {
   if (!ts.isCallExpression(receiver) || receiver.arguments.length === 0) return false;
   const callee = unwrap(receiver.expression);
   return ts.isIdentifier(callee) && NORMALISERS.has(callee.text);
+}
+
+/**
+ * The raw `.trim()` a binding holds: the initializer itself, or the trimmed left
+ * of a `trim() ?? ""` fallback (`const t = draft?.trim() ?? ""`). The fallback is
+ * a real blankness source — the regex scanner reported it, so dropping it would
+ * be a silent blind spot, not a stated ceiling.
+ */
+function trimmedInitializer(initializer: ts.Expression): ts.CallExpression | undefined {
+  const node = unwrap(initializer);
+  if (isTrimCall(node)) return node;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    const left = unwrap(node.left);
+    const right = unwrap(node.right);
+    if (isTrimCall(left) && (isEmptyString(right) || isEmptyTemplate(right))) return left;
+  }
+  return undefined;
 }
 
 /** The nearest block-like ancestor: a block-scoped declaration does not leak
@@ -288,14 +315,14 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
     if (blankKind === "string") {
       if (isTrimCall(expression)) {
         if (!isNormalisedReceiver(trimReceiver(expression))) {
-          anchor(`${collapse(trimReceiver(expression).getText(sourceFile))}.trim()`);
+          anchor(`${receiverText(trimReceiver(expression))}.trim()`);
         }
         return;
       }
       if (!ts.isIdentifier(expression)) return;
       const declaration = visibleDeclaration(expression.text, comparison);
       if (declaration === undefined || declaration.normalised) return;
-      const rhs = collapse(trimReceiver(declaration.trim).getText(sourceFile));
+      const rhs = receiverText(trimReceiver(declaration.trim));
       anchor(expression.text, ` [${rhs}.trim()]`);
       return;
     }
@@ -304,14 +331,14 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
     const on = unwrap(expression.expression);
     if (isTrimCall(on)) {
       if (!isNormalisedReceiver(trimReceiver(on))) {
-        anchor(`${collapse(trimReceiver(on).getText(sourceFile))}.trim().length`);
+        anchor(`${receiverText(trimReceiver(on))}.trim().length`);
       }
       return;
     }
     if (!ts.isIdentifier(on)) return;
     const declaration = visibleDeclaration(on.text, comparison);
     if (declaration === undefined || declaration.normalised) return;
-    const rhs = collapse(trimReceiver(declaration.trim).getText(sourceFile));
+    const rhs = receiverText(trimReceiver(declaration.trim));
     anchor(`${on.text}.length`, ` [${rhs}.trim()]`);
   };
 
@@ -393,23 +420,29 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
 
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
-      const initializer = unwrap(node.initializer);
-      if (isTrimCall(initializer)) {
+      const trim = trimmedInitializer(node.initializer);
+      if (trim !== undefined) {
         const list = node.parent;
         const blockScoped =
           ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) !== 0;
         declarations.push({
           name: node.name.text,
-          trim: initializer,
+          trim,
           offset: node.getStart(sourceFile),
           scope: blockScoped ? nearestScope(node) : nearestFunctionScope(node),
-          normalised: isNormalisedReceiver(trimReceiver(initializer)),
+          normalised: isNormalisedReceiver(trimReceiver(trim)),
         });
       }
     }
     if (ts.isBinaryExpression(node)) classifyComparison(node);
     if (isTrimCall(node)) classifyTrimUse(node);
     if (isLengthAccess(node) && isRawTrimExpression(node, node)) refuseIfTestPosition(node);
+    if (ts.isIdentifier(node)) {
+      // A bound raw trim tested for truthiness is the same unhandled blankness
+      // shape as the call itself: fail closed, never skip it.
+      const declaration = visibleDeclaration(node.text, node);
+      if (declaration !== undefined && !declaration.normalised) refuseIfTestPosition(node);
+    }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);

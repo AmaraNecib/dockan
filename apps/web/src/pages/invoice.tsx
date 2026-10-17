@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { computeReturnRefund } from "@dokan/contracts";
+import { computeReturnRefund, returnSettlementDefault } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
@@ -362,9 +362,23 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // preview need EVERY prior return, so this read is unpaginated (the review
   // screen's returnsList stays paged)
   const returnsQuery = useQuery(orpc.returnsForInvoice.queryOptions({ input: { invoiceId: invoice.id } }));
+  // #256 — the customer's tab, read through the same store seam the api's
+  // default uses (the party id when known, else the typed name), so the method
+  // this form pre-selects is the method the server would pick with no
+  // cashPaidOut. A sale with no name at all has no tab to consult.
+  const counterpartyName = invoice.counterpartyId === null ? invoice.counterpartyName : null;
+  const hasPartyIdentity = invoice.counterpartyId !== null || counterpartyName !== null;
+  const partyDebtQuery = useQuery({
+    ...orpc.debtsByParty.queryOptions({ input: { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName } }),
+    enabled: invoice.kind === "SALE" && hasPartyIdentity,
+  });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
-  const [settlement, setSettlement] = useState<ReturnSettlementPreset>("ALL_CASH");
+  /** #256 — null until the derived default is known, or until the owner must
+   * choose because the debt cannot absorb the return */
+  const [settlement, setSettlement] = useState<ReturnSettlementPreset | null>(null);
+  /** once the owner picks, the derived default stops re-seeding the select */
+  const [settlementChosen, setSettlementChosen] = useState(false);
   const [cashDraft, setCashDraft] = useState("");
   // #162 — the custom cash split is a share of the computed return value, so
   // the amount and the percentage follow each other; the full value is 100%.
@@ -483,7 +497,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
   }, [valueTotal, cashDraft, cashPercentage]);
   const requestedCash =
-    settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
+    settlement === null ? 0 : settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
   // an invalid percentage draft clears the derived amount, and an empty amount
   // is the legitimate "all debt" choice — so it must be rejected explicitly or
   // "12.5%" would silently be recorded as zero cash
@@ -499,13 +513,43 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // bad draft would otherwise render a NaN (or an inflated) split, and
   // `customCashError` already blocks submitting exactly that input.
   const requestedDebt = Math.max(0, valueTotal - requestedCash);
-  const projectionIsValid = cashIsValid && Number.isFinite(requestedDebt);
+  const projectionIsValid = settlement !== null && cashIsValid && Number.isFinite(requestedDebt);
   const projectedDebt = projectionIsValid ? Math.min(requestedDebt, invoice.remainingAmount) : 0;
   const settledCash = projectionIsValid ? valueTotal - projectedDebt : Number.NaN;
   // the offset asked for is bigger than the debt that is left, so that much
   // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
   // (mirrors the api) so an "all debt" choice never silently becomes cash
   const debtIsCapped = projectionIsValid && requestedDebt > projectedDebt;
+  // #256 — what the app picks when the owner does not: the debt when this
+  // invoice's debt can absorb the whole return, cash when there is no debt
+  // anywhere, and nothing when neither holds (the owner must choose; the split
+  // and the cross-invoice rule are owner decisions that are still open).
+  const partyDebt = hasPartyIdentity
+    ? partyDebtQuery.data === undefined
+      ? null
+      : Math.max(invoice.remainingAmount, partyDebtQuery.data.items.reduce((sum, row) => sum + row.remainingAmount, 0))
+    : invoice.remainingAmount;
+  const settlementDefault = returnSettlementDefault({ returnValue: valueTotal, invoiceDebt: invoice.remainingAmount, partyDebt });
+  const derivedPreset: ReturnSettlementPreset | null =
+    settlementDefault.method === "DEBT" || settlementDefault.method === "UNDECIDED"
+      ? // the debt-first direction stays on screen when the app refuses to
+        // pick a split — the owner confirms it (or changes it) before saving
+        "ALL_DEBT"
+      : settlementDefault.method === "CASH"
+        ? "ALL_CASH"
+        : null;
+  // #256 — the method is the owner's whenever the app KNOWS it cannot name one:
+  // the debt cannot absorb the return (the split and the cross-invoice rule are
+  // open decisions). Picking one clears this. While the debt read is still in
+  // flight the app claims no default at all (the select stays unset) but does
+  // not block: a submit sends no method, so the server applies the same rule on
+  // fresh data and refuses loudly if it cannot.
+  const settlementNeedsChoice = !settlementChosen && settlementDefault.method === "UNDECIDED";
+  // the derived default follows the entered quantities until the owner picks
+  useEffect(() => {
+    if (settlementChosen) return;
+    setSettlement(derivedPreset);
+  }, [derivedPreset, settlementChosen]);
   // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
   const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 
@@ -517,7 +561,9 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         setCashDraft("");
         setCashPercentage("");
         cashSource.current = null;
-        setSettlement("ALL_CASH");
+        // a fresh form re-derives the default from the new debt (#256)
+        setSettlementChosen(false);
+        setSettlement(null);
         setError(null);
         setSavedReturn(record);
         void Promise.all([
@@ -560,6 +606,17 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       setError(t("returnsInvalidCash"));
       return;
     }
+    if (settlementNeedsChoice) {
+      // #256 — the app will not pick a split for the owner: the debt cannot
+      // absorb the return here, so the method is theirs to name
+      setError(
+        t(
+          settlementDefault.method === "UNDECIDED" && settlementDefault.reason === "DEBT_ELSEWHERE" ? "returnsDebtElsewhere" : "returnsDebtDefaultExceeds",
+          { value: valueTotal, debt: invoice.remainingAmount },
+        ),
+      );
+      return;
+    }
     const lines = entered.flatMap((line) => {
       const quantity = parseWholeAmount(drafts[line.id] ?? "");
       return quantity === null ? [] : [{ invoiceLineId: line.id, quantity }];
@@ -568,7 +625,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       invoiceId: invoice.id,
       lines,
       reason: reason.trim() === "" ? undefined : reason.trim(),
-      cashPaidOut: settlement === "ALL_CASH" ? undefined : requestedCash,
+      // an untouched default is sent absent so the SERVER derives it from fresh
+      // debt (and refuses instead of capping when the debt moved); once the
+      // owner picks, their explicit number is what settles
+      cashPaidOut: settlementChosen ? requestedCash : undefined,
     });
   }
 
@@ -749,8 +809,10 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             <Select
               value={settlement}
               onValueChange={(value) => {
-                // SAFETY: the select renders only the three preset options
+                // SAFETY: the select renders only the three preset options, and
+                // one is reachable only once a value exists
                 const next = (value ?? "ALL_CASH") as ReturnSettlementPreset;
+                setSettlementChosen(true);
                 setSettlement(next);
                 // the custom split opens at the full return value (100%): the
                 // owner lowers either side to push the rest onto the debt
@@ -768,7 +830,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               ]}
             >
               <SelectTrigger className="w-full" data-testid="returns-settlement">
-                <SelectValue />
+                <SelectValue placeholder={t("returnsSplitChoose")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL_CASH">{t("returnsSplitAllCash")}</SelectItem>
@@ -777,6 +839,28 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               </SelectContent>
             </Select>
           </label>
+          {settlementNeedsChoice && (
+            <div className="grid gap-2 rounded border border-warning/40 bg-warning/10 p-2" data-testid="returns-debt-default-note">
+              <p className="text-xs text-warning">
+                {t(settlementDefault.method === "UNDECIDED" && settlementDefault.reason === "DEBT_ELSEWHERE" ? "returnsDebtElsewhere" : "returnsDebtDefaultExceeds", { value: valueTotal, debt: invoice.remainingAmount })}
+              </p>
+              {/* the select already shows the debt-first direction, so re-picking
+                  it fires no change event — the owner needs a way to say yes */}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="justify-self-start"
+                data-testid="returns-debt-confirm"
+                onClick={() => {
+                  setSettlementChosen(true);
+                  setSettlement("ALL_DEBT");
+                }}
+              >
+                {t("returnsDebtConfirm")}
+              </Button>
+            </div>
+          )}
           {settlement === "CUSTOM" && (
             <div className="grid gap-1 text-sm">
               <AmountPercentageInput

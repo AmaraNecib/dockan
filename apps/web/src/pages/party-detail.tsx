@@ -334,6 +334,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   {supplierAction === "return" && (
                     <SupplierReturnPanel
                       supplierId={partyId}
+                      balance={account.balance}
                       invoices={detail.data.invoices}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierReturnRecorded")); }}
                       onWriteFailed={refreshAfterWriteFailure}

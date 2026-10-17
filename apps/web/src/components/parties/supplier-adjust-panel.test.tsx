@@ -137,7 +137,7 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(host.querySelector('[data-testid="supplier-adjust-preview"]')?.textContent).toContain("لا تتغيّر");
   });
 
-  it("links the invoice, forces يسالنا, and refuses an amount above the remaining", () => {
+  it("links the invoice, forces نسالوه, and refuses an amount above the remaining", () => {
     render();
     clickOn("supplier-adjust-link");
     // linking forces the reducing direction, so the increase button is disabled

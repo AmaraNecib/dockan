@@ -2230,8 +2230,9 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     fillTypedRow(0, "مورد مدين", "100");
     clickOn("opening-balance-add-row");
     fillTypedRow(1, "مورد دائن", "200");
-    // the second row is the credit one; the first must keep its default
-    await pickTypedDirection(1, "يسالنا");
+    // the second row is the credit one; the first must keep its default.
+    // #260 — a credit is THEY_OWE, whose label is now نسالوه
+    await pickTypedDirection(1, "نسالوه");
 
     await act(async () => {
       clickOn("opening-balance-save");

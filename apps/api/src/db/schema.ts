@@ -155,8 +155,8 @@ export const returns = sqliteTable("returns", {
   debtApplied: integer("debt_applied").notNull().default(0),
   /** 1 when acceptance may relieve invoices OTHER than this return's own —
    * only a return recorded under the tab-wide default (#256 round 3). An
-   * explicit choice (and every legacy row, hence the 0 default) is
-   * own-invoice-only: its excess stays unapplied. */
+   * explicit choice, and every row written before this column existed (hence
+   * the 0 default), is own-invoice-only: its excess stays unapplied. */
   spreadsAcrossInvoices: integer("spreads_across_invoices", { mode: "boolean" }).notNull().default(false),
   /** CASH today; credit / debt-credit arrive later without a migration */
   payoutMethod: text("payout_method", { enum: returnPayoutMethods }).notNull(),

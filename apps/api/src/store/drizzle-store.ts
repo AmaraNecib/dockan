@@ -1036,9 +1036,14 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
       }
     }
     // #256 round 3: which allocation rule the promise was recorded under. The
-    // DEFAULT 0 is exactly right for every existing row (all of them predate the
-    // tab-wide rule) and for any row a pre-#256 build writes — an older build
-    // never spreads a promise, so own-invoice-only is the rule it honoured.
+    // DEFAULT 0 is right for every row written before this column existed — a
+    // pre-#256 build never spreads a promise, so own-invoice-only is the rule it
+    // honoured — and it is conservative for the only other source of such rows,
+    // a v5 database written by this PR's own round-2 build (v5 was introduced by
+    // that round and has never shipped). A round-2 defaulted row reads
+    // own-invoice-only, so a promise whose own invoice shrank before acceptance
+    // leaves the excess UNAPPLIED: the debt stays owed rather than being
+    // relieved on an invoice the owner never named.
     if (rows.length > 0 && !names.has("spreads_across_invoices")) {
       conn.raw.exec("ALTER TABLE returns ADD COLUMN spreads_across_invoices INTEGER NOT NULL DEFAULT 0");
     }

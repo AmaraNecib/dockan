@@ -1,0 +1,13 @@
+### probe-safety-demo at 25dfa92 (Greptile finding 2)
+2026-10-17T00:59:26Z
+### CASE A — the old sequence, in a throwaway repo
+edit present before: yes
+edit present after old sequence: no  -> the old instructions DESTROY the edit
+
+### CASE B — the new probe, against a copy carrying a marker edit
+
+target untouched: C:/Users/sensei57/AppData/Local/Temp/tmp.sza0oXTFWD/target/blankness-gates.ts is byte-identical (sha256 860a4d240e07a66e5353cf175721590a9460241687f2fe5ffab8d5c4db209140)
+edit present after new probe: yes -> the new probe leaves the edit BYTE-IDENTICAL
+
+PASSED: old sequence destroys an uncommitted edit; new probe preserves one byte-identical; real target untouched
+exit: 0

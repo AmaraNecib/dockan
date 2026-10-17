@@ -837,6 +837,19 @@ describe("party-detail read-only empty states (issue #96)", () => {
     expect(empty?.querySelector("button, a")).toBeNull();
   });
 
+  it("shows a purchase account entry as the one word شراء (#258)", async () => {
+    partyDetail = makeSupplierDetail();
+    await renderSupplier();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelector('[data-testid="supplier-entry-kind-PURCHASE"]') !== null);
+
+    // «فاتورة شراء» wrapped in the narrow الحركة column; the owner asked for the
+    // single word, matching دفعة / مرتجع / تسوية in the same column
+    const label = host.querySelector('[data-testid="supplier-entry-kind-PURCHASE"]')?.textContent?.trim() ?? "";
+    expect(label).toBe("شراء");
+    expect(label.split(/\s+/u)).toHaveLength(1);
+  });
+
   it("explains an empty supplier account ledger", async () => {
     partyDetail = { ...makeSupplierDetail(), account: { balance: 0, entries: [] } };
     await renderSupplier();

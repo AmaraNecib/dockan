@@ -90,13 +90,13 @@ test("purchase intake: picker lines, quick-add, save, and proposal panel", async
   await expect(page.getByTestId("purchase-total")).toContainText("5100");
 
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // 3. the saved invoice shows the linking proposal (no uninvoiced pool yet)
   await expect(page.getByTestId("link-proposal")).toBeVisible();
 
   // the completion card opens the saved purchase by its id (issue #159)
-  const purchaseNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/INV-\d+/)![0]!;
+  const purchaseNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
   await page.getByTestId("purchase-open-invoice").click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-number")).toContainText(purchaseNumber);

@@ -83,7 +83,7 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   // 4. the return lands in the panel history with a return number
   const historyRow = page.getByTestId("returns-row");
   await expect(historyRow).toBeVisible();
-  const returnNumber = (await historyRow.innerText()).match(/RTN-\d+/)![0]!;
+  const returnNumber = (await historyRow.innerText()).match(/RET-\d+/)![0]!;
   await expect(historyRow).toContainText("900 دج");
   await expect(historyRow).toContainText("قيد المراجعة");
 
@@ -204,7 +204,7 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
 
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
-  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RTN-\d+/)![0]!;
+  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RET-\d+/)![0]!;
 
   // accept it, then the header reconciles: 900 − 200 − 700 = 0
   await openSystemNav(page);

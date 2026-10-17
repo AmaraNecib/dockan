@@ -73,7 +73,10 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 
 **Merge only when the owner says to merge.** A lane never merges at all; the
 parent session merges only on the owner's word, whatever the review says — 5/5
-with no findings and every check green is the *bar to ask*, not permission. A **CI change** (anything under `.github/`)
+with no findings and every check green is the *bar to ask*, not permission. The
+gate is written down in
+[`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md): the four reasons,
+the evidence form (visual vs measured) and the queue path when it cannot merge. A **CI change** (anything under `.github/`)
 additionally goes to the owner for the diff. Merge order matters when two PRs
 share a store/router: land the one that owns the write path first and rebase the
 other onto the new develop.

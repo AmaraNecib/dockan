@@ -69,6 +69,7 @@ async function mountPage(queryClient: QueryClient) {
     rowsText: () =>
       [...container.querySelectorAll("[data-testid='diagnostics-row']")].map((el) => el.textContent ?? ""),
     rows: () => container.querySelectorAll("[data-testid='diagnostics-row']").length,
+    rowElements: () => [...container.querySelectorAll("[data-testid='diagnostics-row']")],
     empty: () => container.querySelector("[data-testid='diagnostics-empty']"),
     retryButton: () => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("إعادة المحاولة")),
     waitFor: async (check: () => boolean) => {
@@ -88,7 +89,7 @@ async function mountPage(queryClient: QueryClient) {
   };
 }
 
-const boot = JSON.stringify({ ts: "2026-08-25T08:00:00", level: "info", event: "SERVER_BOOT_DONE", message: "database ready" });
+const boot = JSON.stringify({ ts: "2026-08-25T08:00:00", level: "info", event: "SERVER_BOOT_DONE", message: "database and auth ready" });
 const warn = JSON.stringify({ ts: "2026-08-25T08:00:01", level: "warn", event: "LOW_DISK", message: "disk nearly full" });
 const seen = { n: 0 };
 const err = (message: string) => {
@@ -116,12 +117,15 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     seen.n = 0;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     queryClient.clear();
     // teardown any mount left behind by a failed assertion — a dangling root
-    // would leak DOM (and act() warnings) into the next test in the file
+    // would leak DOM (and act() warnings) into the next test in the file. The
+    // unmount runs INSIDE act() or it is itself what produces the warning.
     for (const { root, container } of mountedRoots) {
-      root.unmount();
+      await act(async () => {
+        root.unmount();
+      });
       container.remove();
     }
     mountedRoots = [];
@@ -130,7 +134,8 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
   it("requests a bounded tail (200 lines) and shows the log file name", async () => {
     fixture = { file: "logs/2026-08-25.jsonl", lines: [boot] };
     const page = await mountPage(queryClient);
-    expect(await page.waitFor(() => page.text().includes("SERVER_BOOT_DONE"))).toBe(true);
+    // #253 — the event badge is translated; the raw code stays on data-event
+    expect(await page.waitFor(() => page.text().includes(i18n.t("logEvent_SERVER_BOOT_DONE")))).toBe(true);
     expect(lastInput).toEqual({ lines: 200 });
     expect(page.text()).toContain("logs/2026-08-25.jsonl");
     // issue #96 — the non-empty render must not show the empty state
@@ -147,8 +152,8 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     const rows = page.rowsText();
     expect(rows[0]).toContain("rpc call failed #2");
     expect(rows[1]).toContain("rpc call failed #1");
-    expect(rows[2]).toContain("LOW_DISK"); // warn badge rendered as a row
-    expect(rows[3]).toContain("SERVER_BOOT_DONE");
+    expect(rows[2]).toContain("LOW_DISK"); // unknown event badge renders raw
+    expect(rows[3]).toContain(i18n.t("logEvent_SERVER_BOOT_DONE"));
 
     // same site → same DKN code on every RPC_ERROR row (stability, not random)
     const matches = rows.join("\n").match(/DKN-[0-9A-F]{8}/g) ?? [];
@@ -162,8 +167,56 @@ describe("DiagnosticsPage (ticket 14 viewer)", () => {
     const page = await mountPage(queryClient);
     expect(await page.waitFor(() => page.text().includes("this is not json"))).toBe(true);
     expect(page.text()).toContain('"event": 5'); // valid JSON, wrong shape → raw too
-    expect(page.text()).toContain("SERVER_BOOT_DONE");
+    expect(page.text()).toContain(i18n.t("logEvent_SERVER_BOOT_DONE"));
     await page.unmount();
+  });
+
+  /** #253 — the owner named the first-run boot rows as untranslated English. */
+  describe("boot rows are translated (#253)", () => {
+    const firstRun = [
+      JSON.stringify({ ts: "2026-08-25T08:00:01", level: "info", event: "FIRST_TIME_SETUP", message: "owner account created" }),
+      JSON.stringify({ ts: "2026-08-25T08:00:02", level: "info", event: "VAULT_CREATED", message: "vault created and unlocked" }),
+      JSON.stringify({ ts: "2026-08-25T08:00:03", level: "info", event: "SERVER_BOOT_DONE", message: "vault store and auth ready" }),
+      JSON.stringify({ ts: "2026-08-25T08:00:04", level: "info", event: "SERVER_STARTED", message: "Dokan API booted" }),
+    ];
+
+    it("renders Arabic copy for every boot row the owner named", async () => {
+      fixture = { file: "logs/2026-08-25.jsonl", lines: firstRun };
+      const page = await mountPage(queryClient);
+      expect(await page.waitFor(() => page.rows() === 4)).toBe(true);
+      const shown = page.rowsText().join("\n");
+
+      for (const key of ["logEvent_FIRST_TIME_SETUP", "logEvent_VAULT_CREATED", "logEvent_SERVER_BOOT_DONE", "logEvent_SERVER_STARTED"]) {
+        expect(shown).toContain(i18n.t(key));
+      }
+      for (const key of ["logMessage_firstTimeSetup", "logMessage_vaultCreated", "logMessage_serverBootVault", "logMessage_serverStarted"]) {
+        expect(shown).toContain(i18n.t(key));
+      }
+      // no raw English event code or sentence leaks for these rows
+      for (const raw of ["FIRST_TIME_SETUP", "VAULT_CREATED", "SERVER_BOOT_DONE", "SERVER_STARTED", "owner account created", "vault created and unlocked", "vault store and auth ready", "Dokan API booted"]) {
+        expect(shown).not.toContain(raw);
+      }
+      await page.unmount();
+    });
+
+    it("keeps the raw event code on the row for support", async () => {
+      fixture = { file: "logs/2026-08-25.jsonl", lines: firstRun };
+      const page = await mountPage(queryClient);
+      expect(await page.waitFor(() => page.rows() === 4)).toBe(true);
+      const codes = page.rowElements().map((el) => el.querySelector("[data-event]")?.getAttribute("data-event"));
+      // DOM order is newest first, so the seeded order is reversed here
+      expect(codes).toEqual(["SERVER_STARTED", "SERVER_BOOT_DONE", "VAULT_CREATED", "FIRST_TIME_SETUP"]);
+      await page.unmount();
+    });
+
+    it("falls back to the raw English for an event and message outside the catalogue", async () => {
+      fixture = { file: "logs/2026-08-25.jsonl", lines: [warn] };
+      const page = await mountPage(queryClient);
+      expect(await page.waitFor(() => page.rows() === 1)).toBe(true);
+      expect(page.rowsText()[0]).toContain("LOW_DISK");
+      expect(page.rowsText()[0]).toContain("disk nearly full");
+      await page.unmount();
+    });
   });
 
   it("shows the empty state when today's file has no lines", async () => {

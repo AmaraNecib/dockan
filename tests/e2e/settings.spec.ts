@@ -61,7 +61,7 @@ test("settings edit → save → invoice header reflects the store identity", as
   await expect(page.getByTestId("purchase-lines")).toContainText(itemName);
 
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // the saved invoice card prints name + normalized phone
   const header = page.getByTestId("invoice-header");

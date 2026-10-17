@@ -74,11 +74,38 @@ describe("databaseIsEmpty", () => {
     expect(await store.databaseIsEmpty()).toBe(false);
   });
 
-  itHeavy("is false when the invoice number sequence has been used", async () => {
+  itHeavy("is false when an invoice kind counter has been used", async () => {
     const store = makeStore();
     await store.setup();
-    // setup seeds next_number = 1; one allocation proves an invoice existed
-    await store.allocateInvoiceNumber();
+    // no counter row exists yet; one allocation proves an invoice existed
+    await store.allocateInvoiceNumber("SALE");
+
+    expect(await store.databaseIsEmpty()).toBe(false);
+  });
+
+  itHeavy("is false when only the pre-#258 invoice sequence carries the evidence", async () => {
+    // A database claimed before #258 advanced invoice_number_sequence and never
+    // wrote a counter row. Nothing allocates from that singleton any more, so
+    // this reads it deliberately — dropping the check would let a shop whose
+    // invoices were deleted look unprovisioned and be claimed again (ADR-0008
+    // §4.1).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-legacy-claimed-"));
+    const conn: Connection = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "legacy.db") }));
+    cleanups.push(() => {
+      conn.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          return;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    });
+    const store = createDrizzleStore(conn);
+    await store.setup();
+    expect(await store.databaseIsEmpty()).toBe(true);
+    conn.raw.exec("UPDATE invoice_number_sequence SET next_number = 7 WHERE id = 1");
 
     expect(await store.databaseIsEmpty()).toBe(false);
   });

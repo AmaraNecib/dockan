@@ -13,7 +13,7 @@ import { extractPdfText, pdfMediaBoxes, pdfPageCount } from "./pdf-helpers";
  *   both (model 1), 6 lines then 6 (the paginator balances evenly; no payment
  *   block claims the closing sheet's spare room);
  * - a 5-line invoice stays on ONE sheet (the paginator reserves no payment room);
- * - a purchase swaps the meta row to «المورّد» / «فاتورة شراء»;
+ * - a purchase swaps the meta row to «المورّد» / the one word «شراء»;
  * - page 1 carries the running total «المجموع المنقول»; page 2 closes with
  *   the full totals. The payments log stays on the invoice SCREEN, never the
  *   paper (owner decision);
@@ -204,7 +204,8 @@ test("invoice print: a 12-line sale prints as exactly 2 A4 sheets, no browser he
     await expect(sheet.locator(".print-sheet-contacts")).toContainText("العنوان");
     await expect(sheet.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");
   }
-  await expect(last.getByTestId("receipt-kind")).toHaveText("فاتورة بيع");
+  // #258 — the kind row is one word, so it fits the meta row
+  await expect(last.getByTestId("receipt-kind")).toHaveText("بيع");
   await expect(last.locator(".print-sheet-meta")).toContainText("الزبون");
 
   // 5. the 12 lines are printed once, balanced 6/6 over the two sheets
@@ -342,7 +343,7 @@ test("invoice print: a 5-line purchase fits one sheet and labels the supplier", 
   await expect(page.getByTestId("receipt-sheet")).toHaveCount(1);
   const sheet = page.getByTestId("receipt-sheet");
   await expect(sheet.getByTestId("receipt-store")).toHaveText("ماني للاكسسوارات اوتو");
-  await expect(sheet.getByTestId("receipt-kind")).toHaveText("فاتورة شراء");
+  await expect(sheet.getByTestId("receipt-kind")).toHaveText("شراء");
   await expect(sheet.locator(".print-sheet-meta")).toContainText("المورّد");
   await expect(sheet.locator(".print-sheet-meta")).toContainText(longSupplier);
   await expect(sheet.locator(".print-sheet-meta")).not.toContainText("الزبون");

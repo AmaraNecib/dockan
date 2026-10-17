@@ -69,6 +69,20 @@ export const invoiceNumberSequence = sqliteTable("invoice_number_sequence", {
   nextNumber: integer("next_number").notNull(),
 });
 
+/**
+ * #258 — the next number *per invoice kind*, so INV and SUP each run their own
+ * dense series. A single global counter would punch holes in the other prefix
+ * (a purchase would consume a sale's INV number) and a hole in a shop's invoice
+ * book reads as a missing document. A separate table rather than a re-key of
+ * invoice_number_sequence: that table is `CHECK (id = 1)` and ALTER TABLE
+ * cannot change a CHECK, so a per-kind row could not be inserted on a database
+ * created before #258. Rows are created by allocateInvoiceNumber on first use.
+ */
+export const invoiceNumberCounters = sqliteTable("invoice_number_counters", {
+  kind: text("kind", { enum: invoiceKinds }).primaryKey(),
+  nextNumber: integer("next_number").notNull(),
+});
+
 export const invoiceLines = sqliteTable("invoice_lines", {
   id: text("id").primaryKey(),
   invoiceId: text("invoice_id")
@@ -402,6 +416,9 @@ export const SCHEMA_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, subtotal_amount INTEGER NOT NULL DEFAULT 0, discount_type TEXT, discount_value INTEGER, discount_amount INTEGER NOT NULL DEFAULT 0, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_invoices_counterparty ON invoices(counterparty_id)`,
   `CREATE TABLE IF NOT EXISTS invoice_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
+  // #258 — per-kind invoice counters (SALE = INV, PURCHASE = SUP); see the
+  // table definition for why this is not a re-key of the singleton above.
+  `CREATE TABLE IF NOT EXISTS invoice_number_counters (kind TEXT PRIMARY KEY, next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, refund_unit_price INTEGER NOT NULL, refund_amount INTEGER NOT NULL)`,

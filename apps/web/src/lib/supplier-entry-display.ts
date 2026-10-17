@@ -19,11 +19,20 @@ export function supplierEntrySignLabel(entry: { kind: SupplierEntryKind; directi
   return supplierEntrySign(entry.kind, entry.direction) === 1 ? "+" : "−";
 }
 
+/** The direction word for a raw stored `WE_OWE`/`THEY_OWE` token. ONE mapping:
+ * the activity log (#253) and the supplier-account rows share it, so the two
+ * screens can never disagree about who owes whom (#252 owns the label text). */
+export function adjustmentDirectionKey(
+  token: string | null,
+): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
+  return token === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+}
+
 /** The direction word for an ADJUSTMENT, or null for every other kind (whose
  * direction is implied by the kind label). */
 export function supplierEntryDirectionKey(
   entry: { kind: SupplierEntryKind; direction: SupplierAdjustmentDirection | null },
 ): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" | null {
   if (entry.kind !== "ADJUSTMENT") return null;
-  return entry.direction === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+  return adjustmentDirectionKey(entry.direction);
 }

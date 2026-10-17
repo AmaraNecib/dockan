@@ -68,7 +68,7 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   await page.getByTestId("purchase-lines").getByLabel(`${itemName}: الكمية`).fill("5");
   await page.getByTestId("purchase-paid").fill("800");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
 
   // 3. sale: customer typed name, partial payment → customer owes us 1500 of 2000
   const customerName = `زبون مدين-${stamp}`;

@@ -107,15 +107,21 @@ describe("ReceiptView — the settled A4 sheet", () => {
     expect(text(host.querySelector('[data-testid="receipt-date"]'))).toBe("25/08/2026 10:00");
     expect(text(host.querySelector('[data-testid="receipt-number"]'))).toBe("INV-0007");
     expect(text(host.querySelector('[data-testid="receipt-party"]'))).toBe("زبون النقد");
-    expect(text(host.querySelector('[data-testid="receipt-kind"]'))).toBe("فاتورة بيع");
+    // #258 — the kind row is one word, so it sits in the meta row cleanly
+    const saleKind = text(host.querySelector('[data-testid="receipt-kind"]'));
+    expect(saleKind).toBe("بيع");
+    expect(saleKind.split(/\s+/u)).toHaveLength(1);
     expect(text()).toContain("الزبون");
   });
 
-  it("labels a purchase with المورّد and فاتورة شراء", () => {
+  it("labels a purchase with المورّد and the one word شراء", () => {
     renderReceipt({ ...receipt, kind: "PURCHASE" });
-    expect(text(host.querySelector('[data-testid="receipt-kind"]'))).toBe("فاتورة شراء");
+    const purchaseKind = text(host.querySelector('[data-testid="receipt-kind"]'));
+    expect(purchaseKind).toBe("شراء");
+    expect(purchaseKind.split(/\s+/u)).toHaveLength(1);
     expect(text()).toContain("المورّد");
-    expect(text()).not.toContain("فاتورة بيع");
+    // the invoice meta row already says «رقم الفاتورة»; the kind must not
+    expect(text()).not.toContain("فاتورة شراء");
   });
 
   it("shows the label with an em dash when the phone or address is missing", () => {

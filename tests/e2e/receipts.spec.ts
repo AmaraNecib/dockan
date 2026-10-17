@@ -118,7 +118,8 @@ test("invoice print button → receipt document with identity, totals and paymen
   await expect(receipt.getByTestId("receipt-sheet")).toHaveCount(1);
   await expect(receipt.getByTestId("receipt-page-num")).toHaveText("صفحة 1 من 1");
   await expect(receipt.getByTestId("receipt-date")).toHaveText(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
-  await expect(receipt.getByTestId("receipt-kind")).toHaveText("فاتورة بيع");
+  // #258 — one word per kind
+  await expect(receipt.getByTestId("receipt-kind")).toHaveText("بيع");
   await expect(receipt.getByTestId("receipt-items-title")).toHaveText("المشتريات");
   await expect(receipt.locator(".print-sheet-meta")).toContainText("التاريخ والوقت");
   await expect(receipt.locator(".print-sheet-contacts")).toContainText("رقم الهاتف");

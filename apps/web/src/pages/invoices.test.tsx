@@ -171,6 +171,19 @@ describe("InvoicesPage filters", () => {
   });
 });
 
+describe("InvoicesPage kind column (#258)", () => {
+  it("shows one word per kind — بيع for a sale, شراء for a purchase", async () => {
+    const page = await mountPage();
+    // the seeded pair is one legacy sale and one legacy purchase, so the column
+    // is read off real rows rather than the dictionary
+    const kinds = page
+      .rows()
+      .map((row) => row.querySelectorAll("td")[1]?.textContent?.trim() ?? "");
+    expect(kinds).toEqual(["بيع", "شراء"]);
+    for (const label of kinds) expect(label.split(/\s+/u)).toHaveLength(1);
+  });
+});
+
 describe("InvoicesPage empty states (issue #96)", () => {
   it("names the next step and links to a new sale when there are no invoices", async () => {
     allInvoices.length = 0;

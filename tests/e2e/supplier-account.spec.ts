@@ -49,9 +49,9 @@ test("supplier account: pay, return, and refund move one signed balance", async 
   // 2000 stays owed and opens the supplier charge
   await page.getByTestId("purchase-paid").fill("0");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
-  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
-  const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/INV-\d+/)![0]!;
+  await expect(page.getByTestId("purchase-saved-number")).toContainText("SUP-");
+  // SAFETY: the saved card always formats purchase numbers as SUP-<digits>
+  const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
 
   // 3. the supplier detail shows the charge as the balance
   await page.goto("/suppliers");

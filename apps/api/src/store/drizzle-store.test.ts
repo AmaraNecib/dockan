@@ -1151,6 +1151,32 @@ describe("invoices core", () => {
     expect(await store.lastInvoiceNumber()).toBe("INV-0001");
   });
 
+  it("reads the last number across prefixes and ignores a display-only label (#258)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-last-number-"));
+    const connection = openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: path.join(dir, "last.db") }));
+    const tempStore = createDrizzleStore(connection);
+    try {
+      await tempStore.setup();
+      const base = { counterpartyId: null, counterpartyName: null, invoiceDate: "2026-08-25", totalAmount: 0, paidAmount: 0, remainingAmount: 0, notes: null };
+      await tempStore.insertInvoice({ ...base, invoiceNumber: "INV-0004", kind: "SALE" });
+      // the number decides, not the prefix: a purchase can be the latest
+      await tempStore.insertInvoice({ ...base, invoiceNumber: "SUP-0009", kind: "PURCHASE" });
+      // a display-only label must not win on its timestamp suffix
+      await tempStore.insertInvoice({ ...base, invoiceNumber: "INV-RENAME-1792235400275", kind: "SALE" });
+      expect(await tempStore.lastInvoiceNumber()).toBe("SUP-0009");
+    } finally {
+      connection.close();
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          break;
+        } catch {
+          Bun.sleepSync(50);
+        }
+      }
+    }
+  });
+
   it("lists with kind + derived status filters", async () => {
     const invoice = await store.insertInvoice({
       invoiceNumber: "INV-0002",
@@ -1476,15 +1502,19 @@ describe("transactions", () => {
       // connections); the database UPDATE, not either store's queue, owns the
       // uniqueness boundary.
       const [first, second] = await Promise.all([
-        firstStore.allocateInvoiceNumber(),
-        secondStore.allocateInvoiceNumber(),
+        firstStore.allocateInvoiceNumber("SALE"),
+        secondStore.allocateInvoiceNumber("SALE"),
       ]);
       expect(new Set([first, second])).toEqual(new Set(["INV-0001", "INV-0002"]));
+      // #258 — each kind owns its own counter, so the two sale allocations
+      // above must not advance the purchase series: a purchase starts at its
+      // own SUP-0001 (a global counter would hand it 0003 here).
+      expect(await firstStore.allocateInvoiceNumber("PURCHASE")).toBe("SUP-0001");
 
       // The same allocator is safe inside the transaction seam used by the
       // router, and the reservation is committed alongside the invoice row.
       const persisted = await firstStore.withTransaction(async (tx) => {
-        const invoiceNumber = await tx.allocateInvoiceNumber();
+        const invoiceNumber = await tx.allocateInvoiceNumber("PURCHASE");
         return tx.insertInvoice({
           invoiceNumber,
           kind: "PURCHASE",
@@ -1497,20 +1527,24 @@ describe("transactions", () => {
           notes: null,
         });
       });
-      expect(persisted.invoiceNumber).toBe("INV-0003");
+      expect(persisted.invoiceNumber).toBe("SUP-0002");
 
       // A failed transaction must not burn a number, because the sequence
       // update is part of the same atomic unit as the invoice insert.
       await expect(
         firstStore.withTransaction(async (tx) => {
-          await tx.allocateInvoiceNumber();
+          await tx.allocateInvoiceNumber("SALE");
           throw new Error("rollback-number");
         }),
       ).rejects.toThrow("rollback-number");
-      expect(await firstStore.allocateInvoiceNumber()).toBe("INV-0004");
+      // the rolled-back SALE reservation burned nothing: the counter still
+      // holds 3
+      expect(await firstStore.allocateInvoiceNumber("SALE")).toBe("INV-0003");
 
       // A pre-existing manually assigned number must also advance the next
       // suggestion; this protects setup/migration databases with old invoices.
+      // It carries an INV- number on a PURCHASE row, exactly like every
+      // pre-#258 row.
       await firstStore.insertInvoice({
         invoiceNumber: "INV-0042",
         kind: "PURCHASE",
@@ -1522,7 +1556,49 @@ describe("transactions", () => {
         remainingAmount: 0,
         notes: null,
       });
-      expect(await firstStore.allocateInvoiceNumber()).toBe("INV-0043");
+      expect(await firstStore.allocateInvoiceNumber("SALE")).toBe("INV-0043");
+      // …and the manual legacy INV- row must NOT consume a SUP number: the
+      // purchase counter is untouched by it and continues from SUP-0002.
+      expect(await firstStore.allocateInvoiceNumber("PURCHASE")).toBe("SUP-0003");
+
+      // The scan is per prefix in both directions: a hand-inserted SUP row moves
+      // only the purchase counter, and a hand-inserted INV row only the sale one.
+      await firstStore.insertInvoice({
+        invoiceNumber: "SUP-0100",
+        kind: "PURCHASE",
+        counterpartyId: null,
+        counterpartyName: "رقم شراء قديم",
+        invoiceDate: "2026-08-25",
+        totalAmount: 0,
+        paidAmount: 0,
+        remainingAmount: 0,
+        notes: null,
+      });
+      expect(await firstStore.allocateInvoiceNumber("PURCHASE")).toBe("SUP-0101");
+      expect(await firstStore.allocateInvoiceNumber("SALE")).toBe("INV-0044");
+
+      // Four digits is a floor: the GLOB and the substr offset must keep working
+      // once the number grows past 9999 (the SQL path, not just the formatter).
+      await firstStore.insertInvoice({
+        invoiceNumber: "INV-9999",
+        kind: "SALE",
+        counterpartyId: null,
+        counterpartyName: "رقم كبير",
+        invoiceDate: "2026-08-25",
+        totalAmount: 0,
+        paidAmount: 0,
+        remainingAmount: 0,
+        notes: null,
+      });
+      expect(await firstStore.allocateInvoiceNumber("SALE")).toBe("INV-10000");
+
+      // A kind that reached the store through a cast must refuse, not mint a
+      // prefix-less number — and must not leave a counter row behind.
+      // SAFETY: the cast is the case under test: a kind the enum does not carry
+      await expect(firstStore.allocateInvoiceNumber("REFUND" as never)).rejects.toThrow(/unknown invoice kind/u);
+      // SAFETY: the literal SELECT returns one row per counter, shaped { kind, next_number }
+      const counters = firstConnection.raw.query("SELECT kind FROM invoice_number_counters").all() as Array<{ kind: string }>;
+      expect(counters.map((row) => row.kind).sort()).toEqual(["PURCHASE", "SALE"]);
     } finally {
       firstConnection.close();
       secondConnection.close();
@@ -1874,9 +1950,54 @@ describe("returns seam (cash refunds + review marks)", () => {
 
   it("allocates return numbers sequentially from the seeded sequence", async () => {
     const first = await store.allocateReturnNumber();
-    expect(first).toMatch(/^RTN-\d{4}$/);
+    // #258 — the return number carries RET (was RTN)
+    expect(first).toMatch(/^RET-\d{4}$/);
     const second = await store.allocateReturnNumber();
     expect(Number(second.slice(4))).toBe(Number(first.slice(4)) + 1);
+  });
+
+  it("continues a pre-#258 RTN series into RET without reissuing a number", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-return-prefix-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
+    );
+    const legacyStore = createDrizzleStore(legacy);
+    await legacyStore.setup();
+    const invoice = await legacyStore.insertInvoice({
+      invoiceNumber: "INV-0001",
+      kind: "SALE",
+      counterpartyId: null,
+      counterpartyName: "زبون قديم",
+      invoiceDate: "2026-08-01",
+      totalAmount: 900,
+      paidAmount: 0,
+      remainingAmount: 900,
+      notes: null,
+    });
+    // a shop upgraded from #258's predecessor: seven returns, the counter at 8
+    legacy.raw
+      .query("INSERT INTO returns (id, return_number, invoice_id, refund_amount, cash_paid_out, debt_offset, debt_applied, payout_method, reason, status, occurred_at, created_at, updated_at) VALUES (?, 'RTN-0007', ?, 900, 900, 0, 0, 'CASH', NULL, 'PENDING_REVIEW', '2026-08-02T10:00:00', '2026-08-02T10:00:00', '2026-08-02T10:00:00')")
+      .run("00000000-0000-4000-8000-0000000000aa", invoice.id);
+    // the seed ran at the first setup(), when this row did not exist yet, so the
+    // counter still reads 1: only scanning the legacy RTN row can lift the next
+    // allocation to 0008. That scan is the regression this pins — a RET-only
+    // GLOB would answer RET-0001 here.
+    await legacyStore.setup();
+    expect(await legacyStore.allocateReturnNumber()).toBe("RET-0008");
+    // the historical document keeps its own number, and a re-run of the upgrade
+    // does not reset the used counter back to 1
+    expect(legacy.raw.query("SELECT return_number FROM returns WHERE return_number = 'RTN-0007'").all()).toHaveLength(1);
+    await legacyStore.setup();
+    expect(await legacyStore.allocateReturnNumber()).toBe("RET-0009");
+    legacy.close();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.rmSync(legacyDir, { recursive: true, force: true });
+        break;
+      } catch {
+        Bun.sleepSync(50);
+      }
+    }
   });
 
   it("persists a return with lines and reads the full detail (invoice identity joined)", async () => {
@@ -1903,7 +2024,7 @@ describe("returns seam (cash refunds + review marks)", () => {
     });
 
     const detail = await store.getReturnDetail(id);
-    expect(detail?.returnNumber).toMatch(/^RTN-/);
+    expect(detail?.returnNumber).toMatch(/^RET-/);
     expect(detail?.invoiceId).toBe(invoice.id);
     expect(detail?.invoiceNumber).toBe(invoice.invoiceNumber);
     expect(detail?.counterpartyName).toBe("زبون المرتجعات");

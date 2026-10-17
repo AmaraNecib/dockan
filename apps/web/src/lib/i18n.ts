@@ -499,8 +499,10 @@ const resources = {
       invoiceBack: "رجوع للفواتير",
       invoiceNumber: "رقم الفاتورة",
       invoiceKind: "النوع",
+      // #258 — the kind is one word so the column stays narrow and reads as a
+      // pair (بيع / شراء); the two-word «فاتورة شراء» wrapped in the cell
       invoiceKind_SALE: "بيع",
-      invoiceKind_PURCHASE: "مشتريات",
+      invoiceKind_PURCHASE: "شراء",
       invoiceDate: "التاريخ",
       invoiceParty: "الزبون / المورّد",
       invoiceLinesTitle: "أسطر الفاتورة",
@@ -545,8 +547,9 @@ const resources = {
       invoiceDateTime: "التاريخ والوقت",
       invoicePrintCustomer: "الزبون",
       invoicePrintSupplier: "المورّد",
-      invoicePrintKindSale: "فاتورة بيع",
-      invoicePrintKindPurchase: "فاتورة شراء",
+      // #258 — one word per kind on paper too, matching the screens
+      invoicePrintKindSale: "بيع",
+      invoicePrintKindPurchase: "شراء",
       invoicePrintItemsTitle: "المشتريات",
       invoicePrintUnitPrice: "سعر الوحدة",
       invoicePrintSubtotal: "مجموع المشتريات",
@@ -874,7 +877,8 @@ const resources = {
       supplierEntryAmount: "المبلغ",
       supplierEntryInvoice: "الفاتورة",
       supplierEntryNote: "ملاحظة",
-      supplierEntry_PURCHASE: "فاتورة شراء",
+      // #258 — one word in the الحركة column, like دفعة / مرتجع / تسوية
+      supplierEntry_PURCHASE: "شراء",
       supplierEntry_PAYMENT: "دفعة",
       supplierEntry_RETURN: "مرتجع",
       supplierEntry_REFUND: "استرداد",

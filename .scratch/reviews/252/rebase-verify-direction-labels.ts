@@ -9,8 +9,12 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("../../../", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+// fileURLToPath, not `.pathname`. `pathname` leaves percent-encoding in place, so a checkout under
+// a path with a space or a non-ASCII character yields `...%20...` and the readFileSync calls below
+// throw before a single check runs. `fileURLToPath` decodes properly and is the supported API.
+const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB = join(ROOT, "apps/web/src");
 const API = join(ROOT, "apps/api/src");
 const CONTRACTS = join(ROOT, "packages/contracts/src");

@@ -57,8 +57,9 @@ Reversible cheaply: it is one component (`components/ui/amount.tsx`).
 
 **Left alone, per the scope guard:** whether a supplier balance shows a sign at
 all, and what green means — the owner decision recorded in
-`.scratch/notes/decisions-money-ar.html`. The `− ` / `+` characters, the
-`text-success` condition and every label are unchanged.
+`D:/projects/mani-project/.scratch/notes/decisions-money-ar.html` (the MAIN repo;
+`.scratch/notes/` does not exist inside a worktree). The `− ` / `+` characters,
+the `text-success` condition and every label are unchanged.
 
 ## Interfaces
 

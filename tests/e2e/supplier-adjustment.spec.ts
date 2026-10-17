@@ -241,12 +241,13 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await captureEvidence(page, "debts-supplier-credit-row");
 
   // #254 — the signed supplier-credit row: grouped digits, the sign INSIDE the
-  // isolated figures run (a sibling `−` is the run bidi displaced to the far end
-  // of the row), and the currency drawn to the LEFT of the figures.
+  // isolated figures run (a sibling sign is the run bidi displaced to the far end
+  // of the row), and the currency drawn to the LEFT of the figures. The polarity
+  // is #260's, merged while this PR was in flight: a credit is positive ("+").
   const creditRow = page.getByTestId("debts-person").filter({ hasText: creditSupplierName });
   const creditTotal = creditRow.getByTestId("debts-person-total");
-  await expect(creditTotal.getByTestId("money-figures")).toHaveText("− 100,000");
-  await expect(creditTotal).toContainText("− 100,000 دج");
+  await expect(creditTotal.getByTestId("money-figures")).toHaveText("+ 100,000");
+  await expect(creditTotal).toContainText("+ 100,000 دج");
   await expectCurrencyLeftOfFigures(creditTotal);
 });
 

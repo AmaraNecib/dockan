@@ -122,7 +122,9 @@ test("debts screen: both directions grouped with totals, counts, and drill-down"
   // them in this RTL row. A separate placement (or a sibling sign) is what the
   // ticket measured as `92500 د.ج −` reading left to right.
   const weOweTotal = weOweRow.getByTestId("debts-person-total");
-  await expect(weOweTotal.getByTestId("money-figures")).toHaveText("1,200");
+  // #260 polarity (merged while #254 was in flight): a typed-name purchase is a
+  // debt, so the signed row reads "− 1,200". The grouping/bidi half is #254's.
+  await expect(weOweTotal.getByTestId("money-figures")).toHaveText("− 1,200");
   await expectCurrencyLeftOfFigures(weOweTotal);
 
   // directions stay in their own groups

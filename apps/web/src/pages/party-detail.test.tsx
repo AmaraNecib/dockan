@@ -876,7 +876,7 @@ describe("supplier sign rendering (#260)", () => {
     await renderSupplier();
 
     const value = host.querySelector('[data-testid="supplier-balance-value"]');
-    expect(value?.textContent).toContain("1000");
+    expect(value?.textContent).toContain("1,000");
     expect(value?.className).toContain("text-destructive");
     expect(value?.className).not.toContain("text-success");
     expect(host.querySelector('[data-testid="supplier-balance"]')?.textContent).toContain(i18n.t("supplierBalanceOwed"));

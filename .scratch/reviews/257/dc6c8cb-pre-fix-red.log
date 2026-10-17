@@ -1,0 +1,75 @@
+# #257 round 4 — failing-first run (fix absent)
+
+Command: `cd apps/web && bun test src/pages/purchase.test.tsx -t "round 4"`
+Exit: **1** — 0 pass, 4 fail, 46 filtered out.
+
+Tree measured: product code at `dc6c8cb` (PR #266 head) with the round-4 tests as
+committed at `eeca726`, and **no fix** (`const savePending = false;` in place of
+`= createInvoice.isPending`). Re-run twice after the two review passes, so the
+line numbers below are the committed test file's.
+
+| test | line | failing assertion | received |
+|---|---|---|---|
+| `refuses to re-point a line while the invoice save is in flight (round 4, F1)` | `purchase.test.tsx:1674` | `purchase-line-new-item-منتج` `.disabled === true` — the line's create trigger must be dead while the save is out | `false` — the control stayed usable, which is precisely the reported defect |
+| `refuses a line-create submit that no disabled button produced (round 4, F1 belt)` | `purchase.test.tsx:1712` | `expect(createdItems).toHaveLength(0)` — no create may start behind the in-flight save | length **1** — a product was created against a request already serialised |
+| `refuses a catalog pick that would re-point a line under the in-flight save (round 4, F1 belt)` | `purchase.test.tsx:1742` | `expect(purchase-line-pick-item-بديل).toBeNull()` — the line keeps the product the request carries | an `HTMLButtonElement` — the line **was** re-pointed at the picked product while the save was out |
+| `freezes the rest of the invoice draft while the save is in flight (round 4, F1)` | `purchase.test.tsx:1767` | `lineQty(...,"item-منتج").disabled === true` | `false` — the quantity the request already carried stayed editable |
+
+Rows two and three are the ordering proof in its rawest form: with the save in
+flight, a submit and a pick both changed the line after `submit()` had already
+mapped it into the request body. Row two started a real `itemsCreate` behind the
+request; row three re-pointed the line at `بديل` while the payload still named
+`item-منتج`.
+
+The failing React assertion dumps the whole DOM node (~8.5M lines, tens of MB),
+so the raw tail is deliberately not kept: the verdict is the exit code and the
+named assertion is in the head.
+
+```
+bun test v1.4.2 (744846f84)
+
+src\pages\purchase.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+1669 |       expect(saveButton(container)?.disabled).toBe(true);
+1670 |       expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+1671 | 
+1672 |       // the line's own create form is one control that can replace that product:
+1673 |       // it must not open, and the picker beside it must not re-point the line
+1674 |       expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-new-item-منتج"]')?.disabled).toBe(true);
+                                                                                                                         ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses to re-point a line while the invoice save is in flight (round 4, F1) [645.20ms]
+1707 |       // could produce must not start a create against a request already in flight
+1708 |       await act(async () => {
+1709 |         lineForm(container)?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+error: expect(received).toBeNull()
+
+Received: HTMLButtonElement { …whole node dump elided, ~8.5M lines… }
+
+      at <anonymous> (…/apps/web/src/pages/purchase.test.tsx:1742:87)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a catalog pick that would re-point a line under the in-flight save (round 4, F1 belt) [32663.68ms]
+
+1763 |       await saveInFlight(container);
+1764 | 
+1765 |       // every control the request already serialised is read-only, so the draft on
+1766 |       // screen cannot drift from the payload the server is booking
+1767 |       expect(lineQty(container, "item-منتج")?.disabled).toBe(true);
+                                                               ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (D:\projects\mani-worktrees\feat-257-inline-product-round4\apps\web\src\pages\purchase.test.tsx:1767:57)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > freezes the rest of the invoice draft while the save is in flight (round 4, F1) [938.48ms]
+
+ 0 pass
+ 46 filtered out
+ 4 fail
+ 11 expect() calls
+Ran 4 tests across 1 file. [35.79s]
+ 0 pass

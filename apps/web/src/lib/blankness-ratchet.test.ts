@@ -74,6 +74,7 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/items.tsx::name === \"\" [draft.name.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/items.tsx::thresholdText !== \"\" [draft.threshold.trim()]", { verdict: "draftBlank", reason: "converted (#244): blank → leave the stored threshold alone" }],
   ["pages/purchase.tsx::supplier.name.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  ["pages/purchase.tsx::name === \"\" [current.name.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/purchase.tsx::notes.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/purchase.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/purchase.tsx::savedInvoice.counterpartyName.trim() === \"\"", { verdict: "raw", reason: TEXT }],

@@ -34,6 +34,8 @@ export interface InvoiceDraft<T extends DraftLine> {
   setQuantity(itemId: string, draft: string): void;
   /** Merge kind-specific fields (price override, unit cost) into one line. */
   patch(itemId: string, patch: Partial<T>): void;
+  /** Re-point one line at a different item, keeping its quantity and extras (#257). */
+  replaceItem(itemId: string, item: Item): void;
   remove(itemId: string): void;
   reset(): void;
   subtotal: number;
@@ -64,6 +66,9 @@ export function useInvoiceDraft<T extends DraftLine>(config: InvoiceDraftConfig<
   const patch = useCallback((itemId: string, next: Partial<T>) => {
     dispatch({ type: "patch", itemId, patch: next });
   }, []);
+  const replaceItem = useCallback((itemId: string, item: Item) => {
+    dispatch({ type: "replace", itemId, item });
+  }, []);
   const remove = useCallback((itemId: string) => {
     dispatch({ type: "remove", itemId });
   }, []);
@@ -71,7 +76,7 @@ export function useInvoiceDraft<T extends DraftLine>(config: InvoiceDraftConfig<
     dispatch({ type: "reset" });
   }, []);
 
-  return { lines, addItem, setQuantity, patch, remove, reset, subtotal: draftSubtotal(lines, config.unitPrice) };
+  return { lines, addItem, setQuantity, patch, replaceItem, remove, reset, subtotal: draftSubtotal(lines, config.unitPrice) };
 }
 
 export interface PaymentPairState {

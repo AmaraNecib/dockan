@@ -1,0 +1,80 @@
+bun test v1.4.2 (744846f84)
+
+src\pages\purchase.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+(pass) LinkProposalPanel cache reset after linking (greptile round-2) > refetches the proposal after a successful link so the button cannot double-submit [1003.95ms]
+(pass) LinkProposalPanel cache reset after linking (greptile round-2) > explains an empty link pool with no invented action (#96) [99.15ms]
+(pass) LinkProposalPanel cache reset after linking (greptile round-2) > keeps the result message visible while the rows refresh [887.67ms]
+(pass) PurchasePage learnability (issue #94) > teaches the first step on an empty purchase invoice [111.00ms]
+(pass) PurchasePage party picker (issue 120) > carries the picked supplier id onto the purchase invoice [891.24ms]
+(pass) PurchasePage completion card (issue #159) > opens the saved purchase by id, keeps the proposal panel below, and restores the form [194.65ms]
+(pass) PurchasePage completion card (issue #159) > themes the purchase line quantity and cost inputs for dark mode (issue #160) [186.92ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > defaults to the full total and links the percentage (#162) [177.11ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > relinks the pair when the cart total changes (#171) [440.88ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > preserves an amount typed before the first line (#171) [183.26ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > resets the pair before the next purchase (#171) [817.74ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > omits initialPaid for 0% and for a percentage that rounds to zero (#171) [969.77ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > refuses an amount above the cart total before sending (#171) [1049.23ms]
+(pass) PurchasePage amount/percentage payment (#162/#171) > refuses an invalid percentage instead of saving it as unpaid (#171) [1001.04ms]
+(pass) PurchasePage quantity draft (#146) > keeps a cleared draft cleared and refuses to save it, instead of silently keeping the stale quantity [1003.60ms]
+(pass) PurchasePage quantity draft (#146) > blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2) [976.75ms]
+(pass) PurchasePage quantity draft (#146) > keeps an unreadable or zero draft visible and resolves it to zero, exactly like sale [1034.79ms]
+(pass) PurchasePage quantity draft (#146) > sends a valid draft as a whole number and keeps the per-line unitPrice (money math pinned) [1000.65ms]
+(pass) PurchasePage quantity draft (#146) > keeps the unit-cost field's previous value for an unreadable draft and reads a cleared field as zero [1002.33ms]
+(pass) PurchasePage quantity draft (#146) > refuses an over-cap quick-add quantity instead of landing a line that resolves to zero [187.34ms]
+(pass) PurchasePage quantity draft (#146) > creates two items in a row from a single category pick (greptile round 1) [710.60ms]
+(pass) PurchasePage quantity draft (#146) > saves a line at the quantity cap and refuses one above it, pinning the payload [1069.18ms]
+(pass) PurchasePage quantity draft (#146) > bills an Arabic-Indic quantity the same as its ASCII value (#198 decision) [200.86ms]
+(pass) PurchasePage quantity draft (#146) > quick-adds with Arabic-Indic cost, sell and threshold exactly like ASCII (#225) [889.02ms]
+(pass) PurchasePage quantity draft (#146) > lands an Arabic-Indic quick-add cost on the purchase line it adds (#225) [188.50ms]
+(pass) PurchasePage quantity draft (#146) > refuses a multi-line cart with an emptied line and saves once it is fixed [551.20ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > creates the product on the line and keeps the quantity and unit cost the owner typed [391.31ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > uses a typed selling price for the product it creates [624.27ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a nameless create without calling the server, and keeps the form on its line [260.71ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a create with no category picked, naming the category [178.23ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the line as it was when the create is abandoned mid-flight [430.74ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > changes the product on a line from its own picker, keeping the typed values [239.03ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the line when the owner re-picks the product it already holds [277.58ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > creates the product from a line whose unit cost is still zero [769.36ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses an unreadable selling price instead of sending it to the server [417.43ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > collapses the form when the line's own button is pressed again, without creating [179.62ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > returns the caret to the line's create button when the form is cancelled [177.76ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > abandons a create when the owner opens another line's form mid-flight [476.87ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > drops the create form with the line when the owner deletes it [878.34ms]
+An update to ItemPickerDialog inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > does not let a create in flight re-point the line that re-adds its deleted item (round 2, F1) [528.95ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > blocks the invoice save while a line create is in flight (round 2, F2) [459.60ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > frees the invoice save when the owner cancels the create in flight (round 2, F2) [1000.22ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > lets only one create be in flight, so the save gate holds a single slot (round 2, F2) [609.09ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > frees the save when the create fails while the form is still on its line (round 2, F2) [393.59ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses to re-point a line while the invoice save is in flight (round 4, F1) [678.83ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a line-create submit that no disabled button produced (round 4, F1 belt) [445.63ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a catalog pick that would re-point a line under the in-flight save (round 4, F1 belt) [281.88ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > freezes the rest of the invoice draft while the save is in flight (round 4, F1) [596.02ms]
+An update to ItemPickerDialog inside a test was not wrapped in act(...).
+
+When testing, code that causes React state updates should be wrapped into act(...):
+
+act(() => {
+  /* fire events that update state */
+});
+/* assert on the output */
+
+This ensures that you're testing the behavior the user would see in the browser. Learn more at https://react.dev/link/wrap-tests-with-act
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > folds a line into the line that already holds the picked product [330.04ms]
+(pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the category pick for the next line create, and no leftover name [325.00ms]
+
+ 50 pass
+ 0 fail
+ 268 expect() calls
+Ran 50 tests across 1 file. [28.93s]
+exit=0

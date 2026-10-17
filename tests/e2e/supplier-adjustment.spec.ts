@@ -143,8 +143,12 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await expect(saved).toBeVisible();
   await expect(saved).toContainText(openingSupplierName);
   await expect(saved).toContainText("800 دج");
+  // every added row landed with ITS OWN amount, not just its name: a batch that
+  // shifted amounts between rows would still name all three suppliers
   await expect(saved).toContainText(secondOpeningSupplier);
+  await expect(saved).toContainText("150 دج");
   await expect(saved).toContainText(thirdOpeningSupplier);
+  await expect(saved).toContainText("250 دج");
   await page.getByTestId("opening-balance-done").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 

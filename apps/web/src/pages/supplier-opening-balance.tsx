@@ -99,8 +99,9 @@ export function SupplierOpeningBalancePage() {
    * late resolve can no longer address the row that took its place). */
   const nextTypedRowId = useRef(2);
   /** The row an add just appended, focused once it has mounted: the whole point
-   * of #255 is typing many parties without leaving the keyboard. */
-  const pendingTypedFocusId = useRef<string | null>(null);
+   * of #255 is typing many parties without leaving the keyboard. The testid is
+   * resolved AFTER the commit, because only then does the row exist. */
+  const pendingTypedFocusTestId = useRef<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   // the destinations the server named, tagged with the exact batch key they
   // answered for; the dialog renders them verbatim and an edit invalidates the
@@ -292,7 +293,16 @@ export function SupplierOpeningBalancePage() {
     if (rowOnPickedSupplier(row, destinationFor(row.id))) return t("supplierOpeningRowHasAmount");
     return null;
   }
-  const typedRowErrorMessages = typedRowStates.map(({ row, status }) => typedRowError(row, status));
+  // one entry per draft row: its state, its message, and the row itself. The render
+  // reads this array and nothing else, so a row can never show another row's state.
+  const typedRowEntries = typedRowStates.map(({ row, status }) => ({ row, status, error: typedRowError(row, status) }));
+  /** The outgoing rows the batch will actually carry: a row the owner cannot send
+   * (a duplicate, or one naming a supplier another row already carries) is not
+   * counted and not named in the dialog. `save` deliberately maps the UNFILTERED
+   * `readyTypedRows` instead: there, dropping a row would silently lose its amount,
+   * so the write is refused by `blockedReason` and, failing that, by the server.
+   */
+  const eligibleTypedRows = readyTypedRows.filter((row) => !duplicateTypedIds.has(row.id) && !rowOnPickedSupplier(row, destinationFor(row.id)));
 
   // a change to the typed row's lookup fields means the confirmation named an
   // account for a now-outdated row: close it, drop the snapshot, and invalidate
@@ -328,14 +338,20 @@ export function SupplierOpeningBalancePage() {
     };
   }, []);
 
-  const totalRows = filledExisting.length + readyTypedRows.filter((row) => !duplicateTypedIds.has(row.id) && !rowOnPickedSupplier(row, destinationFor(row.id))).length;
+  const totalRows = filledExisting.length + eligibleTypedRows.length;
   const overLimit = isOpeningBatchOverLimit(totalRows);
+  /** #255 — the add control stops at the contract's row cap in BOTH senses: the
+   * batch (filled rows) cannot grow past 200, and neither can the draft list, so
+   * pressing add on a page of blank rows cannot append unbounded DOM. One value,
+   * read by the control's `disabled` and by the handler, so the two cannot
+   * disagree. */
+  const addRowBlocked = totalRows >= MAX_OPENING_BALANCE_ROWS || typedRows.length >= MAX_OPENING_BALANCE_ROWS;
   // the save is blocked, and the reason shown, BEFORE the owner fills more rows.
   // A typed row's error includes the server-resolved id, so editing a row onto the
   // account the dialog named re-blocks the dialog too (issue 177 round 5 / #184);
   // with N rows the FIRST row that has something to say is the one named, so the
   // banner and the row's own message always agree.
-  const firstTypedRowError = typedRowErrorMessages.find((message) => message !== null) ?? null;
+  const firstTypedRowError = typedRowEntries.find((entry) => entry.error !== null)?.error ?? null;
   const blockedReason = overLimit
     ? t("supplierOpeningTooManyRows", { max: MAX_OPENING_BALANCE_ROWS })
     : invalidExisting.length > 0
@@ -349,7 +365,7 @@ export function SupplierOpeningBalancePage() {
   // on an unnamed account
   const confirmNames = [
     ...filledExisting.filter((row) => (row.supplier.accountEntryCount ?? 0) > 0).map((row) => row.supplier.name),
-    ...readyTypedRows.filter((row) => !duplicateTypedIds.has(row.id) && !rowOnPickedSupplier(row, destinationFor(row.id))).map((row) => destinationFor(row.id)?.name ?? row.name),
+    ...eligibleTypedRows.map((row) => destinationFor(row.id)?.name ?? row.name),
   ].filter((name, index, all) => all.findIndex((other) => normalizeTextKey(other) === normalizeTextKey(name)) === index);
   // forward confirmExisting only for the rows the dialog actually named (their
   // cached count shows history); a stale count is resolved by the refusal round-trip
@@ -380,22 +396,31 @@ export function SupplierOpeningBalancePage() {
   }
 
   /** #255 — append a blank typed row and focus its name field, so the owner can
-   * type the next party without reaching for the mouse. Refused at the contract's
-   * row cap: a row added there could only make the batch unsavable. */
+   * type the next party without reaching for the mouse. Refused when
+   * `addRowBlocked`: a row added past the contract's cap could only make the batch
+   * unsavable. */
   function addTypedRow() {
-    if (totalRows >= MAX_OPENING_BALANCE_ROWS) return;
+    if (addRowBlocked) return;
     invalidateAttempt();
     const id = `typed-${nextTypedRowId.current}`;
     nextTypedRowId.current += 1;
-    pendingTypedFocusId.current = id;
+    // the appended row's index is the list length at this moment
+    pendingTypedFocusTestId.current = `opening-balance-typed-name-${typedRows.length}`;
     setTypedRows((current) => [...current, blankTypedRow(id)]);
   }
 
   /** Drop one typed row. The rows after it keep their text and their order: they
-   * are drafts, not supplier rows, so a removal must never re-index anything. */
+   * are drafts, not supplier rows, so a removal must never re-index anything. The
+   * remove control unmounts with its row, so focus moves to the row that took its
+   * place (or to the add control once the list is empty) instead of falling to
+   * `document.body`. */
   function removeTypedRow(id: string) {
     invalidateAttempt();
-    setTypedRows((current) => current.filter((row) => row.id !== id));
+    const index = typedRows.findIndex((row) => row.id === id);
+    const remaining = typedRows.filter((row) => row.id !== id);
+    pendingTypedFocusTestId.current =
+      remaining.length === 0 ? "opening-balance-add-row" : `opening-balance-typed-name-${Math.min(Math.max(index, 0), remaining.length - 1)}`;
+    setTypedRows(remaining);
   }
 
   function setTypedRow(id: string, patch: Partial<TypedRow>) {
@@ -403,13 +428,12 @@ export function SupplierOpeningBalancePage() {
     setTypedRows((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
-  // focus the row an add just appended, once it is in the document
+  // move focus to whatever the last add/remove named, once the DOM reflects it
   useEffect(() => {
-    const id = pendingTypedFocusId.current;
-    if (id === null) return;
-    pendingTypedFocusId.current = null;
-    const index = typedRows.findIndex((row) => row.id === id);
-    if (index >= 0) focusByTestId(`opening-balance-typed-name-${index}`);
+    const testId = pendingTypedFocusTestId.current;
+    if (testId === null) return;
+    pendingTypedFocusTestId.current = null;
+    focusByTestId(testId);
   }, [typedRows]);
 
   /** Leave the screen: abandon any in-flight attempt and drop the confirmation
@@ -816,9 +840,7 @@ export function SupplierOpeningBalancePage() {
                 {/* #255 — one row per typed (new-supplier) draft. Keyed by the row's
                     own id so adding or removing a row never moves another row's text,
                     and indexed in the testids because the draft list is positional. */}
-                {typedRows.map((typedRow, index) => {
-                  const typedState = typedRowStates[index]?.status;
-                  const typedError = typedRowErrorMessages[index] ?? null;
+                {typedRowEntries.map(({ row: typedRow, status: typedState, error: typedError }, index) => {
                   const typedName = typedRow.name.trim();
                   return (
                     <tr key={typedRow.id} className="border-b bg-accent/40" data-testid={`opening-balance-typed-row-${index}`}>
@@ -831,13 +853,13 @@ export function SupplierOpeningBalancePage() {
                             maxLength={200}
                             placeholder={t("supplierOpeningNewRow")}
                             aria-label={t("supplierOpeningNewRow")}
-                            aria-invalid={typedState?.status === "invalid" || typedError !== null}
+                            aria-invalid={typedState.status === "invalid" || typedError !== null}
                             data-testid={`opening-balance-typed-name-${index}`}
                           />
                           <button
                             type="button"
                             className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                            aria-label={typedName === "" ? t("supplierOpeningRemoveRow") : `${t("supplierOpeningRemoveRow")} ${typedName}`}
+                            aria-label={typedName === "" ? t("supplierOpeningRemoveRow") : t("supplierOpeningRemoveRowName", { name: typedName })}
                             onClick={() => removeTypedRow(typedRow.id)}
                             disabled={submitting || bulk.isPending}
                             data-testid={`opening-balance-typed-remove-${index}`}
@@ -871,7 +893,7 @@ export function SupplierOpeningBalancePage() {
                           value={typedRow.amount}
                           onChange={(event) => setTypedRow(typedRow.id, { amount: event.target.value })}
                           aria-label={t("supplierOpeningNewRow")}
-                          aria-invalid={typedState?.status === "invalid"}
+                          aria-invalid={typedState.status === "invalid"}
                           data-testid={`opening-balance-typed-amount-${index}`}
                         />
                       </td>
@@ -928,7 +950,7 @@ export function SupplierOpeningBalancePage() {
               type="button"
               variant="outline"
               onClick={addTypedRow}
-              disabled={submitting || resolving || bulk.isPending || listPending || listFailed || totalRows >= MAX_OPENING_BALANCE_ROWS}
+              disabled={submitting || resolving || bulk.isPending || listPending || listFailed || addRowBlocked}
               data-testid="opening-balance-add-row"
             >
               {t("supplierOpeningAddRow")}

@@ -84,7 +84,8 @@ export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 const EXPLICIT_READERS = ["pages/supplier-opening-balance.tsx"];
 
 /** Thrown when a raw `.trim()` sits in a blankness-test shape the walk does not
- * classify. Fail closed: an unhandled shape is a loud refusal, never a skip. */export class BlanknessScanError extends Error {
+ * classify. Fail closed: an unhandled shape is a loud refusal, never a skip. */
+export class BlanknessScanError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "BlanknessScanError";

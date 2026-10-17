@@ -1986,6 +1986,35 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     return clickTarget<HTMLButtonElement>("opening-balance-save");
   }
 
+  /** Every typed draft row in the table, in order. A prefix count, because a
+   * per-row testid of its own (`typed-row-0`) is true whether or not its siblings
+   * rendered. */
+  function typedRowCount(): number {
+    return host.querySelectorAll('[data-testid^="opening-balance-typed-row-"]').length;
+  }
+
+  /** Open a typed row's direction Select and commit the option with this label.
+   * Base UI arms selection on `pointerdown` and commits on `click` — the same
+   * sequence invoice-returns.test.tsx drives its settlement Select with. */
+  async function pickTypedDirection(index: number, label: string) {
+    const trigger = clickTarget(`opening-balance-typed-direction-${index}`);
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      trigger.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const optionText = (element: HTMLElement) => (element.textContent ?? "").trim();
+    const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((element) => optionText(element) === label);
+    if (option === undefined) throw new Error(`no "${label}" option in the row ${index} direction Select`);
+    act(() => {
+      option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }));
+      option.dispatchEvent(new PointerEvent("click", { bubbles: true, cancelable: true, pointerType: "mouse", detail: 1 }));
+    });
+  }
+
   it("adds five rows and saves them in ONE request", async () => {
     render();
     await settle();
@@ -1994,7 +2023,7 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     for (let index = 1; index < names.length; index += 1) clickOn("opening-balance-add-row");
     names.forEach((name, index) => fillTypedRow(index, name, String((index + 1) * 100)));
 
-    expect(host.querySelectorAll('[data-testid="opening-balance-typed-row-0"]')).toHaveLength(1);
+    expect(typedRowCount()).toBe(5);
     await act(async () => {
       clickOn("opening-balance-save");
     });
@@ -2038,9 +2067,13 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     fillTypedRow(2, "مورد أخير", "500");
 
     clickOn("opening-balance-typed-remove-1");
-    // the survivors keep their order and their 2-row index ids
-    expect(host.querySelectorAll('[data-testid="opening-balance-typed-name-0"]')).toHaveLength(1);
+    // the survivors keep their order, their text AND their amounts: a re-index
+    // bug shows up as a name that kept its row while the amount moved
+    expect(typedRowCount()).toBe(2);
+    expect(typedNameInput(0).value).toBe("مورد يبقى");
+    expect(typedAmountInput(0).value).toBe("300");
     expect(typedNameInput(1).value).toBe("مورد أخير");
+    expect(typedAmountInput(1).value).toBe("500");
     expect(host.querySelector('[data-testid="opening-balance-typed-name-2"]')).toBeNull();
 
     await act(async () => {
@@ -2048,6 +2081,41 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     });
     expect(mutationCalls).toBe(1);
     expect(captured?.rows.map((row) => row.newSupplierName)).toEqual(["مورد يبقى", "مورد أخير"]);
+    expect(captured?.rows.map((row) => row.amount)).toEqual([300, 500]);
+  });
+
+  it("moves focus to the row that took the removed row's place", async () => {
+    render();
+    await settle();
+
+    fillTypedRow(0, "مورد أول", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد ثان", "400");
+
+    // the remove control unmounts with its row: focus must not fall to the body
+    act(() => clickTarget("opening-balance-typed-remove-0").focus());
+    clickOn("opening-balance-typed-remove-0");
+    expect(document.activeElement).toBe(typedNameInput(0));
+
+    // the last remaining row goes too: focus lands on the control that brings one back
+    clickOn("opening-balance-typed-remove-0");
+    expect(document.activeElement).toBe(clickTarget("opening-balance-add-row"));
+  });
+
+  it("keeps each row's direction and sends it with that row", async () => {
+    render();
+    await settle();
+
+    fillTypedRow(0, "مورد مدين", "100");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد دائن", "200");
+    // the second row is the credit one; the first must keep its default
+    await pickTypedDirection(1, "يسالنا");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+    expect(captured?.rows.map((row) => row.direction)).toEqual(["WE_OWE", "THEY_OWE"]);
   });
 
   it("blocks the save when two rows name the same supplier", async () => {
@@ -2060,6 +2128,9 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     clickOn("opening-balance-add-row");
     fillTypedRow(1, "مورد مكرر", "400");
 
+    // BOTH rows are named, not just the later one: either side is the row the
+    // owner can edit, and flagging one leaves the other looking valid
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-0"]')?.textContent).toContain("صفّ آخر");
     expect(host.querySelector('[data-testid="opening-balance-typed-error-1"]')?.textContent).toContain("صفّ آخر");
     expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
     expect(saveButton().disabled).toBe(true);
@@ -2071,13 +2142,33 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     expect(mutationCalls).toBe(0);
   });
 
+  it("blocks two rows that fold onto one supplier the batch already carries", async () => {
+    render();
+    await settle();
+
+    // the owner fills s-1's own row, then types two spellings of the same supplier:
+    // both fold to the filled row, so the same account would be posted three times
+    typeIntoRow(0, "100");
+    fillTypedRow(0, "مورد له حركات", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورد  له حركات", "400");
+
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-0"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="opening-balance-typed-error-1"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    await act(async () => {
+      clickTarget<HTMLButtonElement>("opening-balance-save").click();
+    });
+    expect(captured).toBeNull();
+  });
+
   it("counts every added row on the save button, in the Arabic plural form", async () => {
     render();
     await settle();
 
+    // the plural categories themselves are pinned in lib/i18n.test.ts; this is the
+    // wiring: the count the page sends is the number of rows it will write
     const label = () => saveButton().textContent ?? "";
-    expect(label()).toBe("حفظ 0 تسوية");
-
     fillTypedRow(0, "مورد أ", "100");
     expect(label()).toBe("حفظ تسوية واحدة");
 
@@ -2106,5 +2197,16 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     // large: the control is disabled instead of adding a row that cannot save
     expect(clickTarget<HTMLButtonElement>("opening-balance-add-row").disabled).toBe(true);
     expect(host.querySelector('[data-testid="opening-balance-typed-name-1"]')).toBeNull();
+  }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+
+  it("stops the draft list at the cap even when every row is blank", async () => {
+    render();
+    await settle();
+
+    // a blank row is never sent, so the batch cap alone would let the owner press
+    // add forever; the DRAFT list carries the same cap
+    for (let click = 0; click < 205; click += 1) clickOn("opening-balance-add-row");
+    expect(typedRowCount()).toBe(200);
+    expect(clickTarget<HTMLButtonElement>("opening-balance-add-row").disabled).toBe(true);
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
 });

@@ -974,11 +974,17 @@ const resources = {
       // Arabic counts 3–10 with the plural form `تسويات`, 11+ with the singular
       // `تسوية`; the counted-only key above read "حفظ 1 تسويات" (#255)
       supplierOpeningSave_few: "حفظ {{count}} تسويات",
+      // CLDR Arabic gives 11–99 (`many`) and 100+ (`other`) the SAME singular
+      // form `تسوية`: two identical strings here are the rule, not a copy-paste
       supplierOpeningSave_many: "حفظ {{count}} تسوية",
       supplierOpeningSave_other: "حفظ {{count}} تسوية",
       supplierOpeningAddRow: "إضافة صفّ",
       supplierOpeningRemoveRow: "إزالة الصف",
-      supplierOpeningDuplicateRow: "هذا المورّد مذكور في صفّ آخر؛ ادمج الصفّين أو غيّر الاسم",      supplierOpeningNothing: "لم تُدخل أي مبلغ",
+      // the row's own remove control names the draft it drops; the name is
+      // interpolated here (never composed at the call site) like every other copy
+      supplierOpeningRemoveRowName: "إزالة الصف «{{name}}»",
+      supplierOpeningDuplicateRow: "هذا المورّد مذكور في صفّ آخر؛ ادمج الصفّين أو غيّر الاسم",
+      supplierOpeningNothing: "لم تُدخل أي مبلغ",
       supplierOpeningExistingWarn: "له حركات سابقة",
       supplierOpeningConfirmTitle: "تأكيد الرصيد الافتتاحي",
       supplierOpeningConfirmBody: "هؤلاء الموردون لديهم حركات سابقة. هل تريد إضافة رصيد افتتاحي رغم ذلك؟",

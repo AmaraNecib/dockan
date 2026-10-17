@@ -137,7 +137,7 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(host.querySelector('[data-testid="supplier-adjust-preview"]')?.textContent).toContain("لا تتغيّر");
   });
 
-  it("links the invoice, forces يسالنا, and refuses an amount above the remaining", () => {
+  it("links the invoice, forces the reducing direction (THEY_OWE), and refuses an amount above the remaining", () => {
     render();
     clickOn("supplier-adjust-link");
     // linking forces the reducing direction, so the increase button is disabled
@@ -150,6 +150,24 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     // a fitting amount previews the invoice remaining after saving
     typeInto("supplier-adjust-amount", "500");
     expect(host.querySelector('[data-testid="supplier-adjust-preview-remaining"]')?.textContent).toContain("4500");
+  });
+
+  /**
+   * #252 — the same raw-value defect as the direction selects: this `<Select>`
+   * had no `items` map on its root, so the trigger printed the invoice UUID while
+   * the popup printed invoice numbers. Found by the new AST guard in
+   * `lib/select-trigger-label.test.ts`.
+   */
+  it("#252 — the linked-invoice trigger reads the invoice number, not its id", () => {
+    render([invoice({ id: "inv-raw-uuid-252", invoiceNumber: "INV-9001" })]);
+    clickOn("supplier-adjust-link");
+
+    // the trigger also carries the chevron icon; the label lives in the SelectValue
+    // span, which is the element Base UI resolves from the root's `items` map
+    const trigger = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-invoice"]');
+    const value = trigger?.querySelector('[data-slot="select-value"]');
+    expect(value?.textContent).toBe("INV-9001");
+    expect(trigger?.textContent).not.toContain("inv-raw-uuid-252");
   });
 
   it("offers no link when there is no open purchase invoice", () => {

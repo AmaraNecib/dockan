@@ -69,7 +69,7 @@ export function SupplierAdjustPanel({
   const selected = openInvoices.find((invoice) => invoice.id === invoiceId);
   const selectionLost = linked && invoiceId !== "" && selected === undefined;
   const noInvoiceChosen = linked && openInvoices.length > 0 && invoiceId === "";
-  // linking only reduces an invoice, so the direction is forced to يسالنا
+  // linking only reduces an invoice, so the direction is forced to THEY_OWE (نسالوه)
   const effectiveDirection: SupplierAdjustmentDirection = linked ? "THEY_OWE" : direction;
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
   const amountError =
@@ -221,7 +221,7 @@ export function SupplierAdjustPanel({
           <div className="flex flex-wrap items-end gap-3">
             <div className="grid gap-1 text-sm">
               {t("supplierPayInvoiceLabel")}
-              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")}>
+              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")} items={openInvoices.map((invoice) => ({ value: invoice.id, label: invoice.invoiceNumber }))}>
                 <SelectTrigger className="w-56" data-testid="supplier-adjust-invoice">
                   <SelectValue />
                 </SelectTrigger>

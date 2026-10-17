@@ -415,8 +415,12 @@ describe("DebtsPage (ticket 9)", () => {
     await ui.waitFor(() => document.querySelector('[data-testid="debts-account-entry-direction"]') !== null);
 
     const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
-    expect(directions.join(" ")).toContain("نسالوه");
-    expect(directions.join(" ")).toContain("يسالنا");
+    // #252 — label-to-VALUE, not "both strings appear somewhere". Entry e1 is
+    // WE_OWE (we owe him — it raises the balance) and e2 is THEY_OWE (he owes us);
+    // the previous assertion here passed with the two Darija strings swapped,
+    // which is the bug the ticket reports on this very table.
+    expect(directions[0]).toContain("يسالنا");
+    expect(directions[1]).toContain("نسالوه");
 
     const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
     expect(amounts[0]).toContain("+");

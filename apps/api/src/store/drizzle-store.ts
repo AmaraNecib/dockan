@@ -197,7 +197,7 @@ const safeWhole = (value: SqlScalar): number => {
 /**
  * Coerce a SIGNED aggregate (the supplier account balance) without the
  * non-negativity clamp `safeWhole` applies. A negative balance is a legitimate
- * credit («يسالنا»), so clamping it to 0 would make the list disagree with the
+ * credit («نسالوه»), so clamping it to 0 would make the list disagree with the
  * supplier detail and /debts (issue 176). Only the safe-integer ceiling and
  * non-finite values are guarded. */
 const safeSignedWhole = (value: SqlScalar): number => {

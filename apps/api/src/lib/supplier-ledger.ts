@@ -12,8 +12,11 @@ import { documentNumberSequence as invoiceSequence } from "./document-number";
 
 export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
 
-/** The direction of a manual adjustment (issue 176). «نسالوه» = the shop owes
- * the supplier more; «يسالنا» = the shop owes less / moves toward credit. */
+/** The direction of a manual adjustment (issue 176). «يسالنا» = he asks us, i.e.
+ * the shop owes the supplier more; «نسالوه» = we ask him, i.e. the shop owes less
+ * / moves toward credit. (#252: the two strings were written the other way round
+ * here and in the web layer, which is how the picker's labels ended up on the
+ * wrong enum values.) */
 export type SupplierAdjustmentDirection = "WE_OWE" | "THEY_OWE";
 
 /** The sign one entry kind contributes to the supplier balance.

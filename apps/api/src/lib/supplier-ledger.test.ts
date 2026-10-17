@@ -25,9 +25,9 @@ describe("supplierEntrySign", () => {
   });
 
   it("signs a manual adjustment by its direction (issue 176)", () => {
-    // نسالوه = we owe him = the balance grows
+    // يسالنا = he asks us = we owe him = the balance grows
     expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(1);
-    // يسالنا = he owes us = the balance shrinks
+    // نسالوه = we ask him = he owes us = the balance shrinks
     expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(-1);
   });
 

@@ -1,0 +1,24 @@
+bun test v1.4.2 (744846f84)
+
+src\pages\purchase.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+1855 |       await chooseLineCategory(container, "تصنيف");
+1856 |       await submitCreateInFlight(container);
+1857 | 
+1858 |       // the line's product is about to move, so a pick made through this button
+1859 |       // would name the id the landing removes and be dropped on the floor
+1860 |       expect(picker()?.disabled).toBe(true);
+                                        ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (D:\projects\mani-worktrees\feat-257-inline-product-round6\apps\web\src\pages\purchase.test.tsx:1860:34)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > disables a line's own picker while that line's create is in flight (round 6, F1) [840.76ms]
+
+ 0 pass
+ 53 filtered out
+ 1 fail
+ 2 expect() calls
+Ran 1 test across 1 file. [1.87s]

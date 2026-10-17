@@ -62,6 +62,8 @@ let itemsCreateGate: Promise<void> | null = null;
 let releaseItemsCreate: (() => void) | null = null;
 /** when set, an itemsCreate that gets past its gate rejects (#257 round 2) */
 let itemsCreateFails = false;
+/** when set, an invoicesCreate that gets past its gate rejects (#257 round 6) */
+let invoiceCreateFails = false;
 /**
  * When set, every invoicesCreate waits for it to settle before answering, so a
  * test can leave the SAVE in flight and act while it is pending (#257 round 4).
@@ -150,6 +152,7 @@ mock.module("@/lib/rpc", () => ({
           lastPurchaseInput = input;
           // a gated save stays pending until the test releases it (#257 round 4)
           if (invoiceCreateGate !== null) await invoiceCreateGate;
+          if (invoiceCreateFails) throw new Error("invoicesCreate failed");
           return purchaseInvoiceResult;
         },
         ...opts,
@@ -210,6 +213,7 @@ beforeEach(() => {
   itemsCreateGate = null;
   releaseItemsCreate = null;
   itemsCreateFails = false;
+  invoiceCreateFails = false;
   // a gated save must never leak into the next test either
   invoiceCreateGate = null;
   releaseInvoiceCreate = null;
@@ -1474,6 +1478,11 @@ describe("PurchasePage quantity draft (#146)", () => {
       const region = container.querySelector('[data-testid="purchase-lines"]');
       expect(region?.getAttribute("aria-describedby")).toBe(container.querySelector('[data-testid="purchase-lines-frozen"]')?.id);
       expect(region?.getAttribute("aria-label")).toBe(i18n.t("purchasesLinesTitle"));
+      // …and the region SHOWS that it holds the caret: a script-issued focus
+      // never matches `:focus-visible`, so this landing was silent for a sighted
+      // keyboard user. The ring is written on `focus:` on purpose, and the e2e
+      // asserts its computed width (#257 round 6, F2).
+      expect(region?.className).toContain("focus:outline-2");
 
       await releaseSaved();
       // the save lands and replaces the whole draft with its success card, as it
@@ -1482,6 +1491,41 @@ describe("PurchasePage quantity draft (#146)", () => {
       // the document, which is the page's own save-completed swap and not a second
       // move this freeze makes.
       expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    });
+
+    it("hands the caret back to the line's create button when the frozen save settles (round 6, F2)", async () => {
+      const { container } = await mountWithTypedLine("2", "1200");
+      // the form is open before the save, so round 4's freeze catches the cancel
+      await openCreate(container, "item-منتج");
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      // …and the save FAILS: a failed save keeps the draft, so the trigger the
+      // cancel asked for really does come back
+      invoiceCreateFails = true;
+      await saveInFlight(container);
+
+      const trigger = () => container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-new-item-منتج"]');
+      expect(trigger()?.disabled).toBe(true);
+
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="line-product-cancel"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      // during the freeze the caret has to stand somewhere visible (round 5)
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="purchase-lines"]'));
+
+      await act(async () => {
+        releaseInvoiceCreate?.();
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      });
+
+      // the freeze lifted and the owner is still standing where it left him, so
+      // the request it could not honor is re-applied instead of leaving him on
+      // a region he never chose
+      expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+      expect(trigger()?.disabled).toBe(false);
+      expect(document.activeElement).toBe(trigger());
     });
 
     it("abandons a create when the owner opens another line's form mid-flight", async () => {
@@ -1795,6 +1839,71 @@ describe("PurchasePage quantity draft (#146)", () => {
       // (the pick was refused, so nothing was replaced under it)
       expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
       expect(container.querySelector('[data-testid="purchase-line-pick-item-بديل"]')).toBeNull();
+    });
+
+    it("disables a line's own picker while that line's create is in flight (round 6, F1)", async () => {
+      catalogMatches = [{ item: catalogItem("other-1", "منتج آخر", 700), category: null, matchedBy: "NAME" }];
+      const { container } = await mountWithTypedLine("3", "1200");
+      const picker = () => container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج"]');
+      expect(picker()?.disabled).toBe(false);
+
+      itemsCreateGate = new Promise<void>((resolve) => {
+        releaseItemsCreate = resolve;
+      });
+      await openCreate(container, "item-منتج");
+      await fillCreate(container, { name: "منتج جديد" });
+      await chooseLineCategory(container, "تصنيف");
+      await submitCreateInFlight(container);
+
+      // the line's product is about to move, so a pick made through this button
+      // would name the id the landing removes and be dropped on the floor
+      expect(picker()?.disabled).toBe(true);
+      await act(async () => {
+        picker()?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector('[data-testid="picker-dialog"]')).toBeNull();
+
+      await releaseCreate();
+      // the window is over: the button is live again, pointed at the new product
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج جديد"]')?.disabled).toBe(false);
+    });
+
+    it("keeps a pick made from a picker a landing create replaced (round 6, F1 belt)", async () => {
+      catalogMatches = [{ item: catalogItem("other-1", "منتج آخر", 700), category: null, matchedBy: "NAME" }];
+      const { container } = await mountWithTypedLine("3", "1200");
+      itemsCreateGate = new Promise<void>((resolve) => {
+        releaseItemsCreate = resolve;
+      });
+      await openCreate(container, "item-منتج");
+      await fillCreate(container, { name: "منتج جديد" });
+      await chooseLineCategory(container, "تصنيف");
+
+      // the picker is open for the line the create will replace — the state a
+      // submit that no mouse reaches produces, because the dialog is modal
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await act(async () => {
+        lineForm(container)?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      // the create is now in flight and a mouse could not have opened this
+      // dialog any more (the button is dead for the window) — this is the belt
+      // route: the dialog was open first, the submit came from behind it
+      await releaseCreate();
+
+      // the line is the create's product and the open dialog followed it there:
+      // picking now must re-point that row, not an id the landing removed
+      expect(lineQty(container, "item-منتج جديد")?.value).toBe("3");
+      expect(container.querySelector('[data-testid="picker-dialog"]')).not.toBeNull();
+
+      await pickInOpenPicker(container, "منتج آخر");
+
+      expect(container.querySelector('[data-testid="picker-dialog"]')).toBeNull();
+      expect(lineQty(container, "other-1")?.value).toBe("3");
+      expect(lineCost(container, "other-1")?.value).toBe("1200");
     });
 
     it("freezes the rest of the invoice draft while the save is in flight (round 4, F1)", async () => {

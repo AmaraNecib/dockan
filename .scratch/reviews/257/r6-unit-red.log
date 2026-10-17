@@ -1,0 +1,71 @@
+bun test v1.4.2 (744846f84)
+
+src\pages\purchase.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+1523 |       // the freeze lifted and the owner is still standing where it left him, so
+1524 |       // the request it could not honor is re-applied instead of leaving him on
+1525 |       // a region he never chose
+1526 |       expect(container.querySelector('[data-testid="purchase-error"]')).not.toBeNull();
+1527 |       expect(trigger()?.disabled).toBe(false);
+1528 |       expect(document.activeElement).toBe(trigger());
+                                            ^
+error: expect(received).toBe(expected)
+
+Expected: HTMLButtonElement {
+  [Symbol(listeners)]: {
+    capturing: Map {},
+    bubbling: Map {},
+  },
+  [Symbol(listenerOptions)]: {
+    capturing: Map {},
+    bubbling: Map {},
+  },
+  [Symbol(isConnected)]: true,
+  [Symbol(parentNode)]: HTMLDivElement {
+    [Symbol(listeners)]: {
+      capturing: Map {},
+      bubbling: Map {},
+    },
+    [Symbol(listenerOptions)]: {
+      capturing: Map {},
+... [25028443 lines elided: the failing assertion printed the whole DOM element tree ...]
+  [Symbol(connectedToNode)]: [Function],
+  [Symbol(disconnectedFromNode)]: [Function],
+}
+
+      at <anonymous> (D:\projects\mani-worktrees\feat-257-inline-product-round6\apps\web\src\pages\purchase.test.tsx:1528:38)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > hands the caret back to the line's create button when the frozen save settles (round 6, F2) [71407.49ms]
+1855 |       await chooseLineCategory(container, "تصنيف");
+1856 |       await submitCreateInFlight(container);
+1857 | 
+1858 |       // the line's product is about to move, so a pick made through this button
+1859 |       // would name the id the landing removes and be dropped on the floor
+1860 |       expect(picker()?.disabled).toBe(true);
+                                        ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (D:\projects\mani-worktrees\feat-257-inline-product-round6\apps\web\src\pages\purchase.test.tsx:1860:34)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > disables a line's own picker while that line's create is in flight (round 6, F1) [823.06ms]
+1887 |       });
+1888 |       await act(async () => {
+1889 |         lineForm(container)?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+1890 |         await new Promise((resolve) => setTimeout(resolve, 0));
+1891 |       });
+1892 |       expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج"]')?.disabled).toBe(true);
+                                                                                                                          ^
+error: expect(received).toBe(expected)
+
+Expected: true
+Received: false
+
+      at <anonymous> (D:\projects\mani-worktrees\feat-257-inline-product-round6\apps\web\src\pages\purchase.test.tsx:1892:116)
+(fail) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps a pick made from a picker a landing create replaced (round 6, F1 belt) [295.65ms]
+
+ 0 pass
+ 51 filtered out
+ 3 fail
+ 8 expect() calls
+Ran 3 tests across 1 file. [73.43s]

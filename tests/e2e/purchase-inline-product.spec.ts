@@ -318,6 +318,17 @@ test("purchase line: the frozen draft and the cancel that outlives it (#257 roun
     await page.getByTestId("line-product-cancel").click();
     await expect(lineForm).toHaveCount(0);
     await expect(lines).toBeFocused();
+    // …and the region SHOWS that it holds the caret. A script-issued focus never
+    // matches `:focus-visible`, so this landing was silent for a sighted
+    // keyboard user; the ring is an explicit `focus:` outline and these computed
+    // numbers — not a class name — are the proof (#257 round 6, F2)
+    await page.screenshot({ path: "test-results/round6-evidence/frozen-focus.png" });
+    const ring = await lines.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { style: style.outlineStyle, width: style.outlineWidth };
+    });
+    expect(ring.style).toBe("solid");
+    expect(ring.width).toBe("2px");
 
     // …and no timer released this request: every assertion above ran while it was
     // still held, which is the sequencing a wall-clock window could not promise

@@ -1,0 +1,36 @@
+# #257 round 6 — finding 3 refuted (stale): the 2500 ms timer is not in the tree at 07fea5c0
+
+## git log -S2500 -- tests/e2e/purchase-inline-product.spec.ts
+5c19b2f fix(web): land the cancel caret off the body, and gate the frozen-state e2e (#257 round 5)
+0fcbbcc fix(web): freeze the purchase draft while the invoice save is in flight (#257 round 4)
+
+## rg 2500 tests/e2e/purchase-inline-product.spec.ts (comment only; no timer)
+212: * however long the checks take. A fixed 2500 ms window raced them — on a slow
+
+## the gate that replaced it, by content
+214: * correct behaviour failed looking exactly like a product bug. `routePending` is
+282:  let releaseRoute!: () => void;
+283:  const routeHeld = new Promise<void>((resolve) => {
+284:    releaseRoute = resolve;
+286:  let routePending = false;
+288:    routePending = true;
+289:    await routeHeld;
+290:    routePending = false;
+303:    await expect.poll(() => routePending, { timeout: 15_000 }).toBe(true);
+335:    expect(routePending).toBe(true);
+337:    releaseRoute();
+
+## round-5 ablation pair (a 6 s hold, longer than the discarded 2500 ms window)
+- a2 (old timer + slow hold): FAILS — the timer released the route early
+- a3 (promise gate + same hold): see tail below
+a2 tail:
+  (failing run: the save landed before the frozen checks)
+a3 tail:
+   ➜  Local:   http://127.0.0.1:5700/
+
+Running 1 test using 1 worker
+
+[ablation] routePending while the frozen checks run = true
+  ok 1 tests\e2e\purchase-inline-product.spec.ts:227:1 › purchase line: the invoice draft is frozen while the save is in flight (#257 round 4) (12.5s)
+
+  1 passed (17.7s)

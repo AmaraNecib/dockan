@@ -174,9 +174,13 @@ export function PurchasePage() {
    * (`tabIndex -1`) and carries `aria-describedby` to the frozen status line, so
    * a screen reader hears the region's name AND the reason its controls are dead
    * instead of being dropped on `document.body` with the tab order restarted at
-   * the top of the page.
+   * the top of the page. Round 6 (F2) adds the region's visible `focus:` ring and
+   * the guarded retry: a landing here is announced AND seen, and the caret
+   * returns to the control the owner asked for once the freeze lifts.
    */
   const linesRegionRef = useRef<HTMLTableElement | null>(null);
+  /** the request a frozen control could not take, retried when the freeze lifts */
+  const frozenFocusRef = useRef<FocusRequest | null>(null);
   const lineNameRef = useRef<HTMLInputElement>(null);
 
   const draft = useInvoiceDraft(PURCHASE_DRAFT);
@@ -226,11 +230,20 @@ export function PurchasePage() {
     // nothing — so naming one would drop the owner on `document.body`, which is
     // the one place he cannot afford to be (WCAG 2.4.3). The request is REDIRECTED
     // when this effect runs — one immediate landing, in the same render pass as
-    // the unmount that started it — rather than retried once the save settles: a
+    // the unmount that started it. Round 5 refused any retry here, because a
     // delayed `.focus()` would steal the caret back from wherever the owner has
-    // moved on to by then (#257 round 5, F1).
-    if (target !== undefined && !target.disabled) target.focus();
-    else linesRegionRef.current?.focus();
+    // moved on to by then; round 6 (F2) keeps that refusal and adds the guarded
+    // retry below, which fires only while this redirect still owns the caret.
+    if (target !== undefined && !target.disabled) {
+      frozenFocusRef.current = null;
+      target.focus();
+    } else {
+      // #257 round 6 (F2) — the control comes back when the freeze lifts, so keep
+      // the request instead of dropping it on the floor (see the retire effect
+      // below); the landing is visible meanwhile (the region's `focus:` ring)
+      frozenFocusRef.current = focusRequest;
+      linesRegionRef.current?.focus();
+    }
   }, [focusRequest]);
 
   const lineCreateOpen = lineDraft?.target ?? null;
@@ -345,6 +358,29 @@ export function PurchasePage() {
    * request is frozen by one value instead of two spellings of it.
    */
   const savePending = createInvoice.isPending;
+
+  /**
+   * The request the freeze could not honor (#257 round 6, F2). Round 5 redirects
+   * the caret to the lines region, which is right while the save is out — but the
+   * control the owner asked for comes back the moment the freeze lifts, and
+   * leaving him on a region he never chose is the place the finding says he
+   * loses. The retry is GUARDED: it fires only while the region still owns the
+   * caret, so it cannot grab focus from wherever the owner has moved on to. A
+   * successful save unmounts the whole draft in the same commit, so the region
+   * owns nothing by the time this runs and the page's own save-completed swap is
+   * left alone; the case left is a failed save, where the trigger really does
+   * come back. Written with `document.activeElement` rather than a flag because
+   * the question is exactly "is the caret still where this freeze put it".
+   */
+  useEffect(() => {
+    if (savePending) return;
+    const owed = frozenFocusRef.current;
+    if (owed === null) return;
+    frozenFocusRef.current = null;
+    if (document.activeElement !== linesRegionRef.current) return;
+    const target = owed.kind === "quantity" ? quantityRefs.current.get(owed.itemId) : createTriggerRefs.current.get(owed.itemId);
+    if (target !== undefined && !target.disabled) target.focus();
+  }, [savePending]);
 
   // the explicit type argument pins F, so a later edit to the callbacks cannot
   // widen the bag and quietly disable key checking
@@ -487,6 +523,15 @@ export function PurchasePage() {
     setLineCategory(current.categoryId);
     setLineDraft(null);
     landOnLine(target, outcome.item);
+    // the picker may still be OPEN for the line this landing just replaced: it
+    // was opened while the form was open, and the submit came from somewhere no
+    // mouse reaches (round 6, F1). Retarget it to the new product so a choice
+    // made after this point re-points the row the picker was opened from —
+    // `replaceDraftLineItem` drops a replace that matches no row, and the dialog
+    // has already closed by the time a stale id would be noticed.
+    setPickerTarget((current) =>
+      current !== null && current.kind === "line" && current.itemId === target ? { kind: "line", itemId: outcome.item.id } : current,
+    );
   }
 
   return (
@@ -651,7 +696,12 @@ export function PurchasePage() {
                 </div>
               ) : (
                 <table
-                  className="w-full"
+                  // #257 round 6 (F2) — the ring is written on `focus:`, not
+                  // `focus-visible:`: the caret arrives here by script when a
+                  // cancel races the in-flight save, and a script-issued focus
+                  // never matches `:focus-visible`, so a `focus-visible:` ring
+                  // would leave the only landing that freeze allows invisible
+                  className="w-full focus:outline-2 focus:outline-offset-[-2px] focus:outline-ring"
                   data-testid="purchase-lines"
                   ref={linesRegionRef}
                   tabIndex={-1}
@@ -684,8 +734,11 @@ export function PurchasePage() {
                                 className="rounded px-1 text-start underline decoration-dotted underline-offset-4 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
                                 // #257 review round 4 (F1) — the request already carries
                                 // this line's product, so replacing it now would leave the
-                                // invoice stocking the old one
-                                disabled={savePending}
+                                // invoice stocking the old one. Round 6 (F1): while this
+                                // line's own create is in flight its product is about to
+                                // move, so a pick through here would name the id the landing
+                                // removes and be dropped — dead for that window too.
+                                disabled={savePending || lineCreatePending?.target === line.item.id}
                                 // the accessible name starts with the visible text, so
                                 // a voice-control user can say the name he reads
                                 aria-label={`${line.item.name} — ${t("purchasesChangeItem")}`}

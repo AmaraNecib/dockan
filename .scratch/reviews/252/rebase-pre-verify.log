@@ -1,0 +1,17 @@
+### PRE-REBASE HEAD=c67c641a92ae42bc93ced1ee97234cfbe2e11d19  2026-10-17T16:13:01Z
+PASS  1. supplierAdjustDirectionWeOwe === «يسالنا»
+        apps/web/src/lib/i18n.ts:928 = "يسالنا"
+PASS  2. supplierAdjustDirectionTheyOwe === «نسالوه»
+        apps/web/src/lib/i18n.ts:929 = "نسالوه"
+PASS  3a. the WE_OWE hint sits beside its label and agrees («نحن ندين له»)
+        i18n.ts:930 = "نحن ندين له — يزيد ما علينا" (label at 928)
+PASS  3b. the THEY_OWE hint sits beside its label and agrees («هو يدين لنا»)
+        i18n.ts:931 = "هو يدين لنا — ينقص ما علينا" (label at 929)
+PASS  4a. every core.ts gloss pairs WE_OWE<->«يسالنا» and THEY_OWE<->«نسالوه»
+        7 WE_OWE/THEY_OWE lines scanned, 0 crossed
+PASS  4b. the linked-reduction refusal names the word its own guard requires
+        guard requires THEY_OWE (true); refusal "a linked adjustment must be نسالوه (it reduces the invoice)" names ["نسالوه"]
+PASS  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts:46 present=true; label-key literals outside the map: none
+
+ALL BULLETS HOLD

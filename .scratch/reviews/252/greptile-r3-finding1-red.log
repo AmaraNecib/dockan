@@ -1,0 +1,31 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\supplier-entry-display.test.ts:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+(pass) supplierEntrySign > charges purchases/refunds and a WE_OWE adjustment, credits the rest [0.12ms]
+(pass) supplierEntrySignLabel > distinguishes two equal opposite adjustments [0.09ms]
+(pass) supplierEntryDirectionKey > names the adjustment direction and stays null for other kinds [0.10ms]
+(pass) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [3.75ms]
+(pass) supplier-direction labels (issue 252) > keeps each label on the value its own hint describes [0.20ms]
+(pass) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.38ms]
+(pass) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.32ms]
+(pass) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.06ms]
+116 |       invoiceId: "00000000-0000-4000-8000-000000000001",
+117 |     });
+118 |     expect(result.success).toBe(false);
+119 |     const message = result.success ? "" : result.error.issues.map((issue) => issue.message).join(" ");
+120 |     // the required direction is THEY_OWE, so the message must name its word …
+121 |     expect(message).toContain(i18n.t("supplierAdjustDirectionTheyOwe"));
+                          ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "نسالوه"
+Received: "a linked adjustment must be يسالنا (it reduces the invoice)"
+
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-round3\apps\web\src\lib\supplier-entry-display.test.ts:121:21)
+(fail) supplier-direction labels (issue 252) > names the direction it actually requires in the linked-reduction refusal [3.94ms]
+
+ 8 pass
+ 1 fail
+ 32 expect() calls
+Ran 9 tests across 1 file. [554.00ms]

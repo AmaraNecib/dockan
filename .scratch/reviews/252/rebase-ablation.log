@@ -1,0 +1,128 @@
+# Ablation log, in run order. The FIRST ablation-A run did not bite — the bullet-5
+# guard counted files rather than occurrences, so two maps in one file were invisible.
+# The guard was fixed and ablation A re-run; both runs are kept here on purpose.
+
+################ ABLATION A — keep both maps (develop's file taken verbatim)
+ablation A applied: adjustDirectionKey holds its own ternary again
+PASS  1. supplierAdjustDirectionWeOwe === «يسالنا»
+        apps/web/src/lib/i18n.ts:995 = "يسالنا"
+PASS  2. supplierAdjustDirectionTheyOwe === «نسالوه»
+        apps/web/src/lib/i18n.ts:996 = "نسالوه"
+PASS  3a. the WE_OWE hint sits beside its label and agrees («نحن ندين له»)
+        i18n.ts:997 = "نحن ندين له — يزيد ما علينا" (label at 995)
+PASS  3b. the THEY_OWE hint sits beside its label and agrees («هو يدين لنا»)
+        i18n.ts:998 = "هو يدين لنا — ينقص ما علينا" (label at 996)
+PASS  4a. every core.ts gloss pairs WE_OWE<->«يسالنا» and THEY_OWE<->«نسالوه»
+        7 WE_OWE/THEY_OWE lines scanned, 0 crossed
+PASS  4b. the linked-reduction refusal names the word its own guard requires
+        guard requires THEY_OWE (true); refusal "a linked adjustment must be نسالوه (it reduces the invoice)" names ["نسالوه"]
+PASS  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts present=true; label-pairing literals in the tree: ["apps/web/src/lib/supplier-entry-display.ts"] (must be exactly 1); label-key literals outside the map: none
+
+ALL BULLETS HOLD
+verify exit=0 (expected 1, bullet 5)
+restored apps/web/src/lib/supplier-entry-display.ts
+apps/web/src/lib/i18n.ts had no backup (already clean)
+################ ABLATION B — the labels back on the other value
+ablation B applied: the two labels are back on the other value
+FAIL  1. supplierAdjustDirectionWeOwe === «يسالنا»
+        apps/web/src/lib/i18n.ts:995 = "نسالوه"
+FAIL  2. supplierAdjustDirectionTheyOwe === «نسالوه»
+        apps/web/src/lib/i18n.ts:996 = "يسالنا"
+PASS  3a. the WE_OWE hint sits beside its label and agrees («نحن ندين له»)
+        i18n.ts:997 = "نحن ندين له — يزيد ما علينا" (label at 995)
+PASS  3b. the THEY_OWE hint sits beside its label and agrees («هو يدين لنا»)
+        i18n.ts:998 = "هو يدين لنا — ينقص ما علينا" (label at 996)
+PASS  4a. every core.ts gloss pairs WE_OWE<->«يسالنا» and THEY_OWE<->«نسالوه»
+        7 WE_OWE/THEY_OWE lines scanned, 0 crossed
+PASS  4b. the linked-reduction refusal names the word its own guard requires
+        guard requires THEY_OWE (true); refusal "a linked adjustment must be نسالوه (it reduces the invoice)" names ["نسالوه"]
+PASS  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts present=true; label-pairing literals in the tree: ["apps/web/src/lib/supplier-entry-display.ts"] (must be exactly 1); label-key literals outside the map: none
+
+2 BULLET(S) BROKEN
+verify exit=1 (expected 1, bullets 1/2/3)
+61 |     expect(i18n.t("supplierAdjustDirectionWeOwe")).toBe(DARIJA_WE_OWE);
+error: expect(received).toBe(expected)
+(fail) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [3.03ms]
+78 |     expect(i18n.t(supplierDirectionKey("WE_OWE"))).toBe(DARIJA_WE_OWE);
+error: expect(received).toBe(expected)
+(fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.35ms]
+87 |     expect(supplierDirectionHintKey("WE_OWE")).toBe("supplierAdjustDirectionWeOweHint");
+88 |     expect(supplierDirectionHintKey("THEY_OWE")).toBe("supplierAdjustDirectionTheyOweHint");
+90 |     expect(i18n.t(supplierDirectionKey("WE_OWE"))).toBe(DARIJA_WE_OWE);
+error: expect(received).toBe(expected)
+(fail) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.40ms]
+118 |     expect(result.success).toBe(false);
+121 |     expect(message).toContain(i18n.t("supplierAdjustDirectionTheyOwe"));
+error: expect(received).toContain(expected)
+restored apps/web/src/lib/supplier-entry-display.ts
+restored apps/web/src/lib/i18n.ts
+################ ABLATION C — drop develop's #253 token map (take our side)
+ablation C applied: develop's adjustmentDirectionKey (#253) is gone
+PASS  1. supplierAdjustDirectionWeOwe === «يسالنا»
+        apps/web/src/lib/i18n.ts:995 = "يسالنا"
+PASS  2. supplierAdjustDirectionTheyOwe === «نسالوه»
+        apps/web/src/lib/i18n.ts:996 = "نسالوه"
+PASS  3a. the WE_OWE hint sits beside its label and agrees («نحن ندين له»)
+        i18n.ts:997 = "نحن ندين له — يزيد ما علينا" (label at 995)
+PASS  3b. the THEY_OWE hint sits beside its label and agrees («هو يدين لنا»)
+        i18n.ts:998 = "هو يدين لنا — ينقص ما علينا" (label at 996)
+PASS  4a. every core.ts gloss pairs WE_OWE<->«يسالنا» and THEY_OWE<->«نسالوه»
+        7 WE_OWE/THEY_OWE lines scanned, 0 crossed
+PASS  4b. the linked-reduction refusal names the word its own guard requires
+        guard requires THEY_OWE (true); refusal "a linked adjustment must be نسالوه (it reduces the invoice)" names ["نسالوه"]
+PASS  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts present=true; label-pairing literals in the tree: ["apps/web/src/lib/supplier-entry-display.ts"] (must be exactly 1); label-key literals outside the map: none
+
+ALL BULLETS HOLD
+verify exit=0 (expected 0: only the map count guard sees it)
+src/pages/activity.tsx(14,10): error TS2305: Module '"../lib/supplier-entry-display"' has no exported member 'adjustmentDirectionKey'.
+web typecheck exit=2
+
+
+ 0 pass
+ 1 fail
+ 1 error
+Ran 1 test across 1 file. [793.00ms]
+restored apps/web/src/lib/supplier-entry-display.ts
+restored apps/web/src/lib/i18n.ts
+################ restored — tree must be clean
+ M .dokan-port
+?? .scratch/reviews/252/ablate-252.ts
+?? .scratch/reviews/252/rebase-ablation.log
+?? .scratch/reviews/252/rebase-api-direction-suites.log
+?? .scratch/reviews/252/rebase-e2e-direction.log
+?? .scratch/reviews/252/rebase-full-test.log
+?? .scratch/reviews/252/rebase-mid-commit1-verify.log
+?? .scratch/reviews/252/rebase-post-verify.log
+?? .scratch/reviews/252/rebase-pre-verify.log
+?? .scratch/reviews/252/rebase-verify-direction-labels.ts
+?? .scratch/reviews/252/rebase-web-direction-suites.log
+?? apps/web/src/lib/i18n.ts.ablate-backup
+?? apps/web/src/lib/supplier-entry-display.ts.ablate-backup
+################ ABLATION A (re-run against the FIXED guard) — keep both maps
+ablation A applied: adjustDirectionKey holds its own ternary again
+FAIL  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts present=true; label-pairing occurrences in the tree: 2 in ["apps/web/src/lib/supplier-entry-display.ts x2"] (must be exactly 1); label-key literals outside the map: none
+
+1 BULLET(S) BROKEN
+verify exit=1 (expected 1, bullet 5)
+restored apps/web/src/lib/supplier-entry-display.ts
+apps/web/src/lib/i18n.ts had no backup (already clean)
+################ clean tree, fixed guard — must pass
+        map at apps/web/src/lib/supplier-entry-display.ts present=true; label-pairing occurrences in the tree: 1 in ["apps/web/src/lib/supplier-entry-display.ts x1"] (must be exactly 1); label-key literals outside the map: none
+
+ALL BULLETS HOLD
+verify exit=0 (expected 0)
+################ tree clean?
+?? .scratch/reviews/252/ablate-252.ts
+?? .scratch/reviews/252/rebase-ablation.log
+?? .scratch/reviews/252/rebase-api-direction-suites.log
+?? .scratch/reviews/252/rebase-e2e-direction.log
+?? .scratch/reviews/252/rebase-full-test.log
+?? .scratch/reviews/252/rebase-mid-commit1-verify.log
+?? .scratch/reviews/252/rebase-post-verify.log
+?? .scratch/reviews/252/rebase-pre-verify.log
+?? .scratch/reviews/252/rebase-verify-direction-labels.ts
+?? .scratch/reviews/252/rebase-web-direction-suites.log

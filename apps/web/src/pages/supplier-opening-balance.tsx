@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { parseGroupedAmount } from "@/lib/amount-parse";
 import { tError } from "@/lib/i18n";
+import { supplierBalanceDirectionKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
 import { MAX_OPENING_BALANCE_ROWS, droppedFilledDrafts, isOpeningBatchOverLimit, newOpeningRowStatus, openingRowStatus, type RemovedFilledDraft } from "@/lib/supplier-opening-draft";
@@ -576,6 +577,17 @@ export function SupplierOpeningBalancePage() {
     }
   }
 
+  /** #252 — the direction Selects' value→label map, and the popup's own options.
+   * `SelectValue` renders the raw value when the root has no `items` map, which is
+   * how the trigger showed `WE_OWE` while its own popup showed the Arabic labels.
+   * One map drives both the trigger and the options, built from one
+   * direction→key function, so a label cannot sit on one value in the list and the
+   * other in the trigger. */
+  const directionItems = [
+    { value: "WE_OWE", label: t(supplierDirectionKey("WE_OWE")) },
+    { value: "THEY_OWE", label: t(supplierDirectionKey("THEY_OWE")) },
+  ];
+
   return (
     <section data-testid="opening-balance-page">
       <Link
@@ -600,7 +612,7 @@ export function SupplierOpeningBalancePage() {
             {saved.accounts.map((account) => (
               <li key={account.supplierId} className="flex items-center justify-between gap-3">
                 <span>{account.name}</span>
-                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance >= 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>
+                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {t(supplierBalanceDirectionKey(account.balance))}</span>
               </li>
             ))}
           </ul>
@@ -689,18 +701,19 @@ export function SupplierOpeningBalancePage() {
                         <Amount value={Math.abs(supplier.accountBalance ?? 0)} />{" "}
                         {supplier.accountBalance !== null && supplier.accountBalance !== undefined && supplier.accountBalance !== 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {supplier.accountBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}
+                            {t(supplierBalanceDirectionKey(supplier.accountBalance))}
                           </span>
                         )}
                       </td>
                       <td className="p-2">
-                        <Select value={draft.direction} onValueChange={(next) => setRow(supplier.id, { direction: asDirection(next) })}>
+                        <Select items={directionItems} value={draft.direction} onValueChange={(next) => setRow(supplier.id, { direction: asDirection(next) })}>
                           <SelectTrigger className="w-28" data-testid="opening-balance-direction">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="WE_OWE">{t("supplierAdjustDirectionWeOwe")}</SelectItem>
-                            <SelectItem value="THEY_OWE">{t("supplierAdjustDirectionTheyOwe")}</SelectItem>
+                            {directionItems.map((item) => (
+                              <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </td>
@@ -746,6 +759,7 @@ export function SupplierOpeningBalancePage() {
                   <td className="p-2 text-muted-foreground">—</td>
                   <td className="p-2">
                     <Select
+                      items={directionItems}
                       value={newDirection}
                       onValueChange={(next) => {
                         invalidateAttempt();
@@ -756,8 +770,9 @@ export function SupplierOpeningBalancePage() {
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="WE_OWE">{t("supplierAdjustDirectionWeOwe")}</SelectItem>
-                        <SelectItem value="THEY_OWE">{t("supplierAdjustDirectionTheyOwe")}</SelectItem>
+                        {directionItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </td>

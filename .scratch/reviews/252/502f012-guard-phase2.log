@@ -1,0 +1,73 @@
+# Guard Phase 2 — pre-push/pre-report gate for #252
+lane HEAD: 502f012 (source HEAD reviewed: 0a30eee)
+date: 2026-10-17T11:13:10Z
+
+--- bun run typecheck (0a30eee)
+
+typecheck exit=0
+--- bun run lint (0a30eee)
+$ oxlint
+lint exit=0
+--- apps/web affected suite (0a30eee)
+ 0 fail
+ 440 expect() calls
+Ran 106 tests across 6 files. [42.30s]
+--- apps/api narrowed suite (0a30eee)
+ 0 fail
+ 1269 expect() calls
+Ran 325 tests across 5 files. [134.28s]
+--- mutation gate (0a30eee)
+
+ALL MUTATIONS REDDENED, ALL FILES RESTORED BYTE-IDENTICAL
+--- e2e spec (0a30eee)
+  10 passed (1.5m)
+--- after-run evidence spec (0a30eee)
+  1 passed (45.5s)
+
+--- evidence staleness check
+reviewed SHA in evidence filenames: 0a30eee
+git diff --name-only 0a30eee 502f012:
+.scratch/implementation/252-design.md
+.scratch/reviews/252/0a30eee-api-narrowed-suite.log
+.scratch/reviews/252/0a30eee-code-review.md
+.scratch/reviews/252/0a30eee-lint.log
+.scratch/reviews/252/0a30eee-mutation-proof.log
+.scratch/reviews/252/0a30eee-test-audit.md
+.scratch/reviews/252/0a30eee-typecheck.log
+.scratch/reviews/252/0a30eee-web-affected-green.log
+.scratch/reviews/252/4458560-lint.log
+.scratch/reviews/252/4458560-typecheck.log
+.scratch/reviews/252/605f8c3-lint.log
+.scratch/reviews/252/605f8c3-typecheck.log
+.scratch/reviews/252/evidence/0a30eee-after-evidence-run.log
+.scratch/reviews/252/evidence/0a30eee-e2e-supplier-adjustment.log
+.scratch/reviews/252/evidence/mutation-proof.log
+.scratch/reviews/252/fd19ddd67a152cd57b324d1720f2c36400205106-lint.log
+.scratch/reviews/252/fd19ddd67a152cd57b324d1720f2c36400205106-typecheck.log
+(only .scratch/** = non-reviewable -> evidence valid)
+
+--- evidence files present
+.scratch/reviews/252/0a30eee-api-narrowed-suite.log
+.scratch/reviews/252/0a30eee-code-review.md
+.scratch/reviews/252/0a30eee-lint.log
+.scratch/reviews/252/0a30eee-mutation-proof.log
+.scratch/reviews/252/0a30eee-test-audit.md
+.scratch/reviews/252/0a30eee-typecheck.log
+.scratch/reviews/252/0a30eee-web-affected-green.log
+.scratch/reviews/252/evidence/0a30eee-after-evidence-run.log
+.scratch/reviews/252/evidence/0a30eee-e2e-supplier-adjustment.log
+.scratch/reviews/252/evidence/d843566-red-unit-run.txt
+
+--- working tree
+?? .scratch/reviews/252/502f012-guard-phase2.log
+?? .scratch/reviews/252/evidence/after/
+?? .scratch/reviews/252/evidence/before/
+(?? media dirs only: binary before/after images + video, deliberately uncommitted)
+
+--- authority: no push, no PR, no merge
+502f012 docs(scratch): #252 gate logs and review evidence at 0a30eee
+0a30eee test(web): close the round-3 notes on the guard and the WE_OWE submit path (#252)
+4458560 test(web): close the round-2 guard and test gaps (#252)
+605f8c3 fix(web): make the direction label map the only reading, per round-1 review (#252)
+fd19ddd fix(web,api): put each supplier-direction label on the value its hint describes (#252)
+unpushed branch (expected for a lane)

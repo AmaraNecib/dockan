@@ -1,0 +1,31 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\supplier-entry-display.test.ts:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+(pass) supplierEntrySign > charges purchases/refunds and a WE_OWE adjustment, credits the rest [0.16ms]
+(pass) supplierEntrySignLabel > distinguishes two equal opposite adjustments [0.11ms]
+(pass) supplierEntryDirectionKey > names the adjustment direction and stays null for other kinds [0.13ms]
+(pass) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [4.95ms]
+(pass) supplier-direction labels (issue 252) > keeps each label on the value its own hint describes [0.34ms]
+(pass) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.60ms]
+(pass) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.54ms]
+(pass) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.11ms]
+(pass) supplier-direction labels (issue 252) > names the direction it actually requires in the linked-reduction refusal [5.28ms]
+
+src\components\parties\supplier-adjust-panel.test.tsx:
+(pass) SupplierAdjustPanel (issue 176) > saves an account-only adjustment with the chosen direction and no invoice [209.97ms]
+(pass) SupplierAdjustPanel (issue 176) > links the invoice, forces the reducing direction (THEY_OWE), and refuses an amount above the remaining [58.16ms]
+(pass) SupplierAdjustPanel (issue 176) > #252 — each direction button shows the Darija its own hint describes [10.92ms]
+(pass) SupplierAdjustPanel (issue 176) > #252 — the 'we owe him' button moves the draft back to WE_OWE [407.36ms]
+(pass) SupplierAdjustPanel (issue 176) > #252 — the linked-invoice trigger reads the invoice number, not its id [27.47ms]
+(pass) SupplierAdjustPanel (issue 176) > offers no link when there is no open purchase invoice [11.23ms]
+(pass) SupplierAdjustPanel (issue 176) > treats a mark-only amount as blank: no error text, confirm stays disabled (#244) [9.45ms]
+(pass) SupplierAdjustPanel (issue 176) > never auto-switches the linked invoice when the selected one is no longer open (Greptile finding 2) [27.92ms]
+(pass) SupplierAdjustPanel (issue 176) > accepts the same grouped amount as the bulk opening-balance screen (#180) [29.46ms]
+(pass) SupplierAdjustPanel (issue 176) > rejects a decimal-grouped amount instead of guessing 100x (#180) [11.81ms]
+(pass) SupplierAdjustPanel (issue 176) > invalidates the real debts and dashboard keys after saving (Greptile finding 5) [500.68ms]
+
+ 20 pass
+ 0 fail
+ 65 expect() calls
+Ran 20 tests across 2 files. [3.96s]

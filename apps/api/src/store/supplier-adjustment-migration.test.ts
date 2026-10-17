@@ -17,7 +17,7 @@ import { createDrizzleStore } from "./drizzle-store";
  * The manual adjustment (تسوية) is additive: a new `ADJUSTMENT` kind plus a
  * `supplier_account_entries.direction` column (v3), and then a `dedup_key`
  * column + partial unique index (v4, issue 181). An older (version-2) build has
- * no ADJUSTMENT branch in its sign SQL, so it would read a «نسالوه» adjustment
+ * no ADJUSTMENT branch in its sign SQL, so it would read a «يسالنا» adjustment
  * as a decrement and show a wrong balance; a version-3 build has no `dedup_key`
  * and would write rows that escape the new dedup. The first sequence proves:
  *

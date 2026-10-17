@@ -13,7 +13,7 @@ import type { Database } from "bun:sqlite";
  * Version 3 (issue 176): the manual adjustment kind (تسوية) and the
  * `supplier_account_entries.direction` column that carries its sign. An older
  * build accepts the version-2 shape but signs an adjustment with no branch of
- * its own — it would read a «نسالوه» adjustment as a decrement — so a
+ * its own — it would read a «يسالنا» adjustment as a decrement — so a
  * version-2 build MUST refuse this format (ADR-0008 §4.5).
  *
  * Version 4 (issue 181): the `supplier_account_entries.dedup_key` column and

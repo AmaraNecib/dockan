@@ -101,12 +101,20 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>
   const invoiceNumber = (await page.getByTestId("purchase-saved-number").innerText()).match(/SUP-\d+/)![0]!;
 
-  // 3. the bulk رصيد افتتاحي screen: create a supplier inline with 800 نسالوه
+  // 3. the bulk رصيد افتتاحي screen: create a supplier inline with 800 يسالنا
+  // (the inline row defaults to WE_OWE = "we owe him")
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
   await page.getByTestId("opening-balance-new-name").fill(openingSupplierName);
   await page.getByTestId("opening-balance-new-amount").fill("800");
+  // #252 — the direction control reads a Darija label, never the raw enum value.
+  // Before the fix this trigger printed `WE_OWE` while its own popup printed the
+  // Arabic items (`SelectValue` with no `items` map on the root).
+  const directionSelect = page.getByTestId("opening-balance-new-direction");
+  await expect(directionSelect).toContainText("يسالنا");
+  await expect(directionSelect).not.toContainText("WE_OWE");
+  await expect(directionSelect).not.toContainText("THEY_OWE");
   await page.getByTestId("opening-balance-save").click();
 
   const saved = page.getByTestId("opening-balance-saved");
@@ -139,7 +147,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // the account row names the adjustment and its direction
   await page.getByTestId("party-tab-payments").click();
   await expect(page.getByTestId("supplier-entry-kind-ADJUSTMENT").first()).toBeVisible();
-  await expect(page.getByTestId("supplier-entry-direction").first()).toContainText("يسالنا");
+  await expect(page.getByTestId("supplier-entry-direction").first()).toContainText("نسالوه");
 
   // 7. the invoice agrees: remaining 4500, the 500 surfaced as settled credit
   await page.getByTestId("party-tab-invoices").click();
@@ -154,7 +162,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await page.getByTestId("opening-balance-new-name").fill(creditSupplierName);
-  await chooseSelectOption(page, page.getByTestId("opening-balance-new-direction"), "يسالنا");
+  await chooseSelectOption(page, page.getByTestId("opening-balance-new-direction"), "نسالوه");
   await page.getByTestId("opening-balance-new-amount").fill("100000");
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();

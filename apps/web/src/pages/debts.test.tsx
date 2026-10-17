@@ -415,11 +415,19 @@ describe("DebtsPage (ticket 9)", () => {
     await ui.waitFor(() => document.querySelector('[data-testid="debts-account-entry-direction"]') !== null);
 
     const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
-    expect(directions.join(" ")).toContain("نسالوه");
-    expect(directions.join(" ")).toContain("يسالنا");
-
     const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
+    // #252 — label-to-VALUE, not "both strings appear somewhere". The rows also
+    // carry their entry's date, so this pins the ROW's identity, not just a
+    // position in two independently-queried lists: e1 is 01/10 (WE_OWE = we owe
+    // him, +) and e2 is 02/10 (THEY_OWE = he owes us, −). The previous assertion
+    // here passed with the two Darija strings swapped, which is the bug the ticket
+    // reports on this very table.
+    const dates = Array.from(document.querySelectorAll('[data-testid="debts-account-entry"]')).map((row) => row.querySelector("td")?.textContent ?? "");
+    expect(dates[0]).toContain("01/10/2026");
+    expect(directions[0]).toContain("يسالنا");
     expect(amounts[0]).toContain("+");
+    expect(dates[1]).toContain("02/10/2026");
+    expect(directions[1]).toContain("نسالوه");
     expect(amounts[1]).toContain("−");
 
     await ui.unmount();

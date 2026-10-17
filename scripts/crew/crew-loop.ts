@@ -38,8 +38,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { hostPath } from "./host-path.ts";
-import { check, report, type SelftestCase } from "./selftest.ts";
+import { hostPath } from "./host-path";
+import { check, report, type SelftestCase } from "./selftest";
 
 export const DEFAULT_REPO = "D:/projects/mani-project";
 const PICKUP_TIMEOUT_MS = 240_000;

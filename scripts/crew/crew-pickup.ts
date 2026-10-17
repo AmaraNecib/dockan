@@ -44,8 +44,8 @@ import { basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { hostPath, winPath } from "./host-path.ts";
-import { check, report, type SelftestCase } from "./selftest.ts";
+import { hostPath, winPath } from "./host-path";
+import { check, report, type SelftestCase } from "./selftest";
 
 export const DEFAULT_REPO = "D:/projects/mani-project";
 /** This repo's lane-name convention, shared by pickup, launch-lane and crew-watch. */

@@ -31,8 +31,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { hostPath } from "./host-path.ts";
-import { check, diff, report, type SelftestCase } from "./selftest.ts";
+import { hostPath } from "./host-path";
+import { check, diff, report, type SelftestCase } from "./selftest";
 
 export const DEFAULT_ROOT = "/d/projects/mani-project/.scratch/sessions/crew/e2e-slots";
 export const DEFAULT_SLOTS = 2;
@@ -262,10 +262,10 @@ function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<Spawned> {
     const child = spawnCli(args, env);
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
     child.on("close", (code) => {

@@ -37,8 +37,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { hostPath, winPath } from "./host-path.ts";
-import { check, report, type SelftestCase } from "./selftest.ts";
+import { hostPath, winPath } from "./host-path";
+import { check, report, type SelftestCase } from "./selftest";
 
 export const DEFAULT_REPO = "D:/projects/mani-project";
 export const DEFAULT_WT_ROOT = "/d/projects/mani-worktrees";
@@ -127,7 +127,8 @@ export type CleanDeps = {
   sizeMb: (path: string) => string;
   remove: (path: string) => boolean;
   prune: () => void;
-  dirSizeMb: (path: string) => string;
+  /** `du -sm` of the whole worktree root, for the freed-MB footer. */
+  dirSizeMb: () => string;
 };
 
 type Run = { stdout: string; code: number };
@@ -281,7 +282,7 @@ export function runClean(deps: CleanDeps, options: CleanOptions, out: (line: str
 
 // ------------------------------------------------------------------ selftest
 
-function facts(patch: Partial<WorktreeFacts>): WorktreeFacts {
+function facts(patch: Partial<WorktreeFacts> = {}): WorktreeFacts {
   return {
     path: "D:/projects/mani-worktrees/lane",
     name: "lane",

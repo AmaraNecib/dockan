@@ -46,7 +46,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { check, report, type SelftestCase } from "./selftest.ts";
+import { check, report, type SelftestCase } from "./selftest";
 
 export const DEFAULT_DEADLINE_SECONDS = 900; // 15 minutes
 export const DEFAULT_POLL_SECONDS = 15;

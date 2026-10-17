@@ -1,0 +1,18 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\supplier-entry-display.test.ts:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+(pass) supplierEntrySign > charges purchases/refunds and a WE_OWE adjustment, credits the rest [0.12ms]
+(pass) supplierEntrySignLabel > distinguishes two equal opposite adjustments [0.09ms]
+(pass) supplierEntryDirectionKey > names the adjustment direction and stays null for other kinds [0.11ms]
+(pass) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [4.47ms]
+(pass) supplier-direction labels (issue 252) > keeps each label on the value its own hint describes [0.32ms]
+(pass) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.33ms]
+(pass) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.31ms]
+(pass) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.06ms]
+(pass) supplier-direction labels (issue 252) > names the direction it actually requires in the linked-reduction refusal [3.68ms]
+
+ 9 pass
+ 0 fail
+ 33 expect() calls
+Ran 9 tests across 1 file. [453.00ms]

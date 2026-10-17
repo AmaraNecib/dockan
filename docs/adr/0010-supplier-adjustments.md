@@ -2,8 +2,8 @@
 
 A supplier's old or standalone debt has no invoice to enter, so the account needs
 a way to write a number directly. We added one **append-only** entry kind,
-`ADJUSTMENT` (تسوية), carrying a **direction** — **نسالوه** (`WE_OWE`, the shop
-owes more, +) or **يسالنا** (`THEY_OWE`, the shop owes less, −) — an amount, a
+`ADJUSTMENT` (تسوية), carrying a **direction** — **يسالنا** (`WE_OWE`, the shop
+owes more, −) or **نسالوه** (`THEY_OWE`, the shop owes less, +) — an amount, a
 reason, and a date. A mistake is another تسوية with a reason, never a delete.
 
 The owner's decision: the adjustment takes an **optional invoice link**.
@@ -40,7 +40,7 @@ already carries an account entry asks for confirmation first.
 - `supplierEntryKinds` gains `ADJUSTMENT`; `supplier_account_entries` gains a
   nullable `direction` column. `CURRENT_SCHEMA_VERSION` moves 2 → 3. An older
   (version-2) build has no ADJUSTMENT branch in its sign SQL and would read a
-  نسالوه adjustment as a decrement, so it MUST refuse the version-3 database
+  يسالنا adjustment as a decrement, so it MUST refuse the version-3 database
   (ADR-0008 §4.5). The forward migration is additive: `ALTER TABLE … ADD COLUMN
   direction`, existing rows keep `direction = NULL`, and re-opening is
   idempotent.

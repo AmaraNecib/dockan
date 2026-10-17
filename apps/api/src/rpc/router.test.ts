@@ -2353,7 +2353,7 @@ describe("supplier adjustments (issue 176)", () => {
     expect((await client.invoicesGet({ id: invoice.id })).remainingAmount).toBe(0);
   });
 
-  it("refuses to link a نسالوه adjustment that would increase an invoice", async () => {
+  it("refuses to link a يسالنا adjustment that would increase an invoice", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية اتجاه", 10);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, invoiceId: invoice.id })).rejects.toThrow(/Input validation failed/);
   });

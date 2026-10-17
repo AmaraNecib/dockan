@@ -406,7 +406,7 @@ describe("supplier account store", () => {
     expect((await store.getInvoiceDetail(invoice.id))?.remainingAmount).toBe(800);
   });
 
-  it("refuses a linked نسالوه adjustment and an over-remaining linked one at the store backstop (issue 177)", async () => {
+  it("refuses a linked يسالنا adjustment and an over-remaining linked one at the store backstop (issue 177)", async () => {
     const supplier = await makeSupplier("مورد خلفي");
     const invoice = await makePurchase(supplier.id, 1000);
     await expect(

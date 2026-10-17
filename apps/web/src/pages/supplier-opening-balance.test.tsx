@@ -10,6 +10,7 @@ import { normalizeTextKey } from "@dokan/contracts";
 import i18n from "../lib/i18n";
 
 import { routerMock } from "../tests/router-mock";
+import { activateOption, chooseOption, findOption, openSelect } from "../tests/select-driver";
 
 mock.module("@tanstack/react-router", () => routerMock());
 
@@ -448,6 +449,84 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')!, "500");
     expect(rows[0]?.querySelector<HTMLInputElement>('[data-testid="opening-balance-amount"]')?.value).toBe("");
     expect(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-amount-0"]')?.value).toBe("500");
+  });
+
+  /**
+   * #252 — the direction control's label-to-VALUE binding.
+   *
+   * Two defects met on this control: the i18n map carried each Darija on the
+   * other enum value, and `SelectValue` had no `items` map on the root, so the
+   * trigger printed the raw `WE_OWE` (Base UI falls back to the value string).
+   * The old tests could not see either: the only direction assertion found a
+   * disabled button, and no test ever read this trigger.
+   *
+   * This asserts the string on the trigger is the "we owe him" Darija, and that
+   * clicking the "he owes us" option submits THEY_OWE — the same click a
+   * shopkeeper makes when the supplier owes HIM. The value is what must match the
+   * label, not the label matching a stale expectation.
+   */
+  it("#252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names", async () => {
+    render();
+    await settle();
+
+    const rowTrigger = clickTarget("opening-balance-direction");
+    const newTrigger = clickTarget("opening-balance-typed-direction-0");
+    // the trigger also carries the chevron icon; the label lives in the SelectValue
+    // span, the element Base UI resolves from the root's `items` map
+    const labelOf = (trigger: Element) => trigger.querySelector('[data-slot="select-value"]')?.textContent;
+    for (const trigger of [rowTrigger, newTrigger]) {
+      expect(labelOf(trigger)).toBe("يسالنا");
+      expect(labelOf(trigger)).not.toContain("WE_OWE");
+      expect(labelOf(trigger)).not.toContain("THEY_OWE");
+    }
+
+    // the popup offers the same two strings the root's map holds, in value order:
+    // list and trigger read one map, so they cannot disagree about which label sits
+    // on which value
+    await openSelect(newTrigger);
+    const listboxId = newTrigger.getAttribute("aria-controls") ?? "";
+    const optionLabels = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"))
+      .filter((option) => option.closest("[role='listbox']")?.id === listboxId)
+      .map((option) => option.textContent?.trim() ?? "");
+    expect(optionLabels).toEqual(["يسالنا", "نسالوه"]);
+
+    // choosing the option that reads "he owes us" (THEY_OWE) must submit THEY_OWE
+    const theyOweOption = await findOption("نسالوه", newTrigger);
+    expect(theyOweOption).not.toBeNull();
+    await activateOption(theyOweOption!);
+    expect(labelOf(newTrigger)).toBe("نسالوه");
+
+    setInput(clickTarget("opening-balance-typed-name-0"), "مورد اتجاه ٢٥٢");
+    setInput(clickTarget("opening-balance-typed-amount-0"), "700");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    expect(captured?.rows[0]).toMatchObject({ newSupplierName: "مورد اتجاه ٢٥٢", direction: "THEY_OWE", amount: 700 });
+  });
+
+  /** The other half of acceptance 2 on this screen: the option that reads «يسالنا»
+   * (WE_OWE = we owe him) must SUBMIT WE_OWE. Moved off the default first, so an
+   * option that leaves the draft untouched cannot pass. */
+  it("#252 — choosing the 'we owe him' option submits WE_OWE", async () => {
+    render();
+    await settle();
+
+    // row 1 is s-2, which carries no account entries, so the save goes straight
+    // through without the confirmation dialog
+    const trigger = host.querySelectorAll<HTMLElement>('[data-testid="opening-balance-direction"]')[1]!;
+    const labelOf = () => trigger.querySelector('[data-slot="select-value"]')?.textContent;
+    await chooseOption(trigger, "نسالوه");
+    expect(labelOf()).toBe("نسالوه");
+    await chooseOption(trigger, "يسالنا");
+    expect(labelOf()).toBe("يسالنا");
+
+    typeIntoRow(1, "450");
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    expect(captured?.rows[0]).toMatchObject({ supplierId: "s-2", direction: "WE_OWE", amount: 450 });
   });
 
   it("surfaces the confirmation dialog when the server refuses a stale-expectation row (round 5)", async () => {

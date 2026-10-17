@@ -113,6 +113,13 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await expect(page.getByTestId("opening-balance-page")).toBeVisible();
   await page.getByTestId("opening-balance-typed-name-0").fill(openingSupplierName);
   await page.getByTestId("opening-balance-typed-amount-0").fill("800");
+  // #252 — the direction control reads a Darija label, never the raw enum value.
+  // Before the fix this trigger printed `WE_OWE` while its own popup printed the
+  // Arabic items (`SelectValue` with no `items` map on the root).
+  const directionSelect = page.getByTestId("opening-balance-typed-direction-0");
+  await expect(directionSelect).toContainText("يسالنا");
+  await expect(directionSelect).not.toContainText("WE_OWE");
+  await expect(directionSelect).not.toContainText("THEY_OWE");
 
   await page.getByTestId("opening-balance-add-row").click();
   // the control focuses the row it added: the owner types the next party without

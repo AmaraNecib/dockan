@@ -12,9 +12,9 @@ import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
+import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
-import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -142,9 +142,9 @@ export function SupplierAdjustPanel({
             disabled={linked || adjust.isPending || submitting}
             onClick={() => setDirection("WE_OWE")}
             data-testid="supplier-adjust-direction-we-owe"
-            title={t("supplierAdjustDirectionWeOweHint")}
+            title={t(supplierDirectionHintKey("WE_OWE"))}
           >
-            {t("supplierAdjustDirectionWeOwe")}
+            {t(supplierDirectionKey("WE_OWE"))}
           </Button>
           <Button
             type="button"
@@ -153,9 +153,9 @@ export function SupplierAdjustPanel({
             disabled={adjust.isPending || submitting}
             onClick={() => setDirection("THEY_OWE")}
             data-testid="supplier-adjust-direction-they-owe"
-            title={t("supplierAdjustDirectionTheyOweHint")}
+            title={t(supplierDirectionHintKey("THEY_OWE"))}
           >
-            {t("supplierAdjustDirectionTheyOwe")}
+            {t(supplierDirectionKey("THEY_OWE"))}
           </Button>
         </div>
       </div>
@@ -223,7 +223,7 @@ export function SupplierAdjustPanel({
           <div className="flex flex-wrap items-end gap-3">
             <div className="grid gap-1 text-sm">
               {t("supplierPayInvoiceLabel")}
-              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")}>
+              <Select value={selected !== undefined ? invoiceId : ""} onValueChange={(next) => setInvoiceId(next ?? "")} items={openInvoices.map((invoice) => ({ value: invoice.id, label: invoice.invoiceNumber }))}>
                 <SelectTrigger className="w-56" data-testid="supplier-adjust-invoice">
                   <SelectValue />
                 </SelectTrigger>

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { walkTsx } from "../tests/source-scan";
 
 /**
  * RTL table-cell regression guard (issue #166).
@@ -18,20 +20,6 @@ import { fileURLToPath } from "node:url";
  */
 
 const srcRoot = fileURLToPath(new URL("../", import.meta.url));
-
-function walkTsx(dir: string): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    const stat = statSync(path);
-    if (stat.isDirectory()) {
-      files.push(...walkTsx(path));
-      continue;
-    }
-    if (entry.endsWith(".tsx") && !entry.endsWith(".test.tsx")) files.push(path);
-  }
-  return files;
-}
 
 // a cell opening tag carrying dir="ltr" (any quote/JSX-expression spelling,
 // order-independent, multi-line safe)

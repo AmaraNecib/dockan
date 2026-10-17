@@ -221,6 +221,56 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(previewText()).not.toContain("نسالوه");
   });
 
+  /**
+   * #252 — the panel's two buttons are the other place a direction label sits. The
+   * label and the hint beside it are resolved from the same direction, so this pins
+   * the pair: a label moved to the other value (the reported bug) or a hint moved
+   * to the other value (a fake fix) both redden here.
+   */
+  it("#252 — each direction button shows the Darija its own hint describes", () => {
+    render();
+    const weOwe = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-direction-we-owe"]');
+    const theyOwe = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-direction-they-owe"]');
+
+    expect(weOwe?.textContent).toBe("يسالنا");
+    expect(weOwe?.getAttribute("title")).toContain("نحن ندين له");
+    expect(theyOwe?.textContent).toBe("نسالوه");
+    expect(theyOwe?.getAttribute("title")).toContain("هو يدين لنا");
+  });
+
+  /** #252 — the other half of the same pin: the button that reads «يسالنا» must
+   * SUBMIT WE_OWE. Starting from THEY_OWE first, so a button whose handler does
+   * nothing (or sets the opposite value) cannot pass by leaving the default. */
+  it("#252 — the 'we owe him' button moves the draft back to WE_OWE", async () => {
+    render();
+    clickOn("supplier-adjust-direction-they-owe");
+    clickOn("supplier-adjust-direction-we-owe");
+    typeInto("supplier-adjust-amount", "250");
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+
+    expect(captured).toMatchObject({ direction: "WE_OWE", amount: 250 });
+  });
+
+  /**
+   * #252 — the same raw-value defect as the direction selects: this `<Select>`
+   * had no `items` map on its root, so the trigger printed the invoice UUID while
+   * the popup printed invoice numbers. Found by the new AST guard in
+   * `lib/select-trigger-label.test.ts`.
+   */
+  it("#252 — the linked-invoice trigger reads the invoice number, not its id", () => {
+    render([invoice({ id: "inv-raw-uuid-252", invoiceNumber: "INV-9001" })]);
+    clickOn("supplier-adjust-link");
+
+    // the trigger also carries the chevron icon; the label lives in the SelectValue
+    // span, which is the element Base UI resolves from the root's `items` map
+    const trigger = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-invoice"]');
+    const value = trigger?.querySelector('[data-slot="select-value"]');
+    expect(value?.textContent).toBe("INV-9001");
+    expect(trigger?.textContent).not.toContain("inv-raw-uuid-252");
+  });
+
   it("offers no link when there is no open purchase invoice", () => {
     render([]);
     clickOn("supplier-adjust-link");

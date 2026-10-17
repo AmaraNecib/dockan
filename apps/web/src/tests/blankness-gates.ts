@@ -51,6 +51,14 @@ import { fileURLToPath } from "node:url";
  * way `scanSource` does, so a `;` in a nested template's TEXT
  * (`${flag ? `;` : draft}`) is not a statement break.
  *
+ * Round 5 (#244): that frame stack read JSX text inside a template expression as
+ * code, so an unmatched `)` or `]` in a JSX child
+ * (`${flag ? <span>)</span> : draft}`) looked like the end of the statement and
+ * discarded the declaration — a gate the round-3 scanner caught. An unmatched
+ * `)`/`]` at bracket depth 0 INSIDE a `${...}` cannot be code, so it is skipped
+ * as text there; at the top level (and outside a template) it still ends the
+ * right-hand side, so the round-2..4 matchers are unchanged.
+ *
  * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
  * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
  * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
@@ -87,7 +95,12 @@ import { fileURLToPath } from "node:url";
  * `withoutSubscripts` strips a `[`/`]` inside a string argument, so
  * `normalizeArabicIndicDigits(draft.replace("[", "")).trim()` is reported too.
  * Both over-report a correctly normalised value (the safe direction: a raw gate is
- * never hidden by them) and both go away with the AST walk. Regex literals
+ * never hidden by them) and both go away with the AST walk. JSX inside `${...}`
+ * is handled only for the unmatched-closer half above (round 5): a `}` or a quote
+ * in JSX child text is still read as code, because telling the JSX `}` from the
+ * interpolation's own `}` needs the tag walk an AST gives for free. The three
+ * recorded round-5 fixtures (the `)`/`]` fix and the pre-existing `}` result) pin
+ * what is actually claimed. Regex literals
  * are not parsed, so a regex holding a quote, a backtick or a `/*` can mis-scope
  * or HIDE every later gate in the file (the unsafe direction) — in
  * `breaksStatement` and `normalisesWholeValue` as well as `scanSource` — a
@@ -179,9 +192,12 @@ function breaksStatement(text: string, from: number, to: number): boolean {
       else return true;
     } else if (CLOSERS.includes(char)) {
       // `)` / `]` (the `}` is handled above): a close at depth 0 ends the
-      // right-hand side, so the `.trim()` belongs to a later statement
+      // right-hand side, so the `.trim()` belongs to a later statement. Inside a
+      // template interpolation it ends nothing: an unmatched close there is JSX
+      // text, not code (`${flag ? <span>)</span> : draft}`, round 5 finding 1),
+      // so it is skipped rather than treated as a break.
       if (frame.braces > 0) frame.braces -= 1;
-      else return true;
+      else if (frames.length === 1) return true;
     } else if (char === ";" && frame.braces === 0 && frames.length === 1) return true;
     else if (
       char === "\n" &&

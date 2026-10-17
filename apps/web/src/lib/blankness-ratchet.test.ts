@@ -649,4 +649,31 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
       'synthetic.ts::trimmed === "" [`${flag ? `;` : draft}`.trim()]',
     ]);
   });
+
+  it("reads JSX child text inside a template expression as text, not code (#244 round 5, finding 1)", () => {
+    // BEFORE the fix these returned []: round 4's `${}` frame stack read the JSX
+    // child as code, so the unmatched `)` (or `]`) at bracket depth 0 looked like
+    // the end of the statement, the declaration was discarded, and a raw gate
+    // escaped. The round-3 scanner (flat backticks) caught both.
+    const closingParen = [
+      "export function f(flag: boolean, draft: string) {",
+      "  const trimmed = `${flag ? <span>)</span> : draft}`.trim();",
+      '  if (trimmed === "") return null;',
+      "  return trimmed;",
+      "}",
+    ].join("\n");
+    expect(findBlanknessGates(closingParen, "s.tsx").map((gate) => gate.signature)).toEqual([
+      's.tsx::trimmed === "" [`${flag ? <span>)</span> : draft}`.trim()]',
+    ]);
+    const closingBracket = closingParen.replace("<span>)</span>", "<span>]</span>");
+    expect(findBlanknessGates(closingBracket, "s.tsx").map((gate) => gate.signature)).toEqual([
+      's.tsx::trimmed === "" [`${flag ? <span>]</span> : draft}`.trim()]',
+    ]);
+    // a `}` in JSX child text was already caught before this change (it closes
+    // the interpolation, then the following `${...}` reopens one); it stays caught
+    const closingBrace = closingParen.replace("<span>)</span>", "<span>}</span>");
+    expect(findBlanknessGates(closingBrace, "s.tsx").map((gate) => gate.signature)).toEqual([
+      's.tsx::trimmed === "" [`${flag ? <span>}</span> : draft}`.trim()]',
+    ]);
+  });
 });

@@ -12,6 +12,7 @@ import { draftBlank, parseGroupedAmount } from "@/lib/amount-parse";
 
 import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
+import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey } from "@/lib/supplier-entry-display";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
 
@@ -69,7 +70,8 @@ export function SupplierAdjustPanel({
   const selected = openInvoices.find((invoice) => invoice.id === invoiceId);
   const selectionLost = linked && invoiceId !== "" && selected === undefined;
   const noInvoiceChosen = linked && openInvoices.length > 0 && invoiceId === "";
-  // linking only reduces an invoice, so the direction is forced to THEY_OWE (نسالوه)
+  // linking only reduces an invoice, so the direction is forced to THEY_OWE (the
+  // «we ask him» side: he owes us, so what we owe him drops)
   const effectiveDirection: SupplierAdjustmentDirection = linked ? "THEY_OWE" : direction;
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
   const amountError =
@@ -140,9 +142,9 @@ export function SupplierAdjustPanel({
             disabled={linked || adjust.isPending || submitting}
             onClick={() => setDirection("WE_OWE")}
             data-testid="supplier-adjust-direction-we-owe"
-            title={t("supplierAdjustDirectionWeOweHint")}
+            title={t(supplierDirectionHintKey("WE_OWE"))}
           >
-            {t("supplierAdjustDirectionWeOwe")}
+            {t(supplierDirectionKey("WE_OWE"))}
           </Button>
           <Button
             type="button"
@@ -151,9 +153,9 @@ export function SupplierAdjustPanel({
             disabled={adjust.isPending || submitting}
             onClick={() => setDirection("THEY_OWE")}
             data-testid="supplier-adjust-direction-they-owe"
-            title={t("supplierAdjustDirectionTheyOweHint")}
+            title={t(supplierDirectionHintKey("THEY_OWE"))}
           >
-            {t("supplierAdjustDirectionTheyOwe")}
+            {t(supplierDirectionKey("THEY_OWE"))}
           </Button>
         </div>
       </div>
@@ -249,7 +251,7 @@ export function SupplierAdjustPanel({
       <div className="rounded border border-border bg-background p-2 text-sm" data-testid="supplier-adjust-preview">
         <p>
           {t("supplierAdjustPreview")}: <span className="font-semibold"><Amount value={Math.abs(previewBalance)} /></span>
-          {previewBalance !== 0 && <span> {previewBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>}
+          {previewBalance !== 0 && <span> {t(supplierBalanceDirectionKey(previewBalance))}</span>}
         </p>
         {previewRemaining !== null ? (
           <p className="mt-1" data-testid="supplier-adjust-preview-remaining">

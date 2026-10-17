@@ -7,6 +7,9 @@ import type { SupplierAdjustmentDirection, SupplierEntryKind } from "@dokan/cont
  * `supplierEntrySign` in the api's supplier-ledger module.
  */
 
+/** The label keys for the two manual-adjustment directions. */
+type DirectionLabelKey = "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe";
+
 /** +1 when the entry raises what the shop owes, −1 when it lowers it. An
  * ADJUSTMENT's sign comes from its direction. */
 export function supplierEntrySign(kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null): 1 | -1 {
@@ -38,7 +41,7 @@ export function adjustmentDirectionKey(
  * direction is implied by the kind label). */
 export function supplierEntryDirectionKey(
   entry: { kind: SupplierEntryKind; direction: SupplierAdjustmentDirection | null },
-): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" | null {
+): DirectionLabelKey | null {
   if (entry.kind !== "ADJUSTMENT") return null;
   return supplierDirectionKey(entry.direction ?? "WE_OWE");
 }
@@ -47,14 +50,33 @@ export function supplierEntryDirectionKey(
  * The i18n key that names a direction (issue 252). WE_OWE is the value whose
  * sign raises what the shop owes the supplier; THEY_OWE lowers it.
  *
- * One definition on purpose: the picker's `items` map, its trigger and the
- * movement rows on the debts and party-detail screens all resolve a direction
- * through this function. #176 had two hand-written readings of the same map, and
- * the picker's copy carried each Darija on the other value — a label sits on the
- * value its own hint describes, or it is the bug this test exists for.
+ * One definition on purpose. #176 wrote the map out by hand at each site and the
+ * picker's copy carried each Darija on the other value, so the label contradicted
+ * the hint beside it and a user picking by the label stored the opposite
+ * direction. Every site that resolves a DIRECTION to its label goes through this
+ * function (the picker's options and trigger, the adjust panel's two buttons, the
+ * movement rows on the debts and party-detail screens); a signed balance goes
+ * through `supplierBalanceDirectionKey`.
  */
-export function supplierDirectionKey(
-  direction: SupplierAdjustmentDirection,
-): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
+export function supplierDirectionKey(direction: SupplierAdjustmentDirection): DirectionLabelKey {
   return direction === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+}
+
+/** The hint shown beside a direction's label — the sentence that says what
+ * picking it does to the balance. Resolved here, next to the label's key: #252
+ * was a label that had drifted onto the other value while its own hint stayed
+ * right, so the two strings for one direction are paired in one module and
+ * pinned together by `supplier-entry-display.test.ts`. */
+export function supplierDirectionHintKey(
+  direction: SupplierAdjustmentDirection,
+): "supplierAdjustDirectionWeOweHint" | "supplierAdjustDirectionTheyOweHint" {
+  return direction === "THEY_OWE" ? "supplierAdjustDirectionTheyOweHint" : "supplierAdjustDirectionWeOweHint";
+}
+
+/** The direction a SIGNED supplier balance represents: positive is money the shop
+ * owes the supplier (WE_OWE), negative is credit held with him (THEY_OWE). Zero
+ * reads as WE_OWE — the convention the saved-balance column already used — and
+ * the credit columns never call this at zero (they guard `!== 0` first). */
+export function supplierBalanceDirectionKey(balance: number): DirectionLabelKey {
+  return supplierDirectionKey(balance >= 0 ? "WE_OWE" : "THEY_OWE");
 }

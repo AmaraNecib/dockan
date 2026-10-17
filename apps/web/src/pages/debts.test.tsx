@@ -415,15 +415,16 @@ describe("DebtsPage (ticket 9)", () => {
     await ui.waitFor(() => document.querySelector('[data-testid="debts-account-entry-direction"]') !== null);
 
     const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
-    // #252 — label-to-VALUE, not "both strings appear somewhere". Entry e1 is
-    // WE_OWE (we owe him — it raises the balance) and e2 is THEY_OWE (he owes us);
-    // the previous assertion here passed with the two Darija strings swapped,
-    // which is the bug the ticket reports on this very table.
-    expect(directions[0]).toContain("يسالنا");
-    expect(directions[1]).toContain("نسالوه");
-
     const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
+    // #252 — label-to-VALUE, not "both strings appear somewhere". The fixture is
+    // local to this test and its entries are ordered by occurredAt: e1 (WE_OWE = we
+    // owe him, +) is row 0, e2 (THEY_OWE = he owes us, −) is row 1. Asserting the
+    // word beside its OWN row's sign is what makes this a label pin — the previous
+    // assertion here passed with the two Darija strings swapped, which is the bug
+    // the ticket reports on this very table.
+    expect(directions[0]).toContain("يسالنا");
     expect(amounts[0]).toContain("+");
+    expect(directions[1]).toContain("نسالوه");
     expect(amounts[1]).toContain("−");
 
     await ui.unmount();

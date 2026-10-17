@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import i18n from "./i18n";
 
-import { supplierDirectionKey, supplierEntryDirectionKey, supplierEntrySign, supplierEntrySignLabel } from "./supplier-entry-display";
+import { supplierBalanceDirectionKey, supplierDirectionHintKey, supplierDirectionKey, supplierEntryDirectionKey, supplierEntrySign, supplierEntrySignLabel } from "./supplier-entry-display";
 
 /**
  * Greptile round 1 finding 6: an opposite adjustment looked identical on the
@@ -77,5 +77,24 @@ describe("supplier-direction labels (issue 252)", () => {
     expect(i18n.t(supplierDirectionKey("THEY_OWE"))).toBe(DARIJA_THEY_OWE);
     expect(supplierEntryDirectionKey({ kind: "ADJUSTMENT", direction: "WE_OWE" })).toBe(supplierDirectionKey("WE_OWE"));
     expect(supplierEntryDirectionKey({ kind: "ADJUSTMENT", direction: "THEY_OWE" })).toBe(supplierDirectionKey("THEY_OWE"));
+  });
+
+  it("pairs each direction's label with the hint that describes it", () => {
+    // the two strings for one direction are resolved in one module, so a label
+    // cannot be left sitting on the other value while its hint stays correct
+    expect(supplierDirectionHintKey("WE_OWE")).toBe("supplierAdjustDirectionWeOweHint");
+    expect(supplierDirectionHintKey("THEY_OWE")).toBe("supplierAdjustDirectionTheyOweHint");
+    // and the resolved pair says the same thing: "we owe him" beside WE_OWE
+    expect(i18n.t(supplierDirectionKey("WE_OWE"))).toBe(DARIJA_WE_OWE);
+    expect(i18n.t(supplierDirectionHintKey("WE_OWE"))).toContain("نحن ندين له");
+    expect(i18n.t(supplierDirectionKey("THEY_OWE"))).toBe(DARIJA_THEY_OWE);
+    expect(i18n.t(supplierDirectionHintKey("THEY_OWE"))).toContain("هو يدين لنا");
+  });
+
+  it("reads a signed supplier balance as the direction that sign means", () => {
+    expect(supplierBalanceDirectionKey(500)).toBe("supplierAdjustDirectionWeOwe");
+    expect(supplierBalanceDirectionKey(-300)).toBe("supplierAdjustDirectionTheyOwe");
+    // zero reads as WE_OWE: the convention the saved-balance column already used
+    expect(supplierBalanceDirectionKey(0)).toBe("supplierAdjustDirectionWeOwe");
   });
 });

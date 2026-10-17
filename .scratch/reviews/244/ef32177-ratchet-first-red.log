@@ -1,0 +1,101 @@
+### ratchet first-red at ef32177 — round-3 scanner (1af565f) against the round-4 tests
+
+bun test v1.4.2 (744846f84)
+
+src\lib\blankness-ratchet.test.ts:
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.19ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [0.28ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [0.57ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.36ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.41ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > ignores gate text in a comment and does not match a call-expression receiver [0.29ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a gate whose comparison is split across two lines (#244 round 2, finding 1) [0.31ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a .trim() chain the formatter broke across lines (#244 round 2, same class) [0.61ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration whose right-hand side holds a bracketed group (#244 round 2) [0.63ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [0.73ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.46ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [0.57ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a type-annotated two-step declaration (#244 round 2) [1.20ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps a ?. chain receiver whole, including an optional subscript and a private field (#244 round 2) [0.75ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not attribute a reversed property read to a visible raw declaration (#244 round 2, precision) [0.28ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps the two-step gate on a line that also holds an inline gate (#244 round 2, finding 1) [0.43ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration split across two lines (#244 round 2, finding 1 same class) [0.35ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not let an inner normalised declaration mask an outer raw gate (#244 round 2, finding 2) [0.48ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [1.21ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [0.29ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not skip a raw gate whose receiver name merely contains a normaliser name [0.38ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not attribute a property read to a visible raw declaration (#244 round 2, precision) [0.28ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > names only files inside the scanned scope (a scope shrink reddens this) [0.48ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.67ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > treats a template expression as code: a comment inside it cannot hide a raw check (#244 round 3, finding 1) [0.42ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > treats a template expression as code: an inner normalised declaration cannot hide an outer raw check (#244 round 3, finding 1) [1.09ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps the code region open across an inner brace inside `${}` (#244 round 3 review) [0.80ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not read a brace inside a string subscript as a statement break (#244 round 3 review) [0.34ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > detects a raw value selected through a normalised key (#244 round 3, finding 2) [1.98ms]
+556 |       "  const trimmed = normalizeArabicIndicDigits(prefix).concat(draft).trim();",
+557 |       '  if (trimmed === "") return null;',
+558 |       "  return trimmed;",
+559 |       "}",
+560 |     ].join("\n");
+561 |     expect(findBlanknessGates(appended, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+                                                                                             ^
+error: expect(received).toEqual(expected)
+
+- [
+-   "synthetic.ts::trimmed === "" [normalizeArabicIndicDigits(prefix).concat(draft).trim()]",
+- ]
++ []
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (D:\projects\mani-worktrees\fix-244-round4\apps\web\src\lib\blankness-ratchet.test.ts:561:88)
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > does not skip a raw gate when the normaliser does not wrap the whole value (#244 round 4, finding 1) [2.17ms]
+590 |       "  const/* note */trimmed = draft.trim();",
+591 |       '  if (trimmed === "") return null;',
+592 |       "  return trimmed;",
+593 |       "}",
+594 |     ].join("\n");
+595 |     expect(findBlanknessGates(joined, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+                                                                                           ^
+error: expect(received).toEqual(expected)
+
+- [
+-   "synthetic.ts::trimmed === "" [draft.trim()]",
+- ]
++ []
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (D:\projects\mani-worktrees\fix-244-round4\apps\web\src\lib\blankness-ratchet.test.ts:595:86)
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps a block comment as a token separator so the declaration survives (#244 round 4, finding 2) [1.20ms]
+643 |       "  const trimmed = `${flag ? `;` : draft}`.trim();",
+644 |       '  if (trimmed === "") return null;',
+645 |       "  return trimmed;",
+646 |       "}",
+647 |     ].join("\n");
+648 |     expect(findBlanknessGates(nested, "synthetic.ts").map((gate) => gate.signature)).toEqual([
+                                                                                           ^
+error: expect(received).toEqual(expected)
+
+- [
+-   "synthetic.ts::trimmed === "" [`${flag ? `;` : draft}`.trim()]",
+- ]
++ []
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (D:\projects\mani-worktrees\fix-244-round4\apps\web\src\lib\blankness-ratchet.test.ts:648:86)
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > does not read a `;` inside a nested template as a statement break (#244 round 4, finding 3) [1.03ms]
+
+3 tests failed:
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > does not skip a raw gate when the normaliser does not wrap the whole value (#244 round 4, finding 1) [2.17ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps a block comment as a token separator so the declaration survives (#244 round 4, finding 2) [1.20ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > does not read a `;` inside a nested template as a statement break (#244 round 4, finding 3) [1.03ms]
+
+ 29 pass
+ 3 fail
+ 56 expect() calls
+Ran 32 tests across 1 file. [1288.00ms]

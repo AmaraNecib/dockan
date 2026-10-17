@@ -96,15 +96,17 @@ Fix: the probe module names are unique per run (`$$-$RANDOM`), the script refuse
 to run if the path already exists, and the `EXIT` trap removes only files this
 invocation created. `gate-set-diff.sh` substitutes the unique old-module name into
 the probe's import via `sed`. Pinned by
-`.scratch/reviews/244/concurrent-probe-demo.sh`, which runs `scanner-shapes.sh`
-and `gate-set-diff.sh` CONCURRENTLY and asserts both pass and neither probe path
-survives.
+`.scratch/reviews/244/concurrent-probe-demo.sh`, which is failing-first: the OLD
+fixed-path script DELETES a probe saved at `apps/web/src/tests/__scanner-shapes.ts`
+(CASE A), while the NEW script run TWICE AT ONCE leaves that saved file
+byte-identical and no per-run probe path behind (CASE B). The demo refuses to
+start when the saved path already exists, so it can never destroy a real probe.
 
 ## Evidence plan
 
 | proof | script | log |
 | --- | --- | --- |
-| failing-first shapes | `apps/web/src/tests/__round4-probe.ts` (removed after) | `round4-before.log` |
+| failing-first shapes | `.scratch/reviews/244/round4-before-probe.ts` | `<sha>-round4-before.log` |
 | ratchet first-red / green | `bun test src/lib/blankness-ratchet.test.ts` with the old/new scanner | `<sha>-ratchet-first-red.log`, `<sha>-ratchet-green.log` |
 | observed shape table | `scanner-shapes.sh` | `<sha>-scanner-shapes.log` |
 | gate-set unchanged | `gate-set-diff.sh` | `<sha>-gate-set-diff.log` |
@@ -113,6 +115,27 @@ survives.
 | unique probe paths | `concurrent-probe-demo.sh` | `<sha>-concurrent-probe-demo.log` |
 | mutation + branch-pin + baseline guard | round-3 scripts, re-run on this HEAD | `<sha>-*.log` |
 | guard Phase 1 / 2 | typecheck, lint, test / e2e | `<sha>-guard-phase1.log`, `<sha>-guard-phase2.log` |
+
+## Review rounds (this lane)
+
+A first review round ran on the earlier commit `d60a0fe`; its actionable findings
+were applied in `3a1a1ae` and `ef32177`, and the final round was re-run on
+`ef32177` (see `.scratch/reviews/244/ef32177-*`). Two corrections are worth
+recording because they were NEW escapes introduced by the fixes themselves:
+
+- the always-a-space comment separator lost `draft./* note */trim()` (a shape the
+  pre-fix scanner caught). The separator is now emitted only where two word
+  characters would fuse; pinned by the `insideChain` fixture.
+- counting `#` as a word character broke `this.#/* gap */draft`, re-attributing
+  the gate to an invented `draft` receiver. `#` is a sigil, not an identifier
+  character; pinned by the `privateField` fixture.
+
+Deferred, in the KNOWN CEILING rather than fixed here (all precision/safe
+direction or pre-existing, and fixing them in this scanner is the very
+hand-rolled-lexer growth the approach answer argues against): `normalisesWholeValue`
+tracks quotes flat; `withoutSubscripts` is quote-blind; a non-ASCII identifier
+binding (`const dé = draft.trim()`) is not seen at all (a pre-existing leak, the
+unsafe direction); regex literals desync all three walks.
 
 ## The approach question (answer, not code)
 

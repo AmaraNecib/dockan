@@ -15,15 +15,28 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OLD_SHA="1af565f"
-RUN="$$-$RANDOM"
-OLD_SCRIPT="$ROOT/.scratch/reviews/244/__old-scanner-shapes.$RUN.sh"
 SAVED="$ROOT/apps/web/src/tests/__scanner-shapes.ts"
 MARKER="// a developer saved this probe"
-TMP="$(mktemp -d)"
 FAILURES=0
 
+# Never touch a file we did not create: this demo writes the FIXED path on
+# purpose, so a real saved probe there would be destroyed. Refuse BEFORE the trap
+# exists — a cleanup trap installed first would delete the file it just refused to
+# touch (round-2 review).
+if [ -e "$SAVED" ]; then
+  echo "REFUSING: $SAVED already exists; move it aside before running this demo"
+  exit 1
+fi
+
+RUN="$$-$RANDOM"
+OLD_SCRIPT="$ROOT/.scratch/reviews/244/__old-scanner-shapes.$RUN.sh"
+TMP="$(mktemp -d)"
+
 cleanup() {
-  rm -f "$OLD_SCRIPT" "$SAVED"
+  rm -f "$OLD_SCRIPT"
+  # $SAVED only exists because the refusal above proved it did not, and this
+  # demo created it; remove it alongside the run's own temp files.
+  rm -f "$SAVED"
   rm -rf "$TMP"
 }
 trap cleanup EXIT

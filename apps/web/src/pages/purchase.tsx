@@ -156,6 +156,16 @@ export function PurchasePage() {
   const quantityRefs = useRef(new Map<string, HTMLInputElement>());
   /** the line each create trigger belongs to, so a cancel can hand the caret back */
   const createTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  /**
+   * The lines region, where the caret lands when the control a commit named
+   * cannot take it (#257 round 5, F1). While the invoice save is in flight every
+   * control in the region is disabled on purpose (round 4), so a cancel during
+   * that freeze has no enabled control left to hand the caret to; the region
+   * itself is a programmatic focus target (`tabIndex -1`) and the frozen status
+   * line below states why its controls are dead, so the owner is not dropped on
+   * `document.body` with his tab order restarted at the top of the page.
+   */
+  const linesRegionRef = useRef<HTMLTableElement | null>(null);
   const lineNameRef = useRef<HTMLInputElement>(null);
 
   const draft = useInvoiceDraft(PURCHASE_DRAFT);
@@ -197,8 +207,18 @@ export function PurchasePage() {
   // cancel handed it back to
   useEffect(() => {
     if (focusRequest === null) return;
-    if (focusRequest.kind === "quantity") quantityRefs.current.get(focusRequest.itemId)?.focus();
-    else createTriggerRefs.current.get(focusRequest.itemId)?.focus();
+    const target =
+      focusRequest.kind === "quantity"
+        ? quantityRefs.current.get(focusRequest.itemId)
+        : createTriggerRefs.current.get(focusRequest.itemId);
+    // A disabled control cannot take focus, and `.focus()` on one silently does
+    // nothing — so naming one would drop the owner on `document.body`, which is
+    // the one place he cannot afford to be (WCAG 2.4.3). The request is REDIRECTED
+    // to the lines region in this same commit rather than retried once the save
+    // settles: a delayed `.focus()` would steal the caret back from wherever the
+    // owner has moved on to by then (#257 round 5, F1).
+    if (target !== undefined && !target.disabled) target.focus();
+    else linesRegionRef.current?.focus();
   }, [focusRequest]);
 
   const lineCreateOpen = lineDraft?.target ?? null;
@@ -269,7 +289,9 @@ export function PurchasePage() {
     setLineDraft(null);
     setLineError(null);
     // the form unmounts out from under the caret, so hand it back to the button
-    // that opened it (WCAG 2.4.3)
+    // that opened it (WCAG 2.4.3) — and when the in-flight save has frozen that
+    // button, the focus effect lands on the lines region instead of leaving the
+    // owner on `document.body` (#257 round 5, F1)
     if (target !== null) requestFocus("trigger", target);
   }
 
@@ -616,7 +638,7 @@ export function PurchasePage() {
                   />
                 </div>
               ) : (
-                <table className="w-full" data-testid="purchase-lines">
+                <table className="w-full" data-testid="purchase-lines" ref={linesRegionRef} tabIndex={-1} aria-label={t("purchasesLinesTitle")}>
                   <thead>
                     <tr className="border-b text-right text-sm text-muted-foreground">
                       <th className="p-2">{t("itemsName")}</th>

@@ -206,6 +206,23 @@ test("purchase line: a create from a zero-cost line is allowed and the invoice p
  * the tree) and the lane copies the pair into `.scratch/reviews/257/screenshots/`
  * under the reviewed SHA. Running this spec against the pre-fix tree is the
  * round-4 e2e red: the frozen status never appears and the controls stay live.
+ *
+ * The hold is an explicit GATE, not a timer (#257 round 5, F2): the handler waits
+ * on a promise this test resolves after its checks, so the frozen window is
+ * however long the checks take. A fixed 2500 ms window raced them — on a slow
+ * runner the save landed first, the page dropped `purchase-lines-frozen`, and
+ * correct behaviour failed looking exactly like a product bug. `routePending` is
+ * asserted after the checks, so "the request was still held while these
+ * assertions ran" is a fact the test states instead of a stopwatch it hopes for,
+ * and the release sits in a `finally` so a throwing assertion cannot hand the
+ * next test a hanging route.
+ *
+ * Round 5 adds the cancel leg: the line's create form is open when the request
+ * goes out, and Cancel stays live through the freeze (round 2: a hung write must
+ * not trap the owner). The trigger it would hand the caret back to is the very
+ * control round 4's freeze disabled, so the caret must land on the lines region
+ * — `document.activeElement` is asserted, and a regression that parks the owner
+ * on `document.body` reddens here.
  */
 test("purchase line: the invoice draft is frozen while the save is in flight (#257 round 4)", async ({ page }) => {
   await signIn(page);
@@ -251,29 +268,60 @@ test("purchase line: the invoice draft is frozen while the save is in flight (#2
   await expect(linePick).toBeEnabled();
   await expect(lineQty).toBeEnabled();
   await expect(lineCost).toBeEnabled();
-  await page.screenshot({ path: "test-results/round4-evidence/draft-live-before-save.png" });
+  // the line's create form is open when the request goes out, so the freeze below
+  // has a Cancel to exercise — Cancel is deliberately never disabled (round 2)
+  await lineTrigger.click();
+  const lineForm = page.getByTestId("purchase-line-product-form");
+  await expect(lineForm).toBeVisible();
+  await page.screenshot({ path: "test-results/round5-evidence/draft-live-before-save.png" });
 
-  // hold the invoice write open: the frozen state exists only while it is out.
-  // 2500 ms, not 4000: the window has to stay well inside Playwright's 5000 ms
-  // expect timeout, or a slow round trip turns the screenshots into flakes.
+  // hold the invoice write open: the frozen state exists only while it is out, and
+  // the hold lasts until THIS test releases it, not until a timer says so. Nothing
+  // below reads the clock, so a slow runner lengthens the window instead of
+  // failing the assertions the window exists for.
+  let releaseRoute!: () => void;
+  const routeHeld = new Promise<void>((resolve) => {
+    releaseRoute = resolve;
+  });
+  let routePending = false;
   await page.route("**/api/rpc/invoicesCreate", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    routePending = true;
+    await routeHeld;
+    routePending = false;
     await route.continue();
   });
-  await page.getByTestId("purchase-save").click();
-  // the save itself is pending in both trees; the screenshot is taken here so the
-  // pre-fix run records the live controls this test is about
-  await expect(page.getByTestId("purchase-save")).toBeDisabled();
-  await page.screenshot({ path: "test-results/round4-evidence/draft-during-save.png" });
 
-  // the request is out, so the draft it serialised is read-only — and the frozen
-  // table states why, because a disabled control with no stated reason is a dead
-  // end for a keyboard or screen-reader user
-  await expect(page.getByTestId("purchase-lines-frozen")).toBeVisible();
-  await expect(lineTrigger).toBeDisabled();
-  await expect(linePick).toBeDisabled();
-  await expect(lineQty).toBeDisabled();
-  await expect(lineCost).toBeDisabled();
+  try {
+    await page.getByTestId("purchase-save").click();
+    // the save itself is pending in both trees; the screenshot is taken here so the
+    // pre-fix run records the live controls this test is about
+    await expect(page.getByTestId("purchase-save")).toBeDisabled();
+    // the request reached the handler before any check reads the frozen state
+    await expect.poll(() => routePending).toBe(true);
+    await page.screenshot({ path: "test-results/round5-evidence/draft-during-save.png" });
+
+    // the request is out, so the draft it serialised is read-only — and the frozen
+    // table states why, because a disabled control with no stated reason is a dead
+    // end for a keyboard or screen-reader user
+    await expect(page.getByTestId("purchase-lines-frozen")).toBeVisible();
+    await expect(lineTrigger).toBeDisabled();
+    await expect(linePick).toBeDisabled();
+    await expect(lineQty).toBeDisabled();
+    await expect(lineCost).toBeDisabled();
+
+    // #257 round 5 (F1) — Cancel is the one control the freeze leaves live, and its
+    // own trigger is the control the freeze disabled: a disabled button cannot take
+    // focus, so handing the caret to it would leave the owner on `document.body`
+    await page.getByTestId("line-product-cancel").click();
+    await expect(lineForm).toHaveCount(0);
+    await expect(lines).toBeFocused();
+
+    // …and no timer released this request: every assertion above ran while it was
+    // still held, which is the sequencing a wall-clock window could not promise
+    expect(routePending).toBe(true);
+  } finally {
+    releaseRoute();
+  }
 
   // and the save that lands books the product the owner chose, at the quantity
   // and cost the frozen controls were showing

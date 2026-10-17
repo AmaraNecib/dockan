@@ -1436,6 +1436,45 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(document.activeElement).toBe(container.querySelector('[data-testid="purchase-line-new-item-منتج"]'));
     });
 
+    it("lands the caret on the lines region when a cancel races the in-flight save (round 5, F1)", async () => {
+      const { container } = await mountWithTypedLine("2", "1200");
+      // the form is open BEFORE the save: only a line-create SUBMIT holds the
+      // save back, so an open form leaves it live — this is the state round 4's
+      // freeze then catches the cancel in
+      await openCreate(container, "item-منتج");
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      await saveInFlight(container);
+
+      const trigger = () => container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-new-item-منتج"]');
+      // round 4's freeze is exactly what makes the trigger unfocusable: a
+      // disabled button cannot take focus, and `.focus()` on one is a no-op
+      expect(trigger()?.disabled).toBe(true);
+
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="line-product-cancel"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      // Cancel stays enabled on purpose (round 2: a hung write must not trap the
+      // owner), so the form is gone — but its trigger cannot take the caret back,
+      // and dropping the owner on the document body restarts his tab order at the
+      // top of the page. The request falls back to the lines region instead: it is
+      // the only enabled anchor in the frozen draft and the frozen status line
+      // states why its controls are dead.
+      expect(createRow(container)).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(container.querySelector('[data-testid="purchase-lines"]'));
+
+      await releaseSaved();
+      // the save lands and replaces the whole draft with its success card, as it
+      // does for every successful save — nothing here moves the caret a second
+      // time (the region unmounts with the draft, which is the page's own
+      // save-completed swap, not part of this freeze)
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    });
+
     it("abandons a create when the owner opens another line's form mid-flight", async () => {
       const { container } = await mountWithTypedLine("2", "1200");
       await toggleQuick(container);

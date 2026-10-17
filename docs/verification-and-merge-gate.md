@@ -128,10 +128,12 @@ When the trigger list is silent, ask: *if this lands and is wrong, what does und
 
 ### AUTO is permission, not a shortcut
 
-**Auto-merge is permission for the non-visual, reversible, no-decision class, and only for it**
-(owner decision, 2026-10-17). For `AUTO` the parent still posts the evidence comment at the head —
-then merges without waiting. For `OWNER` nothing changes: a 5/5 with no findings, anchored to the
-current head, with every check green, is the bar to *ask* — not permission.
+**Auto-merge is permission for the cheap-to-reverse, no-decision class, and only for it**
+(owner decision, 2026-10-17). It is not limited by visuals: a visual diff is cheap to reverse
+and auto-merges too, once the before/after packet is posted at the head. For `AUTO` the parent
+still posts the evidence comment at the head — then merges without waiting. For `OWNER` nothing
+changes: a 5/5 with no findings, anchored to the current head, with every check green, is the bar
+to *ask* — not permission.
 
 The parent re-checks the class, the triggers and the four reasons **at the current head, every
 time**. A push after a verdict voids it, and a diff that was reversible before a push can be

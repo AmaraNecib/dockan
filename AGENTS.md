@@ -9,8 +9,8 @@
   parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, requests Greptile review, drives the rounds, and
-  merges — auto-merging a clean **non-visual, cheap-to-reverse** PR itself, and
-  otherwise only when the owner says so (see `Merging`).
+  merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
+  before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
   lane reads `.agents/wisdom/` before it starts, applies what bears on its task
   and says in its `crew_report` which lessons it applied, and which it
@@ -73,10 +73,10 @@ count and re-apply checklist are in `docs/skills-vendoring.md`.
 ## Merging
 
 **The class decides who merges.** A lane never merges. The parent session merges a
-**non-visual** diff itself once the gate is clean (owner decision, 2026-10-17, class A);
-a **visual** diff goes to the owner. The gate is written down in
-[`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md): the four reasons,
-the evidence form (visual vs measured), the visual/non-visual class, and the queue path.
+**cheap-to-reverse, no-decision** diff itself once the gate is clean (owner decision,
+2026-10-17, class A); an **expensive-to-reverse** or **decision** diff goes to the owner. The
+gate is written down in [`docs/verification-and-merge-gate.md`](docs/verification-and-merge-gate.md):
+the four reasons, the evidence form (visual vs measured), the owner triggers, and the queue path.
 
 A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
 image assets. It is **not a veto**: it auto-merges too when it is cheap to reverse, but the parent

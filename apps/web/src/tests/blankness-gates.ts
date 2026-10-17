@@ -52,6 +52,13 @@ import ts from "typescript";
  * `.trim()` / `.trim().length` (`> 0`, `>= 1`) and an empty-template operand.
  * A blind spot that reports nothing is the failure mode this ticket exists to end.
  *
+ * Two scope/position rules the walk applies exactly (Greptile #251 findings 1 and
+ * 2): a `for` / `for-of` / `for-in` statement is the scope for its own
+ * `let`/`const` bindings, so a loop binding cannot mask an outer raw check after
+ * the loop; and a comma expression is followed to its right-most operand before
+ * the surrounding test position is judged — a comma's left operand is discarded,
+ * so a raw trim there is a value use, not a test.
+ *
  * KNOWN CEILING (say it, do not imply otherwise): detection is still syntactic
  * and the gate vocabulary is still #244's, so these shapes are not gates:
  * the truthiness/relational/empty-template tests above are REFUSED rather than

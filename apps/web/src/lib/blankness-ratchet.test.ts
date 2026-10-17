@@ -847,6 +847,14 @@ describe("the AST blankness walk (#249)", () => {
     expect(() => findBlanknessGates("if (draft.trim()) return;", "s.ts")).toThrow(/unhandled/i);
     expect(() => findBlanknessGates("const b = draft.trim() ? 1 : 2;", "s.ts")).toThrow(/unhandled/i);
     expect(() => findBlanknessGates("const b = draft.trim() && other;", "s.ts")).toThrow(/unhandled/i);
+    // the loop-condition refusals need one fixture per position or the
+    // branch-pin proof cannot tell a covered branch from an unexercised one
+    // (Greptile #251 finding 3: `do` / `for` were unpinned)
+    expect(() => findBlanknessGates("while (draft.trim()) {}", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("do { keepGoing = false; } while (draft.trim());", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    expect(() => findBlanknessGates("for (; draft.trim(); ) {}", "s.ts")).toThrow(/unhandled/i);
   });
 
   it("follows a comma expression to its right-most operand, so a wrapped test is refused", () => {

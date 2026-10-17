@@ -48,7 +48,14 @@ out_path = os.environ["OUT"]
 
 # (name, exact source, replacement). The replacement disables one detection
 # branch without touching the others, so a red run is attributable to it.
+#
+# Every `old` MUST occur exactly ONCE. An `old` that matches several sites would
+# delete them together, so one covered branch would let the whole group read
+# green while another is never exercised (Greptile #251 finding 3: the
+# truthiness-refusal call appeared at seven positions and the old proof replaced
+# all seven at once). The `ambiguous` check below enforces the uniqueness.
 BRANCHES = [
+    # detection
     ("inline trim call", "if (isTrimCall(expression)) {", "if (false) {"),
     ("two-step string binding", "if (!ts.isIdentifier(expression)) return;", "if (true) return;"),
     ("inline length of trim", "if (isTrimCall(on)) {", "if (false) {"),
@@ -65,12 +72,40 @@ BRANCHES = [
         "if (!ts.isCallExpression(receiver) || receiver.arguments.length === 0) return false;",
         "if (true) return false;",
     ),
+    # classified blank operands
     ("left blank operand", "if (isEmptyString(left)) {", "if (false) {"),
     ("right blank operand", "} else if (isEmptyString(right)) {", "} else if (false) {"),
     ("zero operand", "} else if (isZero(left)) {", "} else if (false) {"),
+    # refusal — ONE entry per source position
     ("relational refusal", 'refuse(comparison, "relational test on a raw .trim()");', ";"),
-    ("truthiness refusal", 'refuse(node, "truthiness test on a raw .trim()");', ";"),
     ("empty-template refusal", 'refuse(comparison, "empty template literal operand");', ";"),
+    (
+        "truthiness refusal (&& / ||)",
+        "if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {",
+        "if (false) {",
+    ),
+    (
+        "truthiness refusal (prefix !)",
+        "if (ts.isPrefixUnaryExpression(owner) && owner.operator === ts.SyntaxKind.ExclamationToken) {",
+        "if (false) {",
+    ),
+    (
+        "truthiness refusal (ternary)",
+        "if (ts.isConditionalExpression(owner) && isAncestor(owner.condition, node)) {",
+        "if (false) {",
+    ),
+    ("truthiness refusal (if)", "if (ts.isIfStatement(owner) && isAncestor(owner.expression, node)) {", "if (false) {"),
+    (
+        "truthiness refusal (while)",
+        "if (ts.isWhileStatement(owner) && isAncestor(owner.expression, node)) {",
+        "if (false) {",
+    ),
+    ("truthiness refusal (do)", "if (ts.isDoStatement(owner) && isAncestor(owner.expression, node)) {", "if (false) {"),
+    (
+        "truthiness refusal (for)",
+        "if (ts.isForStatement(owner) && owner.condition !== undefined && isAncestor(owner.condition, node)) {",
+        "if (false) {",
+    ),
     (
         "length truthiness refusal",
         "if (isLengthAccess(node) && isRawTrimExpression(node, node)) refuseIfTestPosition(node);",
@@ -86,9 +121,14 @@ BRANCHES = [
 unpinned = []
 crashed = []
 missing = []
+ambiguous = []
 for name, old, new in BRANCHES:
-    if original.count(old) == 0:
+    count = original.count(old)
+    if count == 0:
         missing.append(name)
+        continue
+    if count > 1:
+        ambiguous.append(name)
         continue
     with io.open(scanner, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(original.replace(old, new))
@@ -115,6 +155,12 @@ with io.open(scanner, "w", encoding="utf-8", newline="\n") as handle:
 
 if missing:
     print(f"FATAL: no source found for {', '.join(missing)}")
+    raise SystemExit(2)
+if ambiguous:
+    print(
+        f"FATAL: {', '.join(ambiguous)} match more than one source site "
+        "- a shared deletion hides an unpinned branch"
+    )
     raise SystemExit(2)
 if crashed:
     print(

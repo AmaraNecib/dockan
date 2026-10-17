@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import type { Invoice, PaymentMethod } from "@dokan/contracts";
 
@@ -91,7 +91,7 @@ export function CustomerSettlePanel({
   // will refuse
   const amountErrorText =
     amountError === "EXCEEDS"
-      ? t("pmtExceedsRemaining", { remaining: unpaid })
+      ? <Trans i18nKey="pmtExceedsRemaining" components={{ money: <Amount value={unpaid} /> }} />
       : ((amountError === "INVALID" && !draftBlank(value.amount)) || percentageInvalid)
         ? t("partySettleAmountRequired")
         : null;

@@ -62,10 +62,12 @@ export function Amount({ value, sign, className }: { value: number; sign?: "+" |
     <Money
       value={value}
       sign={sign}
+      // #254 round 2 — the caller's class must reach the WHOLE primitive. The
+      // pre-#254 single-element Amount coloured figures and currency together;
+      // applying it to the figures run only left the currency inheriting a
+      // muted parent (stock.tsx), a silent appearance change.
       amountClassName={cn("font-mono tabular-nums", className)}
-      // the currency sat inside the figures' mono span before #254; keep its
-      // type so unifying the placement is the only visual change
-      currencyClassName="font-mono tabular-nums"
+      currencyClassName={cn("font-mono tabular-nums", className)}
     />
   );
 }

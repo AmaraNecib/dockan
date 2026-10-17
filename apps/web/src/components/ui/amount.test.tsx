@@ -84,6 +84,17 @@ describe("Money / Amount — one money display (issue #254)", () => {
     expect(currency.textContent).toBe("دج");
   });
 
+  it("applies the caller's className to the currency, not only the figures (#254 round 2)", () => {
+    // stock.tsx passes `text-foreground` inside a `text-muted-foreground`
+    // paragraph. #254 moved the class to the figures run only, so the currency
+    // silently inherited the muted paragraph colour — a real appearance change
+    // beyond grouping and placement.
+    const host = render(<Amount value={92500} className="text-foreground" />);
+    const { figures, currency } = runs(host);
+    expect(figures.classList.contains("text-foreground")).toBe(true);
+    expect(currency.classList.contains("text-foreground")).toBe(true);
+  });
+
   it("renders the same figures and currency placement through the real PrintAmount", () => {
     const host = render(<PrintAmount value={-100} />);
     const { figures, currency } = runs(host);
@@ -104,6 +115,26 @@ describe("Money / Amount — one money display (issue #254)", () => {
 describe("one currency placement (issue #254)", () => {
   const WEB_SRC = path.join(import.meta.dir, "..", "..");
   const AMOUNT_MODULE = path.join(WEB_SRC, "components", "ui", "amount.tsx");
+  const I18N_MODULE = path.join(WEB_SRC, "lib", "i18n.ts");
+
+  /**
+   * Catalog keys whose VALUE embeds the currency literal beside a
+   * `{{placeholder}}`. That is money built by a string template: the digits are
+   * interpolated raw and the currency comes from the sentence, so neither ever
+   * reaches `<Money>`. The call-site scan above cannot see a translated
+   * sentence because the call site holds only a key (#254 round 2).
+   */
+  function catalogMoneyTemplateOffenders(): string[] {
+    const offenders: string[] = [];
+    for (const line of readFileSync(I18N_MODULE, "utf8").split("\n")) {
+      const entry = /^\s*([A-Za-z0-9_]+):\s*"(.*)",\s*$/.exec(line);
+      if (entry === null) continue;
+      const key = entry[1] ?? "";
+      const value = entry[2] ?? "";
+      if (value.includes("دج") && value.includes("{{")) offenders.push(key);
+    }
+    return offenders;
+  }
 
   function tsxFiles(dir: string): string[] {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -133,5 +164,16 @@ describe("one currency placement (issue #254)", () => {
     const files = tsxFiles(WEB_SRC);
     expect(files.length).toBeGreaterThan(30);
     expect(files).toContain(AMOUNT_MODULE);
+  });
+
+  it("catches money assembled by a translated sentence, and pins the one deferral", () => {
+    const offenders = catalogMoneyTemplateOffenders();
+    // non-vacuous: the detector does fire on a real entry
+    expect(offenders).toContain("itemsProfitPerUnit");
+    // itemsProfitPerUnit is the documented deferral: the same key is the
+    // items-table header with `profit: ""`, so routing it through the primitive
+    // needs a separate header key (see .scratch/implementation/254-design.md).
+    // Every other money sentence now carries a <money/> component tag instead.
+    expect(offenders).toEqual(["itemsProfitPerUnit"]);
   });
 });

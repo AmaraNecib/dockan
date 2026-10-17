@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import type { ReactNode } from "react";
 
+import { Amount } from "@/components/ui/amount";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Pager } from "@/components/ui/pager";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -90,8 +91,13 @@ function ActivityRefCell({ entry }: { entry: { type: string; summary: string; re
  * `RETURN_RECORDED <rtn> <amount> <invoice> <debt>`, ...). Unknown/legacy
  * summaries (pre-token Arabic rows) render raw exactly as before. The api
  * stays locale-neutral; this page owns the copy.
+ *
+ * Returns a string for plain sentences and a React node for a money sentence:
+ * the amount must render through <Amount> so its digits are grouped and its
+ * currency comes from the one primitive (#254 round 2), and <Trans> is the
+ * only interpolation that passes a React element through i18n intact.
  */
-export function activitySummaryText(t: TFunction, summary: string): string {
+export function activitySummaryText(t: TFunction, summary: string): ReactNode {
   const tokens = summary.split(" ");
   const tag = tokens[0];
   // locale-neutral tokens emitted by the api: the tag is the action and the
@@ -105,8 +111,18 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   if (tag === "ITEM_CREATED_WITH_STOCK" && tokens.length >= 3) return t("activityItemCreatedWithStock", { name: tokens.slice(2).join(" "), stock: tokens[1] });
   if (tag === "ITEM_CREATED" && tokens.length >= 2) return t("activityItemCreated", { name: tokens.slice(1).join(" ") });
   if (tag === "ITEM_UPDATED" && tokens.length >= 2) return t("activityItemUpdated", { name: tokens.slice(1).join(" ") });
-  // locale-neutral cost correction: cost then the free-text name last
-  if (tag === "ITEM_COST_CORRECTED" && tokens.length >= 3) return t("activityItemCostCorrected", { cost: tokens[1], name: tokens.slice(2).join(" ") });
+  // locale-neutral cost correction: cost then the free-text name last. Money
+  // inside a translated sentence goes through <Money>, or the digits stay
+  // ungrouped and the sentence owns the currency (#254 round 2).
+  if (tag === "ITEM_COST_CORRECTED" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activityItemCostCorrected"
+        values={{ name: tokens.slice(2).join(" ") }}
+        components={{ money: <Amount value={Number(tokens[1])} /> }}
+      />
+    );
+  }
   // issue 120: party rows carry a role token, then the free-text name
   if ((tag === "PARTY_CREATED" || tag === "PARTY_UPDATED" || tag === "PARTY_DELETED") && tokens.length >= 3) {
     const role = tokens[1] === "SUPPLIER" ? t("partySupplier") : t("partyCustomer");
@@ -123,11 +139,16 @@ export function activitySummaryText(t: TFunction, summary: string): string {
     const party = tokens.length >= 3 ? tokens.slice(2).join(" ") : t("activitySupplierDefault");
     return t("activityPurchaseCreated", { number: tokens[1], party });
   }
-  if (tag === "PAYMENT_RECORDED" && tokens.length >= 3) return t("activityPaymentRecorded", { number: tokens[2], amount: tokens[1] });
+  if (tag === "PAYMENT_RECORDED" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activityPaymentRecorded"
+        values={{ number: tokens[2] }}
+        components={{ money: <Amount value={Number(tokens[1])} /> }}
+      />
+    );
+  }
   // issue 161: supplier-account actions (amount then the free-text name last)
-  if (tag === "SUPPLIER_PAYMENT" && tokens.length >= 3) return t("activitySupplierPayment", { amount: tokens[1], name: tokens.slice(2).join(" ") });
-  if (tag === "SUPPLIER_RETURN" && tokens.length >= 4) return t("activitySupplierReturn", { number: tokens[1], amount: tokens[2], name: tokens.slice(3).join(" ") });
-  if (tag === "SUPPLIER_REFUND" && tokens.length >= 3) return t("activitySupplierRefund", { amount: tokens[1], name: tokens.slice(2).join(" ") });
   // #253 — the two supplier-account tags that shipped without a branch, so the
   // audit log showed `SUPPLIER_OPENING_BALANCE THEY_OWE 100000 …` verbatim.
   // The direction word comes from the supplier-account labels (one mapping).
@@ -148,26 +169,76 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   // this tag in the throttle's pendingEvents; the next boot copies it into the
   // activity log, so it needs the same branch as the other vault failures.
   if (tag === "VAULT_SETUP_RESUME_FAILED" && tokens.length >= 2) return t("activityVaultSetupResumeFailed", { at: tokens.slice(1).join(" ") });
+  // #254 — the three supplier-account amounts reach the ONE money primitive
+  // through `<Trans>`: their catalog strings carry `<money/>`, so a `t()` call
+  // would print the tag literally (and the raw digits ungrouped).
+  if (tag === "SUPPLIER_PAYMENT" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activitySupplierPayment"
+        values={{ name: tokens.slice(2).join(" ") }}
+        components={{ money: <Amount value={Number(tokens[1])} /> }}
+      />
+    );
+  }
+  if (tag === "SUPPLIER_RETURN" && tokens.length >= 4) {
+    return (
+      <Trans
+        i18nKey="activitySupplierReturn"
+        values={{ number: tokens[1], name: tokens.slice(3).join(" ") }}
+        components={{ money: <Amount value={Number(tokens[2])} /> }}
+      />
+    );
+  }
+  if (tag === "SUPPLIER_REFUND" && tokens.length >= 3) {
+    return (
+      <Trans
+        i18nKey="activitySupplierRefund"
+        values={{ name: tokens.slice(2).join(" ") }}
+        components={{ money: <Amount value={Number(tokens[1])} /> }}
+      />
+    );
+  }
   if (tag === "EXPENSE_CATEGORY_CREATED" && tokens.length >= 3) {
     const name = tokens.slice(2).join(" ");
     return tokens[1] === "WITHDRAWAL"
       ? t("activityExpenseCategoryCreatedWithdrawal", { name })
       : t("activityExpenseCategoryCreated", { name });
   }
-  if (tag === "EXPENSE_RECORDED" && tokens.length >= 2) return t("activityExpenseRecorded", { amount: tokens[1] });
+  if (tag === "EXPENSE_RECORDED" && tokens.length >= 2) {
+    return (
+      <Trans i18nKey="activityExpenseRecorded" components={{ money: <Amount value={Number(tokens[1])} /> }} />
+    );
+  }
   if (tag === "SETTINGS_UPDATED") return t("activitySettingsUpdated");
   if (tag === "BACKUP_CREATED" && tokens.length >= 2) return t("activityBackupCreated", { file: tokens.slice(1).join(" ") });
   if (tag === "DAILY_BACKUP" && tokens.length >= 2) return t("activityDailyBackup", { file: tokens.slice(1).join(" ") });
   if (tag === "PASSWORD_RESET" && tokens.length >= 2) return t("activityPasswordReset", { phone: tokens.slice(1).join(" ") });
   if (tag === "RETURN_RECORDED" && tokens.length >= 5) {
     const [, number, amount, invoice, debt] = tokens;
-    return Number(debt) > 0
-      ? t("activityReturnRecordedDebt", { number, amount, invoice, debt })
-      : t("activityReturnRecorded", { number, amount, invoice });
+    return Number(debt) > 0 ? (
+      <Trans
+        i18nKey="activityReturnRecordedDebt"
+        values={{ number, invoice }}
+        components={{ money: <Amount value={Number(amount)} />, debt: <Amount value={Number(debt)} /> }}
+      />
+    ) : (
+      <Trans
+        i18nKey="activityReturnRecorded"
+        values={{ number, invoice }}
+        components={{ money: <Amount value={Number(amount)} /> }}
+      />
+    );
   }
   if (tag === "RETURN_REVIEWED" && tokens.length >= 4) {
     const [, number, action, amount] = tokens;
-    return t("activityReturnReviewed", { number, action: t(action === "ACCEPTED" ? "returnsAcceptBtn" : "returnsRejectBtn"), amount });
+    return (
+      <Trans
+        i18nKey="activityReturnReviewed"
+        values={{ number, action: t(action === "ACCEPTED" ? "returnsAcceptBtn" : "returnsRejectBtn") }}
+        components={{ money: <Amount value={Number(amount)} /> }}
+      />
+    );
   }
   return summary;
 }

@@ -320,6 +320,18 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(lastPayInput).toBeNull();
   });
 
+  it("groups the remaining inside the overpay error, through the primitive (#254 round 2)", () => {
+    renderPanel(makeInvoice(5000));
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "5001");
+    submitForm(host.querySelector<HTMLFormElement>("form")!);
+    const error = host.querySelector('[data-testid="pmt-error"]')!;
+    expect(error.textContent).toContain("المبلغ يتجاوز المتبقي");
+    // before this round the sentence interpolated raw `5000`, so the owner read
+    // an ungrouped figure beside grouped ones on the same screen
+    expect(error.textContent).toContain("5,000 دج");
+    expect(error.querySelector('[data-testid="money-figures"]')?.textContent).toBe("5,000");
+  });
+
   it("submits a valid instalment and announces success in a status role", async () => {
     renderPanel(makeInvoice(600));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "600");

@@ -119,15 +119,22 @@ and no string changes are needed for it.
 - Round 2 (`605f8c3`, 5 sub-agents): the evidence logs carried no SHA and predated
   the reviewed HEAD (documented-standard breach); the guard let `items={[] as
   const}` / `items={EMPTY}` through; the «يسالنا» panel button's onClick was
-  unpinned; the positive control counted roots without a `SelectValue`. All applied
-  in `4458560`.
+  unpinned; the positive control counted roots without a `SelectValue`. Applied in
+  `4458560`; the SHA-naming breach itself was closed with the final evidence set
+  (`0a30eee-<gate>.log`, every one produced after its commit).
 - Round 3 (`4458560`, 4 sub-agents): recorded in
   `.scratch/reviews/252/4458560-code-review.md` and `-test-audit.md`.
 
 Residual, deliberately not changed (judgement calls, not violations): the two
 one-line ternaries in `supplier-entry-display.ts` could fold into one
 `{labelKey, hintKey}` table; `directionItems` is rebuilt per render (two objects,
-no memo); the guard cannot see aliased/namespaced roots (stated in-file).
+no memo); the guard cannot see aliased/namespaced roots (stated in-file); the
+guard's `items={{}}` branch has no dedicated mutation (every other shape does).
+
+Evidence naming: every gate log is `<sha>-<gate>.log` for the SHA it was produced
+on. The intermediate round-2/3 renames carried a SHA prefix whose run predated its
+commit and were deleted rather than left mislabeled; `0a30eee-*` is the reviewed
+set.
 
 ## Risks
 

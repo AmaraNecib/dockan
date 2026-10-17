@@ -462,6 +462,72 @@ describe("barcodes (ticket 28)", () => {
     }
   });
 
+  it("migrates a v5 returns table: adds spreads_across_invoices and defaults every legacy row to own-invoice-only", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-spread-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
+    );
+    try {
+      // the version-5 shape: debt_applied exists (round 2's column) and the
+      // allocation rule does not. EVERY row in it was written before the
+      // tab-wide default existed, so the new column must read 0.
+      legacy.raw.exec(
+        "CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "CREATE TABLE returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL, refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "INSERT INTO invoices VALUES ('legacy-inv', 'INV-SPREAD', 'SALE', NULL, 'زبون', '2026-01-01', 1000, 600, 400, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+      );
+      legacy.raw.exec(
+        "INSERT INTO returns VALUES ('legacy-ret', 'RTN-SPREAD', 'legacy-inv', 400, 0, 400, 0, 'CASH', NULL, 'PENDING_REVIEW', '2026-01-01T10:00:00', '2026-01-01T10:00:00', '2026-01-01T10:00:00')",
+      );
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const cols = legacy.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toContain("spreads_across_invoices");
+      // the legacy promise was made under the own-invoice-only rule, so the
+      // DEFAULT must not turn it into a tab-wide one — that would let an old
+      // promise relieve invoices the owner never named
+      expect((await legacyStore.getReturnDetail("legacy-ret"))?.spreadsAcrossInvoices).toBe(false);
+
+      // the DEFAULT is what an OLDER build (one that does not know the column)
+      // writes on a v6 database: own-invoice-only, the rule it honoured
+      legacy.raw.exec(
+        "INSERT INTO returns (id, return_number, invoice_id, refund_amount, cash_paid_out, debt_offset, debt_applied, payout_method, status, occurred_at, created_at, updated_at) VALUES ('old-build-ret', 'RTN-OLDBUILD', 'legacy-inv', 100, 100, 0, 0, 'CASH', 'PENDING_REVIEW', '2026-01-02T10:00:00', '2026-01-02T10:00:00', '2026-01-02T10:00:00')",
+      );
+      expect((await legacyStore.getReturnDetail("old-build-ret"))?.spreadsAcrossInvoices).toBe(false);
+
+      // and a row THIS build records keeps what the caller asked for, so the
+      // column is not merely a constant
+      const scripted = await legacyStore.insertReturn({
+        returnNumber: "RTN-SPREAD-2",
+        invoiceId: "legacy-inv",
+        refundAmount: 100,
+        cashPaidOut: 0,
+        debtOffset: 100,
+        spreadsAcrossInvoices: true,
+        payoutMethod: "CASH",
+        reason: null,
+        status: "PENDING_REVIEW",
+        occurredAt: "2026-01-03T10:00:00",
+      });
+      expect((await legacyStore.getReturnDetail(scripted.id))?.spreadsAcrossInvoices).toBe(true);
+
+      // re-running setup is idempotent (the ALTER does not fire again)
+      await legacyStore.setup();
+      expect((await legacyStore.getReturnDetail("legacy-ret"))?.spreadsAcrossInvoices).toBe(false);
+      expect((await legacyStore.getReturnDetail(scripted.id))?.spreadsAcrossInvoices).toBe(true);
+    } finally {
+      legacy.close();
+      removeTempDirRetry(legacyDir);
+    }
+  });
+
   it("heals an interrupted sale-column migration on the next setup (schema present, backfill not applied)", async () => {
     const interruptedDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-sales-interrupted-"));
     const interrupted = openConnection(

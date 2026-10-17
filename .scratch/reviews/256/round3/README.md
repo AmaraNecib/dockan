@@ -10,6 +10,7 @@ closes all five on the branch `fix-256-round2`.
 | 1 explicit return spills | `bun test src/rpc/router.test.ts -t 'own invoice after a payment'` → `expect(accepted.debtApplied).toBe(200)` — Received: **300** (100 spilled onto the other invoice) | same command → 2 pass |
 | 3 unknown split savable | `bun test src/pages/invoice-returns.test.tsx -t 'split is unknown'` → `expect(submit.disabled).toBe(true)` — Received: **false** | same → 1 pass |
 | 5 vacuous ordering test | the old pair (`INV-0009`/`INV-0010`) agreed under a lexical compare too; the new pair (`INV-9999`/`INV-10000`) fails under it (see the ablation below) | 40 pass in `return-calculations.test.ts` |
+| v6 column migration | `drizzle-store.test.ts` "migrates a v5 returns table" asserts the ALTER ran and a pre-existing row reads own-invoice-only | 1 pass |
 
 ### Ablations (does each new guard actually bite?)
 
@@ -18,6 +19,7 @@ closes all five on the branch `fix-256-round2`.
 | `compareInvoicesOldestFirst`: numeric sequence → lexical string compare | `return-calculations.test.ts -t 'numeric sequence'` | **FAIL** — the assertion `toEqual(["b","c"])` breaks |
 | `returnsAccept`: `if (left > 0 && existing.spreadsAcrossInvoices)` → `if (left > 0)` | `router.test.ts -t 'own invoice after a payment'` | **FAIL** — Expected 200, Received 300 |
 | `submit()`: `if (splitUnknown)` → `if (false)` (the disabled button left in place) | `invoice-returns.test.tsx -t 'split is unknown'` | **FAIL** — a raw form submit reaches `returnsCreate` (`lastCreateInput` not null) |
+| drop the `ALTER TABLE returns ADD COLUMN spreads_across_invoices` | `drizzle-store.test.ts -t 'v5 returns table'` | **FAIL** — `toContain("spreads_across_invoices")` on `PRAGMA table_info` |
 
 The third ablation is the one that matters for wisdom 2026-10-12 ("a disabled
 button is not the guard"): with only the button removed the red run failed at the
@@ -39,12 +41,16 @@ The videos were recorded with the shared `playwright.config.ts` wrapped by a
 throwaway config that only turns `video: "on"` (the repo records no video on
 purpose); that wrapper is not part of the commit.
 
-## Gates
+## Boundary coverage added after the test-audit lens
+
+* explicit return whose own invoice is settled before acceptance (own = 0) — nothing is relieved;
+* explicit all-cash return accepted (debtOffset 0) — no invoice moves;
+* the supplier hint's DIRECTION is pinned (`علينا للمورّد`, and not `لنا عند المورّد`).
 
 | Command | Result |
 | --- | --- |
 | `bun run typecheck` | 4/4 tasks |
 | `bun run lint` | clean |
-| `apps/api: bun run test` | 958 pass / 0 fail |
+| `apps/api: bun run test` | 961 pass / 0 fail |
 | `apps/web: bun run test` | 1288 pass / 0 fail |
 | `bun run test:e2e` (ports 4700/5700/4701/5701) | 96 pass / 0 fail — `e2e-full.log` |

@@ -340,6 +340,7 @@ describe("supplier return default refund method (#256)", () => {
     // the note names the amount the server will hand back by default
     expect(defaultNote()).toContain("استرجاع 400 دج نقداً");
     await submit();
+    expect(submitted).toHaveLength(1);
     expect(submitted[0]?.cashBack).toBeUndefined();
   });
 

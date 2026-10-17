@@ -215,6 +215,48 @@ const openingSignature = (
   occurredAt: string,
 ) => ({ supplierId, direction: row.direction, amount: row.amount, reason, occurredAt, invoiceId: null });
 
+/** The two lean reads (#213) folded into one `normalizeTextKey → candidates`
+ * map. Read once per call, so the single and the batch resolve path share one
+ * implementation of "which accounts fold to which names". */
+async function foldSupplierCandidates(store: StorePort): Promise<Map<string, NamedSupplierCandidate[]>> {
+  const [names, summaries] = await Promise.all([store.listPartyNames("supplier"), store.listSupplierAccountSummaries()]);
+  const entriesById = new Map(summaries.map((summary) => [summary.id, summary.accountEntryCount]));
+  const byKey = new Map<string, NamedSupplierCandidate[]>();
+  for (const party of names) {
+    const key = normalizeTextKey(party.name);
+    const candidates = byKey.get(key) ?? [];
+    candidates.push({ id: party.id, name: party.name, entries: entriesById.get(party.id) ?? 0 });
+    byKey.set(key, candidates);
+  }
+  return byKey;
+}
+
+/**
+ * #255 — resolve N typed names against ONE pair of lean reads. A per-row
+ * `suppliersResolveName` call rereads every supplier name and recomputes every
+ * account summary (both grow with the shop's account history), so a 200-row
+ * batch repeated that work 200 times. The lists are read once here and every row
+ * still gets its OWN signature probe through the shared
+ * `resolveOpeningDestination`, so a retry still stays on the account holding it.
+ */
+async function resolveOpeningNames(
+  store: StorePort,
+  input: { occurredAt: string; reason?: string | null; rows: ReadonlyArray<{ name: string; direction: "WE_OWE" | "THEY_OWE"; amount: number }> },
+): Promise<Array<{ id: string; name: string; accountEntryCount: number } | null>> {
+  const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
+  const byKey = await foldSupplierCandidates(store);
+  const suppliers: Array<{ id: string; name: string; accountEntryCount: number } | null> = [];
+  for (const row of input.rows) {
+    const resolution = await resolveOpeningDestination(byKey.get(normalizeTextKey(row.name)) ?? [], (candidate) =>
+      store.hasSupplierAdjustment(openingSignature(candidate.id, row, reason, input.occurredAt)),
+    );
+    suppliers.push(
+      resolution === undefined ? null : { id: resolution.candidate.id, name: resolution.candidate.name, accountEntryCount: resolution.candidate.entries },
+    );
+  }
+  return suppliers;
+}
+
 /**
  * Issue 143: one mapper from the movement-posting module's typed refusals to
  * stable ORPC errors, so every stock write shares one home for the ledger's
@@ -1136,32 +1178,14 @@ export function createRpcRouter(deps: RpcDeps) {
     // already holds it (the same arm the write takes).
     suppliersResolveName: os.suppliersResolveName.handler(
       guardedInput(async (input) => {
-        const key = normalizeTextKey(input.name);
-        // #213 — compose the two names-only reads instead of `listParties`,
-        // whose invoice LEFT JOIN + GROUP BY the resolve path never reads. The
-        // names carry identity; the summary carries the entry count. A supplier
-        // with no entry is absent from the summary and defaults to 0, exactly
-        // the null `listParties` produced. Reads run together so swapping one
-        // expensive read for two cheap ones does not add a round trip.
-        const [names, summaries] = await Promise.all([
-          deps.store.listPartyNames("supplier"),
-          deps.store.listSupplierAccountSummaries(),
-        ]);
-        const entriesById = new Map(summaries.map((summary) => [summary.id, summary.accountEntryCount]));
-        const candidates: NamedSupplierCandidate[] = names
-          .filter((party) => normalizeTextKey(party.name) === key)
-          .map((party) => ({ id: party.id, name: party.name, entries: entriesById.get(party.id) ?? 0 }));
-        const reason = input.reason == null || input.reason.trim() === "" ? null : input.reason.trim();
-        const resolution = await resolveOpeningDestination(candidates, (candidate) =>
-          deps.store.hasSupplierAdjustment(openingSignature(candidate.id, input, reason, input.occurredAt)),
-        );
-        return {
-          supplier:
-            resolution === undefined
-              ? null
-              : { id: resolution.candidate.id, name: resolution.candidate.name, accountEntryCount: resolution.candidate.entries },
-        };
+        const [supplier] = await resolveOpeningNames(deps.store, { occurredAt: input.occurredAt, reason: input.reason, rows: [input] });
+        return { supplier: supplier ?? null };
       }),
+    ),
+    // #255 — the batch form of the resolve above: one read of the two lean lists
+    // for the whole typed batch, each row still resolved on its own signature.
+    suppliersResolveNames: os.suppliersResolveNames.handler(
+      guardedInput(async (input) => ({ suppliers: await resolveOpeningNames(deps.store, input) })),
     ),
     suppliersReturnsList: os.suppliersReturnsList.handler(
       guardedInput(async (input) => deps.store.listSupplierReturns({ supplierId: input.supplierId }, resolvePagination(input))),

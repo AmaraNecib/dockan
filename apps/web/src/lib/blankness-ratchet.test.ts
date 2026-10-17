@@ -59,7 +59,12 @@ const CLASSIFIED = new Map<string, Classification>([
   ["lib/numeric-input.ts::trimmed === \"\" [text.trim()]", { verdict: "draftBlank", reason: "converted (#244): blank → 0 on the plain path, required on the scan path" }],
   ["lib/supplier-opening-draft.ts::raw.trim() === \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → untouched row" }],
   ["lib/supplier-opening-draft.ts::input.amount.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank amount → untouched / incomplete" }],
-  ["lib/supplier-opening-draft.ts::name === \"\" [input.name.trim()]", { verdict: "raw", reason: TEXT }],
+  // #255 Greptile round 3 finding 2 — the raw `name === ""` gate is GONE on purpose:
+  // the name's identity is now `normalizeTextKey(name)`, so a mark-only name (which
+  // folds to "") is not "real content" after all. The replacement gate is
+  // `folded === ""`, which is not a raw trim, so there is no raw verdict to keep.
+  // `supplier-opening-draft.test.ts` pins the new verdict (mark-only + amount →
+  // incomplete), which is what makes deleting this entry reviewable.
   ["pages/expenses.tsx::name === \"\" [newCategoryName.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/expenses.tsx::dateText === \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::dateText !== \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
@@ -90,8 +95,10 @@ const CLASSIFIED = new Map<string, Classification>([
   ["pages/sale.tsx::fields.barcode.trim() === \"\"", { verdict: "raw", reason: BARCODE }],
   ["pages/stock.tsx::unitCost.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → no unit cost (api falls back to the known cost)" }],
   ["pages/supplier-opening-balance.tsx::dateDraft.trim() === \"\"", { verdict: "raw", reason: DATE }],
-  ["pages/supplier-opening-balance.tsx::newName.trim() === \"\"", { verdict: "raw", reason: TEXT }],
   ["pages/supplier-opening-balance.tsx::reasonDraft.trim() === \"\"", { verdict: "raw", reason: TEXT }],
+  // #255 — the typed rows are a list, so the remove control's label names the row
+  // it drops; that check is a name (text), never a numeric draft
+  ["pages/supplier-opening-balance.tsx::typedName === \"\" [typedRow.name.trim()]", { verdict: "raw", reason: TEXT }],
 ]);
 
 describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {

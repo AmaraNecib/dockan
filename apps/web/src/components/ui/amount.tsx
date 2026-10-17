@@ -1,26 +1,81 @@
 import { useTranslation } from "react-i18next";
 
+import { formatMoney } from "@/lib/money-format";
 import { cn } from "@/lib/utils";
 
 /**
- * Renders a DZD amount with LTR isolation and tabular figures.
- * Ensures Western Arabic numerals (0123) render correctly in RTL context
- * and columns align in tables. The currency suffix comes from the catalog so
- * the amount never carries its own copy.
+ * #254 — the ONE place a DZD amount and its currency are rendered.
+ *
+ * Shape, and why it is fixed:
+ *
+ * - the figures are one LTR isolate (a `dir="ltr"` span), because Western
+ *   digits in an RTL sentence must not be reordered (#119/#166);
+ * - a ledger sign (`+` / `−`) is rendered INSIDE that isolate, glued to the
+ *   digits it belongs to. A sign outside the isolate is a neutral run: the RTL
+ *   row lays it out first, so it lands at the far end of the cell with the
+ *   Arabic currency between it and its number — measured in the #254 screenshot
+ *   as `92500 د.ج −` reading left-to-right;
+ * - the currency is a separate RTL run after a real space, so it is drawn to
+ *   the LEFT of the figures in an RTL page — the order the printed sheet uses
+ *   and pins (`tests/e2e/invoice-print-a4.spec.ts`). Both surfaces go through
+ *   this component, so the two placements can no longer drift.
+ * - both runs live in ONE right-to-left, `nowrap` wrapper. As bare siblings they
+ *   were two flex items wherever a caller put them in a `flex flex-wrap` row
+ *   (`supplier-opening-balance.tsx`), so a narrow row could push the currency
+ *   onto a line without its number; `whitespace-nowrap` also stops the split
+ *   moving inside the wrapper, because a flex item's min-content width is then
+ *   the whole amount. The wrapper's `dir="rtl"` gives the pair one base
+ *   direction wherever it is mounted, and the figures stay the only LTR
+ *   isolate (#254 round 3).
+ *
+ * The two runs carry `data-testid="money-figures"` and `money-currency` (no
+ * styles) so a test can measure which side the currency lands on in a real
+ * browser; `textContent` cannot see a bidi reversal
+ * (`.agents/wisdom/2026-10-01-rtl-dates-bidi-and-align.md`).
+ *
+ * The sign/colour CONVENTION for a supplier balance (whether a sign shows at
+ * all, and what green means) is an owner decision and is not made here: this
+ * component only places what the caller gives it.
  */
-export function Amount({
+export function Money({
   value,
-  className,
-  suffix,
+  sign,
+  amountClassName,
+  currencyClassName,
 }: {
-  value: number | string;
-  className?: string;
-  suffix?: string;
+  value: number;
+  /** a ledger sign, rendered inside the isolate before the digits */
+  sign?: "+" | "−";
+  amountClassName?: string;
+  currencyClassName?: string;
 }) {
   const { t } = useTranslation();
+  // A caller that supplies a ledger sign supplies the magnitude: reading the
+  // sign of `value` too would print `− -100`.
+  const figures = formatMoney(sign === undefined ? value : Math.abs(value));
   return (
-    <span dir="ltr" className={cn("font-mono tabular-nums", className)}>
-      {value} {suffix ?? t("currencyDinar")}
+    <span dir="rtl" className="whitespace-nowrap">
+      <span dir="ltr" data-testid="money-figures" className={amountClassName}>
+        {sign === undefined ? "" : `${sign} `}
+        {figures}
+      </span>{" "}
+      <span data-testid="money-currency" className={currencyClassName}>{t("currencyDinar")}</span>
     </span>
+  );
+}
+
+/** A DZD amount on screen: grouped digits, mono tabular figures. */
+export function Amount({ value, sign, className }: { value: number; sign?: "+" | "−"; className?: string }) {
+  return (
+    <Money
+      value={value}
+      sign={sign}
+      // #254 round 2 — the caller's class must reach the WHOLE primitive. The
+      // pre-#254 single-element Amount coloured figures and currency together;
+      // applying it to the figures run only left the currency inheriting a
+      // muted parent (stock.tsx), a silent appearance change.
+      amountClassName={cn("font-mono tabular-nums", className)}
+      currencyClassName={cn("font-mono tabular-nums", className)}
+    />
   );
 }

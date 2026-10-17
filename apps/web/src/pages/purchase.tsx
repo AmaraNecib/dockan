@@ -549,7 +549,7 @@ export function PurchasePage() {
                 savedInvoice.remainingAmount > 0 ? (
                   <span data-testid="purchase-saved-debt">
                     {savedInvoice.counterpartyName === null || savedInvoice.counterpartyName.trim() === "" ? t("purchasesSavedUnattributed") : t("purchasesSavedRemaining")}{" "}
-                    <Amount value={savedInvoice.remainingAmount} suffix={t("dzd")} />
+                    <Amount value={savedInvoice.remainingAmount} />
                   </span>
                 ) : undefined
               }

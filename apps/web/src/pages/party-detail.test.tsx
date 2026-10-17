@@ -332,7 +332,7 @@ describe("customer detail unpaid view (#164)", () => {
     expect(filter.checked).toBe(true);
     await waitFor(() => host.querySelectorAll('[data-testid="party-invoice-row"]').length === 1);
     expect(host.querySelectorAll('[data-testid="party-invoice-row"]')).toHaveLength(1);
-    expect(host.querySelector('[data-testid="party-unpaid-total"]')?.textContent).toContain("30000");
+    expect(host.querySelector('[data-testid="party-unpaid-total"]')?.textContent).toContain("30,000");
   });
 
   it("shows every invoice once the unpaid filter is cleared", async () => {
@@ -415,7 +415,7 @@ describe("customer settle in place (#164)", () => {
     click("party-settle");
     expect(host.querySelector<HTMLInputElement>('[data-testid="party-settle-amount"]')?.value).toBe("50000");
     expect(host.querySelector<HTMLInputElement>('[data-testid="party-settle-percentage"]')?.value).toBe("100");
-    expect(host.querySelector('[data-testid="party-settle-reference"]')?.textContent).toContain("50000");
+    expect(host.querySelector('[data-testid="party-settle-reference"]')?.textContent).toContain("50,000");
   });
 
   it("links the percentage to the amount", async () => {
@@ -452,10 +452,10 @@ describe("customer settle in place (#164)", () => {
     const cells = rows.map((row) => Array.from(row.querySelectorAll("td")).map((cell) => (cell.textContent ?? "").replace(/\s+/g, " ").trim()));
     // INV-0003 (oldest) takes its whole 30,000; INV-0005 takes the remaining 10,000
     expect(cells[0]?.[0]).toBe("INV-0003");
-    expect(cells[0]?.[3]).toBe("30000 دج");
+    expect(cells[0]?.[3]).toBe("30,000 دج");
     expect(cells[1]?.[0]).toBe("INV-0005");
-    expect(cells[1]?.[3]).toBe("10000 دج");
-    expect(host.querySelector('[data-testid="party-settle-remaining"]')?.textContent).toContain("10000");
+    expect(cells[1]?.[3]).toBe("10,000 دج");
+    expect(host.querySelector('[data-testid="party-settle-remaining"]')?.textContent).toContain("10,000");
   });
 
   it("settles each invoice through invoicesPay on confirm, oldest first", async () => {
@@ -876,7 +876,7 @@ describe("supplier sign rendering (#260)", () => {
     await renderSupplier();
 
     const value = host.querySelector('[data-testid="supplier-balance-value"]');
-    expect(value?.textContent).toContain("1000");
+    expect(value?.textContent).toContain("1,000");
     expect(value?.className).toContain("text-destructive");
     expect(value?.className).not.toContain("text-success");
     expect(host.querySelector('[data-testid="supplier-balance"]')?.textContent).toContain(i18n.t("supplierBalanceOwed"));

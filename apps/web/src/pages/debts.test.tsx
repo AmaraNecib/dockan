@@ -204,10 +204,42 @@ describe("DebtsPage (ticket 9)", () => {
     const loaded = await ui.waitFor(() => ui.personButtons().length === 3);
     expect(loaded).toBe(true);
 
-    expect(ui.groupTotal("debts-group-owed")?.textContent).toContain("1400 دج");
+    expect(ui.groupTotal("debts-group-owed")?.textContent).toContain("1,400 دج");
     expect(ui.groupCount("debts-group-owed")?.textContent).toBe("3");
-    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("1200 دج");
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("1,200 دج");
     expect(ui.groupCount("debts-group-weowe")?.textContent).toBe("3");
+
+    await ui.unmount();
+  });
+
+  it("renders a positive and a negative supplier balance as one grouped, signed string (#254)", async () => {
+    // The whole point of #254's acceptance: the number a supplier row shows is
+    // pinned, so it cannot drift from the card's direction wording again. The
+    // wording itself (which phrase names a supplier receivable) is the owner's
+    // open decision and is left exactly as it was.
+    weOwe = [
+      summary({ kind: "PURCHASE", counterpartyId: "sup-pos", counterpartyName: "مورد موجب", remainingTotal: 0, invoiceCount: 0, accountBalance: 92_500 }),
+      summary({ kind: "PURCHASE", counterpartyId: "sup-neg", counterpartyName: "مورد سالب", remainingTotal: 0, invoiceCount: 0, accountBalance: -92_500 }),
+    ];
+
+    const ui = await mountPage(queryClient);
+    const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
+    expect(loaded).toBe(true);
+
+    const rowTotal = (name: string) =>
+      Array.from(document.querySelectorAll<HTMLElement>("button[data-testid='debts-person']"))
+        .find((button) => button.textContent?.includes(name))
+        ?.querySelector<HTMLElement>("[data-testid='debts-person-total']") ?? null;
+
+    // grouped Western digits, and the sign glued to its digits inside the
+    // isolated figures run (a sibling sign is what bidi displaced to the far
+    // end of the row in the #254 screenshot). The POLARITY is #260's, merged
+    // while this PR was in flight: a positive balance is the credit we hold
+    // (leading "+"), a negative one is the debt we owe.
+    expect(rowTotal("مورد موجب")?.textContent).toBe("+ 92,500 دج");
+    expect(rowTotal("مورد موجب")?.querySelector<HTMLElement>('[data-testid="money-figures"]')?.textContent).toBe("+ 92,500");
+    expect(rowTotal("مورد سالب")?.textContent).toBe("− 92,500 دج");
+    expect(rowTotal("مورد سالب")?.querySelector<HTMLElement>('[data-testid="money-figures"]')?.textContent).toBe("− 92,500");
 
     await ui.unmount();
   });
@@ -223,7 +255,7 @@ describe("DebtsPage (ticket 9)", () => {
     // the supplier group nets in credit: the dashboard's label and the absolute
     // amount, never a bare negative number
     expect(ui.text()).toContain("رصيد لنا عند الموردين");
-    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("1500");
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("1,500");
     expect(ui.groupTotal("debts-group-weowe")?.textContent).not.toContain("-");
     // the positive customer group keeps the plain total label
     expect(ui.groupTotal("debts-group-owed")?.textContent).toContain("600");
@@ -264,7 +296,7 @@ describe("DebtsPage (ticket 9)", () => {
     expect(loaded).toBe(true);
 
     // zero is not a credit: the plain total branch renders the absolute value
-    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("0");
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toBe("0 دج");
     expect(ui.text()).not.toContain("رصيد لنا عند الموردين");
 
     await ui.unmount();
@@ -303,7 +335,7 @@ describe("DebtsPage (ticket 9)", () => {
     const cells = ui.invoiceRows()[0]!.textContent ?? "";
     expect(cells).toContain("INV-0201");
     expect(cells).toContain("01/08/2026");
-    expect(cells).toContain("1000 دج");
+    expect(cells).toContain("1,000 دج");
     expect(cells).toContain("600 دج");
 
     // collapse → invoices hidden again

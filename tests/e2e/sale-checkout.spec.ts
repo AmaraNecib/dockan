@@ -187,12 +187,12 @@ test("sale checkout: scan, picker, negotiated prices, discounts, and oversell", 
   await chooseSelectOption(page, page.getByTestId("sale-lines").getByLabel(`${itemName}: نوع تعديل السعر`), "مبلغ");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-error")).toContainText("أدخل تعديلاً صحيحاً للسعر");
-  await expect(page.getByTestId("sale-subtotal")).toContainText("3000");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("3,000");
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("900");
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("100");
-  await expect(page.getByTestId("sale-subtotal")).toContainText("2700");
-  await expect(page.getByTestId("sale-total")).toContainText("2600");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("2,700");
+  await expect(page.getByTestId("sale-total")).toContainText("2,600");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
 
@@ -301,8 +301,8 @@ test("sale checkout: Arabic-Indic digits price the line and the discount like AS
   await page.getByTestId("sale-lines").getByLabel(`${itemName}: قيمة تعديل السعر`).fill("٩٠٠");
   await chooseSelectOption(page, page.getByTestId("sale-discount-type"), "مبلغ");
   await page.getByTestId("sale-discount-value").fill("١٠٠");
-  await expect(page.getByTestId("sale-subtotal")).toContainText("4500");
-  await expect(page.getByTestId("sale-total")).toContainText("4400");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("4,500");
+  await expect(page.getByTestId("sale-total")).toContainText("4,400");
 
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
@@ -361,8 +361,8 @@ test("sale checkout: a pasted bidi-marked Arabic-Indic draft reads like the type
   const discountValue = page.getByTestId("sale-discount-value");
   await discountValue.fill(`${rlm}١٠٠`);
   await expect(discountValue).toHaveValue(`${rlm}١٠٠`);
-  await expect(page.getByTestId("sale-subtotal")).toContainText("4500");
-  await expect(page.getByTestId("sale-total")).toContainText("4400");
+  await expect(page.getByTestId("sale-subtotal")).toContainText("4,500");
+  await expect(page.getByTestId("sale-total")).toContainText("4,400");
 
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
@@ -416,7 +416,7 @@ test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", 
   await expect(paid).toHaveValue(rlm);
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
-  await expect(page.getByTestId("sale-saved-debt")).toContainText("1000");
+  await expect(page.getByTestId("sale-saved-debt")).toContainText("1,000");
 
   // A mark-only PERCENTAGE is the same «not chosen» on the other side of the
   // pair: the amount clears and the save is recorded as unpaid, not refused by
@@ -429,5 +429,5 @@ test("sale checkout: a mark-only payment draft is blank, not a refusal (#238)", 
   await expect(paidPercentage).toHaveValue(rlm);
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
-  await expect(page.getByTestId("sale-saved-debt")).toContainText("1000");
+  await expect(page.getByTestId("sale-saved-debt")).toContainText("1,000");
 });

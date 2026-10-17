@@ -1,7 +1,8 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import type { ReactNode } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnSettlementDefault } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
@@ -89,7 +90,9 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
   const paidSource = useRef<"amount" | "percentage" | null>(null);
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [note, setNote] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // a ReactNode: the overpay copy carries <Amount> so its digits are grouped
+  // and its currency comes from the primitive (#254 round 2)
+  const [error, setError] = useState<ReactNode>(null);
   /** the just-recorded instalment whose completion card is shown */
   const [savedPayment, setSavedPayment] = useState<{ amount: number; method: PaymentMethod } | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -183,7 +186,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     setSavedPayment(null);
     if (remainingMessage !== null || percentageInvalid) {
       // same boundary as the api: an instalment never exceeds what is owed
-      setError(remainingMessage === "EXCEEDS" ? t("pmtExceedsRemaining", { remaining }) : t("pmtInvalidAmount"));
+      setError(remainingMessage === "EXCEEDS" ? <Trans i18nKey="pmtExceedsRemaining" components={{ money: <Amount value={remaining} /> }} /> : t("pmtInvalidAmount"));
       return;
     }
     const amount = parseGroupedAmount(paid.amount);
@@ -251,7 +254,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           containerRef={cardRef}
           title={t("pmtRecorded")}
           detail={
-            <span data-testid="pmt-saved-detail"><Amount value={savedPayment.amount} suffix={t("dzd")} /> — {t(`pmtMethod_${savedPayment.method}`)}</span>
+            <span data-testid="pmt-saved-detail"><Amount value={savedPayment.amount} /> — {t(`pmtMethod_${savedPayment.method}`)}</span>
           }
         >
           <Button asChild>
@@ -733,7 +736,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             {[...pendingReturns, ...reviewedReturns].map((record) => (
               <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
                 <td className="p-2 cell-ltr">{record.returnNumber}</td>
-                <td className="p-2 font-medium">{record.refundAmount} {t("dzd")}</td>
+                <td className="p-2 font-medium"><Amount value={record.refundAmount} /></td>
                 <td className="p-2" data-testid={`returns-status-${record.status}`}>{t(`returnsStatus_${record.status}`)}</td>
                 <td className="p-2">
                   <Link
@@ -759,8 +762,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           title={<span data-testid="returns-done-number">{t("returnsSavedNumber", { number: savedReturn.returnNumber })}</span>}
           detail={
             <span data-testid="returns-done-detail">
-              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} suffix={t("dzd")} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} suffix={t("dzd")} />
-              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} suffix={t("dzd")} /></>)}
+              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} />
+              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} /></>)}
             </span>
           }
         >
@@ -879,11 +882,21 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             <div className="grid gap-2 rounded border border-border bg-muted/30 p-2" data-testid="returns-debt-default-note">
               <p className="text-xs text-muted-foreground">
                 {settlementDefault.method === "SPLIT"
-                  ? t("returnsDebtSplitDefault", { debt: partyDebt ?? invoice.remainingAmount, cash: derivedSplit?.cashPaidOut ?? 0 })
-                  : t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}
+                  ? (
+                    <Trans
+                      i18nKey="returnsDebtSplitDefault"
+                      components={{
+                        debt: <Amount value={partyDebt ?? invoice.remainingAmount} />,
+                        cash: <Amount value={derivedSplit?.cashPaidOut ?? 0} />,
+                      }}
+                    />
+                  )
+                  : <Trans i18nKey="returnsDebtAcrossInvoices" components={{ debt: <Amount value={partyDebt ?? invoice.remainingAmount} /> }} />}
               </p>
               {settlementDefault.method === "SPLIT" && crossInvoiceDebt > 0 && (
-                <p className="text-xs text-muted-foreground">{t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}</p>
+                <p className="text-xs text-muted-foreground">
+                  <Trans i18nKey="returnsDebtAcrossInvoices" components={{ debt: <Amount value={partyDebt ?? invoice.remainingAmount} /> }} />
+                </p>
               )}
             </div>
           )}
@@ -951,7 +964,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           )}
           {debtIsCapped && (
             <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-debt-cap-note">
-              {t("returnsDebtCapNote", { remaining: invoice.remainingAmount, cash: settledCash })}
+              <Trans i18nKey="returnsDebtCapNote" components={{ remaining: <Amount value={invoice.remainingAmount} />, cash: <Amount value={settledCash} /> }} />
             </p>
           )}
           {projectedDebt > 0 && (
@@ -961,7 +974,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           )}
           {cashExceedsCollected && (
             <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-cash-warning">
-              {t("returnsCashWarning", { paid: invoice.paidAmount })}
+              <Trans i18nKey="returnsCashWarning" components={{ paid: <Amount value={invoice.paidAmount} /> }} />
             </p>
           )}
         </div>

@@ -69,20 +69,20 @@ const resources = {
       activityItemCreated: "إنشاء منتج {{name}}",
       activityItemCreatedWithStock: "إنشاء منتج {{name}} بمخزون أولي {{stock}}",
       activityItemUpdated: "تعديل منتج {{name}}",
-      activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى {{cost}} دج",
+      activityItemCostCorrected: "تصحيح تكلفة منتج {{name}} إلى <money/>",
       activityStockAdjusted: "تسوية مخزون {{name}}",
       activityStockLinked: "ربط مخزون سابق بفاتورة {{number}}",
       activityPurchaseCorrected: "تصحيح شراء {{name}}",
       activitySaleCreated: "فاتورة بيع {{number}}",
       activityPurchaseCreated: "فاتورة شراء {{number}} من {{party}}",
       activitySupplierDefault: "مورد",
-      activityPaymentRecorded: "تسجيل دفعة {{amount}} دج على {{number}}",
-      activitySupplierPayment: "دفعة إلى مورّد {{amount}} دج — {{name}}",
-      activitySupplierReturn: "مرتجع إلى مورّد {{number}} {{amount}} دج — {{name}}",
-      activitySupplierRefund: "استرداد رصيد من مورّد {{amount}} دج — {{name}}",
+      activityPaymentRecorded: "تسجيل دفعة <money/> على {{number}}",
+      activitySupplierPayment: "دفعة إلى مورّد <money/> — {{name}}",
+      activitySupplierReturn: "مرتجع إلى مورّد {{number}} <money/> — {{name}}",
+      activitySupplierRefund: "استرداد رصيد من مورّد <money/> — {{name}}",
       activityExpenseCategoryCreated: "إنشاء تصنيف مصاريف {{name}}",
       activityExpenseCategoryCreatedWithdrawal: "إنشاء تصنيف مصاريف {{name}} (سحب مالك)",
-      activityExpenseRecorded: "تسجيل مصروف {{amount}} دج",
+      activityExpenseRecorded: "تسجيل مصروف <money/>",
       activitySettingsUpdated: "تحديث إعدادات المتجر",
       activityBackupCreated: "نسخة احتياطية {{file}}",
       activityDailyBackup: "نسخة احتياطية يومية {{file}}",
@@ -322,7 +322,10 @@ const resources = {
       itemsThresholdInvalid: "أدخل حد تنبيهاً صحيحاً (عدد صحيح 0 أو أكثر)",
       stockUnitCostInvalid: "أدخل تكلفة وحدة صحيحة (عدد صحيح 0 أو أكثر)",
       itemsChooseCategory: "اختر تصنيفاً أو أنشئه أولاً",
-      itemsProfitPerUnit: "الربح لكل وحدة: {{profit}} دج",
+      itemsProfitPerUnit: "الربح لكل وحدة: <money/>",
+      // the same sentence doubles as the products-table column header, where an
+      // amount and its unit would dangle; the header is its own key
+      itemsProfitPerUnitHeader: "الربح لكل وحدة",
       itemsUncategorized: "بدون تصنيف",
       // server error keys -> user text
       AUTH_REQUIRED: "تسجيل الدخول مطلوب",
@@ -603,7 +606,7 @@ const resources = {
       pmtRecorded: "تم تسجيل الدفعة",
       pmtNew: "دفعة أخرى",
       pmtInvalidAmount: "أدخل مبلغاً صحيحاً أكبر من صفر",
-      pmtExceedsRemaining: "المبلغ يتجاوز المتبقي ({{remaining}} دج)",
+      pmtExceedsRemaining: "المبلغ يتجاوز المتبقي (<money/>)",
       pmtUnavailable: "الفاتورة مسدّدة بالكامل",
       // #162 — the shared amount-or-percentage input (مبلغ أو نسبة)
       amountPercentageLabel: "النسبة (%)",
@@ -675,7 +678,7 @@ const resources = {
       // «cash» is the TOTAL handed back, not the excess over the owner's typed
       // amount — it must equal the «نقداً للزبون» row directly above, or the
       // note contradicts the figure it explains.
-      returnsDebtCapNote: "المتبقي في الفاتورة {{remaining}} دج فقط، فيُخصم هذا المقدار كاملاً ويُردّ للزبون {{cash}} دج نقداً.",
+      returnsDebtCapNote: "المتبقي في الفاتورة <remaining/> فقط، فيُخصم هذا المقدار كاملاً ويُردّ للزبون <cash/> نقداً.",
       returnsSplit: "طريقة التسوية",
       returnsSplitAllCash: "كله نقداً",
       returnsSplitAllDebt: "كله خصم من الدين",
@@ -690,9 +693,9 @@ const resources = {
       // #256 round 2 — the default takes the refund off the party's WHOLE tab
       // ("in this invoice or in another invoice"), so the panel names both the
       // split and the fact that the debt may sit on other invoices
-      returnsDebtSplitDefault: "الافتراضي: يُصفَّر الدين ({{debt}} دج) ويُردّ الباقي {{cash}} دج نقداً.",
+      returnsDebtSplitDefault: "الافتراضي: يُصفَّر الدين (<debt/>) ويُردّ الباقي <cash/> نقداً.",
       returnsDebtDefaultConfirm: "اعتمد الافتراضي المحسوب",
-      returnsDebtAcrossInvoices: "الخصم الافتراضي يأخذ من دين الزبون كاملاً ({{debt}} دج) — ويُوزَّع على فواتيره المفتوحة من الأقدم أولاً.",
+      returnsDebtAcrossInvoices: "الخصم الافتراضي يأخذ من دين الزبون كاملاً (<debt/>) — ويُوزَّع على فواتيره المفتوحة من الأقدم أولاً.",
       returnsPartyDebt: "دين الزبون كاملاً",
       returnsCashNow: "نقداً الآن",
       returnsDebtOffset: "خصم من الدين",
@@ -709,7 +712,7 @@ const resources = {
       returnsReviewedCountLabel: "تمت مراجعتها: {{count}}",
       returnsPendingBadgeLabel: "قيد المراجعة: {{count}}",
       returnsPendingBadgeUnavailable: "تعذّر التحقق من المرتجعات",
-      returnsCashWarning: "تنبيه: المبلغ النقدي ({{paid}} دج المحصل في الفاتورة) يتجاوز ما حُصّل فعلاً — القرار لك",
+      returnsCashWarning: "تنبيه: المبلغ النقدي (<paid/> المحصل في الفاتورة) يتجاوز ما حُصّل فعلاً — القرار لك",
       returnsInvalidCash: "أدخل مبلغاً نقدياً صحيحاً ضمن قيمة المرجوع",      returnsStatus: "الحالة",
       returnsStatus_PENDING_REVIEW: "قيد المراجعة",
       returnsStatus_ACCEPTED: "مقبول",
@@ -721,9 +724,9 @@ const resources = {
       returnsExceedsRemaining: "الكمية تتجاوز المتبقي القابل للإرجاع ({{remaining}})",
       returnsNoLines: "اختر كمية لسطر واحد على الأقل",
       // locale-neutral api strings rendered here; the api itself emits keys
-      activityReturnRecorded: "تسجيل مرجوع {{number}} بمبلغ {{amount}} دج على {{invoice}}",
-      activityReturnRecordedDebt: "تسجيل مرجوع {{number}} بمبلغ {{amount}} دج على {{invoice}} (منه {{debt}} دج خصم من الدين)",
-      activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} ({{amount}} دج)",
+      activityReturnRecorded: "تسجيل مرجوع {{number}} بمبلغ <money/> على {{invoice}}",
+      activityReturnRecordedDebt: "تسجيل مرجوع {{number}} بمبلغ <money/> على {{invoice}} (منه <debt/> خصم من الدين)",
+      activityReturnReviewed: "مراجعة مرجوع {{number}}: {{action}} (<money/>)",
       historyReasonReturnRecorded: "مرجوع",
       historyReasonReturnRejected: "مرجوع تالف {{context}}",
       historyReasonCostCorrection: "تصحيح تكلفة يدوي",
@@ -733,8 +736,6 @@ const resources = {
        * copy names the ordering, never a page position, because the correction
        * can sit on a prior page. */
       historySupersededByCorrection: "سُجِّل قبل تصحيح التكلفة اللاحق، فاستُبدل أثره في متوسط التكلفة",
-      /** whole-DZD unit suffix; the api never embeds it in strings */
-      dzd: "دج",
       returnNumber: "رقم المرجوع",
       returnVoucher: "إيصال المرجوع",
       returnVoucherTitle: "إيصال مرجوع",
@@ -1001,7 +1002,7 @@ const resources = {
       supplierReturnInvalidDraft: "تحقق من الكميات والمبالغ المدخلة: يجب أن تكون أعداداً صحيحة",
       // #256 — the default refund method, shown before saving
       supplierReturnDefaultDebt: "الافتراضي: يُخصم من الدين الذي علينا للمورّد (لا نقد)",
-      supplierReturnDefaultCash: "الافتراضي: استرجاع {{amount}} دج نقداً من المورّد",
+      supplierReturnDefaultCash: "الافتراضي: استرجاع <money/> نقداً من المورّد",
       supplierRefundTitle: "استرداد رصيد من المورّد",
       supplierRefundReference: "الرصيد المتاح",
       supplierRefundSave: "تسجيل الاسترداد",

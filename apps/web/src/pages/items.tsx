@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import { Link } from "@tanstack/react-router";
 import type { ItemListItem, ItemCreate, ItemUpdate } from "@dokan/contracts";
@@ -558,7 +558,14 @@ function ItemForm({
         />
       </label>
       <p className="text-sm text-muted-foreground" data-testid="profit-preview">
-        {profit !== null ? t("itemsProfitPerUnit", { profit }) : "…"}
+        {profit !== null ? (
+          // the amount reaches the primitive through the sentence, like the
+          // activity summaries: a `t()`-interpolated number stays ungrouped and
+          // the sentence owns the currency (#254 round 3).
+          <Trans i18nKey="itemsProfitPerUnit" components={{ money: <Amount value={profit} /> }} />
+        ) : (
+          "…"
+        )}
       </p>
       {error && (
         <p className="text-sm text-destructive" role="alert" data-testid="form-error">
@@ -842,7 +849,7 @@ function ItemList({ scanNonce, onAddItem }: { scanNonce: number; onAddItem: () =
             <th className="p-3">{t("itemsCategory")}</th>
             <th className="p-3">{t("itemsCost")}</th>
             <th className="p-3">{t("itemsSell")}</th>
-            <th className="p-3">{t("itemsProfitPerUnit", { profit: "" })}</th>
+            <th className="p-3">{t("itemsProfitPerUnitHeader")}</th>
             <th className="p-3">{t("itemsStock")}</th>
             <th className="p-3">{t("itemsThreshold")}</th>
             <th className="p-3" />

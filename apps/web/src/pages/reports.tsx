@@ -126,7 +126,7 @@ export function ReportsPage() {
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportCogs")}</dt>
-              <dd className="font-semibold" data-testid="report-cogs"><Amount value={`-${report.data.cogs}`} /></dd>
+              <dd className="font-semibold" data-testid="report-cogs"><Amount value={-report.data.cogs} /></dd>
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportGrossProfit")}</dt>
@@ -134,11 +134,11 @@ export function ReportsPage() {
             </div>
             <div className="flex justify-between bg-card p-3">
               <dt>{t("reportOperatingExpenses")}</dt>
-              <dd className="font-semibold" data-testid="report-operating"><Amount value={`-${report.data.operatingExpenses}`} /></dd>
+              <dd className="font-semibold" data-testid="report-operating"><Amount value={-report.data.operatingExpenses} /></dd>
             </div>
             <div className="flex justify-between bg-warning/10 p-3">
               <dt>{t("reportOwnerWithdrawals")}</dt>
-              <dd className="font-semibold" data-testid="report-withdrawals"><Amount value={`-${report.data.ownerWithdrawals}`} /></dd>
+              <dd className="font-semibold" data-testid="report-withdrawals"><Amount value={-report.data.ownerWithdrawals} /></dd>
             </div>
             <div className={`flex justify-between border-t p-3 text-lg font-bold ${report.data.resultAfterExpenses < 0 ? "bg-destructive/10 text-destructive" : "bg-card"}`}>
               <dt>{t("reportResult")}</dt>

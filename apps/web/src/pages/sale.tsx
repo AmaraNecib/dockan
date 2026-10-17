@@ -365,7 +365,7 @@ export function SalePage() {
           detail={
             savedSale.remainingAmount > 0 ? (
               <span data-testid="sale-saved-debt">
-                {hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedSale.remainingAmount} suffix={t("dzd")} />{" "}
+                {hasSavedCustomer ? t("saleDebtSavedPrefix") : t("saleRemainderSavedPrefix")} <Amount value={savedSale.remainingAmount} />{" "}
                 {hasSavedCustomer && t("saleDebtCustomer")}
               </span>
             ) : undefined

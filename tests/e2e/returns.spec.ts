@@ -323,7 +323,7 @@ test("an accepted return relieves the party's older invoices, oldest first, and 
   await expect(page.getByTestId("returns-value")).toContainText("900");
   // the whole 900 goes to the tab, which is not on this invoice at all: the
   // panel shows the tab and says the offset spreads oldest-first
-  await expect(page.getByTestId("returns-party-debt")).toContainText("1500");
+  await expect(page.getByTestId("returns-party-debt")).toContainText("1,500");
   await expect(page.getByTestId("returns-debt-default-note")).toContainText("الأقدم");
   await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^900\b/);
   await expect(page.getByTestId("returns-cash-now")).toHaveText(/^0\b/);
@@ -393,7 +393,7 @@ test("the derived settlement method and its preview come back for the next retur
   await expect(page.getByTestId("sale-lines")).toContainText(itemName);
   // the sale LINE carries 2 units (the quick-add stock is the item's own stock)
   await page.getByLabel(`${itemName}: الكمية`).fill("2");
-  await expect(page.getByTestId("sale-total")).toContainText("1800");
+  await expect(page.getByTestId("sale-total")).toContainText("1,800");
   await page.getByTestId("sale-paid").fill("0");
   await page.getByTestId("sale-save").click();
   await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");

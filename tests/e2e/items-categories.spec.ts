@@ -2,6 +2,12 @@ import { expect, test } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { captureEvidence } from "./money-display-helpers";
+
+// #254 evidence (#259): the money display is a VISUAL change, so this spec can
+// record a video at real user pace when a lane asks for one. CI never sets
+// E2E_VIDEO, so CI records nothing.
+test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
 
 /**
  * E2E flow: create a category, create an item with the live profit
@@ -30,6 +36,15 @@ test("category, item with profit preview, low-stock dashboard", async ({ page })
   const categorySelect = page.getByLabel("التصنيف");
   await chooseSelectOption(page, categorySelect, `زيوت-${stamp}`);
   await expect(page.getByTestId("profit-preview")).toHaveText("الربح لكل وحدة: 150 دج");
+  // #254 round 3 — the sentence carries the amount through the money primitive,
+  // so a five-figure profit is grouped and the currency is the primitive's run,
+  // not a literal the catalog owns
+  await page.getByLabel("سعر البيع (دج)").fill("12700");
+  const preview = page.getByTestId("profit-preview");
+  await captureEvidence(page, "money-profit-preview");
+  await expect(preview.getByTestId("money-figures")).toHaveText("12,500");
+  await expect(preview.getByTestId("money-currency")).toHaveText("دج");
+  await page.getByLabel("سعر البيع (دج)").fill("350");
 
   await page.getByRole("button", { name: "حفظ" }).click();
 

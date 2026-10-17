@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 
 import type { Invoice } from "@dokan/contracts";
 
@@ -268,7 +268,7 @@ export function SupplierReturnPanel({
         <p className="text-xs text-muted-foreground" data-testid="supplier-return-cash-default">
           {defaultCashBack === 0
             ? t("supplierReturnDefaultDebt")
-            : t("supplierReturnDefaultCash", { amount: defaultCashBack })}
+            : <Trans i18nKey="supplierReturnDefaultCash" components={{ money: <Amount value={defaultCashBack} /> }} />}
         </p>
       )}
 

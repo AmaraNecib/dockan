@@ -104,7 +104,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   // 5. debts screen groups the id-backed party with the unpaid remainder
   await page.getByRole("link", { name: "الديون" }).click();
   const owedRow = page.getByTestId("debts-person").filter({ hasText: customerName });
-  await expect(owedRow).toContainText("1500 دج");
+  await expect(owedRow).toContainText("1,500 دج");
   await expect(owedRow.getByTestId("debts-person-count")).toContainText("1");
 
   // 6. customers page: the aggregates only count by counterparty_id
@@ -112,7 +112,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("parties-page-customer")).toBeVisible();
   const customerRow = page.getByTestId("party-row").filter({ hasText: customerName });
   await expect(customerRow.getByTestId("party-row-count")).toHaveText("2");
-  await expect(customerRow.getByTestId("party-row-remaining")).toContainText("1500");
+  await expect(customerRow.getByTestId("party-row-remaining")).toContainText("1,500");
   await expect(customerRow).toContainText(customerPhone);
 
   // search narrows the table by phone too
@@ -125,13 +125,13 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("party-detail-customer")).toBeVisible();
   await expect(page.getByTestId("party-detail-name")).toHaveText(customerName);
   await expect(page.getByTestId("party-stat-partyStatsCount")).toContainText("2");
-  await expect(page.getByTestId("party-stat-partyStatsTotalSales")).toContainText("3000");
-  await expect(page.getByTestId("party-stat-partyStatsPaid")).toContainText("1500");
-  await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1500");
+  await expect(page.getByTestId("party-stat-partyStatsTotalSales")).toContainText("3,000");
+  await expect(page.getByTestId("party-stat-partyStatsPaid")).toContainText("1,500");
+  await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1,500");
   // #164: the tab opens on the unpaid invoices only, and the toggle reveals all
   await expect(page.getByTestId("party-unpaid-filter")).toBeChecked();
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
-  await expect(page.getByTestId("party-unpaid-total")).toContainText("1500");
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("1,500");
   await page.getByTestId("party-unpaid-filter").uncheck();
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);
   await page.getByTestId("party-unpaid-filter").check();
@@ -139,7 +139,7 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await page.getByTestId("party-tab-payments").click();
   await expect(page.getByTestId("party-payment-row")).toHaveCount(2);
   await expect(page.getByTestId("party-panel-payments")).toContainText("500");
-  await expect(page.getByTestId("party-panel-payments")).toContainText("1000");
+  await expect(page.getByTestId("party-panel-payments")).toContainText("1,000");
 
   await page.getByTestId("party-tab-info").click();
   await expect(page.getByTestId("party-form-name")).toHaveValue(customerName);
@@ -175,14 +175,14 @@ test("customers & suppliers: picker, invoice identity, detail page, delete rule"
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
   const supplierRow = page.getByTestId("party-row").filter({ hasText: supplierName });
   await expect(supplierRow.getByTestId("party-row-count")).toHaveText("1");
-  await expect(supplierRow.getByTestId("party-row-remaining")).toContainText("1200");
+  await expect(supplierRow.getByTestId("party-row-remaining")).toContainText("1,200");
 
   // the supplier detail page is the same component on the purchase side
   await supplierRow.getByTestId("party-row-link").click();
   await expect(page.getByTestId("party-detail-supplier")).toBeVisible();
   await expect(page.getByTestId("party-detail-name")).toHaveText(supplierName);
-  await expect(page.getByTestId("party-stat-partyStatsTotalPurchases")).toContainText("2000");
-  await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1200");
+  await expect(page.getByTestId("party-stat-partyStatsTotalPurchases")).toContainText("2,000");
+  await expect(page.getByTestId("party-stat-partyStatsRemaining")).toContainText("1,200");
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(1);
 });
 
@@ -264,7 +264,7 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   const row = page.getByTestId("party-row").filter({ hasText: customerName });
   await row.getByTestId("party-row-link").click();
   await expect(page.getByTestId("party-detail-customer")).toBeVisible();
-  await expect(page.getByTestId("party-unpaid-total")).toContainText("3000");
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("3,000");
   await expect(page.getByTestId("party-invoice-row")).toHaveCount(2);
 
   // 50% of 3000 = 1500, applied to the oldest invoice first
@@ -280,7 +280,7 @@ test("customer settle in place: a percentage payment spread over unpaid invoices
   await expect(page.getByTestId("party-detail-notice")).toContainText("تم توزيع الدفعة");
 
   // the older invoice's remaining dropped from 2000 to 500
-  await expect(page.getByTestId("party-unpaid-total")).toContainText("1500");
+  await expect(page.getByTestId("party-unpaid-total")).toContainText("1,500");
   await page.getByTestId("party-invoice-row").filter({ hasText: olderInvoice }).getByRole("link").click();
   await expect(page.getByTestId("invoice-remaining")).toHaveText(/^500\s*دج$/);
 });

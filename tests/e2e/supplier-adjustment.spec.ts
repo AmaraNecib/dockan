@@ -2,7 +2,13 @@ import { expect, test, type Page } from "@playwright/test";
 import { signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { captureEvidence, expectCurrencyLeftOfFigures } from "./money-display-helpers";
 import { sampleNoWrite } from "./no-write-window";
+
+// #254 evidence (#259): the money display is a VISUAL change, so this spec can
+// record a video at real user pace when a lane asks for one. CI never sets
+// E2E_VIDEO, so CI records nothing.
+test.use({ video: process.env.E2E_VIDEO === "1" ? "on" : "off" });
 
 /** The inputs this spec sends over the issue-184 RPC helper. */
 type RpcInput =
@@ -183,7 +189,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // 5. the purchased supplier shows the charge
   await page.goto("/suppliers");
   await page.getByRole("link", { name: supplierName }).click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("5000 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("5,000 دج");
 
   // 6. an invoice-linked خصم of 500: the balance and the invoice both drop
   await page.getByTestId("supplier-action-adjust").click();
@@ -192,9 +198,9 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("supplierAdjustPresetDiscount").click();
   await page.getByTestId("supplier-adjust-link").check();
   await chooseSelectOption(page, page.getByTestId("supplier-adjust-invoice"), invoiceNumber);
-  await expect(page.getByTestId("supplier-adjust-preview-remaining")).toContainText("4500 دج");
+  await expect(page.getByTestId("supplier-adjust-preview-remaining")).toContainText("4,500 دج");
   await page.getByTestId("supplier-adjust-confirm").click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("4500 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("4,500 دج");
 
   // the account row names the adjustment and its direction (linked خصم = THEY_OWE = نسالوه, #260)
   await page.getByTestId("party-tab-payments").click();
@@ -205,7 +211,7 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("party-tab-invoices").click();
   await page.getByTestId("party-invoices").getByRole("link", { name: invoiceNumber }).click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
-  await expect(page.getByTestId("invoice-remaining")).toHaveText("4500 دج");
+  await expect(page.getByTestId("invoice-remaining")).toHaveText("4,500 دج");
   await expect(page.getByTestId("invoice-returns-credit")).toHaveText("500 دج");
 
   // 8. #180 — a supplier whose account is net in credit shows the credit label
@@ -229,6 +235,20 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // currency suffix alone would also pass for a negative value
   await expect(page.getByTestId("debts-group-weowe-total")).toContainText("دج");
   await expect(page.getByTestId("debts-group-weowe-total")).not.toContainText("-");
+
+  // the lane's before/after image (#259) lands before the assertions the #254
+  // change moves; the credit row is already on the page
+  await captureEvidence(page, "debts-supplier-credit-row");
+
+  // #254 — the signed supplier-credit row: grouped digits, the sign INSIDE the
+  // isolated figures run (a sibling sign is the run bidi displaced to the far end
+  // of the row), and the currency drawn to the LEFT of the figures. The polarity
+  // is #260's, merged while this PR was in flight: a credit is positive ("+").
+  const creditRow = page.getByTestId("debts-person").filter({ hasText: creditSupplierName });
+  const creditTotal = creditRow.getByTestId("debts-person-total");
+  await expect(creditTotal.getByTestId("money-figures")).toHaveText("+ 100,000");
+  await expect(creditTotal).toContainText("+ 100,000 دج");
+  await expectCurrencyLeftOfFigures(creditTotal);
 });
 
 /**
@@ -590,6 +610,54 @@ test("a refresh that removes a filled row's supplier names the loss and blocks t
   await page.getByTestId("opening-balance-removed-dismiss").click();
   await expect(notice).toHaveCount(0);
   await expect(page.getByTestId("opening-balance-save")).toBeEnabled();
+});
+
+/**
+ * #254 round 3 — the removed-row amount is a direct child of a `flex flex-wrap`
+ * row, so as two sibling spans it was two flex ITEMS: a narrow row could push
+ * the currency onto a line without its number. Both runs are one atomic RTL
+ * wrapper now, so squeezing the row to the digits' own width must still leave
+ * the currency on the digits' line.
+ */
+test("the removed-row amount keeps its currency beside its digits in a narrow row (#254 round 3)", async ({ page }) => {
+  // a narrow phone, because the finding is about wrapping
+  await page.setViewportSize({ width: 390, height: 844 });
+  await signIn(page);
+  const supplierName = `مورد-ضيق-${Date.now()}`;
+  const supplier = await rpc<{ id: string }>(page, "suppliersCreate", { name: supplierName });
+
+  const amount = await openBalanceAmountFor(page, supplierName);
+  await amount.fill("700");
+  await rpc(page, "suppliersDelete", { id: supplier.id });
+  await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+
+  const row = page.getByTestId("opening-balance-removed-row");
+  const figures = row.getByTestId("money-figures");
+  const currency = row.getByTestId("money-currency");
+  await expect(figures).toBeVisible();
+  await expect(currency).toBeVisible();
+
+  // exactly as wide as the digits: the currency cannot fit beside them on this
+  // line, so a splittable amount pushes it onto the next one
+  const digits = await figures.boundingBox();
+  expect(digits).not.toBeNull();
+  await row.evaluate((element, width) => {
+    // SAFETY: the locator is `opening-balance-removed-row`, an `<li>` in the page's own
+    // markup, so the element is an HTMLElement at runtime and it has a style object.
+    (element as HTMLElement).style.maxWidth = `${width}px`;
+  }, Math.ceil(digits?.width ?? 0) + 2);
+
+  // widen again so the still shows the SAME squeezed row: at 390 px the nav
+  // sheet covers it, and the squeezed row is what is measured either way
+  await page.setViewportSize({ width: 1000, height: 844 });
+  await captureEvidence(page, "money-narrow-row");
+
+  const figureBox = await figures.boundingBox();
+  const currencyBox = await currency.boundingBox();
+  expect(figureBox).not.toBeNull();
+  expect(currencyBox).not.toBeNull();
+  // the same line: under half an em of vertical drift
+  expect(Math.abs((figureBox?.y ?? 0) - (currencyBox?.y ?? 0))).toBeLessThan(4);
 });
 
 /**

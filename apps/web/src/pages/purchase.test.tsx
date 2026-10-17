@@ -523,7 +523,7 @@ describe("PurchasePage completion card (issue #159)", () => {
     });
 
     expect(container.querySelector('[data-testid="purchase-saved-number"]')?.textContent).toContain("INV-77");
-    expect(container.querySelector('[data-testid="purchase-saved-debt"]')?.textContent).toContain("12000");
+    expect(container.querySelector('[data-testid="purchase-saved-debt"]')?.textContent).toContain("12,000");
     // the actions open the saved invoice by its id, never its number
     expect(container.querySelector('[data-testid="purchase-open-invoice"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
     expect(container.querySelector('[data-testid="purchase-print"]')?.getAttribute("href")).toContain("invoiceId=inv-77");
@@ -844,8 +844,10 @@ describe("PurchasePage quantity draft (#146)", () => {
 
   const quantityField = (container: HTMLElement) => container.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
   const totalText = (container: HTMLElement) => container.querySelector('[data-testid="purchase-total"]')?.textContent ?? "";
-  /** the rendered total as a number, so a zero check cannot pass on a substring */
-  const totalAmount = (container: HTMLElement) => Number(totalText(container).match(/\d+/)?.[0] ?? Number.NaN);
+  /** the rendered total as a number, so a zero check cannot pass on a substring.
+   * The display groups thousands (#254), so the ASCII grouping separator is
+   * dropped before reading the digits. */
+  const totalAmount = (container: HTMLElement) => Number(totalText(container).replaceAll(",", "").match(/\d+/)?.[0] ?? Number.NaN);
   const save = async (container: HTMLElement) => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
@@ -856,7 +858,7 @@ describe("PurchasePage quantity draft (#146)", () => {
   it("keeps a cleared draft cleared and refuses to save it, instead of silently keeping the stale quantity", async () => {
     const { container, root } = await mountWithLine("2", "1200");
     expect(quantityField(container).value).toBe("2");
-    expect(totalText(container)).toContain("2400");
+    expect(totalText(container)).toContain("2,400");
 
     // the drift: the field must stay empty, exactly like sale — the old
     // `Number(event.target.value)` handler snapped it back to "2"
@@ -873,14 +875,14 @@ describe("PurchasePage quantity draft (#146)", () => {
     // typing a fresh value after the cleared draft still works
     await act(async () => setValue(quantityField(container), "3"));
     expect(quantityField(container).value).toBe("3");
-    expect(totalText(container)).toContain("3600");
+    expect(totalText(container)).toContain("3,600");
     await act(async () => root.unmount());
     container.remove();
   });
 
   it("blames the unusable quantity, not the payment, when a typed payment survives a cleared quantity (greptile round 2)", async () => {
     const { container, root } = await mountWithLine("2", "1200");
-    expect(totalText(container)).toContain("2400");
+    expect(totalText(container)).toContain("2,400");
 
     // type a valid payment: the pair's source becomes "amount", so clearing the
     // quantity keeps 1200 in the amount field while the total falls to zero
@@ -917,7 +919,7 @@ describe("PurchasePage quantity draft (#146)", () => {
 
   it("sends a valid draft as a whole number and keeps the per-line unitPrice (money math pinned)", async () => {
     const { container, root } = await mountWithLine("2", "1200");
-    expect(totalText(container)).toContain("2400");
+    expect(totalText(container)).toContain("2,400");
     await save(container);
     expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
     expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
@@ -929,7 +931,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     const { container } = await mountWithLine("2", "1200");
     const cost = container.querySelector<HTMLInputElement>('input[aria-label*="تكلفة"]')!;
     expect(cost.value).toBe("1200");
-    expect(totalText(container)).toContain("2400");
+    expect(totalText(container)).toContain("2,400");
 
     // a cleared cost is an explicit zero, exactly as before #146
     await act(async () => setValue(cost, ""));
@@ -938,12 +940,12 @@ describe("PurchasePage quantity draft (#146)", () => {
 
     await act(async () => setValue(cost, "900"));
     expect(cost.value).toBe("900");
-    expect(totalText(container)).toContain("1800");
+    expect(totalText(container)).toContain("1,800");
 
     // an unreadable draft keeps the previous cost instead of billing zero
     await act(async () => setValue(cost, "abc"));
     expect(cost.value).toBe("900");
-    expect(totalText(container)).toContain("1800");
+    expect(totalText(container)).toContain("1,800");
   });
 
   it("refuses an over-cap quick-add quantity instead of landing a line that resolves to zero", async () => {
@@ -1229,12 +1231,12 @@ describe("PurchasePage quantity draft (#146)", () => {
 
     it("creates the product on the line and keeps the quantity and unit cost the owner typed", async () => {
       const { container } = await mountWithTypedLine("2", "1200");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
 
       await openCreate(container, "item-منتج");
       expect(createRow(container)).not.toBeNull();
       // the form names the cost it will record, so the price is not a mystery
-      expect(createRow(container)?.textContent).toContain("1200");
+      expect(createRow(container)?.textContent).toContain("1,200");
       await fillCreate(container, { name: "منتج جديد" });
       await chooseLineCategory(container, "تصنيف");
       await submitCreate(container);
@@ -1252,7 +1254,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       // …and the typed values survived the replace
       expect(lineQty(container, "item-منتج جديد")?.value).toBe("2");
       expect(lineCost(container, "item-منتج جديد")?.value).toBe("1200");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
       // the caret is on the line's quantity: the cost is already typed
       expect(document.activeElement).toBe(lineQty(container, "item-منتج جديد"));
 
@@ -1283,7 +1285,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(createdItems).toHaveLength(0);
       expect(createRow(container)).not.toBeNull();
       expect(lineQty(container, "item-منتج")?.value).toBe("2");
-      expect(totalText(container)).toContain("2400");
+      expect(totalText(container)).toContain("2,400");
     });
 
     it("refuses a create with no category picked, naming the category", async () => {
@@ -1336,7 +1338,7 @@ describe("PurchasePage quantity draft (#146)", () => {
     it("changes the product on a line from its own picker, keeping the typed values", async () => {
       catalogMatches = [{ item: catalogItem("other-1", "منتج آخر", 700), category: null, matchedBy: "NAME" }];
       const { container } = await mountWithTypedLine("3", "1200");
-      expect(totalText(container)).toContain("3600");
+      expect(totalText(container)).toContain("3,600");
 
       await pickForLine(container, "item-منتج", "منتج آخر");
 
@@ -1955,7 +1957,7 @@ describe("PurchasePage quantity draft (#146)", () => {
       const rows = container.querySelectorAll('[data-testid="purchase-lines"] tbody tr');
       expect(rows).toHaveLength(1);
       expect(lineQty(container, "item-منتج ب")?.value).toBe("5");
-      expect(totalText(container)).toContain("4500");
+      expect(totalText(container)).toContain("4,500");
     });
 
     it("keeps the category pick for the next line create, and no leftover name", async () => {

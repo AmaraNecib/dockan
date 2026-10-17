@@ -441,7 +441,7 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(debtCell).toContain("يسالنا");
     // #260 — s-1 is +5000, a credit: the word is نسالوه
     const positiveCell = rows[0]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
-    expect(positiveCell).toContain("5000");
+    expect(positiveCell).toContain("5,000");
     expect(positiveCell).toContain("نسالوه");
 
     // a typed name is its own row: it is never moved onto an existing row

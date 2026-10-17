@@ -43,7 +43,10 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
   const netBalance = row.kind === "PURCHASE" ? (row.accountBalance ?? -row.remainingTotal) : null;
   const displayAmount = netBalance ?? row.remainingTotal;
   const netBalanceClass = netBalance === null || netBalance === 0 ? "" : netBalance > 0 ? "text-success" : "text-destructive";
-  const netBalanceSign = netBalance === null || netBalance === 0 ? "" : netBalance > 0 ? "+ " : "− ";
+  // #254 — the sign is a value the money primitive renders INSIDE its figures
+  // isolate (a sibling sign is what bidi displaced to the far end of the row),
+  // while the #260 mapping (positive = credit = "+") is unchanged.
+  const netBalanceSign: "+" | "−" | undefined = netBalance === null || netBalance === 0 ? undefined : netBalance > 0 ? "+" : "−";
 
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
@@ -72,7 +75,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
         <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
-        <span className={`font-semibold ${netBalanceClass}`} data-testid="debts-person-total">{netBalanceSign}<Amount value={Math.abs(displayAmount)} /></span>
+        <span className={`font-semibold ${netBalanceClass}`} data-testid="debts-person-total"><Amount value={Math.abs(displayAmount)} sign={netBalanceSign} /></span>
         {expanded ? <ChevronUp size={14} className="text-muted-foreground" aria-hidden="true" /> : <ChevronDown size={14} className="text-muted-foreground" aria-hidden="true" />}
       </button>
 
@@ -135,7 +138,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
                           )}
                         </td>
                         <td className="p-2 font-semibold" data-testid="debts-account-entry-amount">
-                          {supplierEntrySignLabel(entry)} <Amount value={entry.amount} />
+                          <Amount value={entry.amount} sign={supplierEntrySignLabel(entry)} />
                         </td>
                       </tr>
                     );

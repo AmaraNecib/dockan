@@ -1328,13 +1328,13 @@ describe("add item form profit preview (#225)", () => {
 
     setInput("item-cost", "100");
     setInput("item-sell", "180");
-    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
+    expect(preview()).toBe("الربح لكل وحدة: 80 دج");
 
     // ١٠٠ / ۱۸۰ — the same profit, not the `…` the ASCII-only reader rendered.
     // The sell draft is Extended Arabic-Indic, so both scripts are exercised.
     setInput("item-cost", "١٠٠");
     setInput("item-sell", "۱۸۰");
-    expect(preview()).toBe(i18n.t("itemsProfitPerUnit", { profit: 80 }));
+    expect(preview()).toBe("الربح لكل وحدة: 80 دج");
     expect(preview()).not.toContain("…");
 
     // and the same draft saves as the numbers the preview promised
@@ -1342,5 +1342,34 @@ describe("add item form profit preview (#225)", () => {
     click("item-save");
     await waitFor(() => createInputs.length === 1);
     expect(createInputs[0]).toMatchObject({ name: "بطارية بأرقام", costPrice: 100, sellingPrice: 180 });
+  });
+
+  /**
+   * #254 round 3 — the preview sentence used to interpolate the raw profit into
+   * a catalog string that embedded `دج`, so the live page showed `12500 دج`
+   * beside grouped `<Amount>` output on the same screen. The amount now reaches
+   * the primitive through the sentence (the same <Trans> route the activity
+   * summaries use).
+   */
+  it("renders the preview amount through the money primitive, grouped", async () => {
+    await mount();
+    await openAddTab();
+    const preview = () => el<HTMLElement>('[data-testid="profit-preview"]');
+
+    setInput("item-cost", "100");
+    setInput("item-sell", "12600");
+
+    expect(preview().querySelector('[data-testid="money-figures"]')?.textContent).toBe("12,500");
+    expect(preview().querySelector('[data-testid="money-currency"]')?.textContent).toBe("دج");
+    // and the sentence owns no currency of its own any more
+    expect(preview().textContent).toBe("الربح لكل وحدة: 12,500 دج");
+  });
+
+  it("names the profit column without the sentence's dangling amount unit", async () => {
+    await mount();
+    const headers = [...document.querySelectorAll<HTMLElement>("#items-panel-products thead th")].map((th) => th.textContent);
+    const profitHeader = headers.find((text) => text?.includes("الربح"));
+    // the shared money sentence no longer doubles as the column header
+    expect(profitHeader).toBe("الربح لكل وحدة");
   });
 });

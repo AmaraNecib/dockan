@@ -125,12 +125,13 @@ function confirmButton() {
   return host.querySelector<HTMLButtonElement>('[data-testid="supplier-return-confirm"]');
 }
 
-/** The previewed return value as a number. The rendered element is "label: 2000 دج",
- * so extract the last digit run instead of substring-matching (a bare
- * `toContain("0")` also matches 400000, the value the old loose reader showed). */
+/** The previewed return value as a number. The rendered element is "label: 2,000 دج",
+ * so the grouping separator is dropped (#254) and the last digit run is read
+ * instead of substring-matching (a bare `toContain("0")` also matches 400000,
+ * the value the old loose reader showed). */
 function previewAmount(): number {
   const text = host.querySelector('[data-testid="supplier-return-value"]')?.textContent ?? "";
-  return Number(text.match(/(\d+)(?!.*\d)/u)?.[1] ?? Number.NaN);
+  return Number(text.replaceAll(",", "").match(/(\d+)(?!.*\d)/u)?.[1] ?? Number.NaN);
 }
 
 async function submit() {

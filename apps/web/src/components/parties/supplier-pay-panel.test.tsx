@@ -105,7 +105,7 @@ describe("SupplierPayPanel oldest-first preview (finding 4)", () => {
     render(-800);
     typeInto("supplier-pay-amount", "1200");
     const line = host.querySelector('[data-testid="supplier-pay-line"]');
-    expect(line?.textContent).toContain("1000");
+    expect(line?.textContent).toContain("1,000");
     expect(host.querySelector('[data-testid="supplier-pay-credit"]')?.textContent).toContain("200");
   });
 

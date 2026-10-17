@@ -167,6 +167,11 @@ export const returns = sqliteTable("returns", {
   /** portion of debtOffset already applied to the invoice; new returns start
    * at 0 and gain their applied portion when the owner accepts (#68). */
   debtApplied: integer("debt_applied").notNull().default(0),
+  /** 1 when acceptance may relieve invoices OTHER than this return's own —
+   * only a return recorded under the tab-wide default (#256 round 3). An
+   * explicit choice (and every legacy row, hence the 0 default) is
+   * own-invoice-only: its excess stays unapplied. */
+  spreadsAcrossInvoices: integer("spreads_across_invoices", { mode: "boolean" }).notNull().default(false),
   /** CASH today; credit / debt-credit arrive later without a migration */
   payoutMethod: text("payout_method", { enum: returnPayoutMethods }).notNull(),
   /** Arabic owner note; rejection reasons ride here too */
@@ -448,7 +453,7 @@ export const SCHEMA_DDL: readonly string[] = [
   // table definition for why this is not a re-key of the singleton above.
   `CREATE TABLE IF NOT EXISTS invoice_number_counters (kind TEXT PRIMARY KEY, next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, spreads_across_invoices INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, refund_unit_price INTEGER NOT NULL, refund_amount INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id)`,

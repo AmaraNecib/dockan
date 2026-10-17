@@ -150,6 +150,7 @@ describe("store pagination (issue 163)", () => {
         refundAmount: 100,
         cashPaidOut: 100,
         debtOffset: 0,
+        spreadsAcrossInvoices: false,
         payoutMethod: "CASH",
         reason: null,
         status: "PENDING_REVIEW",

@@ -1626,6 +1626,10 @@ export function createRpcRouter(deps: RpcDeps) {
           // explicit cashPaidOut keeps the pre-#256 semantics untouched,
           // including the debt cap with its excess flowing to cash.
           let debtOffset: number;
+          // #256 round 3 — which allocation rule this promise is recorded
+          // under. Only the derived default is tab-wide; an explicit choice
+          // names this invoice and must never reach another.
+          let spreadsAcrossInvoices = false;
           if (input.cashPaidOut === undefined) {
             const invoiceDebt = invoice.remainingAmount;
             const settlement = returnSettlementDefault({
@@ -1643,6 +1647,11 @@ export function createRpcRouter(deps: RpcDeps) {
               throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "RETURN_SETTLEMENT_UNRESOLVED" });
             }
             debtOffset = split.debtOffset;
+            // #256 round 3 — the DERIVED rule is the only one that may reach
+            // another invoice, so record that the promise is tab-wide. An
+            // explicit choice below stays own-invoice-only, and so does every
+            // legacy row (the column's 0 default).
+            spreadsAcrossInvoices = true;
           } else {
             if (input.cashPaidOut > refund.refundTotal) {
               throw new ORPCError("BAD_REQUEST", { message: "REFUND_SPLIT_INVALID" });
@@ -1666,6 +1675,7 @@ export function createRpcRouter(deps: RpcDeps) {
             refundAmount: refund.refundTotal,
             cashPaidOut,
             debtOffset,
+            spreadsAcrossInvoices,
             payoutMethod: input.payoutMethod ?? "CASH",
             reason: input.reason == null || input.reason.trim() === "" ? null : input.reason.trim(),
             status: "PENDING_REVIEW",
@@ -1786,7 +1796,13 @@ export function createRpcRouter(deps: RpcDeps) {
                 relieved.push({ invoiceId: existing.invoiceId, amount: own });
                 left -= own;
               }
-              if (left > 0) {
+              // #256 round 3 — only a return recorded under the tab-wide default
+              // may go on to another invoice. An EXPLICIT choice names this
+              // invoice: when a payment made while the return was pending shrank
+              // that debt below the recorded promise, the leftover stays
+              // UNAPPLIED (the pre-#256 rule) instead of relieving an invoice the
+              // owner never named. Every legacy row is own-invoice-only too.
+              if (left > 0 && existing.spreadsAcrossInvoices) {
                 const openInvoices = sortInvoicesOldestFirst(
                   await tx.listUnpaidInvoicesByParty("SALE", acceptedInvoice.counterpartyId, acceptedInvoice.counterpartyName),
                 );

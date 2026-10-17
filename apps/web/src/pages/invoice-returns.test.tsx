@@ -21,6 +21,8 @@ let partyDebtInvoices: Array<{ remainingAmount: number }> = [];
 let failReturnsCreate = false;
 /** fail the panel's history read, to prove the action is withheld when the cap source is unknown */
 let failReturnsRead = false;
+/** #256 round 3 — make the party-tab read fail, so the derived split is UNKNOWN */
+let failPartyDebt = false;
 /** what the mocked returnsCreate resolves with; a test can override it */
 let createdReturn: ReturnDetail | null = null;
 let lastCreateInput: { invoiceId: string; lines: Array<{ invoiceLineId: string; quantity: number }>; reason?: string; cashPaidOut?: number } | null = null;
@@ -65,7 +67,10 @@ mock.module("@/lib/rpc", () => ({
       // tab through the same read the debts screen uses
       queryOptions: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ({
         queryKey: ["debtsByParty", input],
-        queryFn: async () => ({ items: partyDebtInvoices, total: partyDebtInvoices.length }),
+        queryFn: async () => {
+          if (failPartyDebt) throw new Error("DEBTS_READ_FAILED");
+          return { items: partyDebtInvoices, total: partyDebtInvoices.length };
+        },
       }),
       queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input],
     },
@@ -150,6 +155,7 @@ function returnRecord(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
     cashPaidOut: 900,
     debtOffset: 0,
     debtApplied: 0,
+    spreadsAcrossInvoices: false,
     payoutMethod: "CASH",
     reason: null,
     status: "PENDING_REVIEW",
@@ -182,6 +188,7 @@ beforeEach(() => {
   partyDebtInvoices = [];
   failReturnsCreate = false;
   failReturnsRead = false;
+  failPartyDebt = false;
   createdReturn = null;
   lastCreateInput = null;
 });
@@ -374,6 +381,9 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // drive the REAL save: returnsData stays [] because the mocked history read
     // is still the pre-save list — the exact window before the refetch lands
     renderPanel(makeInvoice([saleLine()]));
+    // this invoice is paid in full, so the split needs the party's tab: the
+    // untouched form waits for it (#256 round 3)
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -471,6 +481,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
 
   it("previews and submits an Arabic-Indic quantity as the same number as ASCII (#225)", async () => {
     renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
     const input = host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!;
     typeInto(input, "٢");
     // the valueTotal projection must read the SAME reader the validator does: 2 ×
@@ -518,6 +529,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
 
   it("drops a mark-only line while a valid line on the same form still submits (#244)", async () => {
     renderPanel(makeInvoice([saleLine(), saleLine({ id: "00000000-0000-4000-8000-0000000000c9", description: "زيت" })]));
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-زيت"]')!, "\u200f");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
@@ -528,6 +540,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
 
   it("submits a valid return and announces success in a status role", async () => {
     renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "2");
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-reason"]')!, "الزبون بدل رأيه");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
@@ -568,6 +581,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
   it("shows a pending return's debt as awaiting acceptance, not already deducted (issue #169 finding 1)", async () => {
     createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 0, status: "PENDING_REVIEW" });
     renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -580,6 +594,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
   it("shows the applied debt once the return is accepted (issue #169 finding 1)", async () => {
     createdReturn = returnRecord({ cashPaidOut: 0, debtOffset: 900, debtApplied: 700, status: "ACCEPTED" });
     renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
@@ -607,6 +622,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
 
   it("shows the server refusal translation when the api rejects a stale cap", async () => {
     renderPanel(makeInvoice([saleLine()]));
+    await flushAsync();
     failReturnsCreate = true;
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
@@ -984,5 +1000,58 @@ describe("ReturnsPanel (new-return form + history)", () => {
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+  });
+
+  it("re-derives the pre-selected method after a return is saved, so the next return still previews (#256 round 3)", async () => {
+    // total 900 / paid 0 → the default is all-debt, and saving the return leaves
+    // the form UNTOUCHED with the SAME derived preset (all-debt at value 0).
+    // Mirroring the preset into state meant the reset cleared it while its
+    // effect dependencies never changed, so the method went blank and the next
+    // return showed no cash/debt preview at all.
+    renderPanel(makeInvoice([saleLine()], 0));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(host.querySelector('[data-testid="returns-done"]')).toBeTruthy();
+    // back to the form: the next return
+    clickTestId("returns-new");
+    await flushAsync();
+    // the method is displayed again, derived, without the owner touching it
+    expect(host.querySelector('[data-testid="returns-settlement"]')?.textContent).toContain(i18n.t("returnsSplitAllDebt"));
+    // …and the split preview is there again as soon as a quantity is typed
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("900");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("0");
+  });
+
+  it("blocks an untouched save while the split is unknown, and still accepts an explicit choice (#256 round 3)", async () => {
+    // this invoice owes 300 while the return is worth 500, and the party's tab
+    // failed to load: the app cannot say how much goes to debt. Saving anyway
+    // would let the SERVER choose across other invoices unseen.
+    failPartyDebt = true;
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await flushAsync();
+    // no preview, because the split is genuinely unknown …
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')).toBeNull();
+    // … so the save is blocked …
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="returns-submit"]')?.disabled).toBe(true);
+    // … and a raw form submit cannot get past it either: the disabled button is
+    // not the guard, the submit handler is. Nothing reaches the api.
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput).toBeNull();
+    expect(host.querySelector('[data-testid="returns-error"]')?.textContent).toBe(i18n.t("returnsSplitUnknown"));
+    // … and the reason is on screen, so the block is not a dead end
+    expect(host.querySelector('[data-testid="returns-split-unknown"]')).toBeTruthy();
+
+    // an EXPLICIT method is the owner answering the question, so it is allowed
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-split-unknown"]')).toBeNull();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBe(0);
   });
 });

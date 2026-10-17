@@ -351,3 +351,72 @@ test("an accepted return relieves the party's older invoices, oldest first, and 
   await expect(page.getByTestId("invoice-returns-credit")).toHaveText(/^300\b/);
   await expect(page.getByTestId("invoice-remaining")).toHaveText(/^600\b/);
 });
+
+/**
+ * #256 round 3 — the settlement control must survive a SAVE. Recording a
+ * debt-defaulted return clears the form, and the derived preset at value 0 is
+ * "all debt" again — the SAME value it was before, so the old mirror-effect
+ * never re-applied it: the method went blank and the next return previewed no
+ * cash / debt split at all. Asserted on the real screen, without the owner
+ * touching the control: the method is displayed and typing the remaining unit
+ * previews the split.
+ */
+test("the derived settlement method and its preview come back for the next return after a save (#256 round 3)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `افتراضي-تصنيف-${stamp}`;
+  const itemName = `افتراضي-منتج-${stamp}`;
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  // 2 × 900 unpaid: the invoice carries the full 1800 debt, so the derived
+  // method is all-debt and both units can be returned (one at a time)
+  await page.goto("/sale");
+  await expect(page.getByTestId("sale-form")).toBeVisible();
+  await page.getByTestId("sale-quick-add").click();
+  await page.getByTestId("sale-quick-name").fill(itemName);
+  await chooseSelectOption(page, page.getByLabel("التصنيف"), categoryName);
+  await page.getByLabel("سعر الشراء (دج)").fill("200");
+  await page.getByLabel("سعر البيع (دج)").fill("900");
+  await page.getByTestId("sale-quick-stock").fill("2");
+  await saveQuickAdd(page, {
+    procedure: "itemsCreateWithStock",
+    save: page.getByTestId("sale-quick-form").getByRole("button", { name: "حفظ المنتج وإضافته" }),
+    error: page.getByTestId("sale-error"),
+    lines: page.getByTestId("sale-lines"),
+    itemName,
+    quantityLabel: "الكمية",
+  });
+  await expect(page.getByTestId("sale-lines")).toContainText(itemName);
+  // the sale LINE carries 2 units (the quick-add stock is the item's own stock)
+  await page.getByLabel(`${itemName}: الكمية`).fill("2");
+  await expect(page.getByTestId("sale-total")).toContainText("1800");
+  await page.getByTestId("sale-paid").fill("0");
+  await page.getByTestId("sale-save").click();
+  await expect(page.getByTestId("sale-saved-number")).toContainText("INV-");
+  // SAFETY: the saved card always formats invoice numbers as INV-<digits>
+  const saleNumber = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
+
+  await page.getByRole("link", { name: "الفواتير" }).click();
+  await expect(page.getByTestId("invoices-table")).toBeVisible();
+  await page.getByTestId(`invoice-open-${saleNumber}`).click();
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+
+  // first return: 1 of the 2 units, untouched → the derived all-debt default
+  await page.locator('[data-testid^="returns-qty-"]').fill("1");
+  await expect(page.getByTestId("returns-settlement")).toContainText("كله خصم من الدين");
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^900\b/);
+  await page.getByTestId("returns-submit").click();
+  await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
+
+  // the NEXT return: the method comes back displayed and derived, and typing
+  // the remaining unit previews the split again
+  await page.getByTestId("returns-new").click();
+  await expect(page.getByTestId("returns-settlement")).toContainText("كله خصم من الدين");
+  await page.locator('[data-testid^="returns-qty-"]').fill("1");
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^900\b/);
+  await expect(page.getByTestId("returns-cash-now")).toHaveText(/^0\b/);
+});

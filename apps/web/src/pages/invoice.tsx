@@ -374,8 +374,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   });
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
-  /** #256 — null until the derived default is known, or until the owner must
-   * choose because the debt cannot absorb the return */
+  /** #256 — the owner's EXPLICIT method, or null while they have not picked.
+   * The DISPLAYED method is derived (`displayedSettlement`) instead of mirrored
+   * into state: a mirror needs an effect to re-seed it, and saving a return
+   * clears both the mirror and the form while `derivedPreset` stays the same
+   * (all-debt at value 0), so the effect's dependencies never changed and the
+   * method went blank (#256 round 3). */
   const [settlement, setSettlement] = useState<ReturnSettlementPreset | null>(null);
   /** once the owner picks, the derived default stops re-seeding the select */
   const [settlementChosen, setSettlementChosen] = useState(false);
@@ -488,6 +492,16 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // hand back
   const derivedPreset: ReturnSettlementPreset | null =
     settlementDefault.method === "CASH" ? "ALL_CASH" : settlementDefault.method === "DEBT" ? "ALL_DEBT" : derivedSplit === null ? null : "CUSTOM";
+  // What the select shows and what the projection prices: the owner's explicit
+  // pick once they made one, otherwise the derived default — recomputed on every
+  // render, so clearing the form re-seeds it with no effect to go stale.
+  const displayedSettlement = settlementChosen ? settlement : derivedPreset;
+  // The untouched form cannot price a split the app could not derive: when the
+  // return exceeds this invoice's debt and the party's tab is still loading (or
+  // failed), `derivedSplit` is null and saving would hand the api the choice of
+  // which OTHER invoices to relieve — a choice the owner never saw. Block the
+  // untouched save; an explicit pick is the owner answering it (#256 round 3).
+  const splitUnknown = !settlementChosen && derivedSplit === null;
   // how much of the tab sits on OTHER invoices — the part the default spreads
   // over the party's open invoices (oldest first)
   const crossInvoiceDebt = partyDebt === null ? 0 : Math.max(0, partyDebt - invoice.remainingAmount);
@@ -527,12 +541,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
   }, [valueTotal, cashDraft, cashPercentage, derivedSplit, settlementChosen]);
   const requestedCash =
-    settlement === null ? 0 : settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
+    displayedSettlement === null ? 0 : displayedSettlement === "ALL_CASH" ? valueTotal : displayedSettlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
   // an invalid percentage draft clears the derived amount, and an empty amount
   // is the legitimate "all debt" choice — so it must be rejected explicitly or
   // "12.5%" would silently be recorded as zero cash
-  const cashPercentageInvalid = settlement === "CUSTOM" && percentageDraftInvalid(cashPercentage);
-  const cashIsValid = settlement !== "CUSTOM" || (customCashError(cashDraft, valueTotal) === null && !cashPercentageInvalid);
+  const cashPercentageInvalid = displayedSettlement === "CUSTOM" && percentageDraftInvalid(cashPercentage);
+  const cashIsValid = displayedSettlement !== "CUSTOM" || (customCashError(cashDraft, valueTotal) === null && !cashPercentageInvalid);
   // The projection mirrors the api EXACTLY, and the api does two different
   // things: an untouched default is derived from the party's tab (and can
   // relieve other invoices), while an explicit choice keeps #162's cap at THIS
@@ -542,19 +556,15 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     ? explicitRefundSplit({ returnValue: valueTotal, cashPaidOut: requestedCash, invoiceDebt: invoice.remainingAmount })
     : null;
   const plan = explicitPlan ?? derivedSplit;
-  const projectionIsValid = settlement !== null && cashIsValid && plan !== null;
+  const projectionIsValid = displayedSettlement !== null && cashIsValid && plan !== null;
   const projectedDebt = projectionIsValid ? plan.debtOffset : 0;
   const settledCash = projectionIsValid ? plan.cashPaidOut : Number.NaN;
   // the offset asked for is bigger than the debt that is left, so that much
   // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
   // (mirrors the api) so an "all debt" choice never silently becomes cash
   const debtIsCapped = explicitPlan !== null && cashIsValid && Math.max(0, valueTotal - requestedCash) > explicitPlan.debtOffset;
-  // the derived default stays visible until the owner picks, and re-derives as
-  // the entered quantities change
-  useEffect(() => {
-    if (settlementChosen) return;
-    setSettlement(derivedPreset);
-  }, [derivedPreset, settlementChosen]);
+  // the derived default stays visible until the owner picks: no mirror state,
+  // so it cannot outlive the form it belonged to
   // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
   const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 
@@ -609,6 +619,13 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     }
     if (!cashIsValid) {
       setError(t("returnsInvalidCash"));
+      return;
+    }
+    // the untouched form needs the derived split to exist before it may save:
+    // read live in the handler, not only through the disabled button, because a
+    // raw form submit bypasses a disabled control
+    if (splitUnknown) {
+      setError(t("returnsSplitUnknown"));
       return;
     }
     const lines = entered.flatMap((line) => {
@@ -807,7 +824,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           <label className="grid gap-1 text-sm">
             <span className="font-medium">{t("returnsSplit")}</span>
             <Select
-              value={settlement}
+              value={displayedSettlement}
               onValueChange={(value) => {
                 // SAFETY: the select renders only the three preset options, and
                 // one is reachable only once a value exists
@@ -869,7 +886,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               {t("returnsDebtDefaultConfirm")}
             </Button>
           )}
-          {settlement === "CUSTOM" && (
+          {splitUnknown && (
+            <p className="rounded border border-warning/40 bg-warning/10 p-2 text-xs text-warning" data-testid="returns-split-unknown">
+              {t("returnsSplitUnknown")}
+            </p>
+          )}
+          {displayedSettlement === "CUSTOM" && (
             <div className="grid gap-1 text-sm">
               <AmountPercentageInput
                 referenceTotal={valueTotal}
@@ -879,6 +901,9 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                   // an EDIT is the owner's own split: from here the api applies
                   // #162's cap at this invoice's debt, not the tab-aware default
                   setSettlementChosen(true);
+                  // …and the method they are editing is this one, so record it
+                  // explicitly (the displayed value is derived while untouched)
+                  setSettlement("CUSTOM");
                   setCashDraft(next.amount);
                   setCashPercentage(next.percentage);
                   setSavedReturn(null);
@@ -936,7 +961,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         <button
           type="submit"
           className="rounded-lg bg-primary py-2 text-primary-foreground disabled:opacity-50"
-          disabled={create.isPending}
+          disabled={create.isPending || splitUnknown}
           data-testid="returns-submit"
         >
           {t("returnsSave")}

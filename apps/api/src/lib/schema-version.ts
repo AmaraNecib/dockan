@@ -32,15 +32,24 @@ import type { Database } from "bun:sqlite";
  * inverting every balances surface. A version-4 build MUST therefore refuse the
  * version-5 database (ADR-0008 §4.5). The 4 -> 5 migration writes no rows.
  *
- * Version 6 (issue 256, round 2): `return_debt_applications` — the per-invoice
+ * Version 6 (issue 256, rounds 2 + 3): `return_debt_applications` — the per-invoice
  * attribution of an accepted return's debt offset, because the approved default
  * takes a refund off the party's whole tab and one return can now relieve
  * several invoices. A version-4 build derives an invoice's return credit from
  * `SUM(returns.debt_applied)` on that invoice alone, so on a v6 database it
  * would print a header that does not reconcile (`total − paid − credit =
  * remaining`) for every invoice relieved by a return recorded elsewhere, and a
- * v6 return accepted by a v4 build would write no attribution at all. A v5
- * build MUST therefore refuse the version-6 database (ADR-0008 §4.5).
+ * v6 return accepted by a v4 build would write no attribution at all.
+ *
+ * It also carries `returns.spreads_across_invoices` — which allocation rule a
+ * debt offset was PROMISED under: the tab-wide default (acceptance may relieve
+ * the party's other open invoices) or the owner's explicit, this-invoice-only
+ * choice. A version-5 build does not know the column, so it writes every new
+ * return as own-invoice-only: a defaulted return whose own invoice's debt shrank
+ * between recording and acceptance (a payment in between) would then leave its
+ * leftover debt permanently unrelieved instead of spreading it, and the owner's
+ * approved rule would silently stop applying. A v5 build MUST therefore refuse
+ * the version-6 database (ADR-0008 §4.5).
  */
 export const CURRENT_SCHEMA_VERSION = 6;
 

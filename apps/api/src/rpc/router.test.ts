@@ -3864,6 +3864,49 @@ describe("returns & refunds", () => {
     expect(settledOther.returnCreditAmount).toBe(100);
   });
 
+  it("relieves NOTHING for an explicit return whose own invoice was settled before acceptance (#256 round 3)", async () => {
+    // The sharpest boundary for the new flag: there is a tab-wide debt the
+    // promise COULD reach, and its own invoice now owes nothing. An explicit
+    // choice may not cross that line even then.
+    const item = await makeReturnItem("مرجوع-سدد-قبل-القبول", 40, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 8, unitCost: 40, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون سدد قبل القبول" });
+    const invoiceOther = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 4 }] });
+    const invoiceB = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 3 }] });
+    const created = await client.returnsCreate({ invoiceId: invoiceB.id, lines: [{ invoiceLineId: invoiceB.lines[0]!.id, quantity: 3 }], cashPaidOut: 0 });
+    expect(created.debtOffset).toBe(300);
+    // B is paid in full while the return is pending: own = 0 at acceptance
+    await client.invoicesPay({ invoiceId: invoiceB.id, amount: 300, method: "CASH" });
+    expect((await client.invoicesGet({ id: invoiceB.id })).remainingAmount).toBe(0);
+
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.debtApplied).toBe(0);
+    const settledOther = await client.invoicesGet({ id: invoiceOther.id });
+    expect(settledOther.remainingAmount).toBe(400);
+    expect(settledOther.returnCreditAmount).toBe(0);
+    expect((await client.invoicesGet({ id: invoiceB.id })).returnCreditAmount).toBe(0);
+  });
+
+  it("never moves a debt for an accepted ALL-CASH explicit return (debtOffset 0) (#256 round 3)", async () => {
+    // left = 0 at acceptance: the whole allocation block must stay a no-op even
+    // with the tab-wide flag false and another invoice open
+    const item = await makeReturnItem("مرجوع-نقدي-بلا-دين", 40, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 8, unitCost: 40, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون مرتجع نقدي" });
+    const invoiceOther = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 4 }] });
+    const invoiceB = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 3 }] });
+    const created = await client.returnsCreate({ invoiceId: invoiceB.id, lines: [{ invoiceLineId: invoiceB.lines[0]!.id, quantity: 3 }], cashPaidOut: 300 });
+    expect(created.debtOffset).toBe(0);
+    expect(created.cashPaidOut).toBe(300);
+
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.debtApplied).toBe(0);
+    expect((await client.invoicesGet({ id: invoiceB.id })).remainingAmount).toBe(300);
+    const settledOther = await client.invoicesGet({ id: invoiceOther.id });
+    expect(settledOther.remainingAmount).toBe(400);
+    expect(settledOther.returnCreditAmount).toBe(0);
+  });
+
   it("applies accepted offsets sequentially, capping each against the debt still owed (#68)", async () => {    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });

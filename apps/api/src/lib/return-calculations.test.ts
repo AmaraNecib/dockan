@@ -376,13 +376,18 @@ describe("sortInvoicesOldestFirst (#164/#256)", () => {
   });
 
   it("orders by date, then creation, then the number's numeric sequence", () => {
-    const older = invoice({ id: "a", invoiceDate: "2026-09-30", invoiceNumber: "INV-0009" });
-    const sameSecondNine = invoice({ id: "b", invoiceNumber: "INV-0009" });
-    const sameSecondTen = invoice({ id: "c", invoiceNumber: "INV-0010" });
-    const expected = [older, sameSecondNine, sameSecondTen].map((row) => row.id);
-    expect(sortInvoicesOldestFirst([sameSecondTen, sameSecondNine, older]).map((row) => row.id)).toEqual(expected);
-    // a lexical compare would put INV-0010 before INV-0009
-    expect(sortInvoicesOldestFirst([sameSecondTen, sameSecondNine]).map((row) => row.id)).toEqual(["b", "c"]);
+    // INV-9999 vs INV-10000 is the only pair that separates a NUMERIC compare
+    // from a lexical one: a string compare sorts "INV-10000" FIRST ("1" < "9"),
+    // so a comparator that drifted to strings fails here. The original fixture
+    // (INV-0009 / INV-0010) agrees in both orders, which left this assertion
+    // green against exactly the mistake its comment names.
+    const older = invoice({ id: "a", invoiceDate: "2026-09-30", invoiceNumber: "INV-9998" });
+    const sameSecond9999 = invoice({ id: "b", invoiceNumber: "INV-9999" });
+    const sameSecond10000 = invoice({ id: "c", invoiceNumber: "INV-10000" });
+    const expected = [older, sameSecond9999, sameSecond10000].map((row) => row.id);
+    expect(sortInvoicesOldestFirst([sameSecond10000, sameSecond9999, older]).map((row) => row.id)).toEqual(expected);
+    // a lexical compare would put INV-10000 before INV-9999
+    expect(sortInvoicesOldestFirst([sameSecond10000, sameSecond9999]).map((row) => row.id)).toEqual(["b", "c"]);
   });
 
   it("does not mutate the array it was handed", () => {

@@ -18,6 +18,7 @@ function makeReturn(overrides: Partial<ReturnDetail> = {}): ReturnDetail {
     cashPaidOut: 1700,
     debtOffset: 0,
     debtApplied: 0,
+    spreadsAcrossInvoices: false,
     payoutMethod: "CASH",
     reason: "الزبون بدل رأيه",
     status: "PENDING_REVIEW",

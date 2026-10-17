@@ -606,6 +606,12 @@ const resources = {
       returnsSplitAllDebt: "كله خصم من الدين",
       returnsSplitCustom: "تقسيم مخصص",
       returnsSplitChoose: "اختر طريقة التسوية",
+      // #256 round 3 — the derived split needs the party's tab. While that read
+      // is in flight (or failed) and the return exceeds this invoice's debt, the
+      // app cannot say how much goes to debt, so the untouched form waits for an
+      // explicit choice instead of letting the server decide across invoices
+      // the owner never saw.
+      returnsSplitUnknown: "تعذّر حساب طريقة التسوية الافتراضية: دين الزبون غير معروف. تحقّق من دينه ثم اختر طريقة التسوية.",
       // #256 round 2 — the default takes the refund off the party's WHOLE tab
       // ("in this invoice or in another invoice"), so the panel names both the
       // split and the fact that the debt may sit on other invoices
@@ -918,7 +924,7 @@ const resources = {
       supplierReturnNothing: "لا يوجد متبقٍ للإرجاع",
       supplierReturnInvalidDraft: "تحقق من الكميات والمبالغ المدخلة: يجب أن تكون أعداداً صحيحة",
       // #256 — the default refund method, shown before saving
-      supplierReturnDefaultDebt: "الافتراضي: يُخصم من الدين الذي لنا عند المورّد (لا نقد)",
+      supplierReturnDefaultDebt: "الافتراضي: يُخصم من الدين الذي علينا للمورّد (لا نقد)",
       supplierReturnDefaultCash: "الافتراضي: استرجاع {{amount}} دج نقداً من المورّد",
       supplierRefundTitle: "استرداد رصيد من المورّد",
       supplierRefundReference: "الرصيد المتاح",

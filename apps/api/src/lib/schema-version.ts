@@ -33,8 +33,18 @@ import type { Database } from "bun:sqlite";
  * remaining`) for every invoice relieved by a return recorded elsewhere, and a
  * v5 return accepted by a v4 build would write no attribution at all. A v4
  * build MUST therefore refuse the version-5 database (ADR-0008 §4.5).
+ *
+ * Version 6 (issue 256, round 3): `returns.spreads_across_invoices` — which
+ * allocation rule a debt offset was PROMISED under: the tab-wide default
+ * (acceptance may relieve the party's other open invoices) or the owner's
+ * explicit, this-invoice-only choice. A version-5 build does not know the
+ * column, so it writes every new return as own-invoice-only: a defaulted return
+ * whose own invoice's debt shrank between recording and acceptance (a payment
+ * in between) would then leave its leftover debt permanently unrelieved instead
+ * of spreading it, and the owner's approved rule would silently stop applying.
+ * A v5 build MUST therefore refuse the version-6 database (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * A database written by a newer app. The older build cannot know what the

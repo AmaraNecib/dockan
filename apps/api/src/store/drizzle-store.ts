@@ -353,6 +353,7 @@ const toReturn = (r: (typeof returns.$inferSelect) & { invoice_number: string; i
     cashPaidOut: r.cashPaidOut,
     debtOffset: r.debtOffset,
     debtApplied: r.debtApplied,
+    spreadsAcrossInvoices: r.spreadsAcrossInvoices,
     payoutMethod: r.payoutMethod,
     reason: r.reason,
     status: r.status,
@@ -1033,6 +1034,13 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         conn.raw.exec("ROLLBACK");
         throw error;
       }
+    }
+    // #256 round 3: which allocation rule the promise was recorded under. The
+    // DEFAULT 0 is exactly right for every existing row (all of them predate the
+    // tab-wide rule) and for any row a pre-#256 build writes — an older build
+    // never spreads a promise, so own-invoice-only is the rule it honoured.
+    if (rows.length > 0 && !names.has("spreads_across_invoices")) {
+      conn.raw.exec("ALTER TABLE returns ADD COLUMN spreads_across_invoices INTEGER NOT NULL DEFAULT 0");
     }
   };
 
@@ -1963,6 +1971,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
             cashPaidOut: input.cashPaidOut,
             debtOffset: input.debtOffset,
             debtApplied: 0,
+            spreadsAcrossInvoices: input.spreadsAcrossInvoices,
             payoutMethod: input.payoutMethod,
             reason: input.reason ?? null,
             status: input.status,
@@ -2005,6 +2014,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           cashPaidOut: returns.cashPaidOut,
           debtOffset: returns.debtOffset,
           debtApplied: returns.debtApplied,
+          spreadsAcrossInvoices: returns.spreadsAcrossInvoices,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,
@@ -2045,6 +2055,7 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           cashPaidOut: returns.cashPaidOut,
           debtOffset: returns.debtOffset,
           debtApplied: returns.debtApplied,
+          spreadsAcrossInvoices: returns.spreadsAcrossInvoices,
           payoutMethod: returns.payoutMethod,
           reason: returns.reason,
           status: returns.status,

@@ -115,6 +115,9 @@ export type ReturnInsert = {
   cashPaidOut: number;
   /** deducted from the invoice's remaining debt; cashPaidOut + debtOffset = refundAmount */
   debtOffset: number;
+  /** may acceptance relieve invoices other than this return's own? true only
+   * for a return recorded under the tab-wide default (#256 round 3) */
+  spreadsAcrossInvoices: boolean;
   payoutMethod: ReturnPayoutMethod;
   reason: string | null;
   status: ReturnStatus;

@@ -613,6 +613,18 @@ export const returnLineSchema = z.object({
  * sum to the return value; the debt portion never exceeds the invoice's
  * remaining debt (any excess flows to cash). Money on the invoice is only
  * ever reduced via the debt offset; the cash side is a cash record here.
+ *
+ * #256 round 3 — `spreadsAcrossInvoices` records WHICH rule the debt portion
+ * was promised under, because the two rules cannot be told apart from the
+ * numbers alone: the approved DEFAULT takes the refund off the party's whole
+ * tab (acceptance relieves the return's own invoice first, then the party's
+ * other open invoices oldest-first), while the owner's EXPLICIT choice names
+ * this invoice and must never reach another one. A promise recorded under the
+ * explicit cap can outlive that cap (a payment while the return is pending
+ * shrinks the invoice's debt below the promise), and there the excess stays
+ * UNAPPLIED — the pre-#256 behaviour — instead of spilling onto an invoice the
+ * owner never named. Legacy rows read 0 (own-invoice-only), which is exactly
+ * the rule they were written under.
  */
 export const returnSchema = z.object({
   id: idSchema,
@@ -635,6 +647,9 @@ export const returnSchema = z.object({
    * accepts. Applying never exceeds debtOffset, and the ledger reads this to
    * avoid double-relief when a legacy and a new return mix. */
   debtApplied: dinarsSchema,
+  /** whether acceptance may relieve invoices OTHER than this return's own —
+   * true only for a return recorded under the tab-wide default (#256 round 3) */
+  spreadsAcrossInvoices: z.boolean(),
   payoutMethod: returnPayoutMethodSchema,
   /** Arabic owner note; rejection reasons ride here too */
   reason: z.string().max(500).nullable(),

@@ -16,6 +16,8 @@ import { routerMock } from "../tests/router-mock";
 
 /** returnsList payload the panel should serve, or an error flag / payload for create */
 let returnsData: ReturnDetail[] = [];
+/** #256 — the customer's unpaid invoices, as `debtsByParty` would return them */
+let partyDebtInvoices: Array<{ remainingAmount: number }> = [];
 let failReturnsCreate = false;
 /** fail the panel's history read, to prove the action is withheld when the cap source is unknown */
 let failReturnsRead = false;
@@ -57,6 +59,15 @@ mock.module("@/lib/rpc", () => ({
     },
     returnsPendingCount: {
       queryKey: () => ["returnsPendingCount"],
+    },
+    debtsByParty: {
+      // #256 — the panel derives the default refund method from the customer's
+      // tab through the same read the debts screen uses
+      queryOptions: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ({
+        queryKey: ["debtsByParty", input],
+        queryFn: async () => ({ items: partyDebtInvoices, total: partyDebtInvoices.length }),
+      }),
+      queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input],
     },
     returnsCreate: {
       mutationOptions: (options?: { onSuccess?: (record: ReturnDetail) => void; onError?: (error: Error) => void }) => ({
@@ -168,6 +179,7 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.appendChild(host);
   returnsData = [];
+  partyDebtInvoices = [];
   failReturnsCreate = false;
   failReturnsRead = false;
   createdReturn = null;
@@ -207,6 +219,15 @@ function typeInto(input: HTMLInputElement, text: string) {
 function submitForm(form: HTMLFormElement) {
   act(() => {
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+}
+
+/** Clicks a button by testid through a real click event. */
+function clickTestId(testId: string) {
+  const button = host.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`);
+  if (button === null) throw new Error(`missing ${testId}`);
+  act(() => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
   });
 }
 
@@ -600,10 +621,14 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.disabled).toBe(true);
   });
 
-  it("shows the return value, the collected-so-far and a soft cash warning when cash exceeds collected", () => {
-    // paidAmount 0: the default all-cash settlement for a 3600 return warns
+  it("shows the return value, the collected-so-far and a soft cash warning when cash exceeds collected", async () => {
+    // paidAmount 0 and a 900 debt: the 3600 return is bigger than the debt, so
+    // the app refuses to name the method (#256) and pre-selects the debt-first
+    // direction with its excess forced to cash — the warning must still track
+    // that cash
     renderPanel(makeInvoice([saleLine()], 0));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
+    await flushAsync();
     expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("3600 دج");
     expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toBe("0 دج");
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
@@ -724,10 +749,11 @@ describe("ReturnsPanel (new-return form + history)", () => {
     expect(note?.textContent).toContain("تبقى مدينة");
   });
 
-  it("hides the acceptance note when the settlement carries no debt portion (#68)", () => {
-    // the default all-cash settlement on a fully unpaid invoice has no debt
+  it("hides the acceptance note when the settlement carries no debt portion (#68)", async () => {
+    // the owner chose all-cash: no debt portion, so no acceptance note
     renderPanel(makeInvoice([saleLine()], 0));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllCash"));
     expect(host.querySelector('[data-testid="returns-debt-note"]')).toBeNull();
   });
 
@@ -856,5 +882,107 @@ describe("ReturnsPanel (new-return form + history)", () => {
     await flushAsync();
     expect(host.textContent).toContain(i18n.t("returnsNothingLeft"));
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')?.disabled).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #256 — the default refund method: the party's debt, cash only with none
+  // -------------------------------------------------------------------------
+
+  it("pre-selects the debt when the invoice's debt covers the whole return (#256)", async () => {
+    // total 900, paid 0 → 900 owed; a 900 return fits it exactly
+    renderPanel(makeInvoice([saleLine()], 0));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("900");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("0");
+    expect(host.querySelector('[data-testid="returns-debt-default-note"]')).toBeNull();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    // untouched: no method is claimed, so the SERVER applies its own default
+    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+  });
+
+  it("pre-selects cash when the customer owes nothing (#256)", async () => {
+    // paid in full: no debt to relieve, so the owner's rule is cash
+    renderPanel(makeInvoice([saleLine()], 900));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toContain("0");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toContain("900");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')).toBeNull();
+  });
+
+  it("pre-selects the SPLIT — debt to zero, remainder cash — when the return exceeds the debt (#256 round 2)", async () => {
+    // total 400, paid 100 → 300 owed; a 500 return is 200 more than the debt,
+    // so the approved default is debt-to-zero + 200 cash, and it is what the
+    // panel pre-selects (no refusal, no confirm click)
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("300 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
+    // the split is named, not silently applied
+    const note = host.querySelector('[data-testid="returns-debt-default-note"]');
+    expect(note).toBeTruthy();
+    expect(note?.textContent).toContain("300");
+    expect(note?.textContent).toContain("200");
+    // …and it is the DERIVED split, not a capped explicit choice: no cap note
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeNull();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    // untouched: the server derives the same split from fresh debt
+    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+  });
+
+  it("pre-selects all-debt and points at the party's tab when the debt is on another invoice (#256 round 2)", async () => {
+    // this invoice is paid in full, the tab owes 900 elsewhere: the approved
+    // rule takes the refund off the tab (oldest open invoice first), no cash
+    partyDebtInvoices = [{ remainingAmount: 900 }];
+    renderPanel(makeInvoice([saleLine()], 900));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("900 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("0 دج");
+    // the tab is shown, and the default says it spreads oldest-first
+    expect(host.querySelector('[data-testid="returns-party-debt"]')?.textContent).toBe("900 دج");
+    expect(host.querySelector('[data-testid="returns-debt-default-note"]')?.textContent).toContain("الأقدم");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
+  });
+
+  it("keeps the explicit all-debt cap on THIS invoice, and warns about it (#256 round 2)", async () => {
+    // choosing the split by hand is still #162's cap: a 900 return against this
+    // invoice's 700 hands 200 back as cash, and the panel says so
+    partyDebtInvoices = [{ remainingAmount: 400 }];
+    renderPanel(makeInvoice([saleLine()], 200));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    await pickSettlement(i18n.t("returnsSplitAllDebt"));
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("700 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
+    expect(host.querySelector('[data-testid="returns-debt-cap-note"]')).toBeTruthy();
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBe(0);
+  });
+
+  it("goes back to the derived default after the owner has picked one (#256 round 2)", async () => {
+    // total 400, paid 100 → 300 owed; 500 return → derived split 300/200
+    renderPanel(makeInvoice([saleLine({ netTotal: 500, quantity: 1, total: 500 })], 100, 400));
+    await flushAsync();
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    // the owner changes their mind to all cash …
+    await pickSettlement(i18n.t("returnsSplitAllCash"));
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("500 دج");
+    // … then takes the derived default back (the pre-selected value fires no
+    // change event when re-picked, so the control has to exist)
+    clickTestId("returns-debt-confirm");
+    expect(host.querySelector('[data-testid="returns-debt-default-note"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("300 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
+    await flushAsync();
+    expect(lastCreateInput?.cashPaidOut).toBeUndefined();
   });
 });

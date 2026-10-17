@@ -109,6 +109,15 @@ function lineCreateFormId(itemId: string): string {
   return `purchase-line-product-form-${itemId}`;
 }
 
+/**
+ * The frozen-state status line's id. The lines region points `aria-describedby`
+ * at it while the save is in flight (#257 round 5, F1): the region is where a
+ * cancel lands the caret when every control in it is disabled, and a focus move
+ * onto an unnamed box with no stated reason tells a screen-reader user nothing
+ * about why his controls stopped working.
+ */
+const LINES_FROZEN_ID = "purchase-lines-frozen-status";
+
 export function PurchasePage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -157,13 +166,15 @@ export function PurchasePage() {
   /** the line each create trigger belongs to, so a cancel can hand the caret back */
   const createTriggerRefs = useRef(new Map<string, HTMLButtonElement>());
   /**
-   * The lines region, where the caret lands when the control a commit named
-   * cannot take it (#257 round 5, F1). While the invoice save is in flight every
-   * control in the region is disabled on purpose (round 4), so a cancel during
-   * that freeze has no enabled control left to hand the caret to; the region
-   * itself is a programmatic focus target (`tabIndex -1`) and the frozen status
-   * line below states why its controls are dead, so the owner is not dropped on
-   * `document.body` with his tab order restarted at the top of the page.
+   * The lines region, where the caret lands when a control a commit named cannot
+   * take focus — missing, or (during the invoice save) disabled (#257 round 5,
+   * F1). While the save is in flight every control in the region is disabled on
+   * purpose (round 4), so a cancel during that freeze has no enabled control left
+   * to hand the caret to. The region itself is a programmatic focus target
+   * (`tabIndex -1`) and carries `aria-describedby` to the frozen status line, so
+   * a screen reader hears the region's name AND the reason its controls are dead
+   * instead of being dropped on `document.body` with the tab order restarted at
+   * the top of the page.
    */
   const linesRegionRef = useRef<HTMLTableElement | null>(null);
   const lineNameRef = useRef<HTMLInputElement>(null);
@@ -214,9 +225,10 @@ export function PurchasePage() {
     // A disabled control cannot take focus, and `.focus()` on one silently does
     // nothing — so naming one would drop the owner on `document.body`, which is
     // the one place he cannot afford to be (WCAG 2.4.3). The request is REDIRECTED
-    // to the lines region in this same commit rather than retried once the save
-    // settles: a delayed `.focus()` would steal the caret back from wherever the
-    // owner has moved on to by then (#257 round 5, F1).
+    // when this effect runs — one immediate landing, in the same render pass as
+    // the unmount that started it — rather than retried once the save settles: a
+    // delayed `.focus()` would steal the caret back from wherever the owner has
+    // moved on to by then (#257 round 5, F1).
     if (target !== undefined && !target.disabled) target.focus();
     else linesRegionRef.current?.focus();
   }, [focusRequest]);
@@ -638,7 +650,16 @@ export function PurchasePage() {
                   />
                 </div>
               ) : (
-                <table className="w-full" data-testid="purchase-lines" ref={linesRegionRef} tabIndex={-1} aria-label={t("purchasesLinesTitle")}>
+                <table
+                  className="w-full"
+                  data-testid="purchase-lines"
+                  ref={linesRegionRef}
+                  tabIndex={-1}
+                  aria-label={t("purchasesLinesTitle")}
+                  // the caret lands here when the save has frozen the control a
+                  // commit named, so it carries the frozen line's reason with it
+                  aria-describedby={savePending ? LINES_FROZEN_ID : undefined}
+                >
                   <thead>
                     <tr className="border-b text-right text-sm text-muted-foreground">
                       <th className="p-2">{t("itemsName")}</th>
@@ -845,7 +866,7 @@ export function PurchasePage() {
                     for a keyboard or screen-reader user. role="status" announces it
                     without stealing focus. */}
                 {savePending && (
-                  <p className="text-sm text-muted-foreground" role="status" data-testid="purchase-lines-frozen">
+                  <p className="text-sm text-muted-foreground" role="status" id={LINES_FROZEN_ID} data-testid="purchase-lines-frozen">
                     {t("purchasesSaveInFlight")}
                   </p>
                 )}

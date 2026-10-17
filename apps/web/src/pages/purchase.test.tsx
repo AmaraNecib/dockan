@@ -1466,12 +1466,21 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(createRow(container)).toBeNull();
       expect(document.activeElement).not.toBe(document.body);
       expect(document.activeElement).toBe(container.querySelector('[data-testid="purchase-lines"]'));
+      // …and the region carries the frozen line's reason with it, so the landing
+      // is announced as "the lines, and here is why they are dead" rather than as
+      // an unnamed box. `role="status"` announced the line when it mounted; a
+      // description is what a screen reader reads at the moment of this focus
+      // move (round-5 review, a11y)
+      const region = container.querySelector('[data-testid="purchase-lines"]');
+      expect(region?.getAttribute("aria-describedby")).toBe(container.querySelector('[data-testid="purchase-lines-frozen"]')?.id);
+      expect(region?.getAttribute("aria-label")).toBe(i18n.t("purchasesLinesTitle"));
 
       await releaseSaved();
       // the save lands and replaces the whole draft with its success card, as it
-      // does for every successful save — nothing here moves the caret a second
-      // time (the region unmounts with the draft, which is the page's own
-      // save-completed swap, not part of this freeze)
+      // does for every successful save. Focusing the region is what this test is
+      // about; the region then unmounts with the draft and the caret falls back to
+      // the document, which is the page's own save-completed swap and not a second
+      // move this freeze makes.
       expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
     });
 

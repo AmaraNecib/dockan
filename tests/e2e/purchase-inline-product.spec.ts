@@ -224,7 +224,7 @@ test("purchase line: a create from a zero-cost line is allowed and the invoice p
  * — `document.activeElement` is asserted, and a regression that parks the owner
  * on `document.body` reddens here.
  */
-test("purchase line: the invoice draft is frozen while the save is in flight (#257 round 4)", async ({ page }) => {
+test("purchase line: the frozen draft and the cancel that outlives it (#257 rounds 4-5)", async ({ page }) => {
   await signIn(page);
 
   const stamp = Date.now().toString();
@@ -296,8 +296,11 @@ test("purchase line: the invoice draft is frozen while the save is in flight (#2
     // the save itself is pending in both trees; the screenshot is taken here so the
     // pre-fix run records the live controls this test is about
     await expect(page.getByTestId("purchase-save")).toBeDisabled();
-    // the request reached the handler before any check reads the frozen state
-    await expect.poll(() => routePending).toBe(true);
+    // the request reached the handler before any check reads the frozen state.
+    // The bound is explicit and generous on purpose: this is a wait-for-true, not
+    // a race, so a slow runner recovers here instead of the poll's 5 s default
+    // giving up while the app is still correct (round-5 review, test)
+    await expect.poll(() => routePending, { timeout: 15_000 }).toBe(true);
     await page.screenshot({ path: "test-results/round5-evidence/draft-during-save.png" });
 
     // the request is out, so the draft it serialised is read-only — and the frozen

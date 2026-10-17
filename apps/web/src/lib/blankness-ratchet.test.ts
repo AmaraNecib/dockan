@@ -838,6 +838,55 @@ describe("the AST blankness walk (#249)", () => {
     expect(signatures('const b = normalizeArabicIndicDigits(draft).trim().length > 0;')).toEqual([]);
   });
 
+  it("refuses a truthiness test on a raw trim's length, inline and two-step", () => {
+    // the `.length` path was silently dropped before this: `x.trim().length`
+    // truthiness is `!== 0` — the same blankness gate as the refused relational form.
+    expect(() => findBlanknessGates("if (draft.trim().length) return;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = !draft.trim().length;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim().length ? 1 : 2;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim().length && other;", "s.ts")).toThrow(/unhandled/i);
+    expect(() =>
+      findBlanknessGates(["const t = draft.trim();", "if (t.length) return;"].join("\n"), "s.ts"),
+    ).toThrow(/unhandled/i);
+    // ...but a length VALUE (not a test) is a plain use
+    expect(signatures("const n = draft.trim().length;")).toEqual([]);
+  });
+
+  it("sees the `draftBlank` normaliser as normalised too, not only `normalizeArabicIndicDigits`", () => {
+    expect(signatures('const b = draftBlank(draft).trim() === "";')).toEqual([]);
+    expect(signatures('const b = draftBlankish(draft).trim() === "";')).toEqual([
+      's.ts::draftBlankish(draft).trim() === ""',
+    ]);
+  });
+
+  it("hoists a `var` binding to the function, so a closed block does not hide it", () => {
+    const source = ["{", "  var t = draft.trim();", "}", 'if (t === "") return;'].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+  });
+
+  it("pins the lexical-scope ceiling: a parameter shadowing a raw local is mis-attributed", () => {
+    // stated ceiling (visibility is lexical, not typed): the parameter `t` hides
+    // the outer raw declaration, yet the comparison is attributed to the outer
+    // trim. Pinned so the ceiling cannot shift silently.
+    const source = [
+      "const t = draft.trim();",
+      'function g(t: string) { return t === ""; }',
+      "void g;",
+    ].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+  });
+
+  it("accepts the empty source and a comment-only source, and counts lines with CRLF", () => {
+    expect(findBlanknessGates("", "s.ts")).toEqual([]);
+    expect(findBlanknessGates('// draft.trim() === ""\n', "s.ts")).toEqual([]);
+    const [gate] = findBlanknessGates('const t = draft.trim();\r\nconst b = t === "";\r\n', "s.ts");
+    expect(gate?.line).toBe(2);
+  });
+
+  it("canonicalises a single-quoted blank operand", () => {
+    expect(signatures("const b = draft.trim() === '';")).toEqual(['s.ts::draft.trim() === ""']);
+  });
+
   it("does not refuse an ordinary value use of a raw trim", () => {
     expect(signatures("setDebounced(query.trim());")).toEqual([]);
     expect(signatures("const label = `x ${draft.trim()} y`;")).toEqual([]);

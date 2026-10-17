@@ -42,11 +42,13 @@ import ts from "typescript";
  *
  * FAIL CLOSED. The walk visits every node, so a `.trim()` call cannot be skipped
  * by a lexing desync (a regex literal holding `"`, `` ` ``, `//` or `/*` is now a
- * node, not a region change). Every raw `.trim()` is classified by its position:
- * a handled comparison is a gate, a value use is named as not-a-gate, and a
+ * node, not a region change). Every raw `.trim()` (and every `.trim().length`,
+ * and every `.length` of a raw-trim binding) is classified by its position: a
+ * handled comparison is a gate, a value use is named as not-a-gate, and a
  * boolean/blankness TEST the registry does not handle throws `BlanknessScanError`
  * — a loud refusal, never silence. That covers truthiness (`!x.trim()`,
- * `if (x.trim())`, `x.trim() ? a : b`, `x.trim() && a`), a relational
+ * `if (x.trim())`, `x.trim() ? a : b`, `x.trim() && a`), `x.trim().length`
+ * truthiness (`if (x.trim().length)`, `!x.trim().length`), a relational
  * `.trim()` / `.trim().length` (`> 0`, `>= 1`) and an empty-template operand.
  * A blind spot that reports nothing is the failure mode this ticket exists to end.
  *
@@ -55,9 +57,12 @@ import ts from "typescript";
  * the truthiness/relational/empty-template tests above are REFUSED rather than
  * detected; a binding formed by assignment (`let t; t = d.trim()`) or
  * destructuring, and a computed `.trim` property (`d["trim"]()`), are not gate
- * sources; `switch (t) { case "": }` after a raw trim is not a comparison; and
- * visibility is lexical, not typed, so a parameter or `catch` binding that
- * shadows a raw-trim local can still be attributed to the local.
+ * sources; `switch (t) { case "": }` after a raw trim is not a comparison;
+ * `Boolean(x.trim())` is an explicit call, so its argument is a value use, not a
+ * test; and visibility is lexical, not typed, so a parameter or `catch` binding
+ * that shadows a raw-trim local can still be attributed to the local. A file that
+ * does not parse is recovered by TS rather than refused (parse diagnostics are
+ * not inspected); production files parse clean.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -144,7 +149,8 @@ function isNormalisedReceiver(expression: ts.Expression): boolean {
   return ts.isIdentifier(callee) && NORMALISERS.has(callee.text);
 }
 
-/** The nearest block-like ancestor: a declaration does not leak out of it. */
+/** The nearest block-like ancestor: a block-scoped declaration does not leak
+ * out of it. */
 function nearestScope(node: ts.Node): ts.Node {
   let current: ts.Node | undefined = node.parent;
   while (current !== undefined) {
@@ -157,6 +163,17 @@ function nearestScope(node: ts.Node): ts.Node {
       default:
         current = current.parent;
     }
+  }
+  return node.getSourceFile();
+}
+
+/** The nearest function (or the file): a `var` hoists to here, so a `var` inside
+ * a block is still visible after that block closes. */
+function nearestFunctionScope(node: ts.Node): ts.Node {
+  let current: ts.Node | undefined = node.parent;
+  while (current !== undefined) {
+    if (ts.isFunctionLike(current) || current.kind === ts.SyntaxKind.SourceFile) return current;
+    current = current.parent;
   }
   return node.getSourceFile();
 }
@@ -332,54 +349,67 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
     }
   };
 
+  /** Refuse a raw trim (or its `.length`) that feeds a boolean/relational test
+   * the gate registry does not handle. The comparison walk owns the `=== ""` /
+   * `=== 0` / relational forms; a value use is not a test. */
+  const refuseIfTestPosition = (node: ts.Node): void => {
+    const owner = transparentParent(node);
+    if (owner === undefined) return;
+    if (ts.isBinaryExpression(owner)) {
+      const kind = owner.operatorToken.kind;
+      if (COMPARISON_OPERATORS.has(kind) || RELATIONAL_OPERATORS.has(kind)) return;
+      if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
+        refuse(node, "truthiness test on a raw .trim()");
+      }
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(owner) && owner.operator === ts.SyntaxKind.ExclamationToken) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isConditionalExpression(owner) && isAncestor(owner.condition, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isIfStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isWhileStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isDoStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isForStatement(owner) && owner.condition !== undefined && isAncestor(owner.condition, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+  };
+
   const classifyTrimUse = (call: ts.CallExpression) => {
     if (isNormalisedReceiver(trimReceiver(call))) return;
     const parent = transparentParent(call);
     if (parent === undefined) return;
-    if (ts.isBinaryExpression(parent)) {
-      const kind = parent.operatorToken.kind;
-      if (COMPARISON_OPERATORS.has(kind) || RELATIONAL_OPERATORS.has(kind)) return;
-      if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
-        refuse(call, "truthiness test on a raw .trim()");
-      }
-      return;
-    }
-    if (isLengthAccess(parent)) return; // the comparison walk owns `.length`
-    if (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
-    if (ts.isConditionalExpression(parent) && isAncestor(parent.condition, call)) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
-    if (ts.isIfStatement(parent) && isAncestor(parent.expression, call)) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
-    if (ts.isWhileStatement(parent) && isAncestor(parent.expression, call)) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
-    if (ts.isDoStatement(parent) && isAncestor(parent.expression, call)) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
-    if (ts.isForStatement(parent) && parent.condition !== undefined && isAncestor(parent.condition, call)) {
-      refuse(call, "truthiness test on a raw .trim()");
-    }
+    if (isLengthAccess(parent)) return; // the `.length` branch below owns it
+    refuseIfTestPosition(call);
   };
 
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
       const initializer = unwrap(node.initializer);
       if (isTrimCall(initializer)) {
+        const list = node.parent;
+        const blockScoped =
+          ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) !== 0;
         declarations.push({
           name: node.name.text,
           trim: initializer,
           offset: node.getStart(sourceFile),
-          scope: nearestScope(node),
+          scope: blockScoped ? nearestScope(node) : nearestFunctionScope(node),
           normalised: isNormalisedReceiver(trimReceiver(initializer)),
         });
       }
     }
     if (ts.isBinaryExpression(node)) classifyComparison(node);
     if (isTrimCall(node)) classifyTrimUse(node);
+    if (isLengthAccess(node) && isRawTrimExpression(node, node)) refuseIfTestPosition(node);
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);

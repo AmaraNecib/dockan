@@ -54,3 +54,32 @@ purpose); that wrapper is not part of the commit.
 | `apps/api: bun run test` | 961 pass / 0 fail |
 | `apps/web: bun run test` | 1288 pass / 0 fail |
 | `bun run test:e2e` (ports 4700/5700/4701/5701) | 96 pass / 0 fail — `e2e-full.log` |
+
+## Review findings — the lane's responses
+
+The independent code-review lens at `4378574` ranked three P2 must-fixes. Two
+were taken; one is REFUTED with line evidence.
+
+1. **Orphan comments (`invoice.tsx:565`)** — taken: the two lines left where the
+   removed mirror effect used to be are deleted.
+2. **"every existing row predates the tab-wide rule"** — taken: the comment on
+   `spreads_across_invoices` (`schema.ts`, `core.ts`, `drizzle-store.ts`) now
+   states what the DEFAULT 0 does to the only other source of such rows, a v5
+   database from this PR's own round-2 build — the promise reads
+   own-invoice-only, so its excess stays owed instead of being relieved on an
+   invoice the owner never named (conservative, never misdirected). Evidence that
+   v5 has never shipped: `git merge-base --is-ancestor 7020666 origin/develop`
+   exits non-zero.
+3. **"`rows.length > 0` treats an existing-but-empty `returns` table as absent"**
+   — REFUTED. `rows` is `PRAGMA table_info(returns)`, which returns ONE ROW PER
+   COLUMN, never a row count: an existing table with zero rows still yields its
+   column descriptors, so the ALTER runs. Only a table that does not exist yet
+   skips it — and there `SCHEMA_DDL` creates it with the column. The same gate
+   already guards `cash_paid_out`, `debt_offset` and `debt_applied` above it.
+
+Not taken from the nice-to-have list: collapsing `settlement` + `settlementChosen`
+(that is a wider refactor of a form with three writers, out of this round's
+scope), and dropping `spreadsAcrossInvoices` from the wire contract (it IS
+consumed — `returnsAccept` reads it through `getReturnDetail`, the store's
+`ReturnDetail` being the contract type; the five fixture updates are the explicit
+cost of a required field on a shared type).

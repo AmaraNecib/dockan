@@ -563,8 +563,6 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
   // (mirrors the api) so an "all debt" choice never silently becomes cash
   const debtIsCapped = explicitPlan !== null && cashIsValid && Math.max(0, valueTotal - requestedCash) > explicitPlan.debtOffset;
-  // the derived default stays visible until the owner picks: no mirror state,
-  // so it cannot outlive the form it belonged to
   // collected-so-far on this invoice vs the settled cash portion: soft warning, never a block
   const cashExceedsCollected = Number.isFinite(settledCash) && settledCash > invoice.paidAmount;
 

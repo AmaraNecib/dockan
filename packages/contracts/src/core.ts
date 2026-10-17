@@ -736,8 +736,11 @@ export const returnLineSchema = z.object({
  * explicit cap can outlive that cap (a payment while the return is pending
  * shrinks the invoice's debt below the promise), and there the excess stays
  * UNAPPLIED — the pre-#256 behaviour — instead of spilling onto an invoice the
- * owner never named. Legacy rows read 0 (own-invoice-only), which is exactly
- * the rule they were written under.
+ * owner never named. A row written before the column existed reads 0
+ * (own-invoice-only): exact for every pre-#256 row, and conservative for the
+ * only other source of such rows — a v5 database from this PR's own round-2
+ * build — where a tab-wide promise's excess then stays owed rather than being
+ * relieved somewhere the owner never named.
  */
 export const returnSchema = z.object({
   id: idSchema,

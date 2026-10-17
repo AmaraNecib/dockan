@@ -14,7 +14,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
-import { computeReturnRefund, returnCapViolation } from "../lib/return-calculations";
+import { computeReturnRefund, returnCapViolation, returnSettlementDefault } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
@@ -244,6 +244,36 @@ async function postStock(tx: StorePort, spec: StockMovementSpec) {
   const [posted] = await postStockBatch(tx, [spec]);
   // SAFETY: the batch returns exactly one result per spec, and we passed one
   return posted!;
+}
+
+/**
+ * #256 — the customer's total outstanding debt, read through the same store
+ * seam the debts screen groups by (id when the party is known, else the typed
+ * name), so the return default can never see a different tab than the one the
+ * owner is looking at. An anonymous invoice has no account to consult, so the
+ * invoice's own remaining is the whole of its debt.
+ */
+async function partyOutstandingDebt(
+  tx: StorePort,
+  invoice: Pick<InvoiceDetail, "counterpartyId" | "counterpartyName" | "remainingAmount">,
+): Promise<number> {
+  if (invoice.counterpartyId === null && invoice.counterpartyName === null) return invoice.remainingAmount;
+  const unpaid = await tx.listUnpaidInvoicesByParty("SALE", invoice.counterpartyId, invoice.counterpartyName);
+  return Math.max(
+    invoice.remainingAmount,
+    unpaid.reduce((sum, row) => sum + row.remainingAmount, 0),
+  );
+}
+
+/**
+ * #256 — the default cash back on a purchase return: nothing while the signed
+ * account still says the shop owes the supplier (the return reduces that debt),
+ * the whole return value once nothing is owed either way. Read with the same
+ * `supplierBalance` the ledger and the account header use.
+ */
+async function defaultSupplierCashBack(tx: StorePort, supplierId: string, returnValue: number): Promise<number> {
+  const owed = supplierBalance(await tx.listSupplierEntries(supplierId));
+  return owed > 0 ? 0 : returnValue;
 }
 
 /**
@@ -866,7 +896,12 @@ export function createRpcRouter(deps: RpcDeps) {
           }
 
           const split = supplierReturnSplit(amount, invoiceRemaining);
-          const cashBack = input.cashBack ?? 0;
+          // #256 — the default refund method on this side too: while the shop
+          // still owes the supplier, the return applies against that debt (no
+          // cash back); when nothing is owed either way, the owner's rule is to
+          // get the money back as cash. An explicit cashBack (including 0) is
+          // the owner's override and stays untouched.
+          const cashBack = input.cashBack ?? (await defaultSupplierCashBack(tx, input.supplierId, amount));
 
           const { id: returnId } = await tx.insertSupplierReturn({
             returnNumber,
@@ -1552,18 +1587,42 @@ export function createRpcRouter(deps: RpcDeps) {
             }),
             returnedByLine,
           );
-          // Settlement (owner-approved split): the owner picks how much cash to
-          // hand back now; the remainder is deducted from the invoice's old
-          // debt, capped so the debt can never go negative — any excess flows
-          // back to cash. cashPaidOut + debtOffset always sums to the return
-          // value. All-cash on an unpaid invoice is allowed (the ui warns; the
-          // api only enforces the split's own bounds).
-          const requestedCash = input.cashPaidOut ?? refund.refundTotal;
-          if (requestedCash > refund.refundTotal) {
-            throw new ORPCError("BAD_REQUEST", { message: "REFUND_SPLIT_INVALID" });
+          // Settlement (#68 split, #256 default): the owner picks how much cash
+          // to hand back now; the remainder is deducted from the invoice's old
+          // debt. cashPaidOut + debtOffset always sums to the return value.
+          //
+          // #256 — when the owner did NOT pick (no cashPaidOut sent), the server
+          // applies the owner's rule: debt first, cash only when there is no
+          // debt. The default REFUSES rather than guessing a split when this
+          // invoice's debt cannot absorb the whole return (the owner decides;
+          // `returnSettlementDefault` documents the two open cases). An explicit
+          // cashPaidOut keeps the pre-#256 semantics untouched, including the
+          // debt cap with its excess flowing to cash.
+          let debtOffset: number;
+          if (input.cashPaidOut === undefined) {
+            const settlement = returnSettlementDefault({
+              returnValue: refund.refundTotal,
+              invoiceDebt: invoice.remainingAmount,
+              // the party read is only needed when this invoice's debt cannot
+              // take the whole return (otherwise the decision never reads it)
+              partyDebt:
+                refund.refundTotal > invoice.remainingAmount
+                  ? await partyOutstandingDebt(tx, invoice)
+                  : invoice.remainingAmount,
+            });
+            if (settlement.method === "UNDECIDED") {
+              throw new ORPCError("BAD_REQUEST", {
+                message: settlement.reason === "DEBT_ELSEWHERE" ? "RETURN_DEBT_ELSEWHERE" : "RETURN_EXCEEDS_DEBT",
+              });
+            }
+            debtOffset = settlement.method === "CASH" ? 0 : refund.refundTotal;
+          } else {
+            if (input.cashPaidOut > refund.refundTotal) {
+              throw new ORPCError("BAD_REQUEST", { message: "REFUND_SPLIT_INVALID" });
+            }
+            const requestedDebt = refund.refundTotal - input.cashPaidOut;
+            debtOffset = Math.min(requestedDebt, invoice.remainingAmount);
           }
-          const requestedDebt = refund.refundTotal - requestedCash;
-          const debtOffset = Math.min(requestedDebt, invoice.remainingAmount);
           const cashPaidOut = refund.refundTotal - debtOffset;
 
           // SAFETY: allocation is a database-atomic UPDATE inside the same

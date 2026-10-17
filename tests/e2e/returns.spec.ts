@@ -11,7 +11,7 @@ import { saveQuickAdd } from "./rpc-helpers";
  * owner reviews and accepts the return from the /returns screen (the pending
  * mark is consumed).
  */
-test("sale → cash return → stock back (marked) + voucher route + review accept", async ({ page }) => {
+test("sale → debt-defaulted return → stock back (marked) + voucher route + review accept", async ({ page }) => {
   // 0. sign in
   await signIn(page);
 
@@ -58,9 +58,8 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   // SAFETY: the saved card always formats invoice numbers as INV-<digits>
   const saleNumber = (await page.getByTestId("sale-saved-number").innerText()).match(/INV-\d+/)![0]!;
 
-  // 3. open the invoice and record a 1-unit cash return; the sale was recorded
-  // without a down payment, so the all-cash settlement triggers the soft
-  // collected-money warning (owner decides — the api never blocks)
+  // 3. open the invoice and record a 1-unit return; the sale carries the full
+  // 900 debt, so #256 pre-selects the DEBT and no cash changes hands
   await page.getByRole("link", { name: "الفواتير" }).click();
   await expect(page.getByTestId("invoices-table")).toBeVisible();
   await page.getByTestId(`invoice-open-${saleNumber}`).click();
@@ -70,12 +69,14 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(page.locator('[data-testid^="returns-qty-"]')).toBeVisible();
   await expect(returnsPanel).toContainText("المتبقي: 1");
   await page.locator('[data-testid^="returns-qty-"]').fill("1");
-  // the return value (900) vs collected-so-far (0) and the soft warning
+  // the visible default: the debt-first preset, previewed as 900 to debt / 0 cash
+  await expect(page.getByTestId("returns-settlement")).toContainText("كله خصم من الدين");
   await expect(page.getByTestId("returns-value")).toContainText("900");
   await expect(page.getByTestId("returns-collected")).toContainText("0");
-  await expect(page.getByTestId("returns-cash-warning")).toBeVisible();
-  // an all-debt split would be capped by the 900 debt — keep the default
-  // all-cash settlement (owner's choice) and record the return
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^900\b/);
+  await expect(page.getByTestId("returns-cash-now")).toHaveText(/^0\b/);
+  // the whole return fits the debt, so the app picks it without asking
+  await expect(page.getByTestId("returns-debt-default-note")).toHaveCount(0);
   await page.getByTestId("returns-reason").fill("الزبون بدل رأيه");
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
@@ -98,8 +99,9 @@ test("sale → cash return → stock back (marked) + voucher route + review acce
   await expect(voucher.getByTestId("return-voucher-line")).toContainText(itemName);
   await expect(voucher.getByTestId("return-voucher-line")).toContainText("900");
   await expect(voucher.getByTestId("return-voucher-total")).toContainText("900");
-  await expect(voucher.getByTestId("return-voucher-cash")).toContainText("900");
-  await expect(voucher.getByTestId("return-voucher-debt")).toContainText("0");
+  // #256 — the default settled the whole value against the debt, so no cash
+  await expect(voucher.getByTestId("return-voucher-cash")).toContainText("0");
+  await expect(voucher.getByTestId("return-voucher-debt")).toContainText("900");
   await expect(voucher.getByTestId("return-voucher-status")).toContainText("قيد المراجعة");
   await page.getByTestId("return-voucher-back").click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
@@ -191,10 +193,13 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await expect(page.getByTestId("returns-value")).toContainText("900");
   await expect(page.getByTestId("returns-remaining-debt")).toHaveText(/^700\b/);
 
-  // … and an all-debt choice is capped at 700, so 200 is forced into cash —
-  // the split is shown and the note names both figures instead of leaving the
-  // cash figure to change silently under the owner's chosen preset
-  await chooseSelectOption(page, page.getByTestId("returns-settlement"), "كله خصم من الدين");
+  // … the return is bigger than the debt, so #256 refuses to pick the split on
+  // its own: the panel says so, names both figures, and offers the debt-first
+  // confirmation instead of silently capping the debt into cash
+  await expect(page.getByTestId("returns-debt-default-note")).toBeVisible();
+  await expect(page.getByTestId("returns-debt-default-note")).toContainText("900");
+  await expect(page.getByTestId("returns-debt-default-note")).toContainText("700");
+  await page.getByTestId("returns-debt-confirm").click();
   await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^700\b/);
   await expect(page.getByTestId("returns-cash-now")).toHaveText(/^200\b/);
   const capNote = page.getByTestId("returns-debt-cap-note");

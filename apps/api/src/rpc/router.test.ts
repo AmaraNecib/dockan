@@ -3566,24 +3566,28 @@ describe("returns & refunds", () => {
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(700);
   });
 
-  it("allows all-cash on a fully unpaid invoice and records zero debt offset", async () => {
+  it("allows all-cash on a fully unpaid invoice when the owner picks it explicitly", async () => {
     const item = await makeReturnItem("مرجوع-نقد-كامل", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
     expect(sale.remainingAmount).toBe(500);
-    // no cashPaidOut sent = all-cash preset
-    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    // #256 — the ABSENT cashPaidOut default is now debt-first; the owner's
+    // explicit all-cash choice (cashPaidOut = the whole value) is unchanged
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 500 });
     expect(created.cashPaidOut).toBe(500);
     expect(created.debtOffset).toBe(0);
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
   });
 
-  it("never lets the debt go negative: an all-debt split beyond the remaining debt flows to cash", async () => {
+  it("never lets the debt go negative: an explicit all-debt request beyond the remaining debt flows to cash", async () => {
     const item = await makeReturnItem("مرجوع-فائض-دين", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, lines: [{ itemId: item.id, quantity: 1 }] });
     expect(sale.remainingAmount).toBe(300);
-    // all-debt request (= cashPaidOut 0) of a 500 return against 300 debt
+    // the owner's EXPLICIT all-debt request (= cashPaidOut 0) of a 500 return
+    // against 300 debt keeps the #162 cap: the excess flows to cash, visibly
+    // (the form warns before saving). #256 only changed what the app picks on
+    // its own — see the refusals below.
     const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 0 });
     expect(created.refundAmount).toBe(500);
     expect(created.debtOffset).toBe(300); // capped at the remaining debt
@@ -3595,8 +3599,76 @@ describe("returns & refunds", () => {
     expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
   });
 
-  it("applies accepted offsets sequentially, capping each against the debt still owed (#68)", async () => {
-    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
+  // #256 — the owner's rule: a return DEFAULTS to the party's debt and takes
+  // cash only when there is no debt. The default refuses rather than guessing a
+  // split (the two open owner questions), while an explicit choice still wins.
+  it("defaults to the debt when the invoice's debt covers the whole return (#256)", async () => {
+    const item = await makeReturnItem("مرجوع-افتراضي-دين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(500);
+    // no cashPaidOut sent: the server applies debt-first, not the old all-cash
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    expect(created.refundAmount).toBe(500);
+    expect(created.debtOffset).toBe(500);
+    expect(created.cashPaidOut).toBe(0);
+    // #68 still holds: the promise lands at acceptance
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(500);
+    await client.returnsAccept({ returnId: created.id });
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(0);
+  });
+
+  it("defaults to cash when the customer has no debt anywhere (#256)", async () => {
+    const item = await makeReturnItem("مرجوع-افتراضي-نقد", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون بلا دين" });
+    // paid in full at the counter: the tab is empty, so there is nothing to
+    // take the return off and the owner's rule is cash
+    const sale = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, initialPaid: 500, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(0);
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    expect(created.cashPaidOut).toBe(500);
+    expect(created.debtOffset).toBe(0);
+  });
+
+  it("refuses the default instead of splitting when the return exceeds the debt (#256)", async () => {
+    const item = await makeReturnItem("مرجوع-يتجاوز-الدين", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
+    const sale = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(sale.remainingAmount).toBe(300);
+    // 500 return against a 300 debt: debt-to-zero + 200 cash is an owner
+    // decision that is still open, so the DEFAULT refuses instead of guessing
+    await expect(
+      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_DEBT" });
+    // nothing was written by the refusal
+    expect((await client.returnsForInvoice({ invoiceId: sale.id })).items).toHaveLength(0);
+    // the owner can still choose the split explicitly — same numbers as before
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 200 });
+    expect(created.debtOffset).toBe(300);
+    expect(created.cashPaidOut).toBe(200);
+  });
+
+  it("refuses the default when the customer's debt is on another invoice (#256)", async () => {
+    const item = await makeReturnItem("مرجوع-دين-أخر", 100, 500);
+    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون دين على فاتورة أخرى" });
+    // invoice A is paid in full (nothing to relieve HERE); invoice B carries 500
+    const invoiceA = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, initialPaid: 500, lines: [{ itemId: item.id, quantity: 1 }] });
+    await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 1 }] });
+    expect(invoiceA.remainingAmount).toBe(0);
+    // applying the return across invoices (oldest debt first) is an owner
+    // decision that is not made yet: the default refuses, never cash
+    await expect(
+      client.returnsCreate({ invoiceId: invoiceA.id, lines: [{ invoiceLineId: invoiceA.lines[0]!.id, quantity: 1 }] }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_DEBT_ELSEWHERE" });
+    // the explicit all-cash override still works
+    const created = await client.returnsCreate({ invoiceId: invoiceA.id, lines: [{ invoiceLineId: invoiceA.lines[0]!.id, quantity: 1 }], cashPaidOut: 500 });
+    expect(created.cashPaidOut).toBe(500);
+    expect(created.debtOffset).toBe(0);
+  });
+
+  it("applies accepted offsets sequentially, capping each against the debt still owed (#68)", async () => {    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 4, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", lines: [{ itemId: item.id, quantity: 4 }] });
     expect(sale.remainingAmount).toBe(2_000);
@@ -3935,6 +4007,55 @@ describe("returns & refunds", () => {
     // revenue 900, cogs 300 — every unit exactly once.
     expect(afterReject.revenue - baseline.revenue).toBe(900);
     expect(afterReject.cogs - baseline.cogs).toBe(300);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Purchase-return default refund method (issue #256)
+// ---------------------------------------------------------------------------
+
+/**
+ * The supplier half of the owner's rule: while the signed account says the shop
+ * owes the supplier, a purchase return applies against that debt; with nothing
+ * owed either way the default is cash back for the whole value. An explicit
+ * cashBack (0 included) is the owner's override.
+ */
+describe("purchase return default refund (#256)", () => {
+  async function makeSupplierReturnItem(name: string) {
+    const category = await client.categoriesCreate({ name: `${name}-cat` });
+    return client.itemsCreateWithStock({ name, categoryId: category.id, costPrice: 100, sellingPrice: 300, stockOnHand: 10 });
+  }
+
+  it("defaults to the debt while the shop owes the supplier", async () => {
+    const item = await makeSupplierReturnItem("مرتجع-دين-مورد");
+    const supplier = await client.suppliersCreate({ name: "مورد عليه دين" });
+    // an unpaid purchase opens the charge: we owe 1 000
+    const purchase = await client.invoicesCreate({ kind: "PURCHASE", counterpartyId: supplier.id, lines: [{ itemId: item.id, quantity: 2, unitPrice: 500 }] });
+    const returned = await client.suppliersReturn({ supplierId: supplier.id, invoiceId: purchase.id, lines: [{ invoiceLineId: purchase.lines[0]!.id, quantity: 1 }] });
+    expect(returned.entries.find((entry) => entry.kind === "RETURN")).toMatchObject({ amount: 500 });
+    expect(returned.entries.some((entry) => entry.kind === "REFUND")).toBe(false);
+    // the return reduced the debt instead of handing cash back
+    expect(returned.balance).toBe(500);
+  });
+
+  it("defaults to cash back when nothing is owed either way", async () => {
+    const item = await makeSupplierReturnItem("مرتجع-لا-دين-مورد");
+    const supplier = await client.suppliersCreate({ name: "مورد بلا دين" });
+    // no purchase at all: the shop owes nothing, so the owner's rule is cash
+    const returned = await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 300 });
+    const refund = returned.entries.find((entry) => entry.kind === "REFUND");
+    expect(refund).toMatchObject({ amount: 300 });
+    // the return's own credit backs the cash, leaving a zero balance
+    expect(returned.balance).toBe(0);
+  });
+
+  it("keeps an explicit zero cash back as the owner's choice", async () => {
+    const item = await makeSupplierReturnItem("مرتجع-صفر-صريح");
+    const supplier = await client.suppliersCreate({ name: "مورد رصيد صريح" });
+    // nothing owed, yet the owner keeps the 300 as credit at the supplier
+    const returned = await client.suppliersReturn({ supplierId: supplier.id, itemId: item.id, quantity: 1, amount: 300, cashBack: 0 });
+    expect(returned.entries.some((entry) => entry.kind === "REFUND")).toBe(false);
+    expect(returned.balance).toBe(-300);
   });
 });
 

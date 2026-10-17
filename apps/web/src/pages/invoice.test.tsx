@@ -57,6 +57,11 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({ mutationFn: async () => ({}) }),
     },
     returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
+    debtsByParty: {
+      // #256 — the panel derives the default refund method from the customer's tab
+      queryOptions: () => ({ queryKey: ["debtsByParty"], queryFn: async () => ({ items: [], total: 0 }) }),
+      queryKey: () => ["debtsByParty"],
+    },
     invoicesPay: {
       // merges the caller's { onSuccess, onError } like the real utils do
       mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({

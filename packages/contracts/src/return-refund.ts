@@ -114,3 +114,50 @@ export function computeReturnRefund(
   const refundTotal = result.reduce((sum, line) => sum + line.refundAmount, 0);
   return { lines: result, refundTotal };
 }
+
+// ---------------------------------------------------------------------------
+// #256 — which refund method a return DEFAULTS to.
+// ---------------------------------------------------------------------------
+
+export interface ReturnSettlementDefaultInput {
+  /** whole DZD the return is worth (what has to be settled somehow) */
+  returnValue: number;
+  /** the remaining debt on the invoice the return is recorded against — the
+   * only debt this return record can relieve (the accepted offset is applied
+   * to that invoice, and the invoice header reconciles it via returnCredit) */
+  invoiceDebt: number;
+  /** the party's total outstanding debt across every invoice, or null while
+   * that read has not resolved yet (the web preview reads it separately) */
+  partyDebt: number | null;
+}
+
+/** Why the default could not pick a method: the return outgrew the debt that
+ * could absorb it here, or the party's debt lives on other invoices (applying
+ * a return across invoices is an owner decision that is still open). */
+export type ReturnSettlementDefaultReason = "EXCEEDS_DEBT" | "DEBT_ELSEWHERE";
+
+export type ReturnSettlementDefault =
+  | { method: "DEBT" }
+  | { method: "CASH" }
+  | { method: "UNDECIDED"; reason: ReturnSettlementDefaultReason }
+  | { method: "UNRESOLVED" };
+
+/**
+ * The owner's rule (#256): default the refund to the party's debt, cash only
+ * when there is no debt. Debt-first is decided by ONE test — can this invoice's
+ * remaining debt absorb the whole return? When it can, all of it goes to the
+ * debt. When it cannot, the default REFUSES rather than guessing a split:
+ * either the return outgrew the party's whole debt, or the debt sits on another
+ * invoice the return cannot reach (`EXCEEDS_DEBT` / `DEBT_ELSEWHERE` — the two
+ * owner questions this scope deliberately left open). A refusal is safe because
+ * the owner can always pick cash or a custom split explicitly; a silent
+ * debt/cash split on money is not.
+ */
+export function returnSettlementDefault(input: ReturnSettlementDefaultInput): ReturnSettlementDefault {
+  // the invoice's own debt answers it alone — no party read needed
+  if (input.returnValue <= input.invoiceDebt) return { method: "DEBT" };
+  // past here the answer depends on the party's tab, which may not have loaded
+  if (input.partyDebt === null) return { method: "UNRESOLVED" };
+  if (input.partyDebt <= 0) return { method: "CASH" };
+  return { method: "UNDECIDED", reason: input.invoiceDebt <= 0 ? "DEBT_ELSEWHERE" : "EXCEEDS_DEBT" };
+}

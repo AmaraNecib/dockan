@@ -605,6 +605,11 @@ const resources = {
       returnsSplitAllCash: "كله نقداً",
       returnsSplitAllDebt: "كله خصم من الدين",
       returnsSplitCustom: "تقسيم مخصص",
+      returnsSplitChoose: "اختر طريقة التسوية",
+      // #256 — the debt-first default will not split for the owner
+      returnsDebtDefaultExceeds: "قيمة المرجوع {{value}} دج أكبر من الدين الذي يمكن خصمه هنا ({{debt}} دج) — لم يُقرَّر بعد كيف يُسوّى الباقي، فاختر طريقة التسوية",
+      returnsDebtConfirm: "اعتمد الخصم من الدين",
+      returnsDebtElsewhere: "دين الزبون على فاتورة أخرى ({{debt}} دج) — خصم المرجوع من فاتورة أخرى لم يُحسم بعد، فاختر طريقة التسوية",
       returnsCashNow: "نقداً الآن",
       returnsDebtOffset: "خصم من الدين",
       // issue #68: the returns card shows the debt label by review state — a
@@ -660,6 +665,9 @@ const resources = {
       RETURN_LINE_NOT_RETURNABLE: "هذا السطر لا يمكن إرجاعه",
       REFUND_SPLIT_INVALID: "المبلغ النقدي يتجاوز قيمة المرجوع",
       RETURN_DEBT_OFFSET_REFUSED: "تعذر خصم الدين — المبلغ غير متاح",
+      // #256 — the debt-first default refuses instead of guessing a split
+      RETURN_EXCEEDS_DEBT: "قيمة المرجوع أكبر من الدين القابل للخصم — اختر طريقة التسوية",
+      RETURN_DEBT_ELSEWHERE: "دين الزبون على فاتورة أخرى — خصم المرجوع من فاتورة أخرى غير محسوم بعد، اختر طريقة التسوية",
       EXPENSE_CATEGORY_EXISTS: "هذا التصنيف موجود مسبقاً",
       INVALID_RANGE: "الفترة غير صالحة",
       UNEXPECTED: "حدث خطأ غير متوقع",
@@ -905,6 +913,9 @@ const resources = {
       supplierReturnDebtReduction: "خصم من الدَّين",
       supplierReturnNothing: "لا يوجد متبقٍ للإرجاع",
       supplierReturnInvalidDraft: "تحقق من الكميات والمبالغ المدخلة: يجب أن تكون أعداداً صحيحة",
+      // #256 — the default refund method, shown before saving
+      supplierReturnDefaultDebt: "الافتراضي: يُخصم من الدين الذي لنا عند المورّد (لا نقد)",
+      supplierReturnDefaultCash: "الافتراضي: استرجاع {{amount}} دج نقداً من المورّد",
       supplierRefundTitle: "استرداد رصيد من المورّد",
       supplierRefundReference: "الرصيد المتاح",
       supplierRefundSave: "تسجيل الاسترداد",

@@ -7,6 +7,7 @@ import {
   refundUnitPriceFor,
   remainingReturnable,
   returnCapViolation,
+  returnSettlementDefault,
 } from "./return-calculations";
 
 describe("refundUnitPriceFor (whole-DZD effective per-unit refund)", () => {
@@ -263,5 +264,49 @@ describe("bookSaleLineForReturns (profit report per-line booking)", () => {
     expect(booked.bookedQty).toBe(3);
     expect(booked.netTotal).toBe(600);
     expect(booked.cogsExact).toBe(420);
+  });
+});
+
+/**
+ * #256 — the refund-method default. Debt first (this invoice's debt, then the
+ * party's tab), cash only when there is no debt at all, and an explicit
+ * refusal — never a guessed split — when the debt cannot absorb the return.
+ */
+describe("returnSettlementDefault (#256)", () => {
+  it("defaults to cash when the party has no debt anywhere", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: 0 })).toEqual({ method: "CASH" });
+  });
+
+  it("defaults to debt when the debt covers the whole return", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 500, partyDebt: 500 })).toEqual({ method: "DEBT" });
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 2_000, partyDebt: 5_000 })).toEqual({ method: "DEBT" });
+  });
+
+  it("refuses (never splits) when the return exceeds the debt it could relieve", () => {
+    expect(returnSettlementDefault({ returnValue: 900, invoiceDebt: 700, partyDebt: 700 })).toEqual({
+      method: "UNDECIDED",
+      reason: "EXCEEDS_DEBT",
+    });
+  });
+
+  it("refuses the cross-invoice case the owner has not decided yet", () => {
+    // the customer owes 1 000, but on another invoice: allocating a return
+    // across invoices is not decided, so the default refuses instead of
+    // handing cash to a customer who owes money
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: 1_000 })).toEqual({
+      method: "UNDECIDED",
+      reason: "DEBT_ELSEWHERE",
+    });
+  });
+
+  it("stays unresolved while the party debt read has not landed", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: null })).toEqual({ method: "UNRESOLVED" });
+  });
+
+  it("never refuses a free (zero-value) return — there is no split to guess", () => {
+    // a fully-discounted line refunds 0: the method is moot, so the default
+    // must not block the record (the api writes 0/0 either way)
+    expect(returnSettlementDefault({ returnValue: 0, invoiceDebt: 0, partyDebt: 0 })).toEqual({ method: "DEBT" });
+    expect(returnSettlementDefault({ returnValue: 0, invoiceDebt: 0, partyDebt: 400 })).toEqual({ method: "DEBT" });
   });
 });

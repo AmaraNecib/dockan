@@ -739,7 +739,7 @@ export function SupplierOpeningBalancePage() {
             {saved.accounts.map((account) => (
               <li key={account.supplierId} className="flex items-center justify-between gap-3" data-testid="opening-balance-saved-row">
                 <span>{account.name}</span>
-                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance >= 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>
+                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance > 0 ? t("supplierAdjustDirectionTheyOwe") : t("supplierAdjustDirectionWeOwe")}</span>
               </li>
             ))}
           </ul>
@@ -828,7 +828,7 @@ export function SupplierOpeningBalancePage() {
                         <Amount value={Math.abs(supplier.accountBalance ?? 0)} />{" "}
                         {supplier.accountBalance !== null && supplier.accountBalance !== undefined && supplier.accountBalance !== 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {supplier.accountBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}
+                            {supplier.accountBalance > 0 ? t("supplierAdjustDirectionTheyOwe") : t("supplierAdjustDirectionWeOwe")}
                           </span>
                         )}
                       </td>

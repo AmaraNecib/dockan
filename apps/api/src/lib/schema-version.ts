@@ -23,8 +23,16 @@ import type { Database } from "bun:sqlite";
  * would escape the new dedup until the next v4 boot's self-healing backfill
  * re-keys them. A version-3 build MUST therefore refuse the version-4 database
  * (ADR-0008 §4.5).
+ *
+ * Version 5 (issue 260): the supplier sign convention flips. WE_OWE is now −1
+ * (يسالنا, we owe) and THEY_OWE +1 (نسالوه, credit), so the signed balance is
+ * positive for a credit and negative for a debt. The stored rows are unchanged
+ * — amounts stay positive and the direction token keeps its meaning — but a
+ * version-4 build computes the OPPOSITE balance from the same data, silently
+ * inverting every balances surface. A version-4 build MUST therefore refuse the
+ * version-5 database (ADR-0008 §4.5). The 4 -> 5 migration writes no rows.
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * A database written by a newer app. The older build cannot know what the

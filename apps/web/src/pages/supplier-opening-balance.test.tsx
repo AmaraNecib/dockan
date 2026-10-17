@@ -429,14 +429,19 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("لم تُدخل");
   });
 
-  it("renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5)", async () => {
+  it("renders each current balance with its direction and keeps a typed name inline (issue 176 / round 5 / #260)", async () => {
     render();
     await settle();
 
     const rows = host.querySelectorAll('[data-testid="opening-balance-row"]');
-    const creditCell = rows[2]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
-    expect(creditCell).toContain("300");
-    expect(creditCell).toContain("يسالنا");
+    // #260 — s-3 is −300, a debt: the word is يسالنا
+    const debtCell = rows[2]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
+    expect(debtCell).toContain("300");
+    expect(debtCell).toContain("يسالنا");
+    // #260 — s-1 is +5000, a credit: the word is نسالوه
+    const positiveCell = rows[0]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
+    expect(positiveCell).toContain("5000");
+    expect(positiveCell).toContain("نسالوه");
 
     // a typed name is its own row: it is never moved onto an existing row
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");

@@ -696,7 +696,7 @@ describe("parties", () => {
     await store.insertSupplierEntry({ supplierId: netZero.id, kind: "PAYMENT", amount: 400, invoiceId: null, method: "CASH", occurredAt: localDateTime() });
 
     const summary = (await store.listSupplierAccountSummaries()).find((row) => row.id === supplier.id);
-    expect(summary).toMatchObject({ accountBalance: 300, accountEntryCount: 2 });
+    expect(summary).toMatchObject({ accountBalance: -300, accountEntryCount: 2 });
     expect((await store.listSupplierAccountSummaries()).find((row) => row.id === netZero.id)).toMatchObject({ accountBalance: 0, accountEntryCount: 2 });
     // the same sign expression as the list seam, so the two cannot disagree
     const listRow = (await store.listParties("supplier")).find((party) => party.id === supplier.id);

@@ -81,9 +81,10 @@ function PartyPaymentRow({ payment }: { payment: PartyPayment }) {
   );
 }
 
-/** #161/#176 — one signed supplier-account entry. The amount is shown with the
- * direction its kind implies (a purchase/refund adds to what we owe, a
- * payment/return reduces it, an adjustment follows its own direction). */
+/** #161/#176/#260 — one signed supplier-account entry. The amount is shown with
+ * the sign its kind implies: positive = the supplier owes us (a credit, green),
+ * negative = we owe the supplier (a debt, red). A purchase/refund is negative, a
+ * payment/return positive, an adjustment follows its own direction. */
 function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
   const { t } = useTranslation();
   const sign = supplierEntrySignLabel(entry);
@@ -105,7 +106,7 @@ function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
           </Link>
         )}
       </td>
-      <td className="p-2 font-medium" data-testid="supplier-entry-amount">
+      <td className={`p-2 font-medium ${sign === "+" ? "text-success" : "text-destructive"}`} data-testid="supplier-entry-amount">
         {sign} <Amount value={entry.amount} />
       </td>
       <td className="p-2 text-sm text-muted-foreground">{entry.ref ?? entry.note ?? "—"}</td>
@@ -113,16 +114,17 @@ function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
   );
 }
 
-/** The supplier's signed balance header: what we owe (positive) or the credit
- * we hold (negative). */
+/** The supplier's signed balance header (#260): negative = we owe the supplier
+ * (red, يسالنا); positive = the credit we hold (green, نسالوه). Zero reads as
+ * owed — nothing is held — matching the old zero branch. */
 function SupplierBalanceHeader({ balance }: { balance: number }) {
   const { t } = useTranslation();
-  const owed = balance >= 0;
+  const owed = balance <= 0;
   return (
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded border bg-card p-4" data-testid="supplier-balance">
       <div>
         <p className="text-xs text-muted-foreground">{owed ? t("supplierBalanceOwed") : t("supplierBalanceCredit")}</p>
-        <p className={`mt-1 text-2xl font-bold ${owed ? "" : "text-success"}`} data-testid="supplier-balance-value">
+        <p className={`mt-1 text-2xl font-bold ${balance < 0 ? "text-destructive" : balance > 0 ? "text-success" : ""}`} data-testid="supplier-balance-value">
           <Amount value={Math.abs(balance)} />
         </p>
       </div>
@@ -313,7 +315,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                 <Button onClick={() => { setSupplierAction("pay"); setNotice(null); }} data-testid="supplier-action-pay">{t("supplierActionPay")}</Button>
                 <Button variant="outline" onClick={() => { setSupplierAction("adjust"); setNotice(null); }} data-testid="supplier-action-adjust">{t("supplierActionAdjust")}</Button>
                 <Button variant="outline" onClick={() => { setSupplierAction("return"); setNotice(null); }} data-testid="supplier-action-return">{t("supplierActionReturn")}</Button>
-                {account.balance < 0 && (
+                {account.balance > 0 && (
                   <Button variant="outline" onClick={() => { setSupplierAction("refund"); setNotice(null); }} data-testid="supplier-action-refund">{t("supplierActionRefund")}</Button>
                 )}
               </div>
@@ -352,7 +354,7 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   {supplierAction === "refund" && (
                     <SupplierRefundPanel
                       supplierId={partyId}
-                      availableCredit={Math.max(0, -account.balance)}
+                      availableCredit={Math.max(0, account.balance)}
                       onDone={() => { refreshTabQueries(); setSupplierAction(null); setNotice(t("supplierRefundRecorded")); }}
                       onWriteFailed={refreshAfterWriteFailure}
                       onCancel={() => setSupplierAction(null)}

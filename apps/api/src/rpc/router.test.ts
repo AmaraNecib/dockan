@@ -1606,10 +1606,10 @@ describe("parties (issue 120)", () => {
 
     await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 750 });
     const summaries = await client.suppliersAccountSummaries();
-    expect(summaries.items.find((item) => item.id === supplier.id)).toMatchObject({ accountBalance: 750, accountEntryCount: 1 });
+    expect(summaries.items.find((item) => item.id === supplier.id)).toMatchObject({ accountBalance: -750, accountEntryCount: 1 });
     // the full list seam agrees with the lean summary
     const listRow = (await client.suppliersList()).items.find((item) => item.id === supplier.id);
-    expect(listRow?.accountBalance).toBe(750);
+    expect(listRow?.accountBalance).toBe(-750);
     expect(listRow?.accountEntryCount).toBe(1);
   });
 
@@ -1825,7 +1825,7 @@ describe("party-detail tab pagination (issue 174)", () => {
     // the signed balance is derived from the FULL entries, not the page
     const detail = await client.suppliersGet({ id: supplier.id });
     expect(detail.account?.entries).toHaveLength(12);
-    expect(detail.account?.balance).toBe(1200);
+    expect(detail.account?.balance).toBe(-1200);
     await expect(client.suppliersDelete({ id: supplier.id })).rejects.toThrow(/PARTY_HAS_INVOICES/);
   });
 
@@ -1879,7 +1879,7 @@ describe("supplier adjustments (issue 176)", () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية رصيد", 10);
 
     const increased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 800, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" });
-    expect(increased.balance).toBe(1800);
+    expect(increased.balance).toBe(-1800);
     expect(increased.entries.find((entry) => entry.kind === "ADJUSTMENT")).toMatchObject({
       direction: "WE_OWE",
       amount: 800,
@@ -1890,7 +1890,7 @@ describe("supplier adjustments (issue 176)", () => {
     });
 
     const decreased = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 300, reason: "تصحيح" });
-    expect(decreased.balance).toBe(1500);
+    expect(decreased.balance).toBe(-1500);
 
     // the account-only adjustment never touches paid/remaining
     const detail = await client.invoicesGet({ id: invoice.id });
@@ -1899,14 +1899,14 @@ describe("supplier adjustments (issue 176)", () => {
     expect(detail.returnCreditAmount).toBe(0);
 
     // the list seam shows the same signed balance
-    expect((await client.suppliersList()).items.find((row) => row.id === supplier.id)?.accountBalance).toBe(1500);
+    expect((await client.suppliersList()).items.find((row) => row.id === supplier.id)?.accountBalance).toBe(-1500);
   });
 
   it("reduces a linked invoice's remaining without cash and the header reconciles", async () => {
     const { supplier, invoice } = await setupSupplier("مورد تسوية خصم", 50);
 
     const account = await client.suppliersAdjust({ supplierId: supplier.id, direction: "THEY_OWE", amount: 500, reason: "خصم", invoiceId: invoice.id });
-    expect(account.balance).toBe(4500);
+    expect(account.balance).toBe(-4500);
     expect(account.entries.find((entry) => entry.kind === "ADJUSTMENT")).toMatchObject({ direction: "THEY_OWE", amount: 500, invoiceId: invoice.id });
 
     const detail = await client.invoicesGet({ id: invoice.id });
@@ -1916,7 +1916,7 @@ describe("supplier adjustments (issue 176)", () => {
     expect(detail.remainingAmount).toBe(detail.totalAmount - detail.paidAmount - detail.returnCreditAmount);
 
     // the account balance and the invoice agree, as the owner's worked example requires
-    expect(account.balance).toBe(detail.remainingAmount);
+    expect(account.balance).toBe(-detail.remainingAmount);
   });
 
   it("refuses a linked adjustment above the remaining and writes nothing", async () => {
@@ -1937,14 +1937,14 @@ describe("supplier adjustments (issue 176)", () => {
     const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد افتتاحي", occurredAt: "2026-10-13T12:00:00" };
 
     const first = await client.suppliersAdjust(payload);
-    expect(first.balance).toBe(1400);
+    expect(first.balance).toBe(-1400);
 
     // the same signature (supplier, direction, amount, reason, timestamp) is
     // refused: one entry, one balance move
     await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1400);
+    expect(account.account?.balance).toBe(-1400);
   });
 
   it("does not reduce a linked invoice twice on a duplicate submission (issue 177)", async () => {
@@ -1965,7 +1965,7 @@ describe("supplier adjustments (issue 176)", () => {
     const { supplier } = await setupSupplier("مورد تواريخ تسوية", 10);
     await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-13T12:00:00" });
     const second = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", occurredAt: "2026-10-14T12:00:00" });
-    expect(second.balance).toBe(1400);
+    expect(second.balance).toBe(-1400);
     expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(2);
   });
 
@@ -1978,7 +1978,7 @@ describe("supplier adjustments (issue 176)", () => {
     await expect(client.suppliersAdjust(payload)).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1300);
+    expect(account.account?.balance).toBe(-1300);
   });
 
   it("rejects a duplicate row inside an opening-balance batch with a row-specific error (issue 177)", async () => {
@@ -2005,7 +2005,7 @@ describe("supplier adjustments (issue 176)", () => {
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1450);
+    expect(account.account?.balance).toBe(-1450);
   });
 
   it("keeps remaining >= 0 when two linked adjustments race (issue 177)", async () => {
@@ -2080,7 +2080,7 @@ describe("supplier adjustments (issue 176)", () => {
 
     const matches = (await client.suppliersList({ limit: MAX_PAGE_SIZE })).items.filter((row) => row.name === name);
     expect(matches).toHaveLength(1);
-    expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(900);
+    expect(matches.reduce((sum, row) => sum + (row.accountBalance ?? 0), 0)).toBe(-900);
   });
 
   it("does not double-post an existing-supplier opening balance when the response is lost (Greptile round 1)", async () => {
@@ -2418,14 +2418,14 @@ describe("supplier adjustments (issue 176)", () => {
       ],
     });
     expect(result.created).toBe(3);
-    expect(result.accounts.find((account) => account.supplierId === existing.id)?.balance).toBe(900);
-    expect(result.accounts.find((account) => account.supplierId === fresh.id)?.balance).toBe(-300);
-    expect(result.accounts.find((account) => account.name === "مورد جملة جديد")?.balance).toBe(5000);
+    expect(result.accounts.find((account) => account.supplierId === existing.id)?.balance).toBe(-900);
+    expect(result.accounts.find((account) => account.supplierId === fresh.id)?.balance).toBe(300);
+    expect(result.accounts.find((account) => account.name === "مورد جملة جديد")?.balance).toBe(-5000);
 
     // the inline supplier is real, listable, and carries its opening balance
     const created = (await client.suppliersList()).items.find((row) => row.name === "مورد جملة جديد");
     expect(created).toBeDefined();
-    expect(created?.accountBalance).toBe(5000);
+    expect(created?.accountBalance).toBe(-5000);
     expect(created?.accountEntryCount).toBe(1);
   });
 
@@ -2630,26 +2630,26 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     const payload = { supplierId: supplier.id, direction: "WE_OWE" as const, amount: 400, reason: "رصيد افتتاحي", idempotencyKey: "retry-gap-1" };
 
     const first = await client.suppliersAdjust({ ...payload, occurredAt: "2026-10-13T12:00:00" });
-    expect(first.balance).toBe(1400);
+    expect(first.balance).toBe(-1400);
 
     // the #177 guard keyed on the timestamp and would post again here; the
     // explicit key makes the changed timestamp irrelevant
     await expect(client.suppliersAdjust({ ...payload, occurredAt: "2026-10-14T09:30:00" })).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1400);
+    expect(account.account?.balance).toBe(-1400);
   });
 
   it("treats the key as the request identity even when other fields change (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح تغيّر المبلغ");
     const first = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, reason: "دين قديم", idempotencyKey: "same-request", occurredAt: "2026-10-13T12:00:00" });
-    expect(first.balance).toBe(1100);
+    expect(first.balance).toBe(-1100);
     await expect(
       client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 200, reason: "دين قديم", idempotencyKey: "same-request", occurredAt: "2026-10-13T12:00:00" }),
     ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1100);
+    expect(account.account?.balance).toBe(-1100);
   });
 
   it("does not let the key weaken the signature guard (issue 181)", async () => {
@@ -2662,7 +2662,7 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     ).rejects.toMatchObject({ code: "CONFLICT", message: "DUPLICATE_ADJUSTMENT" });
     const account = await client.suppliersGet({ id: supplier.id });
     expect(account.account?.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(account.account?.balance).toBe(1300);
+    expect(account.account?.balance).toBe(-1300);
   });
 
   it("scopes the key to the supplier account (issue 181)", async () => {
@@ -2672,8 +2672,8 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     // the same key on a different account is a different request
     const second = await client.suppliersAdjust({ supplierId: b.supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "shared", occurredAt: "2026-10-13T12:00:00" });
     expect(second.entries.filter((entry) => entry.kind === "ADJUSTMENT")).toHaveLength(1);
-    expect(second.balance).toBe(1100);
-    expect((await client.suppliersGet({ id: a.supplier.id })).account?.balance).toBe(1100);
+    expect(second.balance).toBe(-1100);
+    expect((await client.suppliersGet({ id: a.supplier.id })).account?.balance).toBe(-1100);
   });
 
   it("rejects a blank or oversized idempotency key at the contract and accepts the 200-char boundary (issue 181)", async () => {
@@ -2681,7 +2681,7 @@ describe("supplier adjustment idempotency key (issue 181)", () => {
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "   " })).rejects.toThrow(/Input validation failed/);
     await expect(client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "x".repeat(201) })).rejects.toThrow(/Input validation failed/);
     const boundary = await client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "x".repeat(200), occurredAt: "2026-10-13T12:00:00" });
-    expect(boundary.balance).toBe(1100);
+    expect(boundary.balance).toBe(-1100);
     // the contract trims, so a padded identical key is the same request
     await expect(
       client.suppliersAdjust({ supplierId: supplier.id, direction: "WE_OWE", amount: 100, idempotencyKey: "   " + "x".repeat(200) + "   ", occurredAt: "2026-10-13T12:00:00" }),
@@ -4348,10 +4348,11 @@ describe("dashboard summary (issue 84)", () => {
 
     // before the schema fix this call rejected with an output-validation error
     const summary = await client.dashboardSummary();
-    expect(summary.weOwe).toBeLessThan(0);
+    expect(summary.weOwe).toBeGreaterThan(0);
 
     const debts = await client.reportsDebts();
-    const supplierNet = debts.weOwe.reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+    // #260 — a typed-only purchase has no account and is a debt, so −remaining
+    const supplierNet = debts.weOwe.reduce((sum, row) => sum + (row.accountBalance ?? -row.remainingTotal), 0);
     expect(summary.weOwe).toBe(supplierNet);
   });
 });

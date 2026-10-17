@@ -95,14 +95,15 @@ function supplierEntry(over: Partial<SupplierAccountEntry> = {}): SupplierAccoun
   };
 }
 
-/** A supplier with one unpaid purchase and one ledger entry. */
+/** A supplier with one unpaid purchase and one ledger entry. #260: a 1000
+ * purchase is a 1000 debt, so the signed balance is −1000. */
 function makeSupplierDetail(): PartyDetail {
   return {
     party: { id: PARTY_ID, name: "مورد الاختبار", phone: null, createdAt: "2026-09-01T10:00:00" },
     stats: { invoiceCount: 1, totalAmount: 1_000, paidAmount: 0, remainingAmount: 1_000 },
     invoices: [invoice({ id: "pur", invoiceNumber: "INV-0001", kind: "PURCHASE", invoiceDate: "2026-09-01", remainingAmount: 1_000, totalAmount: 1_000 })],
     payments: [],
-    account: { balance: 1_000, entries: [supplierEntry()] },
+    account: { balance: -1_000, entries: [supplierEntry()] },
   };
 }
 
@@ -860,5 +861,59 @@ describe("party-detail read-only empty states (issue #96)", () => {
     expect(empty?.textContent).toContain(i18n.t("supplierAccountEmpty"));
     expect(empty?.textContent).toContain(i18n.t("supplierAccountEmptyHint"));
     expect(empty?.querySelector("button, a")).toBeNull();
+  });
+});
+
+/**
+ * #260 — the sign is the direction of the balance: negative = we owe the
+ * supplier (red, يسالنا), positive = the credit we hold (green, نسالوه). These
+ * tests pin the SIGN and the COLOUR of one direction each, so the two cannot
+ * drift apart again.
+ */
+describe("supplier sign rendering (#260)", () => {
+  it("renders a debt balance as negative and red, labelled owed", async () => {
+    partyDetail = makeSupplierDetail(); // balance −1000
+    await renderSupplier();
+
+    const value = host.querySelector('[data-testid="supplier-balance-value"]');
+    expect(value?.textContent).toContain("1000");
+    expect(value?.className).toContain("text-destructive");
+    expect(value?.className).not.toContain("text-success");
+    expect(host.querySelector('[data-testid="supplier-balance"]')?.textContent).toContain(i18n.t("supplierBalanceOwed"));
+    // no credit to refund while we owe him
+    expect(host.querySelector('[data-testid="supplier-action-refund"]')).toBeNull();
+  });
+
+  it("renders a credit balance as green, labelled credit, and offers the refund action", async () => {
+    partyDetail = { ...makeSupplierDetail(), account: { balance: 1_000, entries: [supplierEntry()] } };
+    await renderSupplier();
+
+    const value = host.querySelector('[data-testid="supplier-balance-value"]');
+    expect(value?.className).toContain("text-success");
+    expect(value?.className).not.toContain("text-destructive");
+    expect(host.querySelector('[data-testid="supplier-balance"]')?.textContent).toContain(i18n.t("supplierBalanceCredit"));
+    expect(host.querySelector('[data-testid="supplier-action-refund"]')).not.toBeNull();
+  });
+
+  it("colours a purchase entry negative and a THEY_OWE adjustment positive", async () => {
+    partyDetail = {
+      ...makeSupplierDetail(),
+      account: {
+        balance: 0,
+        entries: [
+          supplierEntry({ id: "p", kind: "PURCHASE", direction: null }),
+          supplierEntry({ id: "a", kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 500, invoiceId: null, invoiceNumber: null }),
+        ],
+      },
+    };
+    await renderSupplier();
+    click("party-tab-payments");
+    await waitFor(() => host.querySelectorAll('[data-testid="supplier-entry-amount"]').length === 2);
+
+    const cells = Array.from(host.querySelectorAll('[data-testid="supplier-entry-amount"]'));
+    expect(cells[0]?.textContent).toContain("−");
+    expect(cells[0]?.className).toContain("text-destructive");
+    expect(cells[1]?.textContent).toContain("+");
+    expect(cells[1]?.className).toContain("text-success");
   });
 });

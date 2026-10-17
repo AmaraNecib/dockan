@@ -539,10 +539,10 @@ export const debtSummarySchema = z.object({
   invoiceCount: z.number().int().min(0),
   oldestInvoiceDate: localDateSchema.nullable(),
   latestInvoiceDate: localDateSchema.nullable(),
-  /** supplier rows only (issue 161): the signed account balance, positive when
-   * the shop owes the supplier and negative when the shop is ahead. Null for a
-   * customer (customers keep invoice-based debt) and for typed-only rows with
-   * no supplier account. */
+  /** supplier rows only (issue 161): the signed account balance in the #260
+   * convention — positive when the supplier owes the shop (a credit), negative
+   * when the shop owes the supplier. Null for a customer (customers keep
+   * invoice-based debt) and for typed-only rows with no supplier account. */
   accountBalance: z.number().int().nullable(),
 });
 
@@ -625,16 +625,19 @@ export const partyPaymentSchema = paymentSchema.extend({ invoiceNumber: z.string
 // Supplier account (issue 161): one signed ledger per supplier (ADR-0009)
 // ---------------------------------------------------------------------------
 
-/** A supplier account entry. Purchase = +charge, payment = −paid,
- * purchase return = −returned value, account refund = +cash received to close a
- * credit. A manual adjustment (تسوية, issue 176) carries a `direction`
- * («نسالوه» / «يسالنا») that decides its sign. */
+/** A supplier account entry. #260 — the sign is the DIRECTION OF THE BALANCE:
+ * positive = the supplier owes us (a credit), negative = we owe the supplier.
+ * Purchase = a debt, payment = reduces it, purchase return = reduces it,
+ * account refund = draws the credit down. A manual adjustment (تسوية, issue 176)
+ * carries a `direction` («يسالنا» / «نسالوه») that decides its sign. The amount
+ * stored is always positive; the sign is applied when summing. */
 export const supplierEntryKinds = ["PURCHASE", "PAYMENT", "RETURN", "REFUND", "ADJUSTMENT"] as const;
 export const supplierEntryKindSchema = z.enum(supplierEntryKinds);
 
-/** A manual adjustment's direction (issue 176). WE_OWE = «نسالوه» (the shop
- * owes the supplier more, +); THEY_OWE = «يسالنا» (the shop owes less, −). The
- * same two words will serve customers when their account lands. */
+/** A manual adjustment's direction (issue 176). WE_OWE = «يسالنا» (he asks us:
+ * the shop owes the supplier more, −); THEY_OWE = «نسالوه» (we ask him: the shop
+ * owes less, +). #260 — the sign describes the balance's direction, not a cash
+ * movement. The same two words will serve customers when their account lands. */
 export const supplierAdjustmentDirections = ["WE_OWE", "THEY_OWE"] as const;
 export const supplierAdjustmentDirectionSchema = z.enum(supplierAdjustmentDirections);
 
@@ -669,8 +672,8 @@ export const supplierAccountEntrySchema = z.object({
 });
 
 /** The supplier's signed balance and every account entry (newest first).
- * `balance` is a signed whole-DZD integer: positive = the shop owes the
- * supplier, negative = the shop is ahead (credit). */
+ * `balance` is a signed whole-DZD integer in the #260 convention: positive =
+ * the supplier owes the shop (a credit), negative = the shop owes the supplier. */
 export const supplierAccountSchema = z.object({
   balance: z.number().int(),
   entries: z.array(supplierAccountEntrySchema),
@@ -1176,8 +1179,8 @@ export const supplierRefundInputSchema = z.object({
 
 /**
  * #176 — a manual adjustment (تسوية): a signed number written straight on the
- * supplier account, with no invoice. `direction` carries «نسالوه» (WE_OWE, +)
- * or «يسالنا» (THEY_OWE, −). An optional `invoiceId` turns it into a
+ * supplier account, with no invoice. `direction` carries «يسالنا» (WE_OWE, −)
+ * or «نسالوه» (THEY_OWE, +). An optional `invoiceId` turns it into a
  * discount/write-off that reduces THAT invoice's remaining without cash; a
  * linked reduction only makes sense in the THEY_OWE direction, so the contract
  * refuses the contradiction before any store work. The linked amount may not
@@ -1206,7 +1209,7 @@ export const supplierAdjustInputSchema = z
   })
   .superRefine((value, ctx) => {
     if (value.invoiceId !== undefined && value.direction !== "THEY_OWE") {
-      ctx.addIssue({ code: "custom", message: "a linked adjustment must be يسالنا (it reduces the invoice)", path: ["direction"] });
+      ctx.addIssue({ code: "custom", message: "a linked adjustment must be نسالوه (it reduces the invoice)", path: ["direction"] });
     }
   });
 
@@ -1534,8 +1537,8 @@ export const dashboardSummaryOutputSchema = z.object({
   salesCount: z.number().int().min(0),
   /** party-attributed unpaid SALE debt — mirrors the debts screen's drill-down */
   owedToUs: dinarsSchema,
-  /** the signed supplier NET account balance across all suppliers: positive =
-   * the shop owes suppliers, negative = the shop is ahead (supplier credit).
+  /** the signed supplier NET position across all suppliers (#260): positive =
+   * the suppliers owe the shop (a credit), negative = the shop owes them.
    * Signed to match the /debts supplier group total, so a valid credit state
    * never fails output validation (Greptile round 2). Bounded to the safe
    * integer range like every other money field. */

@@ -82,7 +82,9 @@ export interface DashboardAggregates {
   salesCount: number;
   /** party-attributed remaining debt across unpaid SALE invoices (agrees with the debts screen) */
   owedToUs: number;
-  /** party-attributed remaining debt across unpaid PURCHASE invoices */
+  /** signed supplier net position (#260): positive = the suppliers owe us (a
+   * credit), negative = we owe them. Spans the supplier accounts plus any
+   * typed-name purchase remainder (always a debt, so it subtracts). */
   weOwe: number;
   lowStockCount: number | null;
   /** low-stock rows for the detail list, ordered by on-hand then name */

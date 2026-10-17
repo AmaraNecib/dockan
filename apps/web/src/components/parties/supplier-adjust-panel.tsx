@@ -69,7 +69,8 @@ export function SupplierAdjustPanel({
   const selected = openInvoices.find((invoice) => invoice.id === invoiceId);
   const selectionLost = linked && invoiceId !== "" && selected === undefined;
   const noInvoiceChosen = linked && openInvoices.length > 0 && invoiceId === "";
-  // linking only reduces an invoice, so the direction is forced to يسالنا
+  // linking only reduces an invoice, so the direction is forced to نسالوه
+  // (THEY_OWE, the debt-reducing direction under the #260 convention too)
   const effectiveDirection: SupplierAdjustmentDirection = linked ? "THEY_OWE" : direction;
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
   const amountError =
@@ -88,7 +89,7 @@ export function SupplierAdjustPanel({
         : noInvoiceChosen
           ? t("supplierAdjustInvoiceRequired")
           : null;
-  const previewBalance = amount === null || amount <= 0 ? balance : balance + (effectiveDirection === "WE_OWE" ? amount : -amount);
+  const previewBalance = amount === null || amount <= 0 ? balance : balance + (effectiveDirection === "WE_OWE" ? -amount : amount);
   const previewRemaining = linked && selected !== undefined && amount !== null && amount > 0 ? Math.max(0, selected.remainingAmount - amount) : null;
   const blocked = submitting || adjust.isPending || amountError !== null || amount === null || amount <= 0 || dateInvalid || linkError !== null || (linked && openInvoices.length === 0);
 

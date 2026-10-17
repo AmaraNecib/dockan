@@ -118,7 +118,7 @@ describe("dashboardSummary (issue 84)", () => {
     // debt is an all-time outstanding balance (not a day window) and mirrors
     // debtSummaries(): party-attributed unpaid only, so unnamed DASH-6 is out
     expect(result.owedToUs).toBe(11_999); // unpaid SALE: 2_000 + 9_999
-    expect(result.weOwe).toBe(2_000); // unpaid PURCHASE: 1_200 + 800
+    expect(result.weOwe).toBe(-2_000); // unpaid PURCHASE 1_200 + 800 = a debt (−, #260)
     expect(result.lowStockCount).toBe(1);
     expect(present(result.lowStockItems).map((item) => item.id)).toEqual([low.id]);
   });
@@ -136,14 +136,15 @@ describe("dashboardSummary (issue 84)", () => {
     const summary = await store.dashboardSummary(day);
     const rows = await store.debtSummaries();
     const owedFromRows = rows.filter((row) => row.kind === "SALE").reduce((sum, row) => sum + row.remainingTotal, 0);
-    // a supplier row shows its NET account balance when it has one (ADR-0009)
-    const weOweFromRows = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+    // a supplier row shows its NET account balance when it has one (ADR-0009);
+    // a typed-only purchase has no account and is a debt, so −remaining (#260)
+    const weOweFromRows = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? -row.remainingTotal), 0);
 
     // the headline must equal the sum of the rows its own /debts drill-down lists
     expect(summary.owedToUs).toBe(owedFromRows);
     expect(summary.weOwe).toBe(weOweFromRows);
     expect(summary.owedToUs).toBe(2_000);
-    expect(summary.weOwe).toBe(1_200);
+    expect(summary.weOwe).toBe(-1_200);
   });
 
   itHeavy("returns the five newest invoices by creation time, including a just-created backdated one", async () => {
@@ -201,17 +202,17 @@ describe("dashboardSummary (issue 84)", () => {
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 800, invoiceId: null, occurredAt: localDateTime() });
 
     const result = await store.dashboardSummary(day);
-    expect(result.weOwe).toBe(800);
+    expect(result.weOwe).toBe(-800);
 
     // the customer side is unchanged by the supplier-account aggregate
     await seedInvoice(store, { invoiceNumber: "DASH-CUST", kind: "SALE", invoiceDate: day, totalAmount: 500, paidAmount: 0, remainingAmount: 500 });
     const withCustomer = await store.dashboardSummary(day);
-    expect(withCustomer.weOwe).toBe(800);
+    expect(withCustomer.weOwe).toBe(-800);
     expect(withCustomer.owedToUs).toBe(500);
 
-    // a THEY_OWE correction reduces the same figure, matching /debts
+    // a THEY_OWE correction reduces the same debt, matching /debts
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, occurredAt: localDateTime() });
-    expect((await store.dashboardSummary(day)).weOwe).toBe(500);
+    expect((await store.dashboardSummary(day)).weOwe).toBe(-500);
   });
 
   itHeavy("matches the /debts supplier total across id-backed, typed-only and credit accounts (issue 176 review)", async () => {
@@ -250,9 +251,10 @@ describe("dashboardSummary (issue 84)", () => {
 
     const result = await store.dashboardSummary(day);
     const rows = await store.debtSummaries();
-    const displayed = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? row.remainingTotal), 0);
+    const displayed = rows.filter((row) => row.kind === "PURCHASE").reduce((sum, row) => sum + (row.accountBalance ?? -row.remainingTotal), 0);
 
-    expect(result.weOwe).toBe(600 + 500 - 200); // 900
+    // 600 id-backed debt + 500 typed debt − 200 credit = 900 owed, i.e. −900
+    expect(result.weOwe).toBe(-600 - 500 + 200); // -900
     expect(result.weOwe).toBe(displayed);
   });
 

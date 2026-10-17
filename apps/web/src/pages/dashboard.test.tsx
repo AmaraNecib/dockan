@@ -237,7 +237,8 @@ describe("DashboardPage summary (issue 84)", () => {
       salesTotal: 7_500,
       salesCount: 2,
       owedToUs: 7_000,
-      weOwe: 1_200,
+      // #260 — a negative weOwe is a debt (we owe the suppliers)
+      weOwe: -1_200,
       lowStockCount: 1,
       lowStockItems: [{ id: "i1", name: "بطارية", stockOnHand: 0, lowStockThreshold: 5 }],
       recentInvoices: [invoice({ id: "r1", invoiceNumber: "INV-0009", totalAmount: 5_000, remainingAmount: 2_000 })],
@@ -391,8 +392,9 @@ describe("DashboardPage summary (issue 84)", () => {
     await page.unmount();
   });
 
-  it("renders a net supplier credit as a credit subline, not a negative debt (issue 176 round 2)", async () => {
-    summary.weOwe = -300;
+  it("renders a net supplier credit as a credit subline, not a negative debt (issue 176 round 2, #260)", async () => {
+    // #260 — a positive weOwe is the credit the suppliers owe us
+    summary.weOwe = 300;
     const page = await mount(queryClient);
 
     const loaded = await waitFor(() => page.card("dashboard-debt-owed")?.textContent?.includes(i18n.t("dashboardSupplierCredit")) ?? false);

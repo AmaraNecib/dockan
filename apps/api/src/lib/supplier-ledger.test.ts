@@ -17,18 +17,18 @@ import {
 
 
 describe("supplierEntrySign", () => {
-  it("charges purchases and refunds, credits payments and returns", () => {
-    expect(supplierEntrySign("PURCHASE")).toBe(1);
-    expect(supplierEntrySign("REFUND")).toBe(1);
-    expect(supplierEntrySign("PAYMENT")).toBe(-1);
-    expect(supplierEntrySign("RETURN")).toBe(-1);
+  it("#260 — a purchase/refund is a debt (negative), a payment/return a credit (positive)", () => {
+    expect(supplierEntrySign("PURCHASE")).toBe(-1);
+    expect(supplierEntrySign("REFUND")).toBe(-1);
+    expect(supplierEntrySign("PAYMENT")).toBe(1);
+    expect(supplierEntrySign("RETURN")).toBe(1);
   });
 
-  it("signs a manual adjustment by its direction (issue 176)", () => {
-    // نسالوه = we owe him = the balance grows
-    expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(1);
-    // يسالنا = he owes us = the balance shrinks
-    expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(-1);
+  it("signs a manual adjustment by its direction (issue 176, #260)", () => {
+    // يسالنا = we owe him = the balance goes negative
+    expect(supplierEntrySign("ADJUSTMENT", "WE_OWE")).toBe(-1);
+    // نسالوه = he owes us = the balance goes positive (a credit)
+    expect(supplierEntrySign("ADJUSTMENT", "THEY_OWE")).toBe(1);
   });
 
   it("refuses to sign an adjustment with no direction rather than guess", () => {
@@ -38,21 +38,21 @@ describe("supplierEntrySign", () => {
 });
 
 describe("supplierBalance", () => {
-  it("sums the signed account: positive = the shop owes the supplier", () => {
+  it("sums the signed account: positive = the supplier owes us (a credit)", () => {
     const entries = [
       { kind: "PURCHASE" as const, amount: 1000 },
       { kind: "PAYMENT" as const, amount: 400 },
       { kind: "RETURN" as const, amount: 100 },
       { kind: "REFUND" as const, amount: 50 },
     ];
-    expect(supplierBalance(entries)).toBe(1000 - 400 - 100 + 50);
+    expect(supplierBalance(entries)).toBe(-1000 + 400 + 100 - 50);
   });
 
-  it("goes negative when the shop is ahead (a credit)", () => {
+  it("goes positive when the shop is ahead (a credit)", () => {
     expect(supplierBalance([
       { kind: "PURCHASE" as const, amount: 100 },
       { kind: "PAYMENT" as const, amount: 250 },
-    ])).toBe(-150);
+    ])).toBe(150);
   });
 
   it("is zero for an empty account", () => {
@@ -65,12 +65,12 @@ describe("supplierBalance", () => {
       { kind: "ADJUSTMENT" as const, amount: 800, direction: "WE_OWE" as const },
       { kind: "ADJUSTMENT" as const, amount: 500, direction: "THEY_OWE" as const },
     ];
-    expect(supplierBalance(entries)).toBe(1000 + 800 - 500);
+    expect(supplierBalance(entries)).toBe(-1000 - 800 + 500);
   });
 
   it("moves an opening balance the right way from an empty account", () => {
-    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 25000, direction: "WE_OWE" as const }])).toBe(25000);
-    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 3000, direction: "THEY_OWE" as const }])).toBe(-3000);
+    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 25000, direction: "WE_OWE" as const }])).toBe(-25000);
+    expect(supplierBalance([{ kind: "ADJUSTMENT" as const, amount: 3000, direction: "THEY_OWE" as const }])).toBe(3000);
   });
 });
 
@@ -171,9 +171,9 @@ describe("allocateOldestFirst", () => {
 });
 
 describe("availableSupplierCredit", () => {
-  it("is the size of a credit and zero when the shop owes", () => {
-    expect(availableSupplierCredit(-800)).toBe(800);
-    expect(availableSupplierCredit(1200)).toBe(0);
+  it("is the size of a positive credit and zero when the shop owes (#260)", () => {
+    expect(availableSupplierCredit(800)).toBe(800);
+    expect(availableSupplierCredit(-1200)).toBe(0);
     expect(availableSupplierCredit(0)).toBe(0);
   });
 });

@@ -787,6 +787,28 @@ describe("the AST blankness walk (#249)", () => {
     expect(signatures(inner)).toEqual([]);
   });
 
+  it("scopes a for-init binding to its loop, so it cannot mask an outer raw gate", () => {
+    // BEFORE (Greptile #251 finding 1): `nearestScope` walked past the
+    // ForStatement to the surrounding block, so the loop's normalised `t` was
+    // treated as visible after the loop and the outer raw check vanished as a
+    // silent []. A loop is the scope for its own `let`/`const` bindings.
+    const source = [
+      "const t = draft.trim();",
+      "for (let t = normalizeArabicIndicDigits(other).trim(); keepGoing;) {}",
+      'if (t === "") return;',
+    ].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+    // ...and inside the loop body the loop binding is the visible one, so its
+    // normalised check is not a raw gate.
+    const inner = [
+      "const t = draft.trim();",
+      "for (let t = normalizeArabicIndicDigits(other).trim(); keepGoing;) {",
+      '  if (t === "") return;',
+      "}",
+    ].join("\n");
+    expect(signatures(inner)).toEqual([]);
+  });
+
   it("treats any receiver the parser gives exactly, not only a member chain", () => {
     // BEFORE these were the stated `CHAIN` ceiling and returned []
     expect(signatures('const b = f().trim() === "";')).toEqual(['s.ts::f().trim() === ""']);
@@ -825,6 +847,20 @@ describe("the AST blankness walk (#249)", () => {
     expect(() => findBlanknessGates("if (draft.trim()) return;", "s.ts")).toThrow(/unhandled/i);
     expect(() => findBlanknessGates("const b = draft.trim() ? 1 : 2;", "s.ts")).toThrow(/unhandled/i);
     expect(() => findBlanknessGates("const b = draft.trim() && other;", "s.ts")).toThrow(/unhandled/i);
+  });
+
+  it("follows a comma expression to its right-most operand, so a wrapped test is refused", () => {
+    // BEFORE (Greptile #251 finding 2): `refuseIfTestPosition` stopped at the
+    // comma BinaryExpression, so the wrapped truthiness test returned [] without
+    // throwing. The tested value is the comma's right-most operand.
+    expect(() => findBlanknessGates("if ((logDraft(), draft.trim())) return;", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    expect(() => findBlanknessGates("const b = (logDraft(), draft.trim()) ? 1 : 2;", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    // ...a discarded left operand is not the tested value, so it is not refused
+    expect(signatures("if ((draft.trim(), logDraft())) return;")).toEqual([]);
   });
 
   it("refuses a relational trim test and an empty-template operand", () => {

@@ -194,6 +194,22 @@ function nearestScope(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
+/**
+ * The `for` / `for-of` / `for-in` statement a `let`/`const` declaration is the
+ * initializer of: the loop itself is that binding's scope, so it does not leak
+ * into the surrounding block. Without this, `for (let t = normalised; …)` was
+ * treated as visible after the loop and masked an outer raw `t` (Greptile #251
+ * finding 1: the walk returned `[]` for a real raw check with no refusal).
+ */
+function loopScope(node: ts.Node): ts.Node | undefined {
+  const list = node.parent;
+  if (!ts.isVariableDeclarationList(list)) return undefined;
+  const owner = list.parent;
+  if (ts.isForStatement(owner) && owner.initializer === list) return owner;
+  if ((ts.isForOfStatement(owner) || ts.isForInStatement(owner)) && owner.initializer === list) return owner;
+  return undefined;
+}
+
 /** The nearest function (or the file): a `var` hoists to here, so a `var` inside
  * a block is still visible after that block closes. */
 function nearestFunctionScope(node: ts.Node): ts.Node {
@@ -228,6 +244,41 @@ function transparentParent(node: ts.Node): ts.Node | undefined {
     current = current.parent;
   }
   return current;
+}
+
+/**
+ * The node whose VALUE is the one under test. Parens / assertions / `!`-free
+ * wrappers preserve the value, and a comma expression's value is its right-most
+ * operand; a comma's left operand is DISCARDED, so a raw trim there is a value
+ * use, not a test. (Greptile #251 finding 2: `refuseIfTestPosition` stopped at
+ * the comma expression, so `if ((logDraft(), draft.trim()))` returned `[]` with
+ * no refusal.)
+ */
+function testedValue(node: ts.Node): ts.Node {
+  let current = node;
+  for (;;) {
+    const parent = current.parent;
+    if (parent === undefined) return current;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      parent.right === current
+    ) {
+      current = parent;
+      continue;
+    }
+    return current;
+  }
 }
 
 interface Declaration {
@@ -380,7 +431,9 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
    * the gate registry does not handle. The comparison walk owns the `=== ""` /
    * `=== 0` / relational forms; a value use is not a test. */
   const refuseIfTestPosition = (node: ts.Node): void => {
-    const owner = transparentParent(node);
+    // The tested value is the node's value through parens and comma expressions:
+    // `(a, b)` is tested as `b`, while a comma's left operand is discarded.
+    const owner = transparentParent(testedValue(node));
     if (owner === undefined) return;
     if (ts.isBinaryExpression(owner)) {
       const kind = owner.operatorToken.kind;
@@ -429,7 +482,7 @@ export function findBlanknessGates(source: string, file: string): BlanknessGate[
           name: node.name.text,
           trim,
           offset: node.getStart(sourceFile),
-          scope: blockScoped ? nearestScope(node) : nearestFunctionScope(node),
+          scope: blockScoped ? loopScope(node) ?? nearestScope(node) : nearestFunctionScope(node),
           normalised: isNormalisedReceiver(trimReceiver(trim)),
         });
       }

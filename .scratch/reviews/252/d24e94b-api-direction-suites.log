@@ -1,0 +1,983 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\supplier-ledger.test.ts:
+(pass) supplierEntrySign > charges purchases and refunds, credits payments and returns [0.09ms]
+(pass) supplierEntrySign > signs a manual adjustment by its direction (issue 176) [0.03ms]
+(pass) supplierEntrySign > refuses to sign an adjustment with no direction rather than guess [0.16ms]
+(pass) supplierBalance > sums the signed account: positive = the shop owes the supplier [0.20ms]
+(pass) supplierBalance > goes negative when the shop is ahead (a credit) [0.04ms]
+(pass) supplierBalance > is zero for an empty account [0.02ms]
+(pass) supplierBalance > mixes a signed adjustment into the balance by its direction (issue 176) [0.03ms]
+(pass) supplierBalance > moves an opening balance the right way from an empty account [0.10ms]
+(pass) splitAgainstRemaining > attaches what fits and turns the excess into credit [0.18ms]
+(pass) splitAgainstRemaining > keeps the whole amount as credit when nothing is owed [0.02ms]
+(pass) deriveInvoicePaid > sums only the PAYMENT entries that name the invoice, capped at the total [0.20ms]
+(pass) deriveInvoicePaid > never exceeds the invoice total even if corrupt entries would [0.06ms]
+(pass) deriveInvoicePaid > is zero for an invoice with no entries [0.03ms]
+(pass) allocateOldestFirst > fills the oldest invoice first and stops when the amount runs out [0.28ms]
+(pass) allocateOldestFirst > caps each invoice at its remaining and leaves the tail undistributed [0.07ms]
+(pass) allocateOldestFirst > ignores settled invoices [0.07ms]
+(pass) allocateOldestFirst > breaks same-date ties by creation then invoice number [0.16ms]
+(pass) allocateOldestFirst > allocates nothing for a non-positive or non-finite amount [0.11ms]
+(pass) availableSupplierCredit > is the size of a credit and zero when the shop owes [0.05ms]
+(pass) supplierChargeEntryAmount > opens a charge for a positive total and none for a free purchase [0.04ms]
+(pass) supplierReturnSplit > reduces the invoice debt up to its remaining, the rest is credit [0.05ms]
+(pass) supplierReturnSplit > is all credit when no invoice is named [0.02ms]
+(pass) supplierReturnSplit > is all credit when the named invoice is already settled [0.03ms]
+(pass) adjustmentDedupKey (issue 181) > is stable for an identical signature [0.15ms]
+(pass) adjustmentDedupKey (issue 181) > is time-sensitive for a caller-supplied date and time-insensitive when server-stamped [0.05ms]
+(pass) adjustmentDedupKey (issue 181) > treats each signature column as its own dimension [0.10ms]
+(pass) adjustmentDedupKey (issue 181) > distinguishes a null reason from an empty one (NULL-safe encoding) [0.03ms]
+(pass) adjustmentDedupKey (issue 181) > lets an explicit key win over the signature and over serverStamped [0.15ms]
+(pass) adjustmentDedupKey (issue 181) > trims the key and treats a blank one as absent [0.10ms]
+(pass) adjustmentDedupKey (issue 181) > only treats a trimmed non-empty key as explicit [0.09ms]
+(pass) adjustmentDedupKey (issue 181) > scopes the key to the account [0.05ms]
+(pass) adjustmentDedupKey (issue 181) > pins the on-disk key format [0.94ms]
+(pass) adjustmentDedupKey (issue 181) > ignores ref, which is in neither form (issue 181 review) [0.15ms]
+(pass) adjustmentDedupKey (issue 181) > cannot be forged by crafted text (JSON encoding) [0.11ms]
+
+src\rpc\router.test.ts:
+[2026-10-17T18:48:06] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+(pass) health > rejects a business procedure without a session (merged auth guard) [7.11ms]
+(pass) health > reports the service up with a version [0.78ms]
+(pass) categories > creates and lists categories [15.65ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:483:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) categories > rejects a duplicate category name with a clear error [3.35ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:483:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) categories > two concurrent creates of the same category resolve as CONFLICT, not a raw error [16.84ms]
+(pass) items > creates an item with default threshold and zero stock [16.95ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:506:21)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:197:15)[0m
+(pass) items > rejects an item whose category does not exist [4.04ms]
+(pass) items > applies a partial update and keeps the rest [23.80ms]
+(pass) items > lists items ordered by name [7.74ms]
+(pass) items > itemsList rows carry the category name next to categoryId (issue 67) [19.52ms]
+(pass) items > reports low stock only when on-hand is at or below the threshold [35.83ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) catalog search + barcodes (ticket 28) > rejects catalogSearch without a session [1.73ms]
+(pass) catalog search + barcodes (ticket 28) > creates items with normalized barcodes and finds them by exact scan [17.59ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at withBarcodeConflict (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2207:17)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:291:15)[0m
+(pass) catalog search + barcodes (ticket 28) > maps a duplicate barcode to CONFLICT BARCODE_EXISTS [5.56ms]
+(pass) catalog search + barcodes (ticket 28) > ranks search results through the real store seam [3.34ms]
+(pass) catalog search + barcodes (ticket 28) > honors the optional limit through schema → router → rankCatalog (ticket 34) [52.17ms]
+(pass) catalog search + barcodes (ticket 28) > itemsCreateWithStock creates the item with initial stock in one unit [26.65ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at withBarcodeConflict (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2207:17)[0m
+(pass) ticket 28 follow-ups from test audit > two concurrent creates with the same barcode resolve as BARCODE_EXISTS, not a raw error [16.50ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:353:63)[0m
+[2026-10-17T18:48:06] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:354:76)[0m
+(pass) ticket 28 follow-ups from test audit > rejects catalogSearch input that violates the schema boundaries [2.96ms]
+[2026-10-17T18:48:06] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at postStockBatch (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:278:17)
+      at async postStock (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:286:26)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:644:32)[0m
+(pass) stock ledger (ticket 27) > rejects an oversell with STOCK_NEGATIVE and leaves the ledger untouched [22.23ms]
+(pass) stock ledger (ticket 27) > defaults inflow unit cost to the item's current cost when omitted [20.07ms]
+(pass) stock ledger (ticket 27) > blends weighted-average cost on inflow and writes back atomically [48.84ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)[0m
+(pass) stock ledger (ticket 27) > rejects out-of-range deltas before touching the store [13.49ms]
+(pass) stock ledger — backdated inflows (greptile P1) > recomputes cost from ledger layers instead of blending against present holdings [47.38ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+(pass) backups (ticket 13) > rejects backupManual without a session [1.79ms]
+(pass) backups (ticket 13) > exports a copy under dataDir/backups and logs BACKUP_CREATED [37.97ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) activity log (ticket 12) > rejects activitiesList without a session [1.44ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:538:63)[0m
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:539:65)[0m
+(pass) activity log (ticket 12) > lists real-flow entries newest first with a working limit clamp [35.43ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:07] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) settings (ticket 10) > rejects settingsGet/settingsUpdate without a session [2.63ms]
+(pass) settings (ticket 10) > reports the store identity the first-run setup wrote [2.77ms]
+(pass) settings (ticket 10) > normalizes a loose Algerian phone, persists, and audits the change [10.22ms]
+(pass) settings (ticket 10) > persists and clears the store address through settingsUpdate [30.43ms]
+(pass) settings (ticket 10) > clears the phone with an explicit null or an empty string [29.14ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:602:71)[0m
+(pass) settings (ticket 10) > supports a phone-only partial update and rejects an empty store name [15.35ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at requireStorePhone (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2222:38)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2105:17)[0m
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at requireStorePhone (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2222:38)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2105:17)[0m
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at requireStorePhone (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2222:38)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2105:17)[0m
+(pass) settings (ticket 10) > rejects a non-Algerian phone with INVALID_PHONE_NUMBER and writes nothing [23.45ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-A03C6A02) [31mrpc call failed[0m
+  [90m    at insertActivity (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:639:25)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2119:20)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) settings (ticket 10) > rolls the identity write back when the audit insert fails (atomicity) [19.34ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) purchase intake (ticket 29) > rejects unauthed invoicesCreate with UNAUTHORIZED [4.09ms]
+(pass) purchase intake (ticket 29) > creates a SALE invoice once stock is available [41.66ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1216:54)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) purchase intake (ticket 29) > rejects an unknown line item before any write (ITEM_NOT_FOUND) [3.06ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1342:49)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) purchase intake (ticket 29) > rejects paid-above-total with PAID_EXCEEDS_TOTAL [15.65ms]
+(pass) purchase intake (ticket 29) > records a multi-line PURCHASE invoice through the ledger with paid/partial math [56.02ms]
+(pass) purchase intake (ticket 29) > defaults omitted line prices to the item's cost in the header totals [19.39ms]
+(pass) purchase intake (ticket 29) > blends the weighted average when later inflows land on an invoiced item [35.12ms]
+(pass) purchase intake (ticket 29) > quick stock without an invoice lands as a PURCHASE movement (ref=null) [25.53ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:632:21)[0m
+(pass) purchase intake (ticket 29) > rejects a PURCHASE outflow with PURCHASE_REQUIRES_INFLOW [11.72ms]
+(pass) purchase intake (ticket 29) > proposes FIFO availability, links partially, and reports the unmatched share without minting stock [76.93ms]
+(pass) purchase intake (ticket 29) > does not propose a no-op after the invoice attribution cap is consumed [43.89ms]
+(pass) purchase intake (ticket 29) > concurrent invoice creates serialize into distinct invoice numbers [28.87ms]
+(pass) purchase intake (ticket 29) > double correction converges on the last corrected quantity instead of drifting [59.96ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at postStockBatch (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:278:17)
+      at async postStock (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:286:26)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1947:17)[0m
+(pass) purchase intake (ticket 29) > correction oversell guard uses the EFFECTIVE quantity after prior corrections [60.60ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1852:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) purchase intake (ticket 29) > rejects allocations beyond the line with LINK_EXCEEDS_LINE [27.83ms]
+(pass) purchase intake (ticket 29) > correcting a saved purchase cost keeps inflow-first ordering after partial sale [57.33ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at postStockBatch (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:278:17)
+      at async postStock (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:286:26)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1947:17)[0m
+(pass) purchase intake (ticket 29) > rejects a correction that would oversell with STOCK_NEGATIVE and writes nothing [36.18ms]
+[2026-10-17T18:48:07] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1897:21)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1029:15)[0m
+(pass) purchase intake (ticket 29) > rejects corrections for unknown lines with LINE_NOT_FOUND [2.31ms]
+(pass) purchase intake (ticket 29) > keeps recognizing pre-token Arabic correction rows when computing the effective quantity [62.88ms]
+(pass) sale checkout (ticket 30) > sells exact stock, defaults to the historical selling price, and records a payment [37.03ms]
+(pass) sale checkout (ticket 30) > persists amount and percentage negotiated prices separately from their defaults [56.54ms]
+(pass) sale checkout (ticket 30) > applies amount and percentage invoice discounts after line overrides [71.57ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at postStockBatch (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:278:17)
+      at async postStock (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:286:26)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1291:36)[0m
+(pass) sale checkout (ticket 30) > caps a discount at zero and rejects oversell atomically [45.11ms]
+(pass) sale checkout (ticket 30) > books a free (0-unit-price) sale line at its real FIFO loss, never at 0 loss [43.21ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at postStockBatch (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:278:17)
+      at async postStock (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:286:26)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1291:36)[0m
+(pass) sale checkout (ticket 30) > rolls back every sale write when a later line oversells [54.27ms]
+(pass) sale checkout (ticket 30) > snapshots FIFO cost across layers and reconciles stock after checkout [38.45ms]
+(pass) sale checkout (ticket 30) > keeps the live ADR-0002 cache unchanged while later sales cost from remaining FIFO layers [59.46ms]
+(pass) sale checkout (ticket 30) > consumes FIFO layers across duplicate item lines within one invoice [52.12ms]
+(pass) sale checkout (ticket 30) > pages the ledger without losing the cumulative stockAfter (issue 163) [34.37ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1254:58)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) sale checkout (ticket 30) > validates the initial payment against the discounted total [38.63ms]
+(pass) sale checkout (ticket 30) > fully discounts a sale with a 100% percentage and keeps zero totals whole [60.48ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1314:15)[0m
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1317:15)[0m
+[2026-10-17T18:48:08] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1336:21)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) sale checkout (ticket 30) > rejects conflicting or purchase-only negotiated price inputs before any write [39.35ms]
+(pass) sale checkout (ticket 30) > snapshots the exact per-line COGS (cogsExact) alongside the rounded costAtSale [53.19ms]
+(pass) sale checkout (ticket 30) > carries exact per-line COGS through the profit report seam [109.79ms]
+(pass) sale checkout (ticket 30) > dates an explicit-invoiceDate sale's movements at the invoice business date [51.13ms]
+(pass) sale checkout (ticket 30) > bounded backdating: a dated sale never sorts ahead of stock it consumes [55.17ms]
+(pass) sale checkout (ticket 30) > keeps default (undated) sales on today's wall-clock movements, not backdated [106.73ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) diagnostics log (ticket 14) > rejects diagnosticsLogsTail without a session [7.92ms]
+[2026-10-17T18:48:08] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:08] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+(pass) diagnostics log (ticket 14) > returns today's JSONL tail with stable DKN codes across repeated failures [41.49ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1444:68)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1445:70)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1446:69)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1447:70)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1449:71)[0m
+(pass) diagnostics log (ticket 14) > clamps the tail through the contract's bound [435.10ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1473:57)[0m
+(pass) debts screen (ticket 9) > rejects debtsByParty without a session and with no party identity [4.07ms]
+(pass) debts screen (ticket 9) > splits debts by direction with totals and invoice counts [80.92ms]
+(pass) debts screen (ticket 9) > drills into one party's unpaid invoices by typed name in both directions [6.41ms]
+(pass) debts screen (ticket 9) > drills into an id-backed party by id, never by a same-named typed name [61.78ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) parties (issue 120) > guards the party procedures with the session [3.68ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:688:45)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1594:95)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:708:48)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) parties (issue 120) > creates, lists, updates and reads a party detail over the wire [37.69ms]
+(pass) parties (issue 120) > exposes a names-only supplier list and a lean account summary (#183) [65.94ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2193:21)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1618:93)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2193:21)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1621:96)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1627:91)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:721:46)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) parties (issue 120) > maps the phone identity rule to the role-specific CONFLICT key [126.76ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2191:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1636:85)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2191:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1637:86)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2191:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1639:84)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at withPartyPhoneRefusals (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2191:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1644:85)[0m
+(pass) parties (issue 120) > refuses non-numeric phone text with a stable BAD_REQUEST key (issue 129) [69.31ms]
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1228:46)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:09] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1228:46)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) parties (issue 120) > refuses an invoice whose picked party is unknown or the wrong role [38.53ms]
+(pass) parties (issue 120) > labels a renamed party's debt group with its current name [71.94ms]
+(pass) parties (issue 120) > records PARTY_CREATED/UPDATED/DELETED audit rows [36.57ms]
+[2026-10-17T18:48:10] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:723:52)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:10] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:770:46)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) parties (issue 120) > returns the detail aggregate and payment invoice numbers, and refuses to delete a party with invoices [115.29ms]
+(pass) party-detail tab pagination (issue 174) > pages the invoices tab, filters unpaid rows, and keeps partyDetail whole [255.46ms]
+[2026-10-17T18:48:10] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1806:97)[0m
+[2026-10-17T18:48:10] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1807:113)[0m
+[2026-10-17T18:48:10] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1808:99)[0m
+[2026-10-17T18:48:10] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:1809:99)[0m
+(pass) party-detail tab pagination (issue 174) > pages the payments tab and rejects an out-of-range page size [219.92ms]
+[2026-10-17T18:48:10] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:772:52)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) party-detail tab pagination (issue 174) > pages a supplier's account entries while the detail account stays whole [257.22ms]
+(pass) party-detail tab pagination (issue 174) > settles a supplier across more than one page without truncating the distribution (issue 174) [1815.34ms]
+(pass) party-detail tab pagination (issue 174) > returns an empty page for an unknown party and never crosses roles [42.25ms]
+(pass) supplier adjustments (issue 176) > records an account-only adjustment: the balance moves and no invoice is touched [92.74ms]
+(pass) supplier adjustments (issue 176) > reduces a linked invoice's remaining without cash and the header reconciles [52.75ms]
+[2026-10-17T18:48:12] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > refuses a linked adjustment above the remaining and writes nothing [80.50ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > rejects a duplicate adjustment submission so a retry cannot double-post (issue 177) [52.15ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > does not reduce a linked invoice twice on a duplicate submission (issue 177) [81.45ms]
+(pass) supplier adjustments (issue 176) > accepts the same amount on a different date (not a duplicate) (issue 177) [87.28ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > refuses a retry that omits the date (server-stamped signature) (issue 177) [49.91ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1144:42)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > rejects a duplicate row inside an opening-balance batch with a row-specific error (issue 177) [18.54ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > serialises two identical concurrent submissions so only one posts (issue 177) [76.90ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > keeps remaining >= 0 when two linked adjustments race (issue 177) [49.88ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > does not double-post an identical bulk opening-balance batch (issue 177) [45.11ms]
+(pass) supplier adjustments (issue 176) > posts one row per distinct supplier in a bulk batch (issue 177) [29.29ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1063:46)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > refuses two rows naming the same new supplier before creating a party (issue 177) [4.37ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > does not double-post a new-supplier opening balance when the response is lost (Greptile round 1) [16.45ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > does not double-post an existing-supplier opening balance when the response is lost (Greptile round 1) [24.57ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1128:54)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > requires confirmation when a new-supplier name collides with a supplier that has entries (Greptile round 1) [61.71ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > resolves a duplicated folded name to the supplier that already carries entries (Greptile round 1) [33.72ms]
+(pass) supplier adjustments (issue 176) > resolves a typed name to the same supplier the opening-balance write lands on (issue 184) [71.42ms]
+(pass) supplier adjustments (issue 176) > resolves two empty folded names to the lowest id, the same id the write picks (issue 184) [52.32ms]
+(pass) supplier adjustments (issue 176) > resolves a fresh name to null, meaning a write would create one (issue 184) [2.34ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > resolves a retry to the account already holding the row signature, over the entry-count winner (issue 184) [53.03ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1120:27)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1120:27)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > refuses when the named destination no longer matches the server's resolution (issue 184) [36.38ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1120:27)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > refuses when the named account no longer folds to the typed name (issue 184) [21.62ms]
+(pass) supplier adjustments (issue 176) > accepts expectedSupplierId: null when the name is genuinely new (issue 184) [9.87ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2264:141)[0m
+[2026-10-17T18:48:13] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2265:143)[0m
+(pass) supplier adjustments (issue 176) > rejects a whitespace-only resolve name and a zero amount, and folds surrounding whitespace (issue 184) [11.44ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2281:15)[0m
+(pass) supplier adjustments (issue 176) > rejects expectedSupplierId on an explicit supplierId row at the contract (issue 184) [15.35ms]
+[2026-10-17T18:48:13] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1159:67)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > keeps a named-batch retry on the original account when both fold to one name (Greptile round 3) [58.94ms]
+(pass) supplier adjustments (issue 176) > accepts an explicit supplierId for a same-name sibling with no matching entry (Greptile round 4) [42.45ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > reports a linked resend as a duplicate, not an over-remaining error (Greptile round 1) [61.35ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustments (issue 176) > reports a full-settlement linked resend as a duplicate (Greptile round 1) [57.28ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2358:136)[0m
+(pass) supplier adjustments (issue 176) > refuses to link a يسالنا adjustment that would increase an invoice [46.19ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1015:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1015:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > refuses a link to another supplier's invoice or to a sale invoice [111.03ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2381:108)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2382:111)[0m
+(pass) supplier adjustments (issue 176) > rejects an empty opening-balance batch and a zero amount at the contract [7.40ms]
+(pass) supplier adjustments (issue 176) > zeroes an invoice when the linked adjustment equals its remaining [63.60ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1097:42)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > writes one opening balance per filled row and confirms a supplier that already has entries [44.42ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1087:50)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) supplier adjustments (issue 176) > rolls the whole batch back when one row names an unknown supplier [10.17ms]
+(pass) suppliersResolveName uses the lean reads (issue 213) > resolves from listPartyNames + listSupplierAccountSummaries, never listParties (issue 213) [22.77ms]
+(pass) suppliersResolveName uses the lean reads (issue 213) > names the same destination the listParties read would, including a net-zero account (issue 213) [39.18ms]
+(pass) suppliersResolveName uses the lean reads (issue 213) > returns null from an empty store without touching the aggregate (issue 213) [2.78ms]
+(pass) suppliersResolveName uses the lean reads (issue 213) > resolves a no-match name to null through the lean filter (issue 213) [1.67ms]
+(pass) suppliersResolveNames, the batch resolve (issue 255) > reads the two lean lists once for the whole batch and keeps each row's own signature arm (issue 255) [52.23ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2619:82)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2623:15)[0m
+(pass) suppliersResolveNames, the batch resolve (issue 255) > rejects an empty or oversized batch at the contract (issue 255) [3.19ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustment idempotency key (issue 181) > refuses a keyed retry whose timestamp changed (issue 181) [58.36ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustment idempotency key (issue 181) > treats the key as the request identity even when other fields change (issue 181) [91.53ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustment idempotency key (issue 181) > does not let the key weaken the signature guard (issue 181) [65.71ms]
+(pass) supplier adjustment idempotency key (issue 181) > scopes the key to the supplier account (issue 181) [109.79ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2681:136)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2682:146)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at adjustmentRefusal (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:205:14)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1039:65)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) supplier adjustment idempotency key (issue 181) > rejects a blank or oversized idempotency key at the contract and accepts the 200-char boundary (issue 181) [61.79ms]
+(pass) expenses (ticket 31) > seeds default expense categories with exactly one owner-withdrawal flag [2.14ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-1F05E684) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2036:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) expenses (ticket 31) > creates an extra expense category and rejects duplicates [21.63ms]
+(pass) expenses (ticket 31) > records an expense with a note, defaults the moment, and audits it [11.39ms]
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2060:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2731:85)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2732:86)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2733:101)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2739:111)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2741:82)[0m
+[2026-10-17T18:48:14] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:2743:80)[0m
+(pass) expenses (ticket 31) > rejects an unknown category and schema-invalid amounts [11.44ms]
+(pass) expenses (ticket 31) > defaults the list to the current month, filters by category and custom range [37.61ms]
+(pass) expenses (ticket 31) > sorts history by date or amount in both directions [40.15ms]
+(pass) expenses (ticket 31) > pages expenses after the sort, keeping the total stable (issue 163) [30.83ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at windowOrThrow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:103:17)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2082:23)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at windowOrThrow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:103:17)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1985:23)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at resolveWindow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:111:19)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1985:23)
+      at toThrow (unknown)[0m
+(pass) expenses (ticket 31) > rejects an inverted custom window with INVALID_RANGE [5.14ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at windowOrThrow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:103:17)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2082:23)
+      at toThrow (unknown)[0m
+(pass) expenses (ticket 31) > honors customFrom/customTo even without a preset (never silently dropped) [17.87ms]
+(pass) expenses (ticket 31) > documents preset precedence: an explicit preset wins over stray from/to bounds [9.04ms]
+(pass) expenses (ticket 31) > wires non-default presets (24H / LAST_YEAR) through reportsProfit [5.59ms]
+(pass) profit report (ticket 31) — wire reconciliation > reconciles revenue − COGS − expenses = result on a worked example [78.11ms]
+(pass) profit report (ticket 31) — wire reconciliation > attributes a backdated invoice to its invoiceDate window, not the report range of now [44.81ms]
+(pass) profit report (ticket 31) — wire reconciliation > reports multi-line sales and fully-discounted sales exactly [86.90ms]
+(pass) profit report (ticket 31) — wire reconciliation > keeps the purchase side invisible in the profit report (COGS only from sales) [26.59ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at windowOrThrow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:103:17)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2082:23)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at resolveWindow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:111:19)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2082:23)
+      at toThrow (unknown)[0m
+(pass) from-only windows clamp to now (half-open bounds) > a from-only expensesList keeps past rows and excludes future-dated ones [36.35ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at resolveWindow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:111:19)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2082:23)
+      at toThrow (unknown)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at resolveWindow (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:111:19)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1985:23)
+      at toThrow (unknown)[0m
+(pass) from-only windows clamp to now (half-open bounds) > a from-only profit report (CUSTOM with only customFrom) excludes future-dated expenses [89.67ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) invoice payments (ticket 8) > rejects an unauthed later payment with UNAUTHORIZED [1.45ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1459:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toThrow (unknown)[0m
+(pass) invoice payments (ticket 8) > refuses a payment on a missing invoice with INVOICE_NOT_FOUND [2.68ms]
+(pass) invoice payments (ticket 8) > records a partial payment: remaining drops, paid rises, history grows [47.29ms]
+(pass) invoice payments (ticket 8) > accumulates multiple instalments and logs PAYMENT_RECORDED per payment [59.56ms]
+(pass) invoice payments (ticket 8) > accepts an exact-remaining payment (boundary) and marks the invoice PAID [40.54ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1468:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) invoice payments (ticket 8) > refuses a +1 DA overpayment with PAYMENT_EXCEEDS_REMAINING and writes nothing [35.77ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1468:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) invoice payments (ticket 8) > refuses any payment on an already-paid invoice [44.35ms]
+(pass) invoice payments (ticket 8) > accepts later payments on PURCHASE invoices too [36.29ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3201:83)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3201:83)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3201:83)[0m
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3201:83)[0m
+(pass) invoice payments (ticket 8) > rejects non-positive, fractional, or non-integer amounts at the schema [36.54ms]
+(pass) invoice payments (ticket 8) > defaults the method to CASH and stores a null note when omitted [37.55ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-A03C6A02) [31mrpc call failed[0m
+  [90m    at insertActivity (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3235:25)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1497:20)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) invoice payments (ticket 8) > rolls the payment back when the audit insert fails (atomicity) [46.30ms]
+[2026-10-17T18:48:15] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1468:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) invoice payments (ticket 8) > two concurrent payments serialize and never overpay the invoice [55.01ms]
+(pass) invoice payments (ticket 8) > flips the invoice to PARTIAL after the first instalment and to PAID at settlement [75.41ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:3306:90)[0m
+(pass) invoice payments (ticket 8) > rejects amounts beyond the safe-integer money range at the schema [29.73ms]
+(pass) invoice payments (ticket 8) > normalizes an empty or whitespace-only note to null [47.03ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-8DF90F58) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1530:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1533:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > refuses returns on a missing or non-sale invoice before any write [37.89ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1539:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1543:25)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > refuses a line that is not on the invoice and an itemless (description-only) line [40.24ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1561:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1561:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > refuses a return over the sold−already-returned cap and leaves the ledger untouched [66.30ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1561:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > creates a return: stock straight back in, marked pending, refund from the effective price [70.09ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1561:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > partial returns refund only the returned units and cap subsequent returns [89.76ms]
+(pass) returns & refunds > returnsForInvoice serves the complete history while returnsList pages (issue #163 review) [182.37ms]
+(pass) returns & refunds > reads one supplier voucher by id even past the list's first page (issue #163 review) [292.65ms]
+(pass) returns & refunds > returned units join normal FIFO cost layers — a later sale consumes oldest layers first and replay stays valid [72.54ms]
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1688:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:16] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1744:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > accept consumes the pending mark and can never run twice [58.91ms]
+(pass) returns & refunds > reject (damaged) removes the returned quantity as a MANUAL_ADJUSTMENT outflow with an Arabic reason [63.22ms]
+(pass) returns & refunds > reads one item's history once for the whole multi-line scrap, not once per line [68.00ms]
+(pass) returns & refunds > reject after some units were resold clamps the removal to available stock and never blocks the review [60.32ms]
+(pass) returns & refunds > lists and fetches returns; the voucher source is the stored record [53.73ms]
+(pass) returns & refunds > defers the debt offset to acceptance: old debt 1000, return 500, cash 200 / debt 300 [69.59ms]
+(pass) returns & refunds > allows all-cash on a fully unpaid invoice and records zero debt offset [49.84ms]
+(pass) returns & refunds > never lets the debt go negative: an all-debt split beyond the remaining debt flows to cash [57.37ms]
+(pass) returns & refunds > applies accepted offsets sequentially, capping each against the debt still owed (#68) [120.99ms]
+(pass) returns & refunds > keeps the debt on the debts page while a return is pending (#68 user scenario) [86.56ms]
+(pass) returns & refunds > a REJECTED return never applies its debt offset (#68) [111.04ms]
+(pass) returns & refunds > accepting a pre-#68 PENDING return (offset backfilled as applied) never double-relieves (#68) [25.39ms]
+(pass) returns & refunds > accepting an over-promised offset caps it at the debt still owed (#68) [93.69ms]
+[2026-10-17T18:48:17] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1589:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > refuses a cash portion larger than the return value [32.33ms]
+(pass) returns & refunds > returning a free (0-price) line unwinds its booked loss: report back to baseline, stock back [52.63ms]
+(pass) returns & refunds > a REJECTED freebie return keeps the loss: scrapped goods are a real cost [62.09ms]
+(pass) returns & refunds > prices split duplicate entries of one line ONCE (no per-entry rounding over-refund) [42.08ms]
+(pass) returns & refunds > reject after a resale books the original line only for the scrapped-now portion (nothing double-booked) [84.40ms]
+[2026-10-17T18:48:18] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:1561:23)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)
+      at toMatchObject (unknown)[0m
+(pass) returns & refunds > settles sequential partial returns on a non-even line exactly: 34 + 67 = 101, never 102 [55.46ms]
+(pass) returns & refunds > partials then the remainder settle the exact full-line total [71.63ms]
+(pass) returns & refunds > attributes the reject scrap per LINE for a same-item multi-line return (no double count) [77.84ms]
+(pass) first-time setup provisioning > provisions the owner on an empty database [496.92ms]
+[2026-10-17T18:48:19] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:363:46)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4125:74)[0m
+(pass) first-time setup provisioning > refuses uniformly once an owner exists [537.51ms]
+[2026-10-17T18:48:19] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:370:19)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4141:74)[0m
+(pass) first-time setup provisioning > refuses a non-empty database with no owner and writes nothing [430.90ms]
+[2026-10-17T18:48:20] SETUP_LOCKED firstTimeSetup refused while the setup lockout is active (retry in ~30s)
+[2026-10-17T18:48:20] RPC_ERROR (DKN-8D74F5E4) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:390:19)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4153:75)[0m
+(pass) first-time setup provisioning > refuses while the setup lockout is active and writes nothing [400.27ms]
+[2026-10-17T18:48:20] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:380:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4165:74)[0m
+[2026-10-17T18:48:20] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:380:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4177:15)[0m
+(pass) first-time setup provisioning > requires the shell's one-time token in packaged builds [470.62ms]
+[2026-10-17T18:48:21] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:419:44)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+[2026-10-17T18:48:21] RPC_ERROR (DKN-5FE56019) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:363:46)
+      at toThrow (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4217:70)[0m
+(pass) first-time setup provisioning > provisions exactly one owner when two setups race [503.51ms]
+[2026-10-17T18:48:21] RPC_ERROR (DKN-A03C6A02) [31mrpc call failed[0m
+  [90m    at insertActivity (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4233:25)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:459:18)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\store\drizzle-store.ts:753:30)[0m
+(pass) first-time setup provisioning > rolls back a failed setup so it can be retried, and keeps the address [634.71ms]
+(pass) dashboard summary (issue 84) > returns the server's own local day with the newest invoice first [56.78ms]
+(pass) dashboard summary (issue 84) > reports the day the server clock says, not the wall clock [4.34ms]
+(pass) dashboard summary (issue 84) > accepts a signed weOwe in the dashboard output contract (issue 176 round 2) [0.64ms]
+(pass) dashboard summary (issue 84) > serves the signed supplier net for a credit-only shop and agrees with /debts (issue 176 round 2) [28.61ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+(pass) onboarding progress (issue 97) > requires a session [1.28ms]
+(pass) onboarding progress (issue 97) > returns the four record-derived completion booleans [56.25ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:338:11)
+      at toMatchObject (unknown)[0m
+(pass) UI preferences (issue 97 follow-up) > requires a session to read or write [3.42ms]
+(pass) UI preferences (issue 97 follow-up) > round-trips a client-owned preference over the wire [11.82ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4401:79)[0m
+(pass) UI preferences (issue 97 follow-up) > rejects an empty preference key at the contract boundary [1.57ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4405:89)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\node_modules\.bun\@orpc+server@1.15.0+4d1d9585513888ef\node_modules\@orpc\server\dist\shared\server.DEBcqOjg.mjs:162:19)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4408:102)[0m
+(pass) UI preferences (issue 97 follow-up) > rejects keys and values beyond the contract bounds [2.89ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4417:100)[0m
+(pass) UI preferences (issue 97 follow-up) > refuses a key the server owns [2.32ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4431:15)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4436:17)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4436:17)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4436:17)[0m
+[2026-10-17T18:48:22] RPC_ERROR (DKN-E1CB5881) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:2136:21)
+      at toMatchObject (unknown)
+      at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.test.ts:4436:17)[0m
+(pass) UI preferences (issue 97 follow-up) > accepts clearing the milestone, but never setting it (issue #115) [25.01ms]
+(pass) UI preferences (issue 97 follow-up) > still accepts the shell keys the owner owns [7.80ms]
+[2026-10-17T18:48:22] RPC_ERROR (DKN-DC5DD8A7) [31mrpc call failed[0m
+  [90m    at <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:317:37)
+      at async <anonymous> (D:\projects\mani-worktrees\fix-252-direction-labels-rebase2\apps\api\src\rpc\router.ts:329:11)
+      at toMatchObject (unknown)[0m
+(pass) onboarding completion milestone (issue 97 follow-up) > requires a session [1.02ms]
+(pass) onboarding completion milestone (issue 97 follow-up) > records the milestone idempotently once every record exists [50.62ms]
+(pass) items cost correction (issue 144) > keeps an edited cost across a later purchase replay [70.53ms]
+(pass) items cost correction (issue 144) > keeps an edited cost across a later outflow replay [46.79ms]
+(pass) items cost correction (issue 144) > a cost-only correction defines the zero-quantity case without touching quantity [36.32ms]
+(pass) items cost correction (issue 144) > still blends a manual quantity adjustment against the corrected cost [40.58ms]
+(pass) items cost correction (issue 144) > writes exactly one correction activity row, and none on replay [57.05ms]
+(pass) items cost correction (issue 144) > stays consistent when an edit and a purchase race [53.19ms]
+(pass) items cost correction (issue 144) > keeps a correction against a future-dated row, then blends a later purchase from it [57.01ms]
+(pass) item history recording order (issue 215) > resolves a superseded row whose correction is on a prior page [40.37ms]
+(pass) item history recording order (issue 215) > stays additive for an old client: the pre-215 row schema ignores the new fields [22.62ms]
+(pass) item history recording order (issue 215) > keeps the output additive: a row without the recording-order fields still parses [27.34ms]
+(pass) movement posting seam parity (issue 143) > stockAddManual: inflow blends, outflow replays without moving the average [47.63ms]
+(pass) movement posting seam parity (issue 143) > stockAddManual: a backdated outflow replays the full ledger (issue 143 outflow rule) [44.28ms]
+(pass) movement posting seam parity (issue 143) > invoicesCreate SALE: FIFO snapshot and exact cogs land on the line and the seam row [43.86ms]
+(pass) movement posting seam parity (issue 143) > invoicesCreate SALE: each line's FIFO read sees the prior line's movement [70.15ms]
+(pass) movement posting seam parity (issue 143) > invoicesCreate PURCHASE: the line cost is the inflow cost and the cache replays [41.01ms]
+(pass) movement posting seam parity (issue 143) > returnsCreate: a PENDING SALE return joins the layers at the current average [46.49ms]
+(pass) movement posting seam parity (issue 143) > returnsReject: scrapping allocates across the return's lines and zeroes the stock [67.24ms]
+(pass) movement posting seam parity (issue 143) > purchasesCorrectLine: the inflow-first pair lands and replays to the ADR average [43.36ms]
+(pass) movement posting seam parity (issue 143) > suppliersReturn: an outflow reduces stock and keeps the average [43.58ms]
+(pass) movement posting seam parity (issue 143) > itemsCreateWithStock: the opening movement and the cache agree [27.90ms]
+(pass) movement posting seam parity (issue 143) > itemsUpdate: a cost edit is a zero-delta correction row and resyncs the cache [40.76ms]
+
+src\store\supplier-account-store.test.ts:
+(pass) supplier account store > backfills a charge and a payment entry for an existing purchase invoice [40.59ms]
+(pass) supplier account store > records a payment entry and keeps the outstanding invoice read in sync [33.88ms]
+(pass) supplier account store > stores a supplier return and reads back the per-line returned quantity [42.72ms]
+(pass) supplier account store > keeps the invoice cache reconcilable from the entries and returns that name it [58.67ms]
+(pass) supplier account store > includes the signed account on a supplier party detail [29.70ms]
+(pass) supplier account store > moves the balance with an account-only adjustment and leaves invoices alone (issue 176) [29.70ms]
+(pass) supplier account store > reduces a linked invoice's remaining with an adjustment and surfaces it in the header (issue 176) [34.10ms]
+(pass) supplier account store > refuses a linked reduction above the remaining at the conditional UPDATE (issue 176) [16.59ms]
+(pass) supplier account store > lists a supplier's signed balance and entry count, and a customer's nulls (issue 176) [23.22ms]
+(pass) supplier account store > agrees with the debts summary balance after a WE_OWE adjustment (issue 176) [25.12ms]
+(pass) supplier account store > reports a credit balance as a negative signed value in the party list (issue 176) [19.49ms]
+(pass) supplier account store > refuses to persist an ADJUSTMENT with no direction (issue 176) [7.25ms]
+(pass) supplier account store > refuses a linked ADJUSTMENT through the raw entry seam (issue 177) [45.05ms]
+(pass) supplier account store > writes an account-only adjustment with a null invoice and touches no invoice (issue 177) [25.23ms]
+(pass) supplier account store > refuses a duplicate adjustment signature at the store seam (issue 177) [18.33ms]
+(pass) supplier account store > reports whether an adjustment signature already exists (issue 177) [13.92ms]
+(pass) supplier account store > keeps the linked and server-stamped dimensions of the adjustment signature distinct (issue 177) [28.97ms]
+(pass) supplier account store > re-validates the amount so a non-contract caller cannot invert the reduction (issue 177) [5.93ms]
+(pass) supplier account store > refuses the guarded adjustment outside a write unit (issue 177) [7.90ms]
+(pass) supplier account store > treats an account-only and a linked adjustment with the same attributes as distinct (issue 177) [25.09ms]
+(pass) supplier account store > refuses a linked يسالنا adjustment and an over-remaining linked one at the store backstop (issue 177) [21.15ms]
+(pass) supplier account store > refuses a linked adjustment aimed at another supplier's invoice at the store backstop (issue 177) [19.09ms]
+(pass) supplier account store > accepts the same amount with a different reason as a distinct adjustment (issue 177) [16.81ms]
+(pass) supplier account store > dedupes on an explicit idempotency key when the retry changes the timestamp (issue 181) [12.79ms]
+(pass) supplier account store > keeps the signature backstop in force for a keyed request (issue 181) [12.55ms]
+(pass) supplier account store > lets a different key carry a genuinely different request (issue 181) [17.09ms]
+(pass) supplier account store > stores the canonical dedup key on the row and the partial unique index on it (issue 181) [23.12ms]
+(pass) supplier account store > keys an account-only adjustment written through the raw entry seam (issue 181) [17.18ms]
+(pass) supplier account store > stores the timestamp-free key for a server-stamped adjustment (issue 181) [21.77ms]
+(pass) supplier account store > refuses an unkeyed retry of a keyed request when the signature matches (issue 181) [16.19ms]
+(pass) supplier account store > refuses an identical adjustment that only changes ref (issue 181 review) [16.45ms]
+(pass) supplier account store > treats a server-stamped request as time-insensitive against a stored explicit row (issue 181 review) [9.44ms]
+(pass) supplier account store > accepts a changed direction as a distinct adjustment (issue 181 review) [20.02ms]
+(pass) supplier account store > refuses a fresh key while the signature is unchanged, and allows one with a changed signature (issue 181 review) [24.08ms]
+(pass) supplier account store > dedupes a linked adjustment by its key and never reduces the invoice twice (issue 181) [21.89ms]
+(pass) supplier account store > leaves dedup_key null for a non-adjustment entry (issue 181) [19.98ms]
+
+src\store\supplier-adjustment-migration.test.ts:
+(pass) v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking) > adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently [823.59ms]
+(pass) v3 -> v4 adjustment dedup_key migration (issue 181, blocking) > keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently [882.04ms]
+(pass) v3 -> v4 adjustment dedup_key migration (issue 181, blocking) > self-heals a half-migrated database: column present, keys null, version 3 (issue 181) [778.00ms]
+
+ 318 pass
+ 0 fail
+ 1265 expect() calls
+Ran 318 tests across 4 files. [22.45s]

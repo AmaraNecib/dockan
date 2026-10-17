@@ -1,0 +1,23 @@
+[detached HEAD a4e0153] fix(web,api): put each supplier-direction label on the value its hint describes (#252)
+ 27 files changed, 1944 insertions(+), 25 deletions(-)
+ create mode 100644 .scratch/implementation/252-design.md
+ create mode 100644 .scratch/reviews/252/direction-labels.evidence.spec.ts
+ create mode 100644 .scratch/reviews/252/evidence/after-evidence-run.log
+ create mode 100644 .scratch/reviews/252/evidence/api-narrowed-suite.log
+ create mode 100644 .scratch/reviews/252/evidence/e2e-supplier-adjustment.log
+ create mode 100644 .scratch/reviews/252/evidence/mutation-proof.log
+ create mode 100644 .scratch/reviews/252/evidence/red-unit-run.txt
+ create mode 100644 .scratch/reviews/252/evidence/web-affected-green.log
+ create mode 100644 .scratch/reviews/252/mutation-proof.ts
+ create mode 100644 .scratch/reviews/252/playwright.evidence.config.ts
+ create mode 100644 apps/web/src/lib/select-trigger-label.test.ts
+Auto-merging apps/web/src/pages/supplier-opening-balance.test.tsx
+Auto-merging apps/web/src/pages/supplier-opening-balance.tsx
+CONFLICT (content): Merge conflict in apps/web/src/pages/supplier-opening-balance.tsx
+Rebasing (2/10)error: could not apply 93354d4... fix(web): make the direction label map the only reading, per round-1 review (#252)
+hint: Resolve all conflicts manually, mark them as resolved with
+hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
+hint: You can instead skip this commit: run "git rebase --skip".
+hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
+hint: Disable this message with "git config set advice.mergeConflict false"
+Could not apply 93354d4... fix(web): make the direction label map the only reading, per round-1 review (#252)

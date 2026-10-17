@@ -169,6 +169,21 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(theyOwe?.getAttribute("title")).toContain("هو يدين لنا");
   });
 
+  /** #252 — the other half of the same pin: the button that reads «يسالنا» must
+   * SUBMIT WE_OWE. Starting from THEY_OWE first, so a button whose handler does
+   * nothing (or sets the opposite value) cannot pass by leaving the default. */
+  it("#252 — the 'we owe him' button moves the draft back to WE_OWE", async () => {
+    render();
+    clickOn("supplier-adjust-direction-they-owe");
+    clickOn("supplier-adjust-direction-we-owe");
+    typeInto("supplier-adjust-amount", "250");
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+
+    expect(captured).toMatchObject({ direction: "WE_OWE", amount: 250 });
+  });
+
   /**
    * #252 — the same raw-value defect as the direction selects: this `<Select>`
    * had no `items` map on its root, so the trigger printed the invoice UUID while

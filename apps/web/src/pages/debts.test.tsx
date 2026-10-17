@@ -416,14 +416,17 @@ describe("DebtsPage (ticket 9)", () => {
 
     const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
     const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
-    // #252 — label-to-VALUE, not "both strings appear somewhere". The fixture is
-    // local to this test and its entries are ordered by occurredAt: e1 (WE_OWE = we
-    // owe him, +) is row 0, e2 (THEY_OWE = he owes us, −) is row 1. Asserting the
-    // word beside its OWN row's sign is what makes this a label pin — the previous
-    // assertion here passed with the two Darija strings swapped, which is the bug
-    // the ticket reports on this very table.
+    // #252 — label-to-VALUE, not "both strings appear somewhere". The rows also
+    // carry their entry's date, so this pins the ROW's identity, not just a
+    // position in two independently-queried lists: e1 is 01/10 (WE_OWE = we owe
+    // him, +) and e2 is 02/10 (THEY_OWE = he owes us, −). The previous assertion
+    // here passed with the two Darija strings swapped, which is the bug the ticket
+    // reports on this very table.
+    const dates = Array.from(document.querySelectorAll('[data-testid="debts-account-entry"]')).map((row) => row.querySelector("td")?.textContent ?? "");
+    expect(dates[0]).toContain("01/10/2026");
     expect(directions[0]).toContain("يسالنا");
     expect(amounts[0]).toContain("+");
+    expect(dates[1]).toContain("02/10/2026");
     expect(directions[1]).toContain("نسالوه");
     expect(amounts[1]).toContain("−");
 

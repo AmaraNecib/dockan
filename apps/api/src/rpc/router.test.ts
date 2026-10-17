@@ -3720,41 +3720,89 @@ describe("returns & refunds", () => {
     expect(created.debtOffset).toBe(0);
   });
 
-  it("refuses the default instead of splitting when the return exceeds the debt (#256)", async () => {
-    const item = await makeReturnItem("مرجوع-يتجاوز-الدين", 100, 500);
+  it("splits the default when the return exceeds the debt, instead of refusing (#256 round 2)", async () => {
+    const item = await makeReturnItem("مرجوع-تقسيم-افتراضي", 100, 500);
     await client.stockAddManual({ itemId: item.id, delta: 1, unitCost: 100, kind: "PURCHASE" });
     const sale = await client.invoicesCreate({ kind: "SALE", initialPaid: 200, lines: [{ itemId: item.id, quantity: 1 }] });
     expect(sale.remainingAmount).toBe(300);
-    // 500 return against a 300 debt: debt-to-zero + 200 cash is an owner
-    // decision that is still open, so the DEFAULT refuses instead of guessing
-    await expect(
-      client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_EXCEEDS_DEBT" });
-    // nothing was written by the refusal
-    expect((await client.returnsForInvoice({ invoiceId: sale.id })).items).toHaveLength(0);
-    // the owner can still choose the split explicitly — same numbers as before
-    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }], cashPaidOut: 200 });
+    // 500 return against a 300 debt: the owner's answer is debt-to-zero + 200
+    // cash, and it is now the DEFAULT the app picks on its own
+    const created = await client.returnsCreate({ invoiceId: sale.id, lines: [{ invoiceLineId: sale.lines[0]!.id, quantity: 1 }] });
+    expect(created.refundAmount).toBe(500);
     expect(created.debtOffset).toBe(300);
     expect(created.cashPaidOut).toBe(200);
+    // #68 still holds: the promise lands at acceptance, never at creation
+    expect((await client.invoicesGet({ id: sale.id })).remainingAmount).toBe(300);
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.debtApplied).toBe(300);
+    const settled = await client.invoicesGet({ id: sale.id });
+    expect(settled.remainingAmount).toBe(0);
+    // the header still reconciles: 500 − 200 − 300 = 0
+    expect(settled.totalAmount - settled.paidAmount - settled.returnCreditAmount).toBe(settled.remainingAmount);
   });
 
-  it("refuses the default when the customer's debt is on another invoice (#256)", async () => {
-    const item = await makeReturnItem("مرجوع-دين-أخر", 100, 500);
-    await client.stockAddManual({ itemId: item.id, delta: 2, unitCost: 100, kind: "PURCHASE" });
-    const customer = await client.customersCreate({ name: "زبون دين على فاتورة أخرى" });
-    // invoice A is paid in full (nothing to relieve HERE); invoice B carries 500
-    const invoiceA = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, initialPaid: 500, lines: [{ itemId: item.id, quantity: 1 }] });
-    await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 1 }] });
-    expect(invoiceA.remainingAmount).toBe(0);
-    // applying the return across invoices (oldest debt first) is an owner
-    // decision that is not made yet: the default refuses, never cash
-    await expect(
-      client.returnsCreate({ invoiceId: invoiceA.id, lines: [{ invoiceLineId: invoiceA.lines[0]!.id, quantity: 1 }] }),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST", message: "RETURN_DEBT_ELSEWHERE" });
-    // the explicit all-cash override still works
-    const created = await client.returnsCreate({ invoiceId: invoiceA.id, lines: [{ invoiceLineId: invoiceA.lines[0]!.id, quantity: 1 }], cashPaidOut: 500 });
-    expect(created.cashPaidOut).toBe(500);
-    expect(created.debtOffset).toBe(0);
+  it("allocates the default across the party's open invoices, OLDEST first (#256 round 2)", async () => {
+    const item = await makeReturnItem("مرجوع-توزيع-الاقدم", 40, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 8, unitCost: 40, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون دين موزع" });
+    // the oldest invoice owes 200 and the newer one 300 — the tab is 500. The
+    // dates are DISTINCT so the order is decidable: the store hands the unpaid
+    // rows back newest-first, so only the explicit oldest-first comparator can
+    // produce the relief asserted below (the tie-break for equal dates is
+    // covered by the sortInvoicesOldestFirst units).
+    const invoiceOld = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, invoiceDate: "2026-01-05", lines: [{ itemId: item.id, quantity: 2 }] });
+    const invoiceNew = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, invoiceDate: "2026-03-05", lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(invoiceOld.remainingAmount).toBe(200);
+    expect(invoiceNew.remainingAmount).toBe(300);
+    // the returned invoice itself is paid in full, so the tab is not here
+    const invoiceReturn = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, invoiceDate: "2026-04-05", initialPaid: 300, lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(invoiceReturn.remainingAmount).toBe(0);
+    // a 300 return against a 500 tab: all of it goes to the debt, no cash —
+    // and the 300 is smaller than the tab, so the ORDER decides which invoice
+    // is relieved how much (oldest-first: 200 then 100)
+    const created = await client.returnsCreate({ invoiceId: invoiceReturn.id, lines: [{ invoiceLineId: invoiceReturn.lines[0]!.id, quantity: 3 }] });
+    expect(created.refundAmount).toBe(300);
+    expect(created.debtOffset).toBe(300);
+    expect(created.cashPaidOut).toBe(0);
+    // still pending: nothing has moved yet (#68)
+    expect((await client.invoicesGet({ id: invoiceOld.id })).remainingAmount).toBe(200);
+    expect((await client.invoicesGet({ id: invoiceNew.id })).remainingAmount).toBe(300);
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.debtApplied).toBe(300);
+    const settledOld = await client.invoicesGet({ id: invoiceOld.id });
+    const settledNew = await client.invoicesGet({ id: invoiceNew.id });
+    expect(settledOld.remainingAmount).toBe(0);
+    expect(settledNew.remainingAmount).toBe(200);
+    // …and each relieved invoice carries its OWN share of the credit, so the
+    // printed header still reconciles on both
+    expect(settledOld.returnCreditAmount).toBe(200);
+    expect(settledNew.returnCreditAmount).toBe(100);
+    expect(settledOld.totalAmount - settledOld.paidAmount - settledOld.returnCreditAmount).toBe(settledOld.remainingAmount);
+    expect(settledNew.totalAmount - settledNew.paidAmount - settledNew.returnCreditAmount).toBe(settledNew.remainingAmount);
+    // the invoice the goods came from was already settled and stays untouched
+    expect((await client.invoicesGet({ id: invoiceReturn.id })).returnCreditAmount).toBe(0);
+  });
+
+  it("keeps an EXPLICIT all-debt choice on its own invoice — no cross-invoice spill (#256 round 2)", async () => {
+    const item = await makeReturnItem("مرجوع-صريح-فاتورة", 40, 100);
+    await client.stockAddManual({ itemId: item.id, delta: 5, unitCost: 40, kind: "PURCHASE" });
+    const customer = await client.customersCreate({ name: "زبون اختيار صريح" });
+    const invoiceOld = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 2 }] });
+    const invoiceMine = await client.invoicesCreate({ kind: "SALE", counterpartyId: customer.id, lines: [{ itemId: item.id, quantity: 3 }] });
+    expect(invoiceOld.remainingAmount).toBe(200);
+    expect(invoiceMine.remainingAmount).toBe(300);
+    // the owner explicitly asks for all debt (#162 semantics, cap and all):
+    // the cap is THIS invoice's 300, so this whole 300 return goes to its debt
+    const created = await client.returnsCreate({ invoiceId: invoiceMine.id, lines: [{ invoiceLineId: invoiceMine.lines[0]!.id, quantity: 3 }], cashPaidOut: 0 });
+    expect(created.refundAmount).toBe(300);
+    expect(created.debtOffset).toBe(300);
+    expect(created.cashPaidOut).toBe(0);
+    const accepted = await client.returnsAccept({ returnId: created.id });
+    expect(accepted.debtApplied).toBe(300);
+    expect((await client.invoicesGet({ id: invoiceMine.id })).remainingAmount).toBe(0);
+    // the explicit choice named this invoice, so the older one is untouched
+    expect((await client.invoicesGet({ id: invoiceOld.id })).remainingAmount).toBe(200);
+    expect((await client.invoicesGet({ id: invoiceOld.id })).returnCreditAmount).toBe(0);
   });
 
   it("applies accepted offsets sequentially, capping each against the debt still owed (#68)", async () => {    const item = await makeReturnItem("مرجوع-تتابع-دين", 100, 500);

@@ -43,7 +43,7 @@ import type {
 } from "@dokan/contracts";
 import { ONBOARDING_COMPLETED_PREFERENCE_KEY, isPartyPhoneText, normalizePartyPhone, normalizeTextKey, partyInvoiceKind, resolvePagination } from "@dokan/contracts";
 import type { Connection } from "../db/connection";
-import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
+import { SCHEMA_DDL, activities, categories, customers, expenseCategories, expenses, invoiceLines, invoiceNumberCounters, invoiceNumberSequence, invoices, items, payments, preferences, returnDebtApplications, returnLines, returnNumberSequence, returns, settings, stockLinks, stockMovements, supplierAccountEntries, supplierReturnLines, supplierReturns, suppliers } from "../db/schema";
 import { DOCUMENT_NUMBER_PREFIX_LENGTH, documentNumberGlob, invoiceNumberFor, invoiceNumberPrefixFor, numberedDocumentSequence, returnNumberFor } from "../lib/document-number";
 import { bookSaleLineForReturns } from "../lib/return-calculations";
 import { adjustmentDedupKey, hasExplicitIdempotencyKey, supplierBalance } from "../lib/supplier-ledger";
@@ -581,6 +581,9 @@ export const backfillCounterparties = (conn: Connection): void => {
 
 const SUPPLIER_ACCOUNT_MARKER = "migration.supplierAccountV1";
 
+/** #256 round 2 — the per-invoice debt attribution backfill marker. */
+const RETURN_DEBT_APPLICATIONS_MARKER = "migration.returnDebtApplicationsV1";
+
 /**
  * One-time backfill of supplier accounts for existing PURCHASE invoices
  * (develop fixtures / upgraded installs, issue 161). Creates a PURCHASE charge
@@ -629,6 +632,45 @@ export const backfillSupplierAccounts = (conn: Connection): void => {
   }
 };
 
+/**
+ * #256 round 2 — attribute every ALREADY-APPLIED debt offset to the invoice it
+ * relieved, so the invoice header keeps reconciling
+ * (`total − paid − returnCredit = remaining`). Before this round an offset
+ * could only touch the return's own invoice, so `SUM(returns.debt_applied)`
+ * was the credit; now one return may relieve several invoices, and the header
+ * reads `return_debt_applications`. Existing accepted returns get exactly one
+ * row each, pointing at their own invoice — which is where their offset went.
+ *
+ * Marker-gated AND `NOT EXISTS`-guarded (a lost marker can never double-count),
+ * one transaction, deterministic ids (`rda-<return id>`) so a re-run is a
+ * no-op. `getInvoiceDetail` ALSO falls back to `debt_applied` for a return
+ * with no rows at all, so a database that is missing this backfill (an
+ * interrupted boot, or a rollback to a pre-migration build) still reports the
+ * credit the old formula reported.
+ */
+export const backfillReturnDebtApplications = (conn: Connection): void => {
+  conn.raw.exec("BEGIN IMMEDIATE");
+  try {
+    // SAFETY: settings.key is the primary key; this literal SELECT yields one
+    // string column per row, so the cast names what the driver already returns.
+    const marker = conn.raw.query("SELECT value FROM settings WHERE key = ?").all(RETURN_DEBT_APPLICATIONS_MARKER) as Array<{ value: string }>;
+    if (marker.length > 0) {
+      conn.raw.exec("COMMIT");
+      return;
+    }
+    conn.raw.exec(
+      "INSERT INTO return_debt_applications (id, return_id, invoice_id, amount, created_at) " +
+        "SELECT 'rda-' || r.id, r.id, r.invoice_id, r.debt_applied, r.updated_at FROM returns r " +
+        "WHERE r.debt_applied > 0 AND NOT EXISTS (SELECT 1 FROM return_debt_applications a WHERE a.return_id = r.id)",
+    );
+    conn.raw.query("INSERT INTO settings (key, value) VALUES (?, 'done') ON CONFLICT(key) DO NOTHING").run(RETURN_DEBT_APPLICATIONS_MARKER);
+    conn.raw.exec("COMMIT");
+  } catch (err) {
+    conn.raw.exec("ROLLBACK");
+    throw err;
+  }
+};
+
 type DebtSummaryRow = {
   kind: unknown;
   counterparty_id: unknown;
@@ -666,6 +708,7 @@ const MUTATING_METHODS: ReadonlySet<keyof StorePort> = new Set([
   "transitionReturnStatus",
   "applyDebtOffsetToInvoice",
   "setDebtApplied",
+  "insertReturnDebtApplication",
   "setReturnMarks",
   "setReturnReason",
   "insertInvoice",
@@ -1125,6 +1168,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     // account (charge + one payment entry per existing payment row). Runs after
     // the counterparty backfill so typed-name purchases now have a supplier id.
     backfillSupplierAccounts(conn);
+    // #256 round 2: attribute already-applied return offsets to their invoice,
+    // so every invoice header keeps reconciling once an offset can span
+    // invoices. Runs after SCHEMA_DDL created `return_debt_applications`.
+    backfillReturnDebtApplications(conn);
 
     // The singleton seed is one conditional INSERT, so two processes opening
     // an existing database cannot both initialize a competing counter. #258 —
@@ -2368,6 +2415,18 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
     async setDebtApplied(returnId: string, amount: number) {
       await db.update(returns).set({ debtApplied: amount, updatedAt: now() }).where(eq(returns.id, returnId)).run();
     },
+    /** #256 round 2 — one row per invoice an accepted offset relieved. Written
+     * in the same unit as the offset it describes, so the invoice header `
+     * always reconciles (see returnDebtApplications in db/schema.ts). */
+    async insertReturnDebtApplication(input: { returnId: string; invoiceId: string; amount: number }) {
+      await db.insert(returnDebtApplications).values({
+        id: id(),
+        returnId: input.returnId,
+        invoiceId: input.invoiceId,
+        amount: input.amount,
+        createdAt: now(),
+      });
+    },
     /** Consume the pending review tag on every movement a return created. The
      * flat ledger facts stay untouched; only the review tag transitions. */
     async setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">) {
@@ -2441,11 +2500,21 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         db.select(paymentCols).from(payments).where(eq(payments.invoiceId, invoiceId)).orderBy(payments.paidAt, sql`rowid`),
         // the return credit the header reconciles with: `debtApplied` is
         // already 0 for pending (#68 defers it) and rejected returns, so the
-        // sum is the money the invoice genuinely stopped owing
+        // sum is the money the invoice genuinely stopped owing.
+        // #256 round 2: the authoritative attribution is
+        // `return_debt_applications` (one row per invoice an accepted return
+        // relieved, which can now be an invoice the return did not come from).
+        // A return with NO rows at all falls back to its own `debt_applied`,
+        // so a database missing the backfill still reports what the old
+        // formula reported instead of silently showing a zero credit.
         db
-          .select({ credit: sql<SqlScalar>`coalesce(sum(${returns.debtApplied}), 0)` })
-          .from(returns)
-          .where(eq(returns.invoiceId, invoiceId)),
+          .select({ credit: sql<SqlScalar>`coalesce(sum(${returnDebtApplications.amount}), 0) + coalesce((
+            SELECT sum(r.debt_applied) FROM returns r
+            WHERE r.invoice_id = ${invoiceId}
+              AND NOT EXISTS (SELECT 1 FROM return_debt_applications a WHERE a.return_id = r.id)
+          ), 0)` })
+          .from(returnDebtApplications)
+          .where(eq(returnDebtApplications.invoiceId, invoiceId)),
         // supplier purchase returns reduce a PURCHASE invoice's debt the same
         // way; without this the printed header would not add up after a
         // return (total − paid − remaining = returnCreditAmount)

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { saveQuickAdd } from "./rpc-helpers";
@@ -135,13 +135,14 @@ test("sale → debt-defaulted return → stock back (marked) + voucher route + r
 
 /**
  * The settlement panel must make the debt cap legible. A 900 sale with a 200
- * down payment leaves 700 of debt; returning the unit is worth 900, so only 700
- * can go to debt and 200 MUST be handed back as cash. The owner has to see the
- * 700, see the split, and be told which part the cap forced into cash — a
- * correct settlement that looks like a mistake is a defect. Once accepted, the
- * invoice header must reconcile: total − paid − returns = remaining.
+ * down payment leaves 700 of debt; returning the unit is worth 900, so 700 can
+ * go to debt and 200 MUST be handed back as cash. Round 2 makes that split the
+ * DERIVED DEFAULT (the owner answered the question), so the panel pre-selects
+ * it and names both figures — and re-picking "all debt" explicitly still keeps
+ * #162's cap and warns about the cash it forces. Once accepted, the invoice
+ * header must reconcile: total − paid − returns = remaining.
  */
-test("settlement names the debt cap, and the header reconciles after acceptance", async ({ page }) => {
+test("settlement names the derived split, keeps the explicit debt cap, and the header reconciles", async ({ page }) => {
   await signIn(page);
 
   const stamp = Date.now().toString();
@@ -193,19 +194,29 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await expect(page.getByTestId("returns-value")).toContainText("900");
   await expect(page.getByTestId("returns-remaining-debt")).toHaveText(/^700\b/);
 
-  // … the return is bigger than the debt, so #256 refuses to pick the split on
-  // its own: the panel says so, names both figures, and offers the debt-first
-  // confirmation instead of silently capping the debt into cash
+  // … the return is bigger than the debt, so the approved default is the SPLIT:
+  // debt to zero (700) and 200 handed back as cash. The panel pre-selects it,
+  // names both figures, and does NOT warn about a cap — nothing was capped
   await expect(page.getByTestId("returns-debt-default-note")).toBeVisible();
-  await expect(page.getByTestId("returns-debt-default-note")).toContainText("900");
   await expect(page.getByTestId("returns-debt-default-note")).toContainText("700");
-  await page.getByTestId("returns-debt-confirm").click();
+  await expect(page.getByTestId("returns-debt-default-note")).toContainText("200");
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^700\b/);
+  await expect(page.getByTestId("returns-cash-now")).toHaveText(/^200\b/);
+  await expect(page.getByTestId("returns-debt-cap-note")).toHaveCount(0);
+
+  // the owner re-picks the debt-first method by hand: that is #162's explicit
+  // choice, still capped at THIS invoice's 700 — and now the cap is announced
+  await chooseSelectOption(page, page.getByTestId("returns-settlement"), "كله خصم من الدين");
   await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^700\b/);
   await expect(page.getByTestId("returns-cash-now")).toHaveText(/^200\b/);
   const capNote = page.getByTestId("returns-debt-cap-note");
   await expect(capNote).toBeVisible();
   await expect(capNote).toContainText("700");
   await expect(capNote).toContainText("200");
+  // … and the owner can hand the settlement back to the derived default
+  await page.getByTestId("returns-debt-confirm").click();
+  await expect(page.getByTestId("returns-debt-cap-note")).toHaveCount(0);
+  await expect(page.getByTestId("returns-debt-default-note")).toBeVisible();
 
   await page.getByTestId("returns-submit").click();
   await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
@@ -223,4 +234,120 @@ test("settlement names the debt cap, and the header reconciles after acceptance"
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-returns-credit")).toHaveText(/^700\b/);
   await expect(page.getByTestId("invoice-remaining")).toHaveText(/^0\b/);
+});
+
+/**
+ *#256 round 2 — seed one record through the real RPC wire. The oRPC fetch link
+ * posts `{json: input}` to /api/rpc/<procedure> and answers `{json: output}`
+ * (see @orpc/client's StandardRPCSerializer), the same wire
+ * `invoice-print-a4.spec.ts` seeds through. Three invoices for one party
+ * through the UI is a long, flaky walk that tests nothing this spec asserts, so
+ * they are seeded here; every assertion below is the real screen.
+ */
+type SeedRequest =
+  | { procedure: "categoriesCreate"; input: { name: string } }
+  | {
+      procedure: "itemsCreateWithStock";
+      input: { name: string; categoryId: string; costPrice: number; sellingPrice: number; stockOnHand: number };
+    }
+  | {
+      procedure: "invoicesCreate";
+      input: {
+        kind: "SALE";
+        counterpartyName: string;
+        invoiceDate: string;
+        initialPaid?: number;
+        lines: Array<{ itemId: string; quantity: number }>;
+      };
+    };
+
+async function seedRpc<T>(page: Page, request: SeedRequest): Promise<T> {
+  const output = await page.evaluate(async (call) => {
+    const response = await fetch(`/api/rpc/${call.procedure}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ json: call.input }),
+      credentials: "include",
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`${call.procedure} failed: ${response.status} ${text}`);
+    // SAFETY: the oRPC serializer answers `{json: <declared output>}`; the
+    // `ok()` check above already rejected a refusal envelope
+    return (JSON.parse(text) as { json: unknown }).json;
+  }, request);
+  // SAFETY: the value above is the procedure's declared output (same wire the
+  // app's own RPC link reads), so the caller's T names it
+  return output as T;
+}
+
+/**
+ * #256 round 2 — the owner approved the cross-invoice answer: the default takes
+ * the refund off the party's WHOLE tab, "in this invoice or in another
+ * invoice", allocated across the open invoices OLDEST FIRST. The three invoices
+ * are seeded through the app's own RPC (the UI path to three invoices for one
+ * party is a long, flaky walk that tests nothing this spec asserts); everything
+ * asserted below is the real screen: the derived default, the note naming the
+ * tab, the accept, and BOTH invoice headers reconciling
+ * (`total − paid − returnCredit = remaining`).
+ */
+test("an accepted return relieves the party's older invoices, oldest first, and both headers reconcile", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `توزيع-تصنيف-${stamp}`;
+  const itemName = `توزيع-منتج-${stamp}`;
+  const customerName = `زبون توزيع-${stamp}`;
+  interface CreatedItem { id: string }
+  interface CreatedInvoice { id: string; invoiceNumber: string; lines: Array<{ id: string }> }
+  const category = await seedRpc<{ id: string }>(page, { procedure: "categoriesCreate", input: { name: categoryName } });
+  const item = await seedRpc<CreatedItem>(page, {
+    procedure: "itemsCreateWithStock",
+    input: { name: itemName, categoryId: category.id, costPrice: 100, sellingPrice: 300, stockOnHand: 10 },
+  });
+  const sale = async (quantity: number, paid: number, invoiceDate: string): Promise<CreatedInvoice> => {
+    const base = { kind: "SALE" as const, counterpartyName: customerName, invoiceDate, lines: [{ itemId: item.id, quantity }] };
+    // `initialPaid` must be POSITIVE when present: 0 is sent as an absent field,
+    // exactly as the sale form does for an unpaid invoice
+    const input = paid > 0 ? { ...base, initialPaid: paid } : base;
+    return seedRpc<CreatedInvoice>(page, { procedure: "invoicesCreate", input });
+  };
+  // oldest first: A owes 600, B owes 900, and C (the returned one) is paid in full
+  const invoiceOld = await sale(2, 0, "2026-01-05");
+  const invoiceNew = await sale(3, 0, "2026-03-05");
+  const invoiceReturn = await sale(3, 900, "2026-04-05");
+
+  // the return is recorded from the real invoice screen
+  await page.goto(`/invoices/${invoiceReturn.id}`);
+  await expect(page.getByTestId("invoice-page")).toBeVisible();
+  await page.locator('[data-testid^="returns-qty-"]').fill("3");
+  await expect(page.getByTestId("returns-value")).toContainText("900");
+  // the whole 900 goes to the tab, which is not on this invoice at all: the
+  // panel shows the tab and says the offset spreads oldest-first
+  await expect(page.getByTestId("returns-party-debt")).toContainText("1500");
+  await expect(page.getByTestId("returns-debt-default-note")).toContainText("الأقدم");
+  await expect(page.getByTestId("returns-debt-offset")).toHaveText(/^900\b/);
+  await expect(page.getByTestId("returns-cash-now")).toHaveText(/^0\b/);
+  await page.getByTestId("returns-submit").click();
+  await expect(page.getByTestId("returns-done")).toContainText("تم تسجيل المرجوع");
+  const returnNumber = (await page.getByTestId("returns-row").innerText()).match(/RTN-\d+/)![0]!;
+
+  // while pending nothing moves (#68)
+  await page.goto(`/invoices/${invoiceOld.id}`);
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^600\b/);
+  await page.goto(`/invoices/${invoiceNew.id}`);
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^900\b/);
+
+  // accept, then the 900 is taken off the oldest tab first: 600 then 300
+  await openSystemNav(page);
+  await page.getByRole("link", { name: "المرتجعات" }).click();
+  await expect(page.getByTestId("returns-page")).toBeVisible();
+  await page.getByTestId(`returns-accept-${returnNumber}`).click();
+  await expect(page.getByTestId(`returns-review-${returnNumber}`).getByTestId("returns-status-ACCEPTED")).toContainText("مقبول");
+
+  await page.goto(`/invoices/${invoiceOld.id}`);
+  await expect(page.getByTestId("invoice-returns-credit")).toHaveText(/^600\b/);
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^0\b/);
+  await page.goto(`/invoices/${invoiceNew.id}`);
+  await expect(page.getByTestId("invoice-returns-credit")).toHaveText(/^300\b/);
+  await expect(page.getByTestId("invoice-remaining")).toHaveText(/^600\b/);
 });

@@ -7,7 +7,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
-import { createDrizzleStore, seedExpenseCategories } from "./drizzle-store";
+import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
 
 // The whole file is store-seam work against a real SQLite database, including
@@ -2371,5 +2371,130 @@ describe("getInvoiceDetail return credit", () => {
       notes: null,
     });
     expect((await store.getInvoiceDetail(invoice.id))?.returnCreditAmount).toBe(0);
+  });
+
+  // #256 round 2 — one accepted return can relieve SEVERAL invoices (the
+  // approved default takes the refund off the party's whole tab), so the credit
+  // is no longer `SUM(returns.debt_applied)` on one invoice: it is attributed
+  // per invoice, and the legacy fallback must stay out of a return that HAS
+  // attribution rows or the origin invoice would claim the full promise twice.
+  it("attributes one accepted offset to each invoice it actually relieved (#256 round 2)", async () => {
+    const base = {
+      kind: "SALE" as const,
+      counterpartyId: null,
+      counterpartyName: "زبون توزيع",
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 500,
+      paidAmount: 0,
+      remainingAmount: 500,
+      notes: null,
+    };
+    const older = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-older` });
+    const newer = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-newer` });
+    const origin = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-origin`, paidAmount: 500, remainingAmount: 0 });
+    const record = await store.insertReturn({
+      returnNumber: `RTN-RC-${stamp()}-split`,
+      invoiceId: origin.id,
+      refundAmount: 300,
+      cashPaidOut: 0,
+      debtOffset: 300,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "ACCEPTED",
+      occurredAt: localDateTime(),
+    });
+    // the accepted return relieved 200 on the older invoice and 100 on the
+    // newer one — nothing on the invoice the goods came from
+    expect(await store.applyDebtOffsetToInvoice(older.id, 200)).toBe(true);
+    expect(await store.applyDebtOffsetToInvoice(newer.id, 100)).toBe(true);
+    await store.insertReturnDebtApplication({ returnId: record.id, invoiceId: older.id, amount: 200 });
+    await store.insertReturnDebtApplication({ returnId: record.id, invoiceId: newer.id, amount: 100 });
+    await store.setDebtApplied(record.id, 300);
+
+    const olderDetail = await store.getInvoiceDetail(older.id);
+    const newerDetail = await store.getInvoiceDetail(newer.id);
+    const originDetail = await store.getInvoiceDetail(origin.id);
+    expect(olderDetail?.returnCreditAmount).toBe(200);
+    expect(newerDetail?.returnCreditAmount).toBe(100);
+    // the origin invoice must NOT fall back to the return's full debt_applied
+    expect(originDetail?.returnCreditAmount).toBe(0);
+    expect(olderDetail!.totalAmount - olderDetail!.paidAmount - olderDetail!.returnCreditAmount).toBe(olderDetail!.remainingAmount);
+    expect(newerDetail!.totalAmount - newerDetail!.paidAmount - newerDetail!.returnCreditAmount).toBe(newerDetail!.remainingAmount);
+    expect(originDetail!.totalAmount - originDetail!.paidAmount - originDetail!.returnCreditAmount).toBe(originDetail!.remainingAmount);
+  });
+
+  it("backfills attribution for an already-applied return without changing the reported credit (#256 round 2)", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-return-attr-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "attr.db") }),
+    );
+    try {
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+      // a v4-shaped database: the return's offset was applied to its own
+      // invoice, and NO attribution row was ever written (the round-1 world)
+      const invoice = await legacyStore.insertInvoice({
+        invoiceNumber: `INV-ATTR-${stamp()}`,
+        kind: "SALE",
+        counterpartyId: null,
+        counterpartyName: null,
+        invoiceDate: localDate(),
+        subtotalAmount: 0,
+        discountType: null,
+        discountValue: null,
+        discountAmount: 0,
+        totalAmount: 1_000,
+        paidAmount: 600,
+        remainingAmount: 400,
+        notes: null,
+      });
+      const record = await legacyStore.insertReturn({
+        returnNumber: `RTN-ATTR-${stamp()}`,
+        invoiceId: invoice.id,
+        refundAmount: 400,
+        cashPaidOut: 0,
+        debtOffset: 400,
+        payoutMethod: "CASH",
+        reason: null,
+        status: "ACCEPTED",
+        occurredAt: localDateTime(),
+      });
+      await legacyStore.setDebtApplied(record.id, 400);
+      expect(await legacyStore.applyDebtOffsetToInvoice(invoice.id, 400)).toBe(true);
+
+      // PRE-backfill read: no attribution rows exist, so the legacy fallback
+      // (own invoice's debt_applied) answers it
+      const before = await legacyStore.getInvoiceDetail(invoice.id);
+      expect(before?.returnCreditAmount).toBe(400);
+
+      // Now reproduce the actual version-4 shape: the table did not exist when
+      // those rows were written, and the marker was never written either — so
+      // dropping both is what the next boot of THIS build meets
+      legacy.raw.exec("DROP TABLE return_debt_applications");
+      legacy.raw.exec("DELETE FROM settings WHERE key = 'migration.returnDebtApplicationsV1'");
+      // SAFETY: a literal COUNT(*) yields one row with an integer column
+      const rows = (r: Connection) => (r.raw.query("SELECT COUNT(*) AS count FROM return_debt_applications").get() as { count: number }).count;
+      await legacyStore.setup();
+      const after = await legacyStore.getInvoiceDetail(invoice.id);
+      // EQUIVALENCE: the two attribution mechanisms report the same money
+      expect(after?.returnCreditAmount).toBe(before?.returnCreditAmount);
+      expect(after?.remainingAmount).toBe(before?.remainingAmount);
+      expect(rows(legacy)).toBe(1);
+      // idempotent twice over: the marker skips a second run…
+      await legacyStore.setup();
+      expect(rows(legacy)).toBe(1);
+      // …and with the marker LOST, the NOT EXISTS guard still refuses to
+      // double-count the same return
+      legacy.raw.exec("DELETE FROM settings WHERE key = 'migration.returnDebtApplicationsV1'");
+      backfillReturnDebtApplications(legacy);
+      expect(rows(legacy)).toBe(1);
+    } finally {
+      legacy.close();
+      removeTempDirRetry(legacyDir);
+    }
   });
 });

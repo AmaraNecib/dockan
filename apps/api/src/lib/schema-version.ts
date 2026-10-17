@@ -31,8 +31,18 @@ import type { Database } from "bun:sqlite";
  * version-4 build computes the OPPOSITE balance from the same data, silently
  * inverting every balances surface. A version-4 build MUST therefore refuse the
  * version-5 database (ADR-0008 §4.5). The 4 -> 5 migration writes no rows.
+ *
+ * Version 6 (issue 256, round 2): `return_debt_applications` — the per-invoice
+ * attribution of an accepted return's debt offset, because the approved default
+ * takes a refund off the party's whole tab and one return can now relieve
+ * several invoices. A version-4 build derives an invoice's return credit from
+ * `SUM(returns.debt_applied)` on that invoice alone, so on a v6 database it
+ * would print a header that does not reconcile (`total − paid − credit =
+ * remaining`) for every invoice relieved by a return recorded elsewhere, and a
+ * v6 return accepted by a v4 build would write no attribution at all. A v5
+ * build MUST therefore refuse the version-6 database (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 6;
 
 /**
  * A database written by a newer app. The older build cannot know what the

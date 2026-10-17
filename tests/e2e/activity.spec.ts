@@ -33,7 +33,23 @@ test("activity log lists real-flow entries newest first", async ({ page }) => {
   const rows = page.getByTestId("activity-table").locator("tbody tr");
   await expect(rows.first()).toContainText("إنشاء منتج");
   await expect(rows.first()).toContainText("سجل-منتج-12");
-  // the item creation carries its related item id as a ref
-  await expect(rows.first().getByTestId("activity-ref")).not.toHaveText("—");
+  // the item creation carries its related item id as a ref, and the ref is a
+  // link to the record (#253) rather than a bare id
   await expect(rows.nth(1)).toContainText("إنشاء تصنيف");
+  await expect(rows.first().getByTestId("activity-ref")).not.toHaveText("—");
+  const ref = rows.first().getByTestId("activity-ref-link");
+  await expect(ref).toBeVisible();
+  await ref.click();
+  await expect(page).toHaveURL(/\/items\/.+\/history/);
 });
+
+/**
+ * #253 — the raw-key rows. The acceptance sentence (`SUPPLIER_OPENING_BALANCE
+ * THEY_OWE 100000 <name>` → an Arabic sentence naming the supplier) is pinned by
+ * `activity.test.tsx` (exact string, both directions) and by the before/after
+ * screenshots in `.scratch/reviews/253/`, NOT by an e2e seed here: an opening
+ * balance adds a supplier account to the shared e2e database, which changes the
+ * global /debts totals that `debts.spec.ts` (`1200 دج`, count 1) and
+ * `supplier-adjustment.spec.ts` (net-credit group) assert. The suite's own
+ * pre-existing opening-balance rows already prove the flow end to end.
+ */

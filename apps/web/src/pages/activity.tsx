@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import type { ReactNode } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Pager } from "@/components/ui/pager";
@@ -9,6 +11,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { orpc } from "../lib/rpc";
 import { usePagination } from "../hooks/use-pagination";
 import { formatDateTime } from "../lib/dates";
+import { adjustmentDirectionKey } from "../lib/supplier-entry-display";
 
 /** Keep entity references compact, but retain a useful backup filename.
  * Backup refs are local filesystem paths; showing only the basename avoids
@@ -19,6 +22,67 @@ function formatActivityReference(type: string, ref: string): string {
     return ref.split(/[\\/]/).filter(Boolean).at(-1) ?? ref;
   }
   return ref.slice(0, 8);
+}
+
+/** The detail route one activity row's `ref` points at, or null when the row
+ * has no detail screen (a return voucher, an expense, a backup file).
+ *
+ * The summary TAG decides, never the activity type: several types carry more
+ * than one tag with DIFFERENT refs — `STOCK_ADJUSTED` is a stock tweak on an
+ * item but also `STOCK_LINKED` on an invoice, and `PAYMENT_RECORDED` is both an
+ * invoice payment and the `SUPPLIER_*` moves whose ref is a supplier. Keying on
+ * the type would link the wrong record. (#253)
+ */
+export type ActivityRefTarget =
+  | { to: "/invoices/$invoiceId"; params: { invoiceId: string } }
+  | { to: "/items/$itemId/history"; params: { itemId: string } }
+  | { to: "/customers/$partyId"; params: { partyId: string } }
+  | { to: "/suppliers/$partyId"; params: { partyId: string } };
+
+export function activityRefLink(entry: { summary: string; ref: string | null }): ActivityRefTarget | null {
+  const ref = entry.ref;
+  if (ref === null || ref === "") return null;
+  const [tag, role] = entry.summary.split(" ");
+  if (tag === "ITEM_CREATED" || tag === "ITEM_CREATED_WITH_STOCK" || tag === "ITEM_UPDATED" || tag === "ITEM_COST_CORRECTED" || tag === "STOCK_ADJUSTED" || tag === "PURCHASE_CORRECTED") {
+    return { to: "/items/$itemId/history", params: { itemId: ref } };
+  }
+  if (tag === "STOCK_LINKED" || tag === "SALE_CREATED" || tag === "PURCHASE_CREATED" || tag === "PAYMENT_RECORDED") {
+    return { to: "/invoices/$invoiceId", params: { invoiceId: ref } };
+  }
+  if (tag === "SUPPLIER_PAYMENT" || tag === "SUPPLIER_REFUND" || tag === "SUPPLIER_ADJUSTMENT" || tag === "SUPPLIER_OPENING_BALANCE") {
+    return { to: "/suppliers/$partyId", params: { partyId: ref } };
+  }
+  if (tag === "PARTY_CREATED" || tag === "PARTY_UPDATED" || tag === "PARTY_DELETED") {
+    return role === "SUPPLIER"
+      ? { to: "/suppliers/$partyId", params: { partyId: ref } }
+      : { to: "/customers/$partyId", params: { partyId: ref } };
+  }
+  return null;
+}
+
+/** A linked ref. The union is switched on `to` so TypeScript correlates the
+ * params with the route instead of widening them. */
+function ActivityRef({ target, children }: { target: ActivityRefTarget; children: ReactNode }) {
+  switch (target.to) {
+    case "/invoices/$invoiceId":
+      return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
+    case "/items/$itemId/history":
+      return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
+    case "/customers/$partyId":
+      return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
+    case "/suppliers/$partyId":
+      return <Link to={target.to} params={target.params} className="underline hover:text-foreground" data-testid="activity-ref-link">{children}</Link>;
+  }
+}
+
+/** The reference cell: a link to the record when one exists, the compact id or
+ * safe backup filename otherwise, and an em dash when the row has no ref. */
+function ActivityRefCell({ entry }: { entry: { type: string; summary: string; ref: string | null } }) {
+  if (entry.ref === null || entry.ref === "") return <>—</>;
+  const label = formatActivityReference(entry.type, entry.ref);
+  const target = activityRefLink(entry);
+  if (target === null) return <>{label}</>;
+  return <ActivityRef target={target}>{label}</ActivityRef>;
 }
 
 /** Translate the locale-neutral activity summaries the api stores: a stable
@@ -64,6 +128,26 @@ export function activitySummaryText(t: TFunction, summary: string): string {
   if (tag === "SUPPLIER_PAYMENT" && tokens.length >= 3) return t("activitySupplierPayment", { amount: tokens[1], name: tokens.slice(2).join(" ") });
   if (tag === "SUPPLIER_RETURN" && tokens.length >= 4) return t("activitySupplierReturn", { number: tokens[1], amount: tokens[2], name: tokens.slice(3).join(" ") });
   if (tag === "SUPPLIER_REFUND" && tokens.length >= 3) return t("activitySupplierRefund", { amount: tokens[1], name: tokens.slice(2).join(" ") });
+  // #253 — the two supplier-account tags that shipped without a branch, so the
+  // audit log showed `SUPPLIER_OPENING_BALANCE THEY_OWE 100000 …` verbatim.
+  // The direction word comes from the supplier-account labels (one mapping).
+  // Only the two tokens the server enum can write are accepted: an unknown
+  // token falls through to the raw row (a visible bug) instead of defaulting to
+  // a direction word, which would silently misstate who owes whom.
+  if ((tag === "SUPPLIER_ADJUSTMENT" || tag === "SUPPLIER_OPENING_BALANCE") && tokens.length >= 4 && (tokens[1] === "WE_OWE" || tokens[1] === "THEY_OWE")) {
+    const direction = t(adjustmentDirectionKey(tokens[1]));
+    const body = { direction, amount: tokens[2], name: tokens.slice(3).join(" ") };
+    return tag === "SUPPLIER_ADJUSTMENT" ? t("activitySupplierAdjustment", body) : t("activitySupplierOpeningBalance", body);
+  }
+  // the pre-unlock vault failures are stored as `<event> <timestamp>`
+  if (tag === "VAULT_UNLOCK_FAILED" && tokens.length >= 2) return t("activityVaultUnlockFailed", { at: tokens.slice(1).join(" ") });
+  if (tag === "VAULT_RECOVERY_FAILED" && tokens.length >= 2) return t("activityVaultRecoveryFailed", { at: tokens.slice(1).join(" ") });
+  if (tag === "VAULT_CHANGE_PASSPHRASE_FAILED" && tokens.length >= 2) return t("activityVaultChangePassphraseFailed", { at: tokens.slice(1).join(" ") });
+  if (tag === "VAULT_RECOVERY_RESET_FAILED" && tokens.length >= 2) return t("activityVaultRecoveryResetFailed", { at: tokens.slice(1).join(" ") });
+  // #253 round 2 — a wrong passphrase while retrying an interrupted setup stores
+  // this tag in the throttle's pendingEvents; the next boot copies it into the
+  // activity log, so it needs the same branch as the other vault failures.
+  if (tag === "VAULT_SETUP_RESUME_FAILED" && tokens.length >= 2) return t("activityVaultSetupResumeFailed", { at: tokens.slice(1).join(" ") });
   if (tag === "EXPENSE_CATEGORY_CREATED" && tokens.length >= 3) {
     const name = tokens.slice(2).join(" ");
     return tokens[1] === "WITHDRAWAL"
@@ -145,9 +229,11 @@ export function ActivityLogPage() {
                   <span className="rounded bg-muted px-2 py-0.5 text-xs text-foreground">{t(`activityType_${entry.type}`)}</span>
                 </td>
                 <td className="p-3">{activitySummaryText(t, entry.summary)}</td>
-                {/* Entity refs are compact; backup refs display their safe local filename. */}
+                {/* Entity refs are compact; backup refs display their safe local filename.
+                    #253 — a ref with a detail screen is a link, so the column answers
+                    "what is this?" instead of printing an opaque id. */}
                 <td className="p-3 cell-ltr font-mono text-xs text-muted-foreground" data-testid="activity-ref">
-                  {entry.ref ? formatActivityReference(entry.type, entry.ref) : "—"}
+                  <ActivityRefCell entry={entry} />
                 </td>
               </tr>
             ))}

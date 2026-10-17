@@ -58,6 +58,115 @@ export const activityTypes = [
   "VAULT_UNLOCK_FAILED",
 ] as const;
 
+/**
+ * The first token of every activity `summary` the api writes. The api stays
+ * locale-neutral and stores a stable ASCII tag plus positional data fields,
+ * with the single free-text field (a name, invoice number or filename) always
+ * last so embedded spaces survive the split.
+ *
+ * The web page owns the Arabic copy and has one branch per tag. This list is
+ * the one source both sides enumerate: `activity.test.tsx` (web) asserts every
+ * member has a branch, and `activity-tags.test.ts` (api) asserts every tag the
+ * emit sites write is a member — so a new activity type cannot ship with a raw
+ * key in the audit log (#253).
+ *
+ * The four VAULT_* entries are written by `VaultManager.recordFailure(event)`
+ * (`summary: `${event} ${timestamp}``), not by a literal template, so the api
+ * scan proves them only indirectly (via the web enumeration).
+ */
+export const activitySummaryTags = [
+  "STORE_SETUP",
+  "CATEGORY_CREATED",
+  "ITEM_CREATED",
+  "ITEM_CREATED_WITH_STOCK",
+  "ITEM_UPDATED",
+  "ITEM_COST_CORRECTED",
+  "STOCK_ADJUSTED",
+  "STOCK_LINKED",
+  "PURCHASE_CORRECTED",
+  "PARTY_CREATED",
+  "PARTY_UPDATED",
+  "PARTY_DELETED",
+  "SALE_CREATED",
+  "PURCHASE_CREATED",
+  "PAYMENT_RECORDED",
+  "SUPPLIER_PAYMENT",
+  "SUPPLIER_RETURN",
+  "SUPPLIER_REFUND",
+  "SUPPLIER_ADJUSTMENT",
+  "SUPPLIER_OPENING_BALANCE",
+  "RETURN_RECORDED",
+  "RETURN_REVIEWED",
+  "EXPENSE_CATEGORY_CREATED",
+  "EXPENSE_RECORDED",
+  "SETTINGS_UPDATED",
+  "BACKUP_CREATED",
+  "DAILY_BACKUP",
+  "PASSWORD_RESET",
+  "VAULT_UNLOCK_FAILED",
+  "VAULT_RECOVERY_FAILED",
+  "VAULT_CHANGE_PASSPHRASE_FAILED",
+  "VAULT_RECOVERY_RESET_FAILED",
+  "VAULT_SETUP_RESUME_FAILED",
+] as const;
+
+export type ActivitySummaryTag = (typeof activitySummaryTags)[number];
+
+/**
+ * Every event code the api can write to the daily JSONL (`logger.info(event,
+ * message, ctx)` and the two event-carrying helpers `recordFailure(event)` /
+ * `rotateSession(event)`).
+ *
+ * Not an RPC shape: it is the shared vocabulary between the api's log call
+ * sites and the diagnostics viewer (#253), which renders `logEvent_<code>`
+ * instead of the raw English badge. `log-events.test.ts` (api) asserts the emit
+ * sites stay inside this set; `log-copy.test.ts` (web) asserts every member has
+ * Arabic copy. An unknown code still renders raw, so nothing is dropped.
+ */
+export const logEvents = [
+  "FIRST_TIME_SETUP",
+  "SETUP_LOCKED",
+  "RPC_ERROR",
+  "SERVER_BOOT_DONE",
+  "SERVER_STARTED",
+  "SERVER_ERROR",
+  "SNAPSHOT_PERSIST_FAILED",
+  "SESSION_SECRET_REGENERATED",
+  "DASHBOARD_SECTION_FAILED",
+  "WEB_UI_SERVE_FAILED",
+  "VAULT_DISABLED",
+  "VAULT_CREATED",
+  "VAULT_UNLOCKED",
+  "VAULT_RECOVERY_UNLOCKED",
+  "VAULT_SETUP_DONE",
+  "VAULT_SETUP_FAILED",
+  "VAULT_SETUP_BACKUP_FAILED",
+  "VAULT_SETUP_CLEANUP_FAILED",
+  "VAULT_BACKUP_REFRESH_FAILED",
+  "VAULT_PLAINTEXT_REMAINS",
+  "VAULT_LOCK_FAILED",
+  "VAULT_LOCK_LOST",
+  "VAULT_LOCK_RECLAIM_RACED",
+  "VAULT_LOCK_RECLAIMED",
+  "VAULT_ATTEMPT_FAILED",
+  "VAULT_STATE_RESET",
+  "VAULT_OPT_OUT_IGNORED",
+  "VAULT_PASSPHRASE_CHANGED",
+  "VAULT_PASSPHRASE_RESET",
+  "VAULT_RECOVERY_KEY_REMOVED",
+  "VAULT_UNLOCK_FAILED",
+  "VAULT_RECOVERY_FAILED",
+  "VAULT_CHANGE_PASSPHRASE_FAILED",
+  "VAULT_RECOVERY_RESET_FAILED",
+  "VAULT_SESSION_REVOKED",
+  "VAULT_LEGACY_PLAINTEXT_REMOVED",
+  "VAULT_LEGACY_PLAINTEXT_STAYED",
+  "VAULT_LEGACY_BACKUP_ENCRYPTED",
+  "VAULT_LEGACY_BACKUP_STAYED",
+] as const;
+
+export type LogEvent = (typeof logEvents)[number];
+
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------

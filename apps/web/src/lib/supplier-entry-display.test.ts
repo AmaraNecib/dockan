@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import i18n from "./i18n";
-import { supplierEntryDirectionKey, supplierEntrySign, supplierEntrySignLabel } from "./supplier-entry-display";
+import { supplierBalanceDirectionKey, supplierEntryDirectionKey, supplierEntrySign, supplierEntrySignLabel } from "./supplier-entry-display";
 
 /**
  * Greptile round 1 finding 6: an opposite adjustment looked identical on the
@@ -32,6 +32,34 @@ describe("supplierEntryDirectionKey", () => {
     expect(supplierEntryDirectionKey({ kind: "ADJUSTMENT", direction: "WE_OWE" })).toBe("supplierAdjustDirectionWeOwe");
     expect(supplierEntryDirectionKey({ kind: "ADJUSTMENT", direction: "THEY_OWE" })).toBe("supplierAdjustDirectionTheyOwe");
     expect(supplierEntryDirectionKey({ kind: "PURCHASE", direction: null })).toBeNull();
+  });
+});
+
+/**
+ * #260 (PR #271 finding) — the ONE balance → word mapping. A negative balance is
+ * the debt we owe; a positive one is the supplier's credit; zero reads as owed,
+ * matching `SupplierBalanceHeader`. The preview used to invert this comparison,
+ * so the word contradicted what saving recorded.
+ */
+describe("supplierBalanceDirectionKey", () => {
+  it("maps a negative balance to the debt word and a positive one to the credit word (#260)", () => {
+    expect(supplierBalanceDirectionKey(-500)).toBe("supplierAdjustDirectionWeOwe");
+    expect(supplierBalanceDirectionKey(500)).toBe("supplierAdjustDirectionTheyOwe");
+  });
+
+  it("reads zero as owed, matching the balance header (#260)", () => {
+    expect(supplierBalanceDirectionKey(0)).toBe("supplierAdjustDirectionWeOwe");
+  });
+
+  it("flips at the sign boundary, not at zero-width values (#260)", () => {
+    expect(supplierBalanceDirectionKey(1)).toBe("supplierAdjustDirectionTheyOwe");
+    expect(supplierBalanceDirectionKey(-1)).toBe("supplierAdjustDirectionWeOwe");
+  });
+
+  it("round-trips the ledger's entry sign: the sign's direction is the word's direction (#260)", () => {
+    // supplierEntrySign("ADJUSTMENT", "WE_OWE") = −1, and a −1 balance is «يسالنا»
+    expect(supplierBalanceDirectionKey(supplierEntrySign("ADJUSTMENT", "WE_OWE"))).toBe("supplierAdjustDirectionWeOwe");
+    expect(supplierBalanceDirectionKey(supplierEntrySign("ADJUSTMENT", "THEY_OWE"))).toBe("supplierAdjustDirectionTheyOwe");
   });
 });
 

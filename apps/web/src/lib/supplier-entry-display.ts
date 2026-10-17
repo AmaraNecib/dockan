@@ -30,6 +30,17 @@ export function adjustmentDirectionKey(
   return token === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
 }
 
+/** The direction word for a signed BALANCE (#260). One mapping for every reader
+ * that pairs a balance with «يسالنا»/«نسالوه»: a negative balance is the debt we
+ * owe the supplier (`WE_OWE`); a positive one is the credit the supplier holds
+ * for us (`THEY_OWE`). Zero reads as owed, matching `SupplierBalanceHeader`
+ * (`owed = balance <= 0`) — nothing is held. */
+export function supplierBalanceDirectionKey(
+  balance: number,
+): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
+  return balance > 0 ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+}
+
 /** The direction word for an ADJUSTMENT, or null for every other kind (whose
  * direction is implied by the kind label). */
 export function supplierEntryDirectionKey(

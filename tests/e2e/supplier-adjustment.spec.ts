@@ -160,6 +160,9 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // finding 1). Rows are found by their EXACT name because the three share a prefix.
   const savedRow = (name: string) => saved.getByTestId("opening-balance-saved-row").filter({ has: page.getByText(name, { exact: true }) });
   await expect(savedRow(openingSupplierName)).toContainText("800 دج");
+  // #260 — the saved card names the same direction the ledger recorded: 800 WE_OWE
+  // is a debt, so the row reads يسالنا beside the amount
+  await expect(savedRow(openingSupplierName)).toContainText("يسالنا");
   await expect(savedRow(secondOpeningSupplier)).toContainText("150 دج");
   await expect(savedRow(thirdOpeningSupplier)).toContainText("250 دج");
   await page.getByTestId("opening-balance-done").click();
@@ -208,6 +211,10 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("opening-balance-typed-amount-0").fill("100000");
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
+  // #260 — the saved card's credit row keeps the credit word beside the amount
+  await expect(
+    page.getByTestId("opening-balance-saved").getByTestId("opening-balance-saved-row").filter({ has: page.getByText(creditSupplierName, { exact: true }) }),
+  ).toContainText("نسالوه");
 
   await page.goto("/debts");
   await expect(page.getByTestId("debts-group-weowe-credit")).toContainText("رصيد لنا عند الموردين");

@@ -14,6 +14,7 @@ import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
+import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -250,7 +251,7 @@ export function SupplierAdjustPanel({
       <div className="rounded border border-border bg-background p-2 text-sm" data-testid="supplier-adjust-preview">
         <p>
           {t("supplierAdjustPreview")}: <span className="font-semibold"><Amount value={Math.abs(previewBalance)} /></span>
-          {previewBalance !== 0 && <span> {previewBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>}
+          {previewBalance !== 0 && <span> {t(supplierBalanceDirectionKey(previewBalance))}</span>}
         </p>
         {previewRemaining !== null ? (
           <p className="mt-1" data-testid="supplier-adjust-preview-remaining">

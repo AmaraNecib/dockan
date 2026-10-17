@@ -16,6 +16,7 @@ import { tError } from "@/lib/i18n";
 import { focusByTestId } from "@/lib/focus";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
+import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
 import {
   MAX_OPENING_BALANCE_ROWS,
   droppedFilledDrafts,
@@ -739,7 +740,7 @@ export function SupplierOpeningBalancePage() {
             {saved.accounts.map((account) => (
               <li key={account.supplierId} className="flex items-center justify-between gap-3" data-testid="opening-balance-saved-row">
                 <span>{account.name}</span>
-                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {account.balance > 0 ? t("supplierAdjustDirectionTheyOwe") : t("supplierAdjustDirectionWeOwe")}</span>
+                <span className="font-medium"><Amount value={Math.abs(account.balance)} /> {t(supplierBalanceDirectionKey(account.balance))}</span>
               </li>
             ))}
           </ul>
@@ -828,7 +829,7 @@ export function SupplierOpeningBalancePage() {
                         <Amount value={Math.abs(supplier.accountBalance ?? 0)} />{" "}
                         {supplier.accountBalance !== null && supplier.accountBalance !== undefined && supplier.accountBalance !== 0 && (
                           <span className="text-xs text-muted-foreground">
-                            {supplier.accountBalance > 0 ? t("supplierAdjustDirectionTheyOwe") : t("supplierAdjustDirectionWeOwe")}
+                            {t(supplierBalanceDirectionKey(supplier.accountBalance))}
                           </span>
                         )}
                       </td>

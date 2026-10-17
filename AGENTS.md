@@ -81,7 +81,10 @@ the four reasons, the evidence form (visual vs measured), the owner triggers, an
 A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
 image assets. It is **not a veto**: it auto-merges too when it is cheap to reverse, but the parent
 must post the before/after table plus the video at the head **first**, so the owner can judge it
-after the fact. Everything is auto-merge eligible when all four reasons hold, every check is green
+after the fact. A diff that is **visual, changes e2e behaviour, or changes wording** owes a fixed
+shape in its PR evidence comment: before/after images, **a GIF that plays inline**, and the
+video link (the mp4) — GitHub strips `<video>`, so the GIF is what plays. The full form is in the
+gate doc §1. Everything is auto-merge eligible when all four reasons hold, every check is green
 or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
 (migrations/schema, `packages/contracts/**`, release/deploy, outside state), encodes a decision,
 or the owner asked to see it. Those go to the owner.

@@ -26,10 +26,21 @@ that something ran.
 
 ### Visual evidence, in its exact form
 
-A clip at the real user pace, 30–45 s. Record it headless as webm, convert to mp4 or gif, and
-upload it to the public `crew-evidence` bucket under `<project>/<pr>/<artifact>`. GitHub renders
-images and GIFs inline but never video, so a linked mp4 is the wrong shape for a PR comment;
-the GIF or the inline frame is what the parent actually sees and judges.
+Required whenever the diff is **visual**, **changes e2e behaviour**, or **changes wording**
+(i18n/copy) — anything a person reads on screen, or a test reads back as text. The PR's
+evidence comment carries all three:
+
+1. **before/after images** — one row per surface changed, both sides at one display width;
+2. **a GIF that plays inline**, at real user pace (30–45 s), recorded at Full HD so it stays
+   sharp when GitHub scales it to the comment width;
+3. **the video link** — the full-quality mp4 beside the GIF. GitHub strips `<video>`, so the
+   GIF is the only thing that plays in a PR comment; the mp4 is the full-speed copy.
+
+Record headless as webm, convert with ffmpeg (GIF via `palettegen`/`paletteuse`, mp4 as CRF 18),
+and upload to the public `crew-evidence` bucket under `<project>/<pr>/<artifact>` — the harness
+helper is `.scratch/scripts/evidence-put.sh`, and the bucket's `r2.dev` domain is public, so the
+URLs render inline. A screenshot pair alone does not show a transition, a focus ring or a hover
+state; a linked mp4 alone does not play.
 
 ### What counts as failing-first
 

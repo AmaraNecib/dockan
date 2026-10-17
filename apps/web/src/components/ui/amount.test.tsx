@@ -10,7 +10,8 @@ import { createRoot } from "react-dom/client";
 
 import "../../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 
-import { Amount, Money } from "./amount";
+import { PrintAmount } from "../print-sheet";
+import { Amount } from "./amount";
 
 let mounted: Array<{ root: ReturnType<typeof createRoot>; host: HTMLElement }> = [];
 
@@ -62,6 +63,14 @@ describe("Money / Amount — one money display (issue #254)", () => {
     expect(runs(plus).figures.textContent).toBe("+ 15,000");
   });
 
+  it("reads the magnitude when a ledger sign is given, so a sign cannot double", () => {
+    const host = render(<Amount value={-100} sign="−" />);
+    expect(runs(host).figures.textContent).toBe("− 100");
+    // without a sign the value's own sign is the display
+    const plain = render(<Amount value={-100} />);
+    expect(runs(plain).figures.textContent).toBe("-100");
+  });
+
   it("isolates only the figures, and separates the currency with a real space", () => {
     const host = render(<Amount value={1000} />);
     const { figures, currency } = runs(host);
@@ -75,9 +84,11 @@ describe("Money / Amount — one money display (issue #254)", () => {
     expect(currency.textContent).toBe("دج");
   });
 
-  it("renders the same figures and currency placement through PrintAmount's classes", () => {
-    const host = render(<Money value={-100} amountClassName="print-sheet-ltr" currencyClassName="print-sheet-cur" />);
+  it("renders the same figures and currency placement through the real PrintAmount", () => {
+    const host = render(<PrintAmount value={-100} />);
     const { figures, currency } = runs(host);
+    // the sheet's own paper classes still land on the two runs (#254 moved the
+    // formatter, not the sheet's type)
     expect(figures.classList.contains("print-sheet-ltr")).toBe(true);
     expect(currency.classList.contains("print-sheet-cur")).toBe(true);
     expect(host.textContent).toBe("-100 دج");

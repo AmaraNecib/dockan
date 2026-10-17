@@ -296,7 +296,7 @@ describe("DebtsPage (ticket 9)", () => {
     expect(loaded).toBe(true);
 
     // zero is not a credit: the plain total branch renders the absolute value
-    expect(ui.groupTotal("debts-group-weowe")?.textContent).toContain("0");
+    expect(ui.groupTotal("debts-group-weowe")?.textContent).toBe("0 دج");
     expect(ui.text()).not.toContain("رصيد لنا عند الموردين");
 
     await ui.unmount();

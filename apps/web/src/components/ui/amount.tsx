@@ -42,11 +42,14 @@ export function Money({
   currencyClassName?: string;
 }) {
   const { t } = useTranslation();
+  // A caller that supplies a ledger sign supplies the magnitude: reading the
+  // sign of `value` too would print `− -100`.
+  const figures = formatMoney(sign === undefined ? value : Math.abs(value));
   return (
     <>
       <span dir="ltr" data-testid="money-figures" className={amountClassName}>
         {sign === undefined ? "" : `${sign} `}
-        {formatMoney(value)}
+        {figures}
       </span>{" "}
       <span data-testid="money-currency" className={currencyClassName}>{t("currencyDinar")}</span>
     </>
@@ -55,5 +58,14 @@ export function Money({
 
 /** A DZD amount on screen: grouped digits, mono tabular figures. */
 export function Amount({ value, sign, className }: { value: number; sign?: "+" | "−"; className?: string }) {
-  return <Money value={value} sign={sign} amountClassName={cn("font-mono tabular-nums", className)} />;
+  return (
+    <Money
+      value={value}
+      sign={sign}
+      amountClassName={cn("font-mono tabular-nums", className)}
+      // the currency sat inside the figures' mono span before #254; keep its
+      // type so unifying the placement is the only visual change
+      currencyClassName="font-mono tabular-nums"
+    />
+  );
 }

@@ -1,0 +1,3 @@
+[pickup] admission=ADMIT budget=9 — load 0.0% below the admit line, 2 e2e slot(s) free
+[pickup] lanes=1 budget=9 headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)
+[pickup] the queue is empty.

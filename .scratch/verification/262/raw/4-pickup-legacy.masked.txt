@@ -1,0 +1,6 @@
+[pickup] admission=HOLD REASON
+[pickup] holding: the policy is not admitting. Nothing started.
+[why] every item below is held by the HOST, not by the queue: admission=HOLD REASON
+[why] #999: ready to pick, blocked by admission=HOLD REASON
+[why] #998: ready to pick, blocked by admission=HOLD REASON
+[why] #997: ready to pick, blocked by admission=HOLD REASON

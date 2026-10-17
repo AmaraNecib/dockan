@@ -1,0 +1,5 @@
+  would burn clean-lane (1 MB)
+  SKIP   dirty-lane (uncommitted source: unsaved-source.ts)
+
+  burned=1 kept=0 skipped=1
+  branches are kept: recover any checkout with git worktree add <path> <branch>

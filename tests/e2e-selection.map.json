@@ -80,6 +80,8 @@
     ".husky/**",
     "scripts/sync-claude-skills.ts",
     "scripts/sync-claude-skills.test.ts",
+    "$comment: the crew harness (issue #262): it starts lanes and takes slots, it is never bundled and no browser can reach it",
+    "scripts/crew/**",
     "apps/desktop/**",
 
     "$comment: unit tests and their harness never reach the browser; a feature rule above still wins for the test files it names",

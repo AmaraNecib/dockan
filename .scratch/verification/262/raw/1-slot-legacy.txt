@@ -1,0 +1,2 @@
+slots: 2   root: /d/projects/mani-project/.scratch/sessions/crew/e2e-slots
+  (none held)

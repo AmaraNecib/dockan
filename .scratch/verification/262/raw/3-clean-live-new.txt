@@ -1,0 +1,16 @@
+  skip   chore-262-shell-to-ts (a lane holds it)
+  would burn docs-259-verification-rule (367 MB)
+  keep   feat-255-bulk-add-row (open PR on feat-255-bulk-add-row -- review fixes happen here)
+  keep   feat-256-return-defaults (unpushed commits on feat-256-return-defaults)
+  keep   feat-257-inline-product (open PR on feat-257-inline-product -- review fixes happen here)
+  keep   feat-258-invoice-prefix (open PR on feat-258-invoice-prefix -- review fixes happen here)
+  keep   fix-252-direction-labels (open PR on fix-252-direction-labels -- review fixes happen here)
+  keep   fix-253-activity-keys (open PR on fix-253-activity-keys -- review fixes happen here)
+  keep   fix-254-money-display (open PR on fix-254-money-display -- review fixes happen here)
+  skip   fix-256-round2 (a lane holds it)
+  keep   fix-261-round2 (unpushed commits on fix-261-round2)
+  would burn fix-263-round2 (382 MB)
+  would burn issue-249-ast-walk (368 MB)
+
+  burned=3 kept=8 skipped=2
+  branches are kept: recover any checkout with git worktree add <path> <branch>

@@ -1,0 +1,7 @@
+[pickup] admission=ADMIT budget=8 — load 8.6% below the admit line, 2 e2e slot(s) free
+[pickup] lanes=0 budget=8 headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)
+[pickup] queue: 999 998 997 
+[pickup] #999 base=origin/develop
+[pickup] WOULD start #999 as 'issue-999-diff-fixture' from C:/Users/sensei57/AppData/Local/Temp/crew-diff-262/pickup/repo/.scratch/sessions/crew/briefs/issue-999-diff-fixture.md
+[pickup] --- why: admission=ADMIT budget=8 headroom=1 lanes=0 ---
+[pickup] started=1

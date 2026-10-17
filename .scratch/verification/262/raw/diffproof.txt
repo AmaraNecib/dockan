@@ -1,0 +1,49 @@
+### 1. e2e-slot status — live shared slot dir
+IDENTICAL
+### 2. crew-loop status — a fixture state dir, so the input is fixed
+  dead pid: IDENTICAL (not running)
+  live pid 22976 (tasklist confirms bun.exe is running) — a DELIBERATE delta:
+    legacy: not running
+    new:    running pid 22976 — log C:/Users/sensei57/AppData/Local/Temp/crew-diff-262/loop/crew-loop.log
+    measured cause: bash: line 1: kill: (22976) - No such process — MSYS kill cannot see a native pid, so the shell version calls a running loop dead
+### 3. crew-clean --dry-run — FIXTURE repo with one dirty and one clean worktree
+warning: in the working copy of 'tracked.txt', LF will be replaced by CRLF the next time Git touches it
+IDENTICAL
+### 4. crew-pickup --dry-run --why — FIXTURE queue: claimable, brief-less, doubly-claimed
+  fixture queue: 1. #999 [high] diff-fixture 2. #998 [normal] no-brief 3. #997 [low] two-briefs queue=3 
+IDENTICAL (modulo the masked live CPU/slot measurement)
+  the same fixture, unmasked, legacy:
+    [pickup] admission=HOLD budget=8 — both e2e slots are held — the one hard cap; CPU has no say here
+    [pickup] holding: the policy is not admitting. Nothing started.
+    [why] every item below is held by the HOST, not by the queue: admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #999: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #998: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #997: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+  the same fixture, unmasked, new:
+    [pickup] admission=HOLD budget=8 — both e2e slots are held — the one hard cap; CPU has no say here
+    [pickup] holding: the policy is not admitting. Nothing started.
+    [why] every item below is held by the HOST, not by the queue: admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #999: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #998: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+    [why] #997: ready to pick, blocked by admission=HOLD (both e2e slots are held — the one hard cap; CPU has no say here)
+### 4b. crew-pickup --dry-run --why — the same fixture with the slots free, so the PER-ITEM path runs
+IDENTICAL (modulo the masked live CPU measurement)
+  legacy:
+    [pickup] admission=ADMIT budget=8 — load 8.6% below the admit line, 2 e2e slot(s) free
+    [pickup] lanes=0 budget=8 headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)
+    [pickup] queue: 999 998 997 
+    [pickup] #999 base=origin/develop
+    [pickup] WOULD start #999 as 'issue-999-diff-fixture' from C:/Users/sensei57/AppData/Local/Temp/crew-diff-262/pickup/repo/.scratch/sessions/crew/briefs/issue-999-diff-fixture.md
+    [pickup] --- why: admission=ADMIT budget=8 headroom=1 lanes=0 ---
+    [pickup] started=1
+  new:
+    [pickup] admission=ADMIT budget=7 — load 16.8% below the admit line, 2 e2e slot(s) free
+    [pickup] lanes=0 budget=7 headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)
+    [pickup] queue: 999 998 997 
+    [pickup] #999 base=origin/develop
+    [pickup] WOULD start #999 as 'issue-999-diff-fixture' from C:/Users/sensei57/AppData/Local/Temp/crew-diff-262/pickup/repo/.scratch/sessions/crew/briefs/issue-999-diff-fixture.md
+    [pickup] --- why: admission=ADMIT budget=7 headroom=1 lanes=0 ---
+    [pickup] started=1
+### 5. supplementary: the live queue, read-only, both sides back to back
+IDENTICAL (modulo the masked live CPU/slot measurement)
+### done

@@ -1,0 +1,25 @@
+== ABLATION: pickup: the empty-message guard is deleted (the historical bug: herdr accepted an empty prompt at exit 0)
+scripts/crew/crew-pickup.ts: const refusal = validateLaunch(message, brief, env.exists(brief));  ->  const refusal = "";
+   FAIL an empty launch message is refused — [pickup] admission=ADMIT budget=4 — load 10.0%
+   FAIL the refusal happens BEFORE any worktree exists — bun /repo/scripts/crew-admit.ts --json --window 20 --interval 4 | bun /repo/.scratch/scripts/crew-queue.ts list | herdr workspace list | git worktree list | herdr worktree create --cwd D:/projects/mani-project --base origin/develop --branch issue-262-x --path D:/projects/mani-worktrees/issue-262-x --label issue-262-x --no-focus | herdr worktree open --cwd D:/projects/mani-project --path D:/projects/mani-worktrees/issue-262-x --label issue-262-x --no-focus | herdr agent start issue-262-x --kind pi --pane w99:p1 --timeout 120000 | herdr agent prompt issue-262-x  --wait | herdr workspace list | bun /repo/.scratch/scripts/crew-queue.ts remove 262
+   FAIL a refused launch leaves the issue queued — 262
+   35 pass / 3 fail
+== ABLATION: crew-clean: the uncommitted-source guard is deleted (the destructive path)
+scripts/crew/crew-clean.ts: if (!options.force && wt.dirtySource.length > 0) {  ->  if (false) {
+   FAIL THE property: uncommitted source refuses the burn — burn
+   FAIL real git: a worktree with uncommitted source is SKIPped, the clean one would burn —   would burn dirty-lane (1 MB)
+   FAIL real git: the burn removes the clean worktree and keeps the dirty one —   burned dirty-lane (1 MB)
+   12 pass / 3 fail
+== ABLATION: crew-loop: the started= parse is broken (the contract with pickup)
+scripts/crew/crew-loop.ts: started = Number(match[1]);  ->  started = 0;
+   FAIL started=2 is read from the last line — 0
+   FAIL a tick that started lanes logs the count and wakes once — tick: [pickup] admission=ADMIT budget=4 — load 10.0% | started=0 | pickup: [pickup] admission=ADMIT budget=4 — load 10.0%|[pickup] lanes=1 budget=4 headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)|[pickup] queue: 262 |[pickup] #262 base=origin/develop|[pickup] #262: 'issue-262-x' is already a registered worktree -- a lane has it; removing from the queue.
+   FAIL the wake carries a summary, never pickup's transcript
+   FAIL a real child process's started=3 reaches the log — tick: [pickup] admission=ADMIT budget=9 — load 1.0% | started=0 | pickup: [pickup] admission=ADMIT budget=9 — load 1.0%
+   15 pass / 4 fail
+== ABLATION: e2e-slot: the mkdir claim stops being atomic (the lock itself)
+scripts/crew/e2e-slot.ts: mkdirSync(join(held, `slot${String(n)}`));  ->  mkdirSync(join(held, `slot${String(n)}`), { recursive: true });
+   FAIL four lanes, two slots: exactly two hold, on two distinct slots — won=slot1,slot1,slot1,slot1 losers=0
+   19 pass / 1 fail
+== restored:
+   ?? scripts/crew/

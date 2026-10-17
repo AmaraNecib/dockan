@@ -1,0 +1,3 @@
+[pickup] admission=ADMIT REASON
+[pickup] lanes=1 budget=N headroom=1 (one per tick under the 80% ceiling; lanes are already inside busy)
+[pickup] the queue is empty.

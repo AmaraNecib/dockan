@@ -1,0 +1,112 @@
+chore(scripts): convert the hot-path crew scripts to TypeScript on Bun (#262)
+
+Five scripts that run the crew pipeline were still shell: crew-pickup (351 lines),
+crew-loop (154), e2e-slot (172), herdr-wake (95), crew-clean (95). They are the
+files the ticket calls the hot path, and every failure it lists lives in one of
+them: a multi-line prompt passed as an argv element, a `MSG=` definition deleted
+while its uses stayed, `A=x cmd1 | cmd2` scoping an env var to the wrong process,
+`grep -l`/`paste` pairing an issue with the wrong priority, a `mkdir` lock, python
+in a pipeline.
+
+- `scripts/crew/*.ts` — the implementations, tracked, linted and covered by
+  `bun run test` (`bun test ./scripts/` recurses).
+- `.scratch/scripts/{crew-pickup,crew-loop,e2e-slot,crew-clean}.sh` — the compat
+  name, now an `exec bun` forwarding shim. Required, not cosmetic:
+  `crew-autopilot.ts` walks up for `.scratch/scripts/crew-pickup.sh` BY NAME to
+  decide whether the in-session autopilot arms, and `e2e-slot-guard.ts` does the
+  same for `.scratch/scripts/e2e-slot.sh`. Moving instead of shimming disarms both
+  silently.
+- `scripts/crew/herdr-wake.sh` — the installable shim for
+  `~/.pi/agent/bin/herdr-wake.sh`, which is outside every repo.
+- `--selftest` on each converted script, and the same case list asserted by
+  `scripts/crew/*.test.ts`, so the operator's one-command proof cannot drift from
+  CI. 25 tests, 76 assertions.
+- `.scratch/verification/262/legacy/` — the frozen pre-migration sources. `.scratch`
+  is untracked in the main repo's working tree, so replacing a `.sh` there deletes
+  the implementation with no way back; these also make the diff-proof re-runnable.
+- `tests/e2e-selection.map.json` — `scripts/crew/**` is `skip_e2e` (harness, never
+  bundled).
+
+--- EVIDENCE (non-visual change: the measurements) ---
+
+DIFF-PROOF (rule 5), old vs new on the same inputs, byte for byte. The two that
+read live state are run against a fixture: the legacy file is copied and its
+hardcoded constants retargeted at it, which is the only way to hand both versions
+identical inputs. `bash .scratch/verification/262/raw/run-diffproof.sh`:
+
+  e2e-slot status, live shared slot dir          -> IDENTICAL
+  crew-loop status, fixture state dir, dead pid  -> IDENTICAL ("not running")
+  crew-loop status, fixture state dir, live pid  -> DIFFERS, deliberately (see 5)
+  crew-clean --dry-run, fixture repo (one dirty
+    worktree, one clean)                         -> IDENTICAL
+  crew-pickup --dry-run --why, fixture queue
+    (claimable + brief-less + doubly-claimed)    -> IDENTICAL modulo the masked
+                                                    live CPU window
+  crew-pickup --dry-run --why, same fixture with
+    the slots free (the per-item path: base=,
+    WOULD start, both skip reasons)              -> IDENTICAL modulo the masked
+                                                    live CPU window
+  crew-pickup --dry-run --why, the LIVE queue    -> IDENTICAL modulo the masked
+                                                    live CPU window
+
+  `parity.test.ts` re-runs the deterministic half of that in CI (slot status, slot
+  release, the wake's no-herdr path) against the frozen legacy sources.
+
+ABLATION (a guard with no case that reddens is not a guard). Each mutation deletes
+exactly one decision; `bash .scratch/verification/262/raw/run-ablation.sh`:
+
+  pickup-guard  validateLaunch(...) -> ""      3 FAIL (the launch proceeds, and the
+                                               prompt sent is EMPTY -- the historical
+                                               bug: `herdr agent prompt issue-262-x
+                                               --wait` at exit 0)
+  clean-guard   the dirty-source guard -> false 3 FAIL (the dirty worktree is burned)
+  loop-parse    started = Number(match[1]) -> 0 4 FAIL (the contract with pickup)
+  slot-atomic   mkdirSync(dir) -> mkdirSync(dir, {recursive:true})
+                                                1 FAIL: won=slot1,slot1,slot1,slot1
+                                                losers=0 -- the lock's claim itself
+
+  The slot case exists BECAUSE the first version of it was vacuous: with two lanes
+  and one slot the queue order means only the oldest lane ever attempts the mkdir,
+  so a non-atomic claim looked correct. Four lanes, two slots, distinct slot names.
+
+DECISIONS (each found by running both versions, not by reading):
+  1. `[pickup] queue:` prints bare numbers, not `#N` -- the shell's `sed` captured
+     the bare id. Only the non-empty fixture queue showed it.
+  2. `hostPath` learned MSYS `/tmp`: `node:fs` reads `/tmp/x` as `D:\tmp\x`, so
+     readdirSync threw, a `catch` returned no briefs, and pickup said "no brief
+     declares it" for a brief on disk. The same function's `catch` also swallowed a
+     ReferenceError into the same plausible answer.
+  3. Display path and fs path are separate for briefs and for the loop's
+     log/pidfile: print the raw string, `hostPath` only where a syscall happens.
+  4. A lane that stops waiting gives up its slot ticket. The shell left it for the
+     full 2-minute grace and `e2e-slot-guard.ts` calls `acquire --no-wait` on every
+     heavy run, so a blocked lane parked a ticket that blocked the next lane.
+  5. `crew-loop status` reports a live pid as running. The shell's `kill -0` under
+     MSYS cannot see a native pid (`kill: (22976) - No such process` while
+     `tasklist` shows bun.exe 22976), so it called a running loop dead -- and
+     `start` would add a second one. This is the one deliberate output diff.
+  6. The launch message's line separator is LF, not the repo's CRLF; everything
+     else in it is byte-identical.
+
+MISTAKES, and how many times each: the fixture queue was seeded WITHOUT
+`CREW_QUEUE_DIR`, so `crew-queue.ts` resolved `CREW_REPO` and wrote three fake
+issues (#999/#998/#997) into the REAL queue -- 1 occurrence, spotted within the
+same run and undone with `crew-queue.ts remove` (the queue is back to its single
+#130-era entry, verified). Two variable-rename slips (`sessionDir` -> `sessionRaw`,
+`briefDir` not hoisted) were caught by the diff-proof, not by the selftests: the
+selftests drive the injected env, so `realEnv`'s own body is only covered by the
+end-to-end runs -- 2 occurrences of the same shape.
+
+NOT DONE, deliberately: `crew-repo.sh`, `launch-lane.sh`, `gh-pr-watch.sh`,
+`gh-pr-watch-settle.sh`, `gh-run-watch.sh`. None is on the hot path the acceptance
+criterion names, `gh-pr-watch.sh` is already superseded for Greptile by
+`crew-pr-watch.ts` (the loop calls that one), and `launch-lane.sh`'s job is inside
+pickup. `scripts/crew/**` is also not wired into `bun run typecheck` (no root
+tsconfig, `@types/bun` lives under `apps/api`); lint and the tests cover it and the
+type pass is run by hand. Both are in the lane report as deferred work.
+
+Concurrency note: a second writer was editing the same scripts in
+`D:/projects/mani-project` while this lane ran (`.scratch/scripts/crew-loop.sh` was
+shimmed to its own `crew-loop.ts`, plus `crew-github.ts`, `dehardcode-repo.ts`).
+This lane touched nothing there, so the live loop was never mid-rewrite; the parent
+decides which conversion becomes the source of truth before installing these shims.

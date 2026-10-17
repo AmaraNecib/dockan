@@ -67,11 +67,12 @@ const duplicateKeyRefusal = (error: Error): SupplierAdjustmentError | null =>
  * The signed-amount SQL for one supplier-ledger alias. Kept in one place
  * (issue 176): if `debtSummaries` or `listParties` forgot the ADJUSTMENT branch
  * the /debts screen and the supplier detail would disagree about the balance.
- * Mirrors `supplierEntrySign` in ../lib/supplier-ledger.ts. `alias` comes from a
- * closed literal, never input.
+ * Mirrors `supplierEntrySign` in ../lib/supplier-ledger.ts — **positive = the
+ * supplier owes us (a credit), negative = we owe the supplier (#260)**. `alias`
+ * comes from a closed literal, never input.
  */
 const supplierSignedAmountSql = (alias: string): string =>
-  `CASE WHEN ${alias}.kind IN ('PURCHASE','REFUND') OR (${alias}.kind = 'ADJUSTMENT' AND ${alias}.direction = 'WE_OWE') THEN ${alias}.amount ELSE -${alias}.amount END`;
+  `CASE WHEN ${alias}.kind IN ('PAYMENT','RETURN') OR (${alias}.kind = 'ADJUSTMENT' AND ${alias}.direction = 'THEY_OWE') THEN ${alias}.amount ELSE -${alias}.amount END`;
 
 /** An ADJUSTMENT's sign comes from its direction, so the store refuses to write
  * one without it (issue 176). The SQL sign expression signs a null direction as
@@ -197,8 +198,8 @@ const safeWhole = (value: SqlScalar): number => {
 /**
  * Coerce a SIGNED aggregate (the supplier account balance) without the
  * non-negativity clamp `safeWhole` applies. A negative balance is a legitimate
- * credit («يسالنا»), so clamping it to 0 would make the list disagree with the
- * supplier detail and /debts (issue 176). Only the safe-integer ceiling and
+ * debt («يسالنا», #260), so clamping it to 0 would make the list disagree with
+ * the supplier detail and /debts (issue 176). Only the safe-integer ceiling and
  * non-finite values are guarded. */
 const safeSignedWhole = (value: SqlScalar): number => {
   const parsed = Number(value);
@@ -2454,7 +2455,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           .where(eq(supplierReturns.invoiceId, invoiceId)),
         // an invoice-linked adjustment (تسوية, issue 176) reduces a PURCHASE
         // invoice's remaining the same way a return does; without this the
-        // header would not add up (total − paid − remaining = returnCreditAmount)
+        // header would not add up (total − paid − remaining = returnCreditAmount).
+        // #260 deliberately NOT flipped: THEY_OWE is the debt-reducing direction
+        // under BOTH sign conventions, so this predicate is polarity-independent
+        // (only the signed BALANCE flipped, not which direction reduces a debt).
         db
           .select({ credit: sql<SqlScalar>`coalesce(sum(${supplierAccountEntries.amount}), 0)` })
           .from(supplierAccountEntries)
@@ -2581,10 +2585,10 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
           accountBalance: r.account_balance == null ? null : Number(r.account_balance),
         } satisfies DebtSummary;
       });
-      // A supplier whose invoices are all settled but whose account still holds
-      // a credit (or a positive balance with no unpaid invoice) has no row in
-      // the invoice aggregate; add it from the signed ledger so /debts shows the
-      // net balance the ADR promises.
+      // A supplier whose invoices are all settled but whose account is still
+      // non-zero (a debt, or a credit under #260 — a positive balance) has no
+      // row in the invoice aggregate; add it from the signed ledger so /debts
+      // shows the net balance the ADR promises.
       // SAFETY: the SELECT aliases exactly these columns; the counts and the
       // balance are SQLite INTEGERs, the id/name/date columns TEXT.
       const creditOnly = (await db.all(sql`
@@ -2641,14 +2645,15 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
               sql`(${invoices.counterpartyId} IS NOT NULL OR ${invoices.counterpartyName} IS NOT NULL)`,
             ),
           ),
-        // "we owe" is the supplier NET account balance, exactly what /debts
-        // shows: a migrated opening balance with no invoice would otherwise be
-        // invisible on the dashboard (issue 176). The signed SUM spans every
-        // supplier, so a credit offsets a debt the same way the /debts group
-        // total does.
+        // `weOwe` is the supplier NET position (#260): positive = the suppliers
+        // owe us (a credit), negative = we owe them. It spans every supplier
+        // account so a credit offsets a debt, exactly what /debts shows: a
+        // migrated opening balance with no invoice would otherwise be invisible
+        // on the dashboard (issue 176).
         db.all(sql`SELECT COALESCE(SUM(${sql.raw(supplierSignedAmountSql("e"))}), 0) AS total FROM supplier_account_entries e`),
-        // typed-name purchases have no account; their unpaid remainder still
-        // counts (the invoice-based path ADR-0009 left untouched)
+        // typed-name purchases have no account, so no signed ledger entry: they
+        // are always a debt and SUBTRACT from the signed net (the invoice-based
+        // path ADR-0009 left untouched).
         db
           .select({ total: sql<number>`COALESCE(SUM(${invoices.remainingAmount}), 0)` })
           .from(invoices)
@@ -2695,8 +2700,9 @@ export function createDrizzleStore(conn: Connection, logger?: StoreLogger): Stor
         salesCount: Number(salesRows[0]?.count ?? 0),
         owedToUs: Number(owedRows[0]?.total ?? 0),
         // SAFETY: the raw SELECT aliases one column `total` (a SQLite INTEGER),
-        // so the first row, when present, has that shape
-        weOwe: Number((supplierLedgerRows as Array<{ total: number }>)[0]?.total ?? 0) + Number(typedWeOweRows[0]?.total ?? 0),
+        // so the first row, when present, has that shape. Typed-name purchases
+        // subtract: a debt is negative in the #260 signed convention.
+        weOwe: Number((supplierLedgerRows as Array<{ total: number }>)[0]?.total ?? 0) - Number(typedWeOweRows[0]?.total ?? 0),
         lowStockCount:
           lowStockCountResult.status === "fulfilled" ? Number(lowStockCountResult.value[0]?.count ?? 0) : null,
         lowStockItems: lowStockRowsResult.status === "fulfilled" ? lowStockRowsResult.value : null,

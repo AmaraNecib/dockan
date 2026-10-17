@@ -14,6 +14,7 @@ import { nowDateTimeText, parseDateTimeText } from "@/lib/dates";
 import { tError } from "@/lib/i18n";
 import { DEBTS_BY_PARTY_QUERY_KEY, INVOICES_LIST_QUERY_KEY, ACTIVITIES_LIST_QUERY_KEY } from "@/lib/query-keys";
 import { orpc } from "@/lib/rpc";
+import { supplierBalanceDirectionKey } from "@/lib/supplier-entry-display";
 
 const REASON_PRESETS = ["supplierAdjustPresetOpening", "supplierAdjustPresetCorrection", "supplierAdjustPresetOldDebt", "supplierAdjustPresetDiscount"] as const;
 
@@ -69,7 +70,8 @@ export function SupplierAdjustPanel({
   const selected = openInvoices.find((invoice) => invoice.id === invoiceId);
   const selectionLost = linked && invoiceId !== "" && selected === undefined;
   const noInvoiceChosen = linked && openInvoices.length > 0 && invoiceId === "";
-  // linking only reduces an invoice, so the direction is forced to يسالنا
+  // linking only reduces an invoice, so the direction is forced to نسالوه
+  // (THEY_OWE, the debt-reducing direction under the #260 convention too)
   const effectiveDirection: SupplierAdjustmentDirection = linked ? "THEY_OWE" : direction;
   const exceeds = linked && selected !== undefined && amount !== null && amount > selected.remainingAmount;
   const amountError =
@@ -88,7 +90,7 @@ export function SupplierAdjustPanel({
         : noInvoiceChosen
           ? t("supplierAdjustInvoiceRequired")
           : null;
-  const previewBalance = amount === null || amount <= 0 ? balance : balance + (effectiveDirection === "WE_OWE" ? amount : -amount);
+  const previewBalance = amount === null || amount <= 0 ? balance : balance + (effectiveDirection === "WE_OWE" ? -amount : amount);
   const previewRemaining = linked && selected !== undefined && amount !== null && amount > 0 ? Math.max(0, selected.remainingAmount - amount) : null;
   const blocked = submitting || adjust.isPending || amountError !== null || amount === null || amount <= 0 || dateInvalid || linkError !== null || (linked && openInvoices.length === 0);
 
@@ -249,7 +251,7 @@ export function SupplierAdjustPanel({
       <div className="rounded border border-border bg-background p-2 text-sm" data-testid="supplier-adjust-preview">
         <p>
           {t("supplierAdjustPreview")}: <span className="font-semibold"><Amount value={Math.abs(previewBalance)} /></span>
-          {previewBalance !== 0 && <span> {previewBalance > 0 ? t("supplierAdjustDirectionWeOwe") : t("supplierAdjustDirectionTheyOwe")}</span>}
+          {previewBalance !== 0 && <span> {t(supplierBalanceDirectionKey(previewBalance))}</span>}
         </p>
         {previewRemaining !== null ? (
           <p className="mt-1" data-testid="supplier-adjust-preview-remaining">

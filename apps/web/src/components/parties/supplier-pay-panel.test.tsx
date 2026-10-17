@@ -30,9 +30,9 @@ const { SupplierPayPanel } = await import("./supplier-pay-panel");
 /**
  * Regression (issue 161, Greptile finding 4): the oldest-first preview must
  * pass the FULL amount to the distribution, exactly as `suppliersPay` does.
- * With an 800 balance (a 1000 invoice minus a 200 credit) and a 900 payment,
- * the server applies all 900 to the invoice; the preview must not cap at 800
- * and invent a 100 credit.
+ * With an 800 debt (−800 under #260: a 1000 invoice minus a 200 credit) and a
+ * 900 payment, the server applies all 900 to the invoice; the preview must not
+ * cap at 800 and invent a 100 credit.
  */
 const invoice = (over: Partial<Invoice> = {}): Invoice => ({
   id: "inv-1",
@@ -92,8 +92,8 @@ function typeInto(testId: string, text: string) {
 
 describe("SupplierPayPanel oldest-first preview (finding 4)", () => {
   it("previews the full amount across the invoice, not a credit invented by capping at the balance", () => {
-    // balance 800 = 1000 invoice − 200 credit; pay 900
-    render(800);
+    // #260 — balance −800 = a 1000 invoice minus a 200 credit (we owe 800); pay 900
+    render(-800);
     typeInto("supplier-pay-amount", "900");
     const line = host.querySelector('[data-testid="supplier-pay-line"]');
     expect(line?.textContent).toContain("900");
@@ -102,15 +102,28 @@ describe("SupplierPayPanel oldest-first preview (finding 4)", () => {
   });
 
   it("shows a credit only for the part no invoice can absorb", () => {
-    render(800);
+    render(-800);
     typeInto("supplier-pay-amount", "1200");
     const line = host.querySelector('[data-testid="supplier-pay-line"]');
     expect(line?.textContent).toContain("1000");
     expect(host.querySelector('[data-testid="supplier-pay-credit"]')?.textContent).toContain("200");
   });
 
-  it("treats a mark-only amount as blank: no error text, confirm stays disabled (#244)", () => {
+  it("#260 — a negative balance is a debt, so the percentage reference uses its magnitude", () => {
+    render(-800);
+    // the flip Math.max(0, -balance) is what makes the reference non-zero here;
+    // with the old polarity this prefilled nothing and the regression was silent
+    expect(host.querySelector<HTMLInputElement>('[data-testid="supplier-pay-amount"]')?.value).toBe("800");
+    expect(host.querySelector<HTMLInputElement>('[data-testid="supplier-pay-percentage"]')?.value).toBe("100");
+  });
+
+  it("#260 — a positive balance is a credit, so there is nothing owed to prefill", () => {
     render(800);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="supplier-pay-amount"]')?.value).toBe("");
+  });
+
+  it("treats a mark-only amount as blank: no error text, confirm stays disabled (#244)", () => {
+    render(-800);
     // a bidi mark is Cf, not whitespace: the raw gate called it a chosen amount
     // and showed the required-message, though the field holds no number
     typeInto("supplier-pay-amount", "\u200f");

@@ -78,19 +78,19 @@ afterEach(() => {
   host.remove();
 });
 
-function tree(invoices: Invoice[]) {
+function tree(invoices: Invoice[], balance = 5000) {
   return (
     <QueryClientProvider client={queryClient!}>
-      <SupplierAdjustPanel supplierId="sup-1" supplierName="مورد الاختبار" balance={5000} invoices={invoices} onDone={() => undefined} onCancel={() => undefined} />
+      <SupplierAdjustPanel supplierId="sup-1" supplierName="مورد الاختبار" balance={balance} invoices={invoices} onDone={() => undefined} onCancel={() => undefined} />
     </QueryClientProvider>
   );
 }
 
-function render(invoices: Invoice[] = [invoice()]) {
+function render(invoices: Invoice[] = [invoice()], balance = 5000) {
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(host);
   act(() => {
-    root!.render(tree(invoices));
+    root!.render(tree(invoices, balance));
   });
 }
 
@@ -137,7 +137,7 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     expect(host.querySelector('[data-testid="supplier-adjust-preview"]')?.textContent).toContain("لا تتغيّر");
   });
 
-  it("links the invoice, forces يسالنا, and refuses an amount above the remaining", () => {
+  it("links the invoice, forces نسالوه, and refuses an amount above the remaining", () => {
     render();
     clickOn("supplier-adjust-link");
     // linking forces the reducing direction, so the increase button is disabled
@@ -150,6 +150,75 @@ describe("SupplierAdjustPanel (issue 176)", () => {
     // a fitting amount previews the invoice remaining after saving
     typeInto("supplier-adjust-amount", "500");
     expect(host.querySelector('[data-testid="supplier-adjust-preview-remaining"]')?.textContent).toContain("4500");
+  });
+
+  // #260 (PR #271 Greptile finding): the preview's direction WORD must come from
+  // the same sign convention the ledger uses (balance < 0 = we owe = يسالنا;
+  // balance > 0 = the supplier owes us = نسالوه). Before the fix the comparison
+  // was inverted, so the word contradicted what saving recorded for BOTH signs.
+  function previewText(): string {
+    return host.querySelector('[data-testid="supplier-adjust-preview"]')?.textContent ?? "";
+  }
+
+  it("labels a negative previewed balance with the debt word and saves that direction (#260)", async () => {
+    render([], 0);
+    // from a zero balance, a WE_OWE adjustment records −500: we owe 500
+    typeInto("supplier-adjust-amount", "500");
+    expect(previewText()).toContain("يسالنا");
+    expect(previewText()).not.toContain("نسالوه");
+    // the word and the recorded row come from ONE convention: saving keeps WE_OWE,
+    // which the ledger signs −1 (pinned in supplier-entry-display.test.ts)
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+    expect(captured).toMatchObject({ direction: "WE_OWE", amount: 500 });
+  });
+
+  it("labels a positive previewed balance with the credit word and saves that direction (#260)", async () => {
+    render([], 0);
+    // from a zero balance, a THEY_OWE adjustment records +500: the supplier owes us
+    clickOn("supplier-adjust-direction-they-owe");
+    typeInto("supplier-adjust-amount", "500");
+    expect(previewText()).toContain("نسالوه");
+    expect(previewText()).not.toContain("يسالنا");
+    await act(async () => {
+      clickOn("supplier-adjust-confirm");
+    });
+    expect(captured).toMatchObject({ direction: "THEY_OWE", amount: 500 });
+  });
+
+  // The word follows the resulting BALANCE, not the pressed direction button.
+  // From a zero balance the two always agree, so only a carried-over baseline
+  // proves the reader is not just echoing `effectiveDirection`.
+  it("names the resulting balance, not the chosen direction, when they disagree (#260)", () => {
+    render([], 5000); // the shop already holds a credit
+    typeInto("supplier-adjust-amount", "500"); // default WE_OWE: 5000−500 = +4500
+    expect(previewText()).toContain("نسالوه");
+    expect(previewText()).not.toContain("يسالنا");
+  });
+
+  it("still names the resulting balance when a THEY_OWE adjustment leaves a debt (#260)", () => {
+    render([], -5000); // we already owe the supplier
+    clickOn("supplier-adjust-direction-they-owe");
+    typeInto("supplier-adjust-amount", "500"); // −5000+500 = −4500
+    expect(previewText()).toContain("يسالنا");
+    expect(previewText()).not.toContain("نسالوه");
+  });
+
+  it("keeps naming the resulting balance on the linked path, where the direction is forced (#260)", () => {
+    render([invoice()], -5000); // we already owe the supplier
+    clickOn("supplier-adjust-link"); // linking forces THEY_OWE (a debt reduction)
+    typeInto("supplier-adjust-amount", "500"); // −5000+500 = −4500: still a debt
+    expect(previewText()).toContain("يسالنا");
+    expect(previewText()).not.toContain("نسالوه");
+  });
+
+  it("suppresses the word when the adjustment cancels the balance to zero (#260)", () => {
+    render([], -500);
+    clickOn("supplier-adjust-direction-they-owe");
+    typeInto("supplier-adjust-amount", "500"); // −500+500 = 0: nothing is held
+    expect(previewText()).not.toContain("يسالنا");
+    expect(previewText()).not.toContain("نسالوه");
   });
 
   it("offers no link when there is no open purchase invoice", () => {

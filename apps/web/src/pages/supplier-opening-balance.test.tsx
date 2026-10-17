@@ -429,14 +429,19 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
     expect(host.querySelector('[data-testid="opening-balance-form-error"]')?.textContent).toContain("لم تُدخل");
   });
 
-  it("renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5)", async () => {
+  it("renders each current balance with its direction and keeps a typed name inline (issue 176 / round 5 / #260)", async () => {
     render();
     await settle();
 
     const rows = host.querySelectorAll('[data-testid="opening-balance-row"]');
-    const creditCell = rows[2]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
-    expect(creditCell).toContain("300");
-    expect(creditCell).toContain("يسالنا");
+    // #260 — s-3 is −300, a debt: the word is يسالنا
+    const debtCell = rows[2]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
+    expect(debtCell).toContain("300");
+    expect(debtCell).toContain("يسالنا");
+    // #260 — s-1 is +5000, a credit: the word is نسالوه
+    const positiveCell = rows[0]?.querySelector('[data-testid="opening-balance-current"]')?.textContent ?? "";
+    expect(positiveCell).toContain("5000");
+    expect(positiveCell).toContain("نسالوه");
 
     // a typed name is its own row: it is never moved onto an existing row
     setInput(host.querySelector<HTMLInputElement>('[data-testid="opening-balance-typed-name-0"]')!, "مورد له حركات");
@@ -2225,8 +2230,9 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     fillTypedRow(0, "مورد مدين", "100");
     clickOn("opening-balance-add-row");
     fillTypedRow(1, "مورد دائن", "200");
-    // the second row is the credit one; the first must keep its default
-    await pickTypedDirection(1, "يسالنا");
+    // the second row is the credit one; the first must keep its default.
+    // #260 — a credit is THEY_OWE, whose label is now نسالوه
+    await pickTypedDirection(1, "نسالوه");
 
     await act(async () => {
       clickOn("opening-balance-save");

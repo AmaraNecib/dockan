@@ -7,11 +7,13 @@ import type { SupplierAdjustmentDirection, SupplierEntryKind } from "@dokan/cont
  * `supplierEntrySign` in the api's supplier-ledger module.
  */
 
-/** +1 when the entry raises what the shop owes, −1 when it lowers it. An
- * ADJUSTMENT's sign comes from its direction. */
+/** The sign the api's `supplierEntrySign` gives an entry (#260): **positive = the
+ * supplier owes us (a credit, green); negative = we owe the supplier (a debt,
+ * red)**. An ADJUSTMENT's sign comes from its direction; a null one reads as
+ * WE_OWE (the api refuses it, this mirror only needs a default). */
 export function supplierEntrySign(kind: SupplierEntryKind, direction: SupplierAdjustmentDirection | null): 1 | -1 {
-  if (kind === "ADJUSTMENT") return direction === "THEY_OWE" ? -1 : 1;
-  return kind === "PURCHASE" || kind === "REFUND" ? 1 : -1;
+  if (kind === "ADJUSTMENT") return direction === "THEY_OWE" ? 1 : -1;
+  return kind === "PAYMENT" || kind === "RETURN" ? 1 : -1;
 }
 
 /** The leading sign shown before the amount. */
@@ -26,6 +28,17 @@ export function adjustmentDirectionKey(
   token: string | null,
 ): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
   return token === "THEY_OWE" ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
+}
+
+/** The direction word for a signed BALANCE (#260). One mapping for every reader
+ * that pairs a balance with «يسالنا»/«نسالوه»: a negative balance is the debt we
+ * owe the supplier (`WE_OWE`); a positive one is the credit the supplier holds
+ * for us (`THEY_OWE`). Zero reads as owed, matching `SupplierBalanceHeader`
+ * (`owed = balance <= 0`) — nothing is held. */
+export function supplierBalanceDirectionKey(
+  balance: number,
+): "supplierAdjustDirectionWeOwe" | "supplierAdjustDirectionTheyOwe" {
+  return balance > 0 ? "supplierAdjustDirectionTheyOwe" : "supplierAdjustDirectionWeOwe";
 }
 
 /** The direction word for an ADJUSTMENT, or null for every other kind (whose

@@ -33,7 +33,8 @@ export function SupplierPayPanel({
   onCancel,
 }: {
   supplierId: string;
-  /** signed account balance; the percentage reference is max(0, balance) */
+  /** signed account balance (#260: negative = we owe the supplier); the
+   * percentage reference is the amount still owed, max(0, -balance) */
   balance: number;
   invoices: readonly Invoice[];
   onDone: () => void;
@@ -44,7 +45,7 @@ export function SupplierPayPanel({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const owed = Math.max(0, balance);
+  const owed = Math.max(0, -balance);
   const outstanding = unpaidInvoices(invoices);
   const [target, setTarget] = useState<PayTarget>("OLDEST");
   const [invoiceId, setInvoiceId] = useState<string>(outstanding[0]?.id ?? "");

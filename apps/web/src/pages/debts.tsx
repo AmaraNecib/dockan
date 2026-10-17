@@ -36,10 +36,14 @@ function partyId(signature: string): string {
 function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSummary; groupLabel: string; expanded: boolean; onToggle: () => void }) {
   const { t } = useTranslation();
   const signature = partySignature(row);
-  // #161 — a supplier row is the signed net balance (negative = we are ahead),
-  // not the sum of its unpaid invoices. Customer rows keep the invoice total.
-  const netBalance = row.kind === "PURCHASE" ? row.accountBalance : null;
+  // #161/#260 — a supplier row is the signed net balance (positive = the
+  // supplier owes us / a credit, negative = we owe him), not the sum of its
+  // unpaid invoices. A typed-name purchase has no account, so it is always a
+  // debt: −remaining. Customer rows keep the positive invoice total.
+  const netBalance = row.kind === "PURCHASE" ? (row.accountBalance ?? -row.remainingTotal) : null;
   const displayAmount = netBalance ?? row.remainingTotal;
+  const netBalanceClass = netBalance === null || netBalance === 0 ? "" : netBalance > 0 ? "text-success" : "text-destructive";
+  const netBalanceSign = netBalance === null || netBalance === 0 ? "" : netBalance > 0 ? "+ " : "− ";
 
   // Per-row query gated on expansion: a freshly opened row shows its own
   // loading skeleton (never another party's cached invoices), while
@@ -68,7 +72,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
         <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
-        <span className={`font-semibold ${netBalance !== null && netBalance < 0 ? "text-success" : ""}`} data-testid="debts-person-total">{netBalance !== null && netBalance < 0 ? "− " : ""}<Amount value={Math.abs(displayAmount)} /></span>
+        <span className={`font-semibold ${netBalanceClass}`} data-testid="debts-person-total">{netBalanceSign}<Amount value={Math.abs(displayAmount)} /></span>
         {expanded ? <ChevronUp size={14} className="text-muted-foreground" aria-hidden="true" /> : <ChevronDown size={14} className="text-muted-foreground" aria-hidden="true" />}
       </button>
 
@@ -159,7 +163,10 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
   creditLabel?: string;
 }) {
   const { t } = useTranslation();
-  const groupTotal = rows.reduce((sum, row) => sum + (row.kind === "PURCHASE" ? (row.accountBalance ?? row.remainingTotal) : row.remainingTotal), 0);
+  // #260 — the weOwe group nets the SIGNED supplier position: positive = the
+  // group is in credit, negative = we owe. A typed-name purchase is a debt, so
+  // −remaining (matching the row above and dashboardSummary.weOwe).
+  const groupTotal = rows.reduce((sum, row) => sum + (row.kind === "PURCHASE" ? (row.accountBalance ?? -row.remainingTotal) : row.remainingTotal), 0);
   const groupCount = rows.reduce((sum, row) => sum + row.invoiceCount, 0);
 
   return (
@@ -168,15 +175,16 @@ function DebtGroup({ title, rows, label, emptyLabel, emptyHint, emptyAction, ope
         <h2 id={`${label}-title`} className="font-semibold">{title}</h2>
         {rows.length > 0 && (
           <p className="text-sm text-muted-foreground">
-            {groupTotal < 0 && creditLabel !== undefined ? (
-              // #180 — a supplier group can net in credit: label it like the
-              // dashboard (never a bare negative number)
+            {groupTotal > 0 && creditLabel !== undefined ? (
+              // #180/#260 — a supplier group can net in credit (positive under
+              // the #260 convention): label it like the dashboard (never a bare
+              // signed number)
               <>
                 <span className="text-success" data-testid={`${label}-credit`}>{creditLabel}</span>: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={Math.abs(groupTotal)} /></span>
               </>
             ) : (
               <>
-                {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={groupTotal} /></span>
+                {t("debtsGroupTotal")}: <span data-testid={`${label}-total`} className="font-semibold text-foreground"><Amount value={Math.abs(groupTotal)} /></span>
               </>
             )}
             {" · "}

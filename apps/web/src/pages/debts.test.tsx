@@ -214,7 +214,7 @@ describe("DebtsPage (ticket 9)", () => {
 
   it("labels a supplier group that nets in credit instead of a bare negative total (#180)", async () => {
     owedToUs = [summary({ counterpartyName: "زبون مدين", remainingTotal: 600, invoiceCount: 1 })];
-    weOwe = [summary({ kind: "PURCHASE", counterpartyId: "sup-credit", counterpartyName: "مورد دائن", remainingTotal: 0, invoiceCount: 1, accountBalance: -1500 })];
+    weOwe = [summary({ kind: "PURCHASE", counterpartyId: "sup-credit", counterpartyName: "مورد دائن", remainingTotal: 0, invoiceCount: 1, accountBalance: 1500 })];
 
     const ui = await mountPage(queryClient);
     const loaded = await ui.waitFor(() => ui.personButtons().length === 2);
@@ -228,6 +228,27 @@ describe("DebtsPage (ticket 9)", () => {
     // the positive customer group keeps the plain total label
     expect(ui.groupTotal("debts-group-owed")?.textContent).toContain("600");
     expect(ui.text()).toContain("الإجمالي");
+
+    await ui.unmount();
+  });
+
+  it("colours a supplier credit positive/green and a supplier debt negative/red (#260)", async () => {
+    owedToUs = [];
+    weOwe = [
+      summary({ kind: "PURCHASE", counterpartyId: "sup-credit", counterpartyName: "مورد دائن", remainingTotal: 0, invoiceCount: 1, accountBalance: 1500 }),
+      summary({ kind: "PURCHASE", counterpartyId: "sup-debt", counterpartyName: "مورد مدين", remainingTotal: 0, invoiceCount: 1, accountBalance: -800 }),
+    ];
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.personButtons().length === 2)).toBe(true);
+
+    const creditTotal = ui.personNamed("مورد دائن")?.querySelector<HTMLElement>('[data-testid="debts-person-total"]');
+    const debtTotal = ui.personNamed("مورد مدين")?.querySelector<HTMLElement>('[data-testid="debts-person-total"]');
+
+    // #260 — credit is positive and green; a debt is negative and red
+    expect(creditTotal?.textContent).toContain("+");
+    expect(creditTotal?.className).toContain("text-success");
+    expect(debtTotal?.textContent).toContain("−");
+    expect(debtTotal?.className).toContain("text-destructive");
 
     await ui.unmount();
   });
@@ -414,13 +435,21 @@ describe("DebtsPage (ticket 9)", () => {
     });
     await ui.waitFor(() => document.querySelector('[data-testid="debts-account-entry-direction"]') !== null);
 
-    const directions = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-direction"]')).map((el) => el.textContent ?? "");
-    expect(directions.join(" ")).toContain("نسالوه");
-    expect(directions.join(" ")).toContain("يسالنا");
-
-    const amounts = Array.from(document.querySelectorAll('[data-testid="debts-account-entry-amount"]')).map((el) => el.textContent ?? "");
-    expect(amounts[0]).toContain("+");
-    expect(amounts[1]).toContain("−");
+    const rows = Array.from(document.querySelectorAll('[data-testid="debts-account-entry"]'));
+    const pairOf = (index: number) => ({
+      direction: rows[index]?.querySelector('[data-testid="debts-account-entry-direction"]')?.textContent ?? "",
+      amount: rows[index]?.querySelector('[data-testid="debts-account-entry-amount"]')?.textContent ?? "",
+    });
+    // #260 — the rendered PAIR is atomic: a WE_OWE row shows يسالنا AND a
+    // negative amount; a THEY_OWE row shows نسالوه AND a positive one. Asserting
+    // both halves on one row is what makes the atomicity claim testable: revert
+    // only the sign (or only the labels) and one half of this pair goes wrong.
+    const weOweRow = pairOf(0);
+    expect(weOweRow.direction).toContain("يسالنا");
+    expect(weOweRow.amount).toContain("−");
+    const theyOweRow = pairOf(1);
+    expect(theyOweRow.direction).toContain("نسالوه");
+    expect(theyOweRow.amount).toContain("+");
 
     await ui.unmount();
   });

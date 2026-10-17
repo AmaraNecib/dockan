@@ -12,22 +12,26 @@ import { adjustmentDedupKey } from "../lib/supplier-ledger";
 import { createDrizzleStore } from "./drizzle-store";
 
 /**
- * Issue 176 (+ 181) — the BLOCKING supplier-adjustment migration tests.
+ * Issue 176 (+ 181 + 260) — the BLOCKING supplier-adjustment + sign-convention
+ * migration tests.
  *
  * The manual adjustment (تسوية) is additive: a new `ADJUSTMENT` kind plus a
- * `supplier_account_entries.direction` column (v3), and then a `dedup_key`
- * column + partial unique index (v4, issue 181). An older (version-2) build has
+ * `supplier_account_entries.direction` column (v3), then a `dedup_key` column +
+ * partial unique index (v4, issue 181), and then the #260 sign-convention flip
+ * (v5, no DDL — the stored rows are unchanged). An older (version-2) build has
  * no ADJUSTMENT branch in its sign SQL, so it would read a «نسالوه» adjustment
  * as a decrement and show a wrong balance; a version-3 build has no `dedup_key`
- * and would write rows that escape the new dedup. The first sequence proves:
+ * and would write rows that escape the new dedup; a version-4 build signs the
+ * OPPOSITE balance from the same rows (#260), so it too must refuse the file.
+ * The first sequence proves:
  *
  *   1. a version-2 database (no direction column) opens with the new build;
  *   2. the forward migration adds both columns, PRESERVES every existing row, and
- *      stamps the current version (4);
+ *      stamps the current version (5);
  *   3. an older build refuses the merged database;
- *   4. re-opening is idempotent — no error, version 4, no duplicated rows.
+ *   4. re-opening is idempotent — no error, version 5, no duplicated rows.
  *
- * The second describe proves the v3 -> v4 `dedup_key` migration in the same
+ * The second describe proves the v3 -> v5 `dedup_key` migration in the same
  * shape (backfill, legacy-duplicate exemption, index, version refusal, re-open).
  */
 let cleanups: Array<() => void> = [];
@@ -77,8 +81,8 @@ function seedVersion2Database(dbPath: string): void {
   db.close();
 }
 
-describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", () => {
-  itHeavy("adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently", async () => {
+describe("v2 -> v5 supplier-adjustment + sign-convention migration (issues 176 + 181 + 260, blocking)", () => {
+  itHeavy("adds the direction + dedup_key columns, preserves rows, stamps 5, refuses a v2/v4 build, and re-opens idempotently", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "v2.db");
     seedVersion2Database(dbPath);
@@ -86,7 +90,7 @@ describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", 
     // 1. the new build opens the old database and migrates it forward
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(conn).setup();
-    expect(readSchemaVersion(conn.raw)).toBe(4);
+    expect(readSchemaVersion(conn.raw)).toBe(5);
 
     // the additive columns landed; the pre-existing row is untouched and its
     // direction is null (correct for every non-ADJUSTMENT kind)
@@ -103,6 +107,10 @@ describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", 
 
     // 2. an older build cannot read this format: it would mis-sign adjustments
     expect(() => assertSchemaVersionSupported(conn.raw, 2)).toThrow(UnsupportedSchemaVersionError);
+    // ... and a version-4 build is also refused (#260): it computes the OPPOSITE
+    // balance from the same rows, so accepting the file would invert every
+    // balances surface silently.
+    expect(() => assertSchemaVersionSupported(conn.raw, 4)).toThrow(UnsupportedSchemaVersionError);
 
     // 3. a new ADJUSTMENT row round-trips with its direction through the store
     const store = createDrizzleStore(conn);
@@ -120,10 +128,10 @@ describe("v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking)", 
     await conn.close();
 
     // 4. re-opening runs the (idempotent) migrations again: no error, the
-    //    version stays 4 and no row is duplicated
+    //    version stays 5 and no row is duplicated
     const again = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(again).setup();
-    expect(readSchemaVersion(again.raw)).toBe(4);
+    expect(readSchemaVersion(again.raw)).toBe(5);
     // SAFETY: COUNT(*) returns one numeric row
     const count = again.raw.query("SELECT COUNT(*) AS count FROM supplier_account_entries").get() as { count: number };
     expect(count.count).toBe(2);
@@ -176,8 +184,8 @@ function seedHalfMigratedDatabase(dbPath: string): void {
   db.close();
 }
 
-describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => {
-  itHeavy("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently", async () => {
+describe("v3 -> v5 adjustment dedup_key + sign-convention migration (issue 181 + 260, blocking)", () => {
+  itHeavy("keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 5, refuses a v3 build, and re-opens idempotently", async () => {
     const dir = tempDir();
     const dbPath = path.join(dir, "v3.db");
     seedVersion3Database(dbPath);
@@ -185,7 +193,7 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     // 1. the new build opens the old database and migrates it forward
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(conn).setup();
-    expect(readSchemaVersion(conn.raw)).toBe(4);
+    expect(readSchemaVersion(conn.raw)).toBe(5);
 
     // SAFETY: PRAGMA table_info returns one object with a string name per column
     const columns = conn.raw.query("PRAGMA table_info(supplier_account_entries)").all() as Array<{ name: string }>;
@@ -249,10 +257,10 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     await conn.close();
 
     // 6. re-opening runs the (idempotent) migrations again: no error, the
-    //    version stays 4, no row is duplicated and no key changes
+    //    version stays 5, no row is duplicated and no key changes
     const again = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(again).setup();
-    expect(readSchemaVersion(again.raw)).toBe(4);
+    expect(readSchemaVersion(again.raw)).toBe(5);
     // SAFETY: the SELECT names id/dedup_key, so each row has those columns
     const after = again.raw.query("SELECT id, dedup_key AS dedupKey FROM supplier_account_entries ORDER BY rowid").all() as Array<{ id: string; dedupKey: string | null }>;
     expect(after).toEqual(rows.map((row) => ({ id: row.id, dedupKey: row.dedupKey })));
@@ -268,7 +276,7 @@ describe("v3 -> v4 adjustment dedup_key migration (issue 181, blocking)", () => 
     const conn = closeLater(openConnection(createAppConfig({ DOKAN_DATA_DIR: dir, DOKAN_DB_PATH: dbPath })));
     await createDrizzleStore(conn).setup();
 
-    expect(readSchemaVersion(conn.raw)).toBe(4);
+    expect(readSchemaVersion(conn.raw)).toBe(5);
     // SAFETY: the SELECT names dedup_key, so the row has that nullable column
     const row = conn.raw.query("SELECT dedup_key AS dedupKey FROM supplier_account_entries WHERE id = 'entry-1'").get() as { dedupKey: string | null };
     // the self-healing backfill keyed the row instead of skipping it forever

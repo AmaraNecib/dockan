@@ -104,7 +104,8 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // 3. the bulk رصيد افتتاحي screen: THREE new suppliers in one pass (#255). The
   // owner types several parties and saves them in ONE request, so the add control
   // must append a row, keep the rows already typed, and the saved card must name
-  // all three.
+  // all three. Row 0 keeps the default direction, 800 يسالنا
+  // (WE_OWE — a debt the shop owes the supplier, #260).
   const secondOpeningSupplier = `${openingSupplierName}-2`;
   const thirdOpeningSupplier = `${openingSupplierName}-3`;
   await page.goto("/suppliers");
@@ -159,6 +160,9 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   // finding 1). Rows are found by their EXACT name because the three share a prefix.
   const savedRow = (name: string) => saved.getByTestId("opening-balance-saved-row").filter({ has: page.getByText(name, { exact: true }) });
   await expect(savedRow(openingSupplierName)).toContainText("800 دج");
+  // #260 — the saved card names the same direction the ledger recorded: 800 WE_OWE
+  // is a debt, so the row reads يسالنا beside the amount
+  await expect(savedRow(openingSupplierName)).toContainText("يسالنا");
   await expect(savedRow(secondOpeningSupplier)).toContainText("150 دج");
   await expect(savedRow(thirdOpeningSupplier)).toContainText("250 دج");
   await page.getByTestId("opening-balance-done").click();
@@ -185,10 +189,10 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.getByTestId("supplier-adjust-confirm").click();
   await expect(page.getByTestId("supplier-balance-value")).toHaveText("4500 دج");
 
-  // the account row names the adjustment and its direction
+  // the account row names the adjustment and its direction (linked خصم = THEY_OWE = نسالوه, #260)
   await page.getByTestId("party-tab-payments").click();
   await expect(page.getByTestId("supplier-entry-kind-ADJUSTMENT").first()).toBeVisible();
-  await expect(page.getByTestId("supplier-entry-direction").first()).toContainText("يسالنا");
+  await expect(page.getByTestId("supplier-entry-direction").first()).toContainText("نسالوه");
 
   // 7. the invoice agrees: remaining 4500, the 500 surfaced as settled credit
   await page.getByTestId("party-tab-invoices").click();
@@ -203,10 +207,14 @@ test("supplier adjustment: a bulk رصيد افتتاحي and a linked خصم ag
   await page.goto("/suppliers");
   await page.getByTestId("suppliers-opening-balance").click();
   await page.getByTestId("opening-balance-typed-name-0").fill(creditSupplierName);
-  await chooseSelectOption(page, page.getByTestId("opening-balance-typed-direction-0"), "يسالنا");
+  await chooseSelectOption(page, page.getByTestId("opening-balance-typed-direction-0"), "نسالوه");
   await page.getByTestId("opening-balance-typed-amount-0").fill("100000");
   await page.getByTestId("opening-balance-save").click();
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
+  // #260 — the saved card's credit row keeps the credit word beside the amount
+  await expect(
+    page.getByTestId("opening-balance-saved").getByTestId("opening-balance-saved-row").filter({ has: page.getByText(creditSupplierName, { exact: true }) }),
+  ).toContainText("نسالوه");
 
   await page.goto("/debts");
   await expect(page.getByTestId("debts-group-weowe-credit")).toContainText("رصيد لنا عند الموردين");
@@ -253,7 +261,7 @@ test("a folded opening-balance name lands on the supplier the dialog names (issu
   // the amount landed on the account the dialog named, not its empty twin
   const landed = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: carried.id });
   const twin = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: empty.id });
-  expect(landed.account?.balance).toBe(800);
+  expect(landed.account?.balance).toBe(-800);
   expect(twin.account?.balance).toBe(0);
 });
 
@@ -525,7 +533,7 @@ test("editing the typed name away from the confirmed one keeps the batch saveabl
   await expect(page.getByTestId("opening-balance-saved")).toBeVisible();
 
   const carriedAfter = await rpc<{ account?: { balance: number } | null }>(page, "suppliersGet", { id: carried.id });
-  expect(carriedAfter.account?.balance).toBe(700);
+  expect(carriedAfter.account?.balance).toBe(-700);
 
   await page.getByTestId("opening-balance-done").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();

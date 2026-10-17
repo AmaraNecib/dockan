@@ -87,7 +87,8 @@ describe("supplier account store", () => {
     const entries = await store.listSupplierEntries(supplier.id);
     expect(entries.filter((entry) => entry.kind === "PURCHASE").map((entry) => entry.amount)).toEqual([1000]);
     expect(entries.filter((entry) => entry.kind === "PAYMENT").map((entry) => entry.amount)).toEqual([300]);
-    expect(supplierBalance(entries)).toBe(700);
+    // #260 — a 1000 purchase less a 300 payment is a 700 debt, i.e. −700
+    expect(supplierBalance(entries)).toBe(-700);
     // marker-gated: a second call is a no-op, never a double charge
     backfillSupplierAccounts(conn);
     expect((await store.listSupplierEntries(supplier.id)).length).toBe(2);
@@ -105,7 +106,7 @@ describe("supplier account store", () => {
     await store.applyPaymentToInvoice(invoice.id, 200);
 
     const entries = await store.listSupplierEntries(supplier.id);
-    expect(supplierBalance(entries)).toBe(300);
+    expect(supplierBalance(entries)).toBe(-300);
     const stillOwed = await store.listOutstandingPurchaseInvoices(supplier.id);
     expect(stillOwed[0]?.remainingAmount).toBe(300);
   });
@@ -194,7 +195,7 @@ describe("supplier account store", () => {
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PURCHASE", amount: 250, invoiceId: null, occurredAt: now() });
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "PAYMENT", amount: 300, invoiceId: null, occurredAt: now() });
     const detail = await store.partyDetail("supplier", supplier.id);
-    expect(detail?.account?.balance).toBe(-50);
+    expect(detail?.account?.balance).toBe(50);
     expect(detail?.account?.entries).toHaveLength(2);
     // customers keep invoice-based debt: no account
     const customer = await store.createParty("customer", { name: "زبون" });
@@ -211,7 +212,7 @@ describe("supplier account store", () => {
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, note: "تصحيح", occurredAt: now() });
 
     const entries = await store.listSupplierEntries(supplier.id);
-    expect(supplierBalance(entries)).toBe(900 + 800 - 300);
+    expect(supplierBalance(entries)).toBe(-900 - 800 + 300);
     // both directions persisted, independent of the list's ordering
     expect(entries.filter((entry) => entry.kind === "ADJUSTMENT").map((entry) => entry.direction).sort()).toEqual(["THEY_OWE", "WE_OWE"]);
 
@@ -239,7 +240,7 @@ describe("supplier account store", () => {
     expect(detail?.remainingAmount).toBe(detail!.totalAmount - detail!.paidAmount - detail!.returnCreditAmount);
 
     const entries = await store.listSupplierEntries(supplier.id);
-    expect(supplierBalance(entries)).toBe(4500);
+    expect(supplierBalance(entries)).toBe(-4500);
   });
 
   it("refuses a linked reduction above the remaining at the conditional UPDATE (issue 176)", async () => {
@@ -253,7 +254,7 @@ describe("supplier account store", () => {
     const supplier = await makeSupplier("مورد قائمة رصيد");
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "WE_OWE", amount: 700, invoiceId: null, occurredAt: now() });
     const supplierRow = (await store.listParties("supplier")).find((row) => row.id === supplier.id);
-    expect(supplierRow?.accountBalance).toBe(700);
+    expect(supplierRow?.accountBalance).toBe(-700);
     expect(supplierRow?.accountEntryCount).toBe(1);
 
     const customer = await store.createParty("customer", { name: "زبون قائمة" });
@@ -271,22 +272,22 @@ describe("supplier account store", () => {
     const entries = await store.listSupplierEntries(supplier.id);
     const row = (await store.debtSummaries()).find((summary) => summary.counterpartyId === supplier.id && summary.kind === "PURCHASE");
     expect(row?.accountBalance).toBe(supplierBalance(entries));
-    expect(row?.accountBalance).toBe(1250);
+    expect(row?.accountBalance).toBe(-1250);
   });
 
-  it("reports a credit balance as a negative signed value in the party list (issue 176)", async () => {
+  it("reports a credit balance as a positive signed value in the party list (issue 176, #260)", async () => {
     const supplier = await makeSupplier("مورد رصيد سالب");
     await store.insertSupplierEntry({ supplierId: supplier.id, kind: "ADJUSTMENT", direction: "THEY_OWE", amount: 300, invoiceId: null, occurredAt: now() });
 
     const row = (await store.listParties("supplier")).find((party) => party.id === supplier.id);
-    expect(row?.accountBalance).toBe(-300);
+    expect(row?.accountBalance).toBe(300);
     expect(row?.accountEntryCount).toBe(1);
     // the SQL sign expression agrees with the pure signer on the THEY_OWE branch
     expect(row?.accountBalance).toBe(supplierBalance(await store.listSupplierEntries(supplier.id)));
 
     // the debts summary agrees with the same sign on the THEY_OWE branch
     const summary = (await store.debtSummaries()).find((entry) => entry.counterpartyId === supplier.id && entry.kind === "PURCHASE");
-    expect(summary?.accountBalance).toBe(-300);
+    expect(summary?.accountBalance).toBe(300);
   });
 
   it("refuses to persist an ADJUSTMENT with no direction (issue 176)", async () => {

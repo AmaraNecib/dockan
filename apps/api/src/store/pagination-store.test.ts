@@ -307,7 +307,7 @@ describe("party-detail tab pagination (issue 174)", () => {
     }
     const supplierDetail = await store.partyDetail("supplier", supplier.id);
     expect(supplierDetail?.account?.entries).toHaveLength(12);
-    expect(supplierDetail?.account?.balance).toBe(1200);
+    expect(supplierDetail?.account?.balance).toBe(-1200);
   });
 
   it("returns an empty page for a party with no rows and never crosses roles", async () => {

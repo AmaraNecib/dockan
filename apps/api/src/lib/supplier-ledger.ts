@@ -12,24 +12,34 @@ import { documentNumberSequence as invoiceSequence } from "./document-number";
 
 export type SupplierEntryKind = "PURCHASE" | "PAYMENT" | "RETURN" | "REFUND" | "ADJUSTMENT";
 
-/** The direction of a manual adjustment (issue 176). «نسالوه» = the shop owes
- * the supplier more; «يسالنا» = the shop owes less / moves toward credit. */
+/** The direction of a manual adjustment (issue 176). «يسالنا» (WE_OWE) = he asks
+ * us: the shop owes the supplier more, money leaves us; «نسالوه» (THEY_OWE) = we
+ * ask him: the shop owes less / moves toward credit. */
 export type SupplierAdjustmentDirection = "WE_OWE" | "THEY_OWE";
 
-/** The sign one entry kind contributes to the supplier balance.
- * Positive = the shop owes the supplier; negative = the shop is ahead. An
- * ADJUSTMENT's sign comes from its direction, so a missing one is refused
- * rather than guessed (a wrongly-signed money row is worse than an error). */
+/**
+ * The sign one entry kind contributes to the supplier balance (#260).
+ *
+ * Positive = **the supplier owes us** (we hold a credit); negative = **we owe the
+ * supplier**. The sign describes the DIRECTION OF THE BALANCE, not a cash
+ * movement: a balance of −1000 means we owe him 1000, which may settle later by
+ * offsetting a future invoice with no cash involved at all.
+ *
+ * So WE_OWE (money leaves us) is −1 and THEY_OWE (money comes to us) is +1, and
+ * every kind negates with it: a PURCHASE makes us owe (negative), a PAYMENT
+ * reduces that debt (positive). An ADJUSTMENT's sign comes from its direction,
+ * so a missing one is refused rather than guessed (a wrongly-signed money row is
+ * worse than an error). */
 export function supplierEntrySign(
   kind: SupplierEntryKind,
   direction: SupplierAdjustmentDirection | null = null,
 ): 1 | -1 {
   if (kind === "ADJUSTMENT") {
-    if (direction === "WE_OWE") return 1;
-    if (direction === "THEY_OWE") return -1;
+    if (direction === "WE_OWE") return -1;
+    if (direction === "THEY_OWE") return 1;
     throw new Error("a supplier adjustment entry needs a direction");
   }
-  return kind === "PURCHASE" || kind === "REFUND" ? 1 : -1;
+  return kind === "PAYMENT" || kind === "RETURN" ? 1 : -1;
 }
 
 /** The signed balance of a supplier account: Σ amount × sign(kind). */
@@ -46,11 +56,11 @@ export function splitAgainstRemaining(amount: number, remaining: number) {
   return { attached, credit: amount - attached };
 }
 
-/** How much cash the shop may still receive from the supplier: the size of
- * the credit (a negative balance), never a positive amount. A refund or a
- * return's cash-back may not exceed this. */
+/** How much cash the shop may still receive from the supplier: the size of the
+ * credit (**a positive balance** under the #260 convention), never a negative
+ * amount. A refund or a return's cash-back may not exceed this. */
 export function availableSupplierCredit(balance: number): number {
-  return Math.max(0, -balance);
+  return Math.max(0, balance);
 }
 
 /**

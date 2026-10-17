@@ -237,8 +237,9 @@ export const stockLinks = sqliteTable("stock_links", {
 // ---------------------------------------------------------------------------
 
 /** Append-only supplier account entries. `amount` is always positive; the kind
- * determines the sign (PURCHASE/REFUND +, PAYMENT/RETURN −), except an
- * ADJUSTMENT whose `direction` (WE_OWE +, THEY_OWE −, issue 176) carries it. An
+ * determines the sign in the #260 convention (positive = the supplier owes us, a
+ * credit; so PAYMENT/RETURN +, PURCHASE/REFUND −), except an ADJUSTMENT whose
+ * `direction` (WE_OWE −, THEY_OWE +, issue 176) carries it. An
  * entry with an `invoice_id` reduces that purchase invoice's remaining debt; an
  * entry with a null invoice is a credit/advance. Never rewritten. */
 export const supplierAccountEntries = sqliteTable("supplier_account_entries", {

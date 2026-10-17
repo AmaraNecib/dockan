@@ -91,7 +91,10 @@ test("purchase line: create the product inline, keep the typed line, stock it by
   // 6. saving the invoice books the purchase, so the new product carries the
   //    quantity as its initial stock — no separate stock write anywhere
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  // #268 gave every kind its own number prefix (a purchase is SUP-NNNN, not
+  // INV-), so assert the purchase's own shape — the digits included, or a
+  // prefix-less number would still pass the assertion.
+  await expect(page.getByTestId("purchase-saved-number")).toContainText(/SUP-\d+/);
 
   const catalog = await readRpc<{ items: Array<{ id: string; name: string; costPrice: number; sellingPrice: number; stockOnHand: number; categoryName: string | null }> }>(page, "itemsAll");
   const row = catalog.items.find((item) => item.id === created.id);
@@ -179,7 +182,7 @@ test("purchase line: a create from a zero-cost line is allowed and the invoice p
   await createdCost.fill("900");
   await expect(page.getByTestId("purchase-total")).toContainText("2700");
   await page.getByTestId("purchase-save").click();
-  await expect(page.getByTestId("purchase-saved-number")).toContainText("INV-");
+  await expect(page.getByTestId("purchase-saved-number")).toContainText(/SUP-\d+/);
 
   const afterSave = await readRpc<{ items: Array<{ id: string; costPrice: number; sellingPrice: number; stockOnHand: number }> }>(page, "itemsAll");
   expect(afterSave.items.find((item) => item.id === created.id)).toMatchObject({

@@ -59,7 +59,12 @@ const CLASSIFIED = new Map<string, Classification>([
   ["lib/numeric-input.ts::trimmed === \"\" [text.trim()]", { verdict: "draftBlank", reason: "converted (#244): blank → 0 on the plain path, required on the scan path" }],
   ["lib/supplier-opening-draft.ts::raw.trim() === \"\"", { verdict: "draftBlank", reason: "converted (#244): blank → untouched row" }],
   ["lib/supplier-opening-draft.ts::input.amount.trim() !== \"\"", { verdict: "draftBlank", reason: "converted (#244): blank amount → untouched / incomplete" }],
-  ["lib/supplier-opening-draft.ts::name === \"\" [input.name.trim()]", { verdict: "raw", reason: TEXT }],
+  // #255 Greptile round 3 finding 2 — the raw `name === ""` gate is GONE on purpose:
+  // the name's identity is now `normalizeTextKey(name)`, so a mark-only name (which
+  // folds to "") is not "real content" after all. The replacement gate is
+  // `folded === ""`, which is not a raw trim, so there is no raw verdict to keep.
+  // `supplier-opening-draft.test.ts` pins the new verdict (mark-only + amount →
+  // incomplete), which is what makes deleting this entry reviewable.
   ["pages/expenses.tsx::name === \"\" [newCategoryName.trim()]", { verdict: "raw", reason: TEXT }],
   ["pages/expenses.tsx::dateText === \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],
   ["pages/expenses.tsx::dateText !== \"\" [occurredAt.trim()]", { verdict: "raw", reason: DATE }],

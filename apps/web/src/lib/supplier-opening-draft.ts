@@ -70,12 +70,18 @@ export type NewOpeningRowStatus =
  * supplier is a duplicate; otherwise filled. */
 export function newOpeningRowStatus(input: { name: string; amount: string; existingNames: readonly string[] }): NewOpeningRowStatus {
   const name = input.name.trim();
+  // The name's IDENTITY is the fold key, not the raw string. Bidi/zero-width
+  // controls (RLM U+200F, ALM U+061C, ...) are Unicode Cf, not whitespace, so
+  // `trim()` keeps them while `normalizeTextKey` folds them to "". A name that
+  // folds to "" names nobody: sending it made the api normalize the whole batch
+  // to one empty key and refuse it (DUPLICATE_OPENING_BALANCE_ROW), losing every
+  // amount in it (Greptile round 3 finding 2). Treat it exactly as an empty name.
+  const folded = normalizeTextKey(name);
   const amountFilled = !draftBlank(input.amount);
-  if (name === "" && !amountFilled) return { status: "untouched" };
-  if (name === "" || !amountFilled) return { status: "incomplete" };
+  if (folded === "" && !amountFilled) return { status: "untouched" };
+  if (folded === "" || !amountFilled) return { status: "incomplete" };
   const amount = parseGroupedAmount(input.amount);
   if (amount === null || amount <= 0) return { status: "invalid" };
-  const folded = normalizeTextKey(name);
   if (input.existingNames.some((existing) => normalizeTextKey(existing) === folded)) return { status: "duplicate", name, amount };
   return { status: "filled", name, amount };
 }
@@ -89,7 +95,10 @@ export function newOpeningRowStatus(input: { name: string; amount: string; exist
  * (`normalizeTextKey`, ADR-0007).
  *
  * A blank name carries no identity: blank and mark-only drafts all fold to `""`
- * and are NOT duplicates of each other, they are simply rows not filled in yet.
+ * and are NOT duplicates of each other. Such a row can no longer be a READY row
+ * at all — `newOpeningRowStatus` refuses a name that folds to "" (Greptile round
+ * 3 finding 2) — so the empty-key skip here is the last defence, keeping a
+ * not-yet-filled row out of a duplicate report.
  * Every member of a clash is returned, not just the later one, because either
  * side is the row the owner can edit.
  */

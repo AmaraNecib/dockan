@@ -136,14 +136,16 @@ mock.module("@/lib/rpc", () => ({
         },
       }),
     },
-    suppliersResolveName: {
-      queryOptions: ({ input }: { input: { name: string; direction: string; amount: number; occurredAt: string; reason?: string } }) => ({
-        queryKey: ["suppliersResolveName", input.name, input.direction, input.amount, input.occurredAt, input.reason ?? ""],
+    // #255 — the page resolves a whole typed draft in ONE call. The mock counts
+    // resolve PASSES (`resolveCalls`), so a per-row regression reads as N here.
+    suppliersResolveNames: {
+      queryOptions: ({ input }: { input: { occurredAt: string; reason?: string; rows: Array<{ name: string; direction: string; amount: number }> } }) => ({
+        queryKey: ["suppliersResolveNames", input.occurredAt, input.reason ?? "", ...input.rows.map((row) => `${row.name}|${row.direction}|${row.amount}`)],
         queryFn: async () => {
           resolveCalls += 1;
           if (resolveFails) throw new Error("NETWORK");
           if (resolveHold !== null) await resolveHold;
-          return { supplier: resolveByKey.get(normalizeTextKey(input.name)) ?? null };
+          return { suppliers: input.rows.map((row) => resolveByKey.get(normalizeTextKey(row.name)) ?? null) };
         },
       }),
     },
@@ -2139,6 +2141,82 @@ describe("bulk add-a-row on the opening-balance draft (issue 255)", () => {
     // by construction, so a passing `toBe` cannot come from a disabled element
     expect(saveButton().disabled).toBe(false);
   }, BATCH_LIMIT_TEST_TIMEOUT_MS);
+  it("blocks a typed row whose name folds to no identity (Greptile round 3 finding 2)", async () => {
+    render();
+    await settle();
+
+    // RLM is not whitespace, so the raw-trim gate let this row through as FILLED.
+    // The server then folds the whole batch to one empty key and refuses it
+    // (DUPLICATE_OPENING_BALANCE_ROW), losing every amount. Block it first.
+    fillTypedRow(0, "\u200f", "800");
+
+    const rowError = host.querySelector('[data-testid="opening-balance-typed-error-0"]');
+    expect(rowError?.textContent ?? "").toContain("أكمل");
+    expect(host.querySelector('[data-testid="opening-balance-blocked"]')).not.toBeNull();
+    expect(saveButton().disabled).toBe(true);
+
+    await act(async () => {
+      host.querySelector<HTMLFormElement>('[data-testid="opening-balance-form"]')!.requestSubmit();
+    });
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+  });
+
+  it("resolves the whole typed batch in ONE lookup, not one per row (Greptile round 3 finding 3)", async () => {
+    render();
+    await settle();
+
+    const names = ["مورد خدمة أ", "مورد خدمة ب", "مورد خدمة ج", "مورد خدمة د"];
+    names.forEach((name, index) => {
+      if (index > 0) clickOn("opening-balance-add-row");
+      fillTypedRow(index, name, String((index + 1) * 10));
+    });
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the four names are new; the point is the LOOKUP count: one batch read for
+    // the whole draft, where a per-row resolve would have asked four times and
+    // each ask would have reread every name and every account summary
+    expect(resolveCalls).toBe(1);
+    expect(mutationCalls).toBe(1);
+    expect(captured?.rows).toHaveLength(4);
+    expect(captured?.rows.map((row) => row.newSupplierName)).toEqual(names);
+  });
+
+  it("keeps each row's own destination and confirmation answer in a mixed batch (Greptile round 3 finding 4)", async () => {
+    render();
+    await settle();
+
+    // row 0 folds onto s-1, which carries entries; row 1 is new. A per-row
+    // destination map that crossed the two answers would still save both names.
+    fillTypedRow(0, "مورد له حركات", "300");
+    clickOn("opening-balance-add-row");
+    fillTypedRow(1, "مورّد جديد تماما", "400");
+
+    await act(async () => {
+      clickOn("opening-balance-save");
+    });
+
+    // the confirmation comes first: nothing is written until it is confirmed
+    expect(captured).toBeNull();
+    expect(mutationCalls).toBe(0);
+    expect(clickTarget("opening-balance-confirm")).not.toBeNull();
+
+    await act(async () => {
+      clickOn("opening-balance-confirm-save");
+    });
+
+    expect(mutationCalls).toBe(1);
+    expect(captured?.rows).toHaveLength(2);
+    const existing = captured?.rows.find((row) => row.newSupplierName === "مورد له حركات");
+    const fresh = captured?.rows.find((row) => row.newSupplierName === "مورّد جديد تماما");
+    expect(existing).toMatchObject({ direction: "WE_OWE", amount: 300, confirmExisting: true, expectedSupplierId: "s-1" });
+    expect(fresh).toMatchObject({ direction: "WE_OWE", amount: 400, expectedSupplierId: null });
+    // the fresh row was not confirmed: the dialog named only the existing account
+    expect(fresh?.confirmExisting).toBeUndefined();
+  });
 
   it("keeps each row's direction and sends it with that row", async () => {
     render();

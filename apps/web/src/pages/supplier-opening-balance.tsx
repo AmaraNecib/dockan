@@ -459,15 +459,25 @@ export function SupplierOpeningBalancePage() {
   }
 
   /** Ask the server which account each typed row resolves to (issue 184 / #255).
-   * The only resolver; a `null` answer means a write would create a new supplier. */
+   * ONE batch read for the whole draft (Greptile round 3 finding 3): a per-row
+   * `suppliersResolveName` call rereads every supplier name and recomputes every
+   * account summary, so a full 200-row batch repeated that work 200 times. The
+   * server reads the two lean lists once and still resolves each row's own
+   * signature; the answers come back parallel to the rows. A `null` answer means
+   * a write would create a new supplier. An empty draft is not resolved at all. */
   async function resolveTypedDestinations(): Promise<Record<string, ResolvedSupplier | null>> {
-    const entries = await Promise.all(
-      typedLookups.map(async (lookup) => {
-        const result = await queryClient.fetchQuery(orpc.suppliersResolveName.queryOptions({ input: lookup.input }));
-        return [lookup.id, result.supplier] as const;
+    const first = typedLookups[0];
+    if (first === undefined) return {};
+    const result = await queryClient.fetchQuery(
+      orpc.suppliersResolveNames.queryOptions({
+        input: {
+          occurredAt: first.input.occurredAt,
+          reason: first.input.reason,
+          rows: typedLookups.map((lookup) => ({ name: lookup.input.name, direction: lookup.input.direction, amount: lookup.input.amount })),
+        },
       }),
     );
-    return Object.fromEntries(entries);
+    return Object.fromEntries(typedLookups.map((lookup, index) => [lookup.id, result.suppliers[index] ?? null]));
   }
 
   /** Any edit to the outgoing batch invalidates an in-flight submit: the lookup

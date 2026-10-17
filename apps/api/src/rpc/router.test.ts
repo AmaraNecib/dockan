@@ -2536,6 +2536,86 @@ describe("suppliersResolveName uses the lean reads (issue 213)", () => {
   });
 });
 
+/**
+ * #255 — the batch resolve exists so one typed 200-row save does not repeat the
+ * two lean reads 200 times. These tests pin both halves of the contract: the
+ * reads happen ONCE per batch, and each row still gets its own signature arm
+ * (the same answer the single procedure gives for that row).
+ */
+describe("suppliersResolveNames, the batch resolve (issue 255)", () => {
+  it("reads the two lean lists once for the whole batch and keeps each row's own signature arm (issue 255)", async () => {
+    const stamp = Date.now();
+    const twinName = `مورد-دفعة-توأم-${stamp}`;
+    // two suppliers that fold to one key (the legacy duplicate the tie-break
+    // exists for); each later holds a DIFFERENT row signature
+    const twinA = await client.suppliersCreate({ name: twinName });
+    const twinB = await client.suppliersCreate({ name: `${twinName} ` });
+    expect(normalizeTextKey(twinA.name)).toBe(normalizeTextKey(twinB.name));
+    const occurredAt = "2026-10-13T12:00:00";
+    const reason = "رصيد افتتاحي";
+    await client.suppliersAdjust({ supplierId: twinA.id, direction: "WE_OWE", amount: 111, reason, occurredAt });
+    await client.suppliersAdjust({ supplierId: twinB.id, direction: "THEY_OWE", amount: 222, reason, occurredAt });
+
+    const rows = [
+      { name: twinName, direction: "WE_OWE" as const, amount: 111 },
+      { name: twinName, direction: "THEY_OWE" as const, amount: 222 },
+      { name: twinName, direction: "WE_OWE" as const, amount: 333 },
+      { name: `مورد-دفعة-جديد-${stamp}`, direction: "WE_OWE" as const, amount: 10 },
+    ];
+
+    let listPartiesCalls = 0;
+    const reads: string[] = [];
+    const countingStore: StorePort = {
+      ...store,
+      listParties: (role) => {
+        listPartiesCalls += 1;
+        return store.listParties(role);
+      },
+      listPartyNames: (role) => {
+        reads.push(`names:${role}`);
+        return store.listPartyNames(role);
+      },
+      listSupplierAccountSummaries: () => {
+        reads.push("summaries");
+        return store.listSupplierAccountSummaries();
+      },
+    };
+    const countingClient = clientForStore(countingStore);
+
+    const batch = await countingClient.suppliersResolveNames({ occurredAt, reason, rows });
+
+    // the whole point: ONE read of each lean list, whatever the row count
+    expect(listPartiesCalls).toBe(0);
+    expect(reads).toHaveLength(2);
+    expect(new Set(reads)).toEqual(new Set(["names:supplier", "summaries"]));
+
+    // and every row still resolves on its OWN signature, row for row identical
+    // to the single procedure (the shared `resolveOpeningDestination`)
+    for (const [index, row] of rows.entries()) {
+      const single = await client.suppliersResolveName({ ...row, occurredAt, reason });
+      expect(batch.suppliers[index]).toEqual(single.supplier);
+    }
+    // row 0's signature is held by twinA, row 1's by twinB: the same folded name
+    // answers with a DIFFERENT account inside one batch
+    expect(batch.suppliers[0]).toMatchObject({ id: twinA.id, accountEntryCount: 1 });
+    expect(batch.suppliers[1]).toMatchObject({ id: twinB.id, accountEntryCount: 1 });
+    // no holder for row 2: the entries/lowest-id tie-break picks one of the twins
+    const tieBreakId = batch.suppliers[2]?.id;
+    expect(tieBreakId).toBeDefined();
+    expect([twinA.id, twinB.id]).toContain(tieBreakId!);
+    expect(batch.suppliers[3]).toBeNull();
+  });
+
+  it("rejects an empty or oversized batch at the contract (issue 255)", async () => {
+    const occurredAt = "2026-10-13T12:00:00";
+    await expect(client.suppliersResolveNames({ occurredAt, rows: [] })).rejects.toThrow(/Input validation failed/);
+    const row = { name: "مورد حد", direction: "WE_OWE" as const, amount: 10 };
+    await expect(
+      client.suppliersResolveNames({ occurredAt, rows: Array.from({ length: 201 }, (_value, index) => ({ ...row, name: `مورد حد ${index}` })) }),
+    ).rejects.toThrow(/Input validation failed/);
+  });
+});
+
 describe("supplier adjustment idempotency key (issue 181)", () => {
   it("refuses a keyed retry whose timestamp changed (issue 181)", async () => {
     const { supplier } = await setupSupplier("مورد مفتاح تغيّر الوقت");

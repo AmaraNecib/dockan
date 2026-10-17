@@ -86,6 +86,19 @@ describe("newOpeningRowStatus", () => {
     expect(newOpeningRowStatus({ name: "", amount: "\u200f", existingNames })).toEqual({ status: "untouched" });
   });
 
+  it("refuses a name that folds to no identity, even with a positive amount (Greptile round 3 finding 2)", () => {
+    // RLM/ALM are Unicode Cf, not whitespace, so `name.trim()` keeps them while
+    // `normalizeTextKey` folds them to "". Such a row used to be FILLED, and its
+    // empty key was skipped by `duplicateTypedRowIds`, so the api normalized the
+    // whole batch to one empty key and refused it
+    // (DUPLICATE_OPENING_BALANCE_ROW), losing every amount in it.
+    for (const name of ["\u200f", "\u061c", "\u200e\u200f", " \u200f "]) {
+      expect(newOpeningRowStatus({ name, amount: "800", existingNames })).toEqual({ status: "incomplete" });
+    }
+    // the negative: a name that folds to a real key still fills the row
+    expect(newOpeningRowStatus({ name: "مورّد جديد", amount: "800", existingNames })).toEqual({ status: "filled", name: "مورّد جديد", amount: 800 });
+  });
+
   it("is filled with the trimmed name and the parsed amount", () => {
     expect(newOpeningRowStatus({ name: "  مورّد جديد  ", amount: "1,000", existingNames })).toEqual({ status: "filled", name: "مورّد جديد", amount: 1000 });
   });

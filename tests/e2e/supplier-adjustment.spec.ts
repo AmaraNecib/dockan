@@ -267,7 +267,7 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   await signIn(page);
   const name = `مورد معلّق-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -284,7 +284,7 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
 
   // arm the lookup acknowledgement BEFORE the click so the assertion is causally
   // ordered rather than a wall-clock wait
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   // leave while the lookup is still running
@@ -294,7 +294,7 @@ test("cancelling while the name lookup is pending writes nothing (issue 184 revi
   // let the held lookup answer: the abandoned attempt must not write over the
   // window that follows the response, not just at the instant it lands
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 
   // and the name never materialized
@@ -325,7 +325,7 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   let markSecondOnWire: () => void = () => undefined;
   const secondOnWire = new Promise<void>((resolve) => { markSecondOnWire = resolve; });
   const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     lookups += 1;
     if (lookups === 2) {
       markSecondOnWire();
@@ -349,7 +349,7 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   await expect(page.getByTestId("opening-balance-confirm")).toBeVisible();
 
   // a second main Save starts a NEW lookup while the dialog stays open
-  const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const secondLookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
   await secondOnWire; // the second resolve is on the wire and unanswered
 
@@ -362,7 +362,7 @@ test("cancelling the dialog during a re-submit's lookup does not re-open it (iss
   // re-open the dismissed dialog over a bounded window
   await secondLookup;
   expect(lookups).toBeGreaterThanOrEqual(2); // positive control: a second resolve ran
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
   await expect(page.getByTestId("opening-balance-confirm")).toHaveCount(0);
 
@@ -383,7 +383,7 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
   await signIn(page);
   const name = `مورد رجوع-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -398,13 +398,13 @@ test("leaving via the back link while the lookup is pending writes nothing (issu
   await page.getByTestId("opening-balance-typed-name-0").fill(name);
   await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
   await page.getByTestId("opening-balance-back").click();
   await expect(page.getByTestId("parties-page-supplier")).toBeVisible();
 
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 
@@ -416,7 +416,7 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await signIn(page);
   const name = `مورد رجوع-متصفح-${Date.now()}`;
 
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -431,12 +431,12 @@ test("browser back while the name lookup is pending writes nothing (issue 184 re
   await page.getByTestId("opening-balance-typed-name-0").fill(name);
   await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   await page.goBack(); // router-driven unmount, no page onClick
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 
@@ -453,7 +453,7 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
 
   // hold the lookup open across the navigation, like the back-link / browser-back
   // tests; the sidebar has no page-level onClick to invalidate on
-  await page.route("**/api/rpc/suppliersResolveName", async (route) => {
+  await page.route("**/api/rpc/suppliersResolveNames", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     await route.continue();
   });
@@ -468,7 +468,7 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
   await page.getByTestId("opening-balance-typed-name-0").fill(name);
   await page.getByTestId("opening-balance-typed-amount-0").fill("500");
 
-  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveName"));
+  const lookup = page.waitForResponse((response) => response.url().includes("/api/rpc/suppliersResolveNames"));
   await page.getByTestId("opening-balance-save").click();
 
   // a sidebar link, not a page control: the unmount guard must invalidate
@@ -476,7 +476,7 @@ test("leaving via the sidebar while the name lookup is pending writes nothing (i
   await expect(page.getByTestId("purchase-form")).toBeVisible();
 
   await lookup;
-  await page.unroute("**/api/rpc/suppliersResolveName");
+  await page.unroute("**/api/rpc/suppliersResolveNames");
   await expectNoWriteDuring(page, () => wrote);
 });
 

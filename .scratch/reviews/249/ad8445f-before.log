@@ -1,0 +1,30 @@
+comment inside the chain           => s.ts::t === "" [draft.trim()] @L2
+comment joining tokens             => s.ts::t === "" [draft.trim()] @L2
+comment before .trim (inline)      => s.ts::draft.trim() === "" @L1
+regex literal with a quote         => s.ts::draft.trim() === "" @L2
+regex literal with /*              => []
+regex literal with //              => []
+regex literal with a backtick      => s.ts::draft.trim() === "" @L2
+gate text inside a single-quoted string => s.ts::draft.trim() === "" @L1
+gate text inside template text     => s.ts::draft.trim() === "" @L1
+gate inside an interpolation       => s.ts::draft.trim() === "" @L1
+nested template                    => s.ts::t === "" [`${flag ? `;` : draft}`.trim()] @L2
+non-ASCII binding                  => []
+appended normalised prefix         => s.ts::t === "" [normalizeArabicIndicDigits(prefix).concat(draft).trim()] @L2
+appended normaliser inline         => []
+inner normalised block masks outer => s.ts::t === "" [draft.trim()] @L6
+call receiver inline               => []
+as-asserted receiver               => []
+parenthesised receiver             => []
+non-null receiver                  => []
+double trim                        => []
+var binding                        => []
+second declarator                  => s.ts::t === "" [draft.trim()] @L2
+truthiness test                    => []
+relational length                  => []
+empty-template operand             => []
+normaliser predicate               => []
+normalised key, raw value          => s.ts::drafts[normalizeArabicIndicDigits(id)].trim() === "" @L1
+receiver named draftBlankish       => s.ts::draftBlankish.trim() === "" @L2
+comparison against a non-blank     => []
+trim used as an argument           => []

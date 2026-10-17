@@ -1,295 +1,86 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 /**
- * #244 — the scanner behind the raw-`.trim()` blankness ratchet.
+ * #249 — the scanner behind the raw-`.trim()` blankness ratchet, now a
+ * TypeScript AST walk.
  *
- * It finds every *raw* `.trim()` blankness gate in one source string: `X.trim()`
- * (or `X?.trim()`) compared to `""` (either operand order), `X.trim().length`
- * compared to `0`, and the two-step `const X = <expr>.trim(); … X === ""`. A
- * receiver already normalised through `normalizeArabicIndicDigits` (or
- * `draftBlank`) is skipped — those readers need the normalised string, so they
- * are not the defect class.
+ * #244 built this scanner out of regexes over a hand-stripped source string. Four
+ * review rounds each found a new *lexing* failure — line layout, inner-block
+ * scope, `${}` treated as text, normalised keys, appended calls, comment
+ * separators, nested templates — and round 4's fixes introduced two new escapes.
+ * Every one of them is a rule a real parser applies for free. This file replaces
+ * the two regex passes (`scanSource` + six inline matchers +
+ * `collectDeclarations` / `breaksStatement`) with `ts.createSourceFile()` + one
+ * walk over `CallExpression` / `BinaryExpression` / declarations.
  *
- * The gate's identity is `file::<canonical text>`, not a line number: lines drift
- * with every edit, the gate's own text does not. `?.trim()` canonicalises to
- * `.trim()`; two identical gate texts in one file collapse to one signature.
+ * The seam is unchanged on purpose: `numericReaderFiles()` and `CLASSIFIED`
+ * (`blankness-ratchet.test.ts`) keep their meaning, and every signature string is
+ * byte-identical, so `gate-set-diff` can assert the classification set did not
+ * move.
  *
- * Round 2 (#244): every matcher runs over the WHOLE comment-stripped source and
- * claims its match span, instead of walking line by line. A comparison split
- * across two lines is therefore still one gate, in either operand order, for
- * `.length` too, and for a `.trim()` chain the formatter breaks mid-chain, and an
- * inline gate on a line no longer hides a two-step gate beside it (`if (inline)
- * continue` is gone). A declaration is visible to a comparison only when the
- * brace pairs enclosing the declaration also enclose the comparison, so a
- * normalised declaration in an inner block cannot mask an outer raw check, and a
- * property read (`other.trimmed === ""`) is not attributed to a local `trimmed`.
- * A two-step declaration counts as normalised only when its right-hand side CALLS
- * the normaliser, so a receiver whose name merely contains `draftBlank` is still a
- * raw gate. The right-hand side may cross lines and bracketed groups (an object
- * argument, a template `${}`); only a `;`, a closing bracket at depth 0 or a new
- * statement ends it.
+ * A gate's identity is `file::<canonical gate text>`, not a line number. The
+ * canonical text is the same vocabulary #244 used:
  *
- * Round 3 (#244): a template expression `${...}` is CODE in both passes — a
- * comment inside it is stripped and a brace inside it scopes — so a gate split by
- * a comment there is caught and an inner normalised declaration there cannot mask
- * an outer raw check. Template TEXT stays verbatim (above). A declaration is
- * skipped as normalised only when the trimmed VALUE comes from the normaliser: a
- * normaliser in a subscript normalises the KEY, not the selected draft, so
- * `drafts[normalizeArabicIndicDigits(id)].trim()` is a raw gate.
+ *   R.trim() OP ""            "" OP R.trim()
+ *   R.trim().length OP 0      0 OP R.trim().length
+ *   X OP "" [R.trim()]        "" OP X [R.trim()]
+ *   X.length OP 0 [R.trim()]  0 OP X.length [R.trim()]
  *
- * Round 4 (#244): three more false "already clean" reads. (a) A normalised value
- * must be the normaliser's OWN result: its closing parenthesis is matched, so
- * `normalizeArabicIndicDigits(prefix).concat(draft).trim()` is raw even though it
- * begins with the normaliser's name. (b) A comment is a TOKEN SEPARATOR, so
- * removing one leaves a space where two word characters would otherwise fuse:
- * `const` + block comment + `trimmed = draft.trim()` no longer becomes
- * `consttrimmed` and loses the declaration, while a comment between `draft.` and
- * `trim()` still reads as `draft.trim()`. (c) `breaksStatement` tracks nested
- * templates the same
- * way `scanSource` does, so a `;` in a nested template's TEXT
- * (`${flag ? `;` : draft}`) is not a statement break.
+ * where OP is `===` / `!==` / `==` / `!=`, `R` is the `.trim()` receiver's source
+ * text (whitespace collapsed) and `X` is a binding whose initializer is a raw
+ * `.trim()` call. `?.trim()` canonicalises to `.trim()`, and `''` to `""`.
  *
- * Round 5 (#244): that frame stack read JSX text inside a template expression as
- * code, so an unmatched `)` or `]` in a JSX child
- * (`${flag ? <span>)</span> : draft}`) looked like the end of the statement and
- * discarded the declaration — a gate the round-3 scanner caught. An unmatched
- * `)`/`]` at bracket depth 0 INSIDE a `${...}` cannot be code, so it is skipped
- * as text there; at the top level (and outside a template) it still ends the
- * right-hand side, so the round-2..4 matchers are unchanged.
+ * A receiver is NORMALISED — not a raw gate — exactly when it is a call to
+ * `normalizeArabicIndicDigits` / `draftBlank` (optionally parenthesised). Because
+ * the AST receiver *is* the whole value, that one rule subsumes #244's
+ * `normalisesWholeValue` + `withoutSubscripts`: a trailing `.concat(...)` is a
+ * different receiver (raw) and a normaliser in a subscript is a different
+ * receiver (raw).
  *
- * KNOWN CEILING (say it, do not imply otherwise): detection is syntactic, so a
- * gate written as a bare truthiness test (`if (!d.trim())`, `d.trim() ? a : b`),
- * a relational `.length` test (`d.trim().length > 0`, `> 0` and `>= 1` alike), a
- * receiver that is NOT a plain member chain (`f().trim() === ""`,
- * `(draft as string).trim()`, `(draft).trim()`, `draft!.trim()`,
- * `draft.trim().trim()`, `drafts[
- id
-].trim()`, `x.trimStart() === ""`,
- * `draft.trim () === ""`; the two-step form `const t = f().trim()` IS caught), a
- * blank operand that is not a `""`/`''` literal (an empty template), a value
- * assigned after a bare `let t; t = d.trim()` or aliased (`const u = t`), a second
- * declarator on one line (`const t = d.trim(), u = e.trim()`), a destructuring
- * binding, a `switch (t) { case "": }` after a raw trim, a gate in a file that
- * parses numerics without importing `amount-parse`/`numeric-input` — none of those
- * is caught. A declaration bound by `var` is not seen at all (its gate is missed),
- * and a `var`, parameter or `catch` binding can be attributed to a same-named
- * visible declaration (false positive); an ASI-ambiguous `const t = foo` followed
- * by `bar.trim();`, a continuation line (`const t = foo
- + bar.trim()`), or an
- * arrow/callback body on the right-hand side (`const t = xs.map((x) => x.trim())`,
- * whose canonical text then also loses the closing bracket) attributes that
- * `.trim()` to `t` (false positive with invented receiver text). A string or
- * template literal whose TEXT looks like a gate is still scanned as code, so it
- * can be reported as a gate it is not (false positive). That is a deliberate
- * no-change from round 2, not a ceiling: now that `${...}` is handled as code,
- * blanking only a template's TEXT is possible and would remove those false
- * positives without hiding a gate inside `${}` — a deferred follow-up, not part
- * of this change. Two more false POSITIVES are stated rather than fixed, because
- * a fourth hand-rolled lexer would grow the leak surface this brief already calls
- * the problem. (1) `normalisesWholeValue` tracks quotes flat (the bug round 4
- * fixed in `breaksStatement`), so a normaliser whose argument holds a nested
- * template is reported as raw
- * (`normalizeArabicIndicDigits(`${a ? `)` : b}`).trim()`); and
- * `withoutSubscripts` strips a `[`/`]` inside a string argument, so
- * `normalizeArabicIndicDigits(draft.replace("[", "")).trim()` is reported too.
- * Both over-report a correctly normalised value (the safe direction: a raw gate is
- * never hidden by them) and both go away with the AST walk. JSX inside `${...}`
- * is handled only for the unmatched-closer half above (round 5): a `}`, a quote
- * or a comment opener (`/*`, `//`) in JSX child text is still read as code,
- * because telling the JSX `}` from the interpolation's own `}` needs the tag walk
- * an AST gives for free — and a `/*` there HIDES the gate and every later gate in
- * the file, the same unsafe direction as a regex literal. The three recorded
- * round-5 fixtures (the `)`/`]` fix and the pre-existing `}` result) pin what is
- * actually claimed. Regex literals
- * are not parsed, so a regex holding a quote, a backtick or a `/*` can mis-scope
- * or HIDE every later gate in the file (the unsafe direction) — in
- * `breaksStatement` and `normalisesWholeValue` as well as `scanSource` — a
- * deferred follow-up, not a dismissal. Every gate of the matched forms is caught;
- * this comment is the honest boundary of that claim.
+ * FAIL CLOSED. The walk visits every node, so a `.trim()` call cannot be skipped
+ * by a lexing desync (a regex literal holding `"`, `` ` ``, `//` or `/*` is now a
+ * node, not a region change). Every raw `.trim()` (and every `.trim().length`,
+ * and every `.length` of a raw-trim binding) is classified by its position: a
+ * handled comparison is a gate, a value use is named as not-a-gate, and a
+ * boolean/blankness TEST the registry does not handle throws `BlanknessScanError`
+ * — a loud refusal, never silence. That covers truthiness (`!x.trim()`,
+ * `if (x.trim())`, `x.trim() ? a : b`, `x.trim() && a`), `x.trim().length`
+ * truthiness (`if (x.trim().length)`, `!x.trim().length`), a relational
+ * `.trim()` / `.trim().length` (`> 0`, `>= 1`) and an empty-template operand.
+ * A blind spot that reports nothing is the failure mode this ticket exists to end.
+ *
+ * Two scope/position rules the walk applies exactly (Greptile #251 findings 1 and
+ * 2): a `for` / `for-of` / `for-in` statement is the scope for its own
+ * `let`/`const` bindings, so a loop binding cannot mask an outer raw check after
+ * the loop; and a comma expression is followed to its right-most operand before
+ * the surrounding test position is judged — a comma's left operand is discarded,
+ * so a raw trim there is a value use, not a test.
+ *
+ * KNOWN CEILING (say it, do not imply otherwise): detection is still syntactic
+ * and the gate vocabulary is still #244's, so these shapes are not gates:
+ * the truthiness/relational/empty-template tests above are REFUSED rather than
+ * detected; a binding formed by assignment (`let t; t = d.trim()`) or
+ * destructuring, and a computed `.trim` property (`d["trim"]()`), are not gate
+ * sources; `switch (t) { case "": }` after a raw trim is not a comparison;
+ * `Boolean(x.trim())` is an explicit call, so its argument is a value use, not a
+ * test; and visibility is lexical, not typed, so a parameter or `catch` binding
+ * that shadows a raw-trim local can still be attributed to the local. A file that
+ * does not parse is recovered by TS rather than refused (parse diagnostics are
+ * not inspected); production files parse clean.
  */
 
 export const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
-/** A member/chain receiver, e.g. `value.amount`, `drafts[line.id]`, `a?.b`, `this.#draft`. */
-const CHAIN = String.raw`[A-Za-z_$#][\w$]*(?:\s*(?:\??\.[A-Za-z_$#][\w$]*|\??\.?\[[^\]\n]+\]))*`;
-const INLINE_FWD = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`, "g");
-const INLINE_REV = new RegExp(String.raw`(""|'')\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)`, "g");
-const PAREN_FWD = new RegExp(
-  String.raw`\(\s*(${CHAIN})\s*\?\?\s*(${CHAIN}|""|'')\s*\)\s*\??\.trim\(\)\s*(===|!==|==|!=)\s*(""|'')`,
-  "g",
-);
-const PAREN_REV = new RegExp(
-  String.raw`(""|'')\s*(===|!==|==|!=)\s*\(\s*(${CHAIN})\s*\?\?\s*(${CHAIN}|""|'')\s*\)\s*\??\.trim\(\)`,
-  "g",
-);
-const INLINE_LEN = new RegExp(String.raw`(${CHAIN})\s*\??\.trim\(\)\s*\??\.length\s*(===|!==|==|!=)\s*0`, "g");
-const INLINE_LEN_REV = new RegExp(String.raw`0\s*(===|!==|==|!=)\s*(${CHAIN})\s*\??\.trim\(\)\s*\??\.length`, "g");
-/**
- * The start of a two-step declaration. The right-hand side is read separately so
- * it may cross a line break (`const trimmed =\n  draft.trim();`).
- */
-const DECL = new RegExp(String.raw`(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=;]+)?=\s*`, "g");
-const DECL_TRIM = String.raw`\.trim\(\)`;
-const OPENERS = "([{";
-const CLOSERS = ")]}";
-const STATEMENT_KEYWORD =
-  /^\s*(?:const|let|var|return|if|for|while|switch|function|export|import|throw|case|break|continue)\b/;
-
-/**
- * Whether the two characters would FUSE into a different token if a removed
- * comment left no separator between them (`const` + `trimmed` -> `consttrimmed`).
- * Only that boundary gets a space: anywhere else the comment is dropped as it was
- * before, so a chain it interrupted (a comment between `draft.` and `trim()`)
- * stays `draft.trim()` and is still matched (#244 round 4 review). `#` is NOT a
- * word character: `this.#` + comment + `draft` must stay `this.#draft`, not
- * `this.# draft`, or the receiver is attributed to an invented `draft`.
- */
-const isWordCharacter = (char: string) => /[\w$]/.test(char) || char.charCodeAt(0) > 127;
-const fusesTokens = (left: string | undefined, right: string | undefined) =>
-  left !== undefined && right !== undefined && isWordCharacter(left) && isWordCharacter(right);
-
-/**
- * Whether a statement break sits between `=` and the `.trim()` at bracket depth 0,
- * i.e. the `.trim()` belongs to a later statement. A bracketed group (an object
- * argument, a template `${}`) does NOT end the right-hand side; a `;`, a closing
- * bracket at depth 0, or a new line that opens a new statement does. Text inside a
- * string or template literal is skipped, so a `;` or a brace there is not a break
- * — and (round 4) templates NEST: a backtick inside `${...}` opens another
- * template rather than closing the outer one, so `${flag ? `;` : draft}` keeps its
- * `;` as text and does not discard the declaration.
- */
-type BreakFrame =
-  | { kind: "code"; braces: number }
-  | { kind: "quote"; terminator: "'" | '"' }
-  | { kind: "template" };
-
-function breaksStatement(text: string, from: number, to: number): boolean {
-  const frames: BreakFrame[] = [{ kind: "code", braces: 0 }];
-  for (let i = from; i < to; i += 1) {
-    const frame = frames[frames.length - 1]!;
-    const char = text[i]!;
-    const next = text[i + 1];
-    if (frame.kind === "quote") {
-      if (char === "\\") i += 1;
-      else if (char === frame.terminator) frames.pop();
-      continue;
-    }
-    if (frame.kind === "template") {
-      if (char === "\\") i += 1;
-      else if (char === "`") frames.pop();
-      else if (char === "$" && next === "{") {
-        frames.push({ kind: "code", braces: 0 });
-        i += 1;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') frames.push({ kind: "quote", terminator: char });
-    else if (char === "`") frames.push({ kind: "template" });
-    else if (OPENERS.includes(char)) frame.braces += 1;
-    else if (char === "}") {
-      if (frame.braces > 0) frame.braces -= 1;
-      else if (frames.length > 1) frames.pop(); // ends the enclosing `${...}`
-      else return true;
-    } else if (CLOSERS.includes(char)) {
-      // `)` / `]` (the `}` is handled above): a close at depth 0 ends the
-      // right-hand side, so the `.trim()` belongs to a later statement. Inside a
-      // template interpolation it ends nothing: an unmatched close there is JSX
-      // text, not code (`${flag ? <span>)</span> : draft}`, round 5 finding 1),
-      // so it is skipped rather than treated as a break.
-      if (frame.braces > 0) frame.braces -= 1;
-      else if (frames.length === 1) return true;
-    } else if (char === ";" && frame.braces === 0 && frames.length === 1) return true;
-    else if (
-      char === "\n" &&
-      frame.braces === 0 &&
-      frames.length === 1 &&
-      STATEMENT_KEYWORD.test(text.slice(i + 1, i + 40))
-    ) {
-      return true;
-    }
+/** Thrown when a raw `.trim()` sits in a blankness-test shape the walk does not
+ * classify. Fail closed: an unhandled shape is a loud refusal, never a skip. */
+export class BlanknessScanError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BlanknessScanError";
   }
-  return false;
-}
-
-/**
- * Two-step gates on the `.length` of a declared raw trim: `const t = d.trim(); if
- * (t.length === 0)`. The `.length` is what makes this safe to match without also
- * catching ordinary numeric comparisons against `0`.
- */
-const USE_LEN_FWD = new RegExp(
-  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*\??\.length\s*(===|!==|==|!=)\s*0`,
-  "g",
-);
-const USE_LEN_REV = new RegExp(
-  String.raw`0\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\s*\??\.length`,
-  "g",
-);
-const USE_FWD = new RegExp(
-  String.raw`(?<![\w$.])([A-Za-z_$][\w$]*)\s*(===|!==|==|!=)\s*(""|'')`,
-  "g",
-);
-const USE_REV = new RegExp(
-  String.raw`(""|'')\s*(===|!==|==|!=)\s*([A-Za-z_$][\w$]*)\b(?!\s*\.)`,
-  "g",
-);
-/** The opening of a normaliser call at the start of the trimmed value. */
-const NORMALISER_CALL = /^(?:normalizeArabicIndicDigits|draftBlank)\s*\(/;
-
-/**
- * Whether the trimmed value is the normaliser's OWN result. The normaliser's
- * matching closing parenthesis is located by depth (strings and templates are
- * skipped, so a `)` in an argument does not end the call early) and the value
- * must end there: a trailing operation (`.concat(draft)`, `+ suffix`) means the
- * normaliser did not wrap the whole value, so the trim is still raw (#244 round 4,
- * finding 1). `draftBlankish(...)` never matches (the call needs `(`), and a
- * normaliser that is only an argument of another call does not match either.
- * See `withoutSubscripts` for the subscript half of the check.
- */
-function normalisesWholeValue(receiver: string): boolean {
-  const match = NORMALISER_CALL.exec(receiver);
-  if (match === null) return false;
-  let depth = 0;
-  let quote: "'" | '"' | "`" | null = null;
-  for (let i = match[0].length - 1; i < receiver.length; i += 1) {
-    const char = receiver[i]!;
-    if (quote !== null) {
-      if (char === "\\") i += 1;
-      else if (char === quote) quote = null;
-      continue;
-    }
-    if (char === "'" || char === '"' || char === "`") quote = char;
-    else if (char === "(") depth += 1;
-    else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return receiver.slice(i + 1).trim() === "";
-    }
-  }
-  return false;
-}
-
-/**
- * The receiver with every `[...]` subscript group removed. A normaliser in a
- * subscript normalises the KEY, and the selected draft is still raw
- * (`drafts[normalizeArabicIndicDigits(id)].trim()`, round-3 finding 2). Stripping
- * the subscript leaves `drafts`, so the declaration is reported; a normaliser
- * over the value (`normalizeArabicIndicDigits(drafts[id]).trim()`) keeps its name
- * and is still skipped. The resulting text is then passed to
- * `normalisesWholeValue` (not matched by mere presence), so a normaliser that is
- * only an ARGUMENT of another call (`f(normalizeArabicIndicDigits(id)).trim()`) is
- * still raw.
- */
-function withoutSubscripts(receiver: string): string {
-  let out = "";
-  let depth = 0;
-  for (const char of receiver) {
-    if (char === "[") depth += 1;
-    else if (char === "]") {
-      if (depth > 0) depth -= 1;
-    } else if (depth === 0) out += char;
-  }
-  return out;
 }
 
 export interface BlanknessGate {
@@ -299,306 +90,426 @@ export interface BlanknessGate {
   readonly signature: string;
 }
 
-/**
- * One pass over the source producing (a) the comment-stripped text and (b) the
- * matched brace pairs *of that text*, with a template expression `${...}` treated
- * as CODE in both passes. Doing them together is the point: a comment inside
- * `${}` is stripped, so a gate split by it is still a gate, and a brace inside
- * `${}` pairs, so a declaration nested there does not share the enclosing scope
- * of a comparison outside it. Both are round-3 finding 1 — a template expression
- * was text to this scanner while `collectDeclarations` still read its
- * declarations, so an inner normalised `trimmed` hid an outer raw `trimmed ===
- * ""`. The template TEXT between groups is still copied verbatim — a deliberate
- * no-change from round 2, because this change is about the expression half.
- * Blanking a template's TEXT is now possible (the `${...}` half is code either
- * way) and would only remove false positives; it is a deferred follow-up, not a
- * ceiling. Newlines survive every branch, so line numbers hold.
- */
-function scanSource(source: string): ScanResult {
-  let out = "";
-  const braces: BracePair[] = [];
-  const opens: number[] = [];
-  type Region =
-    | { kind: "code"; interpolation: number | null }
-    | { kind: "template" }
-    | { kind: "line" }
-    | { kind: "block" }
-    | { kind: "quote"; terminator: "'" | '"' };
-  const regions: Region[] = [{ kind: "code", interpolation: null }];
-
-  for (let i = 0; i < source.length; i += 1) {
-    const region = regions[regions.length - 1]!;
-    const char = source[i]!;
-    const next = source[i + 1];
-
-    if (region.kind === "line") {
-      if (char === "\n") {
-        regions.pop();
-        out += char;
-      }
-      continue;
-    }
-    if (region.kind === "block") {
-      if (char === "*" && next === "/") {
-        regions.pop();
-        // a comment is a token SEPARATOR, not nothing: `const` + comment +
-        // `trimmed` must not fuse into `consttrimmed`, which loses the
-        // declaration and the gate that follows it. It only needs a space where
-        // two word characters would fuse; elsewhere dropping it keeps every
-        // offset (and every brace pair) as it was, and keeps a chain it
-        // interrupted (`draft./* note */trim()`) matchable.
-        if (fusesTokens(out[out.length - 1], source[i + 2])) out += " ";
-        i += 1;
-      } else if (char === "\n") {
-        out += "\n";
-      }
-      continue;
-    }
-    if (region.kind === "quote") {
-      out += char;
-      if (char === "\\") {
-        out += next ?? "";
-        i += 1;
-      } else if (char === region.terminator) {
-        regions.pop();
-      }
-      continue;
-    }
-    if (region.kind === "template") {
-      if (char === "\\") {
-        out += char + (next ?? "");
-        i += 1;
-        continue;
-      }
-      if (char === "`") {
-        regions.pop();
-        out += char;
-        continue;
-      }
-      if (char === "$" && next === "{") {
-        // the interpolation braces are a scope, so a declaration inside `${}` is
-        // not visible to a comparison outside it
-        const at = out.length;
-        opens.push(at);
-        regions.push({ kind: "code", interpolation: at });
-        out += "${";
-        i += 1;
-        continue;
-      }
-      out += char;
-      continue;
-    }
-    // code region
-    if (char === "/" && next === "/") {
-      regions.push({ kind: "line" });
-      i += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      regions.push({ kind: "block" });
-      i += 1;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      regions.push({ kind: "quote", terminator: char });
-      out += char;
-      continue;
-    }
-    if (char === "`") {
-      regions.push({ kind: "template" });
-      out += char;
-      continue;
-    }
-    if (char === "{") {
-      opens.push(out.length);
-      out += char;
-      continue;
-    }
-    if (char === "}") {
-      const open = opens.pop();
-      if (open !== undefined) braces.push({ open, close: out.length });
-      // only the interpolation's OWN brace ends the region: an inner `{...}` (an
-      // object literal, an arrow body) must not turn the rest of the template
-      // back into text, which would stop stripping its comments and scoping it
-      if (region.interpolation !== null && open === region.interpolation) regions.pop();
-      out += char;
-      continue;
-    }
-    out += char;
-  }
-  return { code: out, braces };
-}
 const collapse = (text: string) => text.replace(/\s+/g, " ").trim();
 
-interface Span {
-  readonly start: number;
-  readonly end: number;
+/**
+ * A receiver's canonical text, with comment trivia dropped and whitespace
+ * collapsed, so a comment edit cannot change a gate's identity. The printer
+ * drops only comments — text inside a literal (`a["//"]`, a template) is
+ * preserved — which a second hand-rolled comment stripper could not promise.
+ */
+const RECEIVER_PRINTER = ts.createPrinter({ removeComments: true });
+const receiverText = (expression: ts.Expression): string =>
+  collapse(RECEIVER_PRINTER.printNode(ts.EmitHint.Unspecified, expression, expression.getSourceFile()));
+
+const COMPARISON_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.EqualsEqualsToken,
+  ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken,
+]);
+
+const RELATIONAL_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.LessThanToken,
+  ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken,
+  ts.SyntaxKind.GreaterThanEqualsToken,
+]);
+
+const NORMALISERS = new Set(["normalizeArabicIndicDigits", "draftBlank"]);
+
+const SCRIPT_KIND = (file: string) => (file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+
+/** Strip the wrappers that do not change a value: parens, assertions, `!`. */
+function unwrap(node: ts.Expression): ts.Expression {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
-interface BracePair {
-  readonly open: number;
-  readonly close: number;
+/** A zero-argument `.trim()` call: `x.trim()` or `x?.trim()`. */
+function isTrimCall(node: ts.Node): node is ts.CallExpression {
+  if (!ts.isCallExpression(node) || node.arguments.length !== 0) return false;
+  const callee = node.expression;
+  return ts.isPropertyAccessExpression(callee) && callee.name.text === "trim";
 }
 
-/** The comment-stripped source and the brace pairs within it, from one pass. */
-interface ScanResult {
-  readonly code: string;
-  readonly braces: BracePair[];
+const trimReceiver = (call: ts.CallExpression): ts.Expression => {
+  // SAFETY: callers pass a call that `isTrimCall()` accepted, which requires the
+  // callee to be a property access named `trim`.
+  return (call.expression as ts.PropertyAccessExpression).expression;
+};
+
+const isLengthAccess = (node: ts.Node): node is ts.PropertyAccessExpression =>
+  ts.isPropertyAccessExpression(node) && node.name.text === "length";
+
+const isEmptyString = (node: ts.Node): boolean => ts.isStringLiteral(node) && node.text === "";
+
+const isEmptyTemplate = (node: ts.Node): boolean =>
+  ts.isNoSubstitutionTemplateLiteral(node) && node.text === "";
+
+const isZero = (node: ts.Node): boolean => ts.isNumericLiteral(node) && node.text === "0";
+
+/** Whether a receiver is the normaliser's OWN result, i.e. the whole value. */
+function isNormalisedReceiver(expression: ts.Expression): boolean {
+  const receiver = unwrap(expression);
+  if (!ts.isCallExpression(receiver) || receiver.arguments.length === 0) return false;
+  const callee = unwrap(receiver.expression);
+  return ts.isIdentifier(callee) && NORMALISERS.has(callee.text);
+}
+
+/**
+ * The raw `.trim()` a binding holds: the initializer itself, or the trimmed left
+ * of a `trim() ?? ""` fallback (`const t = draft?.trim() ?? ""`). The fallback is
+ * a real blankness source — the regex scanner reported it, so dropping it would
+ * be a silent blind spot, not a stated ceiling.
+ */
+function trimmedInitializer(initializer: ts.Expression): ts.CallExpression | undefined {
+  const node = unwrap(initializer);
+  if (isTrimCall(node)) return node;
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    const left = unwrap(node.left);
+    const right = unwrap(node.right);
+    if (isTrimCall(left) && (isEmptyString(right) || isEmptyTemplate(right))) return left;
+  }
+  return undefined;
+}
+
+/** The nearest block-like ancestor: a block-scoped declaration does not leak
+ * out of it. */
+function nearestScope(node: ts.Node): ts.Node {
+  let current: ts.Node | undefined = node.parent;
+  while (current !== undefined) {
+    switch (current.kind) {
+      case ts.SyntaxKind.SourceFile:
+      case ts.SyntaxKind.Block:
+      case ts.SyntaxKind.ModuleBlock:
+      case ts.SyntaxKind.CaseBlock:
+        return current;
+      default:
+        current = current.parent;
+    }
+  }
+  return node.getSourceFile();
+}
+
+/**
+ * The `for` / `for-of` / `for-in` statement a `let`/`const` declaration is the
+ * initializer of: the loop itself is that binding's scope, so it does not leak
+ * into the surrounding block. Without this, `for (let t = normalised; …)` was
+ * treated as visible after the loop and masked an outer raw `t` (Greptile #251
+ * finding 1: the walk returned `[]` for a real raw check with no refusal).
+ */
+function loopScope(node: ts.Node): ts.Node | undefined {
+  const list = node.parent;
+  if (!ts.isVariableDeclarationList(list)) return undefined;
+  const owner = list.parent;
+  if (ts.isForStatement(owner) && owner.initializer === list) return owner;
+  if ((ts.isForOfStatement(owner) || ts.isForInStatement(owner)) && owner.initializer === list) return owner;
+  return undefined;
+}
+
+/** The nearest function (or the file): a `var` hoists to here, so a `var` inside
+ * a block is still visible after that block closes. */
+function nearestFunctionScope(node: ts.Node): ts.Node {
+  let current: ts.Node | undefined = node.parent;
+  while (current !== undefined) {
+    if (ts.isFunctionLike(current) || current.kind === ts.SyntaxKind.SourceFile) return current;
+    current = current.parent;
+  }
+  return node.getSourceFile();
+}
+
+function isAncestor(ancestor: ts.Node, node: ts.Node): boolean {
+  let current: ts.Node | undefined = node;
+  while (current !== undefined) {
+    if (current === ancestor) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+/** The first parent that is not a value-preserving wrapper. */
+function transparentParent(node: ts.Node): ts.Node | undefined {
+  let current: ts.Node | undefined = node.parent;
+  while (
+    current !== undefined &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current))
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+/**
+ * The node whose VALUE is the one under test. Parens / assertions / `!`-free
+ * wrappers preserve the value, and a comma expression's value is its right-most
+ * operand; a comma's left operand is DISCARDED, so a raw trim there is a value
+ * use, not a test. (Greptile #251 finding 2: `refuseIfTestPosition` stopped at
+ * the comma expression, so `if ((logDraft(), draft.trim()))` returned `[]` with
+ * no refusal.)
+ */
+function testedValue(node: ts.Node): ts.Node {
+  let current = node;
+  for (;;) {
+    const parent = current.parent;
+    if (parent === undefined) return current;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isAsExpression(parent) ||
+      ts.isTypeAssertionExpression(parent) ||
+      ts.isNonNullExpression(parent) ||
+      ts.isSatisfiesExpression(parent)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      parent.right === current
+    ) {
+      current = parent;
+      continue;
+    }
+    return current;
+  }
 }
 
 interface Declaration {
   readonly name: string;
-  /** The expression the `.trim()` was called on, e.g. `draft` or
-   * `normalizeArabicIndicDigits(draft)`, collapsed to one line. */
-  readonly rhs: string;
+  /** The raw `.trim()` call in the initializer. */
+  readonly trim: ts.CallExpression;
   readonly offset: number;
-  readonly enclosing: readonly BracePair[];
-}
-
-/** The 1-based line a character offset sits on. */
-function lineAt(text: string, offset: number): number {
-  let line = 1;
-  for (let i = 0; i < offset; i += 1) if (text[i] === "\n") line += 1;
-  return line;
-}
-
-
-
-/** The brace pairs enclosing one offset — the scope chain of a token. */
-function enclosing(pairs: readonly BracePair[], offset: number): BracePair[] {
-  return pairs.filter((pair) => pair.open < offset && offset < pair.close);
-}
-
-/**
- * Every `const`/`let X = <expr>.trim()` in the text, with its scope chain. The
- * right-hand side may cross line breaks; a statement break before the `.trim()`
- * means the `.trim()` is not this declaration's.
- */
-function collectDeclarations(text: string, braces: readonly BracePair[]): Declaration[] {
-  const trimCalls: number[] = [];
-  for (const match of text.matchAll(new RegExp(DECL_TRIM, "g"))) trimCalls.push(match.index);
-  const declarations: Declaration[] = [];
-  for (const match of text.matchAll(DECL)) {
-    const offset = match.index;
-    const afterEquals = offset + match[0].length;
-    const trimOffset = trimCalls.find((candidate) => candidate >= afterEquals);
-    if (trimOffset === undefined) continue;
-    if (breaksStatement(text, afterEquals, trimOffset)) continue;
-    declarations.push({
-      name: match[1]!,
-      rhs: collapse(text.slice(afterEquals, trimOffset)),
-      offset,
-      enclosing: enclosing(braces, offset),
-    });
-  }
-  return declarations;
-}
-
-/**
- * The innermost declaration of `name` that is visible at `offset`: earlier in the
- * file, and whose scope chain is a prefix of the comparison's. A declaration in a
- * nested block therefore cannot mask an outer one of the same name (#244 round 2,
- * finding 2).
- */
-function visibleDeclaration(
-  declarations: readonly Declaration[],
-  name: string,
-  offset: number,
-  comparisonScope: readonly BracePair[],
-): Declaration | undefined {
-  let found: Declaration | undefined;
-  for (const declaration of declarations) {
-    if (declaration.name !== name || declaration.offset >= offset) continue;
-    const visible = declaration.enclosing.every((pair) =>
-      comparisonScope.some((scope) => scope.open === pair.open),
-    );
-    if (visible) found = declaration;
-  }
-  return found;
+  /** The innermost scope node the binding lives in. */
+  readonly scope: ts.Node;
+  readonly normalised: boolean;
 }
 
 /** Every raw-`.trim()` blankness gate in one source string. */
 export function findBlanknessGates(source: string, file: string): BlanknessGate[] {
-  const { code: text, braces } = scanSource(source);
-  const declarations = collectDeclarations(text, braces);
-
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    SCRIPT_KIND(file),
+  );
+  const declarations: Declaration[] = [];
   const bySignature = new Map<string, { offset: number; gate: BlanknessGate }>();
-  const claimed: Span[] = [];
-  const overlaps = (span: Span) =>
-    claimed.some((existing) => span.start < existing.end && existing.start < span.end);
+
   const record = (offset: number, canonical: string) => {
     const signature = `${file}::${canonical}`;
     if (bySignature.has(signature)) return;
-    bySignature.set(signature, { offset, gate: { file, line: lineAt(text, offset), signature } });
+    const { line } = sourceFile.getLineAndCharacterOfPosition(offset);
+    bySignature.set(signature, { offset, gate: { file, line: line + 1, signature } });
   };
 
-  // Inline forms first: they are the more specific match, and claiming their span
-  // stops a broader matcher reading a two-step gate out of their middle. A raw
-  // receiver is a member chain, so it can never be a normaliser CALL — the
-  // normaliser check belongs to a two-step declaration, not here.
-  const claimInline = (regex: RegExp, canonical: (match: RegExpExecArray) => string) => {
-    for (const match of text.matchAll(regex)) {
-      const start = match.index;
-      const span = { start, end: start + match[0].length };
-      if (overlaps(span)) continue;
-      claimed.push(span);
-      record(start, canonical(match));
+  const refuse = (node: ts.Node, reason: string): never => {
+    const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+    throw new BlanknessScanError(
+      `unhandled blankness shape (${reason}) at ${file}:${line + 1}: ${collapse(node.getText(sourceFile))}`,
+    );
+  };
+
+  const visibleDeclaration = (name: string, comparison: ts.Node): Declaration | undefined => {
+    const comparisonStart = comparison.getStart(sourceFile);
+    let found: Declaration | undefined;
+    for (const declaration of declarations) {
+      if (declaration.name !== name) continue;
+      if (declaration.offset >= comparisonStart) continue;
+      if (!isAncestor(declaration.scope, comparison)) continue;
+      found = declaration; // declarations are pushed in source order: keep the innermost preceding
     }
+    return found;
   };
 
-  // A `.trim()` chain may be broken across lines by the formatter, so the chain
-  // matchers allow whitespace inside it; the canonical text collapses it away.
-  claimInline(INLINE_FWD, (match) => `${collapse(match[1]!)}.trim() ${match[2]} ""`);
-  claimInline(
-    PAREN_FWD,
-    (match) => `(${collapse(match[1]!)} ?? ${collapse(match[2]!)}).trim() ${match[3]} ""`,
-  );
-  claimInline(
-    PAREN_REV,
-    (match) => `"" ${match[2]} (${collapse(match[3]!)} ?? ${collapse(match[4]!)}).trim()`,
-  );
-  claimInline(INLINE_REV, (match) => `"" ${match[2]} ${collapse(match[3]!)}.trim()`);
-  claimInline(INLINE_LEN, (match) => `${collapse(match[1]!)}.trim().length ${match[2]} 0`);
-  claimInline(INLINE_LEN_REV, (match) => `0 ${match[1]} ${collapse(match[2]!)}.trim().length`);
+  /** Whether an expression reads a RAW trim (so a relational test on it is a
+   * blankness test we have not handled). */
+  const isRawTrimExpression = (expression: ts.Expression, comparison: ts.Node): boolean => {
+    const node = unwrap(expression);
+    if (isTrimCall(node)) return !isNormalisedReceiver(trimReceiver(node));
+    if (isLengthAccess(node)) {
+      const on = unwrap(node.expression);
+      if (isTrimCall(on)) return !isNormalisedReceiver(trimReceiver(on));
+      if (!ts.isIdentifier(on)) return false;
+      const declaration = visibleDeclaration(on.text, comparison);
+      return declaration !== undefined && !declaration.normalised;
+    }
+    if (!ts.isIdentifier(node)) return false;
+    const declaration = visibleDeclaration(node.text, comparison);
+    return declaration !== undefined && !declaration.normalised;
+  };
 
-  // Two-step: `const X = <expr>.trim(); … X === ""` / `X.length === 0`, in either
-  // operand order.
-  const claimTwoStep = (
-    regex: RegExp,
-    nameGroup: number,
-    operatorGroup: number,
-    canonical: (name: string, operator: string, rhs: string) => string,
+  const classifyBlankOperand = (
+    expression: ts.Expression,
+    comparison: ts.BinaryExpression,
+    offset: number,
+    operator: string,
+    blankFirst: boolean,
+    blankKind: "string" | "zero",
   ) => {
-    for (const match of text.matchAll(regex)) {
-      const start = match.index;
-      const span = { start, end: start + match[0].length };
-      if (overlaps(span)) continue;
-      const name = match[nameGroup] ?? "";
-      const operator = match[operatorGroup] ?? "";
-      const declaration = visibleDeclaration(declarations, name, start, enclosing(braces, start));
-      if (declaration === undefined || normalisesWholeValue(withoutSubscripts(declaration.rhs))) continue;
-      claimed.push(span);
-      record(start, canonical(name, operator, declaration.rhs));
+    const blankText = blankKind === "string" ? '""' : "0";
+    const anchor = (expressionText: string, suffix = "") =>
+      record(
+        offset,
+        blankFirst
+          ? `${blankText} ${operator} ${expressionText}${suffix}`
+          : `${expressionText} ${operator} ${blankText}${suffix}`,
+      );
+
+    if (blankKind === "string") {
+      if (isTrimCall(expression)) {
+        if (!isNormalisedReceiver(trimReceiver(expression))) {
+          anchor(`${receiverText(trimReceiver(expression))}.trim()`);
+        }
+        return;
+      }
+      if (!ts.isIdentifier(expression)) return;
+      const declaration = visibleDeclaration(expression.text, comparison);
+      if (declaration === undefined || declaration.normalised) return;
+      const rhs = receiverText(trimReceiver(declaration.trim));
+      anchor(expression.text, ` [${rhs}.trim()]`);
+      return;
+    }
+
+    if (!isLengthAccess(expression)) return;
+    const on = unwrap(expression.expression);
+    if (isTrimCall(on)) {
+      if (!isNormalisedReceiver(trimReceiver(on))) {
+        anchor(`${receiverText(trimReceiver(on))}.trim().length`);
+      }
+      return;
+    }
+    if (!ts.isIdentifier(on)) return;
+    const declaration = visibleDeclaration(on.text, comparison);
+    if (declaration === undefined || declaration.normalised) return;
+    const rhs = receiverText(trimReceiver(declaration.trim));
+    anchor(`${on.text}.length`, ` [${rhs}.trim()]`);
+  };
+
+  const classifyComparison = (comparison: ts.BinaryExpression) => {
+    const operatorKind = comparison.operatorToken.kind;
+    const offset = comparison.getStart(sourceFile);
+    const operator = comparison.operatorToken.getText(sourceFile);
+    const left = unwrap(comparison.left);
+    const right = unwrap(comparison.right);
+
+    if (RELATIONAL_OPERATORS.has(operatorKind)) {
+      if (
+        isRawTrimExpression(left, comparison) ||
+        isRawTrimExpression(right, comparison)
+      ) {
+        refuse(comparison, "relational test on a raw .trim()");
+      }
+      return;
+    }
+    if (!COMPARISON_OPERATORS.has(operatorKind)) return;
+
+    if (isEmptyString(left)) {
+      classifyBlankOperand(right, comparison, offset, operator, true, "string");
+    } else if (isEmptyString(right)) {
+      classifyBlankOperand(left, comparison, offset, operator, false, "string");
+    } else if (isZero(left)) {
+      classifyBlankOperand(right, comparison, offset, operator, true, "zero");
+    } else if (isZero(right)) {
+      classifyBlankOperand(left, comparison, offset, operator, false, "zero");
+    } else if (
+      (isEmptyTemplate(left) && isRawTrimExpression(right, comparison)) ||
+      (isEmptyTemplate(right) && isRawTrimExpression(left, comparison))
+    ) {
+      refuse(comparison, "empty template literal operand");
     }
   };
 
-  const gateSuffix = (rhs: string) => `[${rhs}.trim()]`;
-  claimTwoStep(USE_FWD, 1, 2, (name, operator, rhs) => `${name} ${operator} "" ${gateSuffix(rhs)}`);
-  claimTwoStep(
-    USE_LEN_FWD,
-    1,
-    2,
-    (name, operator, rhs) => `${name}.length ${operator} 0 ${gateSuffix(rhs)}`,
-  );
-  claimTwoStep(USE_REV, 3, 2, (name, operator, rhs) => `"" ${operator} ${name} ${gateSuffix(rhs)}`);
-  claimTwoStep(
-    USE_LEN_REV,
-    2,
-    1,
-    (name, operator, rhs) => `0 ${operator} ${name}.length ${gateSuffix(rhs)}`,
-  );
+  /** Refuse a raw trim (or its `.length`) that feeds a boolean/relational test
+   * the gate registry does not handle. The comparison walk owns the `=== ""` /
+   * `=== 0` / relational forms; a value use is not a test. */
+  const refuseIfTestPosition = (node: ts.Node): void => {
+    // The tested value is the node's value through parens and comma expressions:
+    // `(a, b)` is tested as `b`, while a comma's left operand is discarded.
+    const owner = transparentParent(testedValue(node));
+    if (owner === undefined) return;
+    if (ts.isBinaryExpression(owner)) {
+      const kind = owner.operatorToken.kind;
+      if (COMPARISON_OPERATORS.has(kind) || RELATIONAL_OPERATORS.has(kind)) return;
+      if (kind === ts.SyntaxKind.AmpersandAmpersandToken || kind === ts.SyntaxKind.BarBarToken) {
+        refuse(node, "truthiness test on a raw .trim()");
+      }
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(owner) && owner.operator === ts.SyntaxKind.ExclamationToken) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isConditionalExpression(owner) && isAncestor(owner.condition, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isIfStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isWhileStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isDoStatement(owner) && isAncestor(owner.expression, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+    if (ts.isForStatement(owner) && owner.condition !== undefined && isAncestor(owner.condition, node)) {
+      refuse(node, "truthiness test on a raw .trim()");
+    }
+  };
 
-  return [...bySignature.values()].sort((a, b) => a.offset - b.offset).map((entry) => entry.gate);
+  const classifyTrimUse = (call: ts.CallExpression) => {
+    if (isNormalisedReceiver(trimReceiver(call))) return;
+    const parent = transparentParent(call);
+    if (parent === undefined) return;
+    if (isLengthAccess(parent)) return; // the `.length` branch below owns it
+    refuseIfTestPosition(call);
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+      const trim = trimmedInitializer(node.initializer);
+      if (trim !== undefined) {
+        const list = node.parent;
+        const blockScoped =
+          ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) !== 0;
+        declarations.push({
+          name: node.name.text,
+          trim,
+          offset: node.getStart(sourceFile),
+          scope: blockScoped ? loopScope(node) ?? nearestScope(node) : nearestFunctionScope(node),
+          normalised: isNormalisedReceiver(trimReceiver(trim)),
+        });
+      }
+    }
+    if (ts.isBinaryExpression(node)) classifyComparison(node);
+    if (isTrimCall(node)) classifyTrimUse(node);
+    if (isLengthAccess(node) && isRawTrimExpression(node, node)) refuseIfTestPosition(node);
+    if (ts.isIdentifier(node)) {
+      // A bound raw trim tested for truthiness is the same unhandled blankness
+      // shape as the call itself: fail closed, never skip it.
+      const declaration = visibleDeclaration(node.text, node);
+      if (declaration !== undefined && !declaration.normalised) refuseIfTestPosition(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return [...bySignature.values()]
+    .sort((a, b) => a.offset - b.offset)
+    .map((entry) => entry.gate);
 }
 
 function walk(dir: string, out: string[] = []): string[] {

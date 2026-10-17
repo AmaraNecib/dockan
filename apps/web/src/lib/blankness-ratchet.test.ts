@@ -619,12 +619,16 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     expect(findBlanknessGates(insideChain, "synthetic.ts").map((gate) => gate.signature)).toEqual([
       'synthetic.ts::trimmed === "" [draft.trim()]',
     ]);
-    // a private-field receiver must not gain a space at the `#`
+    // a private-field receiver stays whole; a comment before `.trim()` is
+    // trivia (the #244 source put the comment INSIDE the private name
+    // `this.#/* gap */draft`, which is a syntax error — the regex tolerated it by
+    // string surgery, a real parser cannot. Same receiver, same signature, valid
+    // syntax).
     const privateField = [
       "class Box {",
       '  #draft = "";',
       "  blank() {",
-      '    if (this.#/* gap */draft.trim() === "") return true;',
+      '    if (this.#draft./* gap */trim() === "") return true;',
       "    return false;",
       "  }",
       "}",
@@ -676,5 +680,296 @@ describe("raw-.trim() blankness ratchet on numeric drafts (#244)", () => {
     expect(findBlanknessGates(closingBrace, "s.tsx").map((gate) => gate.signature)).toEqual([
       's.tsx::trimmed === "" [`${flag ? <span>}</span> : draft}`.trim()]',
     ]);
+  });
+});
+
+/**
+ * #249 — the AST walk replaces the regex scanner. Every fixture here is either
+ * failing-first against the regex scanner (recorded in
+ * `.scratch/reviews/249/ad8445f-before.log`) or a precision pin for a shape the
+ * regex reported wrongly. The `#244` fixtures above are ported unchanged and must
+ * keep passing: the whole value of the ratchet is that the classification set did
+ * not move.
+ */
+describe("the AST blankness walk (#249)", () => {
+  const signatures = (source: string) =>
+    findBlanknessGates(source, "s.ts").map((gate) => gate.signature);
+
+  it("sees a comment in any position as trivia, including inside a chain", () => {
+    // already caught by #244 round 4; kept so the replacement cannot lose it
+    expect(signatures(['const t = draft./* gap */trim();', 'const b = t === "";'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+    expect(signatures(["const/* note */t = draft.trim();", 'const b = t === "";'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+  });
+
+  it("is not desynced by a regex literal holding a quote, a slash, or a backtick", () => {
+    // BEFORE: `/"` opened a flat quote region for the rest of the file and
+    // `/[/*]/` opened a block comment that HID every later gate.
+    expect(signatures(['const re = /"/;', 'const b = draft.trim() === "";'].join("\n"))).toEqual([
+      's.ts::draft.trim() === ""',
+    ]);
+    expect(
+      signatures(["const re = /[/*]/;", "const t = draft.trim();", 'if (t === "") return;'].join("\n")),
+    ).toEqual(['s.ts::t === "" [draft.trim()]']);
+    expect(signatures('const re = /[//]/; const b = draft.trim() === "";')).toEqual([
+      's.ts::draft.trim() === ""',
+    ]);
+    expect(signatures(["const re = /[`]/;", 'const b = draft.trim() === "";'].join("\n"))).toEqual([
+      's.ts::draft.trim() === ""',
+    ]);
+  });
+
+  it("does not invent a gate from gate-shaped TEXT in a string or template", () => {
+    // BEFORE both reported a phantom `draft.trim() === ""` because string and
+    // template TEXT was scanned as code. Text is now a literal node, not code.
+    expect(signatures(`const s = 'draft.trim() === ""';`)).toEqual([]);
+    expect(signatures('const s = `draft.trim() === ""`;')).toEqual([]);
+  });
+
+  it("still scans an interpolation as code and nests templates", () => {
+    expect(signatures('const b = `${draft.trim() === ""}`;')).toEqual([
+      's.ts::draft.trim() === ""',
+    ]);
+    expect(
+      signatures(
+        ["const t = `${flag ? `;` : draft}`.trim();", 'const b = t === "";'].join("\n"),
+      ),
+    ).toEqual(['s.ts::t === "" [`${flag ? `;` : draft}`.trim()]']);
+  });
+
+  it("sees a non-ASCII identifier binding the regex could not match", () => {
+    // BEFORE: DECL/USE were `[A-Za-z_$][\w$]*`; `\w` excludes `é`, so the
+    // declaration and the gate both vanished.
+    expect(signatures(["const dé = draft.trim();", 'const b = dé === "";'].join("\n"))).toEqual([
+      's.ts::dé === "" [draft.trim()]',
+    ]);
+  });
+
+  it("catches an appended call on the normaliser, inline and two-step", () => {
+    // the receiver IS the whole value, so a trailing `.concat(...)` is raw
+    expect(
+      signatures(
+        [
+          "const t = normalizeArabicIndicDigits(prefix).concat(draft).trim();",
+          'const b = t === "";',
+        ].join("\n"),
+      ),
+    ).toEqual(['s.ts::t === "" [normalizeArabicIndicDigits(prefix).concat(draft).trim()]']);
+    // BEFORE: an inline call receiver did not match `CHAIN` at all
+    expect(
+      signatures('const b = normalizeArabicIndicDigits(prefix).concat(draft).trim() === "";'),
+    ).toEqual(['s.ts::normalizeArabicIndicDigits(prefix).concat(draft).trim() === ""']);
+  });
+
+  it("resolves two-step declarations through real scopes, not brace guessing", () => {
+    // the inner normalised `t` must not mask the outer raw one at the outer check
+    const outer = [
+      "const t = draft.trim();",
+      "{",
+      "  const t = normalizeArabicIndicDigits(draft).trim();",
+      "  void t;",
+      "}",
+      'if (t === "") return;',
+    ].join("\n");
+    expect(signatures(outer)).toEqual(['s.ts::t === "" [draft.trim()]']);
+    // ...and inside the inner block the normalised declaration is what is visible
+    const inner = [
+      "const t = draft.trim();",
+      "{",
+      "  const t = normalizeArabicIndicDigits(draft).trim();",
+      '  if (t === "") return;',
+      "}",
+      "void t;",
+    ].join("\n");
+    expect(signatures(inner)).toEqual([]);
+  });
+
+  it("scopes a for-init binding to its loop, so it cannot mask an outer raw gate", () => {
+    // BEFORE (Greptile #251 finding 1): `nearestScope` walked past the
+    // ForStatement to the surrounding block, so the loop's normalised `t` was
+    // treated as visible after the loop and the outer raw check vanished as a
+    // silent []. A loop is the scope for its own `let`/`const` bindings.
+    const source = [
+      "const t = draft.trim();",
+      "for (let t = normalizeArabicIndicDigits(other).trim(); keepGoing;) {}",
+      'if (t === "") return;',
+    ].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+    // ...and inside the loop body the loop binding is the visible one, so its
+    // normalised check is not a raw gate.
+    const inner = [
+      "const t = draft.trim();",
+      "for (let t = normalizeArabicIndicDigits(other).trim(); keepGoing;) {",
+      '  if (t === "") return;',
+      "}",
+    ].join("\n");
+    expect(signatures(inner)).toEqual([]);
+  });
+
+  it("treats any receiver the parser gives exactly, not only a member chain", () => {
+    // BEFORE these were the stated `CHAIN` ceiling and returned []
+    expect(signatures('const b = f().trim() === "";')).toEqual(['s.ts::f().trim() === ""']);
+    expect(signatures('const b = (draft as string).trim() === "";')).toEqual([
+      's.ts::(draft as string).trim() === ""',
+    ]);
+    expect(signatures('const b = (draft).trim() === "";')).toEqual(['s.ts::(draft).trim() === ""']);
+    expect(signatures('const b = draft!.trim() === "";')).toEqual(['s.ts::draft!.trim() === ""']);
+    expect(signatures('const b = draft.trim().trim() === "";')).toEqual([
+      's.ts::draft.trim().trim() === ""',
+    ]);
+  });
+
+  it("sees a `var` binding and a second declarator on one line", () => {
+    // BEFORE `var` was not collected at all and the second declarator was lost
+    expect(signatures(["var t = draft.trim();", 'const b = t === "";'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+    expect(
+      signatures(["const t = draft.trim(), u = e.trim();", 'const b = t === "" || u === "";'].join("\n")),
+    ).toEqual(['s.ts::t === "" [draft.trim()]', 's.ts::u === "" [e.trim()]']);
+  });
+
+  it("skips a receiver that IS the normaliser's own result and no other", () => {
+    expect(signatures('const b = normalizeArabicIndicDigits(draft).trim() === "";')).toEqual([]);
+    expect(signatures('const b = (normalizeArabicIndicDigits(draft)).trim() === "";')).toEqual([]);
+    expect(signatures('const b = drafts[normalizeArabicIndicDigits(id)].trim() === "";')).toEqual([
+      's.ts::drafts[normalizeArabicIndicDigits(id)].trim() === ""',
+    ]);
+  });
+
+  it("refuses a truthiness test on a raw trim instead of skipping it", () => {
+    // the failure mode this ticket exists to end: a blind spot that reports
+    // nothing. An unhandled boolean shape is a loud refusal, not silence.
+    expect(() => findBlanknessGates("if (!draft.trim()) return;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("if (draft.trim()) return;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim() ? 1 : 2;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim() && other;", "s.ts")).toThrow(/unhandled/i);
+    // the loop-condition refusals need one fixture per position or the
+    // branch-pin proof cannot tell a covered branch from an unexercised one
+    // (Greptile #251 finding 3: `do` / `for` were unpinned)
+    expect(() => findBlanknessGates("while (draft.trim()) {}", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("do { keepGoing = false; } while (draft.trim());", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    expect(() => findBlanknessGates("for (; draft.trim(); ) {}", "s.ts")).toThrow(/unhandled/i);
+  });
+
+  it("follows a comma expression to its right-most operand, so a wrapped test is refused", () => {
+    // BEFORE (Greptile #251 finding 2): `refuseIfTestPosition` stopped at the
+    // comma BinaryExpression, so the wrapped truthiness test returned [] without
+    // throwing. The tested value is the comma's right-most operand.
+    expect(() => findBlanknessGates("if ((logDraft(), draft.trim())) return;", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    expect(() => findBlanknessGates("const b = (logDraft(), draft.trim()) ? 1 : 2;", "s.ts")).toThrow(
+      /unhandled/i,
+    );
+    // ...a discarded left operand is not the tested value, so it is not refused
+    expect(signatures("if ((draft.trim(), logDraft())) return;")).toEqual([]);
+  });
+
+  it("refuses a relational trim test and an empty-template operand", () => {
+    expect(() => findBlanknessGates("const b = draft.trim().length > 0;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim().length >= 1;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim() === ``;", "s.ts")).toThrow(/unhandled/i);
+  });
+
+  it("does not refuse a normalised trim in a boolean position (it is not a raw gate)", () => {
+    expect(signatures('const b = !normalizeArabicIndicDigits(draft).trim();')).toEqual([]);
+    expect(signatures('const b = normalizeArabicIndicDigits(draft).trim().length > 0;')).toEqual([]);
+  });
+
+  it("refuses a truthiness test on a raw trim's length, inline and two-step", () => {
+    // the `.length` path was silently dropped before this: `x.trim().length`
+    // truthiness is `!== 0` — the same blankness gate as the refused relational form.
+    expect(() => findBlanknessGates("if (draft.trim().length) return;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = !draft.trim().length;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim().length ? 1 : 2;", "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates("const b = draft.trim().length && other;", "s.ts")).toThrow(/unhandled/i);
+    expect(() =>
+      findBlanknessGates(["const t = draft.trim();", "if (t.length) return;"].join("\n"), "s.ts"),
+    ).toThrow(/unhandled/i);
+    // ...but a length VALUE (not a test) is a plain use
+    expect(signatures("const n = draft.trim().length;")).toEqual([]);
+  });
+
+  it("sees the `draftBlank` normaliser as normalised too, not only `normalizeArabicIndicDigits`", () => {
+    expect(signatures('const b = draftBlank(draft).trim() === "";')).toEqual([]);
+    expect(signatures('const b = draftBlankish(draft).trim() === "";')).toEqual([
+      's.ts::draftBlankish(draft).trim() === ""',
+    ]);
+  });
+
+  it("hoists a `var` binding to the function, so a closed block does not hide it", () => {
+    const source = ["{", "  var t = draft.trim();", "}", 'if (t === "") return;'].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+  });
+
+  it("pins the lexical-scope ceiling: a parameter shadowing a raw local is mis-attributed", () => {
+    // stated ceiling (visibility is lexical, not typed): the parameter `t` hides
+    // the outer raw declaration, yet the comparison is attributed to the outer
+    // trim. Pinned so the ceiling cannot shift silently.
+    const source = [
+      "const t = draft.trim();",
+      'function g(t: string) { return t === ""; }',
+      "void g;",
+    ].join("\n");
+    expect(signatures(source)).toEqual(['s.ts::t === "" [draft.trim()]']);
+  });
+
+  it("accepts the empty source and a comment-only source, and counts lines with CRLF", () => {
+    expect(findBlanknessGates("", "s.ts")).toEqual([]);
+    expect(findBlanknessGates('// draft.trim() === ""\n', "s.ts")).toEqual([]);
+    const [gate] = findBlanknessGates('const t = draft.trim();\r\nconst b = t === "";\r\n', "s.ts");
+    expect(gate?.line).toBe(2);
+  });
+
+  it("canonicalises a single-quoted blank operand", () => {
+    expect(signatures("const b = draft.trim() === '';")).toEqual(['s.ts::draft.trim() === ""']);
+  });
+
+  it("does not refuse an ordinary value use of a raw trim", () => {
+    expect(signatures("setDebounced(query.trim());")).toEqual([]);
+    expect(signatures("const label = `x ${draft.trim()} y`;")).toEqual([]);
+    expect(signatures("const b = current.name.trim() === current.baseline.name;")).toEqual([]);
+  });
+
+  it("keeps a gate's identity when a comment moves into the receiver", () => {
+    // a comment inside a chain is trivia, not canonical text: the signature must
+    // match the uncommented form or a harmless comment edit invalidates a
+    // CLASSIFIED entry (and quietly re-tightens the ratchet).
+    expect(signatures('const b = draft./* gap */amount.trim() === "";')).toEqual([
+      's.ts::draft.amount.trim() === ""',
+    ]);
+    expect(
+      signatures(["const t = draft./* gap */amount.trim();", 'const b = t === "";'].join("\n")),
+    ).toEqual(['s.ts::t === "" [draft.amount.trim()]']);
+  });
+
+  it('keeps the `trim() ?? ""` fallback binding the regex scanner reported', () => {
+    // BEFORE this returned []: the initializer is a `??` expression, so `t` was
+    // not collected and `t === ""` found no declaration — a gate the regex
+    // scanner reported silently vanished instead of being refused.
+    expect(signatures(["const t = draft?.trim() ?? \"\";", 'const b = t === "";'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+    expect(signatures(["const t = draft.trim() ?? '';", 'if (t === "") return;'].join("\n"))).toEqual([
+      's.ts::t === "" [draft.trim()]',
+    ]);
+  });
+
+  it("refuses a truthiness test on a bound raw trim, not only on the call", () => {
+    const bind = "const t = draft.trim();\n";
+    expect(() => findBlanknessGates(`${bind}if (t) return;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}if (!t) return;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}const b = t ? 1 : 2;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}const b = t && other;`, "s.ts")).toThrow(/unhandled/i);
+    expect(() => findBlanknessGates(`${bind}while (t) {}`, "s.ts")).toThrow(/unhandled/i);
+    // ...but a comparison is the classified gate, and a value use is not a test
+    expect(signatures([bind, 'const b = t === "";'].join("\n"))).toEqual(['s.ts::t === "" [draft.trim()]']);
+    expect(signatures([bind, "void t;"].join("\n"))).toEqual([]);
   });
 });

@@ -78,9 +78,12 @@ a **visual** diff goes to the owner. The gate is written down in
 the evidence form (visual vs measured), the visual/non-visual class, and the queue path.
 
 A **visual** diff is anything a browser can render — `apps/web/**`, i18n/copy, CSS/tokens,
-image assets. It is never auto-merged: the parent posts a before/after table plus the video
-at the head, and the owner says merge. Everything else is auto-merge eligible when all four
-reasons hold, every check is green or legitimately skipped, and GitHub reports `MERGEABLE`.
+image assets. It is **not a veto**: it auto-merges too when it is cheap to reverse, but the parent
+must post the before/after table plus the video at the head **first**, so the owner can judge it
+after the fact. Everything is auto-merge eligible when all four reasons hold, every check is green
+or legitimately skipped, and GitHub reports `MERGEABLE` — unless it is expensive to reverse
+(migrations/schema, `packages/contracts/**`, release/deploy, outside state), encodes a decision,
+or the owner asked to see it. Those go to the owner.
 A **CI change** (anything under `.github/`) always goes to the owner for the diff, whatever
 the class. Merge order matters when two PRs share a store/router: land the one that owns the
 write path first and rebase the other onto the new develop.

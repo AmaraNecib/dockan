@@ -83,25 +83,28 @@ parent's check, at merge time, every time.
 
 ## 3. Then the decision
 
-Two questions decide whether the parent may merge without the owner. If **either** is "yes", the
-PR is the owner's.
+Two questions decide whether the parent may merge without the owner:
 
-1. **Does a human have to judge it?** The eye (visual), the words (copy), or a product/policy choice.
-2. **Would undoing it be expensive?** Data written, a published contract, a shipped release.
+1. **Would undoing it be expensive?** Data written, a published contract, a shipped release.
+2. **Did the owner ask to see it, or does it encode a decision?** A default, a policy, wording.
+
+**Visual is a trigger for the evidence, not a veto** (owner decision, 2026-10-17). A visual diff
+still auto-merges when it is cheap to reverse — but the parent MUST post the before/after images and
+the video at the head first, so the owner can judge it after the fact. Wanting to see one specific
+PR before it lands is an owner trigger for that PR.
 
 | the class | who merges |
 | --- | --- |
-| **VISUAL**, or any **OWNER TRIGGER** below | `OWNER` |
-| everything else | `AUTO` — the parent merges when the four reasons hold, checks are green or legitimately skipped, and GitHub reports `MERGEABLE` |
+| **CHEAP TO REVERSE** — a follow-up commit fixes it; no data written, no published contract, no shipped release; and the owner has not asked to see it | `AUTO` — the parent merges when the four reasons hold, checks are green or legitimately skipped, and GitHub reports `MERGEABLE` |
+| **EXPENSIVE TO REVERSE**, or any **OWNER TRIGGER** below, or the owner said "show me" | `OWNER` |
 | **a wrong fact anywhere in the gate** | `REFUSED` — fix the fact, or the finding, and re-review |
 
 ### The owner triggers
 
 The parent classifies from the diff. **ANY** hit makes it the owner's:
 
-- **Visual** — `apps/web/**`, i18n/copy, CSS/tokens, image assets, or `needsVisual`.
 - **Persisted shape** — a migration, `*.sql`, `schema-version`, a new/changed column or enum, or
-  anything that writes rows in a shape a later deploy must read.
+  anything that writes rows in a shape a later deploy must read. (Undoing it means a migration back.)
 - **Published contract** — `packages/contracts/**`: RPC names, field meanings, the wire format.
 - **Money** — balance sign, rounding, tax, totals — any accounting invariant.
 - **Security** — auth, secrets, the vault, crypto.

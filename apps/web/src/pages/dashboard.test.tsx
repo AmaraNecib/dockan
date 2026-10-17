@@ -376,15 +376,15 @@ describe("DashboardPage summary (issue 84)", () => {
 
   it("renders the server totals and count without client-side maths", async () => {
     const page = await mount(queryClient);
-    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7500") ?? false)).toBe(true);
+    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7,500") ?? false)).toBe(true);
 
     const sales = page.card("dashboard-sales-today")?.textContent ?? "";
-    expect(sales).toContain("7500");
+    expect(sales).toContain("7,500");
     expect(sales).toContain(`${i18n.t("dashboardSalesCount")}: 2`);
 
     const debt = page.card("dashboard-debt-owed")?.textContent ?? "";
-    expect(debt).toContain("7000"); // owed to us
-    expect(debt).toContain("1200"); // we-owe subline
+    expect(debt).toContain("7,000"); // owed to us
+    expect(debt).toContain("1,200"); // we-owe subline
 
     expect(page.card("dashboard-low-stock")?.textContent).toContain("1");
     expect(page.card("dashboard-low-stock-list")?.textContent).toContain("0 / 5");
@@ -412,8 +412,8 @@ describe("DashboardPage summary (issue 84)", () => {
     const page = await mount(queryClient);
 
     // the money figures still render: one failing section must not blank them
-    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7500") ?? false)).toBe(true);
-    expect(page.card("dashboard-debt-owed")?.textContent).toContain("7000");
+    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7,500") ?? false)).toBe(true);
+    expect(page.card("dashboard-debt-owed")?.textContent).toContain("7,000");
 
     // and each failed section says so rather than reading as zero or empty
     expect(page.card("dashboard-low-stock")?.textContent).toContain(i18n.t("dashboardSectionUnavailable"));
@@ -470,14 +470,14 @@ describe("DashboardPage summary (issue 84)", () => {
 
   it("keeps the last good figures and flags them stale when a background refetch fails", async () => {
     const page = await mount(queryClient, { refreshMs: 20 }); // 20ms refresh keeps the test fast
-    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7500") ?? false)).toBe(true);
+    expect(await waitFor(() => page.card("dashboard-sales-today")?.textContent?.includes("7,500") ?? false)).toBe(true);
     expect(page.stale()).toBeNull();
 
     failSummary = true;
     expect(await waitFor(() => page.stale() !== null)).toBe(true);
     expect(page.stale()?.getAttribute("role")).toBe("status");
     expect(page.stale()?.textContent).toContain(i18n.t("dashboardStaleRefresh"));
-    expect(page.card("dashboard-sales-today")?.textContent).toContain("7500");
+    expect(page.card("dashboard-sales-today")?.textContent).toContain("7,500");
     expect(page.error()).toBeNull();
     await page.unmount();
   });

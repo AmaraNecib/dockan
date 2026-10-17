@@ -68,7 +68,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
       >
         <span className="font-semibold" data-testid="debts-person-name">{row.counterpartyName ?? row.counterpartyId}</span>
         <span className="text-sm text-muted-foreground" data-testid="debts-person-count">{t("debtsInvoiceCount")}: {row.invoiceCount}</span>
-        <span className={`font-semibold ${netBalance !== null && netBalance < 0 ? "text-success" : ""}`} data-testid="debts-person-total">{netBalance !== null && netBalance < 0 ? "− " : ""}<Amount value={Math.abs(displayAmount)} /></span>
+        <span className={`font-semibold ${netBalance !== null && netBalance < 0 ? "text-success" : ""}`} data-testid="debts-person-total"><Amount value={Math.abs(displayAmount)} sign={netBalance !== null && netBalance < 0 ? "−" : undefined} /></span>
         {expanded ? <ChevronUp size={14} className="text-muted-foreground" aria-hidden="true" /> : <ChevronDown size={14} className="text-muted-foreground" aria-hidden="true" />}
       </button>
 
@@ -131,7 +131,7 @@ function DebtPersonRow({ row, groupLabel, expanded, onToggle }: { row: DebtSumma
                           )}
                         </td>
                         <td className="p-2 font-semibold" data-testid="debts-account-entry-amount">
-                          {supplierEntrySignLabel(entry)} <Amount value={entry.amount} />
+                          <Amount value={entry.amount} sign={supplierEntrySignLabel(entry)} />
                         </td>
                       </tr>
                     );

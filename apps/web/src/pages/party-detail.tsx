@@ -106,7 +106,7 @@ function SupplierAccountRow({ entry }: { entry: SupplierAccountEntry }) {
         )}
       </td>
       <td className="p-2 font-medium" data-testid="supplier-entry-amount">
-        {sign} <Amount value={entry.amount} />
+        <Amount value={entry.amount} sign={sign} />
       </td>
       <td className="p-2 text-sm text-muted-foreground">{entry.ref ?? entry.note ?? "—"}</td>
     </tr>

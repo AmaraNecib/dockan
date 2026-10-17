@@ -294,8 +294,10 @@ function saveButton(host: HTMLElement): HTMLButtonElement {
 /** the sale row quantity input (a draft: it stays exactly as typed) */
 const quantityField = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label*="الكمية"]')!;
 const totalText = (host: HTMLElement) => host.querySelector('[data-testid="sale-total"]')?.textContent ?? "";
-/** the rendered total as a number, so a zero check cannot pass on a substring */
-const totalAmount = (host: HTMLElement) => Number(totalText(host).match(/\d+/)?.[0] ?? Number.NaN);
+/** the rendered total as a number, so a zero check cannot pass on a substring.
+ * The display groups thousands (#254), so the ASCII grouping separator is
+ * dropped before reading the digits. */
+const totalAmount = (host: HTMLElement) => Number(totalText(host).replaceAll(",", "").match(/\d+/)?.[0] ?? Number.NaN);
 const errorText = (host: HTMLElement) => host.querySelector('[data-testid="sale-error"]')?.textContent ?? "";
 const lineOverrideType = (host: HTMLElement, index: number) => host.querySelectorAll<HTMLButtonElement>('button[aria-label$="نوع تعديل السعر"]')[index]!;
 const lineOverrideValue = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[aria-label$="قيمة تعديل السعر"]');
@@ -312,7 +314,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("غير منسوب");
     expect(notice?.textContent).not.toContain("للزبون");
-    expect(notice?.textContent).toContain("1000");
+    expect(notice?.textContent).toContain("1,000");
     expect(notice?.textContent).toContain("تقديري");
 
     await act(async () => setInput(host, "sale-customer", "أمين"));
@@ -328,7 +330,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     await scan("111");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("1000");
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid-percentage"]')?.value).toBe("100");
-    expect(host.querySelector('[data-testid="sale-paid-reference"]')?.textContent).toContain("1000");
+    expect(host.querySelector('[data-testid="sale-paid-reference"]')?.textContent).toContain("1,000");
     await act(async () => setInput(host, "sale-paid-percentage", "50"));
     expect(host.querySelector<HTMLInputElement>('[data-testid="sale-paid"]')?.value).toBe("500");
   });
@@ -489,7 +491,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     expect(savedDebt).not.toBeNull();
     expect(savedDebt?.textContent).toContain("غير منسوب");
     expect(savedDebt?.textContent).not.toContain("للزبون");
-    expect(savedDebt?.textContent).toContain("1000");
+    expect(savedDebt?.textContent).toContain("1,000");
   });
 
   it("freezes the pre-save notice to the submitted values while the commit is pending", async () => {
@@ -512,7 +514,7 @@ describe("SalePage commit states (greptile round-2)", () => {
     const notice = host.querySelector('[data-testid="sale-debt-notice"]');
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("600");
-    expect(notice?.textContent).not.toContain("1000");
+    expect(notice?.textContent).not.toContain("1,000");
   });
 
   it("makes the sale non-editable while the commit is in flight", async () => {
@@ -1121,7 +1123,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     const host = await mountSale();
     await scan("111"); // sellingPrice 1000
     expect(quantityField(host).value).toBe("1");
-    expect(totalText(host)).toContain("1000");
+    expect(totalText(host)).toContain("1,000");
 
     await act(async () => setElementValue(quantityField(host), ""));
     expect(quantityField(host).value).toBe("");
@@ -1197,7 +1199,7 @@ describe("SalePage shares the invoice-draft quantity rule (#146)", () => {
     });
     await act(async () => setInput(host, "sale-discount-value", "10"));
 
-    expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1000");
+    expect(host.querySelector('[data-testid="sale-subtotal"]')?.textContent).toContain("1,000");
     expect(host.querySelector('[data-testid="sale-discount"]')?.textContent).toContain("100");
     expect(host.querySelector('[data-testid="sale-total"]')?.textContent).toContain("900");
   });

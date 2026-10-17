@@ -1,0 +1,14 @@
+bun test v1.4.2 (744846f84)
+
+src\pages\expenses.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+(pass) ExpensesPage — history empty state (issue #96) > keeps focus on the category that emptied the filtered view when clearing [697.22ms]
+(pass) ExpensesPage — history empty state (issue #96) > falls back to the range preset when the window emptied the view [501.87ms]
+(pass) ExpensesPage — history empty state (issue #96) > returns focus to the all-categories pill when the owner last touched it [553.14ms]
+(pass) ExpensesPage — history empty state (issue #96) > falls back to the range preset when the recorded pill is gone [322.54ms]
+
+ 4 pass
+ 47 filtered out
+ 0 fail
+ 25 expect() calls
+Ran 4 tests across 1 file. [3.12s]

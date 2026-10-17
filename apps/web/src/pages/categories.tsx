@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
@@ -15,6 +17,8 @@ export function CategoriesPage() {
   const categories = useQuery(orpc.categoriesList.queryOptions());
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** the empty state's action focuses the add field instead of faking a step */
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const create = useMutation(
     orpc.categoriesCreate.mutationOptions({
@@ -39,6 +43,7 @@ export function CategoriesPage() {
         }}
       >
         <input
+          ref={nameRef}
           className={cn(inputClass, "flex-1")}
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -57,6 +62,19 @@ export function CategoriesPage() {
             <Skeleton key={row} className="h-6 w-full" />
           ))}
         </div>
+      ) : categories.data.items.length === 0 ? (
+        <EmptyState
+          testId="categories-empty"
+          card
+          className="mt-4"
+          title={t("categoriesEmpty")}
+          hint={t("categoriesEmptyHint")}
+          action={
+            <Button size="lg" variant="outline" onClick={() => nameRef.current?.focus()} data-testid="categories-empty-action">
+              {t("categoriesEmptyAction")}
+            </Button>
+          }
+        />
       ) : (
         <ul className="mt-4 divide-y rounded border bg-card">
           {categories.data.items.map((category) => (
@@ -64,7 +82,6 @@ export function CategoriesPage() {
               {category.name}
             </li>
           ))}
-          {categories.data.items.length === 0 && <li className="p-3 text-muted-foreground">{t("categoriesEmpty")}</li>}
         </ul>
       )}
     </section>

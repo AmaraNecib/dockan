@@ -14,6 +14,7 @@ import { InvoiceHeader } from "@/components/invoice-header";
 import { inputClass } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SuccessCard, SuccessCardSpacer } from "@/components/ui/success-card";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -45,6 +46,17 @@ export function paymentAmountError(amount: string, remaining: number): "INVALID"
  */
 function seedPaid(remaining: number): AmountPercentageValue {
   return remaining > 0 ? { amount: String(remaining), percentage: "100" } : { amount: "", percentage: "" };
+}
+
+/**
+ * The first enabled control inside a form. Focus-based actions and the
+ * completion-card restore both need a real field, never a disabled one, and
+ * must not hard-code which field happens to be first (issue #96).
+ */
+function firstEnabledField(form: HTMLFormElement | null): HTMLInputElement | null {
+  return (
+    Array.from(form?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled) ?? null
+  );
 }
 
 /**
@@ -83,8 +95,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
       return;
     }
     if (!restoreFocusPending.current) return;
-    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
-    const target = first ?? paidOffRef.current;
+    const target = firstEnabledField(formRef.current) ?? paidOffRef.current;
     if (target === null || target === undefined) return;
     target.focus();
     // consume the flag only once focus actually moved; a failed move leaves it
@@ -170,7 +181,24 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
     <div className="rounded border bg-card p-4" data-testid="pmt-panel">
       <h2 className="font-semibold">{t("pmtTitle")}</h2>
       {invoice.payments.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground" data-testid="pmt-empty">{t("pmtEmpty")}</p>
+        <EmptyState
+          testId="pmt-empty"
+          className="mt-2"
+          title={t("pmtEmpty")}
+          hint={remaining === 0 ? t("pmtEmptySettledHint") : savedPayment !== null ? t("pmtEmptyJustSavedHint") : t("pmtEmptyHint")}
+          action={
+            remaining === 0 || savedPayment !== null ? undefined : (
+              <Button
+                size="lg"
+                variant="outline"
+                data-testid="pmt-empty-action"
+                onClick={() => formRef.current?.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')?.focus()}
+              >
+                {t("pmtRecord")}
+              </Button>
+            )
+          }
+        />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="pmt-history">
           <thead>
@@ -364,8 +392,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       return;
     }
     if (!restoreFocusPending.current) return;
-    const first = Array.from(formRef.current?.querySelectorAll<HTMLInputElement>("input") ?? []).find((field) => !field.disabled);
-    if (first === undefined) return;
+    const first = firstEnabledField(formRef.current);
+    if (first === null) return;
     first.focus();
     // consume the flag only once focus actually moved
     if (document.activeElement === first) restoreFocusPending.current = false;
@@ -381,6 +409,20 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   const pendingReturns = returns.filter((record) => record.status === "PENDING_REVIEW");
   const reviewedReturns = returns.filter((record) => record.status !== "PENDING_REVIEW");
   const returnableLines = useMemo(() => invoice.lines.filter((line) => line.itemId !== null), [invoice.lines]);
+  // A structurally returnable line can still have nothing left (sold quantity
+  // zero, or every unit already returned). The empty state must not offer a
+  // focus action into that dead form (issue #96).
+  const hasReturnableLine = returnableLines.some((line) => remainingReturnableFor(line, returns) > 0);
+  // #96 round 2 — the api refuses a customer return on a purchase invoice
+  // outright (`RETURN_NOT_SALE`), so the panel must not render that form here:
+  // a purchase return is recorded from the supplier account instead.
+  const isSale = invoice.kind === "SALE";
+  const supplierAccountId = invoice.counterpartyId;
+  // #96 round 2 — the form's per-line cap is read from this history. When the
+  // read failed and there is no cached list, the remaining quantity is unknown,
+  // so the action is withheld rather than opening a form that can only be
+  // refused (the round-1 lesson: branch on the dependency, not just the total).
+  const returnsUnavailable = returnsQuery.isError && returnsQuery.data === undefined;
 
   // What earlier returns already refunded per line, in the shape
   // `computeReturnRefund` expects. The api derives the identical map from
@@ -545,8 +587,50 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           {t("returnsPendingCountLabel", { count: pendingReturns.length })} · {t("returnsReviewedCountLabel", { count: reviewedReturns.length })}
         </p>
       )}
-      {returns.length === 0 ? (
-        <p className="mt-2 text-sm text-muted-foreground" data-testid="returns-empty">{t("returnsEmpty")}</p>
+      {!isSale ? (
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={supplierAccountId === null ? t("invoiceReturnsPurchaseNoPartyHint") : t("invoiceReturnsPurchaseHint")}
+          action={
+            supplierAccountId === null ? (
+              <Button size="lg" variant="outline" asChild>
+                <Link to="/suppliers" data-testid="returns-supplier-action">{t("suppliersTitle")}</Link>
+              </Button>
+            ) : (
+              <Button size="lg" variant="outline" asChild>
+                <Link to="/suppliers/$partyId" params={{ partyId: supplierAccountId }} data-testid="returns-supplier-action">{t("invoiceReturnsSupplierAction")}</Link>
+              </Button>
+            )
+          }
+        />
+      ) : returnsUnavailable ? (
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={t("invoiceReturnsUnavailableHint")}
+        />
+      ) : returns.length === 0 ? (
+        <EmptyState
+          testId="returns-empty"
+          className="mt-2"
+          title={t("returnsEmpty")}
+          hint={savedReturn !== null ? t("invoiceReturnsJustSavedHint") : t("invoiceReturnsEmptyHint")}
+          action={
+            savedReturn === null && hasReturnableLine ? (
+              <Button
+                size="lg"
+                variant="outline"
+                data-testid="returns-empty-action"
+                onClick={() => firstEnabledField(formRef.current)?.focus()}
+              >
+                {t("returnsRecordTitle")}
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <table className="mt-2 w-full text-sm" data-testid="returns-history">
           <thead>
@@ -579,7 +663,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
         </table>
       )}
 
-      {savedReturn !== null ? (
+      {!isSale || returnsUnavailable ? null : savedReturn !== null ? (
         <SuccessCard
           testId="returns-done"
           className="mt-4"

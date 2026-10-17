@@ -102,7 +102,8 @@
         "catalog-scan.spec.ts",
         "stock-ledger.spec.ts",
         "pagination.spec.ts",
-        "arabic-search.spec.ts"
+        "arabic-search.spec.ts",
+        "01-empty-states.spec.ts"
       ]
     },
     {
@@ -139,7 +140,9 @@
         "invoice-print-a4.spec.ts",
         "pagination.spec.ts",
         "purchase-intake.spec.ts",
-        "returns.spec.ts"
+        "returns.spec.ts",
+        "96-returns-supplier-action.spec.ts",
+        "01-empty-states.spec.ts"
       ]
     },
     {
@@ -159,7 +162,7 @@
         "apps/web/src/pages/return-print.tsx",
         "apps/web/src/components/return-voucher-view.tsx"
       ],
-      "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts"]
+      "specs": ["returns.spec.ts", "no-write-window.spec.ts", "completion-screens.spec.ts", "01-empty-states.spec.ts"]
     },
     {
       "$comment": "customers + suppliers list and detail pages; parties.tsx and party-detail.tsx are always_full (shared components/parties tree), so this rule keeps the specs reachable for the unit-test files. phone-identity.spec.ts is the #129 party-phone rule and rpc-helpers.spec.ts drives actAndAck over customersCreate, so both ride this page (#209 drift)",
@@ -200,7 +203,7 @@
         "apps/web/src/pages/expenses.tsx",
         "apps/web/src/pages/expenses.test.tsx"
       ],
-      "specs": ["expense-reports.spec.ts", "completion-screens.spec.ts"]
+      "specs": ["expense-reports.spec.ts", "completion-screens.spec.ts", "01-empty-states.spec.ts"]
     },
     {
       "$comment": "backups.spec.ts drives the activity table's backup-filename render (lines 39-42), so an activity.tsx-only diff must run it (#231)",

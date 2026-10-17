@@ -88,6 +88,8 @@ const createInputs: CapturedCreateInput[] = [];
 const createWithStockInputs: CapturedCreateInput[] = [];
 const updateInputs: CapturedUpdateInput[] = [];
 const stockInputs: CapturedStockInput[] = [];
+/** makes the category read reject, so the items empty state cannot offer the add form */
+let categoriesListFails = false;
 /** knobs the edit tests drive: reject, or hold the mutation open */
 let updateFails = false;
 let updateDeferred = false;
@@ -104,7 +106,13 @@ let releaseItemsGate: (() => void) | null = null;
 mock.module("@/lib/rpc", () => ({
   orpc: {
     categoriesList: {
-      queryOptions: () => ({ queryKey: ["categories"], queryFn: async () => ({ items: categories }) }),
+      queryOptions: () => ({
+        queryKey: ["categories"],
+        queryFn: async () => {
+          if (categoriesListFails) throw new Error("CATEGORIES_FAILED");
+          return { items: categories };
+        },
+      }),
     },
     itemsList: {
       // clone on each fetch so a refetch yields new object identities, exactly
@@ -312,6 +320,24 @@ async function mount(): Promise<MountedPage> {
   return { container, queryClient };
 }
 
+/** The same mount for the empty-catalogue case, where the products table has no rows. */
+async function mountEmpty(): Promise<MountedPage> {
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  mounted.push({ root, container, queryClient });
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ItemsPage />
+      </QueryClientProvider>,
+    );
+  });
+  await waitFor(() => document.querySelector('[data-testid="items-empty"]') !== null);
+  return { container, queryClient };
+}
+
 async function openAddTab(): Promise<void> {
   click("items-tab-add");
   await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
@@ -347,6 +373,7 @@ beforeEach(() => {
   createWithStockInputs.length = 0;
   updateInputs.length = 0;
   stockInputs.length = 0;
+  categoriesListFails = false;
   updateFails = false;
   updateDeferred = false;
   resolveUpdate = null;
@@ -368,6 +395,59 @@ afterEach(() => {
 });
 
 describe("items page tabs", () => {
+  it("shows a teaching empty state whose action opens the add tab (#96)", async () => {
+    items = [];
+    await mountEmpty();
+
+    const empty = el<HTMLElement>('[data-testid="items-empty"]');
+    expect(empty.textContent).toContain(i18n.t("itemsEmpty"));
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyHint"));
+    expect(el<HTMLButtonElement>('[data-testid="items-empty-action"]').textContent).toBe(i18n.t("itemsEmptyAction"));
+
+    // the honest action opens the adjacent add form and keeps keyboard focus
+    click("items-empty-action");
+    await waitFor(() => el<HTMLElement>("#items-panel-add").hidden === false);
+    expect(el<HTMLElement>("#items-panel-products").hidden).toBe(true);
+    expect(document.activeElement).toBe(el<HTMLElement>("#items-tab-add"));
+  });
+
+  it("points at the categories screen when there is no category to add into (#96)", async () => {
+    const original = [...categories];
+    categories.length = 0;
+    items = [];
+    try {
+      await mountEmpty();
+
+      const empty = el<HTMLElement>('[data-testid="items-empty"]');
+      expect(empty.textContent).toContain(i18n.t("itemsEmptyNoCategory"));
+      expect(empty.textContent).toContain(i18n.t("itemsEmptyNoCategoryHint"));
+      const action = el<HTMLAnchorElement>('[data-testid="items-empty-action"]');
+      expect(action.textContent).toBe(i18n.t("itemsEmptyNoCategoryAction"));
+      expect(action.getAttribute("href")?.split("?")[0]).toBe("/categories");
+    } finally {
+      categories.length = 0;
+      categories.push(...original);
+    }
+  });
+
+  it("points at the categories screen when the category read failed (#96)", async () => {
+    categoriesListFails = true;
+    items = [];
+    await mountEmpty();
+
+    // wait for the rejected read to settle — while pending the add button shows
+    await waitFor(
+      () => document.querySelector('[data-testid="items-empty-action"]')?.getAttribute("href")?.includes("/categories") === true,
+    );
+    const empty = el<HTMLElement>('[data-testid="items-empty"]');
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyCategoriesUnavailable"));
+    expect(empty.textContent).toContain(i18n.t("itemsEmptyCategoriesUnavailableHint"));
+    // the add form refuses without a category; a dead-end button must not ship
+    const action = el<HTMLAnchorElement>('[data-testid="items-empty-action"]');
+    expect(action.textContent).toBe(i18n.t("itemsEmptyCategoriesUnavailableAction"));
+    expect(action.getAttribute("href")?.split("?")[0]).toBe("/categories");
+  });
+
   it("defaults to the products table and hides the add panel", async () => {
     await mount();
     expect(el<HTMLElement>("#items-panel-products").hidden).toBe(false);

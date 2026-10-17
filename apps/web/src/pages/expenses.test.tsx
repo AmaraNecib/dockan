@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import i18n from "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
 import { parseDateTimeText } from "../lib/dates";
 import { activateOption, findOption, openSelect } from "../tests/select-driver";
+import { focusedTestId } from "../tests/page-harness";
 
 interface ExpenseCategory {
   id: string;
@@ -76,6 +77,12 @@ let lastListInput: ListInput | null = null;
 /** the history envelope the list query resolves: enough rows to page through */
 let listItems: ExpenseRow[] = [];
 let listTotal = 0;
+/** makes the history read reject, so the error branch is distinguishable from empty */
+let listFails = false;
+/** when set, a filtered read is empty while the default window still returns
+ * `listItems`: the "filtered empty, but the default month has rows" case that
+ * clearing must hand focus out of (issue #96 round 4) */
+let filteredEmpty = false;
 
 const category = (id: string, name: string, isOwnerWithdrawal = false): ExpenseCategory => ({
   id,
@@ -130,7 +137,14 @@ mock.module("@/lib/rpc", () => ({
         lastListInput = input ?? null;
         return {
           queryKey: ["expenses", input],
-          queryFn: async () => ({ items: listItems, total: listTotal }),
+          queryFn: async () => {
+            if (listFails) throw new Error("LIST_FAILED");
+            const filtering =
+              (input?.categoryIds?.length ?? 0) > 0 ||
+              (input?.preset !== undefined && input.preset !== "CURRENT_MONTH");
+            if (filteredEmpty && filtering) return { items: [], total: 0 };
+            return { items: listItems, total: listTotal };
+          },
         };
       },
     },
@@ -226,6 +240,7 @@ async function mountPage(queryClient: QueryClient) {
 beforeEach(() => {
   listItems = [];
   listTotal = 0;
+  filteredEmpty = false;
 });
 
 describe("ExpensesPage — create a category inline (issue #99)", () => {
@@ -1138,6 +1153,266 @@ describe("ExpensesPage — custom range bounds (issue #123)", () => {
     expect(sameSortDir).not.toBeNull();
     await activateOption(sameSortDir!);
     expect(lastListInput?.offset).toBe(laterOffset);
+
+    await ui.unmount();
+  });
+});
+
+describe("ExpensesPage — history empty state (issue #96)", () => {
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    // a category exists, so the record form is usable and the action is real
+    categoriesFixture = [category("cat-1", "كراء المحل")];
+    categoryCreateFails = false;
+    categoryCreateDeferred = false;
+    deferredCategoryCreates = [];
+    categoriesListFails = false;
+    lastCreatedName = null;
+    lastExpense = null;
+    listItems = [];
+    listTotal = 0;
+    listFails = false;
+    filteredEmpty = false;
+    lastListInput = null;
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    document.body.innerHTML = "";
+  });
+
+  it("names the next step and focuses the adjacent record field", async () => {
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expenses-empty") !== null)).toBe(true);
+    const empty = ui.query("expenses-empty")!;
+    expect(empty.textContent).toContain(i18n.t("expensesEmpty"));
+    expect(empty.textContent).toContain(i18n.t("expensesEmptyHint"));
+
+    const action = ui.query<HTMLButtonElement>("expenses-empty-action");
+    expect(action).not.toBeNull();
+    expect(action!.textContent).toBe(i18n.t("expensesEmptyAction"));
+
+    // the action moves the caret to the amount field that records the expense
+    await ui.click("expenses-empty-action");
+    expect(document.activeElement).toBe(ui.query("expense-amount"));
+
+    await ui.unmount();
+  });
+
+  it("does not show the history empty state when a row exists", async () => {
+    listItems = [{ id: "exp-1", categoryId: "cat-1", amount: 500, note: null, occurredAt: "2026-01-01T00:00:00", createdAt: "2026-01-01T00:00:00" }];
+    listTotal = 1;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("offers to clear the filter when a period or category filter is active", async () => {
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expenses-empty") !== null)).toBe(true);
+
+    // a category filter means a new expense may not land in this view, so the
+    // honest action is to clear the filter, not to focus the form
+    await ui.click("expense-filter-cat-1");
+    expect(await ui.waitFor(() => ui.query("expenses-empty")?.textContent?.includes(i18n.t("expensesEmptyFilteredHint")) === true)).toBe(true);
+    expect(ui.query("expenses-empty-action")?.textContent).toBe(i18n.t("expensesEmptyClearFilters"));
+
+    await ui.click("expenses-empty-action");
+    expect(await ui.waitFor(() => ui.query("expenses-empty")?.textContent?.includes(i18n.t("expensesEmptyHint")) === true)).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("keeps focus on the category that emptied the filtered view when clearing", async () => {
+    // the default month has a row; selecting a second category the read does not
+    // contain empties the filtered view, and the default month still has rows --
+    // so clearing replaces the empty state itself (issue #96 round 4)
+    categoriesFixture = [category("cat-1", "كراء المحل"), category("cat-2", "كهرباء")];
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
+
+    // the pills arrive with the category read, which can settle after the rows
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") !== null)).toBe(true);
+    await ui.click("expense-filter-cat-2");
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+    expect(ui.query("expenses-empty-action")?.textContent).toBe(i18n.t("expensesEmptyClearFilters"));
+
+    // a keyboard user activates the button they tabbed to: focus it first, so the
+    // assertion below cannot be satisfied by focus that a previous interaction
+    // left lying on the right control (issue #96 round 4)
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    // the clicked button was replaced by the table, so focus must land on a
+    // control that survives -- and it follows the filter that emptied the view
+    // (the pill), not the range preset that never narrowed it
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-filter-cat-2");
+
+    await ui.unmount();
+  });
+
+  it("falls back to the range preset when the window emptied the view", async () => {
+    // no category is selected, so the window is what emptied the view: focus
+    // must come back to the range control that changed it
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-range-preset") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
+
+    await openSelect(ui.query("expense-range-preset")!);
+    const shorterWindow = await findOption(i18n.t("rangePreset_7D"));
+    expect(shorterWindow).not.toBeNull();
+    await activateOption(shorterWindow!);
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    // the select hands focus back to its trigger when it closes, so the button
+    // must be focused explicitly or this assertion would pass on unfixed code
+    // by inheriting that focus (the test would then prove nothing)
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-range-preset");
+
+    await ui.unmount();
+  });
+
+  it("returns focus to the all-categories pill when the owner last touched it", async () => {
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    // a window with no rows: the history is empty whatever the categories are
+    await openSelect(ui.query("expense-range-preset")!);
+    const shorterWindow = await findOption(i18n.t("rangePreset_7D"));
+    expect(shorterWindow).not.toBeNull();
+    await activateOption(shorterWindow!);
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-1") !== null)).toBe(true);
+    await ui.click("expense-filter-cat-1");
+    await ui.click("expense-filter-all");
+
+    // the last change was the pill, and the window is still empty, so the clear
+    // button remains and focus must go back to the pill itself
+    const action = ui.query<HTMLButtonElement>("expenses-empty-action");
+    expect(action).not.toBeNull();
+    action!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-filter-all");
+
+    await ui.unmount();
+  });
+
+  it("falls back to the range preset when the recorded pill is gone", async () => {
+    categoriesFixture = [category("cat-1", "كراء المحل"), category("cat-2", "كهرباء")];
+    listItems = [
+      {
+        id: "exp-1",
+        categoryId: "cat-1",
+        amount: 500,
+        note: null,
+        occurredAt: "2026-01-01T00:00:00",
+        createdAt: "2026-01-01T00:00:00",
+      },
+    ];
+    listTotal = 1;
+    filteredEmpty = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") !== null)).toBe(true);
+    await ui.click("expense-filter-cat-2");
+    expect(await ui.waitFor(() => ui.query("expenses-empty-action") !== null)).toBe(true);
+
+    // the category list loses that pill while its filter is still applied, so the
+    // recorded focus target is gone by the time the clear runs: focus must land on
+    // the fallback instead of being dropped a second time
+    categoriesFixture = [category("cat-1", "كراء المحل")];
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    expect(await ui.waitFor(() => ui.query("expense-filter-cat-2") === null)).toBe(true);
+    expect(ui.query("expenses-empty-action")).not.toBeNull();
+
+    ui.query<HTMLButtonElement>("expenses-empty-action")!.focus();
+    await ui.click("expenses-empty-action");
+
+    expect(await ui.waitFor(() => ui.query("expense-history") !== null)).toBe(true);
+    expect(focusedTestId()).toBe("expense-range-preset");
+
+    await ui.unmount();
+  });
+
+  it("points at creating a category when the record form is unusable", async () => {
+    categoriesFixture = [];
+    const ui = await mountPage(queryClient);
+    expect(await ui.waitFor(() => ui.query("expenses-empty") !== null)).toBe(true);
+
+    // no category to file under: the amount field is disabled, so the empty
+    // state must not offer the dead focus action; it opens the inline create
+    const empty = ui.query("expenses-empty")!;
+    expect(empty.textContent).toContain(i18n.t("expensesEmptyNoCategory"));
+    expect(empty.textContent).toContain(i18n.t("expenseCategoryEmptyHint"));
+    const action = ui.query<HTMLButtonElement>("expenses-empty-action");
+    expect(action?.textContent).toBe(i18n.t("expenseCategoryCreateFirst"));
+
+    await ui.click("expenses-empty-action");
+    expect(await ui.waitFor(() => ui.query("expense-category-form") !== null)).toBe(true);
+
+    await ui.unmount();
+  });
+
+  it("shows the error box, not the empty state, when the history read fails", async () => {
+    listFails = true;
+    const ui = await mountPage(queryClient);
+
+    expect(await ui.waitFor(() => ui.query("expenses-history-error") !== null)).toBe(true);
+    expect(ui.query("expenses-empty")).toBeNull();
 
     await ui.unmount();
   });

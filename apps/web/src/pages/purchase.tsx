@@ -432,7 +432,7 @@ export function LinkProposalPanel({ invoiceId }: { invoiceId: string }) {
     <div className="mt-3 rounded bg-accent p-3" data-testid="link-proposal">
       <h3 className="font-semibold">{t("purchasesProposalTitle")}</h3>
       {proposal.isPending ? null : linkable.length === 0 ? (
-        <p className="mt-1 text-sm text-muted-foreground">{t("purchasesProposalEmpty")}</p>
+        <p className="mt-1 text-sm text-muted-foreground" data-testid="link-proposal-empty">{t("purchasesProposalEmpty")}</p>
       ) : (
         <ul className="mt-2 grid gap-2">
           {linkable.map((row) => (

@@ -8,6 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import "../lib/i18n"; // side-effect: initializes i18next (ar) for useTranslation
+import i18n from "../lib/i18n";
 
 import type { InvoiceDetail, ReturnDetail } from "@dokan/contracts";
 
@@ -236,8 +237,28 @@ describe("customCashError (return settlement split)", () => {
 describe("PaymentPanel (invoice payment form + history)", () => {
   it("renders the empty-history state when no payments exist", () => {
     renderPanel(makeInvoice(900));
-    expect(host.querySelector('[data-testid="pmt-empty"]')).toBeTruthy();
+    const empty = host.querySelector('[data-testid="pmt-empty"]');
+    expect(empty).toBeTruthy();
+    // issue #96 — the read-only history says what will appear there and why it
+    // is empty; the record form points at itself in words, not a fake button
+    expect(empty?.textContent).toContain(i18n.t("pmtEmpty"));
+    expect(empty?.textContent).toContain(i18n.t("pmtEmptyHint"));
     expect(host.querySelector('[data-testid="pmt-history"]')).toBeNull();
+
+    // and the action moves focus to the adjacent record field
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="pmt-empty-action"]')!.click());
+    expect(document.activeElement).toBe(host.querySelector('[data-testid="pmt-amount"]'));
+  });
+
+  it("does not offer a dead action on a settled invoice with no payment rows (#96)", () => {
+    renderPanel(makeInvoice(0));
+    const empty = host.querySelector('[data-testid="pmt-empty"]');
+    expect(empty).toBeTruthy();
+    // the installments are all disabled at remaining 0, so the copy must not
+    // tell the owner to record one and no action may be offered
+    expect(empty?.textContent).toContain(i18n.t("pmtEmptySettledHint"));
+    expect(empty?.textContent).not.toContain(i18n.t("pmtEmptyHint"));
+    expect(host.querySelector('[data-testid="pmt-empty-action"]')).toBeNull();
   });
 
   it("links the instalment amount to the invoice remaining (#162)", () => {
@@ -287,6 +308,12 @@ describe("PaymentPanel (invoice payment form + history)", () => {
     expect(done?.textContent).toContain("تم تسجيل الدفعة");
     // the submitted control unmounted with the form: focus lands on the card
     expect(document.activeElement).toBe(done);
+    // the history is still empty on this static invoice; the copy says the
+    // payment was just saved instead of telling the owner to record one (#96)
+    const justSaved = host.querySelector('[data-testid="pmt-empty"]');
+    expect(justSaved?.textContent).toContain(i18n.t("pmtEmptyJustSavedHint"));
+    expect(justSaved?.textContent).not.toContain(i18n.t("pmtEmptyHint"));
+    expect(host.querySelector('[data-testid="pmt-empty-action"]')).toBeNull();
     // the detail line shows the recorded amount in «دج» (never "DA")
     const detail = host.querySelector('[data-testid="pmt-saved-detail"]');
     expect(detail?.textContent).toContain("600");

@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Amount } from "@/components/ui/amount";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { tError } from "../lib/i18n";
 import { orpc } from "../lib/rpc";
@@ -341,7 +342,13 @@ export function ItemHistoryPage() {
           ))}
         </div>
       ) : history.data.total === 0 ? (
-        <p className="mt-4 rounded border bg-card p-3 text-muted-foreground">{t("historyEmpty")}</p>
+        <EmptyState
+          testId="history-empty"
+          card
+          className="mt-4"
+          title={t("historyEmpty")}
+          hint={t("historyEmptyHint")}
+        />
       ) : (
         <>
         <table className="mt-4 w-full rounded border bg-card" data-testid="history-table">

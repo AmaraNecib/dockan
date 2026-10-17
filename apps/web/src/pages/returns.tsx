@@ -11,6 +11,7 @@ import { usePagination } from "../hooks/use-pagination";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
 import { Pager } from "@/components/ui/pager";
+import { EmptyState } from "@/components/ui/empty-state";
 import { orpc } from "../lib/rpc";
 
 /**
@@ -42,7 +43,14 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
   );
 
   if (returns.length === 0) {
-    return <p className="text-sm text-muted-foreground" data-testid="returns-list-empty">{t("returnsEmpty")}</p>;
+    return (
+      <EmptyState
+        testId="returns-list-empty"
+        card
+        title={t("returnsEmpty")}
+        hint={t("returnsEmptyHint")}
+      />
+    );
   }
 
   return (
@@ -216,7 +224,14 @@ export function SupplierReturnsList() {
     return <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-returns-error">{tError(message)}</p>;
   }
   if (query.data.total === 0) {
-    return <p className="text-sm text-muted-foreground" data-testid="supplier-returns-empty">{t("supplierReturnsEmpty")}</p>;
+    return (
+      <EmptyState
+        testId="supplier-returns-empty"
+        card
+        title={t("supplierReturnsEmpty")}
+        hint={t("supplierReturnsEmptyHint")}
+      />
+    );
   }
   return (
     <>

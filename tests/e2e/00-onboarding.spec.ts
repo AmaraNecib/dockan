@@ -1,9 +1,8 @@
-import { execFileSync } from "node:child_process";
-import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { openSystemNav, signIn } from "./auth-helpers";
 import { chooseSelectOption } from "./select-helpers";
 import { openItemsTab } from "./items-helpers";
+import { runE2eReset } from "./reset-helpers";
 
 /**
  * Issue #97 — getting-started checklist. The suite shares one database that is
@@ -27,7 +26,7 @@ test.describe.configure({ mode: "serial" });
  * number sequences survive; only shop records and UI preferences are cleared.
  */
 test.beforeAll(() => {
-  runReset("reset-e2e-records.mjs");
+  runE2eReset("reset-e2e-records.mjs");
 });
 
 /**
@@ -35,17 +34,8 @@ test.beforeAll(() => {
  * leak into the next. Each test starts from a clean preference row.
  */
 test.beforeEach(() => {
-  runReset("reset-e2e-preferences.mjs");
+  runE2eReset("reset-e2e-preferences.mjs");
 });
-
-function runReset(script: string): void {
-  execFileSync("bun", [`scripts/${script}`], {
-    cwd: process.cwd(),
-    // respect a harness-supplied data dir; only default when none is set
-    env: { ...process.env, E2E_DATA_DIR: process.env.E2E_DATA_DIR ?? path.join(process.cwd(), ".e2e-data") },
-    stdio: ["ignore", "ignore", "inherit"],
-  });
-}
 
 test("fresh install: the panel lists the four steps in shop order", async ({ page }) => {
   await signIn(page);

@@ -28,8 +28,15 @@ try {
   // busy_timeout: the API holds its own WAL connection while this one writes.
   db.exec("PRAGMA busy_timeout = 5000;");
   // children before parents; FKs are off on this connection but the order is
-  // still the safe one if that ever changes
+  // still the safe one if that ever changes. Every SHOP-RECORD table in
+  // apps/api/src/db/schema.ts is listed here; the named survivors are settings,
+  // the auth tables, the expense categories (a seeded default) and the three
+  // number sequences (invoice, customer-return and supplier-return numbering
+  // must stay honest).
   db.exec(`
+    DELETE FROM supplier_return_lines;
+    DELETE FROM supplier_returns;
+    DELETE FROM supplier_account_entries;
     DELETE FROM stock_links;
     DELETE FROM return_lines;
     DELETE FROM returns;
@@ -38,6 +45,9 @@ try {
     DELETE FROM invoices;
     DELETE FROM stock_movements;
     DELETE FROM items;
+    -- item categories go with the items; expense categories are seeded
+    -- defaults and deliberately survive (expenses reference expense_categories)
+    DELETE FROM categories;
     DELETE FROM activities;
     DELETE FROM expenses;
     DELETE FROM customers;

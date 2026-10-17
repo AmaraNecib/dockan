@@ -194,7 +194,8 @@ async function mountPanel(queryClient: QueryClient) {
   return {
     text: () => container.textContent ?? "",
     button: () => container.querySelector<HTMLButtonElement>("button"),
-    emptyState: () => container.textContent?.includes("لا يوجد مخزون سابق غير مُفوتر") ?? false,
+    empty: () => container.querySelector<HTMLElement>('[data-testid="link-proposal-empty"]'),
+    emptyState: () => container.textContent?.includes(i18n.t("purchasesProposalEmpty")) ?? false,
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
@@ -251,6 +252,20 @@ describe("LinkProposalPanel cache reset after linking (greptile round-2)", () =>
     // stale button + old quantities must be gone; second submit impossible
     expect(ui.emptyState()).toBe(true);
     expect(ui.button()).toBeNull();
+
+    await ui.unmount();
+  });
+
+  it("explains an empty link pool with no invented action (#96)", async () => {
+    fixture = { invoiceId: "inv-1", items: [] };
+    const ui = await mountPanel(queryClient);
+    expect(await ui.waitFor(() => ui.empty() !== null)).toBe(true);
+
+    const empty = ui.empty()!;
+    expect(empty.textContent).toContain(i18n.t("purchasesProposalEmpty"));
+    // the panel keeps its own heading; the explanation invents no control
+    expect(document.querySelectorAll('[data-testid="link-proposal"] h3')).toHaveLength(1);
+    expect(empty.querySelector("button, a")).toBeNull();
 
     await ui.unmount();
   });

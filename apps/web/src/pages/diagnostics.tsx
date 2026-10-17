@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { z } from "zod";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 
 import { orpc } from "../lib/rpc";
 
@@ -117,7 +118,13 @@ export function DiagnosticsPage() {
           ))}
         </div>
       ) : logs.data.lines.length === 0 ? (
-        <p className="mt-4 rounded border bg-card p-4 text-muted-foreground">{t("diagnosticsEmpty")}</p>
+        <EmptyState
+          testId="diagnostics-empty"
+          card
+          className="mt-4"
+          title={t("diagnosticsEmpty")}
+          hint={t("diagnosticsEmptyHint")}
+        />
       ) : (
         <div className="mt-4 grid gap-2" data-testid="diagnostics-list">
           {/* the api tail is newest-last (chronological); the viewer shows newest first.

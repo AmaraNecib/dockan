@@ -1,10 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ReportRangePreset } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DateField } from "@/components/ui/date-field";
@@ -148,7 +151,18 @@ export function ReportsPage() {
 
           <h2 className="mt-6 font-semibold">{t("reportByCategory")}</h2>
           {report.data.byCategory.length === 0 ? (
-            <p className="mt-2 rounded border bg-card p-4 text-muted-foreground" data-testid="report-breakdown-empty">{t("reportsEmpty")}</p>
+            <EmptyState
+              testId="report-breakdown-empty"
+              card
+              className="mt-2"
+              title={t("reportsEmpty")}
+              hint={t("reportsEmptyHint")}
+              action={
+                <Button asChild size="lg" variant="outline">
+                  <Link to="/expenses" data-testid="reports-empty-action">{t("reportsEmptyAction")}</Link>
+                </Button>
+              }
+            />
           ) : (
             <table className="mt-2 w-full rounded border bg-card" data-testid="report-breakdown">
               <thead>

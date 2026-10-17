@@ -1,0 +1,2 @@
+  ok 1 tests\e2e\debts.spec.ts:35:1 › debts screen: both directions grouped with totals, counts, and drill-down (14.1s)
+  1 passed (25.3s)

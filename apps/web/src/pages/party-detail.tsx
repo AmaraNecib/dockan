@@ -15,6 +15,7 @@ import { unpaidInvoices, unpaidTotal } from "@/components/parties/party-settle";
 import { DeletePartyDialog, PartyForm } from "@/components/parties/party-forms";
 import { Amount } from "@/components/ui/amount";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Pager } from "@/components/ui/pager";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -183,6 +184,9 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
   const allInvoices = detail.data?.invoices ?? [];
   const unpaid = unpaidInvoices(allInvoices);
   const showUnpaidOnly = customerScope && unpaidOnly;
+  // a customer with no invoices at all must not read the unpaid-only title; it
+  // has nothing to do with the filter (issue #96)
+  const partyHasNoInvoices = detail.data?.stats.invoiceCount === 0;
   // the settle cap and the distribution both walk the invoice rows, so the
   // reference is their sum too — never a second, potentially divergent stat
   const unpaidAmount = unpaidTotal(allInvoices);
@@ -433,9 +437,12 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                 <Skeleton className="h-6 w-full" />
               </div>
             ) : (invoiceList.data?.total ?? 0) === 0 ? (
-              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-invoices-empty">
-                {showUnpaidOnly ? t("partyNoUnpaid") : t("partyInvoicesEmpty")}
-              </p>
+              <EmptyState
+                testId="party-invoices-empty"
+                card
+                title={showUnpaidOnly && !partyHasNoInvoices ? t("partyNoUnpaid") : t("partyInvoicesEmpty")}
+                hint={showUnpaidOnly && !partyHasNoInvoices ? t("partyNoUnpaidHint") : t("partyInvoicesEmptyHint")}
+              />
             ) : (
               <>
                 <table className="w-full text-sm" data-testid="party-invoices">
@@ -479,7 +486,12 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                   <Skeleton className="h-6 w-full" />
                 </div>
               ) : (entryList.data?.total ?? 0) === 0 ? (
-                <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="supplier-account-empty">{t("supplierAccountEmpty")}</p>
+                <EmptyState
+                  testId="supplier-account-empty"
+                  card
+                  title={t("supplierAccountEmpty")}
+                  hint={t("supplierAccountEmptyHint")}
+                />
               ) : (
                 <>
                   <table className="w-full text-sm" data-testid="supplier-account-entries">
@@ -518,7 +530,12 @@ export function PartyDetailPage({ role }: { role: PartyRole }) {
                 <Skeleton className="h-6 w-full" />
               </div>
             ) : (paymentList.data?.total ?? 0) === 0 ? (
-              <p className="rounded border bg-card p-4 text-sm text-muted-foreground" data-testid="party-payments-empty">{t("partyPaymentsEmpty")}</p>
+              <EmptyState
+                testId="party-payments-empty"
+                card
+                title={t("partyPaymentsEmpty")}
+                hint={t("partyPaymentsEmptyHint")}
+              />
             ) : (
               <>
                 <table className="w-full text-sm" data-testid="party-payments">

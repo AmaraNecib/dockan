@@ -25,7 +25,13 @@ import { walkTsx } from "../tests/source-scan";
  * straight back to the raw value and must not pass as a placeholder:
  *   - statically empty: `items={[]}`, `items={[] as const}`, `items={(undefined)}`,
  *     `items={null}` and `items={EMPTY}` where this file declares `const EMPTY = []`;
- *   - a label that IS its value: `items={[{ value: "WE_OWE", label: "WE_OWE" }]}`.
+ *   - a label that IS its value: `items={[{ value: "WE_OWE", label: "WE_OWE" }]}`
+ *     (quoted keys and plain string literals; a computed value is not decidable).
+ *
+ * The empty-array binding lookup is file-wide, not scope-aware: a `const EMPTY =
+ * []` anywhere in the file makes every `items={EMPTY}` red. That is a false
+ * positive, never a false negative, and the fix in the failing file is to inline
+ * the map.
  *
  * Boundary — deliberate, in the "state the syntactic ceiling" spirit of
  * `tests/blankness-gates.ts`. The walk resolves LITERAL tag names inside a
@@ -40,8 +46,9 @@ import { walkTsx } from "../tests/source-scan";
 
 const srcRoot = fileURLToPath(new URL("../", import.meta.url));
 
-/** The app has at least this many trigger-bearing roots; a walker that sees fewer
- * has stopped walking, and its empty offender list would mean nothing. */
+/** The app has at least this many trigger-bearing roots (27 at `4458560`); a
+ * walker that sees fewer has stopped walking, and its empty offender list would
+ * mean nothing. */
 const MIN_TRIGGER_ROOTS = 10;
 
 function tagNameOf(node: ts.JsxTagNameExpression): string | null {
@@ -105,10 +112,21 @@ function itemsExpression(opening: ts.JsxOpeningElement | ts.JsxSelfClosingElemen
   return null;
 }
 
+function propertyNameText(name: ts.PropertyName): string | null {
+  if (ts.isIdentifier(name)) return name.text;
+  if (ts.isStringLiteral(name)) return name.text;
+  return null;
+}
+
+function staticStringText(expression: ts.Expression): string | null {
+  const unwrapped = unwrapExpression(expression);
+  return ts.isStringLiteral(unwrapped) ? unwrapped.text : null;
+}
+
 function propertyString(object: ts.ObjectLiteralExpression, name: string): string | null {
   for (const property of object.properties) {
-    if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || property.name.text !== name) continue;
-    return ts.isStringLiteral(property.initializer) ? property.initializer.text : null;
+    if (!ts.isPropertyAssignment(property) || propertyNameText(property.name) !== name) continue;
+    return staticStringText(property.initializer);
   }
   return null;
 }
@@ -190,9 +208,15 @@ describe("Select trigger label guard (issue #252)", () => {
     const bound = `const EMPTY = [] as const;\n${bare.replace("<Select value={direction}", "<Select value={direction} items={EMPTY}")}`;
     expect(check(bound)).toBe(1);
 
-    // a map that hands the trigger its own value back is no map either
+    // a map that hands the trigger its own value back is no map either — with an
+    // unquoted key or a quoted one
     const selfLabelled = bare.replace("<Select value={direction}", '<Select value={direction} items={[{ value: "WE_OWE", label: "WE_OWE" }]}');
     expect(check(selfLabelled)).toBe(1);
+    const selfLabelledQuoted = bare.replace("<Select value={direction}", '<Select value={direction} items={[{ "value": "WE_OWE", "label": "WE_OWE" }]}');
+    expect(check(selfLabelledQuoted)).toBe(1);
+
+    // an empty object literal is no map
+    expect(check(bare.replace("<Select value={direction}", "<Select value={direction} items={{}}"))).toBe(1);
 
     // the outer root has no SelectValue of its own: it must NOT be blamed for the
     // nested root's trigger

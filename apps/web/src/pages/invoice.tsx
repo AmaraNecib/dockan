@@ -60,6 +60,21 @@ function firstEnabledField(form: HTMLFormElement | null): HTMLInputElement | nul
 }
 
 /**
+ * The `debtsByParty` input for an invoice's customer tab. ReturnsPanel reads it
+ * and PaymentPanel invalidates the same key after `invoicesPay`, so one helper
+ * keeps them from drifting: the refund preview's derived method must follow a
+ * recorded payment (#256 round 4). A purchase invoice has no customer tab (the
+ * panel is SALE-only).
+ */
+function partyDebtQueryInput(invoice: InvoiceDetail) {
+  return {
+    kind: "SALE" as const,
+    counterpartyId: invoice.counterpartyId,
+    counterpartyName: invoice.counterpartyId === null ? invoice.counterpartyName : null,
+  };
+}
+
+/**
  * Router-free payment panel (same shape as purchase's LinkProposalPanel):
  * full history + record-payment form, unit-testable without a router.
  */
@@ -119,6 +134,13 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           queryClient.invalidateQueries({ queryKey: ["invoicesList"] }),
           queryClient.invalidateQueries({ queryKey: ["activitiesList"] }),
         ]);
+        // #256 round 4 — the returns panel derives its refund default from the
+        // party's whole tab, so a recorded payment must refresh that read too or
+        // the preview keeps the pre-payment total. Exact key, like the detail
+        // read above; a purchase invoice has no customer tab to refresh.
+        if (invoice.kind === "SALE") {
+          void queryClient.invalidateQueries({ queryKey: orpc.debtsByParty.queryKey({ input: partyDebtQueryInput(invoice) }) });
+        }
       },
       onError: (err) => {
         setSavedPayment(null);
@@ -366,10 +388,9 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // default uses (the party id when known, else the typed name), so the method
   // this form pre-selects is the method the server would pick with no
   // cashPaidOut. A sale with no name at all has no tab to consult.
-  const counterpartyName = invoice.counterpartyId === null ? invoice.counterpartyName : null;
-  const hasPartyIdentity = invoice.counterpartyId !== null || counterpartyName !== null;
+  const hasPartyIdentity = invoice.counterpartyId !== null || invoice.counterpartyName !== null;
   const partyDebtQuery = useQuery({
-    ...orpc.debtsByParty.queryOptions({ input: { kind: "SALE", counterpartyId: invoice.counterpartyId, counterpartyName } }),
+    ...orpc.debtsByParty.queryOptions({ input: partyDebtQueryInput(invoice) }),
     enabled: invoice.kind === "SALE" && hasPartyIdentity,
   });
   const [drafts, setDrafts] = useState<Record<string, string>>({});

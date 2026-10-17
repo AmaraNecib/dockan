@@ -1,0 +1,22 @@
+# GREEN — #252-1/#252-2 gate regression tests with the FIXED gate. Verbatim capture.
+# command: bun test ./.scratch/reviews/252/mutation-proof-gate.test.ts   (cwd = repo root)
+
+bun test v1.4.2 (744846f84)
+
+.scratch\reviews\252\mutation-proof-gate.test.ts:
+(pass) mutation-proof gate (#252-1: the baseline must be green) > a baseline that crashed is a problem [0.13ms]
+(pass) mutation-proof gate (#252-1: the baseline must be green) > a baseline with a failing test is a problem [0.04ms]
+(pass) mutation-proof gate (#252-1: the baseline must be green) > a green baseline passes [0.06ms]
+(pass) mutation-proof gate (#252-2: a crash is not a catch) > a mutation exit with no named test failure is a problem, not a catch [0.06ms]
+(pass) mutation-proof gate (#252-2: a crash is not a catch) > a mutation caught by a named test failure passes [0.11ms]
+(pass) mutation-proof gate (#252-2: a crash is not a catch) > a mutation that leaves the suites green did not redden [0.05ms]
+(pass) mutation-proof gate: parsing > only named (fail) lines count, and duplicates collapse [0.26ms]
+(pass) mutation-proof gate: parsing > a load error yields no named failures [0.08ms]
+(pass) mutation-proof gate: end to end through a real bun test process > a suite that cannot load its dependency fails the gate (#252-2) [53.56ms]
+
+ 9 pass
+ 0 fail
+ 14 expect() calls
+Ran 9 tests across 1 file. [136.00ms]
+
+# exit=0 (observed)

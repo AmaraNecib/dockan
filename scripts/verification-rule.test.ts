@@ -51,8 +51,12 @@ const read = (relative: string) => readFileSync(join(ROOT, relative), "utf8");
 
 /** True when `content` links to the canonical doc and the link target exists. */
 function linksToDoc(content: string, fromFile: string): boolean {
-  for (const match of content.matchAll(/\]\(([^)\s]+)\)/g)) {
-    const target = match[1].split("#")[0];
+  // Accept the legal markdown destination forms a lane might use: a bare path, an
+  // angle-bracket path, and either with a title. Reference-style links are not
+  // matched; none of the three lane files uses them, and a miss reddens loudly
+  // rather than passing a broken link.
+  for (const match of content.matchAll(/\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)/g)) {
+    const target = (match[1] ?? match[2]).split("#")[0];
     if (!target.endsWith(DOC_FILE)) continue;
     if (existsSync(resolve(ROOT, dirname(fromFile), target))) return true;
   }

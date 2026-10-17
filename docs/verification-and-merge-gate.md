@@ -37,8 +37,8 @@ reddens when the guard is deleted is not a guard. Run the guard's mutation again
 head; an inherited mutation table is an unrun gate.
 
 Put the evidence in the commit message body so the parent can reuse it for the PR description, and keep
-the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what the
-gate reads**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
+the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what reason
+4 is judged from**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
 lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
 ## 2. The four reasons
@@ -70,7 +70,8 @@ proves the policy with no network. On a real PR it exits non-zero when:
 - reason 1 fails (no verdict, or a score that is not 5),
 - reason 2 fails (the verdict names no reviewed commit, or names an older one),
 - reason 3 fails (a non-evidence comment followed the verdict, or the script cannot tell),
-- a check is pending or failing, or GitHub reports the PR `CONFLICTING`.
+- a check is pending or failing, or GitHub reports the PR not `MERGEABLE` (`CONFLICTING`, or an
+  `UNKNOWN` GitHub cannot resolve).
 
 Reason 4 is **not** scripted. For a browser-reachable diff the predicate returns `OWNER` with
 `needsVisual=true` and the reason *"attach screenshots/video before asking for the merge"*, which
@@ -82,7 +83,7 @@ parent's check, at merge time, every time.
 
 | the class | who decides |
 | --- | --- |
-| **inert diff (tests, docs, markdown, `.agents/`, `.scratch/`, fixtures)** | `AUTO` — CI is the evidence for a change that cannot reach the product. The script decides; the parent only executes. |
+| **inert diff (e.g. tests, any `*.md`, docs, `.agents/`, `.scratch/`, fixtures, `test-support/`)** | `AUTO` — CI is the evidence for a change that cannot reach the product. The script decides; the parent only executes. |
 | **production code (including `scripts/` that is not a test), or anything under `.github/`** | `OWNER` — it is the owner's call, and a `.github/` diff always goes to the owner to read before merge. |
 | **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review. |
 

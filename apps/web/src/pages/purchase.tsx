@@ -175,6 +175,11 @@ export function PurchasePage() {
   }
 
   function pickItem(item: Item) {
+    // belt for the disabled picker button (#257 review round 4, F1): a dialog that
+    // was already open when the save went out must not re-point a line the request
+    // serialised. The dialog is left as it is, so a refused pick cannot look
+    // like it worked.
+    if (savePending) return;
     const target = pickerTarget;
     setPickerTarget(null);
     if (target === null) return;
@@ -293,6 +298,20 @@ export function PurchasePage() {
     }),
   );
 
+  /**
+   * The save in flight owns the draft (#257 review round 4, F1). `submit()` maps
+   * `lines` into the request body, so from that moment the request carries a
+   * snapshot the screen can still edit: a replacement after it went out leaves the
+   * invoice stocking the old product, the new one off it, and the success
+   * handler's `draft.reset()` wipes the evidence. The order is fixed at the source
+   * instead — while the save is pending every control that changes the draft is
+   * dead, and the two handlers a submit or a pick can still reach refuse.
+   *
+   * The supplier picker and the payment pair read the same predicate, so the whole
+   * request is frozen by one value instead of two spellings of it.
+   */
+  const savePending = createInvoice.isPending;
+
   // the explicit type argument pins F, so a later edit to the callbacks cannot
   // widen the bag and quietly disable key checking
   const quick = useQuickAdd<PurchaseQuickFields>(PURCHASE_QUICK, {
@@ -380,6 +399,10 @@ export function PurchasePage() {
   async function submitLineCreate() {
     const current = lineDraft;
     if (current === null) return;
+    // belt for the disabled submit (#257 review round 4, F1): a create started now
+    // would re-point the line the in-flight save already serialised, and its
+    // product would be left off the invoice. Refuse before the write starts.
+    if (savePending) return;
     setLineError(null);
     const line = lines.find((entry) => entry.item.id === current.target);
     // the owner deleted the line while the form was open: nothing to land on
@@ -474,13 +497,13 @@ export function PurchasePage() {
               label={t("purchasesSupplier")}
               value={supplier}
               onChange={setSupplier}
-              disabled={createInvoice.isPending}
+              disabled={savePending}
               testId="purchase-supplier"
             />
             <div className="grid grid-cols-2 gap-3">
               <label className="grid gap-1 text-sm font-medium">
                 {t("purchasesNotes")}
-                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="notes" autoComplete="off" disabled={savePending} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </label>
               <AmountPercentageInput
                 referenceTotal={total > 0 ? total : null}
@@ -491,7 +514,7 @@ export function PurchasePage() {
                 percentageTestId="purchase-paid-percentage"
                 referenceTestId="purchase-paid-reference"
                 percentageInvalid={percentageDraftInvalid(payment.percentage)}
-                disabled={createInvoice.isPending}
+                disabled={savePending}
               />
             </div>
           </div>
@@ -502,7 +525,7 @@ export function PurchasePage() {
             <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
               <h2 className="me-auto text-sm font-semibold">{t("purchasesLinesTitle")}</h2>
               {lines.length > 0 && (
-                <Button data-testid="purchase-open-picker" onClick={() => setPickerTarget({ kind: "append" })}>
+                <Button data-testid="purchase-open-picker" disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
                   {t("purchasesAddItem")}
                 </Button>
               )}
@@ -572,7 +595,7 @@ export function PurchasePage() {
                     <input className="h-9 rounded-lg border border-input bg-background px-3 text-sm" name="quickUnitCost" autoComplete="off" required inputMode="numeric" value={quick.fields.unitCost} onChange={(e) => quick.setField("unitCost", e.target.value)} data-testid="quick-cost" />
                   </label>
                 </div>
-                <Button type="submit" disabled={createItem.isPending}>
+                <Button type="submit" disabled={createItem.isPending || savePending}>
                   {t("purchasesQuickAddBtn")}
                 </Button>
               </form>
@@ -586,7 +609,7 @@ export function PurchasePage() {
                     title={t("purchasesEmptyTitle")}
                     hint={t("purchasesEmptyHint")}
                     action={
-                      <Button size="lg" data-testid="purchase-open-picker" onClick={() => setPickerTarget({ kind: "append" })}>
+                      <Button size="lg" data-testid="purchase-open-picker" disabled={savePending} onClick={() => setPickerTarget({ kind: "append" })}>
                         {t("purchasesAddItem")}
                       </Button>
                     }
@@ -615,7 +638,11 @@ export function PurchasePage() {
                                   to it exactly as it does on the expenses screen. */}
                               <button
                                 type="button"
-                                className="rounded px-1 text-start underline decoration-dotted underline-offset-4 hover:bg-accent"
+                                className="rounded px-1 text-start underline decoration-dotted underline-offset-4 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                                // #257 review round 4 (F1) — the request already carries
+                                // this line's product, so replacing it now would leave the
+                                // invoice stocking the old one
+                                disabled={savePending}
                                 // the accessible name starts with the visible text, so
                                 // a voice-control user can say the name he reads
                                 aria-label={`${line.item.name} — ${t("purchasesChangeItem")}`}
@@ -628,6 +655,7 @@ export function PurchasePage() {
                                 type="button"
                                 variant="ghost"
                                 size="xs"
+                                disabled={savePending}
                                 ref={(element) => {
                                   if (element === null) createTriggerRefs.current.delete(line.item.id);
                                   else createTriggerRefs.current.set(line.item.id, element);
@@ -653,6 +681,7 @@ export function PurchasePage() {
                               }}
                               autoComplete="off"
                               inputMode="numeric"
+                              disabled={savePending}
                               value={line.quantityDraft}
                               onChange={(e) => draft.setQuantity(line.item.id, e.target.value)}
                               aria-label={`${line.item.name}: ${t("purchasesLineQty")}`}
@@ -665,13 +694,14 @@ export function PurchasePage() {
                               autoComplete="off"
                               inputMode="numeric"
                               value={String(line.unitCost)}
+                              disabled={savePending}
                               onChange={(e) => draft.patch(line.item.id, { unitCost: nextUnitCost(e.target.value, line.unitCost) })}
                               aria-label={`${line.item.name}: ${t("purchasesLineCost")}`}
                             />
                           </td>
                           <td className="p-2">{lineQuantity(line) * line.unitCost}</td>
                           <td className="p-2">
-                            <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10" aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => draft.remove(line.item.id)}>
+                            <button type="button" className="rounded p-1 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent" disabled={savePending} aria-label={`${t("removeRow")} ${line.item.name}`} onClick={() => draft.remove(line.item.id)}>
                               <X size={16} aria-hidden="true" />
                             </button>
                           </td>
@@ -751,7 +781,7 @@ export function PurchasePage() {
                                   </p>
                                 )}
                                 <div className="flex items-center gap-2">
-                                  <Button type="submit" disabled={createItem.isPending} data-testid="line-product-save">
+                                  <Button type="submit" disabled={createItem.isPending || savePending} data-testid="line-product-save">
                                     {t("purchasesLineCreateSave")}
                                   </Button>
                                   <Button type="button" variant="outline" onClick={closeLineCreate} data-testid="line-product-cancel">
@@ -783,6 +813,18 @@ export function PurchasePage() {
                 {lineCreatePending !== null && (
                   <p className="text-sm text-muted-foreground" role="status" data-testid="purchase-save-pending">
                     {t("purchasesLineCreatePending")}
+                  </p>
+                )}
+                {/* Why the lines are read-only while the save is in flight (#257
+                    review round 4, F1): `submit()` already mapped them into the
+                    request body, so a control left live would let the screen and the
+                    payload diverge. The disabled controls are the block; this states
+                    the reason, because a frozen table with no reason is a dead end
+                    for a keyboard or screen-reader user. role="status" announces it
+                    without stealing focus. */}
+                {savePending && (
+                  <p className="text-sm text-muted-foreground" role="status" data-testid="purchase-lines-frozen">
+                    {t("purchasesSaveInFlight")}
                   </p>
                 )}
                 <div className="flex flex-wrap items-center justify-between gap-3">

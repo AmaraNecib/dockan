@@ -454,6 +454,7 @@ const resources = {
       purchasesChangeItem: "تغيير المنتج",
       purchasesLineCreateCost: "تُسجَّل تكلفة المنتج من سعر الشراء على هذا السطر:",
       purchasesLineCreatePending: "أكمل إنشاء المنتج على السطر أو ألغِه قبل حفظ الفاتورة",
+      purchasesSaveInFlight: "تُحفظ الفاتورة الآن؛ لا تُعدّل الأسطر حتى ينتهي الحفظ",
       purchasesLineQty: "الكمية",
       purchasesLineCost: "تكلفة الوحدة (دج)",
       purchasesLinesTitle: "أسطر الفاتورة",

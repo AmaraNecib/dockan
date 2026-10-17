@@ -62,6 +62,12 @@ let itemsCreateGate: Promise<void> | null = null;
 let releaseItemsCreate: (() => void) | null = null;
 /** when set, an itemsCreate that gets past its gate rejects (#257 round 2) */
 let itemsCreateFails = false;
+/**
+ * When set, every invoicesCreate waits for it to settle before answering, so a
+ * test can leave the SAVE in flight and act while it is pending (#257 round 4).
+ */
+let invoiceCreateGate: Promise<void> | null = null;
+let releaseInvoiceCreate: (() => void) | null = null;
 
 /** a catalog item for the picker's search results (#257) */
 function catalogItem(id: string, name: string, costPrice = 400, sellingPrice = 1000): Item {
@@ -139,7 +145,11 @@ mock.module("@/lib/rpc", () => ({
       // SAFETY: pass caller options through so onSuccess/onError survive
       mutationOptions: (opts?: PanelMutationOptions) => ({
         mutationFn: async (input: { counterpartyId?: string; counterpartyName?: string; initialPaid?: number }) => {
+          // the payload is the snapshot the owner sent, so it is recorded before
+          // the gate: a test reads what the in-flight request carries (#257 round 4)
           lastPurchaseInput = input;
+          // a gated save stays pending until the test releases it (#257 round 4)
+          if (invoiceCreateGate !== null) await invoiceCreateGate;
           return purchaseInvoiceResult;
         },
         ...opts,
@@ -200,6 +210,9 @@ beforeEach(() => {
   itemsCreateGate = null;
   releaseItemsCreate = null;
   itemsCreateFails = false;
+  // a gated save must never leak into the next test either
+  invoiceCreateGate = null;
+  releaseInvoiceCreate = null;
 });
 
 const { LinkProposalPanel, PurchasePage } = await import("./purchase");
@@ -1188,6 +1201,25 @@ describe("PurchasePage quantity draft (#146)", () => {
       });
     }
 
+    /** press Save and leave the invoice write in flight */
+    async function saveInFlight(container: HTMLElement) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
+    /** release a gated invoicesCreate and let the page settle */
+    async function releaseSaved() {
+      // a test that forgot to open a gate would otherwise go green without ever
+      // settling the save it claims to release
+      if (releaseInvoiceCreate === null) throw new Error("no invoicesCreate gate is open to release");
+      await act(async () => {
+        releaseInvoiceCreate?.();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
     const saveButton = (container: HTMLElement) => container.querySelector<HTMLButtonElement>('[data-testid="purchase-save"]');
     const costField = (container: HTMLElement, itemId: string) => container.querySelector<HTMLInputElement>(`input[name="unitCost-${itemId}"]`);
 
@@ -1624,6 +1656,129 @@ describe("PurchasePage quantity draft (#146)", () => {
       expect(container.querySelector('[data-testid="purchase-save-pending"]')).toBeNull();
       await save(container);
       expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+    });
+
+    it("refuses to re-point a line while the invoice save is in flight (round 4, F1)", async () => {
+      const { container } = await mountWithTypedLine("2", "1200");
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      await saveInFlight(container);
+
+      // the request carries the product the line held when the owner pressed Save
+      expect(saveButton(container)?.disabled).toBe(true);
+      expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+
+      // the line's own create form is one control that can replace that product:
+      // it must not open, and the picker beside it must not re-point the line
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-new-item-منتج"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج"]')?.disabled).toBe(true);
+      await openCreate(container, "item-منتج");
+      expect(createRow(container)).toBeNull();
+
+      // the line the request serialised is the line on screen, so what the owner
+      // sees and what the server books cannot diverge
+      expect(lineQty(container, "item-منتج")?.value).toBe("2");
+      expect(container.querySelector('[data-testid="purchase-line-pick-item-منتج"]')?.textContent).toBe("منتج");
+
+      await releaseSaved();
+
+      // the save that landed is the one that went out: the product the owner chose
+      // at the moment of saving
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+    });
+
+    it("refuses a line-create submit that no disabled button produced (round 4, F1 belt)", async () => {
+      // the form is open and typed BEFORE the save: this is the state the race
+      // needs, and the state the submit button's `disabled` has to cover
+      const { container } = await mountWithTypedLine("2", "1200");
+      await openCreate(container, "item-منتج");
+      await fillCreate(container, { name: "منتج سبق" });
+      await chooseLineCategory(container, "تصنيف");
+
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      await saveInFlight(container);
+      // the request is out, carrying the product the line held when Save was pressed
+      expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+
+      // the handler behind the control is the belt: a submit no disabled button
+      // could produce must not start a create against a request already in flight
+      await act(async () => {
+        lineForm(container)?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(createdItems).toHaveLength(0);
+      // …and the control itself is dead, so no user reaches the belt at all
+      expect(lineForm(container)?.querySelector<HTMLButtonElement>('[data-testid="line-product-save"]')?.disabled).toBe(true);
+
+      await releaseSaved();
+      expect(createdItems).toHaveLength(0);
+    });
+
+    it("refuses a catalog pick that would re-point a line under the in-flight save (round 4, F1 belt)", async () => {
+      // the picker's ranked set is cached under one query key, so it is in place
+      // before the page mounts, like every other picker test here
+      catalogMatches = [{ item: catalogItem("item-بديل", "بديل", 700), category: null, matchedBy: "NAME" }];
+      const { container } = await mountWithTypedLine("2", "1200");
+      // the line's picker is open when the save starts: this is the other control
+      // that can replace the product, and the dialog's backdrop does not stop a
+      // Save click that no mouse reaches (#257 round 4)
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-testid="purchase-line-pick-item-منتج"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      await saveInFlight(container);
+      expect(lastPurchaseInput?.lines).toEqual([{ itemId: "item-منتج", quantity: 2, unitPrice: 1200 }]);
+
+      // the pick lands while the request is out: the line must keep the product the
+      // request carries, not the picked one
+      await pickInOpenPicker(container, "بديل");
+      expect(container.querySelector('[data-testid="purchase-line-pick-item-بديل"]')).toBeNull();
+      expect(lineQty(container, "item-منتج")?.value).toBe("2");
+
+      await releaseSaved();
+      // the save lands and the line it booked is still the one the request carried
+      // (the pick was refused, so nothing was replaced under it)
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="purchase-line-pick-item-بديل"]')).toBeNull();
+    });
+
+    it("freezes the rest of the invoice draft while the save is in flight (round 4, F1)", async () => {
+      const { container } = await mountWithTypedLine("2", "1200");
+      await toggleQuick(container);
+      // before the save every one of these is live
+      expect(lineQty(container, "item-منتج")?.disabled).toBe(false);
+      expect(lineCost(container, "item-منتج")?.disabled).toBe(false);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-open-picker"]')?.disabled).toBe(false);
+
+      invoiceCreateGate = new Promise<void>((resolve) => {
+        releaseInvoiceCreate = resolve;
+      });
+      await saveInFlight(container);
+
+      // every control the request already serialised is read-only, so the draft on
+      // screen cannot drift from the payload the server is booking
+      expect(lineQty(container, "item-منتج")?.disabled).toBe(true);
+      expect(lineCost(container, "item-منتج")?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t("removeRow")} منتج"]`)?.disabled).toBe(true);
+      // the notes ride in the same request, so they are frozen with the lines
+      expect(container.querySelector<HTMLInputElement>('input[name="notes"]')?.disabled).toBe(true);
+      // …and so are the two fields round 2/3 already froze, now by the same value
+      expect(container.querySelector<HTMLInputElement>('[data-testid="purchase-supplier"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLInputElement>('[data-testid="purchase-paid"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-open-picker"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="purchase-quick-form"] button[type="submit"]')?.disabled).toBe(true);
+      // …and the frozen table says so instead of being a dead end
+      expect(container.querySelector('[data-testid="purchase-lines-frozen"]')?.textContent).toContain(i18n.t("purchasesSaveInFlight"));
+
+      await releaseSaved();
+      expect(container.querySelector('[data-testid="purchase-saved"]')).not.toBeNull();
     });
 
     it("folds a line into the line that already holds the picked product", async () => {

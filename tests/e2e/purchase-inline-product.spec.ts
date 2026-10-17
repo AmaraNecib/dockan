@@ -191,3 +191,93 @@ test("purchase line: a create from a zero-cost line is allowed and the invoice p
     stockOnHand: 3,
   });
 });
+
+/**
+ * #257 review round 4 (F1) — the ordering fix at user level.
+ *
+ * `submit()` maps the lines into the request body, so from that moment the draft
+ * it serialised must not change: a replacement after it went out leaves the
+ * invoice stocking the old product, the new one off it. That window is one local
+ * round-trip — tens of milliseconds — so the response is held open with
+ * `page.route`; a state a screenshot can otherwise miss is the point of the
+ * test, and the delay is the only way to observe it without faking the client.
+ *
+ * The screenshots land in `test-results/` (gitignored, so an e2e run never dirties
+ * the tree) and the lane copies the pair into `.scratch/reviews/257/screenshots/`
+ * under the reviewed SHA. Running this spec against the pre-fix tree is the
+ * round-4 e2e red: the frozen status never appears and the controls stay live.
+ */
+test("purchase line: the invoice draft is frozen while the save is in flight (#257 round 4)", async ({ page }) => {
+  await signIn(page);
+
+  const stamp = Date.now().toString();
+  const categoryName = `قطع-${stamp}`;
+  const productName = `وسيط-${stamp}`;
+
+  await page.goto("/categories");
+  await page.getByPlaceholder("اسم تصنيف جديد").fill(categoryName);
+  await page.getByRole("button", { name: "إضافة" }).click();
+  await expect(page.getByText(categoryName, { exact: true })).toBeVisible();
+
+  // a purchase line to save (the page-level quick-add is the existing path)
+  await page.getByRole("link", { name: "المشتريات" }).click();
+  await expect(page.getByTestId("purchase-form")).toBeVisible();
+  await page.getByTestId("purchase-supplier").fill(`مورد-${stamp}`);
+  // the party picker's suggestion overlay reaches into the lines card; Escape is
+  // the picker's own close control
+  await page.keyboard.press("Escape");
+  await page.getByTestId("purchase-toggle-quick").click();
+  await page.getByTestId("quick-name").fill(productName);
+  await chooseSelectOption(page, page.getByTestId("purchase-quick-form").getByLabel("التصنيف"), categoryName);
+  await page.getByTestId("quick-qty").fill("2");
+  await page.getByTestId("quick-cost").fill("900");
+  const created = await saveQuickAdd(page, {
+    procedure: "itemsCreate",
+    save: page.getByTestId("purchase-quick-form").getByRole("button", { name: "منتج جديد سريعاً" }),
+    error: page.getByTestId("purchase-error"),
+    lines: page.getByTestId("purchase-lines"),
+    itemName: productName,
+    quantityLabel: "الكمية",
+  });
+
+  const lines = page.getByTestId("purchase-lines");
+  const lineTrigger = lines.getByRole("button", { name: `منتج جديد: ${productName}` });
+  const linePick = page.getByTestId(`purchase-line-pick-${created.id}`);
+  const lineQty = lines.getByLabel(`${productName}: الكمية`);
+  const lineCost = lines.getByLabel(`${productName}: تكلفة الوحدة (دج)`);
+  // before the save every one of these is live, so the freeze below is a change
+  // and not the page's resting state
+  await expect(lineTrigger).toBeEnabled();
+  await expect(linePick).toBeEnabled();
+  await expect(lineQty).toBeEnabled();
+  await expect(lineCost).toBeEnabled();
+  await page.screenshot({ path: "test-results/round4-evidence/draft-live-before-save.png" });
+
+  // hold the invoice write open: the frozen state exists only while it is out.
+  // 2500 ms, not 4000: the window has to stay well inside Playwright's 5000 ms
+  // expect timeout, or a slow round trip turns the screenshots into flakes.
+  await page.route("**/api/rpc/invoicesCreate", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await route.continue();
+  });
+  await page.getByTestId("purchase-save").click();
+  // the save itself is pending in both trees; the screenshot is taken here so the
+  // pre-fix run records the live controls this test is about
+  await expect(page.getByTestId("purchase-save")).toBeDisabled();
+  await page.screenshot({ path: "test-results/round4-evidence/draft-during-save.png" });
+
+  // the request is out, so the draft it serialised is read-only — and the frozen
+  // table states why, because a disabled control with no stated reason is a dead
+  // end for a keyboard or screen-reader user
+  await expect(page.getByTestId("purchase-lines-frozen")).toBeVisible();
+  await expect(lineTrigger).toBeDisabled();
+  await expect(linePick).toBeDisabled();
+  await expect(lineQty).toBeDisabled();
+  await expect(lineCost).toBeDisabled();
+
+  // and the save that lands books the product the owner chose, at the quantity
+  // and cost the frozen controls were showing
+  await expect(page.getByTestId("purchase-saved-number")).toContainText(/SUP-\d+/);
+  const catalog = await readRpc<{ items: Array<{ id: string; name: string; stockOnHand: number; costPrice: number }> }>(page, "itemsAll");
+  expect(catalog.items.find((item) => item.id === created.id)).toMatchObject({ name: productName, stockOnHand: 2, costPrice: 900 });
+});

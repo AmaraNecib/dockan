@@ -173,3 +173,88 @@ The signed-green-number convention for a supplier balance: whether a sign shows
 at all, what green means, and which phrase names a supplier receivable are the
 owner's open decision. The card title, the summary wording and the movement
 vocabulary are untouched.
+
+---
+
+# Round 2 — Greptile's two findings on PR #263 (head `a8cb27f`)
+
+Tier: **Standard** (display layer). No stored value, no money arithmetic, no
+schema. Restated per `docs/engineering-workflow.md` so the choice sits next to
+the verdict.
+
+## Finding 1 — money assembled inside a translated sentence never reached the primitive
+
+`activitySummaryText` interpolated raw digits into catalog sentences
+(`تسجيل دفعة {{amount}} دج`), and `pmtExceedsRemaining` did the same with
+`remaining`. A call-site source guard cannot see them: the call sites contain
+only translation keys. On the activity screen the result was `5000 دج` sitting
+beside grouped `Amount` output.
+
+**Decision: `Trans` + the primitive, not a second formatter.** A first probe
+(`bun run` on a throwaway `.tsx`) proved the two candidate mechanisms behave
+differently on this stack:
+
+```
+Trans one component:  دفعة <b data-testid="money-figures">5,000</b> على INV-2
+Trans two components: منه <b ...>5,000</b> خصم و<i data-testid="money-currency">دج</i> نقداً
+t with React element:  "قيمة [object Object]"
+```
+
+So `i18n.t` stringifies a React element (the trap), and only `Trans` reaches the
+primitive. Money sentences become `<money/>` component tags; the currency
+literal leaves the catalog, so the digits **and** the currency come from
+`Money`. `activitySummaryText` returns `React.ReactNode`.
+
+**Scope of the fix.** Every `{{…}} دج` catalog entry except one is routed:
+the nine `activitySummaryText` money keys (same function and same screen as the
+finding), `pmtExceedsRemaining`, and the two returns notes
+(`returnsDebtCapNote`, `returnsCashWarning`) — 12 of 13. `itemsProfitPerUnit` is
+left raw and pinned by the new catalog guard: the same key doubles as a table
+header with `profit: ""`, so routing it needs a separate header key (see
+Deferred).
+
+## Finding 2 — the caller's `className` reached the figures but not the currency
+
+The pre-#254 `Amount` was one `dir="ltr"` span carrying the caller's class, so
+`stock.tsx`'s `text-foreground` inside a `text-muted-foreground` paragraph
+coloured digits **and** currency. After #254 the class landed on the figures run
+only, so the currency inherited the muted paragraph colour. Fix: `Amount`
+passes the caller's class to both runs (`amountClassName` and
+`currencyClassName`).
+
+Swept every `Amount`/`Money` call site: exactly one passes a `className` to the
+primitive — `stock.tsx:144` (`text-foreground`) — and `PrintAmount` passes the
+sheet's two classes directly to `Money`, which this change does not touch. So no
+other call site depended on the narrower behaviour.
+
+## Interfaces (round 2)
+
+```tsx
+// components/ui/amount.tsx — unchanged signature; className now reaches both runs
+export function Amount(props: { value: number; sign?: "+" | "−"; className?: string }): JSX.Element;
+
+// pages/activity.tsx — the return type widens so a sentence can carry <Amount>
+export function activitySummaryText(t: TFunction, summary: string): React.ReactNode;
+```
+
+## Planned tests (round 2)
+
+- `amount.test.tsx` — the caller's class lands on the currency too (finding 2).
+- `amount.test.tsx` — a **catalog** guard: no `i18n.ts` entry may hold `دج` and a
+  `{{placeholder}}` together (money built by a string template). Failing-first
+  lists 13 keys; after the fix it pins the one documented deferral.
+- `activity.test.tsx` — the live `activitySummaryText` output renders through the
+  primitive, grouped.
+- `invoice.test.tsx` — the live overpay path (`pmt-error`) groups the remaining.
+
+## Deferred
+
+- `itemsProfitPerUnit` — the same key is the items-table header with `profit: ""`;
+routing it through the primitive needs a separate header key and a preview-test
+rewrite. Pinned by the catalog guard, so it cannot be forgotten silently.
+
+## Evidence (round 2)
+
+Recorded in the commit body on the final HEAD: failing-first runs with the
+failing assertion named, the red→green transition, the gate commands, and the
+catalog sweep result.

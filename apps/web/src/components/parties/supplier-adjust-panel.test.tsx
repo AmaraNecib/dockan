@@ -222,6 +222,23 @@ describe("SupplierAdjustPanel (issue 176)", () => {
   });
 
   /**
+   * #252 — the panel's two buttons are the other place a direction label sits. The
+   * label and the hint beside it are resolved from the same direction, so this pins
+   * the pair: a label moved to the other value (the reported bug) or a hint moved
+   * to the other value (a fake fix) both redden here.
+   */
+  it("#252 — each direction button shows the Darija its own hint describes", () => {
+    render();
+    const weOwe = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-direction-we-owe"]');
+    const theyOwe = host.querySelector<HTMLElement>('[data-testid="supplier-adjust-direction-they-owe"]');
+
+    expect(weOwe?.textContent).toBe("يسالنا");
+    expect(weOwe?.getAttribute("title")).toContain("نحن ندين له");
+    expect(theyOwe?.textContent).toBe("نسالوه");
+    expect(theyOwe?.getAttribute("title")).toContain("هو يدين لنا");
+  });
+
+  /**
    * #252 — the same raw-value defect as the direction selects: this `<Select>`
    * had no `items` map on its root, so the trigger printed the invoice UUID while
    * the popup printed invoice numbers. Found by the new AST guard in

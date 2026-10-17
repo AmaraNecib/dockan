@@ -10,7 +10,7 @@ import { normalizeTextKey } from "@dokan/contracts";
 import i18n from "../lib/i18n";
 
 import { routerMock } from "../tests/router-mock";
-import { chooseOption } from "../tests/select-driver";
+import { activateOption, findOption, openSelect } from "../tests/select-driver";
 
 mock.module("@tanstack/react-router", () => routerMock());
 
@@ -480,8 +480,20 @@ describe("SupplierOpeningBalancePage (issue 176)", () => {
       expect(labelOf(trigger)).not.toContain("THEY_OWE");
     }
 
+    // the popup offers the same two strings the root's map holds, in value order:
+    // list and trigger read one map, so they cannot disagree about which label sits
+    // on which value
+    await openSelect(newTrigger);
+    const listboxId = newTrigger.getAttribute("aria-controls") ?? "";
+    const optionLabels = Array.from(document.querySelectorAll<HTMLElement>("[role='option']"))
+      .filter((option) => option.closest("[role='listbox']")?.id === listboxId)
+      .map((option) => option.textContent?.trim() ?? "");
+    expect(optionLabels).toEqual(["يسالنا", "نسالوه"]);
+
     // choosing the option that reads "he owes us" (THEY_OWE) must submit THEY_OWE
-    await chooseOption(newTrigger, "نسالوه");
+    const theyOweOption = await findOption("نسالوه", newTrigger);
+    expect(theyOweOption).not.toBeNull();
+    await activateOption(theyOweOption!);
     expect(labelOf(newTrigger)).toBe("نسالوه");
 
     setInput(clickTarget("opening-balance-new-name"), "مورد اتجاه ٢٥٢");

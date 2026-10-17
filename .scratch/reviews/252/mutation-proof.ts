@@ -2,9 +2,10 @@
  * #252 ablation proof, run against the FINAL HEAD.
  *
  * For each mutation it patches one production file, runs the named test files,
- * records whether they redden, and restores the file byte-for-byte. The script
- * asserts its own cleanliness at the end: every mutated file is compared to a
- * pre-mutation hash, so a botched restore cannot be mistaken for a clean tree.
+ * and records whether they redden. It is a GATE, not just a log: it exits non-zero
+ * if a mutation does not redden, if an anchor is missing, or if a file is not
+ * restored. A `try/finally` restores the file even when the test spawn throws, and
+ * every mutated file is compared to a pre-mutation sha256 at the end.
  *
  * Run: bun .scratch/reviews/252/mutation-proof.ts   (cwd = repo root)
  */
@@ -36,7 +37,12 @@ const MUTATIONS: readonly Mutation[] = [
     find: `      supplierAdjustDirectionWeOwe: "يسالنا",\n      supplierAdjustDirectionTheyOwe: "نسالوه",`,
     replace: `      supplierAdjustDirectionWeOwe: "نسالوه",\n      supplierAdjustDirectionTheyOwe: "يسالنا",`,
     cwd: WEB,
-    tests: ["src/lib/supplier-entry-display.test.ts", "src/pages/debts.test.tsx", "src/pages/supplier-opening-balance.test.tsx"],
+    tests: [
+      "src/lib/supplier-entry-display.test.ts",
+      "src/pages/debts.test.tsx",
+      "src/pages/supplier-opening-balance.test.tsx",
+      "src/components/parties/supplier-adjust-panel.test.tsx",
+    ],
   },
   {
     id: "M2",
@@ -78,10 +84,46 @@ const MUTATIONS: readonly Mutation[] = [
     id: "M6",
     what: "neuter the guard's items check (does the guard bite?)",
     file: `${WEB}/src/lib/select-trigger-label.test.ts`,
-    find: `      rendersSelectValue(node) &&\n      !hasItemsAttribute(node.openingElement)`,
-    replace: `      rendersSelectValue(node) &&\n      false`,
+    find: `rendersSelectValue(node) && !hasItemsMap(node.openingElement)`,
+    replace: `rendersSelectValue(node) && false`,
     cwd: WEB,
     tests: ["src/lib/select-trigger-label.test.ts"],
+  },
+  {
+    id: "M7",
+    what: "accept a statically empty items map (the guard's near-miss case)",
+    file: `${WEB}/src/lib/select-trigger-label.test.ts`,
+    find: `  if (ts.isArrayLiteralExpression(expression) && expression.elements.length === 0) return false;`,
+    replace: `  if (ts.isArrayLiteralExpression(expression) && expression.elements.length === 0) return true;`,
+    cwd: WEB,
+    tests: ["src/lib/select-trigger-label.test.ts"],
+  },
+  {
+    id: "M8",
+    what: "reverse the signed-balance→direction rule",
+    file: `${WEB}/src/lib/supplier-entry-display.ts`,
+    find: `  return supplierDirectionKey(balance >= 0 ? "WE_OWE" : "THEY_OWE");`,
+    replace: `  return supplierDirectionKey(balance < 0 ? "WE_OWE" : "THEY_OWE");`,
+    cwd: WEB,
+    tests: ["src/lib/supplier-entry-display.test.ts", "src/pages/supplier-opening-balance.test.tsx"],
+  },
+  {
+    id: "M9",
+    what: "pair each direction with the other's hint",
+    file: `${WEB}/src/lib/supplier-entry-display.ts`,
+    find: `  return direction === "THEY_OWE" ? "supplierAdjustDirectionTheyOweHint" : "supplierAdjustDirectionWeOweHint";`,
+    replace: `  return direction === "THEY_OWE" ? "supplierAdjustDirectionWeOweHint" : "supplierAdjustDirectionTheyOweHint";`,
+    cwd: WEB,
+    tests: ["src/components/parties/supplier-adjust-panel.test.tsx"],
+  },
+  {
+    id: "M10",
+    what: "swap the two labels inside the picker's own map",
+    file: `${WEB}/src/pages/supplier-opening-balance.tsx`,
+    find: `    { value: "WE_OWE", label: t(supplierDirectionKey("WE_OWE")) },\n    { value: "THEY_OWE", label: t(supplierDirectionKey("THEY_OWE")) },`,
+    replace: `    { value: "WE_OWE", label: t(supplierDirectionKey("THEY_OWE")) },\n    { value: "THEY_OWE", label: t(supplierDirectionKey("WE_OWE")) },`,
+    cwd: WEB,
+    tests: ["src/pages/supplier-opening-balance.test.tsx"],
   },
 ];
 
@@ -89,16 +131,19 @@ function hash(file: string): string {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
-function run(id: string, cwd: string, tests: readonly string[]): { exit: number; failures: string[] } {
+interface Outcome {
+  readonly exit: number;
+  readonly failures: string[];
+}
+
+function run(cwd: string, tests: readonly string[]): Outcome {
   const proc = Bun.spawnSync(["bun", "test", ...tests], { cwd, stdout: "pipe", stderr: "pipe" });
   const out = `${proc.stdout.toString()}\n${proc.stderr.toString()}`;
   const failures = out
     .split("\n")
-    .filter((line) => line.includes("(fail)") || /^\d+ tests? failed/.test(line) || /^\s*\d+ fail$/.test(line))
+    .filter((line) => line.includes("(fail)"))
     .map((line) => line.trim());
-  console.log(`--- ${id} exit=${proc.exitCode}`);
-  for (const failure of failures) console.log(`      ${failure}`);
-  return { exit: proc.exitCode, failures };
+  return { exit: proc.exitCode ?? -1, failures };
 }
 
 const originals = new Map<string, string>();
@@ -108,29 +153,41 @@ for (const mutation of MUTATIONS) {
 const hashes = new Map([...originals.keys()].map((file) => [file, hash(file)]));
 
 console.log(`# ablation proof on HEAD (${MUTATIONS.length} mutations)\n`);
+const problems: string[] = [];
 for (const mutation of MUTATIONS) {
   const original = originals.get(mutation.file)!;
   // these files are CRLF; the anchors are written LF so they stay readable
   const crlf = original.includes("\r\n");
   const find = crlf ? mutation.find.replace(/\n/g, "\r\n") : mutation.find;
   const replace = crlf ? mutation.replace.replace(/\n/g, "\r\n") : mutation.replace;
+  console.log(`\n--- ${mutation.id}: ${mutation.what}`);
   if (!original.includes(find)) {
-    console.log(`--- ${mutation.id} ANCHOR MISSING — mutation not applied (${mutation.what})`);
+    problems.push(`${mutation.id} ANCHOR MISSING`);
+    console.log("      ANCHOR MISSING — mutation not applied");
     continue;
   }
-  writeFileSync(mutation.file, original.replace(find, replace));
-  console.log(`\n--- ${mutation.id}: ${mutation.what}`);
-  run(mutation.id, mutation.cwd, mutation.tests);
-  writeFileSync(mutation.file, original);
+  try {
+    writeFileSync(mutation.file, original.replace(find, replace));
+    const outcome = run(mutation.cwd, mutation.tests);
+    for (const failure of outcome.failures) console.log(`      ${failure}`);
+    console.log(`      exit=${outcome.exit}`);
+    if (outcome.exit === 0) {
+      problems.push(`${mutation.id} did NOT redden`);
+      console.log("      *** DID NOT REDDEN — this mutation is not covered ***");
+    } else if (outcome.failures.length === 0) {
+      console.log("      (failed without a named test line — check the log)");
+    }
+  } finally {
+    writeFileSync(mutation.file, original);
+  }
 }
 
 console.log("\n# restore check");
-let clean = true;
 for (const [file, before] of hashes) {
   const after = hash(file);
   const ok = before === after;
-  if (!ok) clean = false;
+  if (!ok) problems.push(`RESTORE FAILED ${file}`);
   console.log(`${ok ? "OK  " : "DIRTY"} ${file}`);
 }
-console.log(clean ? "\nALL FILES RESTORED BYTE-IDENTICAL" : "\nRESTORE FAILED");
-process.exit(clean ? 0 : 1);
+console.log(problems.length === 0 ? "\nALL MUTATIONS REDDENED, ALL FILES RESTORED BYTE-IDENTICAL" : `\nPROBLEMS: ${problems.join("; ")}`);
+process.exit(problems.length === 0 ? 0 : 1);

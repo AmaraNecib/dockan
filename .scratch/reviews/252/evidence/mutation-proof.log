@@ -1,51 +1,70 @@
-# ablation proof on HEAD (6 mutations)
+# ablation proof on HEAD (10 mutations)
 
 
 --- M1: swap the two i18n label values back (the original #252 bug)
---- M1 exit=1
-      (fail) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [2.36ms]
-      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.27ms]
-      (fail) DebtsPage (ticket 9) > distinguishes opposite adjustments in the account movements table (Greptile finding 6) [892.65ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [59.34ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [110.89ms]
-      5 tests failed:
-      (fail) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [2.36ms]
-      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.27ms]
-      (fail) DebtsPage (ticket 9) > distinguishes opposite adjustments in the account movements table (Greptile finding 6) [892.65ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [59.34ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [110.89ms]
-      5 fail
+      (fail) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [4.62ms]
+      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.39ms]
+      (fail) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.51ms]
+      (fail) DebtsPage (ticket 9) > distinguishes opposite adjustments in the account movements table (Greptile finding 6) [108.00ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [148.53ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [105.82ms]
+      (fail) SupplierAdjustPanel (issue 176) > #252 — each direction button shows the Darija its own hint describes [12.14ms]
+      (fail) supplier-direction labels (issue 252) > puts the 'we owe him' string on WE_OWE and the 'he owes us' string on THEY_OWE [4.62ms]
+      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.39ms]
+      (fail) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.51ms]
+      (fail) DebtsPage (ticket 9) > distinguishes opposite adjustments in the account movements table (Greptile finding 6) [108.00ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [148.53ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [105.82ms]
+      (fail) SupplierAdjustPanel (issue 176) > #252 — each direction button shows the Darija its own hint describes [12.14ms]
+      exit=1
 
 --- M2: swap the two hints instead of the labels (a fake fix)
---- M2 exit=1
-      (fail) supplier-direction labels (issue 252) > keeps each label on the value its own hint describes [0.84ms]
-      1 fail
+      (fail) supplier-direction labels (issue 252) > keeps each label on the value its own hint describes [0.91ms]
+      (fail) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.98ms]
+      exit=1
 
 --- M3: drop items={directionItems} from the new-row direction Select
---- M3 exit=1
-      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [354.93ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [138.71ms]
-      2 tests failed:
-      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [354.93ms]
-      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [138.71ms]
-      2 fail
+      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [944.63ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [118.38ms]
+      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [944.63ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [118.38ms]
+      exit=1
 
 --- M4: drop the items map from the linked-invoice Select in the adjust panel
---- M4 exit=1
-      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [374.69ms]
-      (fail) SupplierAdjustPanel (issue 176) > #252 — the linked-invoice trigger reads the invoice number, not its id [27.31ms]
-      2 fail
+      (fail) Select trigger label guard (issue #252) > gives every Select that renders a SelectValue a value→label map [581.98ms]
+      (fail) SupplierAdjustPanel (issue 176) > #252 — the linked-invoice trigger reads the invoice number, not its id [39.52ms]
+      exit=1
 
 --- M5: reverse the shared direction→label map
---- M5 exit=1
-      (fail) supplierEntryDirectionKey > names the adjustment direction and stays null for other kinds [0.59ms]
-      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.45ms]
-      2 fail
+      (fail) supplierEntryDirectionKey > names the adjustment direction and stays null for other kinds [0.68ms]
+      (fail) supplier-direction labels (issue 252) > reads the labels through the shared direction map, so a picker cannot drift from the movement rows [0.88ms]
+      (fail) supplier-direction labels (issue 252) > pairs each direction's label with the hint that describes it [0.71ms]
+      (fail) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.46ms]
+      exit=1
 
 --- M6: neuter the guard's items check (does the guard bite?)
---- M6 exit=1
-      (fail) Select trigger label guard (issue #252) > catches a SelectValue whose root has no items map (the guard's own mutation) [16.70ms]
-      1 fail
+      (fail) Select trigger label guard (issue #252) > reddens on each shape the bug and its near-misses take [22.80ms]
+      exit=1
+
+--- M7: accept a statically empty items map (the guard's near-miss case)
+      (fail) Select trigger label guard (issue #252) > reddens on each shape the bug and its near-misses take [30.28ms]
+      exit=1
+
+--- M8: reverse the signed-balance→direction rule
+      (fail) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.47ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [101.75ms]
+      (fail) supplier-direction labels (issue 252) > reads a signed supplier balance as the direction that sign means [0.47ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > renders a credit current balance with its direction and keeps a typed name inline (issue 176 / round 5) [101.75ms]
+      exit=1
+
+--- M9: pair each direction with the other's hint
+      (fail) SupplierAdjustPanel (issue 176) > #252 — each direction button shows the Darija its own hint describes [15.97ms]
+      exit=1
+
+--- M10: swap the two labels inside the picker's own map
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [113.32ms]
+      (fail) SupplierOpeningBalancePage (issue 176) > #252 — the direction select reads the Darija label, never the raw enum, and submits the value its label names [113.32ms]
+      exit=1
 
 # restore check
 OK   apps/web/src/lib/i18n.ts
@@ -54,4 +73,4 @@ OK   apps/web/src/components/parties/supplier-adjust-panel.tsx
 OK   apps/web/src/lib/supplier-entry-display.ts
 OK   apps/web/src/lib/select-trigger-label.test.ts
 
-ALL FILES RESTORED BYTE-IDENTICAL
+ALL MUTATIONS REDDENED, ALL FILES RESTORED BYTE-IDENTICAL

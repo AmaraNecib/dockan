@@ -1,6 +1,7 @@
-// TEMPORARY (issue #252 lane) — not committed. Points the real Playwright
-// config at the evidence spec in .scratch and turns video on so the before/after
-// flow is recorded at real pace.
+// Issue #252 lane evidence — committed as the provenance for the before/after
+// run (`.scratch/reviews/252/direction-labels.evidence.spec.ts`). Not part of the
+// suite or the build: copy it to the repo root as `playwright.evidence.config.ts`
+// to rerun the walkthrough, then delete it.
 import { defineConfig } from "@playwright/test";
 
 import base from "./playwright.config";

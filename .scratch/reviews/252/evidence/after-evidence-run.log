@@ -1,9 +1,9 @@
-[WebServer] @dokan/api start: [2026-10-17T11:05:24] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
-[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4910
+[WebServer] @dokan/api start: [2026-10-17T11:33:17] VAULT_DISABLED DOKAN_VAULT=disabled: the encrypted store is off and the legacy plaintext path is active (development/e2e only)
+[WebServer] @dokan/api start: Dokan API listening on http://127.0.0.1:4800
 [WebServer] @dokan/web dev: 
-[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 4710 ms
+[WebServer] @dokan/web dev:   VITE v7.3.6  ready in 1764 ms
 [WebServer] @dokan/web dev: 
-[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5910/
+[WebServer] @dokan/web dev:   ➜  Local:   http://127.0.0.1:5800/
 
 Running 1 test using 1 worker
 
@@ -11,6 +11,6 @@ Running 1 test using 1 worker
 [after] option index 1 is THEY_OWE, its label: "نسالوه"
 [after] trigger after picking THEY_OWE: "نسالوه"
 [after] adjust panel: {"weOwe":{"text":"يسالنا","hint":"نحن ندين له — يزيد ما علينا"},"theyOwe":{"text":"نسالوه","hint":"هو يدين لنا — ينقص ما علينا"}}
-  ok 1 .scratch\reviews\252\direction-labels.evidence.spec.ts:17:1 › #252 — the direction control's labels (27.7s)
+  ok 1 .scratch\reviews\252\direction-labels.evidence.spec.ts:17:1 › #252 — the direction control's labels (25.6s)
 
-  1 passed (47.3s)
+  1 passed (38.2s)

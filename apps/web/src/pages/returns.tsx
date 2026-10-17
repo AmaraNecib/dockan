@@ -10,6 +10,7 @@ import { tError } from "../lib/i18n";
 import { usePagination } from "../hooks/use-pagination";
 import { cn } from "@/lib/utils";
 import { inputClass } from "@/components/ui/input";
+import { Amount } from "@/components/ui/amount";
 import { Pager } from "@/components/ui/pager";
 import { EmptyState } from "@/components/ui/empty-state";
 import { orpc } from "../lib/rpc";
@@ -63,10 +64,10 @@ export function ReturnsReviewList({ returns }: { returns: readonly ReturnDetail[
             <div>
               <p dir="ltr" className="font-semibold">{record.returnNumber}</p>
               <p className="text-sm text-muted-foreground">
-                {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: {record.refundAmount} {t("dzd")}
+                {t("returnVoucherInvoice")}: <span dir="ltr">{record.invoiceNumber}</span> — {t("returnsRefundTotal")}: <Amount value={record.refundAmount} />
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("returnsCashNow")}: {record.cashPaidOut} {t("dzd")} — {t(debt.labelKey)}: {debt.value} {t("dzd")}
+                {t("returnsCashNow")}: <Amount value={record.cashPaidOut} /> — {t(debt.labelKey)}: <Amount value={debt.value} />
               </p>
               <p className="text-sm text-muted-foreground">
                 {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}
@@ -245,11 +246,11 @@ export function SupplierReturnsList() {
                 {t("supplierReturnSupplier")}: {record.supplierName ?? record.supplierId}
               </p>
               <p className="text-sm text-muted-foreground">
-                {t("returnsRefundTotal")}: {record.amount} {t("dzd")}
+                {t("returnsRefundTotal")}: <Amount value={record.amount} />
                 {record.invoiceNumber !== null && <> — {t("supplierReturnInvoiceLink")}: <span dir="ltr">{record.invoiceNumber}</span></>}
               </p>
               <p className="text-xs text-muted-foreground">
-                {t("supplierReturnDebtReduction")}: {record.debtReduction} {t("dzd")} — {t("supplierReturnCredit")}: {record.credit} {t("dzd")}
+                {t("supplierReturnDebtReduction")}: <Amount value={record.debtReduction} /> — {t("supplierReturnCredit")}: <Amount value={record.credit} />
               </p>
               <p className="text-sm text-muted-foreground">
                 {record.lines.map((line) => `${line.description} ×${line.quantity}`).join(" · ")}

@@ -23,6 +23,12 @@ function parseAmount(text: string | null): number {
   return match === null ? NaN : Number(match[0]);
 }
 
+/** #254 — the screen groups thousands, so an amount typed as "5000" renders
+ * "5,000". Assertions read the DISPLAYED shape; the input keeps the typed one. */
+function shownAmount(amount: string): string {
+  return amount.replace(/\B(?=(\d{3})+$)/u, ",");
+}
+
 /** Select an expense category by its visible label. The withdrawal category
  * includes a badge suffix, so the shared helper uses a partial accessible name. */
 async function selectExpenseCategory(page: import("@playwright/test").Page, name: string) {
@@ -51,7 +57,7 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await page.getByTestId("expense-note").fill(note);
   await page.getByTestId("expense-save").click();
   await expect(page.getByTestId("expense-saved")).toContainText("تم تسجيل المصروف");
-  await expect(page.getByTestId("expense-history")).toContainText(rentAmount);
+  await expect(page.getByTestId("expense-history")).toContainText(shownAmount(rentAmount));
   await expect(page.getByTestId("expense-history")).toContainText(note);
 
   // and an owner withdrawal — the row carries the distinct badge. Enter from a
@@ -59,20 +65,20 @@ test("record expenses, filter and sort history, and see them in the profit repor
   await selectExpenseCategory(page, withdrawalName);
   await page.getByTestId("expense-amount").fill(withdrawalAmount);
   await page.getByTestId("expense-amount").press("Enter");
-  const withdrawalRow = page.getByTestId("expense-history").locator("tbody tr", { hasText: withdrawalAmount });
+  const withdrawalRow = page.getByTestId("expense-history").locator("tbody tr", { hasText: shownAmount(withdrawalAmount) });
   await expect(withdrawalRow).toContainText("سحب المالك");
 
   // sort by amount ascending: the withdrawal (3000) precedes rent (5000)
   await chooseSelectOption(page, page.getByTestId("expense-sort-by"), "المبلغ");
   await chooseSelectOption(page, page.getByTestId("expense-sort-dir"), "تصاعدي");
   const rows = page.getByTestId("expense-history").locator("tbody tr");
-  await expect(rows.first()).toContainText(withdrawalAmount);
-  await expect(rows.last()).toContainText("5000");
+  await expect(rows.first()).toContainText(shownAmount(withdrawalAmount));
+  await expect(rows.last()).toContainText(shownAmount(rentAmount));
 
   // category filter: only the rent row remains while the rent chip is active
   await page.getByRole("button", { name: "كراء المحل", exact: true }).click();
   await expect(rows).toHaveCount(1);
-  await expect(rows.first()).toContainText(rentAmount);
+  await expect(rows.first()).toContainText(shownAmount(rentAmount));
   await page.getByTestId("expense-filter-all").click();
   await expect(rows).toHaveCount(2);
 
@@ -369,7 +375,7 @@ test("create a new expense category from the expenses screen and record against 
   // a substring spanning another row's note stamp and amount (e.g. the note
   // ending "…5312" plus "5000" renders "…5312500", which contains "1250").
   const row = page.getByTestId("expense-history").locator("tbody tr", { hasText: categoryName });
-  await expect(row).toContainText(amount);
+  await expect(row).toContainText(shownAmount(amount));
 });
 
 test("custom range controls stack and stay inside their column on a narrow window", async ({ page }) => {

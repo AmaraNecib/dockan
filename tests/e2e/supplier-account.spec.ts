@@ -57,13 +57,13 @@ test("supplier account: pay, return, and refund move one signed balance", async 
   await page.goto("/suppliers");
   await page.getByRole("link", { name: supplierName }).click();
   await expect(page.getByTestId("supplier-balance")).toBeVisible();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("2000 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("2,000 دج");
 
   // 4. pay 500 (oldest-first default) → balance 1500
   await page.getByTestId("supplier-action-pay").click();
   await page.getByTestId("supplier-pay-amount").fill("500");
   await page.getByTestId("supplier-pay-confirm").click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("1500 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("1,500 دج");
 
   // 5. free-standing return of 1 unit for 300 → balance 1200
   await page.getByTestId("supplier-action-return").click();
@@ -72,7 +72,7 @@ test("supplier account: pay, return, and refund move one signed balance", async 
   await page.getByTestId("supplier-return-quantity").fill("1");
   await page.getByTestId("supplier-return-amount").fill("300");
   await page.getByTestId("supplier-return-confirm").click();
-  await expect(page.getByTestId("supplier-balance-value")).toHaveText("1200 دج");
+  await expect(page.getByTestId("supplier-balance-value")).toHaveText("1,200 دج");
 
   // 6. invoice-linked return of the other unit @1000 → debt reduction 1000,
   //    balance 200 and the invoice remaining drops to 200
@@ -97,7 +97,7 @@ test("supplier account: pay, return, and refund move one signed balance", async 
   await page.getByTestId("party-invoices").getByRole("link", { name: invoiceNumber }).click();
   await expect(page.getByTestId("invoice-page")).toBeVisible();
   await expect(page.getByTestId("invoice-remaining")).toHaveText("300 دج");
-  await expect(page.getByTestId("invoice-returns-credit")).toHaveText("1000 دج");
+  await expect(page.getByTestId("invoice-returns-credit")).toHaveText("1,000 دج");
   await page.goBack();
   await expect(page.getByTestId("supplier-balance")).toBeVisible();
 

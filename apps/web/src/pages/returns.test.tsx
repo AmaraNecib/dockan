@@ -209,7 +209,7 @@ describe("ReturnsReviewList (accept / reject review flow)", () => {
     renderList([makeReturn("PENDING_REVIEW")]);
     const row = host.querySelector('[data-testid="returns-review-RTN-0001"]')!;
     expect(row.textContent).toContain("قيد المراجعة");
-    expect(row.textContent).toContain("1700 دج");
+    expect(row.textContent).toContain("1,700 دج");
     expect(host.querySelector('[data-testid="returns-print-RTN-0001"]')).toBeTruthy();
   });
 

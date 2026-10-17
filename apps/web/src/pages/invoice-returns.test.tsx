@@ -412,7 +412,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // 9 is accepted and the preview prices the full remaining
     typeInto(input, "9");
     await flushAsync();
-    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("8100");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toContain("8,100");
   });
 
   it("flags a pending return and separates it from the reviewed ones (issue #118)", async () => {
@@ -454,7 +454,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     typeInto(input, "٢");
     // the valueTotal projection must read the SAME reader the validator does: 2 ×
     // 900 net = 1800, not 0 (the #229 preview/submit split, on the customer side)
-    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("1800 دج");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("1,800 دج");
     submitForm(host.querySelector<HTMLFormElement>('[data-testid="returns-form"]')!);
     await flushAsync();
     expect(lastCreateInput).toMatchObject({ lines: [{ invoiceLineId: LINE_ID, quantity: 2 }] });
@@ -604,7 +604,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     // paidAmount 0: the default all-cash settlement for a 3600 return warns
     renderPanel(makeInvoice([saleLine()], 0));
     typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "4");
-    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("3600 دج");
+    expect(host.querySelector('[data-testid="returns-value"]')?.textContent).toBe("3,600 دج");
     expect(host.querySelector('[data-testid="returns-collected"]')?.textContent).toBe("0 دج");
     expect(host.querySelector('[data-testid="returns-cash-warning"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="returns-cash-warning"]')?.textContent).toContain("القرار لك");
@@ -639,7 +639,7 @@ describe("ReturnsPanel (new-return form + history)", () => {
     typeInto(qty, "2");
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-cash"]')?.value).toBe("900");
     expect(host.querySelector<HTMLInputElement>('[data-testid="returns-percentage"]')?.value).toBe("50");
-    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("1800 دج");
+    expect(host.querySelector('[data-testid="returns-reference"]')?.textContent).toContain("1,800 دج");
   });
 
   it("recomputes the custom cash to zero when the return value falls to zero (#171)", async () => {

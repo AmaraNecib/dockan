@@ -229,7 +229,7 @@ export function PaymentPanel({ invoice }: { invoice: InvoiceDetail }) {
           containerRef={cardRef}
           title={t("pmtRecorded")}
           detail={
-            <span data-testid="pmt-saved-detail"><Amount value={savedPayment.amount} suffix={t("dzd")} /> — {t(`pmtMethod_${savedPayment.method}`)}</span>
+            <span data-testid="pmt-saved-detail"><Amount value={savedPayment.amount} /> — {t(`pmtMethod_${savedPayment.method}`)}</span>
           }
         >
           <Button asChild>
@@ -643,7 +643,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
             {[...pendingReturns, ...reviewedReturns].map((record) => (
               <tr key={record.id} className="border-b last:border-0" data-testid="returns-row">
                 <td className="p-2 cell-ltr">{record.returnNumber}</td>
-                <td className="p-2 font-medium">{record.refundAmount} {t("dzd")}</td>
+                <td className="p-2 font-medium"><Amount value={record.refundAmount} /></td>
                 <td className="p-2" data-testid={`returns-status-${record.status}`}>{t(`returnsStatus_${record.status}`)}</td>
                 <td className="p-2">
                   <Link
@@ -669,8 +669,8 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
           title={<span data-testid="returns-done-number">{t("returnsSavedNumber", { number: savedReturn.returnNumber })}</span>}
           detail={
             <span data-testid="returns-done-detail">
-              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} suffix={t("dzd")} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} suffix={t("dzd")} />
-              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} suffix={t("dzd")} /></>)}
+              {t("returnsSavedValue")} <Amount value={savedReturn.refundAmount} /> — {t("returnsSavedCash")} <Amount value={savedReturn.cashPaidOut} />
+              {savedReturnDebt !== null && (<> · {t(savedReturnDebt.labelKey)} <Amount value={savedReturnDebt.value} /></>)}
             </span>
           }
         >

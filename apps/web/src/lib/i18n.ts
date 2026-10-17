@@ -644,8 +644,6 @@ const resources = {
        * copy names the ordering, never a page position, because the correction
        * can sit on a prior page. */
       historySupersededByCorrection: "سُجِّل قبل تصحيح التكلفة اللاحق، فاستُبدل أثره في متوسط التكلفة",
-      /** whole-DZD unit suffix; the api never embeds it in strings */
-      dzd: "دج",
       returnNumber: "رقم المرجوع",
       returnVoucher: "إيصال المرجوع",
       returnVoucherTitle: "إيصال مرجوع",

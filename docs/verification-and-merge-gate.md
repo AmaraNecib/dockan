@@ -36,8 +36,10 @@ change and green after it**, with the failing assertion named. A guard added wit
 reddens when the guard is deleted is not a guard. Run the guard's mutation against the current
 head; an inherited mutation table is an unrun gate.
 
-Put the evidence in the commit message body, so the parent can reuse it for the PR description,
-and summarise it in `crew_report`.
+Put the evidence in the commit message body so the parent can reuse it for the PR description, and keep
+the lane's working notes in `.scratch/reviews/<issue>/<sha>-<gate>.md`. The **PR comment is what the
+gate reads**: the parent posts it at the head, with the `<!-- crew-evidence -->` marker in the body. A
+lane that only writes the commit body produces no comment, so reason 4 fails at merge.
 
 ## 2. The four reasons
 
@@ -80,9 +82,14 @@ parent's check, at merge time, every time.
 
 | the class | who decides |
 | --- | --- |
-| **test-only or docs-only diff** | `AUTO` — CI is the evidence for a change that cannot reach the product. The script decides; the parent only executes. |
-| **production code, or anything under `.github/`** | `OWNER` — it is the owner's call, and a `.github/` diff always goes to the owner to read before merge. |
+| **inert diff (tests, docs, markdown, `.agents/`, `.scratch/`, fixtures)** | `AUTO` — CI is the evidence for a change that cannot reach the product. The script decides; the parent only executes. |
+| **production code (including `scripts/` that is not a test), or anything under `.github/`** | `OWNER` — it is the owner's call, and a `.github/` diff always goes to the owner to read before merge. |
 | **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review. |
+
+A PR GitHub already reports `MERGED` is a fourth outcome, `MERGED`: a different question, not a
+decision, and the predicate reports it rather than answering the merge question. `scripts/**` that is
+not a test is deliberately code, not inert: a script can drive CI or a release, and guessing otherwise
+would be the wrong direction of error.
 
 **The owner merges.** A 5/5 with no findings, anchored to the current head, with every check
 green, is the bar to *ask* — not permission. The parent never merges on its own initiative.

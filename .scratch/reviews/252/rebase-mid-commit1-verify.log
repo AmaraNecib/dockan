@@ -1,0 +1,16 @@
+PASS  1. supplierAdjustDirectionWeOwe === «يسالنا»
+        apps/web/src/lib/i18n.ts:995 = "يسالنا"
+PASS  2. supplierAdjustDirectionTheyOwe === «نسالوه»
+        apps/web/src/lib/i18n.ts:996 = "نسالوه"
+PASS  3a. the WE_OWE hint sits beside its label and agrees («نحن ندين له»)
+        i18n.ts:997 = "نحن ندين له — يزيد ما علينا" (label at 995)
+PASS  3b. the THEY_OWE hint sits beside its label and agrees («هو يدين لنا»)
+        i18n.ts:998 = "هو يدين لنا — ينقص ما علينا" (label at 996)
+FAIL  4a. every core.ts gloss pairs WE_OWE<->«يسالنا» and THEY_OWE<->«نسالوه»
+        core.ts:635 /** A manual adjustment's direction (issue 176). WE_OWE = «نسالوه» (the shop | core.ts:636 * owes the supplier more, +); THEY_OWE = «يسالنا» (the shop owes less, −). The | core.ts:1179 * supplier account, with no invoice. `direction` carries «نسالوه» (WE_OWE, +) | core.ts:1180 * or «يسالنا» (THEY_OWE, −). An optional `invoiceId` turns it into a
+FAIL  4b. the linked-reduction refusal names the word its own guard requires
+        guard requires THEY_OWE (true); refusal "a linked adjustment must be يسالنا (it reduces the invoice)" names ["يسالنا"]
+FAIL  5. supplierDirectionKey() is the one label map; no surface re-derives the pairing
+        map at apps/web/src/lib/supplier-entry-display.ts present=false; label-pairing literals in the tree: ["apps/web/src/lib/supplier-entry-display.ts"] (must be exactly 1); label-key literals outside the map: apps/web/src/components/parties/supplier-adjust-panel.tsx, apps/web/src/pages/supplier-opening-balance.tsx
+
+3 BULLET(S) BROKEN

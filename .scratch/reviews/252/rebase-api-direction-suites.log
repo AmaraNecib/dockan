@@ -1,0 +1,12 @@
+(pass) supplier account store > dedupes a linked adjustment by its key and never reduces the invoice twice (issue 181) [18.72ms]
+(pass) supplier account store > leaves dedup_key null for a non-adjustment entry (issue 181) [22.90ms]
+
+src\store\supplier-adjustment-migration.test.ts:
+(pass) v2 -> v4 supplier-adjustment migration (issues 176 + 181, blocking) > adds the direction + dedup_key columns, preserves rows, stamps 4, refuses a v2 build, and re-opens idempotently [1156.49ms]
+(pass) v3 -> v4 adjustment dedup_key migration (issue 181, blocking) > keys existing adjustments, exempts a legacy duplicate, creates the unique index, stamps 4, refuses a v3 build, and re-opens idempotently [763.50ms]
+(pass) v3 -> v4 adjustment dedup_key migration (issue 181, blocking) > self-heals a half-migrated database: column present, keys null, version 3 (issue 181) [713.91ms]
+
+ 316 pass
+ 0 fail
+ 1250 expect() calls
+Ran 316 tests across 4 files. [19.00s]

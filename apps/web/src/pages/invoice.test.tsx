@@ -22,6 +22,10 @@ let lastPayInput: { invoiceId: string; amount: number; method: string; note?: st
 let invoiceDetail: InvoiceDetail | undefined;
 /** this invoice's returns for the panel mounted inside the page */
 let invoiceReturns: ReturnDetail[] = [];
+/** #256 round 4 — the customer's unpaid invoices, as `debtsByParty` returns them */
+let partyDebtInvoices: Array<{ remainingAmount: number }> = [];
+/** the "server" side effect of a recorded payment, so a refresh can observe it */
+let applyPayment: ((amount: number) => void) | null = null;
 
 // The page renders router Links and (through ReturnsPanel) useParams; mirror the
 // seam the other page tests use so InvoicePage is testable without a router.
@@ -57,15 +61,25 @@ mock.module("@/lib/rpc", () => ({
       mutationOptions: () => ({ mutationFn: async () => ({}) }),
     },
     returnsPendingCount: { queryKey: () => ["returnsPendingCount"] },
+    debtsByParty: {
+      // #256 — the returns panel derives its refund default from the customer's
+      // tab; the input is part of the key so `invoicesPay` can invalidate it
+      queryOptions: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ({
+        queryKey: ["debtsByParty", input],
+        queryFn: async () => ({ items: partyDebtInvoices, total: partyDebtInvoices.length }),
+      }),
+      queryKey: ({ input }: { input: { kind: string; counterpartyId: string | null; counterpartyName: string | null } }) => ["debtsByParty", input],
+    },
     invoicesPay: {
       // merges the caller's { onSuccess, onError } like the real utils do
-      mutationOptions: (options?: { onSuccess?: () => void; onError?: (error: Error) => void }) => ({
+      mutationOptions: (options?: { onSuccess?: (updated: { remainingAmount?: number }) => void; onError?: (error: Error) => void }) => ({
         mutationKey: ["invoicesPay"],
         ...options,
         mutationFn: async (input: { invoiceId: string; amount: number; method: string; note?: string }) => {
           lastPayInput = input;
           if (failInvoicesPay) throw new Error("PAYMENT_EXCEEDS_REMAINING");
-          return { ok: true };
+          applyPayment?.(input.amount);
+          return { remainingAmount: invoiceDetail?.remainingAmount };
         },
       }),
     },
@@ -109,6 +123,8 @@ beforeEach(() => {
   lastPayInput = null;
   invoiceDetail = undefined;
   invoiceReturns = [];
+  partyDebtInvoices = [];
+  applyPayment = null;
   routeParams.invoiceId = "00000000-0000-4000-8000-000000000001";
 });
 
@@ -557,5 +573,53 @@ describe("invoice header reconciliation", () => {
   it("omits the credit line when no return cleared debt", async () => {
     await renderPage(makeInvoice(200));
     expect(host.querySelector('[data-testid="invoice-returns-credit"]')).toBeNull();
+  });
+});
+
+describe("InvoicePage pay-then-return (#256 round 4)", () => {
+  it("refreshes the party tab so the return preview matches the split the server saves", async () => {
+    // 1000 total, nothing paid: the customer's whole tab IS this invoice, and an
+    // 800 return hangs on the party read (800 > the 1000 debt is false, but
+    // 800 > the 600 debt left after a 400 payment is a SPLIT)
+    const line: InvoiceDetail["lines"][number] = {
+      id: "00000000-0000-4000-8000-0000000000c1",
+      invoiceId: "00000000-0000-4000-8000-000000000001",
+      itemId: "00000000-0000-4000-8000-0000000000c2",
+      description: "بطارية",
+      quantity: 1,
+      defaultUnitPrice: 800,
+      unitPrice: 800,
+      costAtSale: 400,
+      cogsExact: 400,
+      total: 800,
+      discountAllocated: 0,
+      netTotal: 800,
+    };
+    const invoice: InvoiceDetail = { ...makeInvoice(0), totalAmount: 1000, paidAmount: 0, remainingAmount: 1000, lines: [line] };
+    partyDebtInvoices = [{ remainingAmount: 1000 }];
+    applyPayment = (amount) => {
+      const remaining = invoiceDetail!.remainingAmount - amount;
+      invoiceDetail = { ...invoiceDetail!, paidAmount: invoiceDetail!.paidAmount + amount, remainingAmount: remaining };
+      partyDebtInvoices = [{ remainingAmount: remaining }];
+    };
+    await renderPage(invoice);
+    await flushAsync();
+
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="pmt-amount"]')!, "400");
+    submitForm(host.querySelector<HTMLFormElement>('[data-testid="pmt-form"]')!);
+    // wait until the page's detail refetch shows 600 — the same invalidation
+    // batch must also refresh the party tab the returns preview reads
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (host.querySelector('[data-testid="invoice-remaining"]')?.textContent?.includes("600") === true) break;
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+    }
+
+    typeInto(host.querySelector<HTMLInputElement>('[data-testid="returns-qty-بطارية"]')!, "1");
+    // with the tab refreshed to 600 the derived split is 600 debt / 200 cash;
+    // the stale 1000 tab would show 800 debt / 0 cash, hiding the cash payout
+    expect(host.querySelector('[data-testid="returns-debt-offset"]')?.textContent).toBe("600 دج");
+    expect(host.querySelector('[data-testid="returns-cash-now"]')?.textContent).toBe("200 دج");
   });
 });

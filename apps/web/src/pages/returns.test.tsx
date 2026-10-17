@@ -84,6 +84,7 @@ function makeReturn(status: ReturnDetail["status"], overrides: Partial<ReturnDet
     cashPaidOut: 1700,
     debtOffset: 0,
     debtApplied: 0,
+    spreadsAcrossInvoices: false,
     payoutMethod: "CASH",
     reason: null,
     status,

@@ -12,12 +12,21 @@
  */
 
 export {
+  compareInvoicesOldestFirst,
   computeReturnRefund,
+  derivedRefundSplit,
+  explicitRefundSplit,
   lineRefundAmount,
   refundUnitPriceFor,
+  returnSettlementDefault,
+  sortInvoicesOldestFirst,
+  type OldestFirstInvoiceKey,
   type ReturnLineRefund,
   type ReturnRefundComputation,
   type ReturnRefundLineInput,
+  type ReturnRefundSplit,
+  type ReturnSettlementDefault,
+  type ReturnSettlementDefaultInput,
 } from "@dokan/contracts";
 
 /** What a line can still return today: sold minus already returned, floored at 0. */

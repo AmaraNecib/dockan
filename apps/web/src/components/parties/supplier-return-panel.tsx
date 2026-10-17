@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -25,12 +25,17 @@ type ReturnMode = "INVOICE_LINKED" | "FREE_STANDING";
  */
 export function SupplierReturnPanel({
   supplierId,
+  balance,
   invoices,
   onDone,
   onWriteFailed,
   onCancel,
 }: {
   supplierId: string;
+  /** the signed account balance under the #260 convention: negative while the
+   * shop owes the supplier, positive when the supplier owes us. The default
+   * cash back is derived from it (#256). */
+  balance: number;
   invoices: readonly Invoice[];
   onDone: () => void;
   /** #174 round 1 — a failed (possibly lost-response) call may still have
@@ -47,6 +52,8 @@ export function SupplierReturnPanel({
   const [quantity, setQuantity] = useState("");
   const [amount, setAmount] = useState("");
   const [cashBack, setCashBack] = useState("");
+  /** #256 — once the owner types a cash back, that number is what they mean */
+  const cashBackTouched = useRef(false);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -75,6 +82,13 @@ export function SupplierReturnPanel({
   const invoiceReady = "lines" in parsedQuantities;
   const parsedCash = parseCashBackDraft(cashBack);
   const cashInvalid = parsedCash === null;
+  // #256 — the owner's rule, visible before saving: while the shop owes the
+  // supplier the return applies against that debt (no cash back); with nothing
+  // owed either way the default is to get the money back as cash. An untouched
+  // field submits no cashBack at all, so the SERVER derives it from the ledger
+  // it reads inside the write transaction. #260: the debt we owe is a NEGATIVE
+  // balance, so the same polarity the server derives applies here.
+  const defaultCashBack = balance < 0 ? 0 : value;
   // a nonempty draft that is not a positive whole number must be rejected, not
   // silently dropped: otherwise the saved return differs from the preview
   const quantityDraftInvalid = !invoiceReady && Object.values(quantities).some((draft) => !draftBlank(draft));
@@ -102,7 +116,7 @@ export function SupplierReturnPanel({
           invoiceId,
           lines: parsedQuantities.lines,
           reason: reason.trim() === "" ? undefined : reason.trim(),
-          cashBack: parsedCash > 0 ? parsedCash : undefined,
+          cashBack: cashBackTouched.current ? parsedCash : undefined,
         });
       } else {
         const freeQuantity = parseWholeAmount(quantity);
@@ -115,7 +129,7 @@ export function SupplierReturnPanel({
           quantity: freeQuantity,
           amount: value,
           reason: reason.trim() === "" ? undefined : reason.trim(),
-          cashBack: parsedCash > 0 ? parsedCash : undefined,
+          cashBack: cashBackTouched.current ? parsedCash : undefined,
         });
       }
       await refresh();
@@ -228,7 +242,17 @@ export function SupplierReturnPanel({
       <div className="grid grid-cols-2 gap-3">
         <label className="grid gap-1 text-sm">
           {t("supplierReturnCashBack")}
-          <input className="rounded border bg-background px-2 py-1" inputMode="numeric" value={cashBack} onChange={(event) => setCashBack(event.target.value)} disabled={create.isPending || submitting} data-testid="supplier-return-cash" />
+          <input
+            className="rounded border bg-background px-2 py-1"
+            inputMode="numeric"
+            value={cashBack}
+            onChange={(event) => {
+              cashBackTouched.current = true;
+              setCashBack(event.target.value);
+            }}
+            disabled={create.isPending || submitting}
+            data-testid="supplier-return-cash"
+          />
         </label>
         <label className="grid gap-1 text-sm">
           {t("supplierReturnReason")}
@@ -239,6 +263,14 @@ export function SupplierReturnPanel({
       <p className="text-sm text-muted-foreground" data-testid="supplier-return-value">
         {t("returnsValue")}: <Amount value={value} />
       </p>
+
+      {!cashBackTouched.current && (balance < 0 || value > 0) && (
+        <p className="text-xs text-muted-foreground" data-testid="supplier-return-cash-default">
+          {defaultCashBack === 0
+            ? t("supplierReturnDefaultDebt")
+            : t("supplierReturnDefaultCash", { amount: defaultCashBack })}
+        </p>
+      )}
 
       {error !== null && (
         <p role="alert" className="rounded border border-destructive/20 bg-destructive/10 p-2 text-sm text-destructive" data-testid="supplier-return-error">{error}</p>

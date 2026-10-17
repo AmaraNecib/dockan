@@ -11,7 +11,7 @@ import "@/lib/i18n";
 
 import type { Invoice, SupplierReturn } from "@dokan/contracts";
 
-const submitted: unknown[] = [];
+const submitted: SupplierReturn[] = [];
 const doneCalls: string[] = [];
 mock.module("@/lib/rpc", () => ({
   orpc: {
@@ -92,13 +92,13 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-async function render() {
+async function render(balance = 0) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   root = createRoot(host);
   act(() => {
     root!.render(
       <QueryClientProvider client={client}>
-        <SupplierReturnPanel supplierId="sup-1" invoices={[invoice]} onDone={() => doneCalls.push("done")} onCancel={() => undefined} />
+        <SupplierReturnPanel supplierId="sup-1" balance={balance} invoices={[invoice]} onDone={() => doneCalls.push("done")} onCancel={() => undefined} />
       </QueryClientProvider>,
     );
   });
@@ -310,5 +310,47 @@ describe("SupplierReturnPanel draft validation (findings 3 and 8)", () => {
     await openSelect("supplier-return-mode", "بدون فاتورة");
     typeInto("supplier-return-cash", "1.5");
     expect(host.querySelector('[data-testid="supplier-return-draft-error"]')).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("supplier return default refund method (#256)", () => {
+  const defaultNote = () => host.querySelector('[data-testid="supplier-return-cash-default"]')?.textContent ?? "";
+
+  it("says the default applies against the debt while the shop owes the supplier", async () => {
+    await render(-1_500);
+    typeInto("supplier-return-qty-l2", "1");
+    // #260 — a NEGATIVE balance means the SHOP owes the supplier, so the copy
+    // must name the debt on OUR side (finding #256 round 3: «لنا عند المورّد»
+    // described money the supplier owes us — the opposite direction of the
+    // money that moves)
+    expect(defaultNote()).toContain("يُخصم من الدين");
+    expect(defaultNote()).toContain("الدين الذي علينا للمورّد");
+    expect(defaultNote()).not.toContain("لنا عند المورّد");
+    // untouched: no cashBack is sent, so the server derives it from the ledger
+    await submit();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.cashBack).toBeUndefined();
+  });
+
+  it("says the default comes back as cash when nothing is owed either way", async () => {
+    await render(0);
+    typeInto("supplier-return-qty-l2", "1");
+    expect(previewAmount()).toBe(400);
+    // the note names the amount the server will hand back by default
+    expect(defaultNote()).toContain("استرجاع 400 دج نقداً");
+    await submit();
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.cashBack).toBeUndefined();
+  });
+
+  it("keeps an explicit zero cash-back as the owner's own answer", async () => {
+    await render(0);
+    typeInto("supplier-return-qty-l2", "1");
+    typeInto("supplier-return-cash", "0");
+    // the hint steps aside once the owner names the amount
+    expect(host.querySelector('[data-testid="supplier-return-cash-default"]')).toBeNull();
+    await submit();
+    expect(submitted[0]?.cashBack).toBe(0);
   });
 });

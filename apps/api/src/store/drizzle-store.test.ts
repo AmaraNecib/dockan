@@ -7,7 +7,7 @@ import path from "node:path";
 import { createAppConfig } from "../config";
 import { openConnection, type Connection } from "../db/connection";
 import { localDateTime, localDate } from "../lib/logger";
-import { createDrizzleStore, seedExpenseCategories } from "./drizzle-store";
+import { createDrizzleStore, backfillReturnDebtApplications, seedExpenseCategories } from "./drizzle-store";
 import type { StorePort } from "./port";
 
 // The whole file is store-seam work against a real SQLite database, including
@@ -459,6 +459,72 @@ describe("barcodes (ticket 28)", () => {
           Bun.sleepSync(50);
         }
       }
+    }
+  });
+
+  it("migrates a v5 returns table: adds spreads_across_invoices and defaults every legacy row to own-invoice-only", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-returns-spread-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "legacy.db") }),
+    );
+    try {
+      // the version-5 shape: debt_applied exists (round 2's column) and the
+      // allocation rule does not. EVERY row in it was written before the
+      // tab-wide default existed, so the new column must read 0.
+      legacy.raw.exec(
+        "CREATE TABLE invoices (id TEXT PRIMARY KEY, invoice_number TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, counterparty_id TEXT, counterparty_name TEXT, invoice_date TEXT NOT NULL, total_amount INTEGER NOT NULL, paid_amount INTEGER NOT NULL, remaining_amount INTEGER NOT NULL, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "CREATE TABLE returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL, refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+      );
+      legacy.raw.exec(
+        "INSERT INTO invoices VALUES ('legacy-inv', 'INV-SPREAD', 'SALE', NULL, 'زبون', '2026-01-01', 1000, 600, 400, NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')",
+      );
+      legacy.raw.exec(
+        "INSERT INTO returns VALUES ('legacy-ret', 'RTN-SPREAD', 'legacy-inv', 400, 0, 400, 0, 'CASH', NULL, 'PENDING_REVIEW', '2026-01-01T10:00:00', '2026-01-01T10:00:00', '2026-01-01T10:00:00')",
+      );
+
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+
+      // SAFETY: PRAGMA table_info returns rows shaped { name, type, ... }
+      const cols = legacy.raw.query("PRAGMA table_info(returns)").all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toContain("spreads_across_invoices");
+      // the legacy promise was made under the own-invoice-only rule, so the
+      // DEFAULT must not turn it into a tab-wide one — that would let an old
+      // promise relieve invoices the owner never named
+      expect((await legacyStore.getReturnDetail("legacy-ret"))?.spreadsAcrossInvoices).toBe(false);
+
+      // the DEFAULT is what an OLDER build (one that does not know the column)
+      // writes on a v6 database: own-invoice-only, the rule it honoured
+      legacy.raw.exec(
+        "INSERT INTO returns (id, return_number, invoice_id, refund_amount, cash_paid_out, debt_offset, debt_applied, payout_method, status, occurred_at, created_at, updated_at) VALUES ('old-build-ret', 'RTN-OLDBUILD', 'legacy-inv', 100, 100, 0, 0, 'CASH', 'PENDING_REVIEW', '2026-01-02T10:00:00', '2026-01-02T10:00:00', '2026-01-02T10:00:00')",
+      );
+      expect((await legacyStore.getReturnDetail("old-build-ret"))?.spreadsAcrossInvoices).toBe(false);
+
+      // and a row THIS build records keeps what the caller asked for, so the
+      // column is not merely a constant
+      const scripted = await legacyStore.insertReturn({
+        returnNumber: "RTN-SPREAD-2",
+        invoiceId: "legacy-inv",
+        refundAmount: 100,
+        cashPaidOut: 0,
+        debtOffset: 100,
+        spreadsAcrossInvoices: true,
+        payoutMethod: "CASH",
+        reason: null,
+        status: "PENDING_REVIEW",
+        occurredAt: "2026-01-03T10:00:00",
+      });
+      expect((await legacyStore.getReturnDetail(scripted.id))?.spreadsAcrossInvoices).toBe(true);
+
+      // re-running setup is idempotent (the ALTER does not fire again)
+      await legacyStore.setup();
+      expect((await legacyStore.getReturnDetail("legacy-ret"))?.spreadsAcrossInvoices).toBe(false);
+      expect((await legacyStore.getReturnDetail(scripted.id))?.spreadsAcrossInvoices).toBe(true);
+    } finally {
+      legacy.close();
+      removeTempDirRetry(legacyDir);
     }
   });
 
@@ -2008,6 +2074,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 900,
       cashPaidOut: 900,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: "الزبون غير راضٍ",
       status: "PENDING_REVIEW",
@@ -2044,6 +2111,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 100,
       cashPaidOut: 100,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "PENDING_REVIEW",
@@ -2064,6 +2132,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 200,
       cashPaidOut: 200,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "PENDING_REVIEW",
@@ -2090,6 +2159,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 300,
       cashPaidOut: 300,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "PENDING_REVIEW",
@@ -2109,6 +2179,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 500,
       cashPaidOut: 500,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "PENDING_REVIEW",
@@ -2222,6 +2293,7 @@ describe("returns seam (cash refunds + review marks)", () => {
       refundAmount: 400,
       cashPaidOut: 400,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: "الزبون بدل رأيه",
       status: "PENDING_REVIEW",
@@ -2259,6 +2331,7 @@ describe("getInvoiceDetail return credit", () => {
       refundAmount: 300,
       cashPaidOut: 0,
       debtOffset: 300,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "ACCEPTED",
@@ -2276,6 +2349,7 @@ describe("getInvoiceDetail return credit", () => {
       refundAmount: 300,
       cashPaidOut: 0,
       debtOffset: 300,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "PENDING_REVIEW",
@@ -2290,6 +2364,7 @@ describe("getInvoiceDetail return credit", () => {
       refundAmount: 500,
       cashPaidOut: 500,
       debtOffset: 0,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "REJECTED_DAMAGED",
@@ -2304,6 +2379,7 @@ describe("getInvoiceDetail return credit", () => {
       refundAmount: 200,
       cashPaidOut: 0,
       debtOffset: 200,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "ACCEPTED",
@@ -2342,6 +2418,7 @@ describe("getInvoiceDetail return credit", () => {
       refundAmount: 400,
       cashPaidOut: 0,
       debtOffset: 400,
+      spreadsAcrossInvoices: false,
       payoutMethod: "CASH",
       reason: null,
       status: "ACCEPTED",
@@ -2371,5 +2448,132 @@ describe("getInvoiceDetail return credit", () => {
       notes: null,
     });
     expect((await store.getInvoiceDetail(invoice.id))?.returnCreditAmount).toBe(0);
+  });
+
+  // #256 round 2 — one accepted return can relieve SEVERAL invoices (the
+  // approved default takes the refund off the party's whole tab), so the credit
+  // is no longer `SUM(returns.debt_applied)` on one invoice: it is attributed
+  // per invoice, and the legacy fallback must stay out of a return that HAS
+  // attribution rows or the origin invoice would claim the full promise twice.
+  it("attributes one accepted offset to each invoice it actually relieved (#256 round 2)", async () => {
+    const base = {
+      kind: "SALE" as const,
+      counterpartyId: null,
+      counterpartyName: "زبون توزيع",
+      invoiceDate: localDate(),
+      subtotalAmount: 0,
+      discountType: null,
+      discountValue: null,
+      discountAmount: 0,
+      totalAmount: 500,
+      paidAmount: 0,
+      remainingAmount: 500,
+      notes: null,
+    };
+    const older = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-older` });
+    const newer = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-newer` });
+    const origin = await store.insertInvoice({ ...base, invoiceNumber: `INV-RC-${stamp()}-origin`, paidAmount: 500, remainingAmount: 0 });
+    const record = await store.insertReturn({
+      returnNumber: `RTN-RC-${stamp()}-split`,
+      invoiceId: origin.id,
+      refundAmount: 300,
+      cashPaidOut: 0,
+      debtOffset: 300,
+      spreadsAcrossInvoices: false,
+      payoutMethod: "CASH",
+      reason: null,
+      status: "ACCEPTED",
+      occurredAt: localDateTime(),
+    });
+    // the accepted return relieved 200 on the older invoice and 100 on the
+    // newer one — nothing on the invoice the goods came from
+    expect(await store.applyDebtOffsetToInvoice(older.id, 200)).toBe(true);
+    expect(await store.applyDebtOffsetToInvoice(newer.id, 100)).toBe(true);
+    await store.insertReturnDebtApplication({ returnId: record.id, invoiceId: older.id, amount: 200 });
+    await store.insertReturnDebtApplication({ returnId: record.id, invoiceId: newer.id, amount: 100 });
+    await store.setDebtApplied(record.id, 300);
+
+    const olderDetail = await store.getInvoiceDetail(older.id);
+    const newerDetail = await store.getInvoiceDetail(newer.id);
+    const originDetail = await store.getInvoiceDetail(origin.id);
+    expect(olderDetail?.returnCreditAmount).toBe(200);
+    expect(newerDetail?.returnCreditAmount).toBe(100);
+    // the origin invoice must NOT fall back to the return's full debt_applied
+    expect(originDetail?.returnCreditAmount).toBe(0);
+    expect(olderDetail!.totalAmount - olderDetail!.paidAmount - olderDetail!.returnCreditAmount).toBe(olderDetail!.remainingAmount);
+    expect(newerDetail!.totalAmount - newerDetail!.paidAmount - newerDetail!.returnCreditAmount).toBe(newerDetail!.remainingAmount);
+    expect(originDetail!.totalAmount - originDetail!.paidAmount - originDetail!.returnCreditAmount).toBe(originDetail!.remainingAmount);
+  });
+
+  it("backfills attribution for an already-applied return without changing the reported credit (#256 round 2)", async () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "dokan-return-attr-"));
+    const legacy = openConnection(
+      createAppConfig({ DOKAN_DATA_DIR: legacyDir, DOKAN_DB_PATH: path.join(legacyDir, "attr.db") }),
+    );
+    try {
+      const legacyStore = createDrizzleStore(legacy);
+      await legacyStore.setup();
+      // a v4-shaped database: the return's offset was applied to its own
+      // invoice, and NO attribution row was ever written (the round-1 world)
+      const invoice = await legacyStore.insertInvoice({
+        invoiceNumber: `INV-ATTR-${stamp()}`,
+        kind: "SALE",
+        counterpartyId: null,
+        counterpartyName: null,
+        invoiceDate: localDate(),
+        subtotalAmount: 0,
+        discountType: null,
+        discountValue: null,
+        discountAmount: 0,
+        totalAmount: 1_000,
+        paidAmount: 600,
+        remainingAmount: 400,
+        notes: null,
+      });
+      const record = await legacyStore.insertReturn({
+        returnNumber: `RTN-ATTR-${stamp()}`,
+        invoiceId: invoice.id,
+        refundAmount: 400,
+        cashPaidOut: 0,
+        debtOffset: 400,
+        spreadsAcrossInvoices: false,
+        payoutMethod: "CASH",
+        reason: null,
+        status: "ACCEPTED",
+        occurredAt: localDateTime(),
+      });
+      await legacyStore.setDebtApplied(record.id, 400);
+      expect(await legacyStore.applyDebtOffsetToInvoice(invoice.id, 400)).toBe(true);
+
+      // PRE-backfill read: no attribution rows exist, so the legacy fallback
+      // (own invoice's debt_applied) answers it
+      const before = await legacyStore.getInvoiceDetail(invoice.id);
+      expect(before?.returnCreditAmount).toBe(400);
+
+      // Now reproduce the actual version-4 shape: the table did not exist when
+      // those rows were written, and the marker was never written either — so
+      // dropping both is what the next boot of THIS build meets
+      legacy.raw.exec("DROP TABLE return_debt_applications");
+      legacy.raw.exec("DELETE FROM settings WHERE key = 'migration.returnDebtApplicationsV1'");
+      // SAFETY: a literal COUNT(*) yields one row with an integer column
+      const rows = (r: Connection) => (r.raw.query("SELECT COUNT(*) AS count FROM return_debt_applications").get() as { count: number }).count;
+      await legacyStore.setup();
+      const after = await legacyStore.getInvoiceDetail(invoice.id);
+      // EQUIVALENCE: the two attribution mechanisms report the same money
+      expect(after?.returnCreditAmount).toBe(before?.returnCreditAmount);
+      expect(after?.remainingAmount).toBe(before?.remainingAmount);
+      expect(rows(legacy)).toBe(1);
+      // idempotent twice over: the marker skips a second run…
+      await legacyStore.setup();
+      expect(rows(legacy)).toBe(1);
+      // …and with the marker LOST, the NOT EXISTS guard still refuses to
+      // double-count the same return
+      legacy.raw.exec("DELETE FROM settings WHERE key = 'migration.returnDebtApplicationsV1'");
+      backfillReturnDebtApplications(legacy);
+      expect(rows(legacy)).toBe(1);
+    } finally {
+      legacy.close();
+      removeTempDirRetry(legacyDir);
+    }
   });
 });

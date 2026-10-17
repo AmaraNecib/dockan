@@ -167,6 +167,11 @@ export const returns = sqliteTable("returns", {
   /** portion of debtOffset already applied to the invoice; new returns start
    * at 0 and gain their applied portion when the owner accepts (#68). */
   debtApplied: integer("debt_applied").notNull().default(0),
+  /** 1 when acceptance may relieve invoices OTHER than this return's own —
+   * only a return recorded under the tab-wide default (#256 round 3). An
+   * explicit choice, and every row written before this column existed (hence
+   * the 0 default), is own-invoice-only: its excess stays unapplied. */
+  spreadsAcrossInvoices: integer("spreads_across_invoices", { mode: "boolean" }).notNull().default(false),
   /** CASH today; credit / debt-credit arrive later without a migration */
   payoutMethod: text("payout_method", { enum: returnPayoutMethods }).notNull(),
   /** Arabic owner note; rejection reasons ride here too */
@@ -195,6 +200,33 @@ export const returnLines = sqliteTable("return_lines", {
   refundUnitPrice: integer("refund_unit_price").notNull(),
   /** quantity × refundUnitPrice, whole DZD */
   refundAmount: integer("refund_amount").notNull(),
+});
+
+/**
+ * Which invoice a return's promised debt offset actually relieved (#256
+ * round 2) — one row per invoice, written when the owner ACCEPTS the return,
+ * in the same transaction as the offset itself.
+ *
+ * Round 1 could assume the offset only ever touched the return's own invoice,
+ * so the invoice header derived its credit with
+ * `SUM(returns.debt_applied) WHERE invoice_id = ?`. The approved rule takes
+ * the refund off the party's whole tab "in this invoice or in another
+ * invoice", so one return can now relieve several invoices and the header
+ * needs the per-invoice attribution: `total − paid − returnCredit = remaining`
+ * must still hold on EVERY invoice that moved. Append-only, like every other
+ * money fact here.
+ */
+export const returnDebtApplications = sqliteTable("return_debt_applications", {
+  id: text("id").primaryKey(),
+  returnId: text("return_id")
+    .notNull()
+    .references(() => returns.id),
+  /** the invoice whose remaining debt this portion relieved */
+  invoiceId: text("invoice_id")
+    .notNull()
+    .references(() => invoices.id),
+  amount: integer("amount").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 /** Append-only stock ledger (ticket 27). Rows are raw facts, never rewritten.
@@ -421,11 +453,14 @@ export const SCHEMA_DDL: readonly string[] = [
   // table definition for why this is not a re-key of the singleton above.
   `CREATE TABLE IF NOT EXISTS invoice_number_counters (kind TEXT PRIMARY KEY, next_number INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_number_sequence (id INTEGER PRIMARY KEY CHECK (id = 1), next_number INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, return_number TEXT NOT NULL UNIQUE, invoice_id TEXT NOT NULL REFERENCES invoices(id), refund_amount INTEGER NOT NULL, cash_paid_out INTEGER NOT NULL, debt_offset INTEGER NOT NULL, debt_applied INTEGER NOT NULL DEFAULT 0, spreads_across_invoices INTEGER NOT NULL DEFAULT 0, payout_method TEXT NOT NULL, reason TEXT, status TEXT NOT NULL, occurred_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS return_lines (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_line_id TEXT NOT NULL REFERENCES invoice_lines(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, refund_unit_price INTEGER NOT NULL, refund_amount INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_returns_invoice ON returns(invoice_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_return ON return_lines(return_id)`,
   `CREATE INDEX IF NOT EXISTS idx_return_lines_invoice_line ON return_lines(invoice_line_id)`,
+  `CREATE TABLE IF NOT EXISTS return_debt_applications (id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES returns(id), invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, created_at TEXT NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_invoice ON return_debt_applications(invoice_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_return_debt_applications_return ON return_debt_applications(return_id)`,
   `CREATE TABLE IF NOT EXISTS invoice_lines (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), item_id TEXT REFERENCES items(id), description TEXT NOT NULL, quantity INTEGER NOT NULL, default_unit_price INTEGER NOT NULL DEFAULT 0, unit_price INTEGER NOT NULL, cost_at_sale INTEGER NOT NULL, cogs_exact INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL, discount_allocated INTEGER NOT NULL DEFAULT 0, net_total INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE IF NOT EXISTS payments (id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id), amount INTEGER NOT NULL, method TEXT NOT NULL, note TEXT, paid_at TEXT NOT NULL, created_at TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, at TEXT NOT NULL, type TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT)`,

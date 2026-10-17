@@ -3,10 +3,14 @@ import { describe, expect, it } from "bun:test";
 import {
   bookSaleLineForReturns,
   computeReturnRefund,
+  derivedRefundSplit,
+  explicitRefundSplit,
   lineRefundAmount,
   refundUnitPriceFor,
   remainingReturnable,
   returnCapViolation,
+  returnSettlementDefault,
+  sortInvoicesOldestFirst,
 } from "./return-calculations";
 
 describe("refundUnitPriceFor (whole-DZD effective per-unit refund)", () => {
@@ -263,5 +267,134 @@ describe("bookSaleLineForReturns (profit report per-line booking)", () => {
     expect(booked.bookedQty).toBe(3);
     expect(booked.netTotal).toBe(600);
     expect(booked.cogsExact).toBe(420);
+  });
+});
+
+/**
+ * #256 round 2 — the APPROVED refund-method default. The owner answered both
+ * open questions (`.scratch/notes/decisions-money-ar.html`):
+ *
+ * 1. a return LARGER than the debt is a SPLIT — the whole tab goes to zero and
+ *    the remainder comes back as cash ("we take it from the debt and we will
+ *    give him back 1,000 as cash");
+ * 2. debt on ANOTHER invoice is no longer a refusal — the return is taken off
+ *    the party's tab, allocated across the open invoices oldest-first.
+ *
+ * Cash is the default only when the party owes nothing at all.
+ */
+describe("returnSettlementDefault (#256 round 2)", () => {
+  it("defaults to cash when the party has no debt anywhere", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: 0 })).toEqual({ method: "CASH" });
+  });
+
+  it("defaults to debt when the debt covers the whole return", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 500, partyDebt: 500 })).toEqual({ method: "DEBT" });
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 2_000, partyDebt: 5_000 })).toEqual({ method: "DEBT" });
+  });
+
+  it("defaults to debt when the party's tab covers a return this invoice cannot", () => {
+    // answer 2: the debt lives on another invoice — still all debt, no cash
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: 1_000 })).toEqual({ method: "DEBT" });
+    expect(returnSettlementDefault({ returnValue: 1_000, invoiceDebt: 0, partyDebt: 1_000 })).toEqual({ method: "DEBT" });
+  });
+
+  it("splits when the return exceeds the whole tab — debt to zero, remainder cash", () => {
+    // answer 1, the owner's own numbers: debt 4 000, return 5 000 →
+    // debt 4 000 relieved + 1 000 cash
+    expect(returnSettlementDefault({ returnValue: 5_000, invoiceDebt: 4_000, partyDebt: 4_000 })).toEqual({
+      method: "SPLIT",
+      debtOffset: 4_000,
+      cashPaidOut: 1_000,
+    });
+    // the same split when the tab is spread over several invoices
+    expect(returnSettlementDefault({ returnValue: 5_000, invoiceDebt: 1_000, partyDebt: 4_000 })).toEqual({
+      method: "SPLIT",
+      debtOffset: 4_000,
+      cashPaidOut: 1_000,
+    });
+  });
+
+  it("stays unresolved while the party debt read has not landed", () => {
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 0, partyDebt: null })).toEqual({ method: "UNRESOLVED" });
+    // …unless this invoice's own debt already answers it
+    expect(returnSettlementDefault({ returnValue: 500, invoiceDebt: 500, partyDebt: null })).toEqual({ method: "DEBT" });
+  });
+
+  it("never blocks a free (zero-value) return — there is no split to guess", () => {
+    // a fully-discounted line refunds 0: the method is moot, so the default
+    // must not block the record (the api writes 0/0 either way)
+    expect(returnSettlementDefault({ returnValue: 0, invoiceDebt: 0, partyDebt: 0 })).toEqual({ method: "DEBT" });
+    expect(returnSettlementDefault({ returnValue: 0, invoiceDebt: 0, partyDebt: 400 })).toEqual({ method: "DEBT" });
+  });
+});
+
+/**
+ * The two money numbers every caller writes: the derived default's split and
+ * the owner's explicit choice. ONE implementation each, so the api's write and
+ * the web's preview cannot drift (the round-1 preview restated the explicit
+ * formula by hand).
+ */
+describe("refund split arithmetic (#256)", () => {
+  it("turns each derived method into the numbers the record stores", () => {
+    expect(derivedRefundSplit({ method: "DEBT" }, 500)).toEqual({ debtOffset: 500, cashPaidOut: 0 });
+    expect(derivedRefundSplit({ method: "CASH" }, 500)).toEqual({ debtOffset: 0, cashPaidOut: 500 });
+    expect(derivedRefundSplit({ method: "SPLIT", debtOffset: 4_000, cashPaidOut: 1_000 }, 5_000)).toEqual({
+      debtOffset: 4_000,
+      cashPaidOut: 1_000,
+    });
+    // the party read has not landed: the web previews nothing, the api never
+    // reaches this state (its debt read is synchronous)
+    expect(derivedRefundSplit({ method: "UNRESOLVED" }, 500)).toBeNull();
+  });
+
+  it("caps an explicit all-debt request at this invoice's debt (#162)", () => {
+    // 500 return, 200 cash asked, 900 debt → 300 to the debt, 200 cash
+    expect(explicitRefundSplit({ returnValue: 500, cashPaidOut: 200, invoiceDebt: 900 })).toEqual({ debtOffset: 300, cashPaidOut: 200 });
+    // all debt beyond the remaining swings back to cash, visibly (the cap note)
+    expect(explicitRefundSplit({ returnValue: 500, cashPaidOut: 0, invoiceDebt: 300 })).toEqual({ debtOffset: 300, cashPaidOut: 200 });
+    // no debt here at all → the whole explicit "all debt" is cash
+    expect(explicitRefundSplit({ returnValue: 500, cashPaidOut: 0, invoiceDebt: 0 })).toEqual({ debtOffset: 0, cashPaidOut: 500 });
+    // a full cash request never touches the debt
+    expect(explicitRefundSplit({ returnValue: 500, cashPaidOut: 500, invoiceDebt: 900 })).toEqual({ debtOffset: 0, cashPaidOut: 500 });
+  });
+});
+
+/**
+ * The allocation order the payment panel already uses (#164): oldest first,
+ * with the invoice number's numeric sequence as the tie-break — createdAt has
+ * second precision, so two invoices in the same second would otherwise sort by
+ * a random UUID and spread the money differently on different runs.
+ */
+describe("sortInvoicesOldestFirst (#164/#256)", () => {
+  const invoice = (over: Partial<{ id: string; invoiceDate: string; createdAt: string; invoiceNumber: string; remainingAmount: number }>) => ({
+    id: "id",
+    invoiceDate: "2026-10-01",
+    createdAt: "2026-10-01T10:00:00",
+    invoiceNumber: "INV-0001",
+    remainingAmount: 100,
+    ...over,
+  });
+
+  it("orders by date, then creation, then the number's numeric sequence", () => {
+    // INV-9999 vs INV-10000 is the only pair that separates a NUMERIC compare
+    // from a lexical one: a string compare sorts "INV-10000" FIRST ("1" < "9"),
+    // so a comparator that drifted to strings fails here. The original fixture
+    // (INV-0009 / INV-0010) agrees in both orders, which left this assertion
+    // green against exactly the mistake its comment names.
+    const older = invoice({ id: "a", invoiceDate: "2026-09-30", invoiceNumber: "INV-9998" });
+    const sameSecond9999 = invoice({ id: "b", invoiceNumber: "INV-9999" });
+    const sameSecond10000 = invoice({ id: "c", invoiceNumber: "INV-10000" });
+    const expected = [older, sameSecond9999, sameSecond10000].map((row) => row.id);
+    expect(sortInvoicesOldestFirst([sameSecond10000, sameSecond9999, older]).map((row) => row.id)).toEqual(expected);
+    // a lexical compare would put INV-10000 before INV-9999
+    expect(sortInvoicesOldestFirst([sameSecond10000, sameSecond9999]).map((row) => row.id)).toEqual(["b", "c"]);
+  });
+
+  it("does not mutate the array it was handed", () => {
+    const newest = invoice({ id: "new", invoiceDate: "2026-10-02" });
+    const oldest = invoice({ id: "old", invoiceDate: "2026-09-01" });
+    const input = [newest, oldest];
+    expect(sortInvoicesOldestFirst(input).map((row) => row.id)).toEqual(["old", "new"]);
+    expect(input.map((row) => row.id)).toEqual(["new", "old"]);
   });
 });

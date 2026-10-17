@@ -721,11 +721,28 @@ export const returnLineSchema = z.object({
  * rejecting (damaged) removes the quantity as a MANUAL_ADJUSTMENT outflow.
  *
  * Settlement (owner-approved split): the return value is refundAmount, and
- * the owner chooses how it is settled — cashPaidOut (cash handed back now)
- * plus debtOffset (deducted from the invoice's remaining debt). The two ALWAYS
- * sum to the return value; the debt portion never exceeds the invoice's
- * remaining debt (any excess flows to cash). Money on the invoice is only
- * ever reduced via the debt offset; the cash side is a cash record here.
+ * cashPaidOut (cash handed back now) plus debtOffset (relieved from the
+ * party's debt on acceptance) ALWAYS sum to it. The cap depends on how the
+ * split was chosen: an EXPLICIT cashPaidOut never pushes the debt past this
+ * invoice's remaining debt (any excess flows to cash), while an OMITTED one
+ * derives the split from the party's whole tab, so the debt may reach other
+ * invoices (see `spreadsAcrossInvoices`). Money on the invoice is only ever
+ * reduced via the debt offset; the cash side is a cash record here.
+ *
+ * #256 round 3 — `spreadsAcrossInvoices` records WHICH rule the debt portion
+ * was promised under, because the two rules cannot be told apart from the
+ * numbers alone: the approved DEFAULT takes the refund off the party's whole
+ * tab (acceptance relieves the return's own invoice first, then the party's
+ * other open invoices oldest-first), while the owner's EXPLICIT choice names
+ * this invoice and must never reach another one. A promise recorded under the
+ * explicit cap can outlive that cap (a payment while the return is pending
+ * shrinks the invoice's debt below the promise), and there the excess stays
+ * UNAPPLIED — the pre-#256 behaviour — instead of spilling onto an invoice the
+ * owner never named. A row written before the column existed reads 0
+ * (own-invoice-only): exact for every pre-#256 row, and conservative for the
+ * only other source of such rows — a v5 database from this PR's own round-2
+ * build — where a tab-wide promise's excess then stays owed rather than being
+ * relieved somewhere the owner never named.
  */
 export const returnSchema = z.object({
   id: idSchema,
@@ -740,7 +757,8 @@ export const returnSchema = z.object({
   refundAmount: dinarsSchema,
   /** cash handed back to the customer now (whole DZD) */
   cashPaidOut: dinarsSchema,
-  /** deducted from the invoice's remaining debt (whole DZD) */
+  /** deducted from the party's debt when acceptance settles it (whole DZD);
+   * `spreadsAcrossInvoices` records whether it may reach other invoices */
   debtOffset: dinarsSchema,
   /** portion of the recorded debtOffset already applied to the invoice
    * (whole DZD). Pre-#68 returns were applied in full at creation; #68 defers
@@ -748,6 +766,9 @@ export const returnSchema = z.object({
    * accepts. Applying never exceeds debtOffset, and the ledger reads this to
    * avoid double-relief when a legacy and a new return mix. */
   debtApplied: dinarsSchema,
+  /** whether acceptance may relieve invoices OTHER than this return's own —
+   * true only for a return recorded under the tab-wide default (#256 round 3) */
+  spreadsAcrossInvoices: z.boolean(),
   payoutMethod: returnPayoutMethodSchema,
   /** Arabic owner note; rejection reasons ride here too */
   reason: z.string().max(500).nullable(),
@@ -1322,10 +1343,14 @@ export const returnsCreateInputSchema = z.object({
   reason: z.string().trim().max(500).nullable().optional(),
   /** cash today; credit / debt-credit arrive later without a migration */
   payoutMethod: returnPayoutMethodSchema.optional(),
-  /** how the owner settles the return: cash handed back now (defaults to the
-   * whole return value — all cash). The debt portion is refundTotal minus
-   * this, capped at the invoice's remaining debt; any excess flows back to
-   * cash, so the split always sums to the return value. */
+  /** How the owner settles the return — the cash handed back NOW. When this
+   * field is OMITTED the server applies the approved default against the
+   * party's WHOLE tab: the refund first reduces what the party owes (this
+   * invoice, then other open invoices oldest-first) and comes back as cash
+   * only for what the tab cannot absorb — omitting it is NOT "all cash".
+   * Send an explicit value to choose instead: the debt then takes the rest,
+   * capped at THIS invoice's remaining debt, with any excess flowing back to
+   * cash. Either way cashPaidOut + debtOffset = the return value. */
   cashPaidOut: dinarsSchema.optional(),
 });
 

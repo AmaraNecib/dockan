@@ -71,6 +71,12 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 
 ## Review invariants
 
+- **Evidence is always required; only its form changes.** A visual change needs
+  before/after images and a clip at real user pace; everything else needs the
+  measurements (the failing-first run with the failing assertion named, the
+  ablation proof the guard bites, the before/after numbers). The rule, and the
+  four-part merge gate it feeds, is written down in
+  [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md).
 - **Verify a finding before fixing it.** Greptile edits its comment in place and
   re-lists findings a later commit already fixed. Read the cited lines first; if
   the finding is stale, close it on the PR with the line evidence rather than
@@ -145,6 +151,11 @@ initiative, whatever the review says. A 5/5 Greptile verdict with no findings,
 anchored to the current head SHA, and every CI check green is the **bar to ask** —
 not permission to proceed. Squash merges only. The merge belongs to the parent
 session; a lane never merges at all.
+
+The gate itself is [`docs/verification-and-merge-gate.md`](verification-and-merge-gate.md):
+the four reasons (5/5, `Last reviewed commit` == head, no comments after the
+verdict except `<!-- crew-evidence -->`, an evidence comment at head), the
+AUTO/OWNER/REFUSED decision, and the queue path when it cannot merge now.
 
 A **CI change** (anything under `.github/`) goes to the owner for the diff before
 it merges, whatever Greptile says. Merge order matters when two PRs share a

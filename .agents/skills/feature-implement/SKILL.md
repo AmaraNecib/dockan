@@ -210,6 +210,11 @@ the owner says to merge, whatever the review says. A 5/5 Greptile verdict with n
 findings, anchored to the current head SHA, and every CI check green is the **bar
 to ask** — not permission to proceed.
 
+The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
+the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED
+decision, and the queue path when it cannot merge now. `crew-mergeable.ts --selftest`
+proves the scripted half.
+
 Ask, and wait. Do not treat a clean review as consent, and do not merge "since it
 is green anyway".
 

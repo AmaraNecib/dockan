@@ -258,3 +258,67 @@ rewrite. Pinned by the catalog guard, so it cannot be forgotten silently.
 Recorded in the commit body on the final HEAD: failing-first runs with the
 failing assertion named, the red→green transition, the gate commands, and the
 catalog sweep result.
+
+---
+
+# Round 3 — Greptile's findings on PR #263 (head `79d8c53`)
+
+Tier: **Standard** (display layer). No stored value, no money arithmetic, no
+schema. Restated per `docs/engineering-workflow.md`.
+
+## Finding 3 (live) — the currency could wrap without its number
+
+`Money` returned two sibling `<span>`s in a fragment. In
+`pages/supplier-opening-balance.tsx:791` the primitive is a direct child of
+`flex flex-wrap items-center gap-1`, so the two runs became two flex ITEMS and a
+narrow row could push the currency onto the line below its digits.
+
+**Decision: one RTL wrapper, `nowrap`, figures still the only LTR isolate.**
+The wrapper makes the pair one flex item, so a row that cannot fit the amount
+moves the whole amount down. `whitespace-nowrap` is what makes it *atomic*: a
+flex item's min-content width is now the whole amount, so the split cannot come
+back inside the wrapper. `dir="rtl"` on the wrapper keeps the pair's base
+direction independent of whoever mounts it; the figures keep `dir="ltr"` and the
+currency keeps no `dir`, so `expectCurrencyLeftOfFigures` and the printed sheet's
+placement are unchanged.
+
+## Finding 1 (partly live) — one translated sentence still owned its money
+
+`itemsProfitPerUnit` was the round-2 deferral: `pages/items.tsx:561` rendered
+`t("itemsProfitPerUnit", { profit })` — raw digits into a catalog string that
+embedded `دج` — so the items form showed `12500 دج` while the same screen's
+`<Amount>` output was grouped. The round-2 catalog guard pinned that key as the
+one allowed offender, which is exactly why Greptile's finding stayed open.
+
+**Decision: close the deferral instead of renewing it.** The key becomes
+`"الربح لكل وحدة: <money/>"` and the form interpolates through `<Trans>` +
+`<Amount>`, the same route the activity summaries use. The key doubled as the
+products-table header (`profit: ""`, which rendered a dangling `:  دج`), so the
+header gets its own key `itemsProfitPerUnitHeader` — that rename is required by
+the change, not cosmetic. The catalog guard's allowed list is now empty, and its
+non-vacuity proof moves from a live offender to a fixture line, so the guard
+still fails when the detector stops matching.
+
+Finding 2 (currency loses caller styling) is **refuted**: `79d8c53` already
+passes the caller's class to both runs (`amount.tsx:71`
+`currencyClassName={cn("font-mono tabular-nums", className)}`), the test
+`amount.test.tsx` "applies the caller's className to the currency" pins it, and
+GitHub marks the review thread outdated (`line: null`, `position: 1`).
+
+## Planned tests (round 3)
+
+- `amount.test.tsx` — both runs share one `dir="rtl"`, `whitespace-nowrap`
+  wrapper, and it is the only element the caller's flex row sees.
+- `amount.test.tsx` — catalog guard: zero offenders, non-vacuous on a fixture.
+- `items.test.tsx` — the live preview renders a grouped `12,500` through
+  `money-figures`; the column header carries no dangling amount unit.
+- `tests/e2e/supplier-adjustment.spec.ts` — a narrow (390 px) row squeezed to
+  the digits' own width still keeps the currency on the digits' line.
+- `tests/e2e/items-categories.spec.ts` — the live preview groups a five-figure
+  profit and renders the primitive's runs.
+
+## Evidence (round 3)
+
+Failing-first runs, the red→green transition, the ablations, the gate commands
+and the before/after images and video are recorded in the commit body on the
+final HEAD.

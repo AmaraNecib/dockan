@@ -19,6 +19,14 @@ import { cn } from "@/lib/utils";
  *   the LEFT of the figures in an RTL page — the order the printed sheet uses
  *   and pins (`tests/e2e/invoice-print-a4.spec.ts`). Both surfaces go through
  *   this component, so the two placements can no longer drift.
+ * - both runs live in ONE right-to-left, `nowrap` wrapper. As bare siblings they
+ *   were two flex items wherever a caller put them in a `flex flex-wrap` row
+ *   (`supplier-opening-balance.tsx`), so a narrow row could push the currency
+ *   onto a line without its number; `whitespace-nowrap` also stops the split
+ *   moving inside the wrapper, because a flex item's min-content width is then
+ *   the whole amount. The wrapper's `dir="rtl"` gives the pair one base
+ *   direction wherever it is mounted, and the figures stay the only LTR
+ *   isolate (#254 round 3).
  *
  * The two runs carry `data-testid="money-figures"` and `money-currency` (no
  * styles) so a test can measure which side the currency lands on in a real
@@ -46,13 +54,13 @@ export function Money({
   // sign of `value` too would print `− -100`.
   const figures = formatMoney(sign === undefined ? value : Math.abs(value));
   return (
-    <>
+    <span dir="rtl" className="whitespace-nowrap">
       <span dir="ltr" data-testid="money-figures" className={amountClassName}>
         {sign === undefined ? "" : `${sign} `}
         {figures}
       </span>{" "}
       <span data-testid="money-currency" className={currencyClassName}>{t("currencyDinar")}</span>
-    </>
+    </span>
   );
 }
 

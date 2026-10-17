@@ -14,7 +14,7 @@ import type { BetterAuthInstance } from "../auth/auth";
 import { historyWithRemaining, StockLedgerError, COST_CORRECTION_REASON, supersededByCorrectionSeq } from "../lib/stock-ledger";
 import { itemStockProjection, recordStockMovements, StockItemMissingError, type StockMovementSpec } from "../lib/stock-posting";
 import { calculateSaleTotals } from "../lib/sale-calculations";
-import { computeReturnRefund, returnCapViolation, returnSettlementDefault } from "../lib/return-calculations";
+import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnCapViolation, returnSettlementDefault, sortInvoicesOldestFirst } from "../lib/return-calculations";
 import { resolveOpeningDestination, type NamedSupplierCandidate } from "./opening-balance-resolver";
 import { allocateOldestFirst, availableSupplierCredit, splitAgainstRemaining, supplierBalance, supplierChargeEntryAmount, supplierReturnSplit } from "../lib/supplier-ledger";
 import { createBackup } from "../lib/backups";
@@ -1588,40 +1588,44 @@ export function createRpcRouter(deps: RpcDeps) {
             returnedByLine,
           );
           // Settlement (#68 split, #256 default): the owner picks how much cash
-          // to hand back now; the remainder is deducted from the invoice's old
-          // debt. cashPaidOut + debtOffset always sums to the return value.
+          // to hand back now; the remainder is deducted from the party's debt.
+          // cashPaidOut + debtOffset always sums to the return value.
           //
-          // #256 — when the owner did NOT pick (no cashPaidOut sent), the server
-          // applies the owner's rule: debt first, cash only when there is no
-          // debt. The default REFUSES rather than guessing a split when this
-          // invoice's debt cannot absorb the whole return (the owner decides;
-          // `returnSettlementDefault` documents the two open cases). An explicit
-          // cashPaidOut keeps the pre-#256 semantics untouched, including the
-          // debt cap with its excess flowing to cash.
+          // #256 round 2 — when the owner did NOT pick (no cashPaidOut sent),
+          // the server applies the APPROVED rule: the refund comes off the
+          // party's whole tab, cash only when he owes nothing. A return larger
+          // than the tab is a SPLIT (tab to zero, the rest as cash), and a debt
+          // on another invoice is no longer a refusal — acceptance allocates
+          // the offset across the party's open invoices, oldest first. An
+          // explicit cashPaidOut keeps the pre-#256 semantics untouched,
+          // including the debt cap with its excess flowing to cash.
           let debtOffset: number;
           if (input.cashPaidOut === undefined) {
+            const invoiceDebt = invoice.remainingAmount;
             const settlement = returnSettlementDefault({
               returnValue: refund.refundTotal,
-              invoiceDebt: invoice.remainingAmount,
+              invoiceDebt,
               // the party read is only needed when this invoice's debt cannot
               // take the whole return (otherwise the decision never reads it)
-              partyDebt:
-                refund.refundTotal > invoice.remainingAmount
-                  ? await partyOutstandingDebt(tx, invoice)
-                  : invoice.remainingAmount,
+              partyDebt: refund.refundTotal > invoiceDebt ? await partyOutstandingDebt(tx, invoice) : invoiceDebt,
             });
-            if (settlement.method === "UNDECIDED") {
-              throw new ORPCError("BAD_REQUEST", {
-                message: settlement.reason === "DEBT_ELSEWHERE" ? "RETURN_DEBT_ELSEWHERE" : "RETURN_EXCEEDS_DEBT",
-              });
+            const split = derivedRefundSplit(settlement, refund.refundTotal);
+            if (split === null) {
+              // the debt read above is synchronous, so the pure decision
+              // cannot be UNRESOLVED here. Guessing a side would put money on
+              // the wrong ledger, so fail loudly instead (unreachable).
+              throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "RETURN_SETTLEMENT_UNRESOLVED" });
             }
-            debtOffset = settlement.method === "CASH" ? 0 : refund.refundTotal;
+            debtOffset = split.debtOffset;
           } else {
             if (input.cashPaidOut > refund.refundTotal) {
               throw new ORPCError("BAD_REQUEST", { message: "REFUND_SPLIT_INVALID" });
             }
-            const requestedDebt = refund.refundTotal - input.cashPaidOut;
-            debtOffset = Math.min(requestedDebt, invoice.remainingAmount);
+            debtOffset = explicitRefundSplit({
+              returnValue: refund.refundTotal,
+              cashPaidOut: input.cashPaidOut,
+              invoiceDebt: invoice.remainingAmount,
+            }).debtOffset;
           }
           const cashPaidOut = refund.refundTotal - debtOffset;
 
@@ -1728,20 +1732,56 @@ export function createRpcRouter(deps: RpcDeps) {
           // Only an ACCEPTED return relieves debt; a rejected one never does.
           // debtOffset − debtApplied skips the portion that was already settled
           // at creation by pre-#68 builds, so an upgrade can never double-relieve.
+          //
+          // #256 round 2 — the promise can exceed the return's OWN invoice (the
+          // default takes the refund off the party's whole tab). The own invoice
+          // is relieved first, then the party's other open invoices oldest-first
+          // (the convention the payment panel already applies). Every invoice
+          // that moved gets one `return_debt_applications` row in this same
+          // unit, which is what keeps `total − paid − returnCredit = remaining`
+          // true on each of their headers.
           const acceptedInvoice = await tx.getInvoiceDetail(existing.invoiceId);
           if (acceptedInvoice !== undefined) {
-            const stillPromised = Math.max(0, existing.debtOffset - existing.debtApplied);
-            const applied = Math.min(stillPromised, acceptedInvoice.remainingAmount);
-            // SAFETY: the read happens inside this BEGIN IMMEDIATE unit and
-            // applied <= remaining, so the conditional UPDATE boundary can only
-            // be tripped by corruption — the whole unit would then roll back,
-            // which is why the reviewer-visible state stays consistent.
-            if (applied > 0) {
-              if (!(await tx.applyDebtOffsetToInvoice(existing.invoiceId, applied))) {
-                throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+            let left = Math.max(0, existing.debtOffset - existing.debtApplied);
+            const relieved: Array<{ invoiceId: string; amount: number }> = [];
+            if (left > 0) {
+              // the return's own invoice first: its goods came from here, and an
+              // explicit choice (whose promise never exceeded this invoice's
+              // debt at creation) behaves exactly as it did before
+              const own = Math.min(left, acceptedInvoice.remainingAmount);
+              if (own > 0) {
+                // SAFETY: the read happens inside this BEGIN IMMEDIATE unit and
+                // applied <= remaining, so the conditional UPDATE boundary can
+                // only be tripped by corruption — the whole unit would then roll
+                // back, which is why the reviewer-visible state stays consistent.
+                if (!(await tx.applyDebtOffsetToInvoice(existing.invoiceId, own))) {
+                  throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+                }
+                relieved.push({ invoiceId: existing.invoiceId, amount: own });
+                left -= own;
               }
-              const totalApplied = existing.debtApplied + applied;
-              await tx.setDebtApplied(existing.id, totalApplied);
+              if (left > 0) {
+                const openInvoices = sortInvoicesOldestFirst(
+                  await tx.listUnpaidInvoicesByParty("SALE", acceptedInvoice.counterpartyId, acceptedInvoice.counterpartyName),
+                );
+                for (const open of openInvoices) {
+                  if (left <= 0) break;
+                  if (open.id === existing.invoiceId) continue; // fell to the own invoice above
+                  const take = Math.min(left, open.remainingAmount);
+                  if (take <= 0) continue;
+                  if (!(await tx.applyDebtOffsetToInvoice(open.id, take))) {
+                    throw new ORPCError("BAD_REQUEST", { message: "RETURN_DEBT_OFFSET_REFUSED" });
+                  }
+                  relieved.push({ invoiceId: open.id, amount: take });
+                  left -= take;
+                }
+              }
+            }
+            if (relieved.length > 0) {
+              for (const row of relieved) {
+                await tx.insertReturnDebtApplication({ returnId: existing.id, invoiceId: row.invoiceId, amount: row.amount });
+              }
+              await tx.setDebtApplied(existing.id, existing.debtApplied + relieved.reduce((sum, row) => sum + row.amount, 0));
             }
           }
           await tx.insertActivity({

@@ -406,6 +406,10 @@ export interface StorePort {
   applyDebtOffsetToInvoice(invoiceId: string, amount: number): Promise<boolean>;
   /** record how much of a return's promised debtOffset was actually applied (#68) */
   setDebtApplied(returnId: string, amount: number): Promise<void>;
+  /** #256 round 2 — record ONE invoice the accepted return's offset relieved.
+   * Written for every invoice that moved (the return's own included), in the
+   * same unit as the offset, so each invoice header can derive its credit. */
+  insertReturnDebtApplication(input: { returnId: string; invoiceId: string; amount: number }): Promise<void>;
   /** consume the pending review tag on every movement a return created */
   setReturnMarks(returnId: string, mark: Exclude<ReturnMark, "PENDING">): Promise<void>;
   /** Record the review annotation on the return (the rejection note). */

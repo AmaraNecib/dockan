@@ -122,42 +122,129 @@ export function computeReturnRefund(
 export interface ReturnSettlementDefaultInput {
   /** whole DZD the return is worth (what has to be settled somehow) */
   returnValue: number;
-  /** the remaining debt on the invoice the return is recorded against — the
-   * only debt this return record can relieve (the accepted offset is applied
-   * to that invoice, and the invoice header reconciles it via returnCredit) */
+  /** the remaining debt on the invoice the return is recorded against */
   invoiceDebt: number;
   /** the party's total outstanding debt across every invoice, or null while
    * that read has not resolved yet (the web preview reads it separately) */
   partyDebt: number | null;
 }
 
-/** Why the default could not pick a method: the return outgrew the debt that
- * could absorb it here, or the party's debt lives on other invoices (applying
- * a return across invoices is an owner decision that is still open). */
-export type ReturnSettlementDefaultReason = "EXCEEDS_DEBT" | "DEBT_ELSEWHERE";
-
 export type ReturnSettlementDefault =
   | { method: "DEBT" }
+  | { method: "SPLIT"; debtOffset: number; cashPaidOut: number }
   | { method: "CASH" }
-  | { method: "UNDECIDED"; reason: ReturnSettlementDefaultReason }
   | { method: "UNRESOLVED" };
 
 /**
- * The owner's rule (#256): default the refund to the party's debt, cash only
- * when there is no debt. Debt-first is decided by ONE test — can this invoice's
- * remaining debt absorb the whole return? When it can, all of it goes to the
- * debt. When it cannot, the default REFUSES rather than guessing a split:
- * either the return outgrew the party's whole debt, or the debt sits on another
- * invoice the return cannot reach (`EXCEEDS_DEBT` / `DEBT_ELSEWHERE` — the two
- * owner questions this scope deliberately left open). A refusal is safe because
- * the owner can always pick cash or a custom split explicitly; a silent
- * debt/cash split on money is not.
+ * The owner's rule (#256), as APPROVED in round 2
+ * (`.scratch/notes/decisions-money-ar.html`): the default takes the refund off
+ * the party's DEBT, and comes back as cash only when he owes nothing.
+ *
+ * The debt is the party's whole tab — "in this invoice or in another invoice"
+ * (the owner's words), so this invoice's own debt is not the bound:
+ *
+ * - the tab covers the return → `DEBT`: the whole return reduces the debt, and
+ *   the api allocates it across the party's open invoices oldest-first;
+ * - the return exceeds the tab → `SPLIT`: the tab goes to zero and the rest is
+ *   handed back as cash (his example: debt 4 000, return 5 000 → 4 000 off the
+ *   debt, 1 000 cash);
+ * - nothing owed anywhere → `CASH`.
+ *
+ * Round 2 replaced the round-1 refusals (`UNDECIDED` / `EXCEEDS_DEBT` /
+ * `DEBT_ELSEWHERE`) with those two answers; nothing is refused any more. A
+ * `returnValue` of 0 is always `DEBT` — there is no split to decide, and a
+ * zero-value return must never be blocked.
  */
 export function returnSettlementDefault(input: ReturnSettlementDefaultInput): ReturnSettlementDefault {
   // the invoice's own debt answers it alone — no party read needed
   if (input.returnValue <= input.invoiceDebt) return { method: "DEBT" };
   // past here the answer depends on the party's tab, which may not have loaded
   if (input.partyDebt === null) return { method: "UNRESOLVED" };
-  if (input.partyDebt <= 0) return { method: "CASH" };
-  return { method: "UNDECIDED", reason: input.invoiceDebt <= 0 ? "DEBT_ELSEWHERE" : "EXCEEDS_DEBT" };
+  // SAFETY: the party read is a sum that includes this invoice, but a caller
+  // that hands in only the other invoices' debt must still get the bound right
+  const debt = Math.max(input.invoiceDebt, input.partyDebt);
+  if (debt <= 0) return { method: "CASH" };
+  if (input.returnValue <= debt) return { method: "DEBT" };
+  return { method: "SPLIT", debtOffset: debt, cashPaidOut: input.returnValue - debt };
+}
+
+/** The two money numbers a return record stores. */
+export interface ReturnRefundSplit {
+  /** taken off the debt; settled when the owner accepts the return (#68) */
+  debtOffset: number;
+  /** handed to the customer now */
+  cashPaidOut: number;
+}
+
+/**
+ * The derived default's numbers, or null while the party read has not landed
+ * (the web previews nothing then; the api's debt read is synchronous, so it
+ * never sees `UNRESOLVED`). `cashPaidOut + debtOffset` always equals
+ * `returnValue`.
+ */
+export function derivedRefundSplit(settlement: ReturnSettlementDefault, returnValue: number): ReturnRefundSplit | null {
+  switch (settlement.method) {
+    case "DEBT":
+      return { debtOffset: returnValue, cashPaidOut: 0 };
+    case "CASH":
+      return { debtOffset: 0, cashPaidOut: returnValue };
+    case "SPLIT":
+      return { debtOffset: settlement.debtOffset, cashPaidOut: settlement.cashPaidOut };
+    case "UNRESOLVED":
+      return null;
+  }
+}
+
+/**
+ * The owner's EXPLICIT choice (a `cashPaidOut` was sent): the debt takes what
+ * the cash does not cover, capped at THIS invoice's remaining — #162's warned
+ * cap, where the excess swings back to cash. Unchanged by #256, which only
+ * changed what the app picks when the owner does not. One implementation, so
+ * the api's write and the web's preview cannot disagree.
+ */
+export function explicitRefundSplit(input: { returnValue: number; cashPaidOut: number; invoiceDebt: number }): ReturnRefundSplit {
+  const cash = Math.max(0, Math.min(input.cashPaidOut, input.returnValue));
+  const debtOffset = Math.min(Math.max(0, input.returnValue - cash), Math.max(0, input.invoiceDebt));
+  return { debtOffset, cashPaidOut: input.returnValue - debtOffset };
+}
+
+// ---------------------------------------------------------------------------
+// Allocation order — the convention the payment panel already applies (#164).
+// ---------------------------------------------------------------------------
+
+/** The invoice fields the oldest-first order needs (structural, so a lean row reads too). */
+export interface OldestFirstInvoiceKey {
+  id: string;
+  invoiceDate: string;
+  createdAt: string;
+  invoiceNumber: string;
+}
+
+/**
+ * Oldest first: invoice date, then creation, then the invoice number's numeric
+ * sequence, then id — all deterministic. `createdAt` has second precision, so
+ * two invoices created in the same second would otherwise fall to a random
+ * UUID and take the money in a different order on different runs; the number's
+ * sequence is the tie-break that actually reflects creation order (`INV-0010`
+ * must sort after `INV-0009`, so it is compared numerically, not lexically).
+ * Lives here, next to the refund arithmetic, because BOTH the payment panel and
+ * the api's cross-invoice refund allocation must call the one comparator.
+ */
+export function compareInvoicesOldestFirst(a: OldestFirstInvoiceKey, b: OldestFirstInvoiceKey): number {
+  if (a.invoiceDate !== b.invoiceDate) return a.invoiceDate < b.invoiceDate ? -1 : 1;
+  if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
+  const sequence = invoiceSequence(a.invoiceNumber) - invoiceSequence(b.invoiceNumber);
+  if (sequence !== 0) return sequence;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** A sorted COPY (the caller's array is never reordered in place). */
+export function sortInvoicesOldestFirst<T extends OldestFirstInvoiceKey>(invoices: readonly T[]): T[] {
+  return [...invoices].sort(compareInvoicesOldestFirst);
+}
+
+/** The trailing number of an INV-%04d number; a non-numeric number sorts as 0. */
+function invoiceSequence(invoiceNumber: string): number {
+  const digits = /(\d+)\s*$/u.exec(invoiceNumber);
+  return digits === null ? 0 : Number(digits[1]);
 }

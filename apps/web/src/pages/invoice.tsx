@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { computeReturnRefund, returnSettlementDefault } from "@dokan/contracts";
+import { computeReturnRefund, derivedRefundSplit, explicitRefundSplit, returnSettlementDefault } from "@dokan/contracts";
 import type { InvoiceDetail, PaymentMethod, ReturnDetail } from "@dokan/contracts";
 
 import { Amount } from "@/components/ui/amount";
@@ -467,10 +467,36 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     if (entered.length === 0) return 0;
     return computeReturnRefund(entered, priorByLine).refundTotal;
   }, [returnableLines, drafts, priorByLine]);
-  // #162 — relink the custom cash split when the return value changes: the
+  // #256 — what the app picks when the owner does not: the refund comes off the
+  // party's whole tab (the owner's "in this invoice or in another invoice"),
+  // cash only when he owes nothing; a return larger than the tab is a SPLIT
+  // (tab to zero, the remainder as cash), and acceptance allocates the offset
+  // across the party's open invoices oldest-first. Derived BEFORE the cash-pair
+  // effect below, which seeds an untouched field from it.
+  const partyDebt = hasPartyIdentity
+    ? partyDebtQuery.data === undefined
+      ? null
+      : Math.max(invoice.remainingAmount, partyDebtQuery.data.items.reduce((sum, row) => sum + row.remainingAmount, 0))
+    : invoice.remainingAmount;
+  const settlementDefault = returnSettlementDefault({ returnValue: valueTotal, invoiceDebt: invoice.remainingAmount, partyDebt });
+  // the numbers the SERVER derives while the owner has not touched the control
+  // (an untouched form sends no cashPaidOut, so the server applies this same
+  // rule to fresh debt) — null while the party read is still in flight
+  const derivedSplit = derivedRefundSplit(settlementDefault, valueTotal);
+  // the pre-selected preset: the derived method, with a SPLIT opening on the
+  // custom split, its cash field already carrying the remainder the app would
+  // hand back
+  const derivedPreset: ReturnSettlementPreset | null =
+    settlementDefault.method === "CASH" ? "ALL_CASH" : settlementDefault.method === "DEBT" ? "ALL_DEBT" : derivedSplit === null ? null : "CUSTOM";
+  // how much of the tab sits on OTHER invoices — the part the default spreads
+  // over the party's open invoices (oldest first)
+  const crossInvoiceDebt = partyDebt === null ? 0 : Math.max(0, partyDebt - invoice.remainingAmount);
+  // #162/#256 — relink the custom cash split when the return value changes: the
   // edited field is the source, so 50% of a 900 return becomes 50% of the new
   // value instead of a stale amount. A percentage-based split falls to zero
-  // when the return value does.
+  // when the return value does. An UNTOUCHED pair opens at the DERIVED cash
+  // (0 when the whole return goes to debt, value − debt for a split), so what
+  // the owner reads is what the server derives.
   useEffect(() => {
     if (valueTotal === 0) {
       if (cashSource.current === "percentage") {
@@ -484,8 +510,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
       return;
     }
     if (cashSource.current === null) {
-      setCashDraft(String(valueTotal));
-      setCashPercentage("100");
+      // once the owner has picked a method, a fresh custom pair opens at the
+      // full return value (100%): they lower either side to push the rest onto
+      // the debt
+      const seed = derivedSplit === null || settlementChosen ? valueTotal : derivedSplit.cashPaidOut;
+      setCashDraft(String(seed));
+      setCashPercentage(String(percentageFromAmount(valueTotal, seed)));
       return;
     }
     if (cashSource.current === "percentage") {
@@ -495,7 +525,7 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     }
     const amount = parseGroupedAmount(cashDraft);
     setCashPercentage(amount === null ? "" : String(percentageFromAmount(valueTotal, amount)));
-  }, [valueTotal, cashDraft, cashPercentage]);
+  }, [valueTotal, cashDraft, cashPercentage, derivedSplit, settlementChosen]);
   const requestedCash =
     settlement === null ? 0 : settlement === "ALL_CASH" ? valueTotal : settlement === "ALL_DEBT" ? 0 : (parseGroupedAmount(cashDraft) ?? 0);
   // an invalid percentage draft clears the derived amount, and an empty amount
@@ -503,49 +533,24 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
   // "12.5%" would silently be recorded as zero cash
   const cashPercentageInvalid = settlement === "CUSTOM" && percentageDraftInvalid(cashPercentage);
   const cashIsValid = settlement !== "CUSTOM" || (customCashError(cashDraft, valueTotal) === null && !cashPercentageInvalid);
-  // mirror the api's settlement so the warning tracks the ACTUAL cash the
-  // server will settle: requested debt is capped at the invoice's remaining
-  // debt and any excess flows back to cash (all-debt beyond the debt swings
-  // into cash, which must warn too)
-  // The projection mirrors the api's settlement exactly (`debtOffset =
-  // min(requestedDebt, remaining)`, `cash = refund − debtOffset`). It is shown
-  // only while the custom-cash draft is a VALID whole-DZD amount: an empty or
-  // bad draft would otherwise render a NaN (or an inflated) split, and
-  // `customCashError` already blocks submitting exactly that input.
-  const requestedDebt = Math.max(0, valueTotal - requestedCash);
-  const projectionIsValid = settlement !== null && cashIsValid && Number.isFinite(requestedDebt);
-  const projectedDebt = projectionIsValid ? Math.min(requestedDebt, invoice.remainingAmount) : 0;
-  const settledCash = projectionIsValid ? valueTotal - projectedDebt : Number.NaN;
+  // The projection mirrors the api EXACTLY, and the api does two different
+  // things: an untouched default is derived from the party's tab (and can
+  // relieve other invoices), while an explicit choice keeps #162's cap at THIS
+  // invoice's remaining debt. Both numbers come from @dokan/contracts, so the
+  // preview cannot drift from what the server stores.
+  const explicitPlan = settlementChosen
+    ? explicitRefundSplit({ returnValue: valueTotal, cashPaidOut: requestedCash, invoiceDebt: invoice.remainingAmount })
+    : null;
+  const plan = explicitPlan ?? derivedSplit;
+  const projectionIsValid = settlement !== null && cashIsValid && plan !== null;
+  const projectedDebt = projectionIsValid ? plan.debtOffset : 0;
+  const settledCash = projectionIsValid ? plan.cashPaidOut : Number.NaN;
   // the offset asked for is bigger than the debt that is left, so that much
   // CANNOT go to debt and is handed back as cash instead — surfaced explicitly
   // (mirrors the api) so an "all debt" choice never silently becomes cash
-  const debtIsCapped = projectionIsValid && requestedDebt > projectedDebt;
-  // #256 — what the app picks when the owner does not: the debt when this
-  // invoice's debt can absorb the whole return, cash when there is no debt
-  // anywhere, and nothing when neither holds (the owner must choose; the split
-  // and the cross-invoice rule are owner decisions that are still open).
-  const partyDebt = hasPartyIdentity
-    ? partyDebtQuery.data === undefined
-      ? null
-      : Math.max(invoice.remainingAmount, partyDebtQuery.data.items.reduce((sum, row) => sum + row.remainingAmount, 0))
-    : invoice.remainingAmount;
-  const settlementDefault = returnSettlementDefault({ returnValue: valueTotal, invoiceDebt: invoice.remainingAmount, partyDebt });
-  const derivedPreset: ReturnSettlementPreset | null =
-    settlementDefault.method === "DEBT" || settlementDefault.method === "UNDECIDED"
-      ? // the debt-first direction stays on screen when the app refuses to
-        // pick a split — the owner confirms it (or changes it) before saving
-        "ALL_DEBT"
-      : settlementDefault.method === "CASH"
-        ? "ALL_CASH"
-        : null;
-  // #256 — the method is the owner's whenever the app KNOWS it cannot name one:
-  // the debt cannot absorb the return (the split and the cross-invoice rule are
-  // open decisions). Picking one clears this. While the debt read is still in
-  // flight the app claims no default at all (the select stays unset) but does
-  // not block: a submit sends no method, so the server applies the same rule on
-  // fresh data and refuses loudly if it cannot.
-  const settlementNeedsChoice = !settlementChosen && settlementDefault.method === "UNDECIDED";
-  // the derived default follows the entered quantities until the owner picks
+  const debtIsCapped = explicitPlan !== null && cashIsValid && Math.max(0, valueTotal - requestedCash) > explicitPlan.debtOffset;
+  // the derived default stays visible until the owner picks, and re-derives as
+  // the entered quantities change
   useEffect(() => {
     if (settlementChosen) return;
     setSettlement(derivedPreset);
@@ -604,17 +609,6 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
     }
     if (!cashIsValid) {
       setError(t("returnsInvalidCash"));
-      return;
-    }
-    if (settlementNeedsChoice) {
-      // #256 — the app will not pick a split for the owner: the debt cannot
-      // absorb the return here, so the method is theirs to name
-      setError(
-        t(
-          settlementDefault.method === "UNDECIDED" && settlementDefault.reason === "DEBT_ELSEWHERE" ? "returnsDebtElsewhere" : "returnsDebtDefaultExceeds",
-          { value: valueTotal, debt: invoice.remainingAmount },
-        ),
-      );
       return;
     }
     const lines = entered.flatMap((line) => {
@@ -803,6 +797,12 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               <span className="text-muted-foreground">{t("returnsCollected")}</span>
               <span data-testid="returns-collected"><Amount value={invoice.paidAmount} /></span>
             </div>
+            {hasPartyIdentity && partyDebt !== null && partyDebt > invoice.remainingAmount && (
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-muted-foreground">{t("returnsPartyDebt")}</span>
+                <span data-testid="returns-party-debt" className="font-medium"><Amount value={partyDebt} /></span>
+              </div>
+            )}
           </div>
           <label className="grid gap-1 text-sm">
             <span className="font-medium">{t("returnsSplit")}</span>
@@ -839,27 +839,35 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
               </SelectContent>
             </Select>
           </label>
-          {settlementNeedsChoice && (
-            <div className="grid gap-2 rounded border border-warning/40 bg-warning/10 p-2" data-testid="returns-debt-default-note">
-              <p className="text-xs text-warning">
-                {t(settlementDefault.method === "UNDECIDED" && settlementDefault.reason === "DEBT_ELSEWHERE" ? "returnsDebtElsewhere" : "returnsDebtDefaultExceeds", { value: valueTotal, debt: invoice.remainingAmount })}
+          {!settlementChosen && (settlementDefault.method === "SPLIT" || crossInvoiceDebt > 0) && (
+            <div className="grid gap-2 rounded border border-border bg-muted/30 p-2" data-testid="returns-debt-default-note">
+              <p className="text-xs text-muted-foreground">
+                {settlementDefault.method === "SPLIT"
+                  ? t("returnsDebtSplitDefault", { debt: partyDebt ?? invoice.remainingAmount, cash: derivedSplit?.cashPaidOut ?? 0 })
+                  : t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}
               </p>
-              {/* the select already shows the debt-first direction, so re-picking
-                  it fires no change event — the owner needs a way to say yes */}
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="justify-self-start"
-                data-testid="returns-debt-confirm"
-                onClick={() => {
-                  setSettlementChosen(true);
-                  setSettlement("ALL_DEBT");
-                }}
-              >
-                {t("returnsDebtConfirm")}
-              </Button>
+              {settlementDefault.method === "SPLIT" && crossInvoiceDebt > 0 && (
+                <p className="text-xs text-muted-foreground">{t("returnsDebtAcrossInvoices", { debt: partyDebt ?? invoice.remainingAmount })}</p>
+              )}
             </div>
+          )}
+          {settlementChosen && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="justify-self-start"
+              data-testid="returns-debt-confirm"
+              onClick={() => {
+                // back to the derived default: the payload goes back to ABSENT,
+                // so the tab-aware split (which the explicit cap cannot
+                // express) is what the server derives from fresh debt
+                cashSource.current = null;
+                setSettlementChosen(false);
+              }}
+            >
+              {t("returnsDebtDefaultConfirm")}
+            </Button>
           )}
           {settlement === "CUSTOM" && (
             <div className="grid gap-1 text-sm">
@@ -868,6 +876,9 @@ export function ReturnsPanel({ invoice }: { invoice: InvoiceDetail }) {
                 value={{ amount: cashDraft, percentage: cashPercentage }}
                 onChange={(next, edited) => {
                   cashSource.current = edited;
+                  // an EDIT is the owner's own split: from here the api applies
+                  // #162's cap at this invoice's debt, not the tab-aware default
+                  setSettlementChosen(true);
                   setCashDraft(next.amount);
                   setCashPercentage(next.percentage);
                   setSavedReturn(null);

@@ -23,8 +23,18 @@ import type { Database } from "bun:sqlite";
  * would escape the new dedup until the next v4 boot's self-healing backfill
  * re-keys them. A version-3 build MUST therefore refuse the version-4 database
  * (ADR-0008 §4.5).
+ *
+ * Version 5 (issue 256, round 2): `return_debt_applications` — the per-invoice
+ * attribution of an accepted return's debt offset, because the approved default
+ * takes a refund off the party's whole tab and one return can now relieve
+ * several invoices. A version-4 build derives an invoice's return credit from
+ * `SUM(returns.debt_applied)` on that invoice alone, so on a v5 database it
+ * would print a header that does not reconcile (`total − paid − credit =
+ * remaining`) for every invoice relieved by a return recorded elsewhere, and a
+ * v5 return accepted by a v4 build would write no attribution at all. A v4
+ * build MUST therefore refuse the version-5 database (ADR-0008 §4.5).
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * A database written by a newer app. The older build cannot know what the

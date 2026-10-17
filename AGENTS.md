@@ -8,8 +8,9 @@
   (`gh pr create`) and **never** merges. `feature-implement` step 10 is
   parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
-  lane's branch, opens the PR, requests Greptile review, drives the rounds and
-  merges — only when the owner says so (see `Merging`).
+  lane's branch, opens the PR, requests Greptile review, drives the rounds, and
+  merges — auto-merging a clean **non-visual, cheap-to-reverse** PR itself, and
+  otherwise only when the owner says so (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
   lane reads `.agents/wisdom/` before it starts, applies what bears on its task
   and says in its `crew_report` which lessons it applied, and which it

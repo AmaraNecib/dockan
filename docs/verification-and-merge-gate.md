@@ -95,9 +95,15 @@ PR before it lands is an owner trigger for that PR.
 
 | the class | who merges |
 | --- | --- |
-| **CHEAP TO REVERSE** — a follow-up commit fixes it; no data written, no published contract, no shipped release; and the owner has not asked to see it | `AUTO` — the parent merges when the four reasons hold, checks are green or legitimately skipped, and GitHub reports `MERGEABLE` |
-| **EXPENSIVE TO REVERSE**, or any **OWNER TRIGGER** below, or the owner said "show me" | `OWNER` |
-| **a wrong fact anywhere in the gate** | `REFUSED` — fix the fact, or the finding, and re-review |
+| **CHEAP TO REVERSE** — a follow-up commit fixes it; no data written, no published contract, no shipped release; and the owner has not asked to see it. An **inert diff** (tests, docs, fixtures) is the clearest case, but production code can be cheap too | `AUTO` — the parent merges when the four reasons hold, checks are green or legitimately skipped, and GitHub reports `MERGEABLE` |
+| **EXPENSIVE TO REVERSE** — **production code** that writes data, publishes a contract or ships a release — or any **OWNER TRIGGER** below, or the owner said "show me" | `OWNER` |
+| **a wrong fact anywhere in the gate** | `REFUSED` — not a judgement call. Fix the fact, or the finding, and re-review |
+
+A PR GitHub already reports `MERGED` **is a fourth outcome**, `MERGED`: a different question, not a
+decision, and the predicate reports it rather than answering the merge question.
+
+`AUTO` changes who merges, not what the evidence is: it **waives neither reason 4** nor the evidence
+form in §1. Even an auto-merge posts its evidence comment at the head.
 
 ### The owner triggers
 

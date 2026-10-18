@@ -162,7 +162,7 @@ a loss reads again, so the raw count alone cannot pin the budget).
   permission denied, open 'vault.lock'`), so the log names the syscall and the
   path, not only the errno. Read failures that *recover* log nothing (see the
   vocabulary note above).
-- A permanently unreadable lock still fail-stops, only 250 ms later. Raising
+- A permanently unreadable lock still fail-stops, about a second later.
   `transientReadRetries` is the knob; a *longer* grace would need the write to
   be refused without releasing the lock, which is the ADR's fail-stop contract.
 
@@ -184,3 +184,21 @@ a loss reads again, so the raw count alone cannot pin the budget).
 - **The seam replaces every read**, including acquisition; the acquisition
   scenarios in the existing suite use the default reader, and the new tests use
   the seam only for held-path cases.
+- **The acquisition carve-out (prior debate, sev 4, pre-existing).**
+  `reclaimStaleLock` reads the renamed-aside temp through `readOwner`, which
+  answers `undefined` for both `gone` and a spent read error, so a *sustained*
+  read error during a reclaim can unlink a live holder's record and acquire over
+  it. It is byte-for-byte base behaviour, the design's "Not changed" section
+  says so, and #281 narrows the damage rather than widening it: the evicted
+  holder now loses *promptly and without releasing*, instead of unlinking its own
+  lock and walking away, and every write it attempts stays gated by
+  `assertHeld`. The proposed guard (re-link the moved file and report "raced"
+  when `readOwner` fails for a non-ENOENT reason) is new locking work for #275's
+  path, not this lane's.
+- **The 88d01e2 ablation episode.** A review lens mutated `lock.ts` to check
+  that the new tests discriminate the fix, left the mutation in the tree, and
+  this lane's `git add -A` committed it (`if (code)` - every coded read error
+  read as "gone"). The lane's own full-suite run caught it (4 tests red, then
+  the run died on `lost()`'s `process.exit(1)` in a test with no `onLost`), and
+  186a269 restores `code === "ENOENT"`. The blob was never pushed; the lens's
+  own evidence file flagged it as "never merge while present".

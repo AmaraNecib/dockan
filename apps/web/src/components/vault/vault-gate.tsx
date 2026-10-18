@@ -26,10 +26,31 @@ import {
  * first run shows the recovery key exactly once before continuing.
  */
 
+/**
+ * Why the vault status could not be read. `undefined` means it was.
+ * - `unsupported` — no vault route at all: the legacy plaintext build
+ * - `unreachable` — nothing answered, or answered without naming a cause
+ * - `in-use` — another copy of Dokan holds the data folder (#276)
+ */
+export type VaultFailure = "unsupported" | "unreachable" | "in-use";
+
+/**
+ * The refusals the gate can name exactly. Every other failed status read is
+ * `unreachable`: an unrecognised code names no cause, and guessing one would
+ * put a wrong story in front of the owner — "close the other copy" for a
+ * server that never answered. The `??` default is the safety: this screen is
+ * reachable only through the one code below.
+ */
+const VAULT_STATUS_FAILURES = new Map<string, VaultFailure>([
+  ["VAULT_UNSUPPORTED", "unsupported"],
+  ["VAULT_LOCKED_BY_OTHER_INSTANCE", "in-use"],
+]);
+
 type VaultHook = {
   status: VaultStatus | undefined;
-  /** "unsupported" = legacy build; "unreachable" = show retry, never login */
-  failure: "unsupported" | "unreachable" | undefined;
+  /** "unsupported" = legacy build; "unreachable" = show retry, never login;
+   *  "in-use" = another copy holds the folder (#276) */
+  failure: VaultFailure | undefined;
   setStatus: (status: VaultStatus) => void;
   refresh: () => void;
 };
@@ -44,7 +65,7 @@ type VaultGateField = "passphrase" | "confirm" | "recovery" | null;
  */
 export function useVaultStatus(): VaultHook {
   const [status, setStatus] = useState<VaultStatus | undefined>(undefined);
-  const [failure, setFailure] = useState<"unsupported" | "unreachable" | undefined>(undefined);
+  const [failure, setFailure] = useState<VaultFailure | undefined>(undefined);
   const aliveRef = useRef(true);
 
   const load = useCallback(() => {
@@ -56,7 +77,7 @@ export function useVaultStatus(): VaultHook {
       .catch((reason) => {
         if (!aliveRef.current) return;
         const code = reason instanceof VaultRequestError ? reason.code : "VAULT_UNREACHABLE";
-        setFailure(code === "VAULT_UNSUPPORTED" ? "unsupported" : "unreachable");
+        setFailure(VAULT_STATUS_FAILURES.get(code) ?? "unreachable");
       });
   }, []);
 

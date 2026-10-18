@@ -51,21 +51,26 @@ export function RequireSession({ children }: { children: ReactNode }) {
     return <VaultOwnerGate>{children}</VaultOwnerGate>;
   }
   // A status route that 404s means this build has no vault gate (legacy
-  // plaintext) and falls through to the auth screens. A network/5xx failure on
-  // a vault install shows a RETRY screen, never the legacy login (finding 5).
+  // plaintext) and falls through to the auth screens. A refusal that names a
+  // cause gets its own screen; any other failure shows RETRY, never the legacy
+  // login (finding 5).
+  if (vault.failure === "in-use") return <VaultLockedByOtherInstance onRetry={vault.refresh} />;
   if (vault.failure === "unreachable") return <VaultUnavailable onRetry={vault.refresh} />;
   if (vault.status === undefined && vault.failure === undefined) return <LoadingScreen />;
   return <LegacySessionGate>{children}</LegacySessionGate>;
 }
 
-/** The API booted but the vault status could not be read: retry, never login. */
-function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
+/**
+ * A vault status that could not be read. Both causes keep the owner on this
+ * screen instead of the legacy login; only the story differs.
+ */
+function VaultStatusScreen({ message, testId, onRetry }: { message: string; testId: string; onRetry: () => void }) {
   const { t } = useTranslation();
   return (
     <main className="grid min-h-screen place-items-center bg-background p-4">
       <div className="grid w-full max-w-sm gap-3 rounded-2xl border border-border bg-card p-6 text-center shadow-sm" dir="rtl">
-        <p className="text-sm text-destructive" role="alert" data-testid="vault-status-unavailable">
-          {t("startupCheckFailed")}
+        <p className="text-sm text-destructive" role="alert" data-testid={testId}>
+          {message}
         </p>
         <button
           type="button"
@@ -78,6 +83,24 @@ function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
       </div>
     </main>
   );
+}
+
+/** The API booted but the vault status could not be read: retry, never login. */
+function VaultUnavailable({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  return <VaultStatusScreen message={t("startupCheckFailed")} testId="vault-status-unavailable" onRetry={onRetry} />;
+}
+
+/**
+ * Another copy of Dokan holds the data folder. The API refuses with
+ * VAULT_LOCKED_BY_OTHER_INSTANCE, so the owner is told to close that copy
+ * instead of being told to start a server that is already answering. Retry is
+ * the same call: it succeeds once that copy has released the folder, and it
+ * never becomes an unlock form while the refusal stands (#276).
+ */
+function VaultLockedByOtherInstance({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
+  return <VaultStatusScreen message={t("VAULT_LOCKED_BY_OTHER_INSTANCE")} testId="vault-status-in-use" onRetry={onRetry} />;
 }
 
 /** Owner provisioning after the vault is open (no separate login exists). */

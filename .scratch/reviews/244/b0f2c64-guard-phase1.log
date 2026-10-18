@@ -1,0 +1,41 @@
+### guard Phase 1 (pre-commit) at b0f2c64
+
+### guard checks at b0f2c64
+
+$ bun run typecheck
+Cached:    3 cached, 4 total
+  Time:    34.894s 
+
+typecheck exit: 0
+
+$ bun run lint
+$ oxlint
+lint exit: 0
+
+$ ( cd apps/web && bun test src/lib/blankness-ratchet.test.ts )
+ 29 pass
+ 0 fail
+ 53 expect() calls
+Ran 29 tests across 1 file. [1.84s]
+ratchet exit: 0
+
+$ git status --short
+ M .dokan-port
+?? .scratch/reviews/244/b0f2c64-branch-pin-proof.log
+?? .scratch/reviews/244/b0f2c64-brief.md
+?? .scratch/reviews/244/b0f2c64-e2e-discrimination.log
+?? .scratch/reviews/244/b0f2c64-e2e-mark-only.log
+?? .scratch/reviews/244/b0f2c64-gate-set-diff.log
+?? .scratch/reviews/244/b0f2c64-guard-demo.log
+?? .scratch/reviews/244/b0f2c64-mutation-proof.log
+?? .scratch/reviews/244/b0f2c64-pr-diff.txt
+?? .scratch/reviews/244/b0f2c64-ratchet-first-red.log
+?? .scratch/reviews/244/b0f2c64-ratchet-green.log
+?? .scratch/reviews/244/b0f2c64-review-context.md
+?? .scratch/reviews/244/b0f2c64-round3-diff.txt
+
+NOTE: the full `bun run test` re-run at b0f2c64 was BLOCKED by the heavy-run slot gate
+(no slot free; `.scratch/scripts/e2e-slot.sh` does not exist in this worktree). The full suite was
+green twice earlier in this session (web: 1204 tests, then 1206 after the round-3 fixtures)
+on the functionally identical source; the only delta to b0f2c64 is a doc comment in
+apps/web/src/tests/blankness-gates.ts (no code path).

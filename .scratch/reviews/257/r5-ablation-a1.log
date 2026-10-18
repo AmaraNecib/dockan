@@ -1,0 +1,23 @@
+$ bun test --max-concurrency=2 purchase.test.tsx -t "lands the caret on the lines region"
+bun test v1.4.2 (744846f84)
+
+src\pages\purchase.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+1462 |       // and dropping the owner on the document body restarts his tab order at the
+1463 |       // top of the page. The request falls back to the lines region instead: it is
+1464 |       // the only enabled anchor in the frozen draft and the frozen status line
+1465 |       // states why its controls are dead.
+1466 |       expect(createRow(container)).toBeNull();
+1467 |       expect(document.activeElement).not.toBe(document.body);
+                                                ^
+error: expect(received).not.toBe(expected)
+
+
+        [... the received HTMLBodyElement dump is elided: jsdom prints the whole body ...]
+
+ 0 pass
+ 50 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [15.02s]
+error: script "test" exited with code 1

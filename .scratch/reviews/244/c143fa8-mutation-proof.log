@@ -1,0 +1,75 @@
+### mutation proof at c143fa8 (tool: .scratch/reviews/244/390da2d-mutation-proof.sh, BASE=7f8f5c2)
+
+=================== MUTATION: revert apps/web/src/lib/numeric-input.ts ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "lib/numeric-input.ts::trimmed === "" [text.trim()]",
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [29.40ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [29.40ms]
+=================== MUTATION: revert apps/web/src/lib/supplier-opening-draft.ts ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "lib/supplier-opening-draft.ts::raw.trim() === """,
++   "lib/supplier-opening-draft.ts::input.amount.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.34ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.34ms]
+=================== MUTATION: revert apps/web/src/components/parties/supplier-return-draft.ts ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/parties/supplier-return-draft.ts::trimmed === "" [draft.trim()]",
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.41ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.41ms]
+=================== MUTATION: revert apps/web/src/components/parties/supplier-return-panel.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/parties/supplier-return-panel.tsx::draft.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.71ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.71ms]
+=================== MUTATION: revert apps/web/src/components/ui/amount-percentage-input.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/ui/amount-percentage-input.tsx::percentageDraft.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.79ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.79ms]
+=================== MUTATION: revert apps/web/src/pages/invoice.tsx ===================
+ratchet exit code: 1
++   "pages/invoice.tsx:503 pages/invoice.tsx::entered.length === 0 [returnableLines.filter((line) => (drafts[line.id] ?? "").trim()]",
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [1.18ms]
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "pages/invoice.tsx::trimmed === "" [draft.trim()]",
++   "pages/invoice.tsx::(drafts[line.id] ?? "").trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.73ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [1.18ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.73ms]
+=================== MUTATION: revert apps/web/src/pages/items.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "pages/items.tsx::thresholdText === "" [threshold.trim()]",
++   "pages/items.tsx::thresholdText !== "" [draft.threshold.trim()]",
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.36ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.36ms]
+=================== MUTATION: revert apps/web/src/pages/stock.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "pages/stock.tsx::unitCost.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.50ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.50ms]
+=================== MUTATION: revert apps/web/src/components/parties/customer-settle-panel.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/parties/customer-settle-panel.tsx::value.amount.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.55ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.55ms]
+=================== MUTATION: revert apps/web/src/components/parties/supplier-pay-panel.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/parties/supplier-pay-panel.tsx::value.amount.trim() !== """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.99ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [1.99ms]
+=================== MUTATION: revert apps/web/src/components/parties/supplier-adjust-panel.tsx ===================
+ratchet exit code: 1
+123 |   it("has every converted gate absent, so reverting one reddens this ratchet", () => {
++   "components/parties/supplier-adjust-panel.tsx::amountDraft.trim() === """,
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [5.34ms]
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [5.34ms]
+=================== ALL FILES RESTORED ===================

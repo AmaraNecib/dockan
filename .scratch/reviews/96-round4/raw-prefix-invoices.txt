@@ -1,0 +1,24 @@
+bun test v1.4.2 (744846f84)
+
+src\pages\invoices.test.tsx:
+🌐 i18next is made possible by our own product, Locize — consider powering your project with managed localization (AI, CDN, integrations): https://locize.com 💙
+244 |     await waitFor(() => page.numbers().length === 2);
+245 |     expect(page.empty()).toBeNull();
+246 | 
+247 |     // status is what narrowed the view to nothing, even though kind is set too:
+248 |     // focus must not go to a control that did not empty it
+249 |     expect(focusedTestId()).toBe("invoices-status-filter");
+                                  ^
+error: expect(received).toBe(expected)
+
+Expected: "invoices-status-filter"
+Received: "invoices-kind-filter"
+
+      at <anonymous> (D:\projects\mani-worktrees\issue-96-round4\apps\web\src\pages\invoices.test.tsx:249:29)
+(fail) InvoicesPage empty states (issue #96) > focuses the status filter, not the kind filter, when status changed last [757.86ms]
+
+ 0 pass
+ 5 filtered out
+ 1 fail
+ 5 expect() calls
+Ran 1 test across 1 file. [1.74s]

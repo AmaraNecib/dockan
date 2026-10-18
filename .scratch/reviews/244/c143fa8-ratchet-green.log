@@ -1,0 +1,32 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\blankness-ratchet.test.ts:
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.16ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [0.21ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [0.31ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.55ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.35ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > ignores gate text in a comment and does not match a call-expression receiver [0.32ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a gate whose comparison is split across two lines (#244 round 2, finding 1) [0.24ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a .trim() chain the formatter broke across lines (#244 round 2, same class) [0.45ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration whose right-hand side holds a bracketed group (#244 round 2) [0.91ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [0.47ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.29ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [0.36ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a type-annotated two-step declaration (#244 round 2) [0.28ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps a ?. chain receiver whole, including an optional subscript and a private field (#244 round 2) [12.87ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not attribute a reversed property read to a visible raw declaration (#244 round 2, precision) [0.23ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps the two-step gate on a line that also holds an inline gate (#244 round 2, finding 1) [0.39ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration split across two lines (#244 round 2, finding 1 same class) [0.23ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not let an inner normalised declaration mask an outer raw gate (#244 round 2, finding 2) [0.29ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [0.94ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [0.24ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not skip a raw gate whose receiver name merely contains a normaliser name [0.26ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > does not attribute a property read to a visible raw declaration (#244 round 2, precision) [0.14ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > names only files inside the scanned scope (a scope shrink reddens this) [0.24ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.32ms]
+
+ 24 pass
+ 0 fail
+ 41 expect() calls
+Ran 24 tests across 1 file. [826.00ms]

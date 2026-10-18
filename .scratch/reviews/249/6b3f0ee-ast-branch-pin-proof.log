@@ -1,0 +1,63 @@
+baseline ratchet exit code: 0
+--- delete inline trim call: exit 1, 44 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [1.28ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [0.80ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [1.03ms]
+--- delete two-step string binding: exit 1, 56 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [1.10ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration whose right-hand side holds a bracketed group (#244 round 2) [0.81ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a type-annotated two-step declaration (#244 round 2) [1.12ms]
+--- delete inline length of trim: exit 1, 8 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a .trim() chain the formatter broke across lines (#244 round 2, same class) [1.12ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.72ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [0.49ms]
+--- delete two-step length binding: exit 1, 4 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [0.96ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the optional-chained .length forms (a `?.` before .length changes nothing) [0.56ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [0.96ms]
+--- delete declaration collection: exit 1, 62 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [1.23ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches a declaration whose right-hand side holds a bracketed group (#244 round 2) [0.81ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [0.73ms]
+--- delete trim default fallback: exit 1, 2 failing test(s)
+    (fail) the AST blankness walk (#249) > keeps the `trim() ?? ""` fallback binding the regex scanner reported [0.88ms]
+    (fail) the AST blankness walk (#249) > keeps the `trim() ?? ""` fallback binding the regex scanner reported [0.88ms]
+--- delete normaliser skip: exit 1, 18 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [1.08ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > ignores gate text in a comment and does not match a call-expression receiver [1.03ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [1.43ms]
+--- delete normaliser-call guard: exit 1, 18 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every DETECTED gate, so a detected gate cannot slip in unclassified [0.92ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > ignores gate text in a comment and does not match a call-expression receiver [0.74ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [1.30ms]
+--- delete left blank operand: exit 1, 6 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the parenthesised nullish gate in both operand orders and with a non-literal fallback [2.25ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > pins both two-step branches and ignores a normalised declaration (#244 round 2, finding 4) [0.74ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.49ms]
+--- delete right blank operand: exit 1, 41 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.91ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every raw verdict present in the source (a silent conversion reddens this) [0.80ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.72ms]
+--- delete zero operand: exit 1, 4 failing test(s)
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.60ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the reversed .length gate (#244 round 2, same class as finding 1) [0.73ms]
+    (fail) raw-.trim() blankness ratchet on numeric drafts (#244) > catches the two-step .length gate on a declared raw trim, pinning both operand orders (#244 round 2) [1.60ms]
+--- delete relational refusal: exit 1, 2 failing test(s)
+    (fail) the AST blankness walk (#249) > refuses a relational trim test and an empty-template operand [0.76ms]
+    (fail) the AST blankness walk (#249) > refuses a relational trim test and an empty-template operand [0.76ms]
+--- delete truthiness refusal: exit 1, 6 failing test(s)
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a raw trim instead of skipping it [0.81ms]
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a raw trim's length, inline and two-step [0.47ms]
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a bound raw trim, not only on the call [0.71ms]
+--- delete empty-template refusal: exit 1, 2 failing test(s)
+    (fail) the AST blankness walk (#249) > refuses a relational trim test and an empty-template operand [1.48ms]
+    (fail) the AST blankness walk (#249) > refuses a relational trim test and an empty-template operand [1.48ms]
+--- delete length truthiness refusal: exit 1, 2 failing test(s)
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a raw trim's length, inline and two-step [0.73ms]
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a raw trim's length, inline and two-step [0.73ms]
+--- delete bound truthiness refusal: exit 1, 2 failing test(s)
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a bound raw trim, not only on the call [1.02ms]
+    (fail) the AST blankness walk (#249) > refuses a truthiness test on a bound raw trim, not only on the call [1.02ms]
+AST branch-pin proof PASSED: all 16 branches redden the suite when deleted
+restored ratchet exit code: 0
+scanner restored byte-identical and green

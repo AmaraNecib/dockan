@@ -1,0 +1,55 @@
+# Trimmed extract of the full `bun run test` log for #257 round 5 (a9b6f6d).
+# The full log was 5,855 lines / 532 KB of passing-test noise; this extract keeps
+# every #257 line, every workspace's pass/fail summary, and the turbo summary.
+
+$ turbo test --concurrency=2 && bun test ./scripts/
+• turbo 2.10.11
+
+   • Packages in scope: @dokan/api, @dokan/contracts, @dokan/desktop, @dokan/e2e-support, @dokan/web
+   • Running test in 5 packages
+   • Remote caching disabled, using shared worktree cache
+
+--- every #257 purchase line ---
+4755:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > creates the product on the line and keeps the quantity and unit cost the owner typed [1001.08ms]
+4756:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > uses a typed selling price for the product it creates [845.21ms]
+4757:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a nameless create without calling the server, and keeps the form on its line [687.12ms]
+4758:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a create with no category picked, naming the category [490.73ms]
+4759:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the line as it was when the create is abandoned mid-flight [679.87ms]
+4760:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > changes the product on a line from its own picker, keeping the typed values [285.33ms]
+4761:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the line when the owner re-picks the product it already holds [341.64ms]
+4762:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > creates the product from a line whose unit cost is still zero [692.95ms]
+4763:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses an unreadable selling price instead of sending it to the server [472.56ms]
+4764:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > collapses the form when the line's own button is pressed again, without creating [178.32ms]
+4765:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > returns the caret to the line's create button when the form is cancelled [179.65ms]
+4766:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > lands the caret on the lines region when a cancel races the in-flight save (round 5, F1) [279.31ms]
+4767:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > abandons a create when the owner opens another line's form mid-flight [363.79ms]
+4768:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > drops the create form with the line when the owner deletes it [518.23ms]
+4769:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > does not let a create in flight re-point the line that re-adds its deleted item (round 2, F1) [530.11ms]
+4770:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > blocks the invoice save while a line create is in flight (round 2, F2) [470.24ms]
+4771:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > frees the invoice save when the owner cancels the create in flight (round 2, F2) [981.63ms]
+4772:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > lets only one create be in flight, so the save gate holds a single slot (round 2, F2) [1022.55ms]
+4773:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > frees the save when the create fails while the form is still on its line (round 2, F2) [1011.52ms]
+4774:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses to re-point a line while the invoice save is in flight (round 4, F1) [989.68ms]
+4775:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a line-create submit that no disabled button produced (round 4, F1 belt) [1010.38ms]
+4786:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > refuses a catalog pick that would re-point a line under the in-flight save (round 4, F1 belt) [329.13ms]
+4787:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > freezes the rest of the invoice draft while the save is in flight (round 4, F1) [398.46ms]
+4788:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > folds a line into the line that already holds the picked product [263.09ms]
+4789:@dokan/web:test: (pass) PurchasePage quantity draft (#146) > inline product on the purchase line (#257) > keeps the category pick for the next line create, and no leftover name [1012.48ms]
+
+--- per-workspace summaries ---
+@dokan/e2e-support:test:  0 fail (package has no test files)
+119:@dokan/desktop:test:  68 pass
+120:@dokan/desktop:test:  0 fail
+122:@dokan/desktop:test: Ran 68 tests across 3 files. [7.92s]
+1907:@dokan/api:test:  950 pass
+1908:@dokan/api:test:  0 fail
+1910:@dokan/api:test: Ran 950 tests across 47 files. [277.01s]
+5684:@dokan/web:test:  1335 pass
+5685:@dokan/web:test:  0 fail
+5687:@dokan/web:test: Ran 1335 tests across 79 files. [244.20s]
+
+--- turbo summary ---
+5689: Tasks:    4 successful, 4 total
+5690-Cached:    3 cached, 4 total
+5691-  Time:    4m4.586s 
+5692-

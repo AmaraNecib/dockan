@@ -1,0 +1,20 @@
+$ turbo typecheck
+• turbo 2.10.11
+
+   • Packages in scope: @dokan/api, @dokan/contracts, @dokan/desktop, @dokan/e2e-support, @dokan/web
+   • Running typecheck in 5 packages
+   • Remote caching disabled, using shared worktree cache
+
+@dokan/web:typecheck: cache miss, executing 0ac1b93845be052e
+@dokan/e2e-support:typecheck: cache hit, replaying logs 964e50593224d957
+@dokan/contracts:typecheck: cache hit, replaying logs 0b9cec8777482f82
+@dokan/contracts:typecheck: $ tsc --noEmit
+@dokan/e2e-support:typecheck: $ tsc --noEmit
+@dokan/api:typecheck: cache hit, replaying logs f6495f605c52f0de
+@dokan/api:typecheck: $ tsc --noEmit
+@dokan/web:typecheck: $ tsc --noEmit
+
+ Tasks:    4 successful, 4 total
+Cached:    3 cached, 4 total
+  Time:    18.747s 
+

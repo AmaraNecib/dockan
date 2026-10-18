@@ -1,0 +1,7 @@
+### gate-set-diff at 25dfa92
+reference f30581c gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at f30581c is empty (ADDED [] / REMOVED [], 32 gates)
+exit: 0

@@ -1,0 +1,43 @@
+### gate-set diff at b0f2c64
+
+$ bash .scratch/reviews/244/gate-set-diff.sh 92f40d0
+reference 92f40d0 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at 92f40d0 is empty (ADDED [] / REMOVED [], 32 gates)
+
+$ bash .scratch/reviews/244/gate-set-diff.sh 5fbe0f0
+reference 5fbe0f0 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at 5fbe0f0 is empty (ADDED [] / REMOVED [], 32 gates)
+
+$ bash .scratch/reviews/244/gate-set-diff.sh ad884d1
+reference ad884d1 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at ad884d1 is empty (ADDED [] / REMOVED [], 32 gates)
+
+$ bash .scratch/reviews/244/gate-set-diff.sh f30581c
+reference f30581c gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at f30581c is empty (ADDED [] / REMOVED [], 32 gates)
+
+$ bash .scratch/reviews/244/gate-set-diff.sh f827d28
+reference f827d28 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at f827d28 is empty (ADDED [] / REMOVED [], 32 gates)
+
+$ bash .scratch/reviews/244/gate-set-diff.sh ba5a0b0
+reference ba5a0b0 gates: 32
+current gates: 32
+ADDED []
+REMOVED []
+gate-set diff at ba5a0b0 is empty (ADDED [] / REMOVED [], 32 gates)

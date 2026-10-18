@@ -1,0 +1,33 @@
+bun test v1.4.2 (744846f84)
+
+src\lib\blankness-ratchet.test.ts:
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the numeric-draft reader surface (non-vacuous) [0.07ms]
+101 | 
+102 |   it("classifies every detected gate, so a new gate cannot slip in unclassified", () => {
+103 |     const unclassified = gates
+104 |       .filter((gate) => !CLASSIFIED.has(gate.signature))
+105 |       .map((gate) => `${gate.file}:${gate.line} ${gate.signature}`);
+106 |     expect(unclassified).toEqual([]);
+                               ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   "lib/ratchet-evidence-tmp.ts:4 lib/ratchet-evidence-tmp.ts::draft.trim() === """,
++ ]
+
+- Expected  - 1
++ Received  + 3
+
+      at <anonymous> (D:\projects\mani-worktrees\fix-244-blankness-ratchet\apps\web\src\lib\blankness-ratchet.test.ts:106:26)
+(fail) raw-.trim() blankness ratchet on numeric drafts (#244) > classifies every detected gate, so a new gate cannot slip in unclassified [2.02ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > keeps every gate marked raw (a silent conversion loses its classification) [0.15ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > has every converted gate absent, so reverting one reddens this ratchet [0.09ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner finds a synthetic unclassified gate (scanner self-test) [0.09ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > the scanner ignores a normalised receiver and a comment (not a raw gate) [0.08ms]
+(pass) raw-.trim() blankness ratchet on numeric drafts (#244) > scans the reversed, .length, parenthesised and optional-chained gate forms [0.21ms]
+
+ 6 pass
+ 1 fail
+ 13 expect() calls
+Ran 7 tests across 1 file. [325.00ms]

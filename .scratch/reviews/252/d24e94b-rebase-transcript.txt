@@ -1,14 +1,0 @@
-Auto-merging apps/api/src/rpc/router.test.ts
-Auto-merging apps/web/src/lib/i18n.ts
-Auto-merging apps/web/src/pages/supplier-opening-balance.test.tsx
-Auto-merging apps/web/src/pages/supplier-opening-balance.tsx
-CONFLICT (content): Merge conflict in apps/web/src/pages/supplier-opening-balance.tsx
-Auto-merging tests/e2e/supplier-adjustment.spec.ts
-CONFLICT (content): Merge conflict in tests/e2e/supplier-adjustment.spec.ts
-Rebasing (1/10)error: could not apply 5ab17fc... fix(web,api): put each supplier-direction label on the value its hint describes (#252)
-hint: Resolve all conflicts manually, mark them as resolved with
-hint: "git add/rm <conflicted_files>", then run "git rebase --continue".
-hint: You can instead skip this commit: run "git rebase --skip".
-hint: To abort and get back to the state before "git rebase", run "git rebase --abort".
-hint: Disable this message with "git config set advice.mergeConflict false"
-Could not apply 5ab17fc... fix(web,api): put each supplier-direction label on the value its hint describes (#252)

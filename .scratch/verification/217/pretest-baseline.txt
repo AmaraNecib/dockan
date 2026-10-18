@@ -1,8 +1,0 @@
-(pass) VaultGate > states the unrecoverable case on the first-run screen before anything is created [7.45ms]
-(pass) VaultGate > renders both setup passphrase fields with an identical app-controlled reveal (issue #167) [12.22ms]
-(pass) VaultGate > keeps the setup eye after a double toggle and still submits (issue #167) [29.58ms]
-
- 20 pass
- 0 fail
- 87 expect() calls
-Ran 20 tests across 1 file. [4.45s]

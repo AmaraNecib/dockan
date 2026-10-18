@@ -1,7 +1,0 @@
-=== mutation proof re-run against the updated test file (HEAD 6528d3d + test-audit fixes) ===
-Expected: "false"
-Received: "true"
-      at <anonymous> (D:\projects\mani-worktrees\fix-217-vault-single-failure\apps\web\src\components\vault\vault-gate.test.tsx:235:52)
-(fail) vault gate keeps one failure value (issue #217) > a failing recovery action never keeps the empty-passphrase blame, and editing cannot hide the server error [68.86ms]
- 20 pass
- 1 fail

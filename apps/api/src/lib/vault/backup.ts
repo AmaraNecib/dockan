@@ -4,6 +4,7 @@ import path from "node:path";
 import { writeFileAtomic } from "../atomic-file";
 import { GCM_TAG_BYTES, NONCE_BYTES } from "./crypto";
 import { VAULT_SNAPSHOT_MAGIC, parseVaultHeader } from "./format";
+import { acquireVaultLock } from "./lock";
 
 /**
  * Self-contained vault backup (finding: a snapshot copy alone cannot be
@@ -57,6 +58,27 @@ export function readVaultBackupBundle(bundle: Uint8Array): { headerText: string;
  * Restore a backup bundle into a data dir: `<dataDir>/vault/vault.json` plus
  * `<dataDir>/dokan.db.enc`, written atomically. The caller opens the dir with a
  * fresh VaultManager and unlocks with the passphrase or a recovery key.
+ *
+ * Restore is an OFFLINE write (issue #282). Every other path that writes into a
+ * data folder asks the single-writer lock at the instant of the write
+ * (ADR-0012 clause 3, #275); a restore that skipped that check could overwrite
+ * the snapshot of a shop still running on the same folder — the two-writer
+ * outcome the lock exists to prevent. So this function takes the folder's lock
+ * around its two writes, and the check is bound to the folder it writes:
+ *
+ * - `acquireVaultLock(dataDir)` refuses (VaultAlreadyLockedError) while a live
+ *   owner holds the folder — another instance, or this same process — and
+ *   reclaims a stale lock exactly as the next boot would, so a crashed
+ *   instance never blocks a restore.
+ * - `assertHeld()` runs before each write and once after the pair, so a lock
+ *   lost mid-restore stops the writes instead of overwriting the new owner's
+ *   data, and a restore that lost the folder is never reported as completed.
+ * - The lock is released before returning, so the VaultManager the caller boots
+ *   next can take it.
+ *
+ * A running instance that wants to restore over its own folder must therefore
+ * close the connection and release the lock first, or restore into a fresh dir
+ * as the cross-install restore does.
  */
 export async function extractVaultBackup(
   bundle: Uint8Array,
@@ -64,13 +86,24 @@ export async function extractVaultBackup(
 ): Promise<{ headerPath: string; snapshotPath: string }> {
   const decoded = readVaultBackupBundle(bundle);
   if (decoded === undefined) throw new Error("not a Dokan vault backup bundle");
-  const vaultDir = path.join(dataDir, "vault");
-  fs.mkdirSync(vaultDir, { recursive: true });
-  const headerPath = path.join(vaultDir, "vault.json");
-  const snapshotPath = path.join(dataDir, "dokan.db.enc");
-  // snapshot first, header second: the same ordering first-run setup uses, so a
-  // crash mid-restore leaves an unconfigured dir, never a header without data
-  await writeFileAtomic(snapshotPath, decoded.snapshot);
-  await writeFileAtomic(headerPath, decoded.headerText);
-  return { headerPath, snapshotPath };
+  // decode BEFORE locking: garbage input must not take or touch the folder
+  const lock = acquireVaultLock(dataDir);
+  try {
+    const vaultDir = path.join(dataDir, "vault");
+    fs.mkdirSync(vaultDir, { recursive: true });
+    const headerPath = path.join(vaultDir, "vault.json");
+    const snapshotPath = path.join(dataDir, "dokan.db.enc");
+    // snapshot first, header second: the same ordering first-run setup uses, so a
+    // crash mid-restore leaves an unconfigured dir, never a header without data
+    lock.assertHeld();
+    await writeFileAtomic(snapshotPath, decoded.snapshot);
+    lock.assertHeld();
+    await writeFileAtomic(headerPath, decoded.headerText);
+    // the pair landed only while the folder was still ours; a theft during the
+    // writes is a failed restore, never a silently successful one
+    lock.assertHeld();
+    return { headerPath, snapshotPath };
+  } finally {
+    lock.release();
+  }
 }

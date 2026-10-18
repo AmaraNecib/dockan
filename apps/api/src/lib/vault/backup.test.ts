@@ -9,6 +9,7 @@ import type { KdfParams } from "./crypto";
 import { createVaultBackupBundle, extractVaultBackup, readVaultBackupBundle } from "./backup";
 import { VaultCore } from "./core";
 import { VAULT_SNAPSHOT_MAGIC, VAULT_SNAPSHOT_VERSION } from "./format";
+import { acquireVaultLock, VaultAlreadyLockedError } from "./lock";
 import { VaultManager } from "./manager";
 import { AppLogger } from "../logger";
 import { createDrizzleStore } from "../../store/drizzle-store";
@@ -149,5 +150,95 @@ describe("vault backup bundle", () => {
     await recovered.unlockRecovery(recoveryKey);
     expect(recovered.unlocked).toBe(true);
     recovered.close();
+  });
+});
+
+/** A lock record on disk, as another instance or a crashed one would leave it. */
+function writeLockRecord(
+  dir: string,
+  overrides: Partial<{ pid: number; host: string; startedAt: string; heartbeatAt: string; token: string }> = {},
+): void {
+  fs.writeFileSync(
+    path.join(dir, "vault.lock"),
+    JSON.stringify({
+      pid: process.pid,
+      host: os.hostname(),
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      token: "other-owner",
+      ...overrides,
+    }),
+  );
+}
+
+/**
+ * Issue #282: the restore writes `dokan.db.enc` and the header, so it takes the
+ * folder's single-writer lock the way every other write path does. These tests
+ * fail if that guard is removed (the refusal test then restores successfully).
+ */
+describe("vault backup restore takes the data folder's lock", () => {
+  it("refuses while another instance holds the folder, and writes nothing", async () => {
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-held-");
+    const holder = acquireVaultLock(target);
+    try {
+      await expect(extractVaultBackup(bundle, target)).rejects.toThrow(VaultAlreadyLockedError);
+    } finally {
+      holder.release();
+    }
+    expect(fs.existsSync(path.join(target, "dokan.db.enc"))).toBe(false);
+    expect(fs.existsSync(path.join(target, "vault"))).toBe(false);
+  });
+
+  it("refuses a live holder whose heartbeat is stale instead of stealing the folder", async () => {
+    // the PID wins over the heartbeat on the local host (lock.test.ts): a quiet
+    // holder is never stolen from, so the restore refuses instead
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-quiet-holder-");
+    writeLockRecord(target, { heartbeatAt: new Date(Date.now() - 60 * 60_000).toISOString() });
+    await expect(extractVaultBackup(bundle, target)).rejects.toThrow(VaultAlreadyLockedError);
+  });
+
+  it("restores over a dead holder's stale lock, which the next boot would reclaim too", async () => {
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-dead-holder-");
+    // a lock left by a process that is gone (the crashed-instance restore)
+    const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
+    await child.exited;
+    writeLockRecord(target, { pid: child.pid });
+    const paths = await extractVaultBackup(bundle, target);
+    expect(fs.existsSync(paths.snapshotPath)).toBe(true);
+    expect(fs.existsSync(paths.headerPath)).toBe(true);
+  });
+
+  it("releases the folder lock, so the instance the caller boots next can take it", async () => {
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-release-");
+    await extractVaultBackup(bundle, target);
+    expect(fs.existsSync(path.join(target, "vault.lock"))).toBe(false);
+    // a leftover lock would make this throw
+    const next = acquireVaultLock(target);
+    next.release();
+  });
+
+  it("releases the folder lock when a write fails, and does not lock a bundle it cannot decode", async () => {
+    const header = await headerText();
+    const bundle = createVaultBackupBundle(header, fakeSnapshot());
+    const target = tempDir("dokan-backup-failed-");
+    // a directory where the snapshot belongs makes the atomic rename fail
+    fs.mkdirSync(path.join(target, "dokan.db.enc"), { recursive: true });
+    await expect(extractVaultBackup(bundle, target)).rejects.toThrow();
+    expect(fs.existsSync(path.join(target, "vault.lock"))).toBe(false);
+    const next = acquireVaultLock(target);
+    next.release();
+
+    // decode runs before the lock is taken, so garbage never locks the folder
+    const garbageTarget = tempDir("dokan-backup-garbage-");
+    await expect(extractVaultBackup(Buffer.from("nope"), garbageTarget)).rejects.toThrow();
+    expect(fs.existsSync(path.join(garbageTarget, "vault.lock"))).toBe(false);
   });
 });

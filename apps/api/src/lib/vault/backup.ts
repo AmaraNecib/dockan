@@ -4,7 +4,7 @@ import path from "node:path";
 import { writeFileAtomic } from "../atomic-file";
 import { GCM_TAG_BYTES, NONCE_BYTES } from "./crypto";
 import { VAULT_SNAPSHOT_MAGIC, parseVaultHeader } from "./format";
-import { acquireVaultLock } from "./lock";
+import { acquireVaultLock, type VaultLockOwner } from "./lock";
 
 /**
  * Self-contained vault backup (finding: a snapshot copy alone cannot be
@@ -60,9 +60,15 @@ export type ExtractVaultBackupOptions = {
    * `VaultLockLostError` fails the call. Passing a handler is also what keeps
    * the lock's default fail-stop (`process.exit(1)`, for a holder that never
    * asked to hear about the loss) away from a caller that has an error path of
-   * its own. The reason says whether the record vanished or changed owner.
+   * its own. The reason says whether the record vanished or changed owner, and
+   * `holder` names the instance that took the folder when it was replaced.
+   *
+   * The hook is a notification, not the failure path: a throw from it is
+   * swallowed, because the lock also reports a loss from its heartbeat timer,
+   * where one throw would become an uncaught exception and end the process this
+   * handler exists to keep alive.
    */
-  onLockLost?: (reason: string) => void;
+  onLockLost?: (reason: string, holder?: VaultLockOwner) => void;
 };
 
 /**
@@ -105,7 +111,15 @@ export async function extractVaultBackup(
     // a handler is always present: without one a lost lock fail-stops the whole
     // process inside the lock module, which is the wrong reaction for a caller
     // that can report a failed restore
-    onLost: (reason) => options.onLockLost?.(reason),
+    onLost: (reason, holder) => {
+      try {
+        options.onLockLost?.(reason, holder);
+      } catch {
+        // swallowing is deliberate: the heartbeat calls this hook from a timer,
+        // where a thrown error is an uncaught exception, and the loss itself
+        // still reaches the caller as VaultLockLostError
+      }
+    },
   });
   try {
     const vaultDir = path.join(dataDir, "vault");

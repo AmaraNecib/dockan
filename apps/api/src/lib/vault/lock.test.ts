@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { acquireVaultLock, closeVaultThenReleaseLock, VaultAlreadyLockedError, VaultLockUnavailableError, vaultLockRefusalPageHtml } from "./lock";
+import { acquireVaultLock, closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, VaultLockUnavailableError, vaultLockRefusalPageHtml, type VaultLockOwner } from "./lock";
+import { createAppConfig } from "../../config";
+import { createEncryptedConnection } from "../../db/encrypted-connection";
 
 let dir: string;
 
@@ -37,6 +39,17 @@ function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: 
       ...overrides,
     }),
   );
+}
+
+/**
+ * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
+ * The probe tests must not hang their outcome on whether a hardcoded pid
+ * happens to exist on the runner.
+ */
+async function reapedPid(): Promise<number> {
+  const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
+  await child.exited;
+  return child.pid;
 }
 
 describe("vault single-writer lock", () => {
@@ -79,13 +92,113 @@ describe("vault single-writer lock", () => {
   });
 
   it("reclaims a lock left by a dead same-host process", async () => {
-    const child = Bun.spawn(["bun", "-e", ""], { stdout: "ignore", stderr: "ignore" });
-    await child.exited;
-    const deadPid = child.pid;
+    const deadPid = await reapedPid();
     writeLock({ pid: deadPid, host: os.hostname(), heartbeatAt: new Date().toISOString() });
     const lock = acquireVaultLock(dir, fastSteal);
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
+  });
+
+  it("reclaims a lock the injected probe calls gone, even with a fresh heartbeat", async () => {
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date().toISOString() });
+    const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "gone" });
+    expect(lock.currentOwner().pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it("reclaims an inconclusive probe once the heartbeat is stale (EPERM on Windows, ADR-0012)", async () => {
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+    const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" });
+    expect(lock.currentOwner().pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it("refuses an inconclusive probe while the heartbeat is fresh", async () => {
+    // the pid is genuinely gone, so reverting the seam would reclaim and fail
+    // this test deterministically; only the heartbeat may keep it refused
+    writeLock({ pid: await reapedPid(), host: os.hostname(), heartbeatAt: new Date().toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
+  });
+
+  it("refuses a pid the probe answers as alive however old the heartbeat", () => {
+    writeLock({ pid: process.pid, host: os.hostname(), heartbeatAt: new Date(Date.now() - 60 * 60_000).toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "alive" })).toThrow(VaultAlreadyLockedError);
+  });
+
+  it("pins the 60s heartbeat window at its edges", () => {
+    // an inconclusive probe leaves the heartbeat as the only evidence
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 59_000).toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 61_000).toISOString() });
+    const lock = acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" });
+    expect(lock.currentOwner().pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it("holds the conservative refusal for a heartbeat dated in the future", () => {
+    // a foreign clock running ahead is not evidence of death: reclaiming would
+    // risk two writers, so the holder must stay refused
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() + 5 * 60_000).toISOString() });
+    expect(() => acquireVaultLock(dir, { ...fastSteal, probePid: () => "unknown" })).toThrow(VaultAlreadyLockedError);
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { heartbeatAt: string };
+    expect(Date.parse(owner.heartbeatAt)).toBeGreaterThan(Date.now());
+  });
+
+  it("assertHeld refuses a lock file that vanished, and fail-stops exactly once", () => {
+    let lost = 0;
+    const lock = acquireVaultLock(dir, {
+      ...fastSteal,
+      onLost: () => {
+        lost += 1;
+      },
+    });
+    fs.rmSync(lockPath(), { force: true });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toBe(1);
+  });
+
+  it("assertHeld refuses a released lock", () => {
+    const lock = acquireVaultLock(dir, fastSteal);
+    lock.release();
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+  });
+
+  it("the write guard refuses loudly when no lock was ever held, and passes while held", () => {
+    expect(() => requireHeldLock(undefined)()).toThrow("the vault write guard ran without a held lock");
+    const lock = acquireVaultLock(dir, fastSteal);
+    expect(() => requireHeldLock(lock)()).not.toThrow();
+    lock.release();
+  });
+
+  it("writes exactly the documented lock record at the documented path (criterion 10)", () => {
+    const lock = acquireVaultLock(dir);
+    expect(lock.path).toBe(path.join(dir, "vault.lock"));
+    // SAFETY: the lock record is JSON this process just wrote
+    const record = JSON.parse(fs.readFileSync(path.join(dir, "vault.lock"), "utf8")) as VaultLockOwner;
+    expect(Object.keys(record).sort()).toEqual(["heartbeatAt", "host", "pid", "startedAt", "token"]);
+    expect(record.pid).toBe(process.pid);
+    expect(record.host).toBe(os.hostname());
+    // both timestamps are real ISO instants, not a dropped field
+    expect(Number.isFinite(Date.parse(record.startedAt))).toBe(true);
+    expect(Number.isFinite(Date.parse(record.heartbeatAt))).toBe(true);
+    expect(record.token).toBe(lock.currentOwner().token);
+    lock.release();
+  });
+
+  it("abandons a reclaim when the holder looks live again after the settle window", () => {
+    writeLock({ pid: 4242, host: os.hostname(), heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString(), token: "still-ours" });
+    // first look: gone. After the settle it answers alive, as a holder whose
+    // heartbeat or process came back inside the window would
+    let probes = 0;
+    const probePid = (): "gone" | "alive" => (probes++ === 0 ? "gone" : "alive");
+    expect(() => acquireVaultLock(dir, { ...fastSteal, stealSettleMs: 20, probePid })).toThrow(VaultAlreadyLockedError);
+    expect(probes).toBeGreaterThanOrEqual(2);
+    // the record is untouched: the reclaim was abandoned, not raced
+    // SAFETY: the test wrote this JSON itself above
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe("still-ours");
   });
 
   it("reclaims an unreadable lock file instead of blocking forever", () => {
@@ -193,6 +306,101 @@ describe("vault single-writer lock", () => {
     expect(owner.token).toBe("another-owner");
   });
 
+  it("names the holder in the log and hands it to onLost on every loss", async () => {
+    const logged: string[] = [];
+    const holders: (VaultLockOwner | undefined)[] = [];
+    const lock = acquireVaultLock(dir, {
+      heartbeatIntervalMs: 20,
+      logger: {
+        warn() {
+          /* no warns expected on this path */
+        },
+        error(event, message) {
+          logged.push(`${event}::${message}`);
+        },
+      },
+      onLost: (_reason, holder) => holders.push(holder),
+    });
+    fs.rmSync(lockPath(), { force: true });
+    writeLock({ host: "shop-pc", pid: 4242, token: "another-owner" });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(holders.length).toBeGreaterThan(0);
+    expect(holders[0]?.host).toBe("shop-pc");
+    expect(holders[0]?.pid).toBe(4242);
+    expect(
+      logged.some((line) => line.includes("VAULT_LOCK_LOST") && line.includes("shop-pc") && line.includes("4242")),
+    ).toBe(true);
+    lock.release();
+  });
+
+  it("reclaim logs name the holder's machine and pid", () => {
+    const logged: string[] = [];
+    writeLock({ host: "dead-laptop", pid: 7777, heartbeatAt: new Date(Date.now() - 10 * 60_000).toISOString() });
+    const lock = acquireVaultLock(dir, {
+      ...fastSteal,
+      probePid: () => "unknown",
+      logger: {
+        warn(event, message) {
+          logged.push(`${event}::${message}`);
+        },
+        error() {
+          /* no errors expected */
+        },
+      },
+    });
+    expect(logged.some((line) => line.includes("VAULT_LOCK_RECLAIMED") && line.includes("dead-laptop") && line.includes("7777"))).toBe(
+      true,
+    );
+    lock.release();
+  });
+
+  it("abandons the store at shutdown once the folder is lost (ADR-0012 clause 3)", () => {
+    // without this, the loser's final checkpoint writes its stale image over
+    // the new owner's snapshot
+    const store = { close: async (): Promise<void> => undefined };
+    expect(connectionToCloseAtShutdown(true, store)).toBeUndefined();
+    expect(connectionToCloseAtShutdown(false, store)).toBe(store);
+    expect(connectionToCloseAtShutdown(true, undefined)).toBeUndefined();
+  });
+
+  it("a queued snapshot write refuses once the lock is stolen, and writes nothing (ADR-0012 clause 3)", async () => {
+    const lock = acquireVaultLock(dir, { ...fastSteal, onLost: () => undefined });
+    const snapshot = path.join(dir, "dokan.db.enc");
+    const conn = createEncryptedConnection({
+      vaultId: "11111111-2222-3333-4444-555555555555",
+      masterKey: Buffer.alloc(32, 7),
+      snapshotPath: snapshot,
+      fresh: true,
+      // the guard main.ts installs: the write path re-checks lock ownership
+      writeGuard: () => lock.assertHeld(),
+    });
+    try {
+      conn.raw.exec("CREATE TABLE t(a TEXT)");
+      conn.markDirty();
+      await conn.flush();
+      const before = fs.readFileSync(snapshot);
+
+      // the ADR ordering: mutate while we still hold the lock, QUEUE the
+      // persist, steal the folder before the queued job runs
+      conn.raw.exec("INSERT INTO t VALUES ('sale')");
+      conn.markDirty();
+      const queued = conn.persistIfDirty();
+      fs.rmSync(lockPath(), { force: true });
+      writeLock({ token: "the-new-owner" });
+
+      // the queued persist must refuse when it drains rather than overwrite
+      // the new owner's snapshot
+      await expect(queued).rejects.toThrow(VaultLockLostError);
+      expect(fs.readFileSync(snapshot)).toEqual(before);
+      // the fail-stop ran once, and the replacement's record survived
+      // SAFETY: the test wrote this JSON itself above
+      const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+      expect(owner.token).toBe("the-new-owner");
+    } finally {
+      conn.raw.close();
+    }
+  });
+
   it("holds the lock until the store close (final checkpoint) finishes (round-5)", async () => {
     const lock = acquireVaultLock(dir);
     let releaseObservedDuringClose: boolean | undefined;
@@ -257,5 +465,43 @@ describe("vault single-writer lock", () => {
     const lock = acquireVaultLock(dir, fastSteal);
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
+  });
+});
+
+describe("the vault lock refusal app", () => {
+  const owner: VaultLockOwner = {
+    pid: 4242,
+    host: "shop-pc",
+    startedAt: new Date().toISOString(),
+    heartbeatAt: new Date().toISOString(),
+    token: "other-owner",
+  };
+
+  it("answers the status route and /health with 503 and the refusal code (ADR-0012)", async () => {
+    const app = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const status = await app.fetch(new Request("http://localhost/api/vault/status"));
+    expect(status.status).toBe(503);
+    expect(await status.json()).toEqual({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } });
+
+    const health = await app.fetch(new Request("http://localhost/health"));
+    expect(health.status).toBe(503);
+    expect(await health.json()).toEqual({ ok: false, error: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+  });
+
+  it("serves the Arabic page elsewhere and never JSON for the UI route", async () => {
+    const app = createVaultLockRefusalApp(createAppConfig({}), new VaultAlreadyLockedError(owner, lockPath()));
+    const page = await app.fetch(new Request("http://localhost/"));
+    expect(page.status).toBe(503);
+    expect(await page.text()).toContain("البيانات مفتوحة في نسخة أخرى");
+  });
+
+  it("echoes the boot token so the shell keeps verifying the child", async () => {
+    const token = "c".repeat(64);
+    const app = createVaultLockRefusalApp(createAppConfig({ DOKAN_BOOT_TOKEN: token }), new VaultAlreadyLockedError(owner, lockPath()));
+    const ok = await app.fetch(new Request(`http://localhost/health-token?token=${token}`));
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ ok: true, token });
+    const wrong = await app.fetch(new Request("http://localhost/health-token?token=wrong"));
+    expect(wrong.status).toBe(404);
   });
 });

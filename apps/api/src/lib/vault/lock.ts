@@ -8,6 +8,7 @@ import { z } from "zod";
 
 import type { AppConfig } from "../../config";
 import { tokenMatches } from "../boot-token";
+import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } from "../pid-liveness";
 
 /**
  * Single-writer lock for the vault data folder (issue #142). The runtime
@@ -22,15 +23,20 @@ import { tokenMatches } from "../boot-token";
  * `{ pid, host, startedAt, heartbeatAt, token }`, keeps the file descriptor
  * open, and heartbeats every 10s. A second process refuses; a lock left by a
  * dead holder is reclaimed:
- *   - same host: the PID must be gone (`process.kill(pid, 0)` → ESRCH);
+ *   - same host: the PID must be gone, or the probe must be inconclusive AND
+ *     the heartbeat older than the staleness window. `process.kill(pid, 0)`
+ *     answers exactly while it does not throw (`ESRCH` = gone); `EPERM`, which
+ *     on Windows also covers a pid that no longer runs, cannot tell, so the
+ *     heartbeat decides (`lib/pid-liveness.ts`, ADR-0012);
  *   - another host (a stick moved while a process was killed): the heartbeat
  *     must be older than 60s, because a live remote process keeps beating.
  * The heartbeat is what makes the portable-stick case recoverable without ever
  * trusting a clock-only timeout for a live same-host process.
  *
  * Losing the lock file while running (someone deleted it) is fail-stop: the
- * `onLost` callback fires so the caller can exit rather than run without
- * exclusivity. The module never exits by itself when `onLost` is provided.
+ * `onLost` callback fires so the caller can stop writing and refuse rather than
+ * run without exclusivity. The module never exits by itself when `onLost` is
+ * provided.
  */
 
 export type VaultLockOwner = {
@@ -67,18 +73,29 @@ export type VaultLockOptions = {
   readRetryDelayMs?: number;
   /** settle window before stealing a stale lock, to lose a steal race safely */
   stealSettleMs?: number;
-  /** fail-stop hook: the lock disappeared or became unwritable while held */
-  onLost?: (reason: string) => void;
+  /**
+   * fail-stop hook: the lock disappeared or became unwritable while held. The
+   * holder argument is the new owner when the record named one, so the caller
+   * can say who took the folder.
+   */
+  onLost?: (reason: string, holder?: VaultLockOwner) => void;
+  /** the pid-liveness probe; injectable so tests can force `unknown` (EPERM) */
+  probePid?: PidLivenessProbe;
 };
 
 export class VaultAlreadyLockedError extends Error {
+  /**
+   * `lockPath` is optional: a live holder identified by its own record needs no
+   * path to be named (the refusal page shows the holder), and inventing an
+   * empty-string sentinel at those call sites would be worse than omitting it.
+   */
   constructor(
     readonly owner: VaultLockOwner | undefined,
-    readonly lockPath: string,
+    readonly lockPath?: string,
   ) {
     super(
       owner === undefined
-        ? `another Dokan instance is using this data folder (${lockPath})`
+        ? `another Dokan instance is using this data folder${lockPath === undefined ? "" : ` (${lockPath})`}`
         : `another Dokan instance is using this data folder (${owner.host}, pid ${owner.pid})`,
     );
     this.name = "VaultAlreadyLockedError";
@@ -96,19 +113,15 @@ export class VaultLockUnavailableError extends Error {
   }
 }
 
-function errnoCode(error: Error): string | undefined {
-  if (!("code" in error)) return undefined;
-  // SAFETY: the `"code" in error` probe above established the NodeJS errno shape
-  return (error as NodeJS.ErrnoException).code;
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the process exists but is owned by someone else
-    return error instanceof Error && errnoCode(error) === "EPERM";
+/**
+ * A write was refused because this process no longer owns the single-writer
+ * lock (ADR-0012 clause 3). The write path asks `VaultLock.assertHeld()` at
+ * the instant of each write, so it does not wait for the heartbeat timer.
+ */
+export class VaultLockLostError extends Error {
+  constructor(readonly lockPath: string) {
+    super(`the single-writer lock at ${lockPath} is no longer held by this process`);
+    this.name = "VaultLockLostError";
   }
 }
 
@@ -134,12 +147,33 @@ function readOwner(lockPath: string, options: VaultLockOptions): VaultLockOwner 
   return undefined;
 }
 
-/** True when the recorded holder is (or may be) still running. */
-function holderIsLive(owner: VaultLockOwner, options: VaultLockOptions): boolean {
-  if (owner.host === os.hostname()) return isAlive(owner.pid);
+/** True when the recorded heartbeat is inside the staleness window. */
+function heartbeatIsFresh(owner: VaultLockOwner, options: VaultLockOptions): boolean {
   const heartbeat = Date.parse(owner.heartbeatAt);
   if (!Number.isFinite(heartbeat)) return false;
-  return Date.now() - heartbeat <= (options.staleHeartbeatMs ?? 60_000);
+  const age = Date.now() - heartbeat;
+  // A stamp in the future is not evidence of death: a foreign clock running
+  // ahead must hold the conservative refusal, never invite a reclaim. Only
+  // non-negative ages are measured against the window.
+  if (age < 0) return true;
+  return age <= (options.staleHeartbeatMs ?? 60_000);
+}
+
+/**
+ * True when the recorded holder is (or may be) still running.
+ *
+ * On this host the pid probe is exact whenever it answers: no throw is alive,
+ * `ESRCH` is gone, and anything else is inconclusive, so the recorded
+ * heartbeat decides. A pid that answers as alive still wins over an old
+ * heartbeat (the round-5 rule); only the unknowable case changes (ADR-0012).
+ */
+function holderIsLive(owner: VaultLockOwner, options: VaultLockOptions): boolean {
+  if (owner.host !== os.hostname()) return heartbeatIsFresh(owner, options);
+  const probe = options.probePid ?? probePidLiveness;
+  const liveness: PidLiveness = probe(owner.pid);
+  if (liveness === "alive") return true;
+  if (liveness === "gone") return false;
+  return heartbeatIsFresh(owner, options);
 }
 
 export class VaultLock {
@@ -166,6 +200,26 @@ export class VaultLock {
     return this.owner;
   }
 
+  /**
+   * The WRITE-path ownership check (ADR-0012 clause 3). The
+   * heartbeat alone is not enough: a snapshot persist already queued can run
+   * before the next heartbeat and overwrite the new owner's data. Every write
+   * asks here instead, and the answer is read from the lock file NOW (the same
+   * identity comparison the heartbeat uses), so the guard does not depend on
+   * `lost()` having already fired. The first loss still runs the fail-stop
+   * synchronously, then this throws so the write is refused.
+   */
+  assertHeld(): void {
+    if (this.released) throw new VaultLockLostError(this.path);
+    const current = readOwnerOnce(this.path);
+    if (current !== undefined && current.token === this.owner.token) return;
+    this.lost(
+      current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner",
+      current,
+    );
+    throw new VaultLockLostError(this.path);
+  }
+
   private arm(): void {
     activeLocks.add(this);
     ensureExitHook();
@@ -182,7 +236,10 @@ export class VaultLock {
       // write would make us a second writer (round-5 finding)
       const current = readOwnerOnce(this.path);
       if (current === undefined || current.token !== this.owner.token) {
-        this.lost(current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner");
+        this.lost(
+          current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner",
+          current,
+        );
         return;
       }
       const next: VaultLockOwner = { ...this.owner, heartbeatAt: new Date().toISOString() };
@@ -200,11 +257,14 @@ export class VaultLock {
     }
   }
 
-  private lost(reason: string): void {
-    this.options.logger?.error("VAULT_LOCK_LOST", `the single-writer lock was lost: ${reason}`);
+  private lost(reason: string, holder?: VaultLockOwner): void {
+    // name the holder on every loss: a stuck install must be diagnosable from
+    // the log alone
+    const who = holder === undefined ? "the holder is unknown" : `the holder is ${holder.host} pid ${holder.pid}`;
+    this.options.logger?.error("VAULT_LOCK_LOST", `the single-writer lock was lost (${reason}); ${who}`);
     const handler = this.options.onLost;
     this.release();
-    if (handler !== undefined) handler(reason);
+    if (handler !== undefined) handler(reason, holder);
     else process.exit(1);
   }
 
@@ -228,6 +288,19 @@ export class VaultLock {
       /* already gone */
     }
   }
+}
+
+/**
+ * The snapshot write guard main.ts installs: refuse loudly when no lock was
+ * ever held. A missing lock must never turn the guard into a silent no-op
+ * (ADR-0012 clause 3); that would let a store write with no exclusivity at
+ * all. Exported so the no-lock branch is pinned by a unit test.
+ */
+export function requireHeldLock(lock: VaultLock | undefined): () => void {
+  return () => {
+    if (lock === undefined) throw new Error("the vault write guard ran without a held lock");
+    lock.assertHeld();
+  };
 }
 
 /**
@@ -326,10 +399,14 @@ export function acquireVaultLock(dataDir: string, options: VaultLockOptions = {}
     const existing = readOwner(lockPath, options);
     if (existing !== undefined && holderIsLive(existing, options)) throw new VaultAlreadyLockedError(existing, lockPath);
     // stale (dead same-host PID, quiet foreign heartbeat, or unreadable):
-    // settle so a near-simultaneous reclaimer is likely decided, then reclaim
-    // atomically; a lost race refuses this boot instead of acquiring over it
+    // settle so a near-simultaneous reclaimer is likely decided, then re-read
+    // and re-check IMMEDIATELY before the rename. Without the second check a
+    // holder whose heartbeat lands inside the settle window would be stolen
+    // from; a lost race refuses this boot instead of acquiring over it.
     Bun.sleepSync(options.stealSettleMs ?? 200);
-    const outcome = reclaimStaleLock(lockPath, readOwner(lockPath, options), options);
+    const settled = readOwner(lockPath, options);
+    if (settled !== undefined && holderIsLive(settled, options)) throw new VaultAlreadyLockedError(settled, lockPath);
+    const outcome = reclaimStaleLock(lockPath, settled, options);
     if (outcome === "raced") {
       throw new VaultAlreadyLockedError(readOwner(lockPath, options), lockPath);
     }
@@ -445,6 +522,20 @@ export async function closeVaultThenReleaseLock(
 }
 
 /**
+ * The connection a losing holder may close at shutdown. A lost lock means
+ * another copy owns the folder now, so the abandoned store is `undefined`: its
+ * final checkpoint would write this instance's stale image over the new
+ * owner's snapshot (ADR-0012 clause 3). Exported so this decision is pinned by
+ * a unit test and main.ts cannot drift away from it.
+ */
+export function connectionToCloseAtShutdown<T>(
+  lockLost: boolean,
+  connection: T | undefined,
+): T | undefined {
+  return lockLost ? undefined : connection;
+}
+
+/**
  * The minimal refusal app a second instance serves on its own reserved port:
  * `/health-token` keeps the desktop shell's identity probe working, `/health`
  * answers 503, and everything else is the Arabic lock page. The API, store and
@@ -459,6 +550,9 @@ export function createVaultLockRefusalApp(config: AppConfig, error: VaultAlready
     return c.text("not found", 404);
   });
   app.get("/health", (c) => c.json({ ok: false, error: "VAULT_LOCKED_BY_OTHER_INSTANCE" }, 503));
+  // the JSON route the app actually calls, so the web never parses the HTML
+  // page: 503 with the same code /health already answers
+  app.get("/api/vault/status", (c) => c.json({ error: { code: "VAULT_LOCKED_BY_OTHER_INSTANCE" } }, 503));
   app.all("*", (c) => c.html(vaultLockRefusalPageHtml(error.owner), 503));
   return app;
 }

@@ -23,7 +23,8 @@ import { ensureSessionSecret } from "./lib/session-secret";
 import { VaultAuthenticationError, normalizePassphrase } from "./lib/vault/crypto";
 import { VaultFormatError } from "./lib/vault/format";
 import { createVaultHttpApp, type VaultBootstrapInput } from "./lib/vault/http";
-import { closeVaultThenReleaseLock, createVaultLockRefusalApp, VaultAlreadyLockedError, acquireVaultLock, type VaultLock } from "./lib/vault/lock";
+import { readyHandlerFor } from "./lib/vault/boot-loss";
+import { closeVaultThenReleaseLock, connectionToCloseAtShutdown, createVaultLockRefusalApp, requireHeldLock, VaultAlreadyLockedError, VaultLockLostError, acquireVaultLock, type VaultLock, type VaultLockOwner } from "./lib/vault/lock";
 import { VaultLockedError, VaultManager, VaultNotUnlockedError, VaultSetupInProgressError, type VaultStatus } from "./lib/vault/manager";
 import { createRpcRouter } from "./rpc/router";
 import { createDrizzleStore } from "./store/drizzle-store";
@@ -59,13 +60,21 @@ const logger = new AppLogger(config.dataDir);
  * Arabic refusal page instead of touching the data.
  */
 let vaultLock: VaultLock | undefined;
+/** true once this instance lost the folder to another copy (fail-stop) */
+let lockLost = false;
 if (config.vault === "on") {
   try {
     vaultLock = acquireVaultLock(config.dataDir, {
       logger,
-      onLost: (reason) => {
-        logger.error("VAULT_LOCK_LOST", `the single-writer lock was lost (${reason}); exiting to avoid two writers`);
-        process.exit(1);
+      onLost: (_reason, holder) => {
+        // Fail-stop, but not exit (ADR-0012 clause 3): stop serving writes at
+        // once and answer the in-use refusal on the port already bound. An
+        // exiting sidecar left the shell's broker with nothing to talk to, so
+        // the web fell back to "server unreachable" — the wrong diagnosis.
+        // No second listener, no port-record publication, no new writes. The
+        // single VAULT_LOCK_LOST line is emitted by the lock itself.
+        lockLost = true;
+        activeHandler = buildLockRefusalHandler(holder);
       },
     });
   } catch (error) {
@@ -123,6 +132,21 @@ function buildOverlay(api: RequestHandler | undefined): RequestHandler {
     vaultState: () => vaultManager?.status().state ?? "disabled",
     webIndex,
   });
+}
+
+/**
+ * The refusal a running instance serves the moment it loses the folder: the
+ * same app a refused second instance serves, on the port this instance
+ * already owns. It opens no second listener and touches no port record. The
+ * boot-token echo stays, so the desktop shell keeps verifying this child
+ * instead of treating the refusal as a dead sidecar.
+ */
+function buildLockRefusalHandler(holder: VaultLockOwner | undefined): RequestHandler {
+  // the holder-free variant takes no path: there is no lock file to name when
+  // this instance never held the folder, and an empty-string sentinel would be
+  // worse than omitting it
+  const app = createVaultLockRefusalApp(config, new VaultAlreadyLockedError(holder));
+  return (request, env) => app.fetch(request, env);
 }
 
 /** Startup daily backup: one copy per Algeria-local day, validated by format. */
@@ -216,12 +240,30 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
   // first run: an orphan snapshot from a crashed attempt is overwritten
   if (input.fresh) storeInput.fresh = true;
   if (seedBytes !== undefined) storeInput.seedBytes = seedBytes;
+  // ADR-0012 clause 3: every snapshot write re-checks that this process still
+  // owns the folder, so a persist queued before another copy reclaimed the
+  // lock cannot overwrite that copy's data (the heartbeat alone is too slow).
+  // Fail loud, never open: a missing lock must not turn the guard into a no-op.
+  storeInput.writeGuard = requireHeldLock(vaultLock);
   const { conn, store } = openVaultStore(storeInput);
   // A committed unit that cannot be written to its snapshot is fail-stop: the
   // client must never get a "failed" answer for something already committed
   // (a retry would duplicate a sale/payment). Exiting here means the client
   // sees a connection loss, not a business refusal.
   conn.onFatalError = (error) => {
+    // A lost lock is not a snapshot failure: the write-path guard refused the
+    // write, and the lock's fail-stop already switched this instance to the
+    // in-use refusal. Exiting here would reproduce the bug this change fixes
+    // (the shell's broker would have nothing to talk to). The swallow is
+    // deliberate, but never wordless: the log must name the refusal, so an
+    // offline sale is not attributed to a disk failure.
+    if (error instanceof VaultLockLostError) {
+      logger.error(
+        "SERVER_ERROR",
+        "the encrypted snapshot write was refused: another copy owns the folder; this instance is serving the in-use refusal",
+      );
+      return;
+    }
     logger.error("SNAPSHOT_PERSIST_FAILED", "FATAL: encrypted snapshot could not be written; exiting to avoid divergence", error);
     process.exit(1);
   };
@@ -255,6 +297,16 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
     });
     const deps: AppDeps = { config, logger, auth, rpcRouter };
     const app = createApp(deps);
+    if (readyHandlerFor(lockLost) === "refused") {
+      // The folder was taken while this instance was booting (a heartbeat or a
+      // guarded write). Never install the live app: a mutation would commit in
+      // SQLite, its guarded persist would fail, and a retry would re-execute
+      // against the real app. Throwing refuses every caller at one place; a
+      // plain return left the broker free to commit the setup header and unlink
+      // plaintext files in a folder another copy owns.
+      logger.error("SERVER_ERROR", "the vault opened while another copy owns the folder; keeping the in-use refusal");
+      throw new VaultLockLostError(vaultLock?.path ?? vault.headerPath);
+    }
     activeConnection = conn;
     vaultStoreForBackup = store;
     appReady = true;
@@ -267,11 +319,15 @@ async function bootstrapVault(input: VaultBootstrapInput): Promise<void> {
       logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after unlock: ${cleanup.plaintextRemaining.join(", ")}`);
     }
     // unlock path only: the first-run path runs this after commitSetup, when
-    // the header exists and a self-contained backup can actually be written
-    if (!input.fresh) await runVaultDailyBackup();
+    // the header exists and a self-contained backup can actually be written.
+    // The cleanup above awaits, so a loss can land inside it: never start a
+    // backup in a folder another copy owns.
+    if (!input.fresh && readyHandlerFor(lockLost) === "live") await runVaultDailyBackup();
     logger.info("SERVER_BOOT_DONE", "vault store and auth ready", { driver: "sqlite-encrypted" });
   } catch (error) {
-    await conn.close();
+    // a lost folder abandons the store: closing it would run the final
+    // checkpoint over the new owner's snapshot (ADR-0012 clause 3)
+    if (!lockLost) await conn.close();
     throw error;
   }
 }
@@ -296,20 +352,32 @@ type VaultStatusPayload = {
   lockedForMs: number;
   unlocked: boolean;
   broker: boolean;
+  /**
+   * True once another copy owns the folder. `unlocked` is then false and
+   * `state` reads `"locked"` even though the manager still holds the
+   * in-memory image, so the shell neither reports a healthy unlocked vault nor
+   * sends an unlock down the broker while HTTP serves the refusal.
+   */
+  lockLost: boolean;
 };
 
-/** The gate status over the pipe (same fields the HTTP status route serves). */
+/** The gate status over the pipe (the HTTP status fields, plus `lockLost`). */
 function brokerStatusPayload(vault: VaultManager): VaultStatusPayload {
   const status = vault.status();
+  const unlocked = vault.unlocked && !lockLost;
   return {
     mode: "vault",
-    state: status.state,
+    // a lost folder is a refusal, not an unlocked vault: reporting state
+    // "unlocked" with unlocked:false invites the shell to send exactly the
+    // unlock the broker must refuse
+    state: lockLost ? "locked" : status.state,
     legacyDatabase: status.legacyDatabase,
-    // never advertise the wrap inventory before unlock
-    recoveryKeyCount: status.state === "unlocked" ? status.recoveryKeyCount : 0,
+    // never advertise the wrap inventory before unlock (or after a loss)
+    recoveryKeyCount: unlocked ? status.recoveryKeyCount : 0,
     lockedForMs: status.lockedForMs,
-    unlocked: vault.unlocked,
+    unlocked,
     broker: true,
+    lockLost,
   };
 }
 
@@ -411,6 +479,15 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
       writeBrokerReply({ ok: true, status: brokerStatusPayload(vault) });
       continue;
     }
+    // ADR-0012 clause 3: the broker is a second entry point over stdin, and the
+    // HTTP refusal does not close it. Once another copy owns the folder no
+    // action may reach the header, the snapshot or the plaintext sweep, and no
+    // session may be promised: answer the same typed refusal the HTTP port
+    // serves, and keep the loop alive so the shell can still ask for status.
+    if (lockLost) {
+      writeBrokerReply({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+      continue;
+    }
     try {
       if (request.action === "setup") {
         const passphrase = request.passphrase ?? "";
@@ -420,7 +497,16 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           process.exit(1);
         }
         const prepared = await vault.prepareSetup(passphrase);
+        // bootstrap throws VaultLockLostError when the folder is taken mid-boot, and
+        // the catch answers the typed refusal over the pipe. It also RETURNS EARLY
+        // when the app is already up, so a loss during its own await slips past the
+        // throw: refuse here too, before the header is committed, exactly as the
+        // unlock branch below does
         await bootstrapVault({ masterKey: vault.setupMasterKey(), vaultId: prepared.vaultId, fresh: true });
+        if (lockLost) {
+          writeBrokerReply({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+          continue;
+        }
         // the app is up; a concurrent resume would now be safe, but the broker is
         // single-request anyway
         vault.finishSetupBootstrap();
@@ -437,12 +523,17 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           recoveryKey: prepared.recoveryKey,
         });
         // the follow-up the shell waits for on its own (longer) budget; a
-        // sweep that throws reports UNKNOWN, never a clean empty warning
-        const cleanup = await classifyPlaintextCleanup(
-          () => vault.cleanupLegacyPlaintext(),
-          (error) =>
-            logger.error("VAULT_SETUP_CLEANUP_FAILED", "plaintext files could not be removed after vault setup", error),
-        );
+        // sweep that throws reports UNKNOWN, never a clean empty warning. A
+        // loss between the header commit and this sweep means the folder is not
+        // ours: never unlink in it, and report an honest UNKNOWN.
+        const skippedCleanup = { status: "unknown", remaining: [] } satisfies { status: PlaintextCleanupStatus; remaining: string[] };
+        const cleanup = lockLost
+          ? skippedCleanup
+          : await classifyPlaintextCleanup(
+              () => vault.cleanupLegacyPlaintext(),
+              (error) =>
+                logger.error("VAULT_SETUP_CLEANUP_FAILED", "plaintext files could not be removed after vault setup", error),
+            );
         if (cleanup.status === "remaining") {
           logger.warn("VAULT_PLAINTEXT_REMAINS", `plaintext files still readable after setup: ${cleanup.remaining.join(", ")}`);
         }
@@ -453,7 +544,7 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           plaintextRemaining: cleanup.remaining,
         });
         // the first daily backup needs the committed header, which now exists
-        await runVaultDailyBackup();
+        if (!lockLost) await runVaultDailyBackup();
         // wait for the owner's acknowledgement (the shell shows the key); a
         // closed pipe means the app quit on the key screen, which is safe: the
         // vault exists and the key can be regenerated after unlocking
@@ -477,9 +568,24 @@ async function runVaultBroker(vault: VaultManager): Promise<void> {
           ? await vault.unlockRecovery(request.recoveryKey ?? "")
           : await vault.unlock(request.passphrase ?? "");
       await bootstrapVault({ masterKey: vault.requireMasterKey(), vaultId: vault.metadata().vaultId, fresh: false });
+      // bootstrap throws when it has to open the store in a folder that is no
+      // longer ours, but it returns early when the app is already up: a loss
+      // during the unlock await must still refuse here, because promising a
+      // session would hand the shell a token every HTTP path rejects
+      if (lockLost) {
+        writeBrokerReply({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+        continue;
+      }
       writeBrokerReply({ ok: true, sessionToken: session.token, sessionGeneration: session.generation });
       return;
     } catch (error) {
+      // a guarded write inside the request may have discovered the loss: answer
+      // the typed refusal and keep the broker alive rather than exiting (the
+      // shell needs a process to talk to, and the store is now abandoned)
+      if (error instanceof VaultLockLostError) {
+        writeBrokerReply({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+        continue;
+      }
       const failure = brokerFailure(request.action, error instanceof Error ? error : new Error(String(error)));
       writeBrokerReply(failure);
       vault.close();
@@ -605,7 +711,11 @@ async function forgetPort(): Promise<void> {
  */
 async function closeStoreThenLock(): Promise<void> {
   try {
-    await closeVaultThenReleaseLock(activeConnection, vaultLock);
+    // A lost lock means another instance owns the folder now. Closing this
+    // connection would run a final checkpoint over ITS snapshot, so the
+    // abandoned store is left alone: no request can reach it any more, and
+    // the replacement instance's data is never overwritten (ADR-0012).
+    await closeVaultThenReleaseLock(connectionToCloseAtShutdown(lockLost, activeConnection), vaultLock);
   } catch (err) {
     logger.error("SERVER_ERROR", "store close failed during shutdown", err instanceof Error ? err : new Error(String(err)));
   }

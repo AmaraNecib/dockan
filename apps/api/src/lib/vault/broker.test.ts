@@ -78,6 +78,20 @@ function send(child: ChildProcessWithoutNullStreams, line: string): void {
   child.stdin.write(`${line}\n`);
 }
 
+/** Replace the running instance's lock record the way another copy would. */
+function forgeForeignLock(): void {
+  fs.writeFileSync(
+    path.join(dir, "vault.lock"),
+    JSON.stringify({
+      pid: 4242,
+      host: "another-machine",
+      startedAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      token: "the-new-owner",
+    }),
+  );
+}
+
 async function waitForHealth(apiPort: number, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -89,6 +103,34 @@ async function waitForHealth(apiPort: number, timeoutMs = 15_000): Promise<void>
     }
     if (Date.now() >= deadline) throw new Error("api never became healthy");
     await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * Poll the free status probe until the heartbeat notices the foreign lock. The
+ * status fields are asserted here: a lost folder must not read as an unlocked
+ * vault, or the shell sends exactly the unlock the broker has to refuse.
+ */
+async function waitForLostFolder(
+  activeChild: ChildProcessWithoutNullStreams,
+  nextLine: () => Promise<string>,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    send(activeChild, JSON.stringify({ action: "status" }));
+    // SAFETY: the broker status contract is a single JSON reply line
+    const reply = JSON.parse(await nextLine()) as {
+      ok: boolean;
+      status?: { lockLost?: boolean; unlocked?: boolean; state?: string };
+    };
+    if (reply.status?.lockLost === true) {
+      expect(reply.status.unlocked).toBe(false);
+      expect(reply.status.state).toBe("locked");
+      return;
+    }
+    if (Date.now() >= deadline) throw new Error("the broker never reported the lost folder");
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 }
 
@@ -229,10 +271,13 @@ describe("desktop shell vault broker", () => {
     const nextLine = lineReader(child);
     send(child, JSON.stringify({ action: "status" }));
     // SAFETY: the broker status contract is a single JSON reply line
-    const statusReply = JSON.parse(await nextLine()) as { ok: boolean; status?: { broker?: boolean; state?: string } };
+    const statusReply = JSON.parse(await nextLine()) as { ok: boolean; status?: { broker?: boolean; state?: string; unlocked?: boolean; lockLost?: boolean } };
     expect(statusReply.ok).toBe(true);
     expect(statusReply.status?.broker).toBe(true);
     expect(statusReply.status?.state).toBe("unconfigured");
+    // the lock-loss flag is always present, so the shell never has to infer it
+    expect(statusReply.status?.unlocked).toBe(false);
+    expect(statusReply.status?.lockLost).toBe(false);
 
     // the same child still takes the real one-shot request
     send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
@@ -242,6 +287,73 @@ describe("desktop shell vault broker", () => {
     expect(setupReply.recoveryKey).toMatch(/^([A-Z2-7]{4}-){8}[A-Z2-7]{2}$/);
     send(child, "ack");
     await waitForHealth(port);
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("refuses the broker's mutating actions after the folder is taken, and keeps a broker alive (ADR-0012 clause 3)", async () => {
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    // the child must hold the lock before it is taken: a forged record written
+    // first would make this process a refused second instance with no broker
+    // listening on the pipe
+    await waitForHealth(port);
+    forgeForeignLock();
+    await waitForLostFolder(child, nextLine);
+    // a mutating action is refused with the same typed code the HTTP port serves
+    send(child, JSON.stringify({ action: "unlock", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const refusal = JSON.parse(await nextLine()) as { ok: boolean; code?: string };
+    expect(refusal).toEqual({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+    // no exit: the shell keeps a broker to talk to
+    expect(child.exitCode).toBeNull();
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("refuses a setup that starts after the folder was taken, and commits no header", async () => {
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    await waitForHealth(port);
+    // the loss is discovered by a guarded write inside bootstrap, or by the
+    // heartbeat first: either path must refuse, not commit the header
+    forgeForeignLock();
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const reply = JSON.parse(await nextLine()) as { ok: boolean; code?: string; recoveryKey?: string };
+    expect(reply).toEqual({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+    // the loser never wrote the header the real owner would own
+    expect(fs.existsSync(path.join(dir, "vault", "vault.json"))).toBe(false);
+    expect(child.exitCode).toBeNull();
+  }, HEAVY_TEST_TIMEOUT_MS);
+
+  it("refuses a recovery reset after the folder is taken, and never rewrites the header (ADR-0012 clause 3)", async () => {
+    // a configured vault, so a rewrite would have a real header to land in
+    child = spawnBroker(dir, port);
+    const firstLine = lineReader(child);
+    send(child, JSON.stringify({ action: "setup", passphrase: "correct horse battery" }));
+    // SAFETY: the broker setup contract carries the one-time recovery key
+    const setupReply = JSON.parse(await firstLine()) as { recoveryKey: string };
+    send(child, "ack");
+    await waitForHealth(port);
+    await stopAndWait();
+    const headerPath = path.join(dir, "vault", "vault.json");
+    const headerBefore = fs.readFileSync(headerPath);
+
+    // a fresh broker session holds the folder, then another copy takes it
+    child = spawnBroker(dir, port);
+    const nextLine = lineReader(child);
+    await waitForHealth(port);
+    forgeForeignLock();
+    await waitForLostFolder(child, nextLine);
+
+    // the reset branch used to reach setPassphraseFromRecovery, which rewrites
+    // the header the owner's copy last-writer-wins back
+    send(
+      child,
+      JSON.stringify({ action: "reset", recoveryKey: setupReply.recoveryKey, newPassphrase: "a brand new passphrase" }),
+    );
+    // SAFETY: the broker contract is a single JSON reply line per request
+    const refusal = JSON.parse(await nextLine()) as { ok: boolean; code?: string };
+    expect(refusal).toEqual({ ok: false, code: "VAULT_LOCKED_BY_OTHER_INSTANCE" });
+    expect(fs.readFileSync(headerPath)).toEqual(headerBefore);
+    expect(child.exitCode).toBeNull();
   }, HEAVY_TEST_TIMEOUT_MS);
 
   it("refuses HTTP pre-boot credential routes in broker mode: the secret has only the pipe (issue #141)", async () => {

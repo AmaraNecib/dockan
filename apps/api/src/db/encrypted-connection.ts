@@ -72,6 +72,13 @@ export type EncryptedConnectionOptions = {
    * paths never set this: a committed snapshot must authenticate or refuse.
    */
   fresh?: boolean;
+  /**
+   * Called immediately before (and just after) every snapshot write; it must
+   * throw when this process no longer owns the vault folder. The heartbeat
+   * alone leaves a window in which a persist queued before the theft still
+   * overwrites the new owner's snapshot (ADR-0012 clause 3).
+   */
+  writeGuard?: () => void;
 };
 
 /** An unlock found a vault header but no encrypted database: the data is gone. */
@@ -203,19 +210,27 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
     const envelope = sealSnapshot(connectionKey, vaultId, raw.serialize());
     let lastError: Error | undefined;
     for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt += 1) {
+      // ADR-0012: a persist queued before the lock was stolen must refuse
+      // rather than overwrite the new owner's snapshot, so the guard is asked
+      // at the instant of the write and its throw is never retried
+      options.writeGuard?.();
       try {
         // the single-writer lock (lib/vault/lock.ts) keeps a second process
         // from holding a competing in-memory image, so this rename is the only
         // writer for the folder
         await writeFileAtomic(snapshotPath, envelope);
-        // only now is the version durable; a mutation during the write set
-        // mutationVersion beyond `version` and schedules the next flush
-        persistedVersion = version;
-        return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (attempt < WRITE_ATTEMPTS) await delay(WRITE_RETRY_DELAY_MS);
+        continue;
       }
+      // the bytes landed; report the version durable only while the folder is
+      // still ours, so a theft during the write is never mistaken for saved data
+      options.writeGuard?.();
+      // only now is the version durable; a mutation during the write set
+      // mutationVersion beyond `version` and schedules the next flush
+      persistedVersion = version;
+      return;
     }
     throw new SnapshotPersistenceError(lastError ?? new Error("unknown write failure"));
   }
@@ -248,6 +263,9 @@ export function createEncryptedConnection(options: EncryptedConnectionOptions): 
       // for the post-commit flush.
       if (connection.inTransaction) return;
       if (mutationVersion === persistedVersion && fs.existsSync(snapshotPath)) return;
+      // the same write guard as persistNow: a shutdown or backup checkpoint
+      // must not overwrite a snapshot the folder's new owner already wrote
+      options.writeGuard?.();
       writeFileAtomicSync(snapshotPath, sealSnapshot(connectionKey, vaultId, raw.serialize()));
       persistedVersion = mutationVersion;
     },

@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { pidIsAlive } from "./pid-liveness";
+
 /**
  * Port-record lifecycle: a per-process registry of live API instances plus a
  * canonical `.dokan-port` the web proxy reads. All mutation is serialized by
@@ -121,16 +123,9 @@ export function probeHostFor(bindHost: string): string {
   return bindHost;
 }
 
-export function pidIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    // SAFETY: process.kill throws only ErrnoException-shaped errors
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === "EPERM"; // EPERM = exists but not ours; ESRCH = gone
-  }
-}
+// pidIsAlive lives in ./pid-liveness.ts so the vault lock and this module share
+// one rule; a second copy is how the EPERM staleness bug survived (ADR-0012).
+export { pidIsAlive };
 
 /** one shared TCP probe: succeeds when {host}:{port} accepts a connection */
 export function portIsReachable(host: string, port: number, timeoutMs = 150): Promise<boolean> {

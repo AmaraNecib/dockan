@@ -12,7 +12,10 @@ Read `docs/engineering-workflow.md` first.
 PR, CI/Greptile, the merge decision and wisdom. The lane's last act is
 `crew_report`; it never pushes, never opens a PR and never merges.
 
-**Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
+**Wisdom: read it, never write it.** Before step 1, grep `.agents/wisdom/` for your area
+(`grep -rin "<symbol or failure mode>" .agents/wisdom/ | head -40`) and read the hits — not
+all 58 files. Lessons live in per-area folders (`api/`, `data/`, `e2e/`, `money/`, `process/`,
+`testing/`, `vault/`, `web/`, …); `.agents/wisdom/README.md` has the rule. Then apply
 what bears on the task, and say in your `crew_report` which lessons you applied —
 and which you deliberately did not. Wisdom is read-only for a lane; a candidate
 lesson goes in the `lesson` field of `crew_report` (a harness without that field

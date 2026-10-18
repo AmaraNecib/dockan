@@ -17,7 +17,12 @@
   deliberately did not. Wisdom is **read-only for a lane**: it never writes the
   file. A candidate lesson goes in the `lesson` field of `crew_report` (a harness
   without that field carries it in the report summary).
-- **The parent writes the entry, and only for a repeated pattern.** One
+- **A lesson lives in a category folder, and its filename never carries a date.**
+  `.agents/wisdom/<category>/<lesson>.md`: the folder is the area (`api`, `data`, `e2e`,
+  `money`, `process`, `testing`, `vault`, `web`, …), the filename says what the lesson
+  teaches. When a lesson recurs, **append to the existing file** and add a `Seen in:`
+  line — a second dated file for the same lesson is how a lane reads one of them,
+  misses the other, and re-derives it a third time. `README.md` holds the full rule. One
   occurrence is a report line, not wisdom; the parent records it when the same
   failure shows up across reports. Measured reason: 45 non-merge commits on
   `develop` touch `.agents/wisdom/` (46 with merges), six of those files carry
@@ -69,6 +74,27 @@ generated from it with `bun run skills:sync` and checked with
 `.claude/skills` by hand. The vendored TanStack skills carry local fixes, so an
 upstream sync must not clobber them: their pinned upstream commits, divergence
 count and re-apply checklist are in `docs/skills-vendoring.md`.
+
+## Pick the skill before you write code
+
+The workflow in `docs/engineering-workflow.md` and the skills in `.agents/skills/` are the
+same process in two shapes: the doc is the map, the skills are the per-phase instructions a
+session loads when it reaches that phase. **Read the doc, then load the skill for the phase
+you are in — do not improvise a process.**
+
+| Phase | Skill |
+|---|---|
+| Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
+| Design conversation before code | `grill-with-docs` |
+| Review round, in order | `debate` → `test-audit` → `code-review` |
+| Before the push | `guard` |
+| Greptile, either path | `cli-review` |
+| After a repeated failure | `capture-wisdom` (parent only) |
+| Every piece of writing, always | `unslop` |
+
+Two rules that hold across all of them: a lane **reads** wisdom and never writes it, and a
+lane **commits and reports** — it never pushes, opens a PR or merges. The parent owns those,
+plus CI, Greptile and the merge decision.
 
 ## Review lenses
 

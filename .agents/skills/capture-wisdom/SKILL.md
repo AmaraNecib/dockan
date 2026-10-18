@@ -1,6 +1,6 @@
 ---
 name: capture-wisdom
-description: "Read .agents/wisdom/*.md before starting a task; only the parent session writes them, and only when the same failure has occurred more than once. Lanes report lessons; they never write these files."
+description: "Read .agents/wisdom/**/*.md before starting a task; only the parent session writes them, and only when the same failure has occurred more than once. Lanes report lessons; they never write these files."
 argument-hint: "What repeated lesson to capture, or what task you're starting that might benefit from past wisdom"
 ---
 
@@ -14,7 +14,7 @@ owner resolved the same conflict by hand, and two lanes declined to record a
 lesson because the write would have marked their own review evidence stale (the
 numbers are in `AGENTS.md`, Authority).
 
-Read `.agents/wisdom/*.md` at the start of any task. Write to them only when the
+Read `.agents/wisdom/**/*.md` at the start of any task. Write to them only when the
 criterion below is met, and only from the parent session.
 
 ## When to write

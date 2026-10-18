@@ -70,6 +70,29 @@ generated from it with `bun run skills:sync` and checked with
 upstream sync must not clobber them: their pinned upstream commits, divergence
 count and re-apply checklist are in `docs/skills-vendoring.md`.
 
+## Review lenses
+
+**Every reviewed change runs all three lenses — `debate`, `test-audit`,
+`code-review` — not just High-assurance** (owner decision, 2026-10-18). The tier
+still decides how much scrutiny a failure mode deserves; it no longer decides
+whether the debate happens. Run them in that order, each as its own sub-agent,
+before the lane reports.
+
+- **The lenses run on a different model than the author.** Author lanes run
+  `zen-proxy/deepseek-v4.1-flash-free`; the three lenses run
+  `zen-proxy/glm-5.3-flash-free` (both via `zen-proxy`; the `opencode*` routes
+  have an expired key). A model reviewing its own diff shares the blind spots the
+  lens exists to catch, so the reviewer is never the author.
+- **A lane cannot self-certify a lens.** A lane that reports "I ran the debate"
+  has not run it. The parent re-runs the lens where the tool exists and records
+  the disclosure.
+- **Evidence lands in `.scratch/reviews/<issue-id>/<head-sha>-<lens>.md`**, which
+  `guard` checks before a push.
+- **The lenses return findings; they do not author.** Neither reviewer writes to
+  the worktree or takes the e2e slot (one full `test:e2e` run at a time). The
+  authoring session applies the fixes and re-runs the lens where the tier
+  requires a fresh look, so no lens ever signs off on its own edit.
+
 ## Merging
 
 **The class decides who merges.** A lane never merges. The parent session merges a

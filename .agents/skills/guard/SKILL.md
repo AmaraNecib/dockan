@@ -74,6 +74,7 @@ get the docs-only exemption.
 
 **Standard** (code, CI, workflow, config):
 ```
+[ ] Debate evidence exists and is not stale
 [ ] Test-audit evidence exists and is not stale
 [ ] Code-review evidence exists and is not stale
 ```
@@ -94,7 +95,7 @@ Run before the parent reports a local handoff or remote merge-readiness.
 [ ] Review evidence current for the selected tier
 [ ] Greptile CLI result is for the final HEAD and has no actionable findings
 [ ] CI — required checks green on GitHub (when the branch is pushed)
-[ ] The push and the PR came from the parent, and the merge only on the owner's word
+[ ] The push and the PR came from the parent, and the merge followed the gate's classes — a cheap-to-reverse, no-decision diff merges itself once green, an expensive-to-reverse or decision diff waits for the owner
 [ ] PR description — accurate and complete
 [ ] Any deferred items — documented with follow-up issues
 [ ] (Parent) Wisdom — captured only if the pattern repeated; lanes report lessons and never write `.agents/wisdom/`

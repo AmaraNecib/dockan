@@ -77,9 +77,11 @@ Collect all outputs.
 | Poor test names or structure | Fix it |
 | Missing await on async assertions | Fix it |
 
-### 5. Apply fixes, save evidence
+### 5. Save evidence; the authoring session applies the fixes
 
-Fix all items classified as "Fix it". Commit test fixes.
+The lens returns findings; it does not write to the worktree. The session that
+authored the change fixes everything classified as "Fix it" and commits, and the
+lens re-runs on the result when the tier requires a fresh look.
 
 Save findings to `.scratch/reviews/<issue-id>/<head-sha>-test-audit.md`.
 

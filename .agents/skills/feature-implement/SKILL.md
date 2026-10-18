@@ -9,7 +9,7 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 9 (Guard Phase 2).** Steps 10-13 are parent-owned: push,
-PR, CI/Greptile, merge-on-owner-word and wisdom. The lane's last act is
+PR, CI/Greptile, the merge decision and wisdom. The lane's last act is
 `crew_report`; it never pushes, never opens a PR and never merges.
 
 **Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
@@ -110,10 +110,15 @@ Load relevant skills from the workflow's quality check table:
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
-### 6. Debate — High-assurance only
+### 6. Debate — every reviewed change (Standard and High-assurance)
 
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
+
+Run this lens, `test-audit` and `code-review` on `zen-proxy/glm-5.3-flash-free` —
+never on the model that wrote the diff (`zen-proxy/deepseek-v4.1-flash-free`). The
+reviewer is never the author. A lane that reports "I ran the debate" has not run
+it; the parent re-runs the lens and records the disclosure.
 
 ### 7. Test audit — Standard and High-assurance
 
@@ -205,10 +210,12 @@ The parent reports: PR link, check status (local + CI), Greptile verdict, any de
 
 ## Merge rules
 
-**Parent-only — a lane never merges at all.** The parent session merges only when
-the owner says to merge, whatever the review says. A 5/5 Greptile verdict with no
-findings, anchored to the current head SHA, and every CI check green is the **bar
-to ask** — not permission to proceed.
+**Parent-only — a lane never merges at all.** The class decides who merges: a
+cheap-to-reverse diff with no decision in it merges itself once the gate is
+clean, and an expensive-to-reverse or decision diff waits for the owner's word.
+A 5/5 Greptile verdict with no findings, anchored to the current head SHA, and
+every CI check green is the **bar to merge at all** — auto-merging below it is
+not allowed, and a REFUSED verdict never merges.
 
 The gate is [`docs/verification-and-merge-gate.md`](../../../docs/verification-and-merge-gate.md):
 the four reasons, the evidence form (visual vs measured), the AUTO/OWNER/REFUSED

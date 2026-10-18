@@ -190,7 +190,7 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
     // may throw a bare `{ code }`, and flattening it first would lose the errno
     const thrown = thrownCodeSchema.safeParse(error);
     const code = thrown.success ? thrown.data.code : undefined;
-    if (code) return { kind: "gone" }; // ABLATION A: any read error is treated as ENOENT
+    if (code === "ENOENT") return { kind: "gone" };
     return {
       kind: "unreadable",
       code: code ?? "UNKNOWN",

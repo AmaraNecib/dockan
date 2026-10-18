@@ -16,7 +16,7 @@ the two suites killed each other's dev servers. `tasklist` showed the other
 lane's `playwright test` and a stale `bun run test:e2e` still alive.
 
 This is the same failure family as
-`2026-10-13-e2e-stale-server-and-checksum-flake.md`, but the trigger is another
+`../e2e/stale-server-and-checksum-flake.md`, but the trigger is another
 lane rather than this lane's own previous run. "A different set of specs fails
 each run" is the tell, and it costs a lot of time if you read it as a regression.
 

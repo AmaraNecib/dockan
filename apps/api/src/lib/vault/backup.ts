@@ -87,9 +87,12 @@ export type ExtractVaultBackupOptions = {
  *   owner holds the folder — another instance, or this same process — and
  *   reclaims a stale lock exactly as the next boot would, so a crashed
  *   instance never blocks a restore.
- * - `assertHeld()` runs before each write and once after the pair, so a lock
- *   lost mid-restore stops the writes instead of overwriting the new owner's
- *   data, and a restore that lost the folder is never reported as completed.
+ * - `assertHeld()` runs before each write and once after the pair: a loss seen
+ *   before a write stops that write, and a loss seen after the pair means the
+ *   restore is never reported as completed. It cannot interrupt a write already
+ *   in flight — the same check-before/check-after cadence the encrypted
+ *   connection uses. The theft test pins what that buys: a folder stolen during
+ *   the pair still fails the restore instead of silently succeeding.
  *   The loss raises `VaultLockLostError` for the caller to catch; it never
  *   ends the caller's process.
  * - The lock is released before returning, so the VaultManager the caller boots
@@ -110,7 +113,9 @@ export async function extractVaultBackup(
   const lock = acquireVaultLock(dataDir, {
     // a handler is always present: without one a lost lock fail-stops the whole
     // process inside the lock module, which is the wrong reaction for a caller
-    // that can report a failed restore
+    // that can report a failed restore.
+    // The lock releases before calling this hook, so the hook must not write
+    // into the folder itself: nothing guards that write any more.
     onLost: (reason, holder) => {
       try {
         options.onLockLost?.(reason, holder);
@@ -124,7 +129,6 @@ export async function extractVaultBackup(
   });
   try {
     const vaultDir = path.join(dataDir, "vault");
-    fs.mkdirSync(vaultDir, { recursive: true });
     const headerPath = path.join(vaultDir, "vault.json");
     const snapshotPath = path.join(dataDir, "dokan.db.enc");
     // snapshot first, header second: the same ordering first-run setup uses, so a
@@ -133,7 +137,10 @@ export async function extractVaultBackup(
     // merge: a failure between the two writes leaves the old header over the new
     // snapshot. Swapping the pair atomically is a separate change; #282 closes
     // the ownership hole only.
+    // The ownership check comes first: creating the directory is itself a write
+    // into the folder, and it used to run before any check (debate F2).
     lock.assertHeld();
+    fs.mkdirSync(vaultDir, { recursive: true });
     await writeFileAtomic(snapshotPath, decoded.snapshot);
     lock.assertHeld();
     await writeFileAtomic(headerPath, decoded.headerText);

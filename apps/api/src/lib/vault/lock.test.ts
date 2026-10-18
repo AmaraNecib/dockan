@@ -676,6 +676,79 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     expect(lost[0]).toBe("the lock file disappeared");
   });
 
+  it("bounds a hostile error code the same way as the message", () => {
+    const reads = countingReader(() => {
+      throw { code: `E\nBUSY: ${"x".repeat(5_000)}` };
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    // the code is folded and cut like the message: a code is a token, never a
+    // smuggled log line (critic r3-1)
+    expect(lost[0]).toContain("E BUSY: x");
+    expect(lost[0]).not.toContain("\n");
+    expect(lost[0]!.length).toBeLessThan(300);
+  });
+
+  it("clamps a negative or non-finite knob to the safe end", () => {
+    // NaN is not a budget: it falls back to the default instead of zeroing it
+    const nan = countingReader((lockPath, call) => {
+      if (call <= 2) throw errno("EBUSY", "EBUSY: resource busy or locked");
+      return realRead(lockPath);
+    });
+    const nanLock = acquireVaultLock(dir, {
+      transientReadRetries: Number.NaN,
+      transientReadRetryDelayMs: Number.NaN,
+      readLockFile: nan.readLockFile,
+      logger: nan.logger,
+    });
+    try {
+      expect(() => nanLock.assertHeld()).not.toThrow();
+      expect(nan.state.reads).toBe(3);
+    } finally {
+      nanLock.release();
+    }
+
+    // -1 truncates to no retries at all: one read, then the loss. Last, because
+    // a lock lost this way leaves its file behind for the next boot
+    const negative = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked");
+    });
+    const negativeLost: string[] = [];
+    const negativeLock = acquireVaultLock(dir, {
+      transientReadRetries: -1,
+      transientReadRetryDelayMs: -1,
+      readLockFile: negative.readLockFile,
+      logger: negative.logger,
+      onLost: (reason) => negativeLost.push(reason),
+    });
+    expect(() => negativeLock.assertHeld()).toThrow(VaultLockLostError);
+    expect(negative.state.readsAtLoss).toBe(1);
+    expect(negativeLost).toHaveLength(1);
+  });
+
+  it("keeps its patience at the default budget for most of a second", () => {
+    const reads = countingReader((lockPath, call) => {
+      if (call <= 8) throw errno("EBUSY", "EBUSY: resource busy or locked");
+      return realRead(lockPath);
+    });
+    // the knobs nobody sets: 8 x 100 ms of a scanner holding the file is inside
+    // the default patience, where the old 5 x 50 ms budget failed the holder
+    // closed on a healthy machine (critic r3-2)
+    const lock = acquireVaultLock(dir, { readLockFile: reads.readLockFile, logger: reads.logger });
+    try {
+      expect(() => lock.assertHeld()).not.toThrow();
+      expect(reads.state.reads).toBe(9);
+    } finally {
+      lock.release();
+    }
+  });
+
   it("caps the whole retry window even when a knob asks for hours", () => {
     const reads = countingReader((lockPath, call) => {
       if (call <= 2) throw errno("EBUSY", "EBUSY: resource busy or locked");
@@ -685,7 +758,7 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     const startedAt = Date.now();
     const lock = acquireVaultLock(dir, {
       transientReadRetries: 10_000,
-      transientReadRetryDelayMs: 60_000,
+      transientReadRetryDelayMs: 3_000,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
       onLost: (reason) => lost.push(reason),
@@ -693,9 +766,10 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     try {
       expect(() => lock.assertHeld()).not.toThrow();
       expect(reads.state.reads).toBe(3);
-      // unclamped this is 2 x 60 s; the window holds the whole sequence near a
-      // second, because it runs inside the write guard (critic N2)
-      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      // unclamped this is 2 x 3 s; the window holds the whole sequence near a
+      // second, because it runs inside the write guard, and a regression here
+      // fails in seconds rather than after the unclamped budget (critic N2)
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
       expect(lost).toEqual([]);
     } finally {
       lock.release();

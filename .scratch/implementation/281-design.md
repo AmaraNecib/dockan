@@ -50,9 +50,10 @@ Two readers over that classification:
 - `readHeldLock(lockPath, token, options)` — the holder path (`assertHeld` and
   `heartbeat`). `gone` is a loss now, a different token is a loss now, and
   `unreadable` is **held-and-retry**: up to `transientReadRetries` extra reads
-  (default 5 × 50 ms = 250 ms), and only after the budget is spent a fail-stop
-  whose reason names the code and the attempt count. Bounded, so a persistent
-  error still fails closed rather than reporting ownership we cannot attest to.
+  (default 10 × 100 ms = 1 s), and only after the budget is spent a fail-stop
+  whose reason names every code it saw and the attempt count. Bounded, so a
+  persistent error still fails closed rather than reporting ownership we cannot
+  attest to.
 
 `release()` gets the same classification and one rule: an `unreadable` record is
 **not deleted**. We cannot compare the token, so unlinking could delete a new
@@ -102,9 +103,13 @@ a loss reads again, so the raw count alone cannot pin the budget).
 10. `release()` over an unreadable record → one read, file kept.
 11. flapping `EBUSY`/`EACCES` → the reason names both codes, on one line.
 12. a non-Error `{ code: "ENOENT" }` thrown through the seam → gone at once.
-13. `transientReadRetries: 10_000` with a 60 s delay → held after 3 reads in
-    about a second (the window cap), and an always-failing read stops at 101
-    reads (the attempt cap).
+13. a hostile `{ code }` with a newline and 5 kB of padding → the reason stays
+    one short line.
+14. `transientReadRetries: -1` / `Number.NaN` → no retries / the default.
+15. the default budget rides out 8 × 100 ms of read failure, which the old
+    5 × 50 ms default failed closed on.
+16. `transientReadRetries: 10_000` with a 3 s delay → held after 3 reads inside
+    the window cap, and an always-failing read stops at the 101-read ceiling.
 
 ## Round-2 fixes (debate on 9a6a30c)
 
@@ -125,9 +130,30 @@ a loss reads again, so the raw count alone cannot pin the budget).
   replacement may lose as "the lock file disappeared". The outcome is the same
   prompt fail-stop; only the holder goes unnamed.
 
+## Round-3 fixes (debate on d93e550)
+
+- **r3-1 (4):** the *code* was the last unbounded piece of the reason. It is now
+  folded and capped like the message, so no throwing reader can smuggle a line
+  break or a megabyte into the JSONL (classification still compares the raw
+  code; only the log copy is folded).
+- **r3-2 (4):** the production default was the attenuated failure:
+  `main.ts` passes no knob, so the live budget was 5 × 50 ms = 250 ms, which a
+  real Windows scanner hold outlasts. Default is now 10 × 100 ms = 1 s, which
+  costs nothing on the fail-stop path — a replacement record or a missing file
+  is judged on the first read.
+- **r3-4 (2):** the `-1`/`NaN` half of the clamp now has a test, and the window
+  test fails in seconds instead of after its unclamped budget.
+- **r3-3 (3), not fixed — #275's knob:** `stealSettleMs` still goes into
+  `Bun.sleepSync` unclamped, and `readOwner`'s 100 × 500 ms ceiling is a boot
+  worst case. Both are pre-existing, boot-path only, and outside #281; reported
+  as a follow-up for the parent.
+
 ## Risks
 
-- The retry block is synchronous (`Bun.sleepSync`), 250 ms per check in the
+- The retry block is synchronous (`Bun.sleepSync`), 1 s per check in the worst
+  case at the default, and it runs inside the write guard. That stall is the
+  price of not killing a healthy holder, and it only happens while the file is
+  genuinely unreadable.
   worst case. A persistent error makes the first check fail closed, which is
   terminal for the write path, so the process pays it once; a flapping error
   can pay it per check (up to twice per business unit plus the checkpoint). The

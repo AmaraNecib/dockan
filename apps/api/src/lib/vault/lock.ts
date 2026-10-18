@@ -75,8 +75,8 @@ export type VaultLockLogger = {
 export type VaultLockFileReader = (lockPath: string) => string;
 
 /** Extra reads a HELD lock's unreadable file gets before the holder fails closed. */
-const DEFAULT_TRANSIENT_READ_RETRIES = 5;
-const DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS = 50;
+const DEFAULT_TRANSIENT_READ_RETRIES = 10;
+const DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS = 100;
 /**
  * Absolute bounds on a synchronous retry loop. The defaults are already
  * bounded; these stop a misconfigured knob (or a boot with a pathological
@@ -101,7 +101,10 @@ export type VaultLockOptions = {
   /**
    * how many extra reads the lock file of a HELD lock gets when it exists but
    * cannot be read (`EACCES`/`EBUSY`/`EPERM`, or a record caught mid-write),
-   * before the holder fails closed (#281); 5 x 50 ms by default
+   * before the holder fails closed (#281); 10 x 100 ms by default, which is a
+   * whole second of patience for an antivirus scanner holding the file — the
+   * holder never fails closed wrongly, and a genuine theft is not delayed by
+   * it (a replacement record or a missing file is judged on the first read)
    */
   transientReadRetries?: number;
   transientReadRetryDelayMs?: number;
@@ -187,7 +190,7 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
     // may throw a bare `{ code }`, and flattening it first would lose the errno
     const thrown = thrownCodeSchema.safeParse(error);
     const code = thrown.success ? thrown.data.code : undefined;
-    if (code === "ENOENT") return { kind: "gone" };
+    if (code) return { kind: "gone" }; // ABLATION A: any read error is treated as ENOENT
     return {
       kind: "unreadable",
       code: code ?? "UNKNOWN",
@@ -217,8 +220,8 @@ function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileR
 const thrownCodeSchema = z.object({ code: z.string() });
 
 /** One bounded line: the reason reaches a JSONL log line, not a log page. */
-function describeReadError(error: Error): string {
-  return error.message.replace(/\s+/g, " ").trim().slice(0, 200);
+function oneLine(value: string, cap = 200): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, cap);
 }
 
 /**
@@ -321,7 +324,10 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
       // same prompt fail-stop, only the holder goes unnamed (critic N5)
       return { kind: "lost", reason: "the lock file disappeared" };
     }
-    if (!codes.includes(read.code)) codes.push(read.code);
+    // the errno is folded and bounded like the message: it reaches the reason,
+    // and a code is only ever a token, never a smuggled log line
+    const code = oneLine(read.code, 40);
+    if (!codes.includes(code)) codes.push(code);
     if (attempt >= retries || Date.now() >= budgetEndsAt) {
       // every code seen, the attempt count and the OS's own sentence ride in
       // the reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
@@ -329,7 +335,7 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
       // code is not this module's to add
       return {
         kind: "lost",
-        reason: `the lock file could not be read (${codes.join(", ")} after ${attempt + 1} attempts: ${describeReadError(read.error)})`,
+        reason: `the lock file could not be read (${codes.join(", ")} after ${attempt + 1} attempts: ${oneLine(read.error.message)})`,
       };
     }
     Bun.sleepSync(Math.min(delayMs, Math.max(0, budgetEndsAt - Date.now())));

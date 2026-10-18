@@ -31,10 +31,12 @@ the other, and re-derives the lesson a third time.
 
 ## Who writes
 
-**The parent session only.** A lane reads this folder, applies what bears on its task, and reports
-which lessons it applied and which it deliberately did not. A candidate lesson goes in the `lesson`
-field of its report. One occurrence is a report line, not wisdom: the parent writes an entry when the
-same failure shows up across reports.
+**The parent session only.** A lane reads this folder, applies what bears on its task, and says
+which lessons it applied and which it deliberately did not **in its commit message body** — the
+durable handoff that travels with the branch, since a lane's last act is its commit and there is no
+report tool to write a field into. A candidate lesson goes there too, on a `Lesson:` line. One
+occurrence is a report line, not wisdom: the parent writes an entry when the same failure shows up
+across reports.
 
 ## How to read it
 

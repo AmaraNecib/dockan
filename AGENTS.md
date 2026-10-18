@@ -68,24 +68,32 @@ Either way, one writer per worktree, and a lane never pushes or merges.
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
 reuse a lane's session for the next PR.
 
-**Three lanes at a time, and an idle lane is a wasted one.** Close a lane's
-workspace the moment the parent has pushed its branch: a lane waiting on review
-(or on a rebase) is doing nothing while it holds RAM and CPU. Close first, then
-start the next lane in the freed slot. Prefer lanes that touch disjoint files;
-when two lanes share a store/router, nominate which one lands first and rebase
-the other onto it. Poll CI and Greptile in-session, never the lane.
+**Run as many lanes as the box can carry, and an idle lane is a wasted one.** No
+fixed count: measure it. A lane waiting on review, on CI or on a rebase is doing
+nothing while it holds RAM and CPU, so close it the moment the parent has pushed
+its branch and start the next one in the freed slot. Prefer lanes that touch
+disjoint files; when two lanes share a store/router, nominate which one lands
+first and rebase the other onto it. Poll CI and Greptile in-session, never the
+lane.
 
 **A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
 workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
-I can't see anything"*). Create lanes with `herdr worktree create` (new branch)
-or `herdr worktree open --path <worktree> --label <label>` (re-entering an
-existing worktree). Pass `--cwd` and VERIFY the pane's cwd before
-`herdr agent start`: a bare `herdr pane run "cd ..."` silently leaves the agent in
-the MAIN repo (owner complaint, same day).
+I can't see anything"*). `delegate_task` with `isolation: "worktree"` gives it
+one: it checks the work out from the parent's local commit, runs project setup,
+and wakes the parent when it finishes. The `herdr worktree create` /
+`herdr agent start` pair this paragraph used to prescribe went with the crew
+apparatus. Two things the mechanism does not do for you: a fresh worktree has no
+`node_modules`, so the lane's first command is `bun install --frozen-lockfile`,
+and it starts from the parent's **commit**, so commit before delegating or the
+lane cannot see the work. `t3_thread_launch` is the fallback and only for
+resuming work that exists uncommitted — see Lanes above.
 
-Why the lane limit is hard: five lanes went up at once on 2026-10-13, so finished
-lanes sat idle while new ones spawned, and sibling lanes fought over the shared
-dev ports 4317/5173 — each failing its own e2e run against the other's server.
+Two costs, and only one of them still binds. An idle lane holds RAM and CPU for
+nothing, which is why a finished lane is closed the moment its branch is pushed.
+The other was the shared dev ports 4317/5173: five lanes went up at once on
+2026-10-13 and each failed its own e2e run against a sibling's server. Per-lane
+`DOKAN_PORT` and `DOKAN_VAULT_PORT` fixed that (#202), so the count now follows
+measured capacity instead of the ports.
 
 ## Vendored skills
 

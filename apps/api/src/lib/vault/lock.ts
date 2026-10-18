@@ -37,6 +37,15 @@ import { errnoCode, probePidLiveness, type PidLiveness, type PidLivenessProbe } 
  * `onLost` callback fires so the caller can stop writing and refuse rather than
  * run without exclusivity. The module never exits by itself when `onLost` is
  * provided.
+ *
+ * A read that fails without the file being gone is NOT that loss (#281): a
+ * Windows sharing violation (`EACCES`/`EBUSY`/`EPERM`, antivirus or the indexer
+ * holding `vault.lock`) and a record caught mid-write are `unreadable`, not
+ * missing, so the holder retries them a bounded number of times and only then
+ * fails closed. `ENOENT` and a different owner's token still lose the lock at
+ * once, so this is not a new way to strand the folder. `release()` never
+ * unlinks a record it could not read, for the same reason: an unreadable file
+ * may be a new owner's.
  */
 
 export type VaultLockOwner = {
@@ -62,6 +71,13 @@ export type VaultLockLogger = {
   error(event: string, message: string, error?: Error): void;
 };
 
+/** Runs one read of the lock file; injectable so tests can force a read error. */
+export type VaultLockFileReader = (lockPath: string) => string;
+
+/** Extra reads a HELD lock's unreadable file gets before the holder fails closed. */
+const DEFAULT_TRANSIENT_READ_RETRIES = 5;
+const DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS = 50;
+
 export type VaultLockOptions = {
   logger?: VaultLockLogger;
   /** heartbeat cadence while the lock is held */
@@ -73,6 +89,15 @@ export type VaultLockOptions = {
   readRetryDelayMs?: number;
   /** settle window before stealing a stale lock, to lose a steal race safely */
   stealSettleMs?: number;
+  /**
+   * how many extra reads the lock file of a HELD lock gets when it exists but
+   * cannot be read (`EACCES`/`EBUSY`/`EPERM`, or a record caught mid-write),
+   * before the holder fails closed (#281); 5 x 50 ms by default
+   */
+  transientReadRetries?: number;
+  transientReadRetryDelayMs?: number;
+  /** the lock-file read; injectable so tests can force a read error (#281) */
+  readLockFile?: VaultLockFileReader;
   /**
    * fail-stop hook: the lock disappeared or became unwritable while held. The
    * holder argument is the new owner when the record named one, so the caller
@@ -125,23 +150,66 @@ export class VaultLockLostError extends Error {
   }
 }
 
-function readOwnerOnce(lockPath: string): VaultLockOwner | undefined {
-  try {
-    const parsed = ownerSchema.safeParse(JSON.parse(fs.readFileSync(lockPath, "utf8")));
-    return parsed.success ? parsed.data : undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * One read of the lock file, classified (#281). `ENOENT` is the only canonical
+ * "gone": the path does not resolve, so there is nothing left to hold. Every
+ * other failure — a sharing violation (`EACCES`/`EBUSY`/`EPERM`), an I/O error,
+ * or a record that does not parse or does not satisfy the schema — is
+ * `unreadable`: the file is there and may well be ours, we just cannot attest
+ * to it at this instant. A holder's own truncate-then-write heartbeat is one
+ * way to see `MALFORMED` on a perfectly healthy lock.
+ */
+type LockFileRead =
+  | { readonly kind: "owner"; readonly owner: VaultLockOwner }
+  | { readonly kind: "gone" }
+  | { readonly kind: "unreadable"; readonly code: string; readonly error: Error };
+
+function lockFileReader(options: VaultLockOptions): VaultLockFileReader {
+  return options.readLockFile ?? ((lockPath: string) => fs.readFileSync(lockPath, "utf8"));
 }
 
+function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileRead {
+  let raw: string;
+  try {
+    raw = reader(lockPath);
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (errnoCode(failure) === "ENOENT") return { kind: "gone" };
+    return { kind: "unreadable", code: errnoCode(failure) ?? "UNKNOWN", error: failure };
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (error) {
+    return { kind: "unreadable", code: "MALFORMED", error: error instanceof Error ? error : new Error(String(error)) };
+  }
+  const parsed = ownerSchema.safeParse(json);
+  if (!parsed.success) return { kind: "unreadable", code: "MALFORMED", error: parsed.error };
+  return { kind: "owner", owner: parsed.data };
+}
+
+/** A retry/delay knob: a non-finite or negative value falls back, never loops. */
+function retryBudget(configured: number | undefined, fallback: number): number {
+  if (configured === undefined || !Number.isFinite(configured)) return fallback;
+  return Math.max(0, Math.trunc(configured));
+}
+
+/**
+ * The acquisition path's read: "what, if anything, does the lock file say?".
+ * `gone` and an error that does not clear within the budget both answer
+ * `undefined`, which the caller treats as reclaimable — unchanged from before
+ * #281, which is what keeps an unreadable stale lock from blocking a boot.
+ */
 function readOwner(lockPath: string, options: VaultLockOptions): VaultLockOwner | undefined {
-  const retries = options.readRetries ?? 20;
-  const delayMs = options.readRetryDelayMs ?? 50;
+  const retries = retryBudget(options.readRetries, 20);
+  const delayMs = retryBudget(options.readRetryDelayMs, 50);
+  const reader = lockFileReader(options);
   for (let attempt = 0; attempt <= retries; attempt += 1) {
-    if (!fs.existsSync(lockPath)) return undefined;
-    const owner = readOwnerOnce(lockPath);
-    if (owner !== undefined) return owner;
-    // a creator may still be writing its JSON; retry before calling it stale
+    const read = readOwnerOnce(lockPath, reader);
+    if (read.kind === "owner") return read.owner;
+    if (read.kind === "gone") return undefined;
+    // a creator may still be writing its JSON, or another process holds the
+    // file open: retry before calling the lock stale (and reclaimable)
     if (attempt < retries) Bun.sleepSync(delayMs);
   }
   return undefined;
@@ -174,6 +242,52 @@ function holderIsLive(owner: VaultLockOwner, options: VaultLockOptions): boolean
   if (liveness === "alive") return true;
   if (liveness === "gone") return false;
   return heartbeatIsFresh(owner, options);
+}
+
+/** What the holder's own read of its lock file established (#281). */
+type HeldRead =
+  | { readonly kind: "held" }
+  | { readonly kind: "lost"; readonly reason: string; readonly holder?: VaultLockOwner };
+
+/**
+ * The holder's own read of its lock file (#281). Same classification as every
+ * other read, plus the decision only the holder needs:
+ * - `gone` — lost NOW (someone deleted the file);
+ * - another owner's token — lost NOW (someone replaced it);
+ * - `unreadable` — retried, bounded, and only then lost. It is NOT theft: a
+ *   transient Windows sharing violation, or the holder's own heartbeat caught
+ *   between truncate and write, used to fail-stop a healthy holder — which
+ *   released its own lock, unlinked the file and served the refusal page,
+ *   after which a third instance could take the folder.
+ */
+function readHeldLock(lockPath: string, token: string, options: VaultLockOptions): HeldRead {
+  const retries = retryBudget(options.transientReadRetries, DEFAULT_TRANSIENT_READ_RETRIES);
+  const delayMs = retryBudget(
+    options.transientReadRetryDelayMs,
+    DEFAULT_TRANSIENT_READ_RETRY_DELAY_MS,
+  );
+  const reader = lockFileReader(options);
+  let warned = false;
+  for (let attempt = 0; ; attempt += 1) {
+    const read = readOwnerOnce(lockPath, reader);
+    if (read.kind === "owner") {
+      return read.owner.token === token
+        ? { kind: "held" }
+        : { kind: "lost", reason: "the lock file was replaced by another owner", holder: read.owner };
+    }
+    if (read.kind === "gone") return { kind: "lost", reason: "the lock file disappeared" };
+    if (attempt >= retries) {
+      return { kind: "lost", reason: `the lock file could not be read (${read.code} after ${attempt + 1} attempts)` };
+    }
+    if (!warned) {
+      warned = true;
+      options.logger?.warn(
+        "VAULT_LOCK_READ_RETRY",
+        `the lock file could not be read (${read.code}); retrying up to ${retries} time(s) before it is called lost`,
+      );
+    }
+    Bun.sleepSync(delayMs);
+  }
 }
 
 export class VaultLock {
@@ -211,12 +325,9 @@ export class VaultLock {
    */
   assertHeld(): void {
     if (this.released) throw new VaultLockLostError(this.path);
-    const current = readOwnerOnce(this.path);
-    if (current !== undefined && current.token === this.owner.token) return;
-    this.lost(
-      current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner",
-      current,
-    );
+    const read = readHeldLock(this.path, this.owner.token, this.options);
+    if (read.kind === "held") return;
+    this.lost(read.reason, read.holder);
     throw new VaultLockLostError(this.path);
   }
 
@@ -230,18 +341,17 @@ export class VaultLock {
 
   private heartbeat(): void {
     if (this.released || this.fd === undefined) return;
+    // verify IDENTITY, not mere existence: a reclaim/rename may have
+    // replaced the path with another owner's record, and continuing to
+    // write would make us a second writer (round-5 finding). A read that
+    // cannot attest (sharing violation, mid-write record) is retried before
+    // it is a loss (#281).
+    const read = readHeldLock(this.path, this.owner.token, this.options);
+    if (read.kind === "lost") {
+      this.lost(read.reason, read.holder);
+      return;
+    }
     try {
-      // verify IDENTITY, not mere existence: a reclaim/rename may have
-      // replaced the path with another owner's record, and continuing to
-      // write would make us a second writer (round-5 finding)
-      const current = readOwnerOnce(this.path);
-      if (current === undefined || current.token !== this.owner.token) {
-        this.lost(
-          current === undefined ? "the lock file disappeared" : "the lock file was replaced by another owner",
-          current,
-        );
-        return;
-      }
       const next: VaultLockOwner = { ...this.owner, heartbeatAt: new Date().toISOString() };
       fs.ftruncateSync(this.fd, 0);
       // position 0: the fd position advanced past the first write
@@ -280,9 +390,18 @@ export class VaultLock {
       /* already closed */
     }
     this.fd = undefined;
+    const read = readOwnerOnce(this.path, lockFileReader(this.options));
+    if (read.kind === "unreadable") {
+      // we cannot compare the token, so unlinking could delete a NEW owner's
+      // record; a stale file is still reclaimable by the pid probe (#281)
+      this.options.logger?.warn(
+        "VAULT_LOCK_RELEASE_SKIPPED",
+        `left the lock file at ${this.path} in place: it could not be read (${read.code})`,
+      );
+      return;
+    }
+    if (read.kind === "owner" && read.owner.token !== this.owner.token) return;
     try {
-      const current = readOwnerOnce(this.path);
-      if (current !== undefined && current.token !== this.owner.token) return;
       fs.unlinkSync(this.path);
     } catch {
       /* already gone */

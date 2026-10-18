@@ -41,6 +41,39 @@ function writeLock(overrides: Partial<{ pid: number; host: string; heartbeatAt: 
   );
 }
 
+function errno(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+/**
+ * A counted read seam for the #281 tests. `reads` is every read the lock made;
+ * `readsAtLoss` is how many had run when it decided the lock was lost. The
+ * release that follows a loss reads again, so the raw count alone cannot pin
+ * the retry budget.
+ */
+function countingReader(behaviour: (path: string, call: number) => string) {
+  const state = { reads: 0, readsAtLoss: 0 };
+  const events: string[] = [];
+  const logger = {
+    warn: (event: string, message: string): void => {
+      events.push(`${event}::${message}`);
+    },
+    error: (event: string, message: string): void => {
+      events.push(`${event}::${message}`);
+      if (event === "VAULT_LOCK_LOST") state.readsAtLoss = state.reads;
+    },
+  };
+  return {
+    state,
+    events,
+    logger,
+    readLockFile: (lockPath: string): string => {
+      state.reads += 1;
+      return behaviour(lockPath, state.reads);
+    },
+  };
+}
+
 /**
  * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
  * The probe tests must not hang their outcome on whether a hardcoded pid
@@ -465,6 +498,173 @@ describe("vault single-writer lock", () => {
     const lock = acquireVaultLock(dir, fastSteal);
     expect(lock.currentOwner().pid).toBe(process.pid);
     lock.release();
+  });
+});
+
+/**
+ * #281: `ENOENT` is "gone" and everything else is "cannot read right now". The
+ * holder must ride out the second, and must still lose the lock promptly on
+ * the first — a retry budget spent on a deleted file is a stalled writer.
+ */
+describe("a transient lock-file read error is not theft (#281)", () => {
+  const realRead = (lockPath: string): string => fs.readFileSync(lockPath, "utf8");
+  const fastRead = { transientReadRetries: 3, transientReadRetryDelayMs: 1 } as const;
+
+  it("rides out one failed read and keeps the lock", () => {
+    const reads = countingReader((lockPath, call) => {
+      if (call === 1) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    try {
+      expect(() => lock.assertHeld()).not.toThrow();
+      expect(reads.state.reads).toBe(2);
+      expect(lost).toEqual([]);
+      expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY") && line.includes("EBUSY"))).toBe(true);
+      // the record is untouched: we never stopped holding it
+      // SAFETY: the test wrote this JSON itself in acquireVaultLock
+      const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+      expect(owner.token).toBe(lock.currentOwner().token);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("treats ENOENT as gone at once, with no retry budget spent", () => {
+    const reads = countingReader(() => {
+      throw errno("ENOENT", "ENOENT: no such file or directory, open 'vault.lock'");
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(1);
+    expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY"))).toBe(false);
+    expect(lost[0]).toContain("disappeared");
+  });
+
+  it("fail-stops when the lock file has genuinely gone (default reader)", () => {
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, { onLost: (reason) => lost.push(reason) });
+    fs.rmSync(lockPath(), { force: true });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(lost).toEqual(["the lock file disappeared"]);
+  });
+
+  it("still fail-stops at once when another owner's record is there", () => {
+    const reads = countingReader(realRead);
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    writeLock({ host: "shop-pc", pid: 4242, token: "the-new-owner" });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(1);
+    expect(lost[0]).toContain("replaced");
+  });
+
+  it("stops retrying at the bound and fails closed, naming the error and the count", () => {
+    const reads = countingReader((lockPath, call) => {
+      // readable on the attempt AFTER the budget: a loop that retried even once
+      // more would see our record and not fail-stop
+      if (call <= fastRead.transientReadRetries + 1) throw errno("EACCES", "EACCES: permission denied, open 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
+    expect(reads.state.readsAtLoss).toBe(fastRead.transientReadRetries + 1);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("EACCES");
+    expect(lost[0]).toContain(`${fastRead.transientReadRetries + 1} attempts`);
+  });
+
+  it("retries a record that is momentarily malformed while it is being written", () => {
+    const reads = countingReader((lockPath, call) => (call === 1 ? "" : realRead(lockPath)));
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    try {
+      expect(() => lock.assertHeld()).not.toThrow();
+      expect(lost).toEqual([]);
+      expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_READ_RETRY") && line.includes("MALFORMED"))).toBe(true);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it("heartbeats through a transient read error instead of declaring the lock lost", async () => {
+    const reads = countingReader((lockPath, call) => {
+      if (call === 1) throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+      return realRead(lockPath);
+    });
+    const lost: string[] = [];
+    const lock = acquireVaultLock(dir, {
+      ...fastRead,
+      heartbeatIntervalMs: 10,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lost).toEqual([]);
+    expect(reads.state.reads).toBeGreaterThan(1);
+    // the heartbeat kept writing: the record still names us
+    // SAFETY: the test wrote this JSON itself in acquireVaultLock
+    const owner = JSON.parse(fs.readFileSync(lockPath(), "utf8")) as { token: string };
+    expect(owner.token).toBe(lock.currentOwner().token);
+    lock.release();
+  });
+
+  it("fail-stops the heartbeat once the read error outlasts the budget", async () => {
+    const reads = countingReader(() => {
+      throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
+    });
+    const lost: string[] = [];
+    acquireVaultLock(dir, {
+      ...fastRead,
+      heartbeatIntervalMs: 10,
+      readLockFile: reads.readLockFile,
+      logger: reads.logger,
+      onLost: (reason) => lost.push(reason),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain("EBUSY");
+  });
+
+  it("release never deletes a lock file it could not read", () => {
+    const reads = countingReader(() => {
+      throw errno("EACCES", "EACCES: permission denied, open 'vault.lock'");
+    });
+    const lock = acquireVaultLock(dir, { readLockFile: reads.readLockFile, logger: reads.logger });
+    lock.release();
+    // we cannot compare the token, so we must not unlink: the record may be a
+    // new owner's, and a stale file is still reclaimable by the pid probe
+    expect(fs.existsSync(lockPath())).toBe(true);
+    expect(reads.events.some((line) => line.startsWith("VAULT_LOCK_RELEASE_SKIPPED") && line.includes("EACCES"))).toBe(true);
   });
 });
 

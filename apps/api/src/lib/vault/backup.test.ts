@@ -172,35 +172,44 @@ function writeLockRecord(
 }
 
 /**
- * Restore while a second instance replaces `vault.lock` at the instant the
- * snapshot lands. The steal point is the snapshot's own rename, so this
- * interleave is deterministic instead of a race.
+ * Restore while a second instance replaces `vault.lock` at the instant one of
+ * the two writes lands. The steal point is that write's own rename, so the
+ * interleave is deterministic instead of a race: `snapshot` steals before the
+ * header write starts, `header` steals inside the header write itself, after
+ * the check before that write has already passed.
  */
 async function restoreWhileLockIsStolen(
   target: string,
   options: ExtractVaultBackupOptions = {},
-): Promise<{ error: Error | undefined; losses: string[]; stolen: boolean }> {
+  stealPoint: "snapshot" | "header" = "snapshot",
+): Promise<{
+  error: Error | undefined;
+  losses: string[];
+  stolen: boolean;
+  paths: { headerPath: string; snapshotPath: string } | undefined;
+}> {
   const bundle = createVaultBackupBundle(await headerText(), fakeSnapshot());
   const losses: string[] = [];
   const original = fs.promises.rename;
+  const stealSuffix = stealPoint === "header" ? "vault.json" : "dokan.db.enc";
   let stolen = false;
   const spy = spyOn(fs.promises, "rename").mockImplementation(async (from, to) => {
-    if (!stolen && String(to).endsWith("dokan.db.enc")) {
+    if (!stolen && String(to).endsWith(stealSuffix)) {
       stolen = true;
       writeLockRecord(target, { token: "thief" });
     }
     return original(from, to);
   });
   try {
-    await extractVaultBackup(bundle, target, {
+    const paths = await extractVaultBackup(bundle, target, {
       onLockLost: (reason, holder) => {
         losses.push(holder === undefined ? reason : `${reason} (taken by ${holder.host} pid ${holder.pid})`);
         options.onLockLost?.(reason, holder);
       },
     });
-    return { error: undefined, losses, stolen };
+    return { error: undefined, losses, stolen, paths };
   } catch (error) {
-    return { error: error instanceof Error ? error : new Error(String(error)), losses, stolen };
+    return { error: error instanceof Error ? error : new Error(String(error)), losses, stolen, paths: undefined };
   } finally {
     spy.mockRestore();
   }
@@ -260,7 +269,8 @@ describe("vault backup restore takes the data folder's lock", () => {
     next.release();
   });
 
-  it("releases the folder lock when a write fails, and does not lock a bundle it cannot decode", async () => {    const header = await headerText();
+  it("releases the folder lock when a write fails, and does not lock a bundle it cannot decode", async () => {
+    const header = await headerText();
     const bundle = createVaultBackupBundle(header, fakeSnapshot());
     const target = tempDir("dokan-backup-failed-");
     // a directory where the snapshot belongs makes the atomic rename fail
@@ -283,9 +293,44 @@ describe("vault backup restore takes the data folder's lock", () => {
     expect(error).toBeInstanceOf(VaultLockLostError);
     expect(losses.length).toBe(1);
     expect(losses[0]).toMatch(/lock/i);
+    // the new owner's identity travels with the reason: dropping the holder
+    // argument at the call site leaves the bare reason, which /lock/i still
+    // matches (#282 review finding)
+    expect(losses[0]).toContain(`pid ${process.pid}`);
     // the header never landed, and the new owner's record is left alone
     expect(fs.existsSync(path.join(target, "vault", "vault.json"))).toBe(false);
     expect(fs.existsSync(path.join(target, "vault.lock"))).toBe(true);
+  });
+
+  it("fails the restore when the lock is stolen at the header write, so the pair never reports success", async () => {
+    const target = tempDir("dokan-backup-theft-header-");
+    // the theft lands inside the header's rename, after the check before that
+    // write already passed; only the check after the pair can fail this restore
+    const { error, losses, stolen, paths } = await restoreWhileLockIsStolen(target, {}, "header");
+    expect(stolen).toBe(true);
+    expect(error).toBeInstanceOf(VaultLockLostError);
+    expect(losses.length).toBe(1);
+    // an in-flight rename cannot be interrupted, so the header can be on disk;
+    // what must never happen is the restore returning it as a completed write
+    expect(fs.existsSync(path.join(target, "vault", "vault.json"))).toBe(true);
+    expect(paths).toBeUndefined();
+    expect(fs.existsSync(path.join(target, "vault.lock"))).toBe(true);
+  });
+
+  it("refuses an undecodable bundle before it takes the folder's lock", async () => {
+    const target = tempDir("dokan-backup-garbage-locked-");
+    // a live holder's record: if the decode ran after the lock was taken, this
+    // refusal would be the error the caller sees instead of the decode failure
+    writeLockRecord(target);
+    const recordBefore = fs.readFileSync(path.join(target, "vault.lock"), "utf8");
+    await expect(extractVaultBackup(Buffer.from("nope"), target)).rejects.toThrow(
+      "not a Dokan vault backup bundle",
+    );
+    // the folder is untouched: the live record is byte-identical and neither
+    // write path started
+    expect(fs.readFileSync(path.join(target, "vault.lock"), "utf8")).toBe(recordBefore);
+    expect(fs.existsSync(path.join(target, "vault"))).toBe(false);
+    expect(fs.existsSync(path.join(target, "dokan.db.enc"))).toBe(false);
   });
 
   it("still fails with VaultLockLostError when the caller's onLockLost handler throws", async () => {

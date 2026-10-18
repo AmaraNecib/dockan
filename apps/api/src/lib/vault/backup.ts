@@ -76,12 +76,15 @@ export type ExtractVaultBackupOptions = {
  * `<dataDir>/dokan.db.enc`, written atomically. The caller opens the dir with a
  * fresh VaultManager and unlocks with the passphrase or a recovery key.
  *
- * Restore is an OFFLINE write (issue #282). Every other path that writes into a
- * data folder asks the single-writer lock at the instant of the write
- * (ADR-0012 clause 3, #275); a restore that skipped that check could overwrite
- * the snapshot of a shop still running on the same folder — the two-writer
- * outcome the lock exists to prevent. So this function takes the folder's lock
- * around its two writes, and the check is bound to the folder it writes:
+ * A restore is another writer of the data folder, so it takes the folder's
+ * single-writer lock (issue #282); whether the caller runs it offline is the
+ * caller's decision, and nothing in this function depends on it. Every other
+ * path that writes into a data folder asks the single-writer lock at the
+ * instant of the write (ADR-0012 clause 3, #275); a restore that skipped that
+ * check could overwrite the snapshot of a shop still running on the same
+ * folder — the two-writer outcome the lock exists to prevent. So this function
+ * takes the folder's lock around its two writes, and the check is bound to the
+ * folder it writes:
  *
  * - `acquireVaultLock(dataDir)` refuses (VaultAlreadyLockedError) while a live
  *   owner holds the folder — another instance, or this same process — and
@@ -138,7 +141,7 @@ export async function extractVaultBackup(
     // snapshot. Swapping the pair atomically is a separate change; #282 closes
     // the ownership hole only.
     // The ownership check comes first: creating the directory is itself a write
-    // into the folder, and it used to run before any check (debate F2).
+    // into the folder, so it must not run before the check.
     lock.assertHeld();
     fs.mkdirSync(vaultDir, { recursive: true });
     await writeFileAtomic(snapshotPath, decoded.snapshot);

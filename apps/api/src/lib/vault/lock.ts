@@ -108,14 +108,25 @@ export type VaultLockOptions = {
    * how many extra reads the lock file of a HELD lock gets when it exists but
    * cannot be read (`EACCES`/`EBUSY`/`EPERM`, or a record caught mid-write),
    * before the holder fails closed (#281); 10 x 100 ms by default, which is a
-   * whole second of patience for an antivirus scanner holding the file — the
-   * holder never fails closed wrongly, and a genuine theft is not delayed by
-   * it (a replacement record or a missing file is judged on the first read)
+   * whole second of patience for an antivirus scanner holding the file, while
+   * a genuine theft is still judged on the first read (a replacement record or
+   * a missing file), and the budget cannot close the gap between this holder's
+   * read and its own rewrite — a file stolen inside that gap still fails the
+   * holder closed, which is the conservative outcome, not a wrong one.
    */
   transientReadRetries?: number;
   transientReadRetryDelayMs?: number;
   /** the lock-file read; injectable so tests can force a read error (#281) */
   readLockFile?: VaultLockFileReader;
+  /**
+   * @internal The clock and sleep the held-lock retry loop runs on. Both
+   * default to the real `Date.now` and `Bun.sleepSync`, so production is
+   * unchanged; tests inject a controlled pair so the loop's attempt ceiling and
+   * one-second window are proved by arithmetic, not against a loaded machine's
+   * wall clock (#281).
+   */
+  now?: () => number;
+  sleep?: (milliseconds: number) => void;
   /**
    * fail-stop hook: the lock disappeared or became unwritable while held. The
    * holder argument is the new owner when the record named one, so the caller
@@ -186,6 +197,10 @@ type LockFileRead =
 function lockFileReader(options: VaultLockOptions): VaultLockFileReader {
   return options.readLockFile ?? ((lockPath: string) => fs.readFileSync(lockPath, "utf8"));
 }
+
+/** The held-lock retry loop's real clock and sleep; the defaults for `now`/`sleep`. */
+const realNow = (): number => Date.now();
+const realSleep = (milliseconds: number): void => Bun.sleepSync(milliseconds);
 
 function readOwnerOnce(lockPath: string, reader: VaultLockFileReader): LockFileRead {
   let raw: string;
@@ -313,9 +328,11 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
     MAX_RETRY_DELAY_MS,
   );
   const reader = lockFileReader(options);
+  const now = options.now ?? realNow;
+  const sleep = options.sleep ?? realSleep;
   // the window bounds the stall whatever the knobs say: this runs inside
   // `writeGuard`, so an unbounded wait here is an unbounded stalled write
-  const budgetEndsAt = Date.now() + MAX_HELD_RETRY_WINDOW_MS;
+  const budgetEndsAt = now() + MAX_HELD_RETRY_WINDOW_MS;
   const codes: string[] = [];
   const seenCodes = new Set<string>();
   let omittedCodes = 0;
@@ -342,7 +359,7 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
       if (codes.length < MAX_REASON_CODES) codes.push(code);
       else omittedCodes += 1;
     }
-    if (attempt >= retries || Date.now() >= budgetEndsAt) {
+    if (attempt >= retries || now() >= budgetEndsAt) {
       // the codes seen, the attempt count and the OS's own sentence ride in
       // the reason, which `lost()` logs as VAULT_LOCK_LOST: the api's log
       // vocabulary is a contract shared with the web badge, so a new event
@@ -353,7 +370,7 @@ function readHeldLock(lockPath: string, token: string, options: VaultLockOptions
         reason: `the lock file could not be read (${codeSummary} after ${attempt + 1} attempts: ${oneLine(read.error.message)})`,
       };
     }
-    Bun.sleepSync(Math.min(delayMs, Math.max(0, budgetEndsAt - Date.now())));
+    sleep(Math.min(delayMs, Math.max(0, budgetEndsAt - now())));
   }
 }
 

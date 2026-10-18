@@ -75,6 +75,32 @@ function countingReader(behaviour: (path: string, call: number) => string) {
 }
 
 /**
+ * A driven clock and sleep for the held-lock retry loop: time moves only when
+ * the loop sleeps, so its bounds are asserted by arithmetic rather than against
+ * a loaded machine's wall clock (#281, Greptile P2). `sleeps` is every delay
+ * the loop asked for, in order; a non-finite ask moves time by one, so a mutant
+ * with no attempt ceiling still terminates at the window instead of hanging.
+ */
+type ControlledClock = {
+  now: () => number;
+  sleep: (milliseconds: number) => void;
+  sleeps: number[];
+};
+
+function controlledClock(): ControlledClock {
+  const sleeps: number[] = [];
+  let time = 0;
+  return {
+    sleeps,
+    now: () => time,
+    sleep: (milliseconds: number): void => {
+      sleeps.push(milliseconds);
+      time += Number.isFinite(milliseconds) ? milliseconds : 1;
+    },
+  };
+}
+
+/**
  * A pid the OS is guaranteed to answer `ESRCH` for: spawn a child and reap it.
  * The probe tests must not hang their outcome on whether a hardcoded pid
  * happens to exist on the runner.
@@ -656,6 +682,11 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     // own multi-line sentence is folded to one line (critic N1)
     expect(lost[0]).toContain("EBUSY, EACCES");
     expect(lost[0]).not.toContain("\n");
+    // the summary is deduped, not merely "contains both": a reader that flaps
+    // must not repeat a code. Without `seenCodes` this reads
+    // "EBUSY, EACCES, EBUSY, EACCES" and over-counts (audit N1).
+    const reason = lost[0]!;
+    expect(reason.slice(reason.indexOf("(") + 1, reason.indexOf(" after"))).toBe("EBUSY, EACCES");
   });
 
   it("classifies a non-Error throw by its errno code", () => {
@@ -700,7 +731,9 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     // zeroing it OR spinning. The reader never recovers, so the 11th attempt
     // (the default budget) is what ends it; a mutant that lets NaN through has
     // no attempt ceiling and only the 1 s window stops it, thousands of reads
-    // later. A reader that recovers on attempt 3 would pass either way.
+    // later. A reader that recovers on attempt 3 would pass either way. The
+    // clock is driven, so the 11 is arithmetic, not the wall (Greptile P2).
+    const clock = controlledClock();
     const nan = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked");
     });
@@ -708,12 +741,16 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     const nanLock = acquireVaultLock(dir, {
       transientReadRetries: Number.NaN,
       transientReadRetryDelayMs: Number.NaN,
+      now: clock.now,
+      sleep: clock.sleep,
       readLockFile: nan.readLockFile,
       logger: nan.logger,
       onLost: (reason) => nanLost.push(reason),
     });
     expect(() => nanLock.assertHeld()).toThrow(VaultLockLostError);
+    // the default budget ends the loop at read 11, after ten 100 ms sleeps
     expect(nan.state.readsAtLoss).toBe(11);
+    expect(clock.sleeps).toEqual(Array.from({ length: 10 }, () => 100));
     expect(nanLost).toHaveLength(1);
     nanLock.release();
 
@@ -759,27 +796,29 @@ describe("a transient lock-file read error is not theft (#281)", () => {
     // the knobs are legal at their ceilings (100 attempts x 500 ms = 50 s) and
     // the reader never recovers, so only MAX_HELD_RETRY_WINDOW_MS can end this
     // sequence: a mutant that drops the window check alone runs all 101
-    // attempts before it loses
+    // attempts before it loses. The clock is driven, so the same read ends the
+    // sequence on any machine (Greptile P2).
+    const clock = controlledClock();
     const reads = countingReader(() => {
       throw errno("EBUSY", "EBUSY: resource busy or locked, read 'vault.lock'");
     });
     const lost: string[] = [];
-    const startedAt = Date.now();
     const lock = acquireVaultLock(dir, {
       transientReadRetries: 10_000,
       transientReadRetryDelayMs: 500,
+      now: clock.now,
+      sleep: clock.sleep,
       readLockFile: reads.readLockFile,
       logger: reads.logger,
       onLost: (reason) => lost.push(reason),
     });
     expect(() => lock.assertHeld()).toThrow(VaultLockLostError);
-    const elapsed = Date.now() - startedAt;
-    // a handful of reads, not the ceiling's 101
-    expect(reads.state.readsAtLoss).toBeLessThan(10);
-    expect(elapsed).toBeLessThan(2_000);
+    // 500 ms, then 500 ms, and the third read is already past the window
+    expect(clock.sleeps).toEqual([500, 500]);
+    expect(reads.state.readsAtLoss).toBe(3);
     expect(lost).toHaveLength(1);
     lock.release();
-  }, 10_000);
+  });
 
   it("caps the number of distinct codes it names in the loss reason", () => {
     const reads = countingReader((_lockPath, call) => {

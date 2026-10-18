@@ -9,14 +9,18 @@ description: "Mandatory lifecycle orchestrator for code-changing issues. Delegat
 Read `docs/engineering-workflow.md` first.
 
 **A lane stops at step 9 (Guard Phase 2).** Steps 10-13 are parent-owned: push,
-PR, CI/Greptile, the merge decision and wisdom. The lane's last act is
-`crew_report`; it never pushes, never opens a PR and never merges.
+PR, CI/Greptile, the merge decision and wisdom. The lane's last act is its
+**commit**; its completion wakes the parent. It never pushes, never opens a PR
+and never merges.
 
-**Wisdom: read it, never write it.** Before step 1, read `.agents/wisdom/`, apply
-what bears on the task, and say in your `crew_report` which lessons you applied —
+**Wisdom: read it, never write it.** Before step 1, grep `.agents/wisdom/` for your area
+(`grep -rin "<symbol or failure mode>" .agents/wisdom/ | head -40`) and read the hits — not
+all 62 files. Lessons live in per-area folders (`api/`, `data/`, `e2e/`, `money/`, `process/`,
+`testing/`, `vault/`, `web/`, …); `.agents/wisdom/README.md` has the rule. Then apply
+what bears on the task, and say in your **commit message body** which lessons you applied —
 and which you deliberately did not. Wisdom is read-only for a lane; a candidate
-lesson goes in the `lesson` field of `crew_report` (a harness without that field
-carries it in the report summary). The parent decides whether the pattern
+lesson goes in that same body under a `Lesson:` line, which is the handoff that
+travels with the branch. The parent decides whether the pattern
 repeated enough to write an entry.
 
 ## Enforced order
@@ -152,7 +156,7 @@ Run `guard` Phase 2. Verifies:
 
 ### 10. Report to the parent — the parent owns push and PR
 
-**A lane stops at step 9.** Its last act is `crew_report`. It does not push, does
+**A lane stops at step 9.** Its last act is its **commit**. It does not push, does
 not open a PR and does not merge — running any command below is a breach of its
 authority boundary, not help. The parent session pushes the lane's branch, opens
 the PR and drives the review rounds.
@@ -199,8 +203,8 @@ The parent runs `guard` Phase 3. Verifies:
 - PR description — accurate and complete
 - Any deferred items — documented with follow-up issues
 
-There is **no lane wisdom step.** A lane states in `crew_report` which lessons it
-applied and carries any candidate lesson in its `crew_report`; the parent writes
+There is **no lane wisdom step.** A lane states in its commit message body which lessons it
+applied and carries any candidate lesson there; the parent writes
 a `.agents/wisdom/` entry (via `capture-wisdom`) only when the same failure has
 occurred more than once.
 

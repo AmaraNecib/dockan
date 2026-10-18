@@ -8,7 +8,7 @@ import { SCAN_MAX_GAP_MS, useBarcodeScanner } from "./use-barcode-scanner";
  * Unit tests for the wedge-scanner hook (ticket 34). happy-dom provides the
  * DOM globals; the clock is a stubbed performance.now driven by an explicit
  * millisecond counter so gap/duplicate timing is exact, never slept through
- * (see .agents/wisdom/2026-08-24-deterministic-timing-tests.md).
+ * (see .agents/wisdom/e2e/deterministic-timing-tests.md).
  */
 
 /** mutable fake clock consumed by the stubbed performance.now */

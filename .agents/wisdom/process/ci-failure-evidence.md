@@ -1,6 +1,6 @@
 # Wisdom — 2026-10-15 · CI failure evidence: what actually survives a red run (#197)
 
-Follow-up to `2026-10-14-e2e-ack-vs-test-budget.md` (#191). That note is about
+Follow-up to `../e2e/ack-vs-test-budget.md` (#191). That note is about
 writing a *better* assertion; this one is about what is left on disk when the
 assertion fails in CI.
 

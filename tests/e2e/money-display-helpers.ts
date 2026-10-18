@@ -5,7 +5,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
  *
  * `textContent` and `innerText` return the LOGICAL string, so no DOM assertion
  * can tell that an amount's runs were reordered on screen; only real geometry
- * can (`.agents/wisdom/2026-10-01-rtl-dates-bidi-and-align.md`). This is the
+ * can (`.agents/wisdom/web/rtl-dates-bidi-and-align.md`). This is the
  * same measurement `invoice-print-a4.spec.ts` already uses for the sheet: in an
  * RTL row the currency run is drawn to the LEFT of the isolated figures.
  */

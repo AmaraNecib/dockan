@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
  * The two runs carry `data-testid="money-figures"` and `money-currency` (no
  * styles) so a test can measure which side the currency lands on in a real
  * browser; `textContent` cannot see a bidi reversal
- * (`.agents/wisdom/2026-10-01-rtl-dates-bidi-and-align.md`).
+ * (`.agents/wisdom/web/rtl-dates-bidi-and-align.md`).
  *
  * The sign/colour CONVENTION for a supplier balance (whether a sign shows at
  * all, and what green means) is an owner decision and is not made here: this

@@ -189,7 +189,7 @@ Rules:
   catalogue), never a display label.
 - `Thinking` is the effort level **in force for that commit**. If it is unknown, write `unknown`;
   never guess.
-- `Harness` is `t3-code`, `pi-cli`, or `herdr`.
+- `Harness` is `t3-code` or `pi`.
 - `Agent` is the role: `parent`, `crew-lane/<issue>-<round>`, `delegate/<short-id>`.
 - A human-authored commit carries none of these; their absence means a human wrote it.
 - **Squash makes this cheap to lose.** The parent repeats the trailers in the PR body and in the

@@ -3,26 +3,33 @@
 ## Authority
 
 - **A lane commits and reports; it does not land.** A lane (`fix-*`, `feat-*`,
-  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree, commits its diff
-  and calls `crew_report`. It **never** runs `git push`, **never** opens a PR
-  (`gh pr create`) and **never** merges. `feature-implement` step 10 is
-  parent-only.
+  `test-*`, `chore-*`, `docs-*`, …) works in its own worktree and commits its diff. Its
+  completion wakes the parent; there is no report tool to call. It **never** runs
+  `git push`, **never** opens a PR (`gh pr create`) and **never** merges.
+  `feature-implement` step 10 is parent-only.
 - **The parent session owns push, PR, review and merge.** The parent pushes the
   lane's branch, opens the PR, requests Greptile review, drives the rounds, and
   merges — auto-merging a clean **cheap-to-reverse** PR itself (a visual one too, once its
   before/after packet is posted), and otherwise only when the owner says so (see `Merging`).
 - **`.agents/wisdom/` is parent-owned, and reading it is every lane's job.** A
-  lane reads `.agents/wisdom/` before it starts, applies what bears on its task
-  and says in its `crew_report` which lessons it applied, and which it
-  deliberately did not. Wisdom is **read-only for a lane**: it never writes the
-  file. A candidate lesson goes in the `lesson` field of `crew_report` (a harness
-  without that field carries it in the report summary).
-- **The parent writes the entry, and only for a repeated pattern.** One
+  lane reads `.agents/wisdom/` before it starts, applies what bears on its task,
+  and says which lessons it applied and which it deliberately did not **in its
+  commit message body**, which is the durable handoff that travels with the
+  branch. Wisdom is **read-only for a lane**: it never writes the file. A
+  candidate lesson also goes in the commit message body, under a `Lesson:` line,
+  for the parent to promote or drop.
+- **A lesson lives in a category folder, and its filename never carries a date.**
+  `.agents/wisdom/<category>/<lesson>.md`: the folder is the area (`api`, `data`, `e2e`,
+  `money`, `process`, `testing`, `vault`, `web`, …), the filename says what the lesson
+  teaches. When a lesson recurs, **append to the existing file** and add a `Seen in:`
+  line — a second dated file for the same lesson is how a lane reads one of them,
+  misses the other, and re-derives it a third time. `README.md` holds the full rule. One
   occurrence is a report line, not wisdom; the parent records it when the same
-  failure shows up across reports. Measured reason: 45 non-merge commits on
-  `develop` touch `.agents/wisdom/` (46 with merges), six of those files carry
-  edits from more than one commit, and one carries three, so lane-written lessons
-  collided and the owner resolved the same conflict by hand.
+  failure shows up across reports. Measured reason (2026-10-19 snapshot — re-measure
+  it, it grows): 47 non-merge commits on `develop` touch `.agents/wisdom/` (48 with
+  merges), six of those files carry edits from more than one commit, and one carries
+  three, so lane-written lessons collided and the owner resolved the same conflict by
+  hand.
 
 ## e2e ports and lanes
 
@@ -33,33 +40,61 @@ they no longer have to be serialized across lanes (#202).
 
 ## Lanes
 
+**Mechanism: a child agent with its own worktree, by default.** `delegate_task` with
+`isolation: "worktree"` checks out the work from the parent's local commit, runs project setup,
+and wakes the parent when it finishes. Prefer it to a top-level thread: no workspace to create,
+none to close afterwards, and the completion arrives by itself instead of being polled.
+
+A top-level thread (`t3_thread_launch`) is for the one case a fresh worktree cannot serve:
+**resuming work that only exists uncommitted** in an existing worktree. That is the fallback for a
+dead lane, not the default. The cheaper path through the same situation is to commit the partial
+work to its branch first, after which an ordinary child can continue on that branch.
+
+**A fresh worktree has no `node_modules`.** Worktree setup does not install. A lane must run
+`bun install --frozen-lockfile` (about a minute with the warm cache) before it can run a test,
+typecheck, or build, or it will fail for a reason that has nothing to do with its change. Reusing
+an existing install with a directory junction is faster, but it shares one dependency tree with
+the worktree it points at, so deleting `node_modules/` through the junction would delete that
+worktree's packages too.
+
+**A worktree also costs a trust decision.** Pi asks before loading a folder's skills and settings
+whenever `.agents/skills` sits in it or above it, and this repository has exactly that — so every
+worktree needs one. The lane roots are saved in `~/.pi/agent/trust.json`
+(`D:\worktrees\mani-project`, `D:\projects\mani-worktrees`), and the closest ancestor entry covers
+every worktree under it. When T3 runs Pi in RPC mode it cannot show that prompt itself, which is
+why an untrusted lane surfaces as an approval card in T3 instead of a question in the terminal.
+
+Either way, one writer per worktree, and a lane never pushes or merges.
+
 Every PR starts a FRESH worktree, a FRESH agent and a FRESH session — never
-reuse a lane's session for the next PR (a reused session also misses the
-workspace label at startup, which is what makes `crew_report` work).
+reuse a lane's session for the next PR.
 
-Name the herdr workspace label so it matches `/^(issue|rev|pr|feat|fix|chore|docs|test|build|ci|perf|style)-/`
-AND name the manifest `<worktree>/.scratch/sessions/crew/<label>.manifest.json`
-expected by `crew-watch`. `herdr workspace rename <id> <label>` takes the label
-positionally (no `--label` flag).
-
-**Three lanes at a time, and an idle lane is a wasted one.** Close a lane's
-workspace the moment the parent has pushed its branch: a lane waiting on review
-(or on a rebase) is doing nothing while it holds RAM and CPU. Close first, then
-start the next lane in the freed slot. Prefer lanes that touch disjoint files;
-when two lanes share a store/router, nominate which one lands first and rebase
-the other onto it. Poll CI and Greptile in-session, never the lane.
+**Run as many lanes as the box can carry, and an idle lane is a wasted one.** No
+fixed count: measure it. A lane waiting on review, on CI or on a rebase is doing
+nothing while it holds RAM and CPU, so close it the moment the parent has pushed
+its branch and start the next one in the freed slot. Prefer lanes that touch
+disjoint files; when two lanes share a store/router, nominate which one lands
+first and rebase the other onto it. Poll CI and Greptile in-session, never the
+lane.
 
 **A lane ALWAYS gets its own workspace** — never a pane split inside the parent's
 workspace (owner complaint, 2026-10-13: *"why u open the crew here in this panel;
-I can't see anything"*). Create lanes with `herdr worktree create` (new branch)
-or `herdr worktree open --path <worktree> --label <label>` (re-entering an
-existing worktree). Pass `--cwd` and VERIFY the pane's cwd before
-`herdr agent start`: a bare `herdr pane run "cd ..."` silently leaves the agent in
-the MAIN repo (owner complaint, same day).
+I can't see anything"*). `delegate_task` with `isolation: "worktree"` gives it
+one: it checks the work out from the parent's local commit, runs project setup,
+and wakes the parent when it finishes. The `herdr worktree create` /
+`herdr agent start` pair this paragraph used to prescribe went with the crew
+apparatus. Two things the mechanism does not do for you: a fresh worktree has no
+`node_modules`, so the lane's first command is `bun install --frozen-lockfile`,
+and it starts from the parent's **commit**, so commit before delegating or the
+lane cannot see the work. `t3_thread_launch` is the fallback and only for
+resuming work that exists uncommitted — see Lanes above.
 
-Why the lane limit is hard: five lanes went up at once on 2026-10-13, so finished
-lanes sat idle while new ones spawned, and sibling lanes fought over the shared
-dev ports 4317/5173 — each failing its own e2e run against the other's server.
+Two costs, and only one of them still binds. An idle lane holds RAM and CPU for
+nothing, which is why a finished lane is closed the moment its branch is pushed.
+The other was the shared dev ports 4317/5173: five lanes went up at once on
+2026-10-13 and each failed its own e2e run against a sibling's server. Per-lane
+`DOKAN_PORT` and `DOKAN_VAULT_PORT` fixed that (#202), so the count now follows
+measured capacity instead of the ports.
 
 ## Vendored skills
 
@@ -69,6 +104,27 @@ generated from it with `bun run skills:sync` and checked with
 `.claude/skills` by hand. The vendored TanStack skills carry local fixes, so an
 upstream sync must not clobber them: their pinned upstream commits, divergence
 count and re-apply checklist are in `docs/skills-vendoring.md`.
+
+## Pick the skill before you write code
+
+The workflow in `docs/engineering-workflow.md` and the skills in `.agents/skills/` are the
+same process in two shapes: the doc is the map, the skills are the per-phase instructions a
+session loads when it reaches that phase. **Read the doc, then load the skill for the phase
+you are in — do not improvise a process.**
+
+| Phase | Skill |
+|---|---|
+| Any code-changing issue, start to finish | `feature-implement` (the lifecycle orchestrator — read it first) |
+| Design conversation before code | `grill-with-docs` |
+| Review round, in order | `debate` → `test-audit` → `code-review` |
+| Before the push | `guard` |
+| Greptile, either path | `cli-review` |
+| After a repeated failure | `capture-wisdom` (parent only) |
+| Every piece of writing, always | `unslop` |
+
+Two rules that hold across all of them: a lane **reads** wisdom and never writes it, and a
+lane **commits and reports** — it never pushes, opens a PR or merges. The parent owns those,
+plus CI, Greptile and the merge decision.
 
 ## Review lenses
 
@@ -127,12 +183,23 @@ Do not hand the wait back to the user. After pushing and requesting
 then 2-3 minutes, then 1-2 minutes, checking `gh pr checks <n>` and the
 Greptile comment each time, until the verdict appears. Same for CI.
 
-A crew lane reports on its own (`crew_report` wakes the session) — stop and
-let it report. Never poll a lane.
+A lane reports by finishing: its completion wakes the session. Stop and let it
+finish rather than polling it.
 
 ## Search scope
 
-Scope every filesystem search (`find`, `grep`, `rg`, glob) to this repository
-root or a specific subdirectory — e.g. `find . -name "*.ts"` from the repo
-root. Never search from `/` (the filesystem root): scans of the whole disk are
-slow and waste the session.
+Scope every search (`find`, `grep`, `rg`, glob) to this repository root or a
+specific subdirectory. Never search from `/` (the filesystem root): scans of
+the whole disk are slow and waste the session, and the guard refuses one before
+it runs. A caller that genuinely needs one escalates to the parent session;
+the guard never asks the owner.
+
+A walk that starts at the repository root also reads `node_modules` unless you
+exclude it, and that is the heaviest tree here. Reading it is a resource
+decision, so pick one of these instead:
+
+- `rg "symbol"` — ripgrep skips what `.gitignore` excludes, so start here;
+- `grep -rn --exclude-dir=node_modules "symbol" .`;
+- or name the subtree you mean: `find apps/api/src -name "*.ts"`. A subtree is the only
+  `find` the guard runs: it refuses a bare `find .` even with `-prune`, so the pruned
+  root form is not a safe recommendation.

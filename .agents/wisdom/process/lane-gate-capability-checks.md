@@ -23,7 +23,7 @@ develop` → `error: this review is too large to send`. The "too large" error wa
 **misleading**: the worktree's local `develop` branch was 34 commits behind, so
 the CLI diffed against that instead of `origin/develop`; passing the pinned base
 SHA (`--branch fc95113…`) got past the size check and failed on auth instead
-(see also `2026-08-24-greptile-cli-large-diff.md`).
+(see also `greptile-cli-large-diff.md`).
 
 **Always**: when a mandatory gate cannot run in-lane (Greptile here), say so in
 the evidence with the exact command and error, and hand it to the parent — the

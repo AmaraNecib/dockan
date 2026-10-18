@@ -32,7 +32,7 @@ time at x≈1346, space at x≈1376, date at x≈1380 (date rightmost) — and
 **Always**: one formatter per app. `apps/web/src/lib/dates.ts` (`formatDate`,
 `formatDateTime`, `parseDateTimeText`, `nowDateTimeText`) is pure string work; no `Date`
 parsing, no `Intl`/`toLocale*`, invalid input returned unchanged. See
-`2026-08-25-real-clock-fixtures-and-time-format-traps.md` for why locale-driven display
+`../testing/real-clock-fixtures.md` for why locale-driven display
 formatters are untestable across machines.
 
 ## A cell that needs LTR isolation: `.cell-ltr`, never `dir="ltr"` (#166)

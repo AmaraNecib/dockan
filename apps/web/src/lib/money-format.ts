@@ -4,7 +4,7 @@
  * Digits are grouped with Western grouping (`1234567` → `1,234,567`) and pinned
  * to `en-US`, never the browser locale: the Arabic locale would print
  * Arabic-Indic digits, and a locale-driven formatter is untestable across
- * machines (see `.agents/wisdom/2026-08-25-real-clock-fixtures-and-time-format-traps.md`).
+ * machines (see `.agents/wisdom/testing/real-clock-fixtures.md`).
  * Negative values keep their sign for discounts and signed balances.
  *
  * There is deliberately no second money formatter: a per-surface copy is how

@@ -16,8 +16,10 @@
 - **Average cost**. the weighted mean cost per unit across purchases, recomputed automatically when the same item is bought at a different price. The way the app values stock when prices change between purchases. A manual cost edit is a **cost-correction movement** on the ledger (a zero-quantity `MANUAL_ADJUSTMENT` with reason `COST_CORRECTION`), never a direct write to the item's cached cost. Replay walks the ledger in recording order and splits it at each correction, so a correction applies after everything recorded before it and before everything recorded after it; ordinary movements inside a segment still replay in business-date order, so backdated purchases and outflows are unaffected.
 - **Sale** (بيع). a customer buys one or more items. Generates a **sale invoice**, decreases stock.
 - **Purchase** (شراء). the owner buys from a supplier. Increases stock; may be paid fully, partially, or on credit.
-- **Customer** (عميل). a person who buys. Optional on a sale invoice; when present, name (and phone) print on the invoice and the customer's unpaid sales are tracked.
+- **Customer** (زبون). a person who buys. Optional on a sale invoice; when present, name (and phone) print on the invoice and the customer's unpaid sales are tracked. A phone number, when given, identifies the person and is unique; names may repeat.
+  _Avoid_: عميل (formal), الطرف (means "party", not a person — never shown in the UI).
 - **Supplier** (مورّد). the person the owner buys from; the target of unpaid purchases.
+- **Counterparty**. the other side of an invoice: the زبون on a sale, the مورّد on a purchase. One internal concept, two roles; the UI names the role, never «الطرف».
 - **Invoice / receipt** (فاتورة). the document for a sale or a purchase: invoice number (auto-suggested, editable), lines, total, paid amount, remaining amount.
 - **Payment** (دفعة). money paid against an invoice, or against a **supplier account** when no single invoice is named. An invoice can have several payments (first payment, later payment); a payment never exceeds what is owed (no overpayment) — anything beyond the invoice it names becomes **supplier credit**.
 - **Remaining amount / debt** (الباقي). invoice total minus what has been paid. Direction matters: unpaid *purchases* mean the shop owes the supplier; unpaid *sales* mean the customer owes the shop.
@@ -37,6 +39,10 @@
 
 ## Build, Access, and Data Format
 
+- **Data folder** (مجلد البيانات). the folder holding the shop's data: the encrypted snapshot, the backups, the logs and the lock. One copy of Dokan has it open at a time; the vault lives inside it.
+  _Avoid_: data dir, database folder, store directory.
+- **In use** (قيد الاستعمال). the data folder is open in another copy of Dokan, so this one refuses to start rather than risk two writers on the same data.
+  _Avoid_: locked, busy, occupied.
 - **Session signing secret**. the key that signs login sessions. Generated per install on first run and stored with the shop data; never shipped in the build. In the unified vault it lives inside the encrypted snapshot.
 - **Vault**. the encrypted store of the shop's data. One passphrase (or a recovery key) unwraps the master key; the app opens only when the vault is open.
 - **Master key**. a random key generated at first run; it is the key that encrypts the data folder. It never exists in the clear outside memory and is stored only wrapped by the passphrase and the recovery keys.

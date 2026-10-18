@@ -40,7 +40,7 @@ Guard Phase 1 — pre-commit checks
     ↓
 Quality check — relevant skills
     ↓
-Debate — High-assurance only
+Debate — Standard + High-assurance (never Lightweight)
     ↓
 Test audit — Standard + High-assurance
     ↓
@@ -60,7 +60,7 @@ Guard Phase 3 — pre-report gate
     ↓
 Capture wisdom (repeated pattern only) + report to the owner
     ↓
-Merge — only on the owner's explicit word
+Merge — cheap-to-reverse merges itself; expensive or decision diffs wait for the owner
 ```
 
 A **worker lane stops at Guard Phase 2** and reports (`crew_report`); the parent
@@ -84,6 +84,13 @@ Do not run a later phase without recording the earlier gate, its commands, and i
 - **Reviewers are independent.** `debate`, `test-audit` and `code-review` run as
   separate sub-agents. A child that reports "I ran the gates in-lane" has not run
   them — re-run the lenses where the tool exists, and record the disclosure.
+- **The lenses run on a different model than the author.** Author lanes run
+  `zen-proxy/deepseek-v4.1-flash-free`; `debate`, `test-audit` and `code-review`
+  run `zen-proxy/glm-5.3-flash-free`. A model that reviews its own diff shares
+  the blind spots the lens exists to catch, so the reviewer is never the author.
+- **All three lenses run at Standard and above.** `debate` is no longer reserved
+  for High-assurance (owner decision, 2026-10-18); the tier decides how much
+  scrutiny a failure mode earns, not whether the debate happens.
 - **A green suite is not a review.** Every gate names the commands it ran and
   their exit codes; an unstated gate is an unrun gate.
 
@@ -97,8 +104,8 @@ that can bypass a session check is High-assurance.
 | Tier | Decision: what the change can break | Required review |
 | --- | --- | --- |
 | Lightweight | Truly non-reviewable files only (.gitignore, LICENSE, .scratch/): nothing a runtime executes reads them | Guard Phase 1 → quality check → report |
-| Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → test-audit → code-review → guard 2 → Greptile → guard 3 |
-| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | Standard plus debate |
+| Standard | Everything else: code, tests, config, UI, API, skills, docs | Standard gates: guard 1 → quality check → debate → test-audit → code-review → guard 2 → Greptile → guard 3 |
+| High-assurance | The diff can violate one of these failure modes: (1) stock quantity goes below zero, or an average cost is recomputed wrongly; (2) a payment exceeds its invoice total, or a total is computed wrongly; (3) debt direction is wrong (who owes whom); (4) a login, session, RBAC or secret-handling rule is bypassed; (5) a backup/restore loses or corrupts data | Standard gates, plus a debate re-run on the final head once the fixes are in |
 
 Auth/RBAC, backup/restore, invoice & debt money calculations, security and a
 schema-version bump are **examples that hint at a failure mode, never a test**.

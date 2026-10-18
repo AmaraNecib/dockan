@@ -110,10 +110,15 @@ Load relevant skills from the workflow's quality check table:
 | React Query / TanStack Query data fetching, cache keys, invalidation | `tanstack-query` |
 | TanStack Router routes, search params, loaders | `tanstack-router`, `tanstack-router-best-practices` |
 
-### 6. Debate — High-assurance only
+### 6. Debate — every reviewed change (Standard and High-assurance)
 
 Load `debate` with resolved base SHA. Saves evidence to
 `.scratch/reviews/<issue-id>/<head-sha>-debate.md`.
+
+Run this lens, `test-audit` and `code-review` on `zen-proxy/glm-5.3-flash-free` —
+never on the model that wrote the diff (`zen-proxy/deepseek-v4.1-flash-free`). The
+reviewer is never the author. A lane that reports "I ran the debate" has not run
+it; the parent re-runs the lens and records the disclosure.
 
 ### 7. Test audit — Standard and High-assurance
 

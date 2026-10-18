@@ -1,6 +1,6 @@
 # Wisdom — 2026-10-14 · Playwright: an ack wait against the test budget, and how to keep it attributable (#191)
 
-Follow-up to `2026-08-24…/2026-10-14-e2e-await-server-ack.md` (#179). The ack
+Follow-up to `await-server-ack.md` (#179). The ack
 pattern is still right, but #191 shows the failure mode it leaves behind.
 
 ## A `page.waitForResponse` timeout says nothing about whether a request was sent
